@@ -10,7 +10,7 @@ This directory is immutable compatibility evidence for released `RunState` write
 
 Each historical fixture records its package version, release tag, full source commit, npm integrity, scenario, path, and SHA-256 in `sources.json`. The published package and npm integrity identify the primary writer artifact; the tag and commit are supplementary source provenance. Minimal fixtures prove the writer format for every published schema. Feature and resume fixtures are intentionally limited to durable boundaries that need more than an empty state to exercise compatibility.
 
-The released `1.17` sandbox format predates the mount-credential redaction boundary added by unreleased schema `1.18`, so this corpus intentionally does not fabricate a released credential-redaction fixture. The prototype-key negative fixture uses the obvious non-secret sentinel `sentinel-not-a-secret`.
+The released `1.17` sandbox format predates the mount-credential redaction boundary added by schema `1.18`. The `v0.16.0` writer fixtures establish the released `1.18` boundary, including canonical per-call approval identity. Schema `1.19` changes mixed sticky and exact approval decisions to resolve the exact call first. The prototype-key negative fixture uses the obvious non-secret sentinel `sentinel-not-a-secret`.
 
 ## Regeneration
 

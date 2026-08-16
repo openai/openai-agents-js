@@ -2912,6 +2912,83 @@ describe('Agent scenarios (examples and docs patterns)', () => {
     },
   );
 
+  it.each([
+    { name: 'run with sticky approval', stream: false, sticky: 'approve' },
+    { name: 'stream with sticky approval', stream: true, sticky: 'approve' },
+    { name: 'run with sticky rejection', stream: false, sticky: 'reject' },
+    { name: 'stream with sticky rejection', stream: true, sticky: 'reject' },
+  ] as const)(
+    'honors exact call decisions after a serialized $name resume',
+    async ({ stream, sticky }) => {
+      const executions: string[] = [];
+      const approvalTool = tool({
+        name: 'exact_decision_tool',
+        description: 'Executes only approved calls.',
+        parameters: z.object({ value: z.string() }),
+        needsApproval: true,
+        execute: async ({ value }) => {
+          executions.push(value);
+          return value;
+        },
+      });
+      const model = new RecordingModel();
+      model.addMultipleTurnOutputs([
+        [
+          functionToolCall(
+            approvalTool.name,
+            JSON.stringify({ value: 'sticky' }),
+            'sticky-call',
+          ),
+          functionToolCall(
+            approvalTool.name,
+            JSON.stringify({ value: 'exception' }),
+            'exception-call',
+          ),
+        ],
+        [textMessage('done')],
+      ]);
+      const agent = new Agent({
+        name: 'ExactDecisionResumeAgent',
+        model,
+        tools: [approvalTool],
+      });
+      const runWithMode = async (
+        input: string | RunState<unknown, Agent<unknown, 'text'>>,
+      ) => {
+        if (stream) {
+          const result = await run(agent, input, { stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(agent, input);
+      };
+
+      const first = await runWithMode('start');
+      expect(first.interruptions).toHaveLength(2);
+      if (sticky === 'approve') {
+        first.state.approve(first.interruptions[0], { alwaysApprove: true });
+        first.state.reject(first.interruptions[1], {
+          message: 'Denied exactly.',
+        });
+      } else {
+        first.state.reject(first.interruptions[0], {
+          alwaysReject: true,
+          message: 'Denied by default.',
+        });
+        first.state.approve(first.interruptions[1]);
+      }
+
+      const restored = await RunState.fromString(agent, first.state.toString());
+      const resumed = await runWithMode(restored);
+
+      expect(resumed.interruptions).toHaveLength(0);
+      expect(resumed.finalOutput).toBe('done');
+      expect(executions).toEqual([
+        sticky === 'approve' ? 'sticky' : 'exception',
+      ]);
+    },
+  );
+
   it('restores a pending schema 1.17 sticky MCP approval as exact-call approval', async () => {
     const model = new RecordingModel();
     model.addMultipleTurnOutputs([

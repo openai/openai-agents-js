@@ -1,0 +1,63 @@
+{
+  "$schemaVersion": "1.18",
+  "currentTurn": 0,
+  "currentAgent": {
+    "name": "ApprovalOverrideAgent"
+  },
+  "originalInput": "approve selectively",
+  "modelResponses": [],
+  "context": {
+    "usage": {
+      "requests": 0,
+      "inputTokens": 0,
+      "outputTokens": 0,
+      "totalTokens": 0,
+      "inputTokensDetails": [],
+      "outputTokensDetails": []
+    },
+    "approvals": {},
+    "functionApprovals": [
+      {
+        "agentIdentity": "ApprovalOverrideAgent",
+        "approvals": {
+          "[\"bare\",\"sensitive_tool\"]": {
+            "approved": true,
+            "rejected": ["exception-call"],
+            "messages": {
+              "exception-call": "Denied exactly."
+            }
+          }
+        }
+      }
+    ],
+    "approvalInvocations": [
+      {
+        "agentIdentity": "ApprovalOverrideAgent",
+        "invocations": {
+          "sticky-call": "{\"caller\":{\"type\":\"direct\"},\"payload\":{\"format\":\"json\",\"value\":{}},\"toolName\":\"[\\\"bare\\\",\\\"sensitive_tool\\\"]\",\"type\":\"function_call\"}",
+          "exception-call": "{\"caller\":{\"type\":\"direct\"},\"payload\":{\"format\":\"json\",\"value\":{}},\"toolName\":\"[\\\"bare\\\",\\\"sensitive_tool\\\"]\",\"type\":\"function_call\"}"
+        },
+        "approvals": {}
+      }
+    ],
+    "context": {
+      "fixture": "per-call-approval-override"
+    }
+  },
+  "toolUseTracker": {},
+  "maxTurns": 3,
+  "noActiveAgentRun": true,
+  "inputGuardrailResults": [],
+  "outputGuardrailResults": [],
+  "toolInputGuardrailResults": [],
+  "toolOutputGuardrailResults": [],
+  "currentTurnInProgress": false,
+  "generatedItems": [],
+  "pendingAgentToolRuns": {},
+  "pendingAgentToolRunAliases": {},
+  "currentTurnPersistedItemCount": 0,
+  "completedToolInvocations": [],
+  "completedToolInvocationEvidence": [],
+  "ambiguousToolInvocationCallIds": [],
+  "trace": null
+}

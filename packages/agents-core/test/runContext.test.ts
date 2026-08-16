@@ -7,6 +7,7 @@ import {
   getFunctionToolLookupKey,
   getFunctionToolStateKeyForCall,
 } from '../src/toolIdentity';
+import { getToolInvocationFingerprint } from '../src/toolInvocation';
 import { z } from 'zod';
 
 const agent = new Agent({ name: 'A' });
@@ -224,6 +225,70 @@ describe('RunContext', () => {
     );
   });
 
+  it('lets an exact rejection override and then restore sticky approval', () => {
+    const ctx = new RunContext();
+    const stickyCall = createApproval('sticky-call');
+    const exceptionCall = createApproval('exception-call');
+
+    ctx.approveTool(stickyCall, { alwaysApprove: true });
+    ctx.rejectTool(exceptionCall, { message: 'Denied exactly.' });
+
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'exception-call' }),
+    ).toBe(false);
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'other-call' }),
+    ).toBe(true);
+    expect(ctx.getRejectionMessage('toolX', 'exception-call')).toBe(
+      'Denied exactly.',
+    );
+
+    ctx.approveTool(exceptionCall);
+
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'exception-call' }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'other-call' }),
+    ).toBe(true);
+    expect(ctx.getRejectionMessage('toolX', 'exception-call')).toBeUndefined();
+  });
+
+  it('lets an exact approval override and then restore sticky rejection', () => {
+    const ctx = new RunContext();
+    const stickyCall = createApproval('sticky-call');
+    const exceptionCall = createApproval('exception-call');
+
+    ctx.rejectTool(stickyCall, {
+      alwaysReject: true,
+      message: 'Denied by default.',
+    });
+    ctx.approveTool(exceptionCall);
+
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'exception-call' }),
+    ).toBe(true);
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'other-call' }),
+    ).toBe(false);
+    expect(ctx.getRejectionMessage('toolX', 'exception-call')).toBeUndefined();
+    expect(ctx.getRejectionMessage('toolX', 'other-call')).toBe(
+      'Denied by default.',
+    );
+
+    ctx.rejectTool(exceptionCall);
+
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'exception-call' }),
+    ).toBe(false);
+    expect(
+      ctx.isToolApproved({ toolName: 'toolX', callId: 'other-call' }),
+    ).toBe(false);
+    expect(ctx.getRejectionMessage('toolX', 'exception-call')).toBe(
+      'Denied by default.',
+    );
+  });
+
   it('scopes function approval decisions to the owning agent', () => {
     const otherAgent = new Agent({ name: 'B' });
     const first = createApproval('shared-call');
@@ -269,6 +334,163 @@ describe('RunContext', () => {
     expect(
       ctx._getFunctionRejectionMessage(toolName, 'shared-call', otherAgent),
     ).toBe('Rejected for B.');
+  });
+
+  it('preserves an exact legacy rejection message over scoped sticky approval', () => {
+    const ctx = new RunContext();
+    const toolName = getFunctionToolStateKeyForCall(rawItem)!;
+    const exceptionCall = createApproval('exception-call');
+    const agentsByIdentity = new Map([[agent.name, agent]]);
+    ctx._rebuildFunctionApprovals(
+      [
+        {
+          agentIdentity: agent.name,
+          approvals: {
+            [toolName]: { approved: true, rejected: [] },
+          },
+        },
+      ],
+      agentsByIdentity,
+    );
+    ctx._rebuildLegacyFunctionApprovals({
+      toolX: {
+        approved: [],
+        rejected: ['exception-call'],
+        messages: { 'exception-call': 'Rejected by legacy decision.' },
+      },
+    });
+    ctx._rebuildApprovalInvocations(
+      [
+        {
+          agentIdentity: agent.name,
+          invocations: {
+            'exception-call': getToolInvocationFingerprint(
+              toolName,
+              exceptionCall.rawItem,
+            ),
+          },
+          approvals: {},
+        },
+      ],
+      agentsByIdentity,
+    );
+
+    expect(
+      ctx._resolveToolInvocationApproval(
+        agent,
+        toolName,
+        exceptionCall.rawItem,
+      ),
+    ).toBe(false);
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'exception-call',
+        functionTool: false,
+        agent,
+      }),
+    ).toBe(false);
+    expect(
+      ctx.isToolApproved({
+        toolName,
+        callId: 'other-call',
+        functionTool: false,
+        agent,
+      }),
+    ).toBe(true);
+    expect(
+      ctx._getFunctionRejectionMessage(toolName, 'exception-call', agent),
+    ).toBe('Rejected by legacy decision.');
+    expect(
+      ctx._getToolInvocationRejectionMessage(
+        agent,
+        toolName,
+        exceptionCall.rawItem,
+      ),
+    ).toBe('Rejected by legacy decision.');
+    expect(
+      ctx._getFunctionRejectionMessage(toolName, 'other-call', agent),
+    ).toBeUndefined();
+  });
+
+  it('does not borrow function rejection messages from lower-priority groups', () => {
+    const toolName = getFunctionToolStateKeyForCall(rawItem)!;
+    const exceptionCall = createApproval('exception-call');
+    const agentsByIdentity = new Map([[agent.name, agent]]);
+    const bindExceptionCall = (ctx: RunContext) =>
+      ctx._rebuildApprovalInvocations(
+        [
+          {
+            agentIdentity: agent.name,
+            invocations: {
+              'exception-call': getToolInvocationFingerprint(
+                toolName,
+                exceptionCall.rawItem,
+              ),
+            },
+            approvals: {},
+          },
+        ],
+        agentsByIdentity,
+      );
+
+    const scopedExact = new RunContext();
+    scopedExact._rebuildFunctionApprovals(
+      [
+        {
+          agentIdentity: agent.name,
+          approvals: {
+            [toolName]: { approved: [], rejected: ['exception-call'] },
+          },
+        },
+      ],
+      agentsByIdentity,
+    );
+    scopedExact._rebuildLegacyFunctionApprovals({
+      toolX: {
+        approved: [],
+        rejected: true,
+        stickyRejectMessage: 'Losing legacy message.',
+      },
+    });
+    bindExceptionCall(scopedExact);
+
+    expect(
+      scopedExact._getToolInvocationRejectionMessage(
+        agent,
+        toolName,
+        exceptionCall.rawItem,
+      ),
+    ).toBeUndefined();
+
+    const legacyExact = new RunContext();
+    legacyExact._rebuildFunctionApprovals(
+      [
+        {
+          agentIdentity: agent.name,
+          approvals: {
+            [toolName]: {
+              approved: [],
+              rejected: true,
+              stickyRejectMessage: 'Losing scoped message.',
+            },
+          },
+        },
+      ],
+      agentsByIdentity,
+    );
+    legacyExact._rebuildLegacyFunctionApprovals({
+      toolX: { approved: [], rejected: ['exception-call'] },
+    });
+    bindExceptionCall(legacyExact);
+
+    expect(
+      legacyExact._getToolInvocationRejectionMessage(
+        agent,
+        toolName,
+        exceptionCall.rawItem,
+      ),
+    ).toBeUndefined();
   });
 
   it('reuses alwaysReject messages for future call ids', () => {

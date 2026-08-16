@@ -11,7 +11,7 @@ import {
 import type { ModelResponse } from '../src/model';
 import { Runner } from '../src/run';
 import { RunContext } from '../src/runContext';
-import { RunState } from '../src/runState';
+import { CURRENT_SCHEMA_VERSION, RunState } from '../src/runState';
 import {
   applyPatchTool,
   attachClientToolSearchExecutor,
@@ -171,7 +171,7 @@ describe('tool invocation replay binding', () => {
       1,
     ).toJSON() as any;
 
-    expect(serialized.$schemaVersion).toBe('1.18');
+    expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(serialized.context.approvalInvocations).toEqual([]);
     expect(serialized.completedToolInvocations).toEqual([]);
     expect(serialized.completedToolInvocationEvidence).toEqual([]);
@@ -205,7 +205,9 @@ describe('tool invocation replay binding', () => {
 
       await expect(
         RunState.fromString(agent, JSON.stringify(serialized)),
-      ).rejects.toThrow(UserError);
+      ).rejects.toThrow(
+        `RunState schema ${CURRENT_SCHEMA_VERSION} requires explicit approval, completed, completion-evidence, and ambiguous invocation records.`,
+      );
     },
   );
 
@@ -838,7 +840,7 @@ describe('tool invocation replay binding', () => {
       expect(calls).toEqual(['first']);
 
       const serialized = secondInterruption.state.toJSON() as any;
-      expect(serialized.$schemaVersion).toBe('1.18');
+      expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
       expect(
         serialized.context.approvalInvocations[0].invocations[firstCallId],
       ).toBeTypeOf('string');

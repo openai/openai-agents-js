@@ -14,6 +14,7 @@ import {
 } from '../src/runState';
 import { setDefaultModelProvider } from '../src/providers';
 import { tool } from '../src/tool';
+import { getFunctionToolStateKey } from '../src/toolIdentity';
 import { Usage } from '../src/usage';
 import { ScriptedModel, modelResponse } from '../src/testing';
 
@@ -117,6 +118,7 @@ describe('historical RunState compatibility corpus', () => {
       '1.14',
       '1.15',
       '1.17',
+      '1.18',
     ]);
     expect(
       manifest.schemas
@@ -127,7 +129,7 @@ describe('historical RunState compatibility corpus', () => {
       manifest.schemas
         .filter((entry) => entry.status === 'current_unreleased')
         .map((entry) => entry.schemaVersion),
-    ).toEqual(['1.18']);
+    ).toEqual(['1.19']);
   });
 
   it('pins every fixture to immutable bytes and complete writer provenance', () => {
@@ -289,6 +291,58 @@ describe('historical RunState compatibility corpus', () => {
           item.output === 'side effect completed',
       ),
     ).toHaveLength(1);
+  });
+
+  it('honors an exact rejection from the released schema 1.18 writer', async () => {
+    const approvalTool = tool({
+      name: 'sensitive_tool',
+      description: 'Requires an exact approval decision.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: async () => 'unused',
+    });
+    const agent = new Agent({
+      name: 'ApprovalOverrideAgent',
+      tools: [approvalTool],
+    });
+    const buildCall = (callId: string) => ({
+      id: `fc_${callId}`,
+      type: 'function_call' as const,
+      name: approvalTool.name,
+      callId,
+      status: 'completed' as const,
+      arguments: '{}',
+      providerData: {},
+    });
+    const restored = await RunState.fromString(
+      agent,
+      readFixture('historical/v1.18-per-call-approval-override.json'),
+    );
+    const toolName = getFunctionToolStateKey(approvalTool)!;
+    const exceptionCall = buildCall('exception-call');
+
+    expect(
+      restored._context._resolveToolInvocationApproval(
+        agent,
+        toolName,
+        exceptionCall,
+      ),
+    ).toBe(false);
+    expect(
+      restored._context._getToolInvocationRejectionMessage(
+        agent,
+        toolName,
+        exceptionCall,
+      ),
+    ).toBe('Denied exactly.');
+    expect(
+      restored._context._resolveToolInvocationApproval(
+        agent,
+        toolName,
+        buildCall('other-call'),
+      ),
+    ).toBe(true);
+    expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
   });
 
   it.each(manifest.negativeFixtures.filter((fixture) => fixture.expectedError))(
