@@ -135,13 +135,23 @@ export function createChainedSandboxEventSink(
 }
 
 export function serializeSandboxEventError(error: unknown): SandboxEventError {
-  if (error instanceof Error) {
-    const name = readStringErrorProperty(error, 'name');
+  let isError = false;
+  try {
+    isError = error instanceof Error;
+  } catch {
+    return {
+      message: UNSERIALIZABLE_SANDBOX_ERROR_MESSAGE,
+    };
+  }
+
+  if (isError) {
+    const errorValue = error as Error;
+    const name = readStringErrorProperty(errorValue, 'name');
     const message =
-      readStringErrorProperty(error, 'message') ??
+      readStringErrorProperty(errorValue, 'message') ??
       UNSERIALIZABLE_SANDBOX_ERROR_MESSAGE;
-    const code = readErrorCode(error);
-    const retryable = readErrorRetryability(error);
+    const code = readErrorCode(errorValue);
+    const retryable = readErrorRetryability(errorValue);
     return {
       ...(name !== undefined ? { name } : {}),
       message,
