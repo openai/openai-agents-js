@@ -265,6 +265,17 @@ export async function deserializeSandboxSessionStateEntry(
     resolvedTrustedManifest,
   );
   assertMountCredentialsRebound(prevalidatedPersistedState);
+  client.validateSessionStateForResume?.(
+    {
+      source: 'runState',
+      state: providerStateWithSdkEnvelopeFields(
+        envelope,
+        prevalidatedPersistedState.manifest,
+        resolvedTrustedManifest,
+      ),
+    },
+    { clientOptions: trustedConfig.clientOptions },
+  );
   const materializedTrustedManifest = resolvedTrustedManifest
     ? await resolveAndValidateMountEnvironment(resolvedTrustedManifest)
     : undefined;

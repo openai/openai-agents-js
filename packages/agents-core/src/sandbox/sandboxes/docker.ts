@@ -53,6 +53,7 @@ import type {
   SandboxConcurrencyLimits,
   SandboxPreservedSessionReuseOptions,
   SandboxSessionSerializationOptions,
+  SandboxSessionResumeValidationInput,
 } from '../client';
 import { normalizeSandboxClientCreateArgs } from '../client';
 import {
@@ -144,6 +145,7 @@ import {
   normalizeExposedPorts,
 } from './shared/sessionStateValues';
 import {
+  readOptionalNumberArray,
   readOptionalString,
   readString,
   readStringArray,
@@ -167,9 +169,12 @@ const DOCKER_SESSION_IDENTITY_LABEL = 'openai-agents-sandbox.session-identity';
 const DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL =
   'openai-agents-sandbox.mount-authority-fingerprint';
 
+type DockerNetworkMode = 'none';
+
 export interface DockerSandboxClientOptions extends SandboxClientOptions {
   image?: string;
   exposedPorts?: number[];
+  networkMode?: DockerNetworkMode;
   workspaceBaseDir?: string;
   snapshot?: LocalSandboxSnapshotSpec;
   concurrencyLimits?: SandboxConcurrencyLimits;
@@ -188,6 +193,7 @@ export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState 
   image: string;
   defaultUser?: string;
   configuredExposedPorts?: number[];
+  networkMode?: DockerNetworkMode;
   dockerVolumeNames?: string[];
   snapshotExcludedPaths?: string[];
 }
@@ -1028,6 +1034,8 @@ export class DockerSandboxClient implements SandboxClient<
         ? { archiveLimits: createArgs.archiveLimits }
         : {}),
     };
+    const { configuredExposedPorts, networkMode } =
+      resolveDockerNetworkConfiguration(this.options, createArgs.options);
     const environment = await manifest.resolveEnvironment();
     validateMountEnvironmentCredentialBoundaries(manifest, environment);
     await ensureDockerAvailable();
@@ -1056,9 +1064,6 @@ export class DockerSandboxClient implements SandboxClient<
     await prepareDockerWorkspaceRoot(workspaceRootPath, manifest);
     const image = resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE;
     const defaultUser = getHostDockerUser();
-    const configuredExposedPorts = normalizeExposedPorts(
-      resolvedOptions.exposedPorts,
-    );
     const sessionIdentity = randomUUID();
     const container = await startDockerContainer({
       image,
@@ -1069,6 +1074,7 @@ export class DockerSandboxClient implements SandboxClient<
       environment,
       defaultUser,
       exposedPorts: configuredExposedPorts,
+      networkMode,
     });
     const session = new DockerSandboxSession({
       state: {
@@ -1085,6 +1091,7 @@ export class DockerSandboxClient implements SandboxClient<
         containerId: container.containerId,
         defaultUser,
         configuredExposedPorts,
+        networkMode,
         dockerVolumeNames: container.volumeNames,
       },
       archiveLimits: resolvedOptions.archiveLimits,
@@ -1118,14 +1125,51 @@ export class DockerSandboxClient implements SandboxClient<
 
   async resume(
     state: DockerSandboxSessionState,
-    options: SandboxClientResumeOptions = {},
+    options: SandboxClientResumeOptions<DockerSandboxClientOptions> = {},
   ): Promise<DockerSandboxSession> {
-    assertMountCredentialsRebound(state);
-    assertHostPathGrantsRebound(state);
-    assertDockerManifestSupported(state.manifest);
+    const trustedConfig = getRunStateSessionTrustedConfig(state);
+    this.validateSessionStateForResume(
+      {
+        source: trustedConfig ? 'runState' : 'explicit',
+        state,
+      },
+      trustedConfig
+        ? {
+            ...options,
+            clientOptions: trustedConfig.clientOptions as
+              DockerSandboxClientOptions | undefined,
+          }
+        : options,
+    );
+    let resumeState = state;
+    if (!isRunStateSessionState(state)) {
+      const { configuredExposedPorts, networkMode } =
+        resolveDockerNetworkConfiguration(
+          this.options,
+          options.clientOptions,
+          state,
+        );
+      if (
+        state.networkMode !== networkMode ||
+        !dockerExposedPortSetsEqual(
+          state.configuredExposedPorts ?? [],
+          configuredExposedPorts,
+        )
+      ) {
+        resumeState = {
+          ...state,
+          configuredExposedPorts,
+          networkMode,
+          exposedPorts: undefined,
+        };
+      }
+    }
+    assertMountCredentialsRebound(resumeState);
+    assertHostPathGrantsRebound(resumeState);
+    assertDockerManifestSupported(resumeState.manifest);
     validateMountEnvironmentCredentialBoundaries(
-      state.manifest,
-      state.environment,
+      resumeState.manifest,
+      resumeState.environment,
     );
     await ensureDockerAvailable();
     await this.retryFailedCreateCleanups();
@@ -1133,7 +1177,10 @@ export class DockerSandboxClient implements SandboxClient<
       options.archiveLimits === undefined
         ? this.options.archiveLimits
         : options.archiveLimits;
-    const restoredState = await this.restoreIfNeeded(state, archiveLimits);
+    const restoredState = await this.restoreIfNeeded(
+      resumeState,
+      archiveLimits,
+    );
 
     return new DockerSandboxSession({
       state: restoredState,
@@ -1141,10 +1188,37 @@ export class DockerSandboxClient implements SandboxClient<
     });
   }
 
+  validateSessionStateForResume(
+    input: SandboxSessionResumeValidationInput<DockerSandboxSessionState>,
+    options: SandboxClientResumeOptions<DockerSandboxClientOptions> = {},
+  ): void {
+    const configuredExposedPorts =
+      input.source === 'explicit'
+        ? normalizeExposedPorts(input.state.configuredExposedPorts)
+        : normalizeExposedPorts(
+            readOptionalNumberArray(input.state.configuredExposedPorts),
+          );
+    const networkMode = validateDockerNetworkConfiguration(
+      input.state.networkMode,
+      configuredExposedPorts,
+    );
+    resolveDockerNetworkConfiguration(
+      this.options,
+      options.clientOptions,
+      input.source === 'explicit'
+        ? { configuredExposedPorts, networkMode }
+        : undefined,
+    );
+  }
+
   async canReusePreservedOwnedSession(
     state: DockerSandboxSessionState,
     options: SandboxPreservedSessionReuseOptions<DockerSandboxClientOptions> = {},
   ): Promise<boolean> {
+    validateDockerNetworkConfiguration(
+      state.networkMode,
+      state.configuredExposedPorts,
+    );
     if (isSandboxSessionStateUnsafe(state)) {
       return false;
     }
@@ -1164,12 +1238,15 @@ export class DockerSandboxClient implements SandboxClient<
       ...this.options,
       ...options.clientOptions,
     };
+    const { configuredExposedPorts, networkMode } =
+      resolveDockerNetworkConfiguration(this.options, options.clientOptions);
     if (
       state.image !== (resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE) ||
       !dockerExposedPortSetsEqual(
         state.configuredExposedPorts ?? [],
-        normalizeExposedPorts(resolvedOptions.exposedPorts),
-      )
+        configuredExposedPorts,
+      ) ||
+      state.networkMode !== networkMode
     ) {
       return false;
     }
@@ -1245,6 +1322,9 @@ export class DockerSandboxClient implements SandboxClient<
       containerId: state.containerId,
       defaultUser: state.defaultUser,
       configuredExposedPorts: state.configuredExposedPorts ?? [],
+      ...(state.networkMode !== undefined
+        ? { networkMode: state.networkMode }
+        : {}),
       dockerVolumeNames: state.dockerVolumeNames ?? [],
       exposedPorts: state.exposedPorts ?? null,
     };
@@ -1255,6 +1335,13 @@ export class DockerSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<DockerSandboxSessionState> {
+    const configuredExposedPorts = normalizeExposedPorts(
+      readOptionalNumberArray(state.configuredExposedPorts),
+    );
+    const networkMode = validateDockerNetworkConfiguration(
+      state.networkMode,
+      configuredExposedPorts,
+    );
     const baseState = await deserializeLocalSandboxSessionStateValues(
       state,
       this.options.snapshot,
@@ -1266,6 +1353,7 @@ export class DockerSandboxClient implements SandboxClient<
       containerId: readString(state, 'containerId'),
       defaultUser:
         readOptionalString(state, 'defaultUser') ?? getHostDockerUser(),
+      networkMode,
       dockerVolumeNames: readStringArray(state.dockerVolumeNames),
     };
   }
@@ -1282,6 +1370,12 @@ export class DockerSandboxClient implements SandboxClient<
         ...(trustedConfig?.clientOptions as
           DockerSandboxClientOptions | undefined),
       };
+      const { configuredExposedPorts, networkMode } =
+        resolveDockerNetworkConfiguration(
+          this.options,
+          trustedConfig?.clientOptions as
+            DockerSandboxClientOptions | undefined,
+        );
       const trustedState: DockerSandboxSessionState = {
         ...state,
         sessionIdentity: undefined,
@@ -1293,9 +1387,8 @@ export class DockerSandboxClient implements SandboxClient<
           resolvedOptions.snapshot ??
           null,
         defaultUser: getHostDockerUser(),
-        configuredExposedPorts: normalizeExposedPorts(
-          resolvedOptions.exposedPorts,
-        ),
+        configuredExposedPorts,
+        networkMode,
         dockerVolumeNames: [],
         exposedPorts: undefined,
       };
@@ -1447,6 +1540,7 @@ export class DockerSandboxClient implements SandboxClient<
       environment: state.environment,
       defaultUser: state.defaultUser,
       exposedPorts: state.configuredExposedPorts,
+      networkMode: state.networkMode,
     });
     const nextState = {
       ...state,
@@ -1610,6 +1704,9 @@ async function inspectRunningDockerContainerForReuse(
   if (!ownershipVerified) {
     return { ownershipVerified: false, reusable: false };
   }
+  if (!(await dockerNetworkConfigurationMatches(state))) {
+    return { ownershipVerified: true, reusable: false };
+  }
 
   const expectedBindMounts = dockerBindMountsFromAuthority([
     workspaceMountAfterInspect,
@@ -1680,10 +1777,12 @@ async function inspectLegacyDockerContainerForReuse(
   const ownershipVerified = actualBindMounts.some((mount) =>
     dockerBindMountsEqual(mount, expectedWorkspaceMount),
   );
+  const networkConfigurationMatches =
+    ownershipVerified && (await dockerNetworkConfigurationMatches(state));
   return {
     ownershipVerified,
     reusable:
-      ownershipVerified &&
+      networkConfigurationMatches &&
       dockerMountAuthoritiesEqual(
         workspaceMountBeforeInspect,
         workspaceMountAfterInspect,
@@ -1698,6 +1797,52 @@ async function inspectLegacyDockerContainerForReuse(
         ...dockerBindMountsFromAuthority(manifestBindMountsAfterInspect),
       ]),
   };
+}
+
+async function dockerNetworkConfigurationMatches(
+  state: DockerSandboxSessionState,
+): Promise<boolean> {
+  if (state.networkMode === undefined) {
+    return true;
+  }
+  const inspectionResult = await runSandboxProcess(
+    'docker',
+    [
+      'inspect',
+      '--type',
+      'container',
+      '--format',
+      '{{json .HostConfig.NetworkMode}}\n{{json .NetworkSettings.Networks}}',
+      state.containerId,
+    ],
+    { timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS },
+  );
+  if (inspectionResult.status !== 0) {
+    return false;
+  }
+  try {
+    const [modeJson, networksJson, ...unexpectedLines] = inspectionResult.stdout
+      .trim()
+      .split('\n');
+    if (
+      modeJson === undefined ||
+      networksJson === undefined ||
+      unexpectedLines.length > 0
+    ) {
+      return false;
+    }
+    const mode: unknown = JSON.parse(modeJson);
+    const networks: unknown = JSON.parse(networksJson);
+    return (
+      mode === 'none' &&
+      typeof networks === 'object' &&
+      networks !== null &&
+      !Array.isArray(networks) &&
+      Object.keys(networks).every((network) => network === 'none')
+    );
+  } catch {
+    return false;
+  }
 }
 
 function dockerContainerIdentityMatches(
@@ -2037,6 +2182,63 @@ function dockerExposedPortSetsEqual(left: number[], right: number[]): boolean {
   );
 }
 
+function validateDockerNetworkConfiguration(
+  networkMode: unknown,
+  exposedPorts: number[] | undefined,
+): DockerNetworkMode | undefined {
+  if (networkMode !== undefined && networkMode !== 'none') {
+    throw new UserError(
+      'DockerSandboxClient networkMode must be "none" when provided.',
+    );
+  }
+  if (networkMode === 'none' && (exposedPorts?.length ?? 0) > 0) {
+    throw new UserError(
+      'DockerSandboxClient exposedPorts cannot be used when networkMode is "none".',
+    );
+  }
+  return networkMode;
+}
+
+function resolveDockerNetworkConfiguration(
+  clientOptions: DockerSandboxClientOptions,
+  perRunOptions?: DockerSandboxClientOptions,
+  explicitStateFallback?: Pick<
+    DockerSandboxSessionState,
+    'configuredExposedPorts' | 'networkMode'
+  >,
+): {
+  configuredExposedPorts: number[];
+  networkMode?: DockerNetworkMode;
+} {
+  const trustedExposedPorts =
+    perRunOptions?.exposedPorts !== undefined
+      ? normalizeExposedPorts(perRunOptions.exposedPorts)
+      : clientOptions.exposedPorts !== undefined
+        ? normalizeExposedPorts(clientOptions.exposedPorts)
+        : undefined;
+  const exposedPorts = explicitStateFallback
+    ? normalizeExposedPorts(explicitStateFallback.configuredExposedPorts)
+    : (trustedExposedPorts ?? []);
+  if (
+    explicitStateFallback &&
+    trustedExposedPorts !== undefined &&
+    !dockerExposedPortSetsEqual(trustedExposedPorts, exposedPorts)
+  ) {
+    throw new UserError(
+      'DockerSandboxClient exposedPorts cannot be changed when resuming explicit session state. Start a fresh sandbox session instead.',
+    );
+  }
+  const networkMode = validateDockerNetworkConfiguration(
+    perRunOptions?.networkMode !== undefined
+      ? perRunOptions.networkMode
+      : clientOptions.networkMode !== undefined
+        ? clientOptions.networkMode
+        : explicitStateFallback?.networkMode,
+    exposedPorts,
+  );
+  return { configuredExposedPorts: exposedPorts, networkMode };
+}
+
 function assertDockerManifestDeltaSupported(
   currentManifest: Manifest,
   deltaManifest: Manifest,
@@ -2294,7 +2496,9 @@ async function startDockerContainer(args: {
   environment: Record<string, string>;
   defaultUser?: string;
   exposedPorts?: number[];
+  networkMode?: DockerNetworkMode;
 }): Promise<{ containerId: string; volumeNames: string[] }> {
+  validateDockerNetworkConfiguration(args.networkMode, args.exposedPorts);
   const envArgs = Object.entries(args.environment).flatMap(([key, value]) => [
     '-e',
     `${key}=${value}`,
@@ -2304,6 +2508,7 @@ async function startDockerContainer(args: {
     '-p',
     `127.0.0.1::${port}`,
   ]);
+  const networkArgs = args.networkMode ? ['--network', args.networkMode] : [];
   const containerName = `openai-agents-sandbox-${randomUUID().slice(0, 8)}`;
   const workspaceMount = await resolveDockerWorkspaceMount(
     args.workspaceRootPath,
@@ -2339,6 +2544,7 @@ async function startDockerContainer(args: {
       ...privilegeArgs,
       '-w',
       args.manifestRoot,
+      ...networkArgs,
       ...portArgs,
       ...userArgs,
       ...envArgs,

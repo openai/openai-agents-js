@@ -113,6 +113,8 @@ function dockerWorkspaceMount(source: string, target = '/workspace') {
 type DockerContainerInspection = {
   labels: Record<string, string>;
   mounts: ReturnType<typeof dockerWorkspaceMount>;
+  networkMode: string;
+  networks: unknown;
 };
 
 function dockerRunInspection(args: string[]): DockerContainerInspection {
@@ -148,9 +150,14 @@ function dockerRunInspection(args: string[]): DockerContainerInspection {
       RW: options.readonly !== true,
     });
   }
+  const networkArgIndex = args.indexOf('--network');
+  const networkMode =
+    networkArgIndex === -1 ? 'bridge' : (args[networkArgIndex + 1] ?? '');
   return {
     labels: dockerRunLabels(args),
     mounts,
+    networkMode,
+    networks: networkMode === 'none' ? {} : { [networkMode]: {} },
   };
 }
 
@@ -164,6 +171,14 @@ function dockerInspectionResult(
   }
   if (args[4] === '{{json .Mounts}}') {
     return success(JSON.stringify(inspection?.mounts ?? []));
+  }
+  if (
+    args[4] ===
+    '{{json .HostConfig.NetworkMode}}\n{{json .NetworkSettings.Networks}}'
+  ) {
+    return success(
+      `${JSON.stringify(inspection?.networkMode ?? '')}\n${JSON.stringify(inspection?.networks ?? null)}\n`,
+    );
   }
   return undefined;
 }
@@ -332,6 +347,7 @@ describe('DockerSandboxClient unit behavior', () => {
         'custom:image',
       ]),
     );
+    expect(runCall?.[1]).not.toContain('--network');
     const imageArgIndex = runCall?.[1].indexOf('custom:image') ?? -1;
     expect(runCall?.[1].slice(imageArgIndex + 1, imageArgIndex + 3)).toEqual([
       '/bin/sh',
@@ -369,6 +385,105 @@ describe('DockerSandboxClient unit behavior', () => {
       { timeoutMs: 30_000 },
     );
     await expect(stat(session.state.workspaceRootPath)).rejects.toThrow();
+  });
+
+  it.each(['bridge', 'host', null, 42])(
+    'rejects unsupported network mode %j before Docker or filesystem effects',
+    async (networkMode) => {
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        networkMode: networkMode as never,
+      });
+
+      await expect(client.create(new Manifest())).rejects.toThrow(
+        'networkMode must be "none"',
+      );
+
+      expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+      await expect(readdir(rootDir)).resolves.toEqual([]);
+    },
+  );
+
+  it('rejects exposed ports with network isolation before Docker or filesystem effects', async () => {
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      networkMode: 'none',
+      exposedPorts: [3000],
+    });
+
+    await expect(client.create(new Manifest())).rejects.toThrow(
+      'exposedPorts cannot be used when networkMode is "none"',
+    );
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    await expect(readdir(rootDir)).resolves.toEqual([]);
+  });
+
+  it('creates and persists a network-isolated container', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-isolated\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      networkMode: 'none',
+      snapshot: new NoopSnapshotSpec(),
+    });
+
+    const session = await client.create(new Manifest(), {
+      networkMode: undefined,
+    });
+    const runArgs = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    )?.[1];
+
+    expect(session.state.networkMode).toBe('none');
+    expect(runArgs).toEqual(expect.arrayContaining(['--network', 'none']));
+    expect(runArgs?.indexOf('--network')).toBe(
+      (runArgs?.indexOf('none') ?? 0) - 1,
+    );
+    expect(runArgs).not.toContain('-p');
+
+    const serialized = await client.serializeSessionState(session.state);
+    expect(serialized.networkMode).toBe('none');
+    await expect(
+      client.deserializeSessionState(serialized),
+    ).resolves.toMatchObject({ networkMode: 'none' });
+
+    const legacy = { ...serialized };
+    delete legacy.networkMode;
+    await expect(client.deserializeSessionState(legacy)).resolves.toMatchObject(
+      { networkMode: undefined },
+    );
+
+    const providerCallCount = processMocks.runSandboxProcess.mock.calls.length;
+    await expect(
+      client.deserializeSessionState({
+        ...serialized,
+        networkMode: 'bridge',
+      }),
+    ).rejects.toThrow('networkMode must be "none"');
+    await expect(
+      client.deserializeSessionState({
+        ...serialized,
+        configuredExposedPorts: [3000],
+      }),
+    ).rejects.toThrow('exposedPorts cannot be used when networkMode is "none"');
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledTimes(
+      providerCallCount,
+    );
+
+    await session.close();
   });
 
   it('passes bind and Docker volume mounts to container creation', async () => {
@@ -3036,6 +3151,11 @@ describe('DockerSandboxClient unit behavior', () => {
         clientOptions: { exposedPorts: [8080] },
       }),
     ).resolves.toBe(false);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        clientOptions: { networkMode: 'none' },
+      }),
+    ).resolves.toBe(false);
     expect(activeChild.kill).not.toHaveBeenCalled();
     expect(runCount).toBe(1);
     expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
@@ -3046,6 +3166,284 @@ describe('DockerSandboxClient unit behavior', () => {
 
     await session.close();
   });
+
+  it('verifies actual Docker network isolation before live reuse', async () => {
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          inspections.set('container-isolated', dockerRunInspection(args));
+          return success('container-isolated\n');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      networkMode: 'none',
+    });
+    const session = await client.create(new Manifest());
+    const inspection = inspections.get('container-isolated')!;
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        clientOptions: { networkMode: undefined },
+      }),
+    ).resolves.toBe(true);
+
+    inspection.networks = { bridge: {} };
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(false);
+
+    inspection.networks = { none: {} };
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(true);
+
+    inspection.networkMode = 'bridge';
+    inspection.networks = {};
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(false);
+
+    inspection.networkMode = 'none';
+    inspection.networks = null;
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(false);
+
+    await session.close();
+  });
+
+  it('replaces an owned container whose network isolation no longer matches', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      networkMode: 'none',
+    });
+    const session = await client.create(new Manifest());
+    const firstInspection = inspections.get('container-1')!;
+    firstInspection.networkMode = 'bridge';
+    firstInspection.networks = { bridge: {} };
+
+    const resumed = await client.resume(session.state);
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(resumed.state.networkMode).toBe('none');
+    expect(inspections.get('container-2')).toMatchObject({
+      networkMode: 'none',
+      networks: {},
+    });
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-1'],
+      { timeoutMs: 30_000 },
+    );
+
+    await resumed.close();
+  });
+
+  it('applies trusted network isolation when resuming explicit session state', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest());
+
+    const resumed = await client.resume(session.state, {
+      clientOptions: { networkMode: 'none' },
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(resumed.state.networkMode).toBe('none');
+    expect(inspections.get('container-1')).toMatchObject({
+      networkMode: 'bridge',
+    });
+    expect(inspections.get('container-2')).toMatchObject({
+      networkMode: 'none',
+      networks: {},
+    });
+    expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-1'],
+      { timeoutMs: 30_000 },
+    );
+
+    await resumed.close();
+  });
+
+  it('keeps constructor network isolation when per-run resume mode is undefined', async () => {
+    let runCount = 0;
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          const containerId = `container-${runCount}`;
+          inspections.set(containerId, dockerRunInspection(args));
+          return success(`${containerId}\n`);
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const sourceClient = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const sourceSession = await sourceClient.create(new Manifest());
+    const isolatedClient = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      networkMode: 'none',
+    });
+
+    const resumed = await isolatedClient.resume(sourceSession.state, {
+      clientOptions: { networkMode: undefined },
+    });
+
+    expect(resumed.state.containerId).toBe('container-2');
+    expect(resumed.state.networkMode).toBe('none');
+    expect(inspections.get('container-2')).toMatchObject({
+      networkMode: 'none',
+      networks: {},
+    });
+
+    await resumed.close();
+  });
+
+  it('rejects trusted network isolation conflicts before explicit resume side effects', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-1\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest(), {
+      exposedPorts: [8080],
+    });
+    processMocks.runSandboxProcess.mockClear();
+
+    await expect(
+      client.resume(session.state, {
+        clientOptions: { networkMode: 'none' },
+      }),
+    ).rejects.toThrow('exposedPorts cannot be used when networkMode is "none"');
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+
+    await session.close();
+  });
+
+  it.each([{ exposedPorts: [] }, { exposedPorts: [9090] }])(
+    'rejects explicit resume port changes before side effects: $exposedPorts',
+    async ({ exposedPorts }) => {
+      processMocks.runSandboxProcess.mockImplementation(
+        async (_command: string, args: string[]) => {
+          if (args[0] === 'version') {
+            return success('Docker version test');
+          }
+          if (args[0] === 'run') {
+            return success('container-1\n');
+          }
+          if (args[0] === 'rm') {
+            return success();
+          }
+          return failure('unexpected docker command');
+        },
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot: new NoopSnapshotSpec(),
+      });
+      const session = await client.create(new Manifest(), {
+        exposedPorts: [8080],
+      });
+      const deserialized = await client.deserializeSessionState(
+        await client.serializeSessionState(session.state),
+      );
+      expect(deserialized.configuredExposedPorts).toEqual([8080]);
+      processMocks.runSandboxProcess.mockClear();
+
+      await expect(
+        client.resume(deserialized, {
+          clientOptions: { exposedPorts },
+        }),
+      ).rejects.toThrow(
+        'exposedPorts cannot be changed when resuming explicit session state',
+      );
+      expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+
+      await session.close();
+    },
+  );
 
   it('preserves live reuse after runtime files are materialized', async () => {
     let runCount = 0;
@@ -4902,6 +5300,88 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(
       readFile(join(restored.state.workspaceRootPath, 'notes.txt'), 'utf8'),
     ).resolves.toBe('snapshot\n');
+
+    await restored.close();
+    await session.close();
+  });
+
+  it('recreates Docker RunState with trusted network isolation', async () => {
+    let runCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-${runCount}\n`);
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: {
+        type: 'local',
+        baseDir: rootDir,
+      },
+    });
+    const manifest = new Manifest({
+      entries: {
+        'notes.txt': {
+          type: 'file',
+          content: 'snapshot\n',
+        },
+      },
+    });
+    const session = await client.create(manifest);
+    const serialized = await client.serializeSessionState(session.state);
+    delete serialized.networkMode;
+
+    const persistedState = (await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: client.backendId,
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: toSessionStateEnvelope(
+          client.backendId,
+          session.state,
+          serialized,
+        ),
+      },
+      manifest,
+      {
+        clientOptions: {
+          networkMode: 'none',
+          workspaceBaseDir: rootDir,
+        },
+        snapshot: {
+          type: 'local',
+          baseDir: rootDir,
+        },
+      },
+    )) as DockerSandboxSessionState;
+
+    expect(persistedState.networkMode).toBeUndefined();
+    const restored = await client.resume(persistedState);
+    const runCalls = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    );
+
+    expect(restored.state.networkMode).toBe('none');
+    expect(runCalls[0]?.[1]).not.toContain('--network');
+    expect(runCalls[1]?.[1]).toEqual(
+      expect.arrayContaining(['--network', 'none']),
+    );
+    expect(
+      processMocks.runSandboxProcess.mock.calls.some(
+        ([, args]) => args[0] === 'inspect',
+      ),
+    ).toBe(false);
 
     await restored.close();
     await session.close();

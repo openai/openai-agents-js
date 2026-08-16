@@ -1052,7 +1052,17 @@ export class SandboxRuntimeManager<TContext> {
       getSerializedSandboxState(this.runState),
       agentKey,
     );
-    const explicitSessionState = this.sandboxConfig?.sessionState
+    const explicitSessionStateInput = this.sandboxConfig?.sessionState;
+    if (explicitSessionStateInput) {
+      client.validateSessionStateForResume?.(
+        { source: 'explicit', state: explicitSessionStateInput },
+        {
+          archiveLimits: this.sandboxConfig?.archiveLimits,
+          clientOptions: this.sandboxConfig?.options,
+        },
+      );
+    }
+    const explicitSessionState = explicitSessionStateInput
       ? await this.prepareExplicitSessionStateForResume(client, trustedManifest)
       : undefined;
     if (explicitSessionState && !client.resume) {

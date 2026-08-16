@@ -158,7 +158,9 @@ import {
  *   JSON-compatible tool outputs as structured data, and adds durable pending input
  *   and accepted-response resume state.
  * - 1.19: Lets an exact call approval decision override a sticky decision for the
- *   same canonical approval identity.
+ *   same canonical approval identity, and adds sandbox session-state envelope version 4
+ *   so Docker network-isolation state cannot be consumed by older SDKs that would drop it
+ *   during container replacement.
  */
 export const CURRENT_SCHEMA_VERSION = '1.19' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
@@ -189,7 +191,15 @@ const $schemaVersion = z.enum(SUPPORTED_SCHEMA_VERSIONS);
 function schemaVersionSupportsV118State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === '1.18' || schemaVersion === CURRENT_SCHEMA_VERSION;
+  return (
+    schemaVersion === '1.18' || schemaVersionSupportsV119State(schemaVersion)
+  );
+}
+
+function schemaVersionSupportsV119State(
+  schemaVersion: SupportedSchemaVersion,
+): boolean {
+  return schemaVersion === CURRENT_SCHEMA_VERSION;
 }
 
 function schemaVersionSupportsV116State(
@@ -1446,6 +1456,7 @@ const sandboxSessionStateEnvelopeSchema = z.object({
     ) as [
       z.ZodLiteral<1>,
       z.ZodLiteral<2>,
+      z.ZodLiteral<3>,
       z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>,
     ],
   ),
@@ -3175,13 +3186,15 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
     schemaVersion === '1.16' ||
     schemaVersion === '1.17' ||
     schemaVersionSupportsV118State(schemaVersion);
+  const supportsVersion3 = schemaVersionSupportsV118State(schemaVersion);
   if (
     envelopes.every(
       (envelope) =>
         envelope.version === 1 ||
         (envelope.version === 2 && supportsVersion2) ||
+        (envelope.version === 3 && supportsVersion3) ||
         (envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-          schemaVersionSupportsV118State(schemaVersion)),
+          schemaVersionSupportsV119State(schemaVersion)),
     )
   ) {
     return;
@@ -3191,9 +3204,10 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
     (envelope) =>
       envelope.version !== 1 &&
       !(envelope.version === 2 && supportsVersion2) &&
+      !(envelope.version === 3 && supportsVersion3) &&
       !(
         envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-        schemaVersionSupportsV118State(schemaVersion)
+        schemaVersionSupportsV119State(schemaVersion)
       ),
   )?.version;
   throw new UserError(

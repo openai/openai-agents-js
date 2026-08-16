@@ -317,7 +317,7 @@
     {
       "schemaVersion": "1.19",
       "status": "current_unreleased",
-      "reason": "Supported on main but not emitted by the latest released package v0.16.0."
+      "reason": "Supported on main but not emitted by the latest released package v0.16.0; includes exact-call approval precedence and sandbox envelope version 4."
     }
   ],
   "expectedNormalizedFixtures": [
@@ -363,6 +363,12 @@
       "path": "negative/v1.17-sandbox-v3.json",
       "sha256": "686c6b8e7deafce9afcb306acbeebef180e74fa9921e9cebcac74186981dce0c",
       "expectedError": "does not support sandbox session state version 3"
+    },
+    {
+      "scenario": "v1.18-sandbox-v4",
+      "path": "negative/v1.18-sandbox-v4.json",
+      "sha256": "7792da13fda1bd76b59499ea13051cef593d59f391a125920d299cf9e6c24869",
+      "expectedError": "does not support sandbox session state version 4"
     },
     {
       "scenario": "prototype-key",
