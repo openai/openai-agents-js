@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.18",
+  "currentSchemaAtCreation": "1.19",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -294,16 +294,31 @@
     },
     {
       "schemaVersion": "1.18",
+      "status": "published_writer",
+      "packageVersion": "0.15.0",
+      "tag": "v0.15.0",
+      "commit": "6e220a73b748518aacbea90aded189d77212ae56",
+      "npmIntegrity": "sha512-5kd9RzlyhPCA133RsfXb5j8BMx96zQB602Psak5KHQxhi22z5I+z2FDwnzW3CWoNIyNBelQDS1fgAQ+Yek/ofA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.18-minimal.json",
+          "sha256": "114f59b4c2a6a52fa1597a61c9cbfed52f003e8d57e7c55dfa5a31586416515f"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.19",
       "status": "current_unreleased",
-      "commit": "49fe593b603410e713f67cf853a578e61d480b48",
-      "reason": "Supported on main but not emitted by the latest released package v0.14.3."
+      "reason": "Supported by this branch but not emitted by the latest released package v0.15.0."
     }
   ],
   "expectedNormalizedFixtures": [
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "114f59b4c2a6a52fa1597a61c9cbfed52f003e8d57e7c55dfa5a31586416515f"
+      "sha256": "de5dc77e20a72d1c00de59ca5eca2875fcc7c5fdb6310ac135284d691217b9ae"
     }
   ],
   "negativeFixtures": [

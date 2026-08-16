@@ -82,9 +82,11 @@ import {
   isAbortError,
 } from './runner/streaming';
 import {
+  applySessionHistoryMutationsBeforeRun,
   createSessionPersistenceTracker,
   captureSessionHistoryTransactionInputItems,
   markSessionHistoryTransactionInputPersisted,
+  preflightSessionHistoryTransactionsForRun,
   prepareSessionHistoryTransactionsForRun,
   releaseProvisionalSessionHistoryTransactionBinding,
   releaseUnusedSessionHistoryTransactionBinding,
@@ -791,9 +793,22 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const portableInputItems =
         resumedState._currentTurnSessionHistoryTransactionInputItems;
       resumedState.setReasoningItemIdPolicy(reasoningItemIdPolicy);
-      await prepareSessionHistoryTransactionsForRun(session, resumedState, {
+      const sessionHistoryTransactionPreflight =
+        await preflightSessionHistoryTransactionsForRun(session, resumedState, {
+          serverManagesConversation,
+        });
+      const clearSessionHistoryMutations =
+        resumedState._prepareSessionHistoryMutationClear();
+      await applySessionHistoryMutationsBeforeRun(session, resumedState, {
         serverManagesConversation,
       });
+      await prepareSessionHistoryTransactionsForRun(
+        session,
+        resumedState,
+        { serverManagesConversation },
+        sessionHistoryTransactionPreflight,
+      );
+      clearSessionHistoryMutations?.();
       if (!hadSessionBinding) {
         provisionalSessionHistoryTransactionSessionId =
           resumedState._currentTurnSessionHistoryTransactionSessionId;

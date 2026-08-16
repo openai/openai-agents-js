@@ -447,6 +447,13 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       throw new Error('Expected nested tool approval interruption');
     }
     expect(approval.agent.name).toBe('NestedAgent');
+    expect(() =>
+      restored.approve(approval, {
+        overrideArguments: { text: 'updated' },
+      }),
+    ).toThrow(
+      'only supported for function_call approvals owned directly by the current RunState',
+    );
     restored.approve(approval);
 
     const resumed = await runner.run(outerAgent, restored);

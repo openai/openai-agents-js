@@ -20,6 +20,7 @@ import {
 } from '../../src/items';
 import { ModelResponse } from '../../src/model';
 import {
+  applySessionHistoryMutationsBeforeRun,
   prepareInputItemsWithSession,
   releaseUnusedSessionHistoryTransactionBinding,
   saveStreamInputToSession,
@@ -40,9 +41,11 @@ import type {
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionResult,
   Session,
+  SessionHistoryRewriteArgs,
   SessionHistoryTransactionArgs,
 } from '../../src/memory/session';
 import { MemorySession as TransactionMemorySession } from '../../src/memory/memorySession';
+import { applySessionHistoryMutations } from '../../src/memory/historyMutations';
 import { toAgentInputList } from '../../src/runner/items';
 import { tool } from '../../src/tool';
 import type { FunctionTool } from '../../src/tool';
@@ -56,6 +59,67 @@ import logger from '../../src/logger';
 beforeAll(() => {
   setTracingDisabled(true);
   setDefaultModelProvider(new ScriptedModelProvider());
+});
+
+describe('applySessionHistoryMutationsBeforeRun', () => {
+  it('delegates the complete mutation batch to the session atomic boundary', async () => {
+    const firstExpected = functionCall('call_first');
+    const secondExpected = functionCall('call_second');
+    const mutations = [firstExpected, secondExpected].map((expected) => ({
+      type: 'replace_function_call' as const,
+      callId: expected.callId,
+      expected,
+      replacement: { ...expected, arguments: '{"ok":true}' },
+    }));
+    let receivedMutations: typeof mutations | undefined;
+    const session = {
+      supportsExpectedHistoryMutations: true,
+      getItems: async () => {
+        throw new Error('runner must not perform a separate history read');
+      },
+      prepareHistoryItemsForPersistenceComparison: () => {
+        throw new Error('normalization belongs to the atomic rewrite');
+      },
+      applyHistoryMutations: async (args: { mutations: typeof mutations }) => {
+        receivedMutations = args.mutations;
+      },
+    } as unknown as Session;
+    const state = {
+      _context: new RunContext(),
+      _currentTurnPersistedItemCount: 1,
+      _getValidatedSessionHistoryMutations: () => mutations,
+    } as unknown as RunState<any, any>;
+
+    await applySessionHistoryMutationsBeforeRun(session, state, {
+      serverManagesConversation: false,
+    });
+
+    expect(receivedMutations).toEqual(mutations);
+  });
+
+  it('skips rewrites when the interrupted turn has no persisted items', async () => {
+    const expected = functionCall('call_unpersisted');
+    const mutations = [
+      {
+        type: 'replace_function_call' as const,
+        callId: expected.callId,
+        expected,
+        replacement: { ...expected, arguments: '{"ok":true}' },
+      },
+    ];
+    const session = {} as Session;
+    const state = {
+      _context: new RunContext(),
+      _currentTurnPersistedItemCount: 0,
+      _getValidatedSessionHistoryMutations: () => mutations,
+    } as unknown as RunState<any, any>;
+
+    await expect(
+      applySessionHistoryMutationsBeforeRun(session, state, {
+        serverManagesConversation: false,
+      }),
+    ).resolves.toBeUndefined();
+  });
 });
 
 async function expectLoggerWarnings<T>(
@@ -4831,6 +4895,147 @@ describe('saveToSession', () => {
       compaction,
       call,
     ]);
+  });
+
+  it('retains an applied override mutation when legacy reconciliation fails', async () => {
+    let executions = 0;
+    const approvalTool = tool({
+      name: 'legacy_compaction_override_retry',
+      description: 'Tool requiring approval.',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: true,
+      async execute({ value }) {
+        executions += 1;
+        return value;
+      },
+    });
+    const agent = new Agent({
+      name: 'LegacyCompactionOverrideRetryAgent',
+      tools: [approvalTool],
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const call: protocol.FunctionCallItem = {
+      type: 'function_call',
+      name: approvalTool.name,
+      callId: 'call_legacy_compaction_override_retry',
+      arguments: JSON.stringify({ value: 'original' }),
+      status: 'completed',
+    };
+    const compaction: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_legacy_compaction_override_retry',
+      encrypted_content: 'ciphertext',
+    };
+    const callItem = new ToolCallItem(call, agent);
+    const approvalItem = new ToolApprovalItem(call, agent);
+    const response = modelResponse([call]);
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state._generatedItems = [
+      new CompactionItem(compaction, agent),
+      callItem,
+      approvalItem,
+    ];
+    state._lastProcessedResponse = {
+      newItems: [new CompactionItem(compaction, agent), callItem],
+      handoffs: [],
+      functions: [{ toolCall: call, tool: approvalTool as any }],
+      functionToolsNotFound: [],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      toolsUsed: [approvalTool.name],
+      hasToolsOrApprovalsToRun: () => true,
+    };
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approvalItem] },
+    };
+    state._modelResponses = [response];
+    state._lastTurnResponse = response;
+    state._pendingLegacyCompactionSessionItems = [compaction, call];
+    state._currentTurnPersistedItemCount = 3;
+    state.approve(approvalItem, {
+      overrideArguments: { value: 'updated' },
+    });
+
+    class RewriteSession implements Session {
+      readonly supportsExpectedHistoryMutations = true;
+      items: AgentInputItem[] = [structuredClone(call)];
+      rewriteCalls = 0;
+
+      constructor(
+        private readonly sessionId: string,
+        private failNextAdd: boolean,
+      ) {}
+
+      async getSessionId(): Promise<string> {
+        return this.sessionId;
+      }
+
+      async getItems(): Promise<AgentInputItem[]> {
+        return structuredClone(this.items);
+      }
+
+      async addItems(items: AgentInputItem[]): Promise<void> {
+        if (this.failNextAdd) {
+          this.failNextAdd = false;
+          this.items.push(structuredClone(items[0]!));
+          throw new Error('replacement failed');
+        }
+        this.items.push(...structuredClone(items));
+      }
+
+      async popItem(): Promise<AgentInputItem | undefined> {
+        return this.items.pop();
+      }
+
+      async clearSession(): Promise<void> {
+        this.items = [];
+      }
+
+      async applyHistoryMutations(
+        args: SessionHistoryRewriteArgs,
+      ): Promise<void> {
+        this.rewriteCalls += 1;
+        this.items = applySessionHistoryMutations(this.items, args.mutations);
+      }
+    }
+
+    const failingSession = new RewriteSession('failing-rewrite-session', true);
+    await expectLoggerWarnings(
+      [
+        [
+          'Restored session history after compaction replacement failed.',
+          'object',
+        ],
+      ],
+      async () => {
+        await expect(
+          new Runner().run(agent, state, { session: failingSession }),
+        ).rejects.toThrow('replacement failed');
+      },
+    );
+
+    expect(executions).toBe(0);
+    expect(failingSession.rewriteCalls).toBe(1);
+    expect(
+      failingSession.items.find((item) => item.type === 'function_call'),
+    ).toMatchObject({ arguments: JSON.stringify({ value: 'updated' }) });
+    expect(state._getSessionHistoryMutations()).toHaveLength(1);
+
+    const retrySession = new RewriteSession('retry-rewrite-session', false);
+    const result = await new Runner().run(agent, state, {
+      session: retrySession,
+    });
+
+    expect(result.finalOutput).toBe('updated');
+    expect(executions).toBe(1);
+    expect(retrySession.rewriteCalls).toBe(1);
+    expect(
+      retrySession.items.find((item) => item.type === 'function_call'),
+    ).toMatchObject({ arguments: JSON.stringify({ value: 'updated' }) });
+    expect(state._getSessionHistoryMutations()).toEqual([]);
   });
 
   it('rejects legacy compaction before executing an approved tool without a session', async () => {

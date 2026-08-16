@@ -60,6 +60,7 @@ import {
   getFunctionToolStateKey,
   getFunctionToolStateKeyForCall,
 } from '../src/toolIdentity';
+import { getToolInvocationFingerprint } from '../src/toolInvocation';
 import { z, ZodError } from 'zod';
 
 const REDACTED_TOOL_NAME_COLLISION_WARNING =
@@ -10137,6 +10138,97 @@ export function registerRunStateToolSearchTests(): void {
 }
 
 export function registerRunStateApprovalTests(): void {
+  function buildOverrideableApprovalState(options?: {
+    conversationId?: string;
+    previousResponseId?: string;
+    optionalUndefinedField?:
+      'id' | 'namespace' | 'status' | 'providerData' | 'caller';
+  }) {
+    const sendEmailTool = tool({
+      name: 'send_email',
+      description: 'Send an email.',
+      parameters: z.object({ recipient: z.string() }),
+      execute: async ({ recipient }) => recipient,
+      needsApproval: async () => true,
+    });
+    const agent = new Agent({
+      name: 'OverrideAgent',
+      tools: [sendEmailTool],
+    });
+    const state = new RunState(new RunContext(), 'input', agent, 2);
+    state.setConversationContext(
+      options?.conversationId,
+      options?.previousResponseId,
+    );
+    const rawItem: protocol.FunctionCallItem = {
+      id: 'fc_override',
+      type: 'function_call',
+      name: 'send_email',
+      callId: 'call-override',
+      status: 'completed',
+      arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+    };
+    if (options?.optionalUndefinedField) {
+      (rawItem as any)[options.optionalUndefinedField] = undefined;
+    }
+    const toolStateKey = getFunctionToolStateKey(sendEmailTool)!;
+    const approvalItem = new ToolApprovalItem(
+      rawItem,
+      agent,
+      'send_email',
+      toolStateKey,
+    );
+    state._currentStep = {
+      type: 'next_step_interruption',
+      data: { interruptions: [approvalItem] },
+    };
+    state._generatedItems.push(
+      new RunToolCallItem(rawItem, agent),
+      approvalItem,
+    );
+    state._modelResponses = [
+      {
+        usage: new Usage(),
+        output: [structuredClone(rawItem)],
+        responseId: 'resp-override',
+      },
+    ];
+    state._lastTurnResponse = {
+      usage: new Usage(),
+      output: [structuredClone(rawItem)],
+      responseId: 'resp-override',
+    };
+    state._lastProcessedResponse = {
+      newItems: [
+        new RunToolCallItem(structuredClone(rawItem), agent),
+        new ToolApprovalItem(
+          structuredClone(rawItem),
+          agent,
+          'send_email',
+          toolStateKey,
+        ),
+      ],
+      toolsUsed: ['send_email'],
+      handoffs: [],
+      functions: [
+        { toolCall: structuredClone(rawItem), tool: sendEmailTool as any },
+      ],
+      computerActions: [],
+      shellActions: [],
+      applyPatchActions: [],
+      mcpApprovalRequests: [],
+      hasToolsOrApprovalsToRun() {
+        return true;
+      },
+    };
+    state._observeToolInvocation(
+      agent,
+      rawItem.callId,
+      getToolInvocationFingerprint(toolStateKey, rawItem),
+    );
+    return { agent, state, approvalItem, rawItem, toolStateKey };
+  }
+
   describe('RunState', () => {
     it('approve updates context approvals correctly', () => {
       const context = new RunContext();
@@ -10154,6 +10246,851 @@ export function registerRunStateApprovalTests(): void {
       expect(
         state._context.isToolApproved({ toolName: 'toolX', callId: 'cid123' }),
       ).toBe(true);
+    });
+
+    it('approve with overrideArguments updates the pending invocation and replay state', () => {
+      const { agent, state, approvalItem, toolStateKey } =
+        buildOverrideableApprovalState();
+      const overrideArguments = { recipient: 'bob@example.com' };
+
+      expect(state.getApprovalArguments(approvalItem)).toEqual({
+        originalArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        effectiveArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        overridden: false,
+      });
+
+      state.approve(approvalItem, { overrideArguments });
+
+      const serializedArguments = JSON.stringify(overrideArguments);
+      expect(state.getApprovalArguments(approvalItem)).toEqual({
+        originalArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        effectiveArguments: serializedArguments,
+        overridden: true,
+      });
+      expect(approvalItem.arguments).toBe(serializedArguments);
+      expect(
+        state._context.isToolApproved({
+          toolName: toolStateKey,
+          callId: 'call-override',
+          agent,
+        }),
+      ).toBe(true);
+      expect(
+        (state._generatedItems[0] as RunToolCallItem).rawItem,
+      ).toMatchObject({ arguments: serializedArguments });
+      expect(
+        state._lastProcessedResponse?.functions[0]?.toolCall,
+      ).toMatchObject({ arguments: serializedArguments });
+      expect(state._modelResponses[0]?.output[0]).toMatchObject({
+        arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+      });
+      expect(state._lastTurnResponse?.output[0]).toMatchObject({
+        arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+      });
+      expect(state._getSessionHistoryMutations()).toEqual([
+        {
+          type: 'replace_function_call',
+          callId: 'call-override',
+          expected: expect.objectContaining({
+            arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+          }),
+          replacement: expect.objectContaining({
+            arguments: serializedArguments,
+          }),
+        },
+      ]);
+      expect(
+        state._observedToolInvocations.get(agent)?.get('call-override'),
+      ).toBe(
+        getToolInvocationFingerprint(
+          toolStateKey,
+          approvalItem.rawItem as protocol.FunctionCallItem,
+        ),
+      );
+    });
+
+    it('makes an identical repeated approval override idempotent', () => {
+      const { state, approvalItem } = buildOverrideableApprovalState();
+
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+
+      expect(approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'bob@example.com' }),
+      );
+      expect(state._getValidatedSessionHistoryMutations()).toEqual([
+        {
+          type: 'replace_function_call',
+          callId: 'call-override',
+          expected: expect.objectContaining({
+            arguments: JSON.stringify({
+              recipient: 'alice@example.com',
+            }),
+          }),
+          replacement: expect.objectContaining({
+            arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+          }),
+        },
+      ]);
+    });
+
+    it.each(['id', 'namespace', 'status', 'providerData', 'caller'] as const)(
+      'omits an undefined optional %s field from durable function calls',
+      (optionalUndefinedField) => {
+        const { state, approvalItem } = buildOverrideableApprovalState({
+          optionalUndefinedField,
+        });
+
+        state.approve(approvalItem, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        });
+
+        const [mutation] = state._getValidatedSessionHistoryMutations();
+        expect(mutation).toBeDefined();
+        expect(
+          Object.prototype.hasOwnProperty.call(
+            mutation!.expected,
+            optionalUndefinedField,
+          ),
+        ).toBe(false);
+        expect(
+          Object.prototype.hasOwnProperty.call(
+            mutation!.replacement,
+            optionalUndefinedField,
+          ),
+        ).toBe(false);
+      },
+    );
+
+    it('rejects undefined optional-looking fields in override arguments', () => {
+      const { agent, state, approvalItem } = buildOverrideableApprovalState();
+
+      expect(() =>
+        state.approve(approvalItem, {
+          overrideArguments: { type: 'function_call', caller: undefined },
+        }),
+      ).toThrow('overrideArguments must be a JSON-serializable plain object');
+      expect(approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'alice@example.com' }),
+      );
+      expect(
+        state._context.isToolApproved({
+          toolName: 'send_email',
+          callId: 'call-override',
+          agent,
+        }),
+      ).toBeUndefined();
+      expect(state._getSessionHistoryMutations()).toEqual([]);
+    });
+
+    it('rejects nested undefined fields in function call provider data', () => {
+      const { agent, state, approvalItem, rawItem } =
+        buildOverrideableApprovalState();
+      rawItem.providerData = {
+        nested: { type: 'function_call', caller: undefined },
+      };
+
+      expect(() =>
+        state.approve(approvalItem, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        }),
+      ).toThrow(
+        'The pending function call cannot be represented in a durable history mutation',
+      );
+      expect(approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'alice@example.com' }),
+      );
+      expect(
+        state._context.isToolApproved({
+          toolName: 'send_email',
+          callId: 'call-override',
+          agent,
+        }),
+      ).toBeUndefined();
+      expect(state._getSessionHistoryMutations()).toEqual([]);
+    });
+
+    it('rejects a changed override after approval without changing state', () => {
+      const { state, approvalItem } = buildOverrideableApprovalState();
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+      const mutations = state._getSessionHistoryMutations();
+
+      expect(() =>
+        state.approve(approvalItem, {
+          overrideArguments: { recipient: 'carol@example.com' },
+        }),
+      ).toThrow(
+        'Tool call ID call-override was reused for a different invocation after an approval decision',
+      );
+      expect(approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'bob@example.com' }),
+      );
+      expect(state._getSessionHistoryMutations()).toEqual(mutations);
+    });
+
+    it('serialization round-trip preserves approval argument overrides', async () => {
+      const { agent, state, approvalItem, toolStateKey } =
+        buildOverrideableApprovalState();
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+
+      const restored = await RunState.fromString(agent, state.toString());
+      const restoredApproval = restored.getInterruptions()[0]!;
+
+      expect(restored.toJSON().$schemaVersion).toBe('1.19');
+      expect(restoredApproval.arguments).toBe(
+        JSON.stringify({ recipient: 'bob@example.com' }),
+      );
+      expect(restored.getApprovalArguments(restoredApproval)).toEqual({
+        originalArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        effectiveArguments: JSON.stringify({ recipient: 'bob@example.com' }),
+        overridden: true,
+      });
+      expect(restored._getSessionHistoryMutations()).toEqual(
+        state._getSessionHistoryMutations(),
+      );
+      expect(
+        restored._context.isToolApproved({
+          toolName: toolStateKey,
+          callId: 'call-override',
+          agent,
+        }),
+      ).toBe(true);
+    });
+
+    it('preserves approval argument provenance after a persisted rewrite is cleared', async () => {
+      const { agent, state, approvalItem } = buildOverrideableApprovalState();
+      state._lastTurnResponse!.output.unshift({
+        type: 'message',
+        id: 'unrelated-message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Unrelated output.' }],
+        providerData: { bytes: new Uint8Array([1, 2, 3]) },
+      });
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+
+      state._prepareSessionHistoryMutationClear()?.();
+
+      expect(state.getApprovalArguments(approvalItem)).toEqual({
+        originalArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        effectiveArguments: JSON.stringify({ recipient: 'bob@example.com' }),
+        overridden: true,
+      });
+
+      const restored = await RunState.fromString(agent, state.toString());
+      const restoredApproval = restored.getInterruptions()[0]!;
+      expect(restored.getApprovalArguments(restoredApproval)).toEqual({
+        originalArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        effectiveArguments: JSON.stringify({ recipient: 'bob@example.com' }),
+        overridden: true,
+      });
+    });
+
+    it('inspects approval arguments with opaque target provider metadata', async () => {
+      const { agent, state, approvalItem, rawItem } =
+        buildOverrideableApprovalState();
+      rawItem.providerData = { bytes: new Uint8Array([1, 2, 3]) };
+      state._lastTurnResponse!.output = [structuredClone(rawItem)];
+
+      expect(state.getApprovalArguments(approvalItem)).toEqual({
+        originalArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        effectiveArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        overridden: false,
+      });
+
+      const restored = await RunState.fromString(agent, state.toString());
+      const restoredApproval = restored.getInterruptions()[0]!;
+      expect(restored.getApprovalArguments(restoredApproval)).toEqual({
+        originalArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        effectiveArguments: JSON.stringify({
+          recipient: 'alice@example.com',
+        }),
+        overridden: false,
+      });
+    });
+
+    it('rejects approval argument inspection for an item outside the pending state', () => {
+      const { state, approvalItem } = buildOverrideableApprovalState();
+      const unrelatedApproval = new ToolApprovalItem(
+        approvalItem.rawItem,
+        approvalItem.agent,
+      );
+
+      expect(() => state.getApprovalArguments(unrelatedApproval)).toThrow(
+        'Approval arguments are only available for a pending approval item',
+      );
+    });
+
+    it('returns undefined for a pending non-function-tool approval', () => {
+      const { agent, state } = buildOverrideableApprovalState();
+      const hostedApproval = new ToolApprovalItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'hosted-approval',
+          name: 'search',
+          status: 'completed',
+        },
+        agent,
+      );
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [hostedApproval] },
+      };
+
+      expect(state.getApprovalArguments(hostedApproval)).toBeUndefined();
+    });
+
+    it('detaches durable history mutations from caller-visible approval items', () => {
+      const secret = 'SECRET_APPROVAL_ITEM_ACCESSOR';
+      const { state, approvalItem } = buildOverrideableApprovalState();
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+      const durableMutation = state._getSessionHistoryMutations();
+      const retainedApproval = state.getInterruptions()[0]!;
+      Object.defineProperty(retainedApproval.rawItem, 'providerData', {
+        enumerable: true,
+        get() {
+          throw new Error(secret);
+        },
+      });
+
+      expect(state._getSessionHistoryMutations()).toEqual(durableMutation);
+
+      let error: unknown;
+      try {
+        state._getValidatedSessionHistoryMutations();
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error).toBeInstanceOf(UserError);
+      expect(String(error)).toContain(
+        'RunState contains an invalid function-call history mutation',
+      );
+      expect(String(error)).not.toContain(secret);
+    });
+
+    it('keeps provider-data identity stable across canonical key ordering', async () => {
+      const { agent, state, approvalItem, rawItem, toolStateKey } =
+        buildOverrideableApprovalState();
+      rawItem.providerData = { z: 1, a: 2 };
+      const originalModelCall = state._lastTurnResponse!
+        .output[0] as protocol.FunctionCallItem;
+      originalModelCall.providerData = { z: 1, a: 2 };
+      state._observedToolInvocations
+        .get(agent)!
+        .set(
+          rawItem.callId,
+          getToolInvocationFingerprint(toolStateKey, rawItem),
+        );
+
+      state.approve(approvalItem, {
+        overrideArguments: { recipient: 'bob@example.com' },
+      });
+
+      expect(state._getValidatedSessionHistoryMutations()).toHaveLength(1);
+      const restored = await RunState.fromString(agent, state.toString());
+      expect(restored._getValidatedSessionHistoryMutations()).toHaveLength(1);
+    });
+
+    it('accepts interface-typed override argument objects', () => {
+      interface SendEmailArguments {
+        recipient: string;
+      }
+
+      const { state, approvalItem } = buildOverrideableApprovalState();
+      const overrideArguments: SendEmailArguments = {
+        recipient: 'bob@example.com',
+      };
+
+      state.approve(approvalItem, { overrideArguments });
+
+      expect(state.getInterruptions()[0]?.arguments).toBe(
+        JSON.stringify(overrideArguments),
+      );
+    });
+
+    it.each([
+      [
+        'callable provider data',
+        () => ({ callback: () => 'SECRET_PROVIDER_CALLBACK' }),
+      ],
+      [
+        'cyclic provider data',
+        () => {
+          const providerData: Record<string, unknown> = {};
+          providerData.self = providerData;
+          return providerData;
+        },
+      ],
+      ['non-plain provider data', () => ({ values: new Map([['key', 1]]) })],
+      ['lossy provider data', () => ({ value: -0 })],
+      [
+        'provider data that throws during replacement matching',
+        () => {
+          let reads = 0;
+          return Object.defineProperty({}, 'unstable', {
+            enumerable: true,
+            get() {
+              reads += 1;
+              if (reads > 2) {
+                throw new Error('SECRET_PROVIDER_ACCESSOR_ERROR');
+              }
+              return 'value';
+            },
+          });
+        },
+      ],
+    ] as const)(
+      'rejects %s before changing approval state',
+      (_description, createProviderData) => {
+        const { agent, state, approvalItem, rawItem, toolStateKey } =
+          buildOverrideableApprovalState();
+        rawItem.providerData = createProviderData();
+        const originalFingerprint = getToolInvocationFingerprint(
+          toolStateKey,
+          rawItem,
+        );
+        state._observedToolInvocations
+          .get(agent)!
+          .set(rawItem.callId, originalFingerprint);
+
+        let approvalError: unknown;
+        try {
+          state.approve(approvalItem, {
+            overrideArguments: { recipient: 'bob@example.com' },
+          });
+        } catch (error) {
+          approvalError = error;
+        }
+
+        expect(String(approvalError)).toContain(
+          'cannot be represented in a durable history mutation',
+        );
+        expect(String(approvalError)).not.toContain('SECRET_PROVIDER_CALLBACK');
+        expect(approvalItem.arguments).toBe(
+          JSON.stringify({ recipient: 'alice@example.com' }),
+        );
+        expect(
+          state._context.isToolApproved({
+            toolName: toolStateKey,
+            callId: rawItem.callId,
+            agent,
+          }),
+        ).toBeUndefined();
+        expect(
+          state._observedToolInvocations.get(agent)?.get(rawItem.callId),
+        ).toBe(originalFingerprint);
+        expect(
+          state._lastProcessedResponse?.functions[0]?.toolCall.arguments,
+        ).toBe(JSON.stringify({ recipient: 'alice@example.com' }));
+        expect(state._getSessionHistoryMutations()).toEqual([]);
+      },
+    );
+
+    it('rejects a frozen approval target before changing approval state', () => {
+      const { agent, state, approvalItem, rawItem, toolStateKey } =
+        buildOverrideableApprovalState();
+      const originalFingerprint = state._observedToolInvocations
+        .get(agent)
+        ?.get(rawItem.callId);
+      Object.freeze(approvalItem);
+
+      expect(() =>
+        state.approve(approvalItem, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        }),
+      ).toThrow('cannot be represented in a durable history mutation');
+
+      expect(approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'alice@example.com' }),
+      );
+      expect(
+        state._context.isToolApproved({
+          toolName: toolStateKey,
+          callId: rawItem.callId,
+          agent,
+        }),
+      ).toBeUndefined();
+      expect(
+        state._observedToolInvocations.get(agent)?.get(rawItem.callId),
+      ).toBe(originalFingerprint);
+      expect(
+        state._lastProcessedResponse?.functions[0]?.toolCall.arguments,
+      ).toBe(JSON.stringify({ recipient: 'alice@example.com' }));
+      expect(state._getSessionHistoryMutations()).toEqual([]);
+    });
+
+    it('rejects accessor-backed mutation storage before changing approval state', () => {
+      const secret = 'SECRET_MUTATION_STORAGE_ACCESSOR';
+      const { agent, state, approvalItem, rawItem, toolStateKey } =
+        buildOverrideableApprovalState();
+      const originalFingerprint = state._observedToolInvocations
+        .get(agent)
+        ?.get(rawItem.callId);
+      const originalMutations = state._sessionHistoryMutations;
+      let storageReads = 0;
+      Object.defineProperty(state, '_sessionHistoryMutations', {
+        configurable: true,
+        enumerable: true,
+        get() {
+          storageReads += 1;
+          throw new Error(secret);
+        },
+      });
+
+      let approvalError: unknown;
+      try {
+        state.approve(approvalItem, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        });
+      } catch (error) {
+        approvalError = error;
+      }
+
+      expect(String(approvalError)).toContain(
+        'cannot be represented in a durable history mutation',
+      );
+      expect(String(approvalError)).not.toContain(secret);
+      expect(storageReads).toBe(0);
+      Object.defineProperty(state, '_sessionHistoryMutations', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: originalMutations,
+      });
+      expect(approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'alice@example.com' }),
+      );
+      expect(
+        state._context.isToolApproved({
+          toolName: toolStateKey,
+          callId: rawItem.callId,
+          agent,
+        }),
+      ).toBeUndefined();
+      expect(
+        state._observedToolInvocations.get(agent)?.get(rawItem.callId),
+      ).toBe(originalFingerprint);
+      expect(
+        state._lastProcessedResponse?.functions[0]?.toolCall.arguments,
+      ).toBe(JSON.stringify({ recipient: 'alice@example.com' }));
+      expect(state._getSessionHistoryMutations()).toEqual([]);
+    });
+
+    it.each(['agent', 'toolName', 'functionToolStateKey'] as const)(
+      'rejects accessor-backed approval %s metadata before changing state',
+      (property) => {
+        const secret = `SECRET_APPROVAL_${property}_ACCESSOR`;
+        const { agent, state, approvalItem, rawItem, toolStateKey } =
+          buildOverrideableApprovalState();
+        const originalFingerprint = state._observedToolInvocations
+          .get(agent)
+          ?.get(rawItem.callId);
+        let metadataReads = 0;
+        Object.defineProperty(approvalItem, property, {
+          configurable: true,
+          enumerable: true,
+          get() {
+            metadataReads += 1;
+            throw new Error(secret);
+          },
+        });
+
+        let approvalError: unknown;
+        try {
+          state.approve(approvalItem, {
+            overrideArguments: { recipient: 'bob@example.com' },
+          });
+        } catch (error) {
+          approvalError = error;
+        }
+
+        expect(String(approvalError)).toContain(
+          'cannot be represented in a durable history mutation',
+        );
+        expect(String(approvalError)).not.toContain(secret);
+        expect(metadataReads).toBe(0);
+        expect(approvalItem.arguments).toBe(
+          JSON.stringify({ recipient: 'alice@example.com' }),
+        );
+        expect(
+          state._context.isToolApproved({
+            toolName: toolStateKey,
+            callId: rawItem.callId,
+            agent,
+          }),
+        ).toBeUndefined();
+        expect(
+          state._observedToolInvocations.get(agent)?.get(rawItem.callId),
+        ).toBe(originalFingerprint);
+        expect(
+          state._lastProcessedResponse?.functions[0]?.toolCall.arguments,
+        ).toBe(JSON.stringify({ recipient: 'alice@example.com' }));
+        expect(state._getSessionHistoryMutations()).toEqual([]);
+      },
+    );
+
+    it('rejects function-call history mutations in schema 1.18 payloads', async () => {
+      const agent = new Agent({ name: 'Schema18HistoryMutationAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.18';
+      serialized.sessionHistoryMutations = [
+        {
+          type: 'replace_function_call',
+          callId: 'call-override',
+          expected: {
+            type: 'function_call',
+            id: 'item-override',
+            callId: 'call-override',
+            name: 'send_email',
+            arguments: JSON.stringify({ recipient: 'alice@example.com' }),
+          },
+          replacement: {
+            type: 'function_call',
+            id: 'item-override',
+            callId: 'call-override',
+            name: 'send_email',
+            arguments: JSON.stringify({ recipient: 'bob@example.com' }),
+          },
+        },
+      ];
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow('does not support function-call history mutations');
+
+      delete serialized.sessionHistoryMutations;
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      expect(restored.toJSON().$schemaVersion).toBe('1.19');
+    });
+
+    it('rejects approval argument overrides outside the supported boundary', () => {
+      const local = buildOverrideableApprovalState();
+      expect(() =>
+        local.state.approve(local.approvalItem, {
+          alwaysApprove: true,
+          overrideArguments: { recipient: 'bob@example.com' },
+        }),
+      ).toThrow('overrideArguments cannot be used together with alwaysApprove');
+
+      const fabricatedApproval = new ToolApprovalItem(
+        {
+          ...local.rawItem,
+          callId: 'call-not-pending',
+        },
+        local.agent,
+        'send_email',
+        local.toolStateKey,
+      );
+      expect(() =>
+        local.state.approve(fabricatedApproval, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        }),
+      ).toThrow('can only update a pending function_call approval');
+
+      const circularArguments: Record<string, unknown> = {};
+      circularArguments.self = circularArguments;
+      expect(() =>
+        local.state.approve(local.approvalItem, {
+          overrideArguments: circularArguments,
+        }),
+      ).toThrow('must be a JSON-serializable plain object');
+
+      for (const overrideArguments of [
+        { value: -0 },
+        { value: Number.NaN },
+        { value: undefined },
+        { values: new Array(1) },
+      ]) {
+        const lossyOverride = buildOverrideableApprovalState();
+        expect(() =>
+          lossyOverride.state.approve(lossyOverride.approvalItem, {
+            overrideArguments,
+          }),
+        ).toThrow('must be a JSON-serializable plain object');
+        expect(lossyOverride.approvalItem.arguments).toBe(
+          JSON.stringify({ recipient: 'alice@example.com' }),
+        );
+        expect(lossyOverride.state._getSessionHistoryMutations()).toEqual([]);
+      }
+
+      const rawItemAccessor = buildOverrideableApprovalState();
+      const rawItemSecret = 'SECRET_PENDING_CALL_ACCESSOR';
+      let rawItemReads = 0;
+      Object.defineProperty(rawItemAccessor.rawItem, 'providerData', {
+        enumerable: true,
+        get() {
+          rawItemReads += 1;
+          throw new Error(rawItemSecret);
+        },
+      });
+      let rawItemError: unknown;
+      try {
+        rawItemAccessor.state.approve(rawItemAccessor.approvalItem, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        });
+      } catch (error) {
+        rawItemError = error;
+      }
+      expect(String(rawItemError)).toContain(
+        'cannot be represented in a durable history mutation',
+      );
+      expect(String(rawItemError)).not.toContain(rawItemSecret);
+      expect(rawItemReads).toBe(0);
+      expect(rawItemAccessor.state._getSessionHistoryMutations()).toEqual([]);
+
+      const typeAccessor = buildOverrideableApprovalState();
+      const typeAccessorSecret = 'SECRET_PENDING_CALL_TYPE_ACCESSOR';
+      const originalTypeAccessorFingerprint =
+        typeAccessor.state._observedToolInvocations
+          .get(typeAccessor.agent)
+          ?.get(typeAccessor.rawItem.callId);
+      let typeAccessorReads = 0;
+      Object.defineProperty(typeAccessor.rawItem, 'type', {
+        enumerable: true,
+        get() {
+          typeAccessorReads += 1;
+          throw new Error(typeAccessorSecret);
+        },
+      });
+      let typeAccessorError: unknown;
+      try {
+        typeAccessor.state.approve(typeAccessor.approvalItem, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        });
+      } catch (error) {
+        typeAccessorError = error;
+      }
+      expect(String(typeAccessorError)).toContain(
+        'cannot be represented in a durable history mutation',
+      );
+      expect(String(typeAccessorError)).not.toContain(typeAccessorSecret);
+      expect(typeAccessorReads).toBe(0);
+      expect(
+        typeAccessor.state._observedToolInvocations
+          .get(typeAccessor.agent)
+          ?.get(typeAccessor.rawItem.callId),
+      ).toBe(originalTypeAccessorFingerprint);
+      expect(
+        typeAccessor.state._context.isToolApproved({
+          toolName: typeAccessor.toolStateKey,
+          callId: typeAccessor.rawItem.callId,
+          agent: typeAccessor.agent,
+        }),
+      ).toBeUndefined();
+      expect(
+        typeAccessor.state._lastProcessedResponse?.functions[0]?.toolCall
+          .arguments,
+      ).toBe(JSON.stringify({ recipient: 'alice@example.com' }));
+      expect(typeAccessor.state._getSessionHistoryMutations()).toEqual([]);
+
+      const dateOverride = buildOverrideableApprovalState();
+      expect(() =>
+        dateOverride.state.approve(dateOverride.approvalItem, {
+          overrideArguments: new Date() as unknown as Record<string, unknown>,
+        }),
+      ).toThrow('must be a JSON-serializable plain object');
+      expect(dateOverride.approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'alice@example.com' }),
+      );
+      expect(dateOverride.state._getSessionHistoryMutations()).toEqual([]);
+
+      const arraySerializer = buildOverrideableApprovalState();
+      expect(() =>
+        arraySerializer.state.approve(arraySerializer.approvalItem, {
+          overrideArguments: {
+            toJSON: () => ['not', 'an', 'object'],
+          },
+        }),
+      ).toThrow('must be a JSON-serializable plain object');
+      expect(arraySerializer.approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'alice@example.com' }),
+      );
+
+      const secret = 'SECRET_OVERRIDE_SERIALIZER_ERROR';
+      const throwingSerializer = buildOverrideableApprovalState();
+      let serializerError: unknown;
+      try {
+        throwingSerializer.state.approve(throwingSerializer.approvalItem, {
+          overrideArguments: {
+            toJSON: () => {
+              throw new Error(secret);
+            },
+          },
+        });
+      } catch (error) {
+        serializerError = error;
+      }
+      expect(String(serializerError)).toContain(
+        'must be a JSON-serializable plain object',
+      );
+      expect(String(serializerError)).not.toContain(secret);
+      expect(throwingSerializer.approvalItem.arguments).toBe(
+        JSON.stringify({ recipient: 'alice@example.com' }),
+      );
+      expect(throwingSerializer.state._getSessionHistoryMutations()).toEqual(
+        [],
+      );
+
+      const serverManaged = buildOverrideableApprovalState({
+        previousResponseId: 'resp-existing',
+      });
+      expect(() =>
+        serverManaged.state.approve(serverManaged.approvalItem, {
+          overrideArguments: { recipient: 'bob@example.com' },
+        }),
+      ).toThrow('cannot rewrite server-managed conversation history');
+
+      const hostedState = new RunState(new RunContext(), '', local.agent, 1);
+      const hostedApproval = new ToolApprovalItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'hosted-approval',
+          name: 'search',
+          status: 'completed',
+          arguments: '{}',
+        },
+        local.agent,
+      );
+      expect(() =>
+        hostedState.approve(hostedApproval, {
+          overrideArguments: { query: 'updated' },
+        }),
+      ).toThrow('only supported for function_call approvals');
     });
 
     it('returns undefined when approval status is unknown', () => {
@@ -10533,6 +11470,55 @@ export function registerRunStateApprovalTests(): void {
         restored._context.isToolApproved({
           toolName: collidingName,
           callId: 'future-local-call',
+          functionTool: false,
+        }),
+      ).toBe(true);
+    });
+
+    it('does not migrate aggregate approvals into schema 1.18 hosted MCP state', async () => {
+      const agent = new Agent({ name: 'Schema18HostedMcpIsolationAgent' });
+      const pendingApproval = new ToolApprovalItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'request-a',
+          name: 'lookup_account',
+          status: 'in_progress',
+          providerData: {
+            type: 'mcp_approval_request',
+            id: 'request-a',
+            server_label: 'server-a',
+            name: 'lookup_account',
+            arguments: '{}',
+          },
+        },
+        agent,
+      );
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._currentStep = {
+        type: 'next_step_interruption',
+        data: { interruptions: [pendingApproval] },
+      };
+      const serialized = state.toJSON() as any;
+      serialized.$schemaVersion = '1.18';
+      serialized.context.approvals = {
+        lookup_account: { approved: ['request-a'], rejected: [] },
+      };
+      serialized.context.hostedMcpApprovals = {};
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      const restoredApproval = restored.getInterruptions()[0]!;
+
+      expect(
+        restored._context._getHostedMcpApprovalStatus(restoredApproval),
+      ).toBeUndefined();
+      expect(restored.toJSON().context.hostedMcpApprovals).toBeUndefined();
+      expect(
+        restored._context.isToolApproved({
+          toolName: 'lookup_account',
+          callId: 'request-a',
           functionTool: false,
         }),
       ).toBe(true);

@@ -1,6 +1,8 @@
 import OpenAI from 'openai';
 import {
   getLogger,
+  isRunContextAwareSession,
+  isSessionHistoryExpectedRewriteAwareSession,
   MemorySession,
   RequestUsage,
   UserError,
@@ -9,9 +11,15 @@ import type {
   AgentInputItem,
   OpenAIResponsesCompactionArgs,
   OpenAIResponsesCompactionAwareSession as OpenAIResponsesCompactionSessionLike,
+  RunContextAwareSession,
   Session,
+  SessionHistoryRewriteArgs,
+  SessionHistoryRewriteAwareSession,
 } from '@openai/agents-core';
-import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
+import type {
+  OpenAIResponsesCompactionResult,
+  RunContext,
+} from '@openai/agents-core';
 import { logModelAndToolActionWarning } from '@openai/agents-core/utils/internal';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import { getInputItems } from '../openaiResponsesModel';
@@ -110,9 +118,12 @@ export type OpenAIResponsesCompactionSessionOptions = {
 export class OpenAIResponsesCompactionSession
   implements
     OpenAIResponsesCompactionSessionLike,
+    RunContextAwareSession,
+    SessionHistoryRewriteAwareSession,
     OpenAISessionApiTagged<'responses'>
 {
   readonly [OPENAI_SESSION_API] = 'responses' as const;
+  readonly acceptsRunContext = true;
 
   private readonly client: OpenAI;
   private readonly underlyingSession: Session;
@@ -125,7 +136,14 @@ export class OpenAIResponsesCompactionSession
   ) => boolean | Promise<boolean>;
   private compactionCandidateItems: AgentInputItem[] | undefined;
   private sessionItems: AgentInputItem[] | undefined;
+  private activeRunContext: RunContext<any> | undefined;
   private mutationOperation: Promise<void> = Promise.resolve();
+
+  get supportsExpectedHistoryMutations(): true | undefined {
+    return isSessionHistoryExpectedRewriteAwareSession(this.underlyingSession)
+      ? true
+      : undefined;
+  }
 
   constructor(options: OpenAIResponsesCompactionSessionOptions) {
     this.client = resolveClient(options);
@@ -150,12 +168,17 @@ export class OpenAIResponsesCompactionSession
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
+    runContext?: RunContext<any>,
   ): Promise<OpenAIResponsesCompactionResult | null> {
-    return this.runMutationOperation(() => this.runCompactionOperation(args));
+    return this.runMutationOperation(() => {
+      this.activateRunContext(runContext);
+      return this.runCompactionOperation(args, runContext);
+    });
   }
 
   private async runCompactionOperation(
     args: OpenAIResponsesCompactionArgs,
+    runContext: RunContext<any> | undefined,
   ): Promise<OpenAIResponsesCompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
@@ -175,7 +198,7 @@ export class OpenAIResponsesCompactionSession
     }
 
     const { compactionCandidateItems, sessionItems } =
-      await this.ensureCompactionCandidates();
+      await this.ensureCompactionCandidates(runContext);
     const shouldTriggerCompaction =
       args.force === true
         ? true
@@ -213,10 +236,11 @@ export class OpenAIResponsesCompactionSession
     const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
     const outputCompactionCandidateItems =
       selectCompactionCandidateItems(outputItems);
-    const previousItems = await this.getAllUnderlyingSessionItems();
+    const previousItems = await this.getAllUnderlyingSessionItems(runContext);
     await this.replaceUnderlyingSessionItems({
       outputItems,
       previousItems,
+      runContext,
     });
     this.compactionCandidateItems = outputCompactionCandidateItems;
     this.sessionItems = outputItems;
@@ -237,17 +261,31 @@ export class OpenAIResponsesCompactionSession
     return this.underlyingSession.getSessionId();
   }
 
-  async getItems(limit?: number): Promise<AgentInputItem[]> {
-    return this.underlyingSession.getItems(limit);
+  async getItems(
+    limit?: number,
+    runContext?: RunContext<any>,
+  ): Promise<AgentInputItem[]> {
+    return this.getUnderlyingSessionItems(limit, runContext);
   }
 
-  async addItems(items: AgentInputItem[]) {
+  prepareHistoryItemsForPersistenceComparison(
+    items: AgentInputItem[],
+  ): AgentInputItem[] {
+    return (
+      this.underlyingSession.prepareHistoryItemsForPersistenceComparison?.(
+        items,
+      ) ?? items
+    );
+  }
+
+  async addItems(items: AgentInputItem[], runContext?: RunContext<any>) {
     if (items.length === 0) {
       return;
     }
 
     await this.runMutationOperation(async () => {
-      await this.underlyingSession.addItems(items);
+      this.activateRunContext(runContext);
+      await this.addUnderlyingSessionItems(items, runContext);
       if (this.compactionCandidateItems) {
         const candidates = selectCompactionCandidateItems(items);
         if (candidates.length > 0) {
@@ -263,9 +301,10 @@ export class OpenAIResponsesCompactionSession
     });
   }
 
-  async popItem() {
+  async popItem(runContext?: RunContext<any>) {
     return this.runMutationOperation(async () => {
-      const popped = await this.underlyingSession.popItem();
+      this.activateRunContext(runContext);
+      const popped = await this.popUnderlyingSessionItem(runContext);
       if (!popped) {
         return popped;
       }
@@ -274,7 +313,8 @@ export class OpenAIResponsesCompactionSession
         if (index >= 0) {
           this.sessionItems.splice(index, 1);
         } else {
-          this.sessionItems = await this.underlyingSession.getItems();
+          this.sessionItems =
+            await this.getAllUnderlyingSessionItems(runContext);
         }
       }
       if (this.compactionCandidateItems) {
@@ -286,7 +326,7 @@ export class OpenAIResponsesCompactionSession
           } else {
             // Fallback when the popped item reference differs from stored candidates.
             this.compactionCandidateItems = selectCompactionCandidateItems(
-              await this.underlyingSession.getItems(),
+              await this.getAllUnderlyingSessionItems(runContext),
             );
           }
         }
@@ -295,11 +335,38 @@ export class OpenAIResponsesCompactionSession
     });
   }
 
-  async clearSession() {
+  async clearSession(runContext?: RunContext<any>) {
     await this.runMutationOperation(async () => {
-      await this.underlyingSession.clearSession();
+      this.activateRunContext(runContext);
+      await this.clearUnderlyingSession(runContext);
       this.compactionCandidateItems = [];
       this.sessionItems = [];
+    });
+  }
+
+  async applyHistoryMutations(
+    args: SessionHistoryRewriteArgs,
+    runContext?: RunContext<any>,
+  ): Promise<void> {
+    await this.runMutationOperation(async () => {
+      this.activateRunContext(runContext);
+      if (
+        !isSessionHistoryExpectedRewriteAwareSession(this.underlyingSession)
+      ) {
+        throw new UserError(
+          'OpenAIResponsesCompactionSession requires its underlying session to support expected function-call history rewrites.',
+        );
+      }
+      try {
+        if (runContext && isRunContextAwareSession(this.underlyingSession)) {
+          await this.underlyingSession.applyHistoryMutations(args, runContext);
+        } else {
+          await this.underlyingSession.applyHistoryMutations(args);
+        }
+      } finally {
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+      }
     });
   }
 
@@ -312,33 +379,98 @@ export class OpenAIResponsesCompactionSession
     return result;
   }
 
-  private async getAllUnderlyingSessionItems(): Promise<AgentInputItem[]> {
-    return this.underlyingSession.getItems();
+  private activateRunContext(runContext: RunContext<any> | undefined): void {
+    if (
+      !isRunContextAwareSession(this.underlyingSession) ||
+      this.activeRunContext === runContext
+    ) {
+      return;
+    }
+    this.activeRunContext = runContext;
+    this.responseId = undefined;
+    this.lastStore = undefined;
+    this.compactionCandidateItems = undefined;
+    this.sessionItems = undefined;
+  }
+
+  private async getUnderlyingSessionItems(
+    limit: number | undefined,
+    runContext: RunContext<any> | undefined,
+  ): Promise<AgentInputItem[]> {
+    if (runContext && isRunContextAwareSession(this.underlyingSession)) {
+      return this.underlyingSession.getItems(limit, runContext);
+    }
+    return limit === undefined
+      ? this.underlyingSession.getItems()
+      : this.underlyingSession.getItems(limit);
+  }
+
+  private async getAllUnderlyingSessionItems(
+    runContext: RunContext<any> | undefined,
+  ): Promise<AgentInputItem[]> {
+    return this.getUnderlyingSessionItems(undefined, runContext);
+  }
+
+  private async addUnderlyingSessionItems(
+    items: AgentInputItem[],
+    runContext: RunContext<any> | undefined,
+  ): Promise<void> {
+    if (runContext && isRunContextAwareSession(this.underlyingSession)) {
+      await this.underlyingSession.addItems(items, runContext);
+      return;
+    }
+    await this.underlyingSession.addItems(items);
+  }
+
+  private async popUnderlyingSessionItem(
+    runContext: RunContext<any> | undefined,
+  ): Promise<AgentInputItem | undefined> {
+    if (runContext && isRunContextAwareSession(this.underlyingSession)) {
+      return this.underlyingSession.popItem(runContext);
+    }
+    return this.underlyingSession.popItem();
+  }
+
+  private async clearUnderlyingSession(
+    runContext: RunContext<any> | undefined,
+  ): Promise<void> {
+    if (runContext && isRunContextAwareSession(this.underlyingSession)) {
+      await this.underlyingSession.clearSession(runContext);
+      return;
+    }
+    await this.underlyingSession.clearSession();
   }
 
   private async replaceUnderlyingSessionItems({
     outputItems,
     previousItems,
+    runContext,
   }: {
     outputItems: AgentInputItem[];
     previousItems: AgentInputItem[];
+    runContext: RunContext<any> | undefined;
   }): Promise<void> {
     try {
-      await this.underlyingSession.clearSession();
+      await this.clearUnderlyingSession(runContext);
     } catch (error) {
       await this.restoreUnderlyingSessionItemsAfterFailedClear(
         previousItems,
         error,
+        runContext,
       );
       throw error;
     }
 
     try {
       if (outputItems.length > 0) {
-        await this.underlyingSession.addItems(outputItems);
+        await this.addUnderlyingSessionItems(outputItems, runContext);
       }
     } catch (error) {
-      await this.restoreUnderlyingSessionItems(previousItems, error);
+      await this.restoreUnderlyingSessionItems(
+        previousItems,
+        error,
+        runContext,
+      );
       throw error;
     }
   }
@@ -346,10 +478,11 @@ export class OpenAIResponsesCompactionSession
   private async restoreUnderlyingSessionItemsAfterFailedClear(
     previousItems: AgentInputItem[],
     error: unknown,
+    runContext: RunContext<any> | undefined,
   ): Promise<void> {
     let currentItems: AgentInputItem[];
     try {
-      currentItems = await this.getAllUnderlyingSessionItems();
+      currentItems = await this.getAllUnderlyingSessionItems(runContext);
     } catch (inspectionError) {
       logModelAndToolActionWarning(
         logger,
@@ -363,7 +496,7 @@ export class OpenAIResponsesCompactionSession
       return;
     }
 
-    await this.restoreUnderlyingSessionItems(previousItems, error, {
+    await this.restoreUnderlyingSessionItems(previousItems, error, runContext, {
       popExistingItemCount: currentItems.length,
     });
   }
@@ -371,6 +504,7 @@ export class OpenAIResponsesCompactionSession
   private async restoreUnderlyingSessionItems(
     previousItems: AgentInputItem[],
     error: unknown,
+    runContext: RunContext<any> | undefined,
     options: {
       clearExistingItems?: boolean;
       popExistingItemCount?: number;
@@ -379,16 +513,16 @@ export class OpenAIResponsesCompactionSession
     try {
       if (options.popExistingItemCount !== undefined) {
         for (let i = 0; i < options.popExistingItemCount; i += 1) {
-          const popped = await this.underlyingSession.popItem();
+          const popped = await this.popUnderlyingSessionItem(runContext);
           if (!popped) {
             break;
           }
         }
       } else if (options.clearExistingItems !== false) {
-        await this.underlyingSession.clearSession();
+        await this.clearUnderlyingSession(runContext);
       }
       if (previousItems.length > 0) {
-        await this.underlyingSession.addItems(previousItems);
+        await this.addUnderlyingSessionItems(previousItems, runContext);
       }
     } catch (restoreError) {
       logModelAndToolActionWarning(
@@ -406,7 +540,9 @@ export class OpenAIResponsesCompactionSession
     );
   }
 
-  private async ensureCompactionCandidates(): Promise<{
+  private async ensureCompactionCandidates(
+    runContext: RunContext<any> | undefined,
+  ): Promise<{
     compactionCandidateItems: AgentInputItem[];
     sessionItems: AgentInputItem[];
   }> {
@@ -419,7 +555,7 @@ export class OpenAIResponsesCompactionSession
         sessionItems: [...this.sessionItems],
       };
     }
-    const history = await this.underlyingSession.getItems();
+    const history = await this.getAllUnderlyingSessionItems(runContext);
     const compactionCandidates = selectCompactionCandidateItems(history);
     this.compactionCandidateItems = compactionCandidates;
     this.sessionItems = history;
