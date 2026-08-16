@@ -14,7 +14,10 @@ export function imageOutputFromBytes(
   bytes: Uint8Array,
 ): ToolOutputImage {
   assertViewImageByteLength(path, bytes.byteLength);
-  const mediaType = sniffImageMediaType(bytes, path);
+  const inferredMediaType = mediaTypeFromPath(path);
+  const mediaType =
+    sniffImageMediaType(bytes) ??
+    (inferredMediaType === 'image/svg+xml' ? inferredMediaType : null);
   if (!mediaType) {
     throw new UserError(`Unsupported image format for view_image: ${path}`);
   }
@@ -35,7 +38,11 @@ export function sniffImageMediaType(
     bytes[0] === 0x89 &&
     bytes[1] === 0x50 &&
     bytes[2] === 0x4e &&
-    bytes[3] === 0x47
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
   ) {
     return 'image/png';
   }
@@ -46,7 +53,9 @@ export function sniffImageMediaType(
     bytes[0] === 0x47 &&
     bytes[1] === 0x49 &&
     bytes[2] === 0x46 &&
-    bytes[3] === 0x38
+    bytes[3] === 0x38 &&
+    (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+    bytes[5] === 0x61
   ) {
     return 'image/gif';
   }
@@ -65,7 +74,7 @@ export function sniffImageMediaType(
   if (bytes[0] === 0x42 && bytes[1] === 0x4d) {
     return 'image/bmp';
   }
-  if (
+  const isClassicTiff =
     (bytes[0] === 0x49 &&
       bytes[1] === 0x49 &&
       bytes[2] === 0x2a &&
@@ -73,8 +82,25 @@ export function sniffImageMediaType(
     (bytes[0] === 0x4d &&
       bytes[1] === 0x4d &&
       bytes[2] === 0x00 &&
-      bytes[3] === 0x2a)
-  ) {
+      bytes[3] === 0x2a);
+  const isBigTiff =
+    (bytes[0] === 0x49 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x2b &&
+      bytes[3] === 0x00 &&
+      bytes[4] === 0x08 &&
+      bytes[5] === 0x00 &&
+      bytes[6] === 0x00 &&
+      bytes[7] === 0x00) ||
+    (bytes[0] === 0x4d &&
+      bytes[1] === 0x4d &&
+      bytes[2] === 0x00 &&
+      bytes[3] === 0x2b &&
+      bytes[4] === 0x00 &&
+      bytes[5] === 0x08 &&
+      bytes[6] === 0x00 &&
+      bytes[7] === 0x00);
+  if (isClassicTiff || isBigTiff) {
     return 'image/tiff';
   }
   if (looksLikeSvg(bytes)) {
