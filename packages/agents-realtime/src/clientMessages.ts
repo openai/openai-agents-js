@@ -217,7 +217,7 @@ export function toNewSessionConfig(
     const inputConfig = audioInput
       ? {
           format: normalizeAudioFormat(audioInput?.format),
-          noiseReduction: audioInput?.noiseReduction ?? null,
+          noiseReduction: audioInput.noiseReduction,
           transcription: audioInput?.transcription,
           turnDetection: audioInput?.turnDetection,
         }
