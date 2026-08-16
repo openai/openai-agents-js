@@ -133,20 +133,26 @@ export function createChainedSandboxEventSink(
 }
 
 export function serializeSandboxEventError(error: unknown): SandboxEventError {
-  if (error instanceof Error) {
-    const code = readErrorCode(error);
-    const retryable = readErrorRetryability(error);
+  try {
+    if (error instanceof Error) {
+      const code = readErrorCode(error);
+      const retryable = readErrorRetryability(error);
+      return {
+        name: error.name,
+        message: error.message,
+        ...(code ? { code } : {}),
+        ...(retryable !== undefined ? { retryable } : {}),
+      };
+    }
+
     return {
-      name: error.name,
-      message: error.message,
-      ...(code ? { code } : {}),
-      ...(retryable !== undefined ? { retryable } : {}),
+      message: String(error),
+    };
+  } catch {
+    return {
+      message: 'Sandbox operation failed with an unserializable error.',
     };
   }
-
-  return {
-    message: String(error),
-  };
 }
 
 function readErrorCode(error: Error): string | undefined {
