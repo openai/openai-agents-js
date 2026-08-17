@@ -202,6 +202,10 @@ class SkillContractTest(unittest.TestCase):
             self.implementation_kickoff,
         )
         self.assertIn(
+            "shipped-path manifest must be a finite regular file",
+            self.implementation_kickoff,
+        )
+        self.assertIn(
             "authoritative even when ignore rules match that file", self.skill
         )
         self.assertIn("literal precedence over Git pathspec metacharacters", self.skill)
@@ -210,6 +214,46 @@ class SkillContractTest(unittest.TestCase):
             "directory or glob pathspec never promotes ignored operational files",
             self.skill,
         )
+        self.assertIn(
+            "every initialized submodule, including nested submodules, to be clean", self.skill
+        )
+        self.assertIn("Stage reviewable gitlink pointer changes", self.skill)
+        self.assertIn("fail closed on dirty worktrees, hidden index flags", self.skill)
+        self.assertIn("Reject cyclic or aliased submodule worktree graphs", self.skill)
+        self.assertIn("two consecutive identical observations of HEAD", self.skill)
+        self.assertIn("state changes during capture", self.skill)
+        self.assertIn("including FIFOs, sockets, and devices", self.skill)
+        self.assertIn("Require unique keys and standard finite numbers", self.skill)
+        self.assertIn("JavaScript-style `NaN` or infinity constants", self.skill)
+        self.assertIn("numeric exponents that overflow to infinity", self.skill)
+        self.assertIn("numeric-size and nesting-limit failures", self.skill)
+        self.assertIn(
+            "Every JSON object must use unique keys and standard finite numbers",
+            self.reviewer_brief,
+        )
+        self.assertIn("`NaN`, `Infinity`, and `-Infinity` constants", self.reviewer_brief)
+        self.assertIn("numeric exponents that overflow to infinity", self.reviewer_brief)
+        self.assertIn("numeric-size and nesting-limit failures", self.reviewer_brief)
+        self.assertIn("distinct normalized primary and high-risk specialties", self.skill)
+        self.assertIn("require every preflight command to be unique", self.skill)
+        self.assertIn("exact, unique `command` and `result` objects", self.reviewer_brief)
+        self.assertIn("primary and high-risk specialties must not overlap", self.reviewer_brief)
+        self.assertIn("Reject unknown fields instead of ignoring", self.skill)
+        self.assertIn("Unknown receipt fields are invalid", self.reviewer_brief)
+        self.assertIn("Unknown fields are invalid rather than ignored", self.reviewer_brief)
+        self.assertIn("two consecutive identical repository observations", self.reviewer_brief)
+        self.assertIn("path-level `stat` must not authorize a later reopen", self.reviewer_brief)
+        self.assertIn("unique opened-file device and inode identities", self.reviewer_brief)
+        self.assertIn("evidence digest absent from every canonical root", self.reviewer_brief)
+        self.assertIn("`contract_evidence_sha256`", self.reviewer_brief)
+        self.assertIn("`inventory_sha256`", self.reviewer_brief)
+        self.assertIn("prior bindings are immutable", self.reviewer_brief)
+        self.assertIn("every distinct root proposed in the same output", self.reviewer_brief)
+        self.assertIn(
+            "Credited receipt content digests and exact commands must be unique",
+            self.reviewer_brief,
+        )
+        self.assertIn("requires their validated digests to remain unchanged", self.reviewer_brief)
 
     def test_verified_base_advance_closure_is_strict_and_keeps_final_verification(
         self,
@@ -233,7 +277,13 @@ class SkillContractTest(unittest.TestCase):
             "rerun every mandatory final verification gate", self.implementation_kickoff
         )
         self.assertIn("exact base pathspecs", self.reviewer_brief)
-        self.assertIn("prose-only claim", self.reviewer_brief)
+        self.assertIn("prose-only or empty dependency claims", self.reviewer_brief)
+        self.assertIn("keys exactly match the component names", self.reviewer_brief)
+        self.assertIn(
+            "nonempty arrays of exact `pathspec` and `reason` records",
+            self.reviewer_brief,
+        )
+        self.assertIn("maps every component name to a nonempty array", self.skill)
 
     def test_operational_artifacts_are_excluded_from_the_handoff_manifest(self) -> None:
         required_kickoff_text = (
@@ -373,6 +423,21 @@ class SkillContractTest(unittest.TestCase):
             "append the feedback cycle's default two-round budget to the same ledger without "
             "another authorization prompt",
             "Persist enough task identity, used and authorized round budgets",
+            "Persist the current combined content fingerprint as `ledger.round_fingerprint`",
+            "A same-round retry is valid only when that value and the authorized budget history "
+            "match",
+            "exact packet SHA-256 and fingerprints",
+            "no unresolved merge stages before fingerprinting",
+            "resolve to finite regular files",
+            "Verify the file type after opening",
+            "read content from that same descriptor",
+            "Canonicalize each path before opening",
+            "opened descriptor's device and inode identity",
+            "require their validated digests to remain unchanged",
+            "evidence or inventory as new for a canonical root only when its digest is absent",
+            "Preserve those digest bindings across rounds",
+            "every distinct root proposed in the same output",
+            "credited receipt to have a unique content digest and exact command",
         )
         for text in required_text:
             with self.subTest(text=text):
@@ -384,9 +449,9 @@ class SkillContractTest(unittest.TestCase):
             "run the complexity reset once",
             "scan the complete inventory for sibling scenarios",
             "mark the canonical root-cause ID closed",
-            "Do not reopen it for another local patch without new contract evidence or a newly "
-            "uncovered inventory ID",
-            "reject aliases, renamed IDs, and bare unknown IDs",
+            "Do not reopen it for another local patch without content-new contract evidence or "
+            "semantic inventory",
+            "reject aliases, renamed or copied content, and bare unknown IDs",
         )
         for text in required_text:
             with self.subTest(text=text):
@@ -508,9 +573,11 @@ class SkillContractTest(unittest.TestCase):
             "Every contract evidence ID must resolve to an `evidence_artifacts[].id`",
             "JSON booleans are not integers for protocol purposes",
             "Each sibling-scenario scan must reuse a canonical root ID",
-            "verification.preflight_results` as an array of exact `command` and `result` objects",
+            "verification.preflight_results` as an array of exact, unique `command` and "
+            "`result` objects",
             "ledger file's JSON object to match the packet ledger exactly",
-            "not already owned by any canonical root",
+            "not already owned by any canonical or distinct proposed root",
+            "digest maps must bind exactly the currently owned IDs",
             "absolute `path` and `sha256` digest",
             'role: "review-state"',
             'role: "repository-status"',
@@ -518,7 +585,7 @@ class SkillContractTest(unittest.TestCase):
             "extra copied fingerprint or state fields are invalid",
             "requires the complete-diff artifact digest to equal its `complete_diff_sha256`",
             "Supply the task ID and absolute task-global ledger path independently",
-            "requires `current_round` plus `remaining_budget` to equal the sum",
+            "`current_round` plus `remaining_budget` to equal the sum",
             "immediately preceding round's immutable ledger snapshot and its SHA-256 digest",
             "same-round retry or advance by exactly one",
             "immutable snapshot must be a distinct file",
