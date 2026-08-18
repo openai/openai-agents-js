@@ -18,7 +18,6 @@ import { execa } from 'execa';
  *   node scripts/run-example-starts.mjs --include-external       # include scripts needing extra services
  *   node scripts/run-example-starts.mjs --fail-fast              # stop after first failure
  *   node scripts/run-example-starts.mjs --print-auto-skip        # show the auto-skip list and exit
- *   node scripts/run-example-starts.mjs --collect <main_log> [--output <path>]  # generate rerun list from a main log
  *
  * Via package.json:
  *   pnpm examples:start-all --dry-run
@@ -154,9 +153,6 @@ const parseArgs = (args) => {
   const defaultInteractiveMode = envInteractiveMode ?? 'auto';
 
   let printAutoSkip = false;
-  let collectLog = null;
-  let collectOutput = null;
-
   let includeServer = defaultIncludeServer;
   let includeInteractive = defaultIncludeInteractive;
   let includeAudio = defaultIncludeAudio;
@@ -218,18 +214,6 @@ const parseArgs = (args) => {
       continue;
     }
 
-    if (arg === '--collect') {
-      collectLog = args[index + 1] ?? null;
-      index += 1;
-      continue;
-    }
-
-    if (arg === '--output') {
-      collectOutput = args[index + 1] ?? null;
-      index += 1;
-      continue;
-    }
-
     console.warn(`Ignoring unknown argument: ${arg}`);
   }
 
@@ -244,8 +228,6 @@ const parseArgs = (args) => {
     failFast,
     verbose,
     printAutoSkip,
-    collectLog,
-    collectOutput,
   };
 };
 
@@ -356,92 +338,6 @@ const getConditionalAutoSkipReason = (startOrName) => {
   });
 
   return missingEnv ? rule.reason : null;
-};
-
-const detectTagsFromName = (name) => {
-  const lower = name.toLowerCase();
-  const tags = new Set();
-  if (
-    SERVER_COMMAND_KEYWORDS.some((keyword) => lower.includes(keyword)) ||
-    SERVER_PATH_KEYWORDS.some((keyword) => lower.includes(keyword))
-  ) {
-    tags.add('server');
-  }
-  if (AUDIO_PATH_KEYWORDS.some((keyword) => lower.includes(keyword))) {
-    tags.add('audio');
-  }
-  if (
-    EXTERNAL_STARTS.has(name) ||
-    EXTERNAL_COMMAND_KEYWORDS.some((keyword) => lower.includes(keyword))
-  ) {
-    tags.add('external');
-  }
-  return tags;
-};
-
-export const collectRerunFromLog = ({
-  logPath,
-  includeServer = false,
-  includeAudio = false,
-  includeExternal = false,
-  autoSkipSet = loadAutoSkip(),
-}) => {
-  if (!logPath) {
-    throw new Error('logPath is required for collectRerunFromLog');
-  }
-  const tableRow = /^(passed|failed|skipped|unknown)\s+([^\s]+)/;
-  const entries = {};
-  const lines = readFileSync(logPath, 'utf-8').split(/\r?\n/);
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const m = tableRow.exec(trimmed);
-    if (m) {
-      let [, status, name] = m;
-      if (name.includes('…')) {
-        const prefix = name.split('…', 1)[0];
-        for (const existing of Object.keys(entries)) {
-          if (existing.startsWith(prefix)) {
-            name = existing;
-            break;
-          }
-        }
-      }
-      entries[name] = status;
-      continue;
-    }
-    const skip = /^↷ Skipping ([^ ]+)/.exec(trimmed);
-    if (skip) {
-      entries[skip[1]] = 'skipped';
-      continue;
-    }
-    const fail = /!! ([^ ]+) exited with (\d+)/.exec(trimmed);
-    if (fail) {
-      entries[fail[1]] = `failed:${fail[2]}`;
-    }
-  }
-
-  const allowedByFlags = (name) => {
-    const tags = detectTagsFromName(name);
-    if (tags.has('server') && !includeServer) return false;
-    if (tags.has('audio') && !includeAudio) return false;
-    if (tags.has('external') && !includeExternal) return false;
-    return true;
-  };
-
-  return [...Object.entries(entries)]
-    .filter(
-      ([name, status]) =>
-        !isExcludedStart(name) &&
-        status !== 'passed' &&
-        status !== 'pending' &&
-        !autoSkipSet.has(name) &&
-        !getConditionalAutoSkipReason(name) &&
-        (!status.startsWith('skipped') || allowedByFlags(name)),
-    )
-    .map(([name]) => name)
-    .sort((a, b) => a.localeCompare(b));
 };
 
 const matchesFilter = (start, filter) => {
@@ -1059,36 +955,10 @@ const main = async () => {
     failFast,
     verbose,
     printAutoSkip,
-    collectLog,
-    collectOutput,
   } = parseArgs(process.argv.slice(2));
 
   const starts = await collectStartScripts(filter);
   const autoSkipSet = loadAutoSkip();
-
-  if (collectLog) {
-    const resolvedLog = path.isAbsolute(collectLog)
-      ? collectLog
-      : path.resolve(process.cwd(), collectLog);
-    const list = collectRerunFromLog({
-      logPath: resolvedLog,
-      includeServer,
-      includeAudio,
-      includeExternal,
-      autoSkipSet,
-    });
-    if (collectOutput) {
-      const outPath = path.isAbsolute(collectOutput)
-        ? collectOutput
-        : path.resolve(process.cwd(), collectOutput);
-      const output = list.length > 0 ? `${list.join('\n')}\n` : '';
-      await fs.writeFile(outPath, output, 'utf-8');
-      console.log(`Wrote ${list.length} entries to ${outPath}`);
-    } else {
-      for (const item of list) console.log(item);
-    }
-    return 0;
-  }
 
   if (printAutoSkip) {
     console.log('Auto-skip list (source: EXAMPLES_AUTO_SKIP or defaults):');

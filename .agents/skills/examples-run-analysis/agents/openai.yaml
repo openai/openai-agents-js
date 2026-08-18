@@ -1,0 +1,4 @@
+interface:
+  display_name: "Examples Run Analysis"
+  short_description: "Analyze completed example logs without running workflows"
+  default_prompt: "Use $examples-run-analysis to inspect the latest completed example logs and source files, validate every exit-zero example, and classify failures, skips, and environment restrictions without executing or controlling any process."

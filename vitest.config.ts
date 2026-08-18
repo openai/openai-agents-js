@@ -115,6 +115,8 @@ export default defineConfig({
             'helpers/vitest/workspacePackageAliases.test.ts',
             'scripts/update-rclone-pin.test.mjs',
             'scripts/released-api-contract.test.mjs',
+            'scripts/run-integration-tests-managed.test.mjs',
+            'scripts/workflow-contracts.test.mjs',
           ],
         },
       },

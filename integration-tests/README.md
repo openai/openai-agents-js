@@ -9,7 +9,7 @@ It is intentionally not part of the `pnpm` workspace and instead installs the pa
 1. **Requirements:**
 
 - Have Node.js, Bun, and Deno installed globally
-- Have an `OPENAI_API_KEY` environment variable configured
+- Have `OPENAI_API_KEY` configured from a trusted service-account shell and `OPENAI_API_KEY_SOURCE=service-account`. Do not relabel an inherited or employee key.
 - Run `pnpm exec playwright install` to install playwright
 - `pnpm test:integration` will create temporary `integration-tests/cloudflare-workers/worker/.dev.vars` and `integration-tests/vite-react/.env` files from `OPENAI_API_KEY` and restore any pre-existing files during cleanup
 - Integration test fixture subprocesses run with `NODE_ENV=development` so real-model SDK examples keep the normal server-runtime tracing behavior even though Vitest itself runs with `NODE_ENV=test`
@@ -18,7 +18,21 @@ It is intentionally not part of the `pnpm` workspace and instead installs the pa
 - Optional sandbox storage mount coverage requires Docker with FUSE support and is skipped unless `OPENAI_AGENTS_RUN_STORAGE_MOUNT_INTEGRATION=1` is set. It starts local Azurite and MinIO containers and removes them after the test.
 - The React Native fixture copies the Expo example, installs the locally published packages, type-checks it, and creates an Android Metro bundle. Set `OPENAI_AGENTS_RUN_REACT_NATIVE_LIVE=1` to additionally build and run it against the Realtime API on an already-running Android emulator with `adb` available.
 
-2. **Local npm registry**
+2. **Run the managed repository workflow**
+
+   The canonical command validates credential provenance, refuses to interfere with an unowned process on Verdaccio's port, starts and waits for its own registry, installs and builds the workspace, resets and publishes to the local registry, runs the full integration suite with storage-mount coverage enabled, and cleans up on success, failure, `SIGINT`, or `SIGTERM`:
+
+   ```bash
+   pnpm test:integration:managed
+   ```
+
+   The caller must supply the approved environment before invoking the command. The orchestrator does not source shell startup files or replace credentials. It removes `OPENAI_API_KEY` from Verdaccio and every local-only install, build, reset, and publish child; only the integration-test child receives the already validated key. The orchestrator accepts readiness only after its own Verdaccio child confirms a successful bind. Each invocation streams complete output and writes a timestamped `pipeline.log` and `verdaccio.log` under `.tmp/integration-tests-managed/`; cleanup or log-finalization failure makes an otherwise successful run fail.
+
+3. **Low-level manual workflow**
+
+   Keep the following commands available when you need to manage Verdaccio and individual integration profiles yourself.
+
+   **Local npm registry**
 
    We will publish packages in a local registry to emulate a real environment.
 
@@ -26,11 +40,11 @@ It is intentionally not part of the `pnpm` workspace and instead installs the pa
 
    **Hint:** The first time you might have to run `npm adduser --registry http://localhost:4873/` (you can use any fake data)
 
-3. **Publish your packages to run the tests**
+   **Publish your packages to run the tests**
 
    In order to test the packages first build them (`pnpm build`) and then run `pnpm local-npm:publish`.
 
-4. **Run your tests**
+   **Run your tests**
 
    You can now run your integration tests:
 
