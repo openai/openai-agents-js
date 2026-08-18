@@ -109,6 +109,7 @@ export default defineConfig({
           maxConcurrency: 4,
           include: [
             'helpers/tests/consoleGuard.test.ts',
+            'helpers/vitest/codeChangeVerificationPolicy.test.ts',
             'helpers/vitest/reviewTestProfile.test.ts',
             'helpers/vitest/testConcurrency.test.ts',
             'helpers/vitest/workspacePackageAliases.test.ts',

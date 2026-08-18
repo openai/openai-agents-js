@@ -30,8 +30,14 @@ jobs:
               '.husky/',
               'integration-tests/',
             ];
+            const CI_RELEVANT_PREFIXES = [
+              '.agents/skills/code-change-verification/',
+            ];
 
             const isIgnoredPath = (path) => {
+              if (CI_RELEVANT_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+                return false;
+              }
               if (IGNORED_PREFIXES.some((prefix) => path.startsWith(prefix))) {
                 return true;
               }
@@ -41,6 +47,10 @@ jobs:
               }
               return false;
             };
+            const changedPathsForFile = (file) =>
+              [file.filename, file.previous_filename].filter(
+                (path) => typeof path === 'string',
+              );
 
             let changedFiles = [];
 
@@ -51,7 +61,7 @@ jobs:
                 pull_number: context.payload.pull_request.number,
                 per_page: 100,
               });
-              changedFiles = files.map((file) => file.filename);
+              changedFiles = files.flatMap(changedPathsForFile);
             } else if (context.eventName === 'push') {
               const before = context.payload.before;
               const after = context.payload.after;
@@ -67,7 +77,7 @@ jobs:
                 repo: context.repo.repo,
                 basehead: `${before}...${after}`,
               });
-              changedFiles = (comparison.data.files ?? []).map((file) => file.filename);
+              changedFiles = (comparison.data.files ?? []).flatMap(changedPathsForFile);
             } else {
               core.info(`Unsupported event "${context.eventName}". Running CI by default.`);
               core.setOutput('run_ci', 'true');
