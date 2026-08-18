@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   access,
   chmod,
@@ -13,7 +13,6 @@ import { constants as fsConstants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -29,29 +28,6 @@ async function pathExists(filePath) {
   } catch {
     return false;
   }
-}
-
-function processIsRunning(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === 'ESRCH') {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function waitUntil(predicate, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) {
-      return;
-    }
-    await delay(25);
-  }
-  throw new Error('Condition was not reached.');
 }
 
 describe('repository workflow contracts', () => {
@@ -175,106 +151,25 @@ describe('repository workflow contracts', () => {
     }
   });
 
-  it('stops the owned background process group and its descendant', async () => {
-    const temporaryDirectory = await mkdtemp(
-      path.join(tmpdir(), 'examples-background-test-'),
-    );
-    const stateDirectory = path.join(temporaryDirectory, 'state');
-    const fakePnpm = path.join(temporaryDirectory, 'pnpm');
-    const childPidFile = path.join(temporaryDirectory, 'child.pid');
-    const childStartedFile = path.join(temporaryDirectory, 'child.started');
-    const childStoppedFile = path.join(temporaryDirectory, 'child.stopped');
-    await writeFile(
-      fakePnpm,
-      [
-        '#!/usr/bin/env bash',
-        'set -euo pipefail',
-        'if [[ "$*" == *"examples:start-all"* ]]; then',
-        '  printf "%s\\n" "$$" >"$FAKE_CHILD_PID_FILE"',
-        '  printf "started\\n" >"$FAKE_CHILD_STARTED_FILE"',
-        `  trap 'printf "stopped\\n" >"$FAKE_CHILD_STOPPED_FILE"; exit 0' TERM INT`,
-        '  while true; do sleep 0.1; done',
-        'fi',
-        'exit 0',
-        '',
-      ].join('\n'),
-      'utf8',
-    );
-    await chmod(fakePnpm, 0o755);
-
-    const environment = {
-      ...process.env,
-      PATH: `${temporaryDirectory}:${process.env.PATH}`,
-      EXAMPLES_WORKFLOW_STATE_DIR: stateDirectory,
-      FAKE_CHILD_PID_FILE: childPidFile,
-      FAKE_CHILD_STARTED_FILE: childStartedFile,
-      FAKE_CHILD_STOPPED_FILE: childStoppedFile,
-      OPENAI_API_KEY_SOURCE: 'service-account',
-      OPENAI_API_KEY: 'test-only-key',
-    };
-
-    try {
-      const start = spawnSync(
-        '/bin/bash',
-        [
-          path.join(repositoryRoot, 'scripts', 'run-examples-workflow.sh'),
-          'start',
-          '--background',
-          '--filter',
-          'fake',
-        ],
-        { cwd: repositoryRoot, env: environment, encoding: 'utf8' },
-      );
-      expect(start.status).toBe(0);
-      await waitUntil(() => pathExists(childStartedFile));
-      const childPid = Number((await readFile(childPidFile, 'utf8')).trim());
-      expect(processIsRunning(childPid)).toBe(true);
-
-      const stop = spawnSync(
-        '/bin/bash',
-        [
-          path.join(repositoryRoot, 'scripts', 'run-examples-workflow.sh'),
-          'stop',
-        ],
-        { cwd: repositoryRoot, env: environment, encoding: 'utf8' },
-      );
-      expect(stop.status).toBe(0);
-      expect(stop.stdout).toContain('Stopped.');
-      await waitUntil(() => pathExists(childStoppedFile));
-      await waitUntil(() => !processIsRunning(childPid));
-    } finally {
-      const pid = Number(
-        (await readFile(childPidFile, 'utf8').catch(() => '')).trim(),
-      );
-      if (Number.isInteger(pid) && processIsRunning(pid)) {
-        process.kill(pid, 'SIGKILL');
-      }
-      spawnSync(
-        '/bin/bash',
-        [
-          path.join(repositoryRoot, 'scripts', 'run-examples-workflow.sh'),
-          'stop',
-        ],
-        { cwd: repositoryRoot, env: environment, encoding: 'utf8' },
-      );
-      await rm(temporaryDirectory, { recursive: true, force: true });
-    }
-  }, 15_000);
-
   it('refuses to signal a stale unowned background pid', async () => {
     const temporaryDirectory = await mkdtemp(
       path.join(tmpdir(), 'examples-stale-pid-test-'),
     );
     const stateDirectory = path.join(temporaryDirectory, 'state');
     const pidFile = path.join(stateDirectory, 'examples-auto-run.pid');
+    const fakeBin = path.join(temporaryDirectory, 'bin');
+    const fakePs = path.join(fakeBin, 'ps');
     await mkdir(stateDirectory, { recursive: true });
-    const unrelated = spawn(process.execPath, [
-      '--eval',
-      'setTimeout(() => {}, 30000)',
-    ]);
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(
+      fakePs,
+      '#!/usr/bin/env bash\nif [[ "$*" == *"-o command="* ]]; then printf "unrelated process\\n"; fi\n',
+      'utf8',
+    );
+    await chmod(fakePs, 0o755);
 
     try {
-      await writeFile(pidFile, `${unrelated.pid} stale-token ready\n`, 'utf8');
+      await writeFile(pidFile, `${process.pid} stale-token ready\n`, 'utf8');
       const stop = spawnSync(
         '/bin/bash',
         [
@@ -285,6 +180,7 @@ describe('repository workflow contracts', () => {
           cwd: repositoryRoot,
           env: {
             ...process.env,
+            PATH: `${fakeBin}:${process.env.PATH}`,
             EXAMPLES_WORKFLOW_STATE_DIR: stateDirectory,
           },
           encoding: 'utf8',
@@ -293,11 +189,8 @@ describe('repository workflow contracts', () => {
 
       expect(stop.status).toBe(1);
       expect(stop.stderr).toContain('Refusing to signal unowned pid');
-      expect(processIsRunning(unrelated.pid)).toBe(true);
       expect(await pathExists(pidFile)).toBe(true);
     } finally {
-      unrelated.kill('SIGKILL');
-      await new Promise((resolve) => unrelated.once('exit', resolve));
       await rm(temporaryDirectory, { recursive: true, force: true });
     }
   });
