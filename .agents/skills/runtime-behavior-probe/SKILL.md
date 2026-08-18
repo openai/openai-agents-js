@@ -12,6 +12,9 @@ Use this skill to investigate real runtime behavior, not to restate code or docu
 ## Core Rules
 
 - Treat this skill as manual-only. Do not rely on implicit invocation.
+- Invoking this skill authorizes planning only. Every runtime probe requires explicit user approval after the exact probe has been proposed. Do not infer execution approval from the skill invocation or a general request to investigate runtime behavior.
+- Before requesting approval, disclose the source identity, exact command, transitively executed material, known filesystem, environment, network, and host-service capabilities, expected side effects, and control for the proposed probe. Mark unknown capabilities as unknown rather than assuming that they are unavailable.
+- Wait for an affirmative response before executing the probe. Approval is bound to the disclosed source, command, executed material, and capability scope. Obtain new approval before changing any of those fields, adding another probe, or expanding the approved matrix.
 - For `openai-agents-js`, treat this skill as a disposable-probe workflow, not a repository implementation workflow.
 - Unless the user explicitly asks for a reusable repository artifact, the allowed write scope is limited to:
   - a temporary directory used for probe scripts or artifacts
@@ -20,11 +23,11 @@ Use this skill to investigate real runtime behavior, not to restate code or docu
 - If your draft plan would touch a disallowed path, stop and rewrite the plan before editing anything.
 - A baseline success or smoke case is often the right entry point, but do not stop there when the real question involves edge cases, drift, or failure behavior.
 - Plan before running anything. Write the case matrix first, then fill it in with observed results. The matrix can live in a scratch note, a temporary file, or the probe script header.
-- Default to local or read-only probes. Consider a live service only when it is clearly relevant, then apply the lightweight gates below before you run it.
+- Default to proposing local or read-only probes. Consider a live service only when it is clearly relevant, then apply the lightweight gates below before requesting approval.
 - Size the probe to the decision. Start with the smallest matrix that can disqualify or validate the current hypothesis, then expand only when uncertainty remains.
 - Before a live probe, apply three lightweight gates:
   - Destination gate. Use only a live destination that is clearly allowed for the task.
-  - Intent gate. Run the live probe only when the user explicitly wants runtime verification on that integration, or explicitly approves it after you propose the probe.
+  - Intent gate. Propose a live probe only when the user explicitly wants runtime verification on that integration. Execution still requires separate approval after the exact probe is proposed.
   - Data gate. If the probe will read environment variables, mutate remote state, incur material cost, or exercise non-public or user data, name the exact variable names or data class and get explicit approval first.
 - Classify each case as read-only, mutating, or costly before execution. For mutating or costly cases, or for any live case that will read environment variables, define cleanup or rollback before running the probe.
 - Use temporary files or a temporary directory for one-off probe scripts.
@@ -72,11 +75,12 @@ Use this skill to investigate real runtime behavior, not to restate code or docu
 - Prefer current-branch `src/` imports when the question is "what does this branch do now?" and prefer `dist/` imports only when the question is specifically about packaged output after a build.
 - Do not run a repository-wide build just to typecheck a disposable probe. Reserve `pnpm build` for `dist/` probes or when emitted output is itself part of the question.
 
-15. Execute the matrix and capture evidence. Record request shape, setup, observation summary, unexpected or negative result, error details, timing, runtime context, approved environment-variable names, repeat counts, warm-up handling, variance when relevant, cleanup behavior, and for comparisons note what was held constant plus any response-shape or usage notes that affect interpretation.
-16. Update the matrix with actual outcomes, not guesses.
-17. Keep temporary artifacts until the final response is drafted. Then delete them unless the user asked to keep them or they are needed for follow-up. Benchmark and repeat-heavy probes often need follow-up, so keeping artifacts is normal when the result may be revisited. If deleted, retain and report a short run summary.
-18. Report findings first, with unexpected or negative findings first. Then summarize how the validation was performed and which cases were covered.
-19. If the probe isolates one clear defect, you may include a short implementation hypothesis or minimal repro direction. Do not expand into a larger next-step plan unless the user asked for it.
+15. Present the complete probe proposal with the disclosures required above, including the exact command for each case or approved matrix, then ask the user for explicit approval and wait.
+16. Execute only the approved matrix and capture evidence. Record request shape, setup, observation summary, unexpected or negative result, error details, timing, runtime context, approved environment-variable names, repeat counts, warm-up handling, variance when relevant, cleanup behavior, and for comparisons note what was held constant plus any response-shape or usage notes that affect interpretation.
+17. Update the matrix with actual outcomes, not guesses.
+18. Keep temporary artifacts until the final response is drafted. Then delete them unless the user asked to keep them or they are needed for follow-up. Benchmark and repeat-heavy probes often need follow-up, so keeping artifacts is normal when the result may be revisited. If deleted, retain and report a short run summary.
+19. Report findings first, with unexpected or negative findings first. Then summarize how the validation was performed and which cases were covered.
+20. If the probe isolates one clear defect, you may include a short implementation hypothesis or minimal repro direction. Do not expand into a larger next-step plan unless the user asked for it.
 
 ## Validation Matrix
 

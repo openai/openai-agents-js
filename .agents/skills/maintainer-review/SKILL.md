@@ -24,7 +24,7 @@ Make a maintainer decision, not a generic diff summary. Separate these questions
 
 Treat an issue's requested field, callback, flag, class, or implementation strategy as a proposed mechanism, not as the accepted requirement. Do not begin by asking how to implement it. First establish either a concrete unmet user outcome or a violated supported contract, then prove that the proposed mechanism is better than the available alternatives.
 
-Lead with the current review state. Use `Preliminary assessment` while approval-gated runtime work or decision-relevant evidence is pending, and `Maintainer decision` only when the review can be concluded. Use the diff, issue narrative, and contributor effort as evidence, not as proxies for impact.
+Lead with the current review state. Use `Preliminary assessment` while decision-relevant evidence is pending, and `Maintainer decision` only when the review can be concluded. Use the diff, issue narrative, and contributor effort as evidence, not as proxies for impact.
 
 ## Workflow
 
@@ -88,23 +88,24 @@ Do this before deeply evaluating a specified PR. A PR URL selects the starting p
 
 Compare candidates on need coverage, runtime correctness, placement, tests, compatibility, complexity, readiness, remaining maintainer work, and reusable pieces. Prefer the best maintainable solution, not the first or smallest diff by default.
 
-### 4. Use a two-stage evidence flow
+### 4. Use a desk-review evidence flow
 
 Always begin with a desk review. Inspect the real runtime path before judging a change as trivial or meaningful. Check callers, public exports, equivalent streaming/non-streaming or provider/runtime paths, persistence, cleanup, and focused tests. Inspecting test code is part of the desk review; executing tests, imports, examples, reproductions, benchmarks, or service calls is a runtime probe.
 
+This skill does not plan or execute runtime probes. Invoking this skill, asking for a review, or supplying an issue or pull-request URL does not authorize tests, imports, examples, reproductions, benchmarks, service calls, or another runtime-probe skill. If decision-relevant runtime evidence remains after desk review, keep the assessment preliminary and suggest a separate runtime investigation. State the unresolved question, why it could change the decision, the evidence needed, and an appropriate base, release, or known-good control. Do not provide an exact command, request approval, invoke another skill, or execute code from this skill.
+
 Start with `.agents/references/README.md` and open only the references for the affected boundary. Treat `.agents/references/` as read-only background during review. Verify every current claim against the remote change, current source, tests, docs, release boundary, and runtime evidence. Do not infer issue status or PR correctness from a reference. Recommend a separate reference-maintenance change when review reveals a durable invariant unless the user explicitly includes that update.
 
-Use this evidence order across the two stages:
+Use this evidence order:
 
 1. Trace the closest existing supported capabilities and determine whether they already satisfy the underlying user outcome.
 2. Inspect existing tests and complete the code-path trace, including the mandatory interleaving and ownership pass when triggered, without executing code.
-3. Proactively run a focused local reproduction of the exact claim when the desk-review rules below require it and it stays within the local-probe authorization below.
-4. A comparison with the latest release, base branch, or another known-good control.
-5. A broader runtime matrix only when the maintainer decision remains uncertain and the additional cost and scope are justified; request approval when the expansion crosses the authorization boundary below.
+3. Compare the implementation and existing evidence with the latest release, base branch, or another known-good control without executing code.
+4. If a decision-relevant runtime uncertainty remains, stop and suggest a separate runtime investigation using the evidence requirements below.
 
-#### Stage 1: desk review
+#### Desk review
 
-Produce an initial result from static evidence before running code:
+Produce the result from static evidence:
 
 ##### Mandatory unmet-need and design pass
 
@@ -130,30 +131,20 @@ Run this pass before any positive PR assessment when a patch adds, removes, or r
 5. Compare base and head for the survivor invariant. Replacing duplicated work with missing handlers, a closed shared resource, reverted state, or a rejected surviving promise is a regression, not a successful cleanup. Do not dismiss stale cleanup as pre-existing when the patch newly invokes it for another failure, cancellation, or retry path.
 6. Inspect tests for controlled interleavings using deferred promises, callbacks, or events. Require assertions about the failing and surviving operations' observable behavior and final resource coherence, not only listener counts or individual rejection results.
 
-Do not mark a concurrency-sensitive patch `Merge-worthy as-is` merely because sequential reconnect, retry, failure, and close tests pass. A triggered ownership pass is incomplete unless the evidence records the complete mutation surface, concrete ownership mechanism, strongest distinct-mutator interleaving, and survivor and coherence result. If the code trace proves an unsafe interleaving, conclude from static evidence and request a focused fix and regression test. If ownership remains ambiguous, keep the result preliminary until the smallest decisive runtime probe or equivalent evidence resolves it.
+Do not mark a concurrency-sensitive patch `Merge-worthy as-is` merely because sequential reconnect, retry, failure, and close tests pass. A triggered ownership pass is incomplete unless the evidence records the complete mutation surface, concrete ownership mechanism, strongest distinct-mutator interleaving, and survivor and coherence result. If the code trace proves an unsafe interleaving, conclude from static evidence and request a focused fix and regression test. If ownership remains ambiguous, keep the result preliminary and state the exact runtime evidence needed to resolve it.
 
 - If the claim or PR is decisively negative from a complete reachable code-path trace, conclude the review without a runtime probe. Examples include an impossible or unsupported path, duplicated existing handling, a demonstrated no-op, a direct compatibility break, or a clearly wrong abstraction. Do not call an ambiguous result negative merely to avoid a probe.
-- If the initial result is positive and there is no unresolved runtime concern, and any triggered interleaving and ownership pass is complete, the desk review may be sufficient for a final maintainer decision. Do not run a probe only to restate evidence that cannot plausibly change the decision.
-- If there is any unresolved runtime concern that could plausibly change claim validity, severity, merge-worthiness, required changes, or the preferred competing PR, run the smallest decisive local probe and control when authorized below. If the probe requires approval or is not practical, report a `Preliminary assessment`, name the concern, and explain the exact evidence still needed.
-- A purely stylistic, documentation, CI-status, or repository-readiness concern does not trigger a runtime probe unless it masks a runtime question.
+- If the initial result is positive and there is no unresolved runtime concern, and any triggered interleaving and ownership pass is complete, the desk review may be sufficient for a final maintainer decision. Do not suggest additional runtime investigation only to restate evidence that cannot plausibly change the decision.
+- If there is any unresolved runtime concern that could plausibly change claim validity, severity, merge-worthiness, required changes, or the preferred competing PR, report a `Preliminary assessment`. State the unresolved question, why it could change the decision, the evidence needed, and an appropriate control, then suggest a separate runtime investigation without planning or executing it.
+- A purely stylistic, documentation, CI-status, or repository-readiness concern does not justify suggesting a runtime investigation unless it masks a runtime question.
 
-Do not issue a definitive positive maintainer decision while a decision-relevant runtime concern remains unresolved. If an approval-gated probe is declined or a material concern is practically probeable but remains untested, keep the result preliminary and state the exact confidence limitation.
-
-#### Stage 2: focused runtime probe
-
-Invocation of this skill authorizes focused local-only probes that use existing dependencies and temporary or disposable data, do not use credentials, live APIs, or external services, do not modify tracked repository content or persistent external state, and remain narrowly scoped to the review question. Announce the probe before running it, then exercise the real public or internal path and include a base, release, or known-good control when relevant. Do not wait for separate approval for a qualifying local probe, and do not stop at a happy-path smoke check when failure behavior determines the decision.
-
-Ask for explicit approval before using credentials, a live API, or an external service; installing dependencies; modifying tracked repository content or persistent external state; or starting a materially broad, expensive, or long-running probe. Return to the user for separate approval before expanding an authorized local probe across one of those boundaries.
-
-For latency, timeout, buffering, backpressure, or cleanup, measure an observable elapsed-time or state transition where feasible. Do not assume that a mocked unit test exercises real scheduling or provider behavior. Prefer a local probe first; use an approval-gated live-service probe only when local evidence cannot settle the decision.
-
-Use `$runtime-behavior-probe` only when the user explicitly invokes it or approves using it for the proposed runtime work. Preserve its environment-variable, live-service, cost, cleanup, and reporting gates. Ordinary maintainer review must not depend on that skill.
+Do not issue a definitive positive maintainer decision while a decision-relevant runtime concern remains unresolved. If the needed runtime evidence is unavailable or remains untested, keep the result preliminary and state the exact confidence limitation.
 
 For validation, cleanup, retries, interruption, background work, or concurrency:
 
 - Identify the earliest correct decision point after dynamic inputs are available.
 - List resources acquired before and after it: listeners, promises/tasks, streams, connections, files, locks, caches, state mutations, and telemetry.
-- Exercise failure during construction, connection, validation, execution, and cleanup where applicable.
+- Trace failure behavior during construction, connection, validation, execution, and cleanup where applicable.
 - Verify explicit cleanup when failure occurs before normal teardown.
 - Require a negative-path test when a listener, promise, stream, connection, process, or state can remain.
 
@@ -201,7 +192,7 @@ When multiple plausible semantic scopes, compatibility boundaries, or public API
 
 Choose the assessment language from the current user request and governing repository instructions. Maintainer comment drafts remain English.
 
-Use the matching compact report in the evaluation framework. While approval-gated runtime work or decision-relevant evidence is pending, use its preliminary-assessment variant and end with the approval request or evidence limitation instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
+Use the matching compact report in the evaluation framework. While decision-relevant evidence is pending, use its preliminary-assessment variant and end with the evidence limitation and optional suggestion for a separate runtime investigation instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
 
 For PRs, put `Need evidence` before the code recommendation. When the need is not `Demonstrated`, lead with that result, omit repository readiness, and avoid presenting patch fixes as the primary maintainer action.
 
