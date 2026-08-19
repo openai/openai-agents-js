@@ -6,6 +6,7 @@ import {
   OutputGuardrailMetadata,
   OutputGuardrailFunctionArgs,
 } from '@openai/agents-core';
+import { toSmartString } from '@openai/agents-core/utils';
 
 export interface RealtimeOutputGuardrailSettings {
   /**
@@ -67,6 +68,14 @@ export function defineRealtimeOutputGuardrail({
   };
 }
 
+function stringifyOutputInfo(outputInfo: unknown): string {
+  try {
+    return JSON.stringify(outputInfo) ?? '{}';
+  } catch {
+    return toSmartString(outputInfo);
+  }
+}
+
 /**
  * Generates a message that informs the model about why the guardrail was triggered and to
  * correct the behavior.
@@ -77,7 +86,7 @@ export function getRealtimeGuardrailFeedbackMessage(
   return `
 ⚠️ Your last answer was blocked. 
 Failed Guardrail Reason: ${result.guardrail.policyHint}. 
-Failure Details: ${JSON.stringify(result.output.outputInfo ?? {})}. 
+Failure Details: ${stringifyOutputInfo(result.output.outputInfo ?? {})}. 
 Please respond again following policy. Apologize for not being able to answer the question (while avoiding the specific reason) and divert discussion back to an approved topic immediately and not invite more discussion.
 `.trim();
 }
