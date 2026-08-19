@@ -1,0 +1,2 @@
+# Keep checkouts as LF so fixture hashes and workflow tests stay stable on Windows.
+* text=auto eol=lf
