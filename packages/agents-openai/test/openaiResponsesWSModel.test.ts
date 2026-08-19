@@ -10,8 +10,10 @@ import {
 import type OpenAI from 'openai';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 import {
+  ModelBehaviorError,
   setTracingDisabled,
   type ResponseStreamEvent,
+  withTrace,
 } from '@openai/agents-core';
 import { HEADERS } from '../src/defaults';
 import { OpenAIResponsesWSModel } from '../src/openaiResponsesModel';
@@ -723,9 +725,9 @@ describe('OpenAIResponsesWSModel', () => {
   it.each([
     ['response.incomplete', 'incomplete'],
     ['response.failed', 'failed'],
-    ['response.error', 'failed'],
+    ['error', undefined],
   ] as const)(
-    'emits response_done for terminal websocket stream event %s',
+    'rejects terminal websocket stream event %s without response_done',
     async (terminalEventType, expectedStatus) => {
       const fakeClient = createFakeClient();
 
@@ -736,19 +738,33 @@ describe('OpenAIResponsesWSModel', () => {
             response: { id: 'resp_init', status: 'in_progress' },
             sequence_number: 0,
           } as any);
-          socket.queueJSON({
-            type: terminalEventType,
-            response: {
-              id: 'resp_terminal',
-              status: expectedStatus,
-              output: [],
-              usage: {},
-              ...(terminalEventType === 'response.incomplete'
-                ? { incomplete_details: { reason: 'max_output_tokens' } }
-                : {}),
-            },
-            sequence_number: 1,
-          } as any);
+          socket.queueJSON(
+            terminalEventType === 'error'
+              ? {
+                  type: 'error',
+                  code: 'server_error',
+                  message: 'sensitive websocket error',
+                  param: null,
+                  sequence_number: 1,
+                }
+              : {
+                  type: terminalEventType,
+                  response: {
+                    id: 'resp_terminal',
+                    status: expectedStatus,
+                    output: [],
+                    usage: {},
+                    ...(terminalEventType === 'response.incomplete'
+                      ? {
+                          incomplete_details: {
+                            reason: 'max_output_tokens',
+                          },
+                        }
+                      : {}),
+                  },
+                  sequence_number: 1,
+                },
+          );
         });
       };
 
@@ -765,21 +781,26 @@ describe('OpenAIResponsesWSModel', () => {
       };
 
       const received: ResponseStreamEvent[] = [];
-      for await (const event of model.getStreamedResponse(request as any)) {
-        received.push(event);
-      }
+      const error = await (async () => {
+        try {
+          for await (const event of model.getStreamedResponse(request as any)) {
+            received.push(event);
+          }
+        } catch (caught) {
+          return caught;
+        }
+      })();
 
       expect(received.some((event) => event.type === 'response_started')).toBe(
         true,
       );
-      const responseDone = received.find(
-        (event) => event.type === 'response_done',
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect((error as Error).message).toContain(terminalEventType);
+      expect((error as Error).message).not.toContain(
+        'sensitive websocket error',
       );
-      expect(responseDone).toBeDefined();
-      expect((responseDone as any).response.id).toBe('resp_terminal');
-      expect((responseDone as any).response.requestId).toBeUndefined();
-      expect((responseDone as any).response.providerData?.status).toBe(
-        expectedStatus,
+      expect(received.some((event) => event.type === 'response_done')).toBe(
+        false,
       );
       expect(
         received.some(
@@ -788,6 +809,82 @@ describe('OpenAIResponsesWSModel', () => {
             (event as any).event?.type === terminalEventType,
         ),
       ).toBe(true);
+      expect(TestWebSocket.instances[0]?.sent).toHaveLength(1);
+      expect(
+        model.getRetryAdvice({
+          error,
+          request: request as any,
+          stream: true,
+          attempt: 1,
+        }),
+      ).toMatchObject({
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      });
+    },
+  );
+
+  it.each(['response.incomplete', 'error'] as const)(
+    'reuses the websocket after terminal stream event %s',
+    async (firstTerminalEventType) => {
+      const fakeClient = createFakeClient();
+      let requestCount = 0;
+
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          requestCount += 1;
+          socket.queueJSON(
+            requestCount === 1 && firstTerminalEventType === 'error'
+              ? {
+                  type: 'error',
+                  code: 'server_error',
+                  message: 'retry with a new request',
+                  param: null,
+                  sequence_number: 0,
+                }
+              : {
+                  type:
+                    requestCount === 1
+                      ? 'response.incomplete'
+                      : 'response.completed',
+                  response: {
+                    id: `resp_${requestCount}`,
+                    status: requestCount === 1 ? 'incomplete' : 'completed',
+                    output: [],
+                    usage: {},
+                  },
+                  sequence_number: 0,
+                },
+          );
+        });
+      };
+
+      const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+      const request = {
+        systemInstructions: undefined,
+        input: 'ping',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+      const consume = async () => {
+        for await (const _event of model.getStreamedResponse(request as any)) {
+          // Consume the entire stream so the request lock can be released.
+        }
+      };
+
+      await expect(consume()).rejects.toThrow(ModelBehaviorError);
+      const result = await withTrace('test', () =>
+        model.getResponse(request as any),
+      );
+
+      expect(result.responseId).toBe('resp_2');
+      expect(TestWebSocket.instances).toHaveLength(1);
+      expect(TestWebSocket.instances[0]?.sent).toHaveLength(2);
     },
   );
 
@@ -960,9 +1057,8 @@ describe('OpenAIResponsesWSModel', () => {
   it.each([
     ['response.incomplete', 'incomplete'],
     ['response.failed', 'failed'],
-    ['response.error', 'failed'],
   ] as const)(
-    'returns terminal websocket responses in non-stream mode (%s)',
+    'rejects terminal websocket responses in non-stream mode (%s)',
     async (terminalEventType, expectedStatus) => {
       const fakeClient = createFakeClient();
 
@@ -998,21 +1094,110 @@ describe('OpenAIResponsesWSModel', () => {
         signal: undefined,
       };
 
-      const result = await (model as any)._fetchResponse(request as any, false);
+      const error = await withTrace('test', () =>
+        model.getResponse(request as any),
+      ).catch((caught: unknown) => caught as any);
 
-      expect(result.id).toBe('resp_done');
-      expect(result.status).toBe(expectedStatus);
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect(error.message).toContain(`response.${expectedStatus}`);
       expect(TestWebSocket.instances[0]?.sent).toHaveLength(1);
+      expect(
+        model.getRetryAdvice({
+          error,
+          request: request as any,
+          stream: false,
+          attempt: 1,
+        }),
+      ).toMatchObject({
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      });
     },
   );
 
-  it('marks post-consumption terminal response validation failures as unsafe', async () => {
+  it.each([false, true])(
+    'rejects a missing terminal response payload (stream=%s)',
+    async (stream) => {
+      const fakeClient = createFakeClient();
+
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          socket.queueJSON({
+            type: 'response.completed',
+            ...(socket.sent.length > 1
+              ? { response: { id: 'resp_recovered', output: [], usage: {} } }
+              : {}),
+            sequence_number: 0,
+          });
+        });
+      };
+
+      const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+      const request = {
+        systemInstructions: undefined,
+        input: 'ping',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      };
+
+      const received: ResponseStreamEvent[] = [];
+      const error = await withTrace('test', async () => {
+        if (!stream) {
+          return model.getResponse(request as any);
+        }
+        for await (const event of model.getStreamedResponse(request as any)) {
+          received.push(event);
+        }
+      }).catch((err: unknown) => err as any);
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect(error.message).toBe(
+        'OpenAI Responses terminal event "response.completed" is missing its required response payload.',
+      );
+      expect(error.unsafeToReplay).toBe(true);
+      expect(error.responseStarted).toBe(true);
+      expect(
+        model.getRetryAdvice({
+          error,
+          request: request as any,
+          stream,
+          attempt: 1,
+        }),
+      ).toMatchObject({
+        suggested: false,
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      });
+      expect(
+        received.filter((event) => event.type === 'response_done'),
+      ).toEqual([]);
+      expect(received.filter((event) => event.type === 'model')).toHaveLength(
+        stream ? 1 : 0,
+      );
+      const recovered = await withTrace('test', () =>
+        model.getResponse(request as any),
+      );
+      expect(recovered.responseId).toBe('resp_recovered');
+      expect(TestWebSocket.instances).toHaveLength(1);
+      expect(TestWebSocket.instances[0]?.sent).toHaveLength(2);
+    },
+  );
+
+  it('rejects a first-frame websocket error with a redacted model error', async () => {
     const fakeClient = createFakeClient();
 
     TestWebSocket.onCreate = (socket) => {
       socket.onSend(() => {
         socket.queueJSON({
-          type: 'response.completed',
+          type: 'error',
+          code: 'server_error',
+          message: 'sensitive invalid request',
+          param: null,
           sequence_number: 0,
         });
       });
@@ -1030,75 +1215,15 @@ describe('OpenAIResponsesWSModel', () => {
       signal: undefined,
     };
 
-    const error = await (model as any)
-      ._fetchResponse(request as any, false)
-      .catch(
-        (err: unknown) =>
-          err as Error & {
-            unsafeToReplay?: boolean;
-            responseStarted?: boolean;
-          },
-      );
+    const error = await withTrace('test', () =>
+      model.getResponse(request as any),
+    ).catch((err: unknown) => err as any);
 
+    expect(error).toBeInstanceOf(ModelBehaviorError);
     expect(error.message).toBe(
-      'Responses websocket stream ended without a terminal response event.',
+      'OpenAI Responses request ended with unsuccessful terminal state "error".',
     );
-    expect(error.unsafeToReplay).toBe(true);
-    expect(error.responseStarted).toBe(true);
-    expect(
-      model.getRetryAdvice({
-        error,
-        request: request as any,
-        stream: false,
-        attempt: 1,
-      }),
-    ).toMatchObject({
-      suggested: false,
-      replaySafety: 'unsafe',
-      responseStarted: true,
-    });
-  });
-
-  it('surfaces first-frame websocket error payloads without feature-disabled wrapping', async () => {
-    const fakeClient = createFakeClient();
-
-    TestWebSocket.onCreate = (socket) => {
-      socket.onSend(() => {
-        socket.queueJSON({
-          type: 'error',
-          error: {
-            message: 'invalid request',
-          },
-        });
-      });
-    };
-
-    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
-    const request = {
-      systemInstructions: undefined,
-      input: 'ping',
-      modelSettings: {},
-      tools: [],
-      outputType: 'text',
-      handoffs: [],
-      tracing: false,
-      signal: undefined,
-    };
-
-    const error = await (model as any)
-      ._fetchResponse(request as any, false)
-      .catch(
-        (err: unknown) =>
-          err as Error & {
-            unsafeToReplay?: boolean;
-            responseStarted?: boolean;
-          },
-      );
-
-    expect(error).toBeInstanceOf(Error);
-    expect(error.message).toContain('Responses websocket error:');
-    expect(error.message).toContain('invalid request');
-    expect(error.message).not.toContain('feature may not be enabled');
+    expect(error.message).not.toContain('sensitive invalid request');
     expect(error.unsafeToReplay).toBe(true);
     expect(error.responseStarted).toBe(true);
     expect(

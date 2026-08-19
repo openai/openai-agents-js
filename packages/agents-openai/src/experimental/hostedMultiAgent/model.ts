@@ -361,6 +361,11 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     return this.#normalizedResponses.get(response) ?? response;
   }
 
+  /** @internal */
+  protected override _getUnsuccessfulResponseTerminalType(): undefined {
+    return undefined;
+  }
+
   protected override _getResponseUsage(
     response: OpenAI.Responses.Response,
   ): Usage {
