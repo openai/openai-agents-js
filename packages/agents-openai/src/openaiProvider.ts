@@ -63,6 +63,12 @@ export class OpenAIProvider implements ModelProvider {
           'Cannot provide both websocketBaseURL and openAIClient',
         );
       }
+      if (typeof this.#options.organization !== 'undefined') {
+        throw new Error('Cannot provide both organization and openAIClient');
+      }
+      if (typeof this.#options.project !== 'undefined') {
+        throw new Error('Cannot provide both project and openAIClient');
+      }
       this.#client = this.#options.openAIClient as OpenAI;
     }
     this.#useResponses = this.#options.useResponses;
