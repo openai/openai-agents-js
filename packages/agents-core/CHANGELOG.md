@@ -1,5 +1,11 @@
 # @openai/agents-core
 
+## 0.17.0
+
+### Minor Changes
+
+- 33fe55c: fix: redact blocked tool outputs and aliases from replay state
+
 ## 0.16.1
 
 ### Patch Changes
