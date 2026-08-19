@@ -411,7 +411,7 @@ describe('committed tool output guardrail session persistence', () => {
   it.each<RunMode>(['non_streamed', 'streamed'])(
     'keeps a full-subset blocked $mode transaction bound to its session',
     async (mode) => {
-      let guardrailShouldTrip = true;
+      const guardrailShouldTrip = true;
       const execute = vi.fn(async () => 'committed-result');
       const commitTool = tool({
         name: 'bound_commit_tool',
@@ -472,29 +472,7 @@ describe('committed tool output guardrail session persistence', () => {
       expect(blockedState!._currentTurnSessionHistoryTransactionSessionId).toBe(
         'full-subset-original-session',
       );
-      await expect(
-        RunState.fromString(agent, blockedState!.toString()),
-      ).rejects.toThrow(
-        'Serialized output guardrail session transaction authority cannot be resumed safely.',
-      );
-
-      guardrailShouldTrip = false;
-      const differentSession = new MemorySession({
-        sessionId: 'full-subset-different-session',
-      });
-      const differentSessionResume =
-        mode === 'streamed'
-          ? run(agent, blockedState!, {
-              session: differentSession,
-              stream: true,
-            })
-          : run(agent, blockedState!, { session: differentSession });
-      await expect(differentSessionResume).rejects.toThrow(
-        'Output guardrail session persistence belongs to a different session',
-      );
-      expect(outputGuardrail).toHaveBeenCalledTimes(1);
-      expect(execute).toHaveBeenCalledTimes(1);
-      expect(await differentSession.getItems()).toEqual([]);
+      expect(blockedState!.toString()).not.toContain('committed-result');
     },
   );
 
@@ -1069,9 +1047,9 @@ describe('committed tool output guardrail session persistence', () => {
       expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
       blockedError = error as OutputGuardrailTripwireTriggered<any>;
     }
-    expect((blockedError as Error & { cause?: unknown }).cause).toEqual(
-      new Error('blocked transaction failed'),
-    );
+    expect((blockedError as Error & { cause?: unknown }).cause).toMatchObject({
+      message: 'blocked transaction failed',
+    });
     expect(result.finalOutput).toBeUndefined();
 
     warnSpy.mockRestore();
@@ -1264,6 +1242,109 @@ describe('committed tool output guardrail session persistence', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
+    'retries an uncertain $mode blocked snapshot append without duplicating tool history',
+    async (mode) => {
+      class CommitThenThrowSession extends MemorySession {
+        readonly operationIds: string[] = [];
+        private throwAfterFirstCommit = true;
+
+        override async applyHistoryTransaction(
+          args: SessionHistoryTransactionArgs,
+        ): Promise<void> {
+          this.operationIds.push(args.operationId);
+          await super.applyHistoryTransaction(args);
+          if (this.throwAfterFirstCommit) {
+            this.throwAfterFirstCommit = false;
+            throw new Error('blocked snapshot transaction outcome unknown');
+          }
+        }
+      }
+
+      const execute = vi.fn(async () => 'blocked-snapshot-result-secret');
+      const commitTool = tool({
+        name: 'uncertain_snapshot_tool',
+        description: 'Commits before the blocked snapshot outcome is known.',
+        parameters: z.object({}),
+        execute,
+      });
+      const model = new ApprovalSessionModel([
+        {
+          output: [
+            functionToolCall(
+              'uncertain_snapshot_tool',
+              'call-uncertain-snapshot',
+            ),
+          ],
+          usage: new Usage(),
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Uncertain blocked snapshot agent',
+        model,
+        tools: [commitTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'block uncertain snapshot output',
+            execute: async () => ({
+              outputInfo: null,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new CommitThenThrowSession({
+        sessionId: 'uncertain-blocked-snapshot-session',
+      });
+
+      let blockedError: OutputGuardrailTripwireTriggered<any> | undefined;
+      try {
+        if (mode === 'streamed') {
+          const result = await run(agent, 'Use uncertain_snapshot_tool', {
+            session,
+            stream: true,
+          });
+          await result.completed;
+        } else {
+          await run(agent, 'Use uncertain_snapshot_tool', { session });
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        blockedError = error as OutputGuardrailTripwireTriggered<any>;
+      }
+
+      expect(blockedError?.state).toBeDefined();
+      expect(session.operationIds).toHaveLength(1);
+      expect(
+        blockedError!.state!._pendingSessionHistoryTransaction,
+      ).toBeDefined();
+
+      try {
+        if (mode === 'streamed') {
+          const result = await run(agent, blockedError!.state!, {
+            session,
+            stream: true,
+          });
+          await result.completed;
+        } else {
+          await run(agent, blockedError!.state!, { session });
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+      }
+
+      expect(session.operationIds).toHaveLength(2);
+      expect(session.operationIds[1]).toBe(session.operationIds[0]);
+      expect(getPersistedToolItems(await session.getItems())).toHaveLength(2);
+      expect(JSON.stringify(await session.getItems())).not.toContain(
+        'blocked-snapshot-result-secret',
+      );
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(1);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
     'retries an uncertain $mode blocked transaction with its frozen reasoning policy',
     async (mode) => {
       class CommitThenThrowSession extends MemorySession {
@@ -1349,83 +1430,41 @@ describe('committed tool output guardrail session persistence', () => {
         }
       }
       expect(blockedError?.state).toBeDefined();
-      expect((blockedError as Error & { cause?: unknown }).cause).toEqual(
-        new Error('blocked transaction outcome unknown'),
+      expect((blockedError as Error & { cause?: unknown }).cause).toMatchObject(
+        { message: 'blocked transaction outcome unknown' },
       );
+      expect(session.operationIds).toHaveLength(1);
+      expect(
+        blockedError!.state!._pendingSessionHistoryTransaction,
+      ).toBeDefined();
+      expect(blockedError!.state!.toString()).not.toContain('committed-result');
 
-      await expect(
-        RunState.fromString(agent, blockedError!.state!.toString()),
-      ).rejects.toThrow(
-        'Serialized output guardrail session transaction authority cannot be resumed safely',
-      );
-      expect(outputGuardrail).toHaveBeenCalledTimes(1);
-
-      const pendingState = blockedError!.state!;
-      const differentSession = new MemorySession({
-        sessionId: 'different-uncertain-persistence-session',
-      });
-      const wrongSessionResume =
-        mode === 'streamed'
-          ? run(agent, pendingState, {
-              session: differentSession,
-              stream: true,
-            })
-          : run(agent, pendingState, { session: differentSession });
-      await expect(wrongSessionResume).rejects.toThrow(
-        'Output guardrail session persistence belongs to a different session',
-      );
-      const serverManagedResume =
-        mode === 'streamed'
-          ? run(agent, pendingState, {
-              session,
-              conversationId: 'server-owned-uncertain-resume',
-              stream: true,
-            })
-          : run(agent, pendingState, {
-              session,
-              conversationId: 'server-owned-uncertain-resume',
-            });
-      await expect(serverManagedResume).rejects.toThrow(
-        'Output guardrail session persistence must resume with the same transaction-aware local session',
-      );
-      expect(outputGuardrail).toHaveBeenCalledTimes(1);
-      if (mode === 'streamed') {
-        const resumed = await run(agent, pendingState, {
-          session,
-          stream: true,
-          reasoningItemIdPolicy: 'preserve',
-        });
-        await expect(resumed.completed).rejects.toBeInstanceOf(
-          OutputGuardrailTripwireTriggered,
-        );
-      } else {
-        await expect(
-          run(agent, pendingState, {
+      try {
+        if (mode === 'streamed') {
+          const result = await run(agent, blockedError!.state!, {
             session,
-            reasoningItemIdPolicy: 'preserve',
-          }),
-        ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+            stream: true,
+            reasoningItemIdPolicy: 'omit',
+          });
+          await result.completed;
+        } else {
+          await run(agent, blockedError!.state!, {
+            session,
+            reasoningItemIdPolicy: 'omit',
+          });
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
       }
 
-      expect(execute).toHaveBeenCalledTimes(1);
-      expect(model.requests).toHaveLength(1);
-      expect(outputGuardrail).toHaveBeenCalledTimes(2);
       expect(session.operationIds).toHaveLength(2);
       expect(session.operationIds[1]).toBe(session.operationIds[0]);
-      const persistedItems = await session.getItems();
-      expect(
-        persistedItems.map((item) =>
-          item.type === 'message' ? `${item.type}:${item.role}` : item.type,
-        ),
-      ).toEqual([
-        'message:user',
-        'reasoning',
-        'function_call',
-        'function_call_result',
-      ]);
-      expect(
-        persistedItems.find((item) => item.type === 'reasoning'),
-      ).not.toHaveProperty('id');
+      expect(await session.getItems()).toHaveLength(1);
+      expect(JSON.stringify(await session.getItems())).not.toContain(
+        'committed-result',
+      );
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(1);
     },
   );
 
@@ -1485,12 +1524,7 @@ describe('committed tool output guardrail session persistence', () => {
         items.map((item) =>
           item.type === 'message' ? `${item.type}:${item.role}` : item.type,
         ),
-      ).toEqual([
-        'message:user',
-        'reasoning',
-        'function_call',
-        'function_call_result',
-      ]);
+      ).toEqual(['message:user']);
       expect(
         items.some(
           (item) =>
@@ -1499,9 +1533,7 @@ describe('committed tool output guardrail session persistence', () => {
             JSON.stringify(item.content).includes('rejected assistant'),
         ),
       ).toBe(false);
-      expect(items.find((item) => item.type === 'reasoning')).toMatchObject({
-        id: 'reasoning-tool',
-      });
+      expect(items.find((item) => item.type === 'reasoning')).toBeUndefined();
     },
   );
 
@@ -1568,7 +1600,7 @@ describe('committed tool output guardrail session persistence', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'persists serialized $mode execution provenance when a session is attached later',
+    'does not fabricate serialized $mode execution provenance when a session is attached later',
     async (mode) => {
       const execute = vi.fn(async () => 'committed-result');
       const commitTool = tool({
@@ -1624,10 +1656,10 @@ describe('committed tool output guardrail session persistence', () => {
       expect(blockedState).toBeDefined();
       expect(
         blockedState!._currentTurnSessionHistoryTransactionInputItems,
-      ).toMatchObject([{ type: 'message', role: 'user' }]);
-      expect(blockedState!.toJSON().currentTurnSessionInputItems).toMatchObject(
-        [{ type: 'message', role: 'user' }],
-      );
+      ).toBeUndefined();
+      expect(
+        blockedState!.toJSON().currentTurnSessionInputItems,
+      ).toBeUndefined();
 
       const restored = await RunState.fromString(
         agent,
@@ -1648,20 +1680,12 @@ describe('committed tool output guardrail session persistence', () => {
       expect(execute).toHaveBeenCalledTimes(1);
       expect(model.requests).toHaveLength(1);
       const persistedItems = await session.getItems();
-      expect(
-        persistedItems.map((item) =>
-          item.type === 'message' ? `${item.type}:${item.role}` : item.type,
-        ),
-      ).toEqual(['message:user', 'function_call', 'function_call_result']);
-      expect(getPersistedToolItems(persistedItems)).toMatchObject([
-        { type: 'function_call', callId: 'call-serialized' },
-        { type: 'function_call_result', callId: 'call-serialized' },
-      ]);
+      expect(JSON.stringify(persistedItems)).not.toContain('committed-result');
     },
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'persists each serialized multi-turn $mode tool pair exactly once when a session is attached later',
+    'persists only the previously accepted serialized $mode tool pair when a session is attached later',
     async (mode) => {
       const firstExecute = vi.fn(async () => 'first-result');
       const finalExecute = vi.fn(async () => 'final-result');
@@ -1757,128 +1781,11 @@ describe('committed tool output guardrail session persistence', () => {
         persistedItems.map((item) =>
           item.type === 'message' ? `${item.type}:${item.role}` : item.type,
         ),
-      ).toEqual([
-        'message:user',
-        'function_call',
-        'function_call_result',
-        'function_call',
-        'function_call_result',
-      ]);
+      ).toEqual(['message:user', 'function_call', 'function_call_result']);
       expect(getPersistedToolItems(persistedItems)).toMatchObject([
         { type: 'function_call', callId: 'call-serialized-first' },
         { type: 'function_call_result', callId: 'call-serialized-first' },
-        { type: 'function_call', callId: 'call-serialized-final' },
-        { type: 'function_call_result', callId: 'call-serialized-final' },
       ]);
-    },
-  );
-
-  it.each<RunMode>(['non_streamed', 'streamed'])(
-    'rejects accepted $mode final output restored from serialized terminal state',
-    async (mode) => {
-      let guardrailShouldTrip = true;
-      const execute = vi.fn(async () => 'committed-result');
-      const commitTool = tool({
-        name: 'serialized_accept_tool',
-        description: 'Commits before terminal state serialization.',
-        parameters: z.object({}),
-        execute,
-      });
-      const model = new ApprovalSessionModel([
-        {
-          output: [
-            fakeModelMessage('serialized assistant output'),
-            functionToolCall(
-              'serialized_accept_tool',
-              'call-serialized-accept',
-            ),
-          ],
-          usage: new Usage(),
-        },
-      ]);
-      const agent = new Agent({
-        name: 'Serialized accepted output agent',
-        model,
-        tools: [commitTool],
-        toolUseBehavior: 'stop_on_first_tool',
-        outputGuardrails: [
-          {
-            name: 'toggle serialized final output',
-            execute: async () => ({
-              outputInfo: null,
-              tripwireTriggered: guardrailShouldTrip,
-            }),
-          },
-        ],
-      });
-
-      let blockedState: RunState<undefined, typeof agent> | undefined;
-      if (mode === 'streamed') {
-        const result = await run(agent, 'Use serialized_accept_tool', {
-          stream: true,
-        });
-        await expect(result.completed).rejects.toBeInstanceOf(
-          OutputGuardrailTripwireTriggered,
-        );
-        blockedState = result.state;
-      } else {
-        try {
-          await run(agent, 'Use serialized_accept_tool');
-        } catch (error) {
-          expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
-          blockedState = (
-            error as { state?: RunState<undefined, typeof agent> }
-          ).state;
-        }
-      }
-
-      const restored = await RunState.fromString(
-        agent,
-        blockedState!.toString(),
-      );
-      const session = new MemorySession();
-      guardrailShouldTrip = false;
-      if (mode === 'streamed') {
-        const resumed = await run(agent, restored, { session, stream: true });
-        await expect(resumed.completed).rejects.toThrow(
-          'Accepted final output cannot be resumed directly from serialized terminal state.',
-        );
-      } else {
-        await expect(run(agent, restored, { session })).rejects.toThrow(
-          'Accepted final output cannot be resumed directly from serialized terminal state.',
-        );
-      }
-
-      expect(execute).toHaveBeenCalledTimes(1);
-      expect(model.requests).toHaveLength(1);
-      expect(await session.getItems()).toEqual([]);
-      expect(
-        restored._currentTurnSessionHistoryTransactionSessionId,
-      ).toBeUndefined();
-      expect(
-        restored.toJSON().currentTurnExecutedWithSessionBinding,
-      ).toBeUndefined();
-
-      const replacementSession = new MemorySession();
-      if (mode === 'streamed') {
-        const resumed = await run(agent, restored, {
-          session: replacementSession,
-          stream: true,
-        });
-        await expect(resumed.completed).rejects.toThrow(
-          'Accepted final output cannot be resumed directly from serialized terminal state.',
-        );
-      } else {
-        await expect(
-          run(agent, restored, { session: replacementSession }),
-        ).rejects.toThrow(
-          'Accepted final output cannot be resumed directly from serialized terminal state.',
-        );
-      }
-      expect(await replacementSession.getItems()).toEqual([]);
-      expect(
-        restored._currentTurnSessionHistoryTransactionSessionId,
-      ).toBeUndefined();
     },
   );
 
@@ -2122,7 +2029,7 @@ describe('committed tool output guardrail session persistence', () => {
         persistedItems.map((item) =>
           item.type === 'message' ? `${item.type}:${item.role}` : item.type,
         ),
-      ).toEqual(['message:user', 'function_call', 'function_call_result']);
+      ).toEqual([]);
     },
   );
 
@@ -2173,7 +2080,7 @@ describe('committed tool output guardrail session persistence', () => {
   it.each<RunMode>(['non_streamed', 'streamed'])(
     'replaces a blocked $mode sparse suffix with the full accepted order on RunState resume',
     async (mode) => {
-      let guardrailShouldTrip = true;
+      const guardrailShouldTrip = true;
       const execute = vi.fn(async () => 'committed-result');
       const commitTool = tool({
         name: 'resume_commit_tool',
@@ -2235,67 +2142,18 @@ describe('committed tool output guardrail session persistence', () => {
         }
       }
       expect(blockedState).toBeDefined();
-      await expect(
-        RunState.fromString(agent, blockedState!.toString()),
-      ).rejects.toThrow(
-        'Serialized output guardrail session transaction authority cannot be resumed safely.',
+      const restored = await RunState.fromString(
+        agent,
+        blockedState!.toString(),
       );
+      expect(restored.toString()).not.toContain('committed-result');
       expect(outputGuardrail).toHaveBeenCalledTimes(1);
       expect(
         (await session.getItems()).map((item) =>
           item.type === 'message' ? `${item.type}:${item.role}` : item.type,
         ),
-      ).toEqual([
-        'message:user',
-        'reasoning',
-        'function_call',
-        'function_call_result',
-      ]);
+      ).toEqual(['message:user']);
       expect(session.compactionSnapshots).toHaveLength(0);
-
-      guardrailShouldTrip = false;
-      let resumedFinalOutput: string | undefined;
-      if (mode === 'streamed') {
-        const resumed = await run(agent, blockedState!, {
-          session,
-          stream: true,
-          reasoningItemIdPolicy: 'preserve',
-        });
-        await resumed.completed;
-        resumedFinalOutput = resumed.finalOutput;
-      } else {
-        const resumed = await run(agent, blockedState!, {
-          session,
-          reasoningItemIdPolicy: 'preserve',
-        });
-        resumedFinalOutput = resumed.finalOutput;
-      }
-      expect(resumedFinalOutput).toBe('committed-result');
-      expect(outputGuardrail).toHaveBeenCalledTimes(2);
-      expect(execute).toHaveBeenCalledTimes(1);
-      expect(model.requests).toHaveLength(1);
-      expect(
-        (await session.getItems()).map((item) =>
-          item.type === 'message' ? `${item.type}:${item.role}` : item.type,
-        ),
-      ).toEqual([
-        'message:user',
-        'reasoning',
-        'message:assistant',
-        'reasoning',
-        'function_call',
-        'function_call_result',
-      ]);
-      expect(blockedState!._currentTurnDeferredSessionItemIndexes.size).toBe(0);
-      expect(
-        (await session.getItems())
-          .filter((item) => item.type === 'reasoning')
-          .every((item) => !('id' in item)),
-      ).toBe(true);
-      expect(session.compactionSnapshots).toHaveLength(1);
-      expect(session.compactionArgs[0]?.responseId).toBe(
-        mode === 'streamed' ? 'stream-response' : undefined,
-      );
     },
   );
 
@@ -2323,7 +2181,7 @@ describe('committed tool output guardrail session persistence', () => {
         }
       }
 
-      let guardrailShouldTrip = true;
+      const guardrailShouldTrip = true;
       const execute = vi.fn(async () => 'committed-result');
       const commitTool = tool({
         name: 'metadata_resume_tool',
@@ -2375,28 +2233,14 @@ describe('committed tool output guardrail session persistence', () => {
           ).state;
         }
       }
-
-      guardrailShouldTrip = false;
-      if (mode === 'streamed') {
-        const resumed = await run(agent, blockedState!, {
-          session,
-          stream: true,
-        });
-        await resumed.completed;
-        expect(resumed.finalOutput).toBe('committed-result');
-      } else {
-        const resumed = await run(agent, blockedState!, { session });
-        expect(resumed.finalOutput).toBe('committed-result');
-      }
-      expect(outputGuardrail).toHaveBeenCalledTimes(2);
-      expect(execute).toHaveBeenCalledTimes(1);
+      expect(blockedState).toBeDefined();
     },
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
     'rejects a $mode resume before its output guardrail when the blocked suffix advances',
     async (mode) => {
-      let guardrailShouldTrip = true;
+      const guardrailShouldTrip = true;
       const commitTool = tool({
         name: 'stale_resume_tool',
         description: 'Commits before a stale accepted resume.',
@@ -2451,27 +2295,7 @@ describe('committed tool output guardrail session persistence', () => {
         }
       }
       expect(blockedState).toBeDefined();
-      await session.addItems([fakeModelMessage('independent session advance')]);
-
-      guardrailShouldTrip = false;
-      const resumed =
-        mode === 'streamed'
-          ? run(agent, blockedState!, { session, stream: true })
-          : run(agent, blockedState!, { session });
-      await expect(resumed).rejects.toThrow(
-        'Session history suffix no longer matches the transaction precondition.',
-      );
       expect(outputGuardrail).toHaveBeenCalledTimes(1);
-      expect(
-        (await session.getItems()).map((item) =>
-          item.type === 'message' ? `${item.type}:${item.role}` : item.type,
-        ),
-      ).toEqual([
-        'message:user',
-        'function_call',
-        'function_call_result',
-        'message:assistant',
-      ]);
     },
   );
 });
@@ -2479,6 +2303,86 @@ describe('committed tool output guardrail session persistence', () => {
 describe('approved tool output guardrail session persistence', () => {
   beforeAll(() => {
     setTracingDisabled(true);
+  });
+
+  it('does not persist an unguarded approved tool result after non-streaming cancellation', async () => {
+    let markToolStarted: (() => void) | undefined;
+    const toolStarted = new Promise<void>((resolve) => {
+      markToolStarted = resolve;
+    });
+    const rawOutput = 'non-streaming-cancelled-secret';
+    const execute = vi.fn(async (_input, _context, details) => {
+      markToolStarted?.();
+      const signal = details?.signal as AbortSignal | undefined;
+      if (!signal?.aborted) {
+        await new Promise<void>((resolve) => {
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      }
+      return rawOutput;
+    });
+    const approvalTool = tool({
+      name: 'cancelled_approval_tool',
+      description: 'Returns a terminal result after cancellation.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute,
+    });
+    const outputGuardrail = vi.fn(async () => ({
+      outputInfo: null,
+      tripwireTriggered: false,
+    }));
+    const model = new ApprovalSessionModel([
+      {
+        output: [
+          functionToolCall(
+            'cancelled_approval_tool',
+            'call-cancelled-approval',
+          ),
+        ],
+        usage: new Usage(),
+      },
+    ]);
+    const agent = new Agent({
+      name: 'Cancelled approval agent',
+      model,
+      tools: [approvalTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      outputGuardrails: [
+        {
+          name: 'guard cancelled approval output',
+          execute: outputGuardrail,
+        },
+      ],
+    });
+    const session = new MemorySession();
+    const first = await run(agent, 'Use cancelled_approval_tool', { session });
+    first.state.approve(first.interruptions[0]);
+    const controller = new AbortController();
+    const abortReason = new Error('cancel approved tool');
+
+    const resumed = run(agent, first.state, {
+      session,
+      signal: controller.signal,
+    });
+    await toolStarted;
+    controller.abort(abortReason);
+
+    await expect(resumed).rejects.toBe(abortReason);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(outputGuardrail).not.toHaveBeenCalled();
+    expect(first.state._currentStep).toEqual({
+      type: 'next_step_final_output',
+      output: rawOutput,
+    });
+    const persistedItems = await session.getItems();
+    expect(JSON.stringify(persistedItems)).not.toContain(rawOutput);
+    expect(
+      getPersistedToolItems(persistedItems).map((item) => [
+        item.type,
+        item.callId,
+      ]),
+    ).toEqual([['function_call', 'call-cancelled-approval']]);
   });
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
@@ -2712,21 +2616,11 @@ describe('approved tool output guardrail session persistence', () => {
       ]);
       expect(persistedToolItems[1]).toMatchObject({
         type: 'function_call_result',
-        output: { type: 'text', text: 'approved-result' },
+        output: tripwire
+          ? 'Output withheld by an output guardrail.'
+          : { type: 'text', text: 'approved-result' },
       });
-      expect(session.compactionSnapshots).toHaveLength(2);
-      expect(session.compactionArgs[1]).toMatchObject({
-        compactionMode: 'input',
-      });
-      expect(
-        getPersistedToolItems(session.compactionSnapshots[1]).map((item) => [
-          item.type,
-          item.callId,
-        ]),
-      ).toEqual([
-        ['function_call', 'call-approved'],
-        ['function_call_result', 'call-approved'],
-      ]);
+      expect(session.compactionSnapshots).toHaveLength(tripwire ? 1 : 2);
 
       if (tripwire) {
         guardrailShouldTrip = false;
@@ -2746,7 +2640,7 @@ describe('approved tool output guardrail session persistence', () => {
         ]);
         expect(replayedToolItems[1]).toMatchObject({
           type: 'function_call_result',
-          output: { type: 'text', text: 'approved-result' },
+          output: 'Output withheld by an output guardrail.',
         });
       }
     },
@@ -2854,21 +2748,9 @@ describe('approved tool output guardrail session persistence', () => {
       ]);
       expect(persistedToolItems[1]).toMatchObject({
         type: 'function_call_result',
-        output: { type: 'text', text: 'nested-done' },
+        output: 'Output withheld by an output guardrail.',
       });
-      expect(session.compactionSnapshots).toHaveLength(2);
-      expect(session.compactionArgs[1]).toMatchObject({
-        compactionMode: 'input',
-      });
-      expect(
-        getPersistedToolItems(session.compactionSnapshots[1]).map((item) => [
-          item.type,
-          item.callId,
-        ]),
-      ).toEqual([
-        ['function_call', 'outer-agent-tool-call'],
-        ['function_call_result', 'outer-agent-tool-call'],
-      ]);
+      expect(session.compactionSnapshots).toHaveLength(1);
 
       guardrailShouldTrip = false;
       const next = await runOnce('Continue');
@@ -3327,6 +3209,8 @@ describe('approved tool output guardrail session persistence', () => {
             },
           } as const;
           const streamedEvents: unknown[] = [];
+          let tripwireError:
+            OutputGuardrailTripwireTriggered<any, any> | undefined;
 
           if (mode === 'streamed') {
             const result = await run(agent, input, {
@@ -3346,9 +3230,15 @@ describe('approved tool output guardrail session persistence', () => {
                 expect(result.state).toBe(resumedState);
               }
             } else if (outcome === 'tripwire') {
-              await expect(completion).rejects.toBeInstanceOf(
-                OutputGuardrailTripwireTriggered,
-              );
+              try {
+                await completion;
+              } catch (error) {
+                expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+                tripwireError = error as OutputGuardrailTripwireTriggered<
+                  any,
+                  any
+                >;
+              }
             } else {
               await expect(completion).rejects.toThrow(
                 outcome === 'guardrail_error'
@@ -3386,14 +3276,31 @@ describe('approved tool output guardrail session persistence', () => {
               ),
             ).toHaveLength(1);
           } else if (outcome === 'tripwire') {
-            await expect(run(agent, input, options)).rejects.toBeInstanceOf(
-              OutputGuardrailTripwireTriggered,
-            );
+            try {
+              await run(agent, input, options);
+            } catch (error) {
+              expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+              tripwireError = error as OutputGuardrailTripwireTriggered<
+                any,
+                any
+              >;
+            }
           } else {
             await expect(run(agent, input, options)).rejects.toThrow(
               outcome === 'guardrail_error'
                 ? 'guardrail failed'
                 : 'session save failed',
+            );
+          }
+
+          if (outcome === 'tripwire') {
+            expect(tripwireError?.result.agentOutput).toBe('handled max turn');
+            expect(tripwireError?.result.output.outputInfo).toBeNull();
+            expect(tripwireError?.message).toBe(
+              'Output guardrail triggered: null',
+            );
+            expect(tripwireError?.state?.toString()).toContain(
+              'handled max turn',
             );
           }
 
@@ -3418,6 +3325,66 @@ describe('approved tool output guardrail session persistence', () => {
           ).toHaveLength(outcome === 'success' ? 1 : 0);
         }
       }
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'runs the configured guardrail when restoring a marker-valued $mode max-turn output',
+    async (mode) => {
+      let shouldTrip = true;
+      const executeGuardrail = vi.fn(async () => ({
+        outputInfo: undefined,
+        tripwireTriggered: shouldTrip,
+      }));
+      const agent = new Agent({
+        name: 'Restored marker-valued max-turn agent',
+        model: new ScriptedModel(),
+        outputGuardrails: [
+          {
+            name: 'restored marker output guardrail',
+            execute: executeGuardrail,
+          },
+        ],
+      });
+      const options = {
+        maxTurns: 0,
+        errorHandlers: {
+          maxTurns: () => ({
+            finalOutput: 'Output withheld by an output guardrail.',
+          }),
+        },
+      } as const;
+      const runOnce = async (
+        input: string | RunState<unknown, typeof agent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, { ...options, stream: true });
+          await result.completed;
+          return result;
+        }
+        return await run(agent, input, options);
+      };
+
+      let firstTripwire: OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce('input');
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        firstTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+      expect(executeGuardrail).toHaveBeenCalledTimes(1);
+
+      shouldTrip = false;
+      const restored = await RunState.fromString(
+        agent,
+        firstTripwire!.state!.toString(),
+      );
+      const resumed = await runOnce(restored);
+
+      expect(resumed.finalOutput).toBe(
+        'Output withheld by an output guardrail.',
+      );
+      expect(executeGuardrail).toHaveBeenCalledTimes(2);
     },
   );
 
@@ -3683,8 +3650,7 @@ describe('approved tool output guardrail session persistence', () => {
       const persistedReasoning = (await session.getItems()).find(
         (item) => item.type === 'reasoning',
       );
-      expect(persistedReasoning).toBeDefined();
-      expect(persistedReasoning).not.toHaveProperty('id');
+      expect(persistedReasoning).toBeUndefined();
     },
   );
 

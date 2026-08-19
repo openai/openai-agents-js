@@ -1793,6 +1793,7 @@ async function maybeCompleteTurnFromToolResults<TContext>({
         type: 'next_step_final_output',
         output: toolOutcome.finalOutput,
       },
+      'tool_result',
     );
   }
 

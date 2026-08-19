@@ -1,7 +1,9 @@
-import { UserError } from '../errors';
+import { OutputGuardrailTripwireTriggered, UserError } from '../errors';
+import type { OutputGuardrailResult } from '../guardrail';
 import {
   RunHandoffOutputItem,
   RunItem,
+  RunToolCallItem,
   RunToolCallOutputItem,
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
@@ -10,6 +12,8 @@ import {
   getToolCallName,
   getToolCallNamespace,
   getToolCallQualifiedName,
+  getFunctionToolLookupKeyForCall,
+  matchesFunctionToolName,
 } from '../toolIdentity';
 import {
   getToolSearchExecution,
@@ -18,7 +22,21 @@ import {
   getToolSearchProviderCallId,
 } from '../tooling';
 import { AgentInputItem } from '../types';
-import type { ToolSearchOutputItem } from '../types/protocol';
+import {
+  FunctionCallItem as FunctionCallItemSchema,
+  FunctionCallResultItem as FunctionCallResultItemSchema,
+  type FunctionCallItem,
+  type FunctionCallResultItem,
+  type ToolSearchOutputItem,
+} from '../types/protocol';
+import type { RunState } from '../runState';
+import type { Session } from '../memory/session';
+import { Usage } from '../usage';
+import {
+  sanitizeBlockedOutputGuardrailResults,
+  sanitizeBlockedToolOutputGuardrailResults,
+} from './guardrails';
+import { invalidateOutputItemNormalization } from './items';
 import {
   getToolResultCorrelationForCall,
   getToolResultCorrelationForResult,
@@ -27,6 +45,207 @@ import {
 import { addLoadedToolNamesFromToolSearchOutput } from './toolSearch';
 
 type BlockedPairKind = 'tool' | 'handoff';
+
+export const OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT =
+  'Output withheld by an output guardrail.';
+
+const currentResponseToolOutputGuardrailResultStarts = new WeakMap<
+  RunState<any, any>,
+  number
+>();
+
+export function captureCurrentResponseToolOutputGuardrailResultStart(
+  state: RunState<any, any>,
+  overwrite: boolean,
+): void {
+  if (overwrite || !currentResponseToolOutputGuardrailResultStarts.has(state)) {
+    currentResponseToolOutputGuardrailResultStarts.set(
+      state,
+      state._toolOutputGuardrailResults.length,
+    );
+  }
+}
+
+function currentCompletedToolRuns(state: RunState<any, any>) {
+  const responseCalls = getResponseOutput(currentResponse(state))?.filter(
+    (item): item is FunctionCallItem => item.type === 'function_call',
+  );
+  const processedRuns = state._lastProcessedResponse?.functions ?? [];
+  if (!responseCalls?.length || processedRuns.length < responseCalls.length) {
+    return [];
+  }
+  return processedRuns.slice(-responseCalls.length).filter((run, index) => {
+    try {
+      return (
+        JSON.stringify(buildCanonicalFunctionCall(run.toolCall)) ===
+          JSON.stringify(buildCanonicalFunctionCall(responseCalls[index]!)) &&
+        state._completedToolInvocationEvidence
+          .get(state._currentAgent)
+          ?.has(run.toolCall.callId)
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+function currentTerminalToolRuns(state: RunState<any, any>) {
+  if (state._currentStep?.type !== 'next_step_final_output') {
+    return [];
+  }
+  const behavior = state._currentAgent.toolUseBehavior;
+  if (behavior === 'run_llm_again') {
+    return [];
+  }
+  const completedRuns = currentCompletedToolRuns(state);
+  if (
+    typeof behavior === 'object' &&
+    !completedRuns.some((run) =>
+      behavior.stopAtToolNames.some((toolName: string) =>
+        matchesFunctionToolName(run.tool, toolName),
+      ),
+    )
+  ) {
+    return [];
+  }
+  return completedRuns;
+}
+
+export function hasTerminalToolOutputSource(
+  state: RunState<any, any>,
+): boolean {
+  return (
+    state._finalOutputSource === 'tool_result' ||
+    (state._finalOutputSource === undefined &&
+      state._serializedCurrentStep === state._currentStep &&
+      currentTerminalToolRuns(state).length > 0)
+  );
+}
+
+export function sanitizeBlockedTerminalToolOutput(
+  state: RunState<any, any>,
+  outputGuardrailResultStart: number,
+  completedOutputGuardrailTripwireResult:
+    OutputGuardrailResult<any, any> | undefined,
+  observedOutputGuardrailResults: ReadonlyMap<
+    OutputGuardrailResult<any, any>,
+    boolean
+  >,
+  tripwire?: OutputGuardrailTripwireTriggered<any, any>,
+  ownedOutputGuardrailResults?: ReadonlySet<OutputGuardrailResult<any, any>>,
+): boolean {
+  if (
+    !hasTerminalToolOutputSource(state) ||
+    !completedOutputGuardrailTripwireResult
+  ) {
+    return false;
+  }
+  redactBlockedResponseToolOutputs(state);
+  sanitizeBlockedOutputGuardrailResults(
+    state,
+    outputGuardrailResultStart,
+    OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+    observedOutputGuardrailResults,
+    tripwire,
+    ownedOutputGuardrailResults,
+  );
+  sanitizeBlockedToolOutputGuardrailResults(
+    state,
+    currentResponseToolOutputGuardrailResultStarts.get(state) ?? 0,
+    OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+  );
+  return true;
+}
+
+export function shouldDeferInterruptedSessionItems(
+  state: RunState<any, any>,
+  hasOutputGuardrail: boolean,
+): boolean {
+  return (
+    state._currentStep?.type === 'next_step_interruption' &&
+    hasOutputGuardrail &&
+    state._currentAgent.toolUseBehavior !== 'run_llm_again' &&
+    hasOutputBearingApprovalCheckpoint(state)
+  );
+}
+
+export function assertResumedSessionOutputGuardrailSafety(
+  state: RunState<any, any>,
+  session: Session | undefined,
+  hasOutputGuardrail: boolean,
+): void {
+  if (
+    hasOutputGuardrail &&
+    state._serializedCurrentStep === state._currentStep &&
+    state._currentStep?.type === 'next_step_final_output' &&
+    state._finalOutputSource === undefined &&
+    currentCompletedToolRuns(state).length > 0 &&
+    !hasTerminalToolOutputSource(state)
+  ) {
+    throw new UserError(
+      'Cannot resume this serialized terminal output because terminal tool output provenance could not be verified after the tool behavior changed. Continue the live RunState or start a new run from safe input.',
+    );
+  }
+  const shouldDefer = shouldDeferInterruptedSessionItems(
+    state,
+    hasOutputGuardrail,
+  );
+  if (state._serializedCurrentStep !== undefined && shouldDefer) {
+    const responseOutput = getResponseOutput(currentResponse(state));
+    if (
+      session !== undefined ||
+      state._toolOutputGuardrailResults.length > 0 ||
+      !responseOutput ||
+      responseOutput.some((item) => item.type !== 'function_call') ||
+      !currentRunItemSelection(state, responseOutput).proven
+    ) {
+      throw new UserError(
+        'Cannot resume this serialized output-bearing approval checkpoint because current-response provenance was not preserved. Start a new run from safe input.',
+      );
+    }
+  }
+  if (session === undefined) {
+    if (shouldDefer && state._currentTurnPersistedItemCount > 0) {
+      state.resetTurnPersistence();
+    }
+    return;
+  }
+  if (!shouldDefer || state._currentTurnPersistedItemCount <= 0) {
+    return;
+  }
+  const currentCallIds = new Set(
+    (state._lastProcessedResponse?.functions ?? []).map(
+      (run) => run.toolCall.callId,
+    ),
+  );
+  const currentStart = state._generatedItems.findIndex(
+    (item) =>
+      item instanceof RunToolCallItem &&
+      item.rawItem.type === 'function_call' &&
+      currentCallIds.has(item.rawItem.callId),
+  );
+  const firstOutputIndex = state._generatedItems.findIndex(
+    (item, index) =>
+      index >= currentStart && item instanceof RunToolCallOutputItem,
+  );
+  if (
+    currentStart >= 0 &&
+    firstOutputIndex === state._currentTurnPersistedItemCount &&
+    state._generatedItems
+      .slice(currentStart, firstOutputIndex)
+      .every(
+        (item) =>
+          'rawItem' in item &&
+          item.rawItem.type === 'function_call' &&
+          currentCallIds.has(item.rawItem.callId),
+      )
+  ) {
+    return;
+  }
+  throw new UserError(
+    'Cannot resume an output-bearing approval checkpoint with a Session while output guardrails are enabled because the persisted response ownership cannot be proven. Start a new run from safe input.',
+  );
+}
 
 type BlockedToolRecord = Readonly<{
   key: string;
@@ -625,6 +844,11 @@ export function buildRunItemPersistencePlan(options: {
   currentDeferredIndexes: Iterable<number>;
   outputBlocked: boolean;
   canUseHistoryTransactions: boolean;
+  blockedSnapshot?: Readonly<{
+    items: RunItem[];
+    startIndex: number;
+    alreadyPersistedCount: number;
+  }>;
 }): RunItemPersistencePlan {
   const {
     items,
@@ -632,6 +856,7 @@ export function buildRunItemPersistencePlan(options: {
     currentDeferredIndexes,
     outputBlocked,
     canUseHistoryTransactions,
+    blockedSnapshot,
   } = options;
   const newRunItemIndexes = Array.from(
     { length: Math.max(0, items.length - alreadyPersistedCount) },
@@ -639,6 +864,24 @@ export function buildRunItemPersistencePlan(options: {
   );
 
   if (outputBlocked) {
+    if (blockedSnapshot) {
+      const snapshotPersistedCount = canUseHistoryTransactions
+        ? alreadyPersistedCount
+        : blockedSnapshot.alreadyPersistedCount;
+      const persistedSnapshotItems = Math.max(
+        0,
+        snapshotPersistedCount - blockedSnapshot.startIndex,
+      );
+      return {
+        alreadyPersistedCount: snapshotPersistedCount,
+        runItemsToPersist: blockedSnapshot.items.slice(persistedSnapshotItems),
+        runItemsToReplace: [],
+        processedRunItemCount: newRunItemIndexes.length,
+        deferredRunItemIndexes: [],
+        useHistoryTransaction: canUseHistoryTransactions,
+        transactionKind: 'blocked_append',
+      };
+    }
     if (!canUseHistoryTransactions) {
       return {
         alreadyPersistedCount,
@@ -731,4 +974,731 @@ export function buildRunItemPersistencePlan(options: {
     useHistoryTransaction: true,
     transactionKind: 'accepted_replace',
   };
+}
+
+type BlockedModelResponse = NonNullable<
+  RunState<any, any>['_lastTurnResponse']
+>;
+
+function optionalField<K extends PropertyKey, V>(
+  key: K,
+  value: V | undefined,
+): Partial<Record<K, V>> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, V>);
+}
+
+function buildCanonicalFunctionCall(rawItem: AgentInputItem): FunctionCallItem {
+  const parsed = FunctionCallItemSchema.parse(rawItem);
+  return FunctionCallItemSchema.parse({
+    type: 'function_call',
+    name: parsed.name,
+    ...optionalField('namespace', parsed.namespace),
+    callId: parsed.callId,
+    arguments: parsed.arguments,
+    ...optionalField('id', parsed.id),
+    ...optionalField('status', parsed.status),
+    ...optionalField('caller', parsed.caller),
+  });
+}
+
+export function buildBlockedToolOutputRawItem(
+  rawItem: AgentInputItem,
+): FunctionCallResultItem {
+  const parsed = FunctionCallResultItemSchema.parse(rawItem);
+  return FunctionCallResultItemSchema.parse({
+    type: 'function_call_result',
+    name: parsed.name,
+    ...optionalField('namespace', parsed.namespace),
+    callId: parsed.callId,
+    output: OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+    ...optionalField('id', parsed.id),
+    ...optionalField('status', parsed.status),
+  });
+}
+
+function getResponseOutput(
+  response: BlockedModelResponse | undefined,
+): AgentInputItem[] | undefined {
+  if (!response) return [];
+  try {
+    return Array.isArray(response.output)
+      ? (response.output.slice() as AgentInputItem[])
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function copyResponseString(
+  response: BlockedModelResponse,
+  key: 'responseId' | 'requestId',
+): string | undefined {
+  try {
+    const value = response[key];
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function cloneBlockedResponse(
+  response: BlockedModelResponse,
+  output: AgentInputItem[],
+): BlockedModelResponse {
+  let usage = new Usage();
+  try {
+    usage = new Usage(response.usage);
+  } catch {
+    // Usage is not replay authority. Keep the replacement data-free.
+  }
+  return {
+    usage,
+    output,
+    ...optionalField('responseId', copyResponseString(response, 'responseId')),
+    ...optionalField('requestId', copyResponseString(response, 'requestId')),
+  };
+}
+
+function currentResponse(
+  state: RunState<any, any>,
+): BlockedModelResponse | undefined {
+  return state._lastTurnResponse;
+}
+
+function functionCallKey(item: AgentInputItem): string | undefined {
+  if (item?.type !== 'function_call') return undefined;
+  try {
+    const parsed = FunctionCallItemSchema.parse(item);
+    const toolKey = getFunctionToolLookupKeyForCall(parsed);
+    return toolKey ? JSON.stringify([toolKey, parsed.callId]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function functionResultKey(item: AgentInputItem): string | undefined {
+  if (item?.type !== 'function_call_result') return undefined;
+  try {
+    const parsed = FunctionCallResultItemSchema.parse(item);
+    const toolKey = getFunctionToolLookupKeyForCall(parsed);
+    return toolKey ? JSON.stringify([toolKey, parsed.callId]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type CurrentRunItemSelection = Readonly<{
+  primary: RunItem[];
+  aliases: RunItem[];
+  proven: boolean;
+}>;
+
+function functionRunItemSignature(item: RunItem): string | undefined {
+  try {
+    if (
+      item instanceof RunToolCallItem &&
+      item.rawItem.type === 'function_call'
+    ) {
+      return JSON.stringify(buildCanonicalFunctionCall(item.rawItem));
+    }
+    if (
+      item instanceof RunToolCallOutputItem &&
+      item.rawItem.type === 'function_call_result'
+    ) {
+      const parsed = FunctionCallResultItemSchema.parse(item.rawItem);
+      return JSON.stringify({
+        type: parsed.type,
+        name: parsed.name,
+        ...optionalField('namespace', parsed.namespace),
+        callId: parsed.callId,
+        output: parsed.output,
+        ...optionalField('id', parsed.id),
+        ...optionalField('status', parsed.status),
+      });
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function functionRunItemSequenceIsPrefix(
+  items: readonly RunItem[],
+  prefix: readonly RunItem[],
+): boolean {
+  return (
+    prefix.length <= items.length &&
+    prefix.every((item, index) => {
+      const signature = functionRunItemSignature(item);
+      return (
+        signature !== undefined &&
+        signature === functionRunItemSignature(items[index]!)
+      );
+    })
+  );
+}
+
+function boundedCurrentFunctionResponseStart(
+  generated: readonly RunItem[],
+  responseOutput: readonly AgentInputItem[],
+): number | undefined {
+  const responseKeys = responseOutput.map(functionCallKey);
+  if (
+    responseKeys.length === 0 ||
+    responseKeys.some((key) => key === undefined)
+  ) {
+    return undefined;
+  }
+  const start = generated.length - responseKeys.length * 2;
+  if (start < 0) return undefined;
+  const suffix = generated.slice(start);
+  const calls = suffix.filter(
+    (item): item is RunToolCallItem =>
+      item instanceof RunToolCallItem && item.rawItem.type === 'function_call',
+  );
+  const results = suffix.filter(
+    (item): item is RunToolCallOutputItem =>
+      item instanceof RunToolCallOutputItem &&
+      item.rawItem.type === 'function_call_result',
+  );
+  if (
+    calls.length !== responseKeys.length ||
+    results.length !== responseKeys.length ||
+    calls.some(
+      (item, index) => functionCallKey(item.rawItem) !== responseKeys[index],
+    ) ||
+    results.some(
+      (item, index) => functionResultKey(item.rawItem) !== responseKeys[index],
+    )
+  ) {
+    return undefined;
+  }
+  return start;
+}
+
+function currentRunItemSelection(
+  state: RunState<any, any>,
+  responseOutput: AgentInputItem[],
+): CurrentRunItemSelection {
+  const generated = state._generatedItems.slice();
+  const responseObjects = new Set(responseOutput);
+  const processed = state._lastProcessedResponse?.newItems ?? [];
+  const ownsResponseItem = (item: RunItem): boolean => {
+    try {
+      return (
+        'rawItem' in item && responseObjects.has(item.rawItem as AgentInputItem)
+      );
+    } catch {
+      return false;
+    }
+  };
+  const processedOwnsResponse = processed.some(ownsResponseItem);
+  const processedItems = new Set(processed);
+  const processedOwnerStart = generated.findIndex((item) =>
+    processedItems.has(item),
+  );
+  const completedInvocationOwners = new Set(
+    (state._lastProcessedResponse?.functions ?? []).flatMap(
+      (run) =>
+        state._completedToolInvocationEvidence
+          .get(state._currentAgent)
+          ?.get(run.toolCall.callId)?.items ?? [],
+    ),
+  );
+  const completedInvocationOwnerStart = generated.findIndex((item) =>
+    completedInvocationOwners.has(item),
+  );
+  const boundedCurrentStart = boundedCurrentFunctionResponseStart(
+    generated,
+    responseOutput,
+  );
+  let start = generated.findIndex(ownsResponseItem);
+  if (
+    start < 0 &&
+    boundedCurrentStart !== undefined &&
+    (processedOwnerStart >= boundedCurrentStart ||
+      completedInvocationOwnerStart >= boundedCurrentStart)
+  ) {
+    start = boundedCurrentStart;
+  }
+  if (start >= 0) {
+    const primary = generated.slice(start);
+    const aliases = [...primary];
+    const currentProcessedCalls = new Set(
+      (state._lastProcessedResponse?.functions ?? []).map(
+        (run) => run.toolCall,
+      ),
+    );
+    let currentProcessedStart = processed.findIndex(ownsResponseItem);
+    if (currentProcessedStart < 0) {
+      currentProcessedStart = processed.findIndex((item) =>
+        primary.includes(item),
+      );
+    }
+    if (currentProcessedStart < 0) {
+      currentProcessedStart = processed.findIndex(
+        (item) =>
+          item instanceof RunToolCallItem &&
+          item.rawItem.type === 'function_call' &&
+          currentProcessedCalls.has(item.rawItem),
+      );
+    }
+    if (
+      currentProcessedStart >= 0 &&
+      (processedOwnsResponse ||
+        processedOwnerStart >= start ||
+        completedInvocationOwnerStart >= start)
+    ) {
+      for (const item of processed.slice(currentProcessedStart)) {
+        if (!aliases.includes(item)) aliases.push(item);
+      }
+    }
+    return { primary, aliases, proven: true };
+  }
+
+  if (
+    state._currentStep?.type === 'next_step_interruption' &&
+    processed.length > 0 &&
+    processed.length === responseOutput.length &&
+    processed.length * 2 <= generated.length &&
+    processed.every(
+      (item, index) =>
+        item instanceof RunToolCallItem &&
+        item.rawItem.type === 'function_call' &&
+        functionCallKey(item.rawItem) ===
+          functionCallKey(responseOutput[index]!),
+    )
+  ) {
+    const interruptionCount = state._currentStep.data.interruptions.length;
+    const currentSuffix = generated.slice(-processed.length * 2);
+    const callItems = currentSuffix.slice(0, processed.length);
+    const outcomeItems = currentSuffix.slice(processed.length);
+    const responseKeys = new Set(responseOutput.map(functionCallKey));
+    const outcomeKeys = new Set<string>();
+    let approvalCount = 0;
+    const outcomesAreBounded = outcomeItems.every((item) => {
+      if (item.type === 'tool_approval_item') {
+        if (!('rawItem' in item) || item.rawItem.type !== 'function_call') {
+          return false;
+        }
+        approvalCount += 1;
+        const key = functionCallKey(item.rawItem);
+        if (!key || !responseKeys.has(key) || outcomeKeys.has(key))
+          return false;
+        outcomeKeys.add(key);
+        return true;
+      }
+      if (
+        !(item instanceof RunToolCallOutputItem) ||
+        item.rawItem.type !== 'function_call_result'
+      ) {
+        return false;
+      }
+      const key = functionResultKey(item.rawItem);
+      if (!key || !responseKeys.has(key) || outcomeKeys.has(key)) return false;
+      outcomeKeys.add(key);
+      return true;
+    });
+    if (
+      responseKeys.size === responseOutput.length &&
+      outcomeKeys.size === responseOutput.length &&
+      approvalCount === interruptionCount &&
+      outcomesAreBounded &&
+      functionRunItemSequenceIsPrefix(callItems, processed)
+    ) {
+      return {
+        primary: currentSuffix,
+        aliases: [...currentSuffix, ...processed],
+        proven: true,
+      };
+    }
+  }
+
+  if (state._currentTurnBlockedSessionStartIndex !== undefined) {
+    const blockedStart = Math.min(
+      state._currentTurnBlockedSessionStartIndex,
+      generated.length,
+    );
+    return {
+      primary: generated.slice(blockedStart),
+      aliases: generated.slice(blockedStart),
+      proven: true,
+    };
+  }
+
+  const fallbackStart = Math.min(
+    state._currentTurnPersistedItemCount,
+    generated.length,
+  );
+  const fallback = generated.slice(fallbackStart);
+  return { primary: fallback, aliases: fallback, proven: false };
+}
+
+type CurrentFunctionPairPlan = Readonly<{
+  responseOutput: FunctionCallItem[];
+  replacements: ReadonlyMap<RunItem, RunItem>;
+  sanitizedItems: RunItem[];
+}>;
+
+function buildCurrentFunctionPairPlan(
+  state: RunState<any, any>,
+  responseOutput: AgentInputItem[],
+  selection: CurrentRunItemSelection,
+): CurrentFunctionPairPlan | undefined {
+  if (!selection.proven) return undefined;
+
+  try {
+    const canonicalResponse = responseOutput.map(buildCanonicalFunctionCall);
+    const responseKeys = canonicalResponse.map((item) => {
+      const key = functionCallKey(item);
+      if (!key) throw new Error();
+      return key;
+    });
+    if (
+      responseKeys.length === 0 ||
+      new Set(responseKeys).size !== responseKeys.length
+    ) {
+      return undefined;
+    }
+
+    const callKeys: string[] = [];
+    const resultKeys: string[] = [];
+    const callIndexes = new Map<string, number>();
+    const resultIndexes = new Map<string, number>();
+    const sanitizedItems: RunItem[] = [];
+    for (const [index, item] of selection.primary.entries()) {
+      if (
+        item instanceof RunToolCallItem &&
+        item.rawItem.type === 'function_call'
+      ) {
+        const key = functionCallKey(item.rawItem);
+        if (!key || callIndexes.has(key)) return undefined;
+        callKeys.push(key);
+        callIndexes.set(key, index);
+        sanitizedItems.push(
+          new RunToolCallItem(
+            buildCanonicalFunctionCall(item.rawItem),
+            item.agent,
+          ),
+        );
+        continue;
+      }
+      if (
+        item instanceof RunToolCallOutputItem &&
+        item.rawItem.type === 'function_call_result'
+      ) {
+        const key = functionResultKey(item.rawItem);
+        if (!key || resultIndexes.has(key)) return undefined;
+        resultKeys.push(key);
+        resultIndexes.set(key, index);
+        sanitizedItems.push(
+          new RunToolCallOutputItem(
+            buildBlockedToolOutputRawItem(item.rawItem),
+            item.agent,
+            OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+            undefined,
+            item.executionStatus,
+          ),
+        );
+        continue;
+      }
+      return undefined;
+    }
+
+    if (
+      callKeys.length !== responseKeys.length ||
+      resultKeys.length !== responseKeys.length ||
+      callKeys.some((key, index) => key !== responseKeys[index]) ||
+      resultKeys.some((key, index) => key !== responseKeys[index]) ||
+      responseKeys.some(
+        (key) =>
+          callIndexes.get(key) === undefined ||
+          resultIndexes.get(key) === undefined ||
+          callIndexes.get(key)! >= resultIndexes.get(key)!,
+      )
+    ) {
+      return undefined;
+    }
+
+    const replacements = new Map<RunItem, RunItem>();
+    for (const [index, item] of selection.primary.entries()) {
+      replacements.set(item, sanitizedItems[index]!);
+    }
+    const processed = state._lastProcessedResponse?.newItems ?? [];
+    const aliases = new Set(selection.aliases);
+    let currentProcessedStart = processed.findIndex((item) =>
+      aliases.has(item),
+    );
+    if (
+      currentProcessedStart < 0 &&
+      state._serializedCurrentStep !== undefined &&
+      state._serializedCurrentStep === state._currentStep &&
+      functionRunItemSequenceIsPrefix(selection.primary, processed)
+    ) {
+      currentProcessedStart = 0;
+      for (const item of processed) aliases.add(item);
+    }
+    if (currentProcessedStart >= 0) {
+      const currentProcessed = processed.slice(currentProcessedStart);
+      if (
+        currentProcessed.some((item) => !aliases.has(item)) ||
+        !functionRunItemSequenceIsPrefix(selection.primary, currentProcessed)
+      ) {
+        return undefined;
+      }
+      for (const [index, item] of currentProcessed.entries()) {
+        if (replacements.has(item)) continue;
+        const replacement = sanitizedItems[index]!;
+        if (
+          replacement instanceof RunToolCallItem &&
+          item instanceof RunToolCallItem
+        ) {
+          replacements.set(
+            item,
+            new RunToolCallItem(replacement.rawItem, item.agent),
+          );
+        } else if (
+          replacement instanceof RunToolCallOutputItem &&
+          item instanceof RunToolCallOutputItem
+        ) {
+          replacements.set(
+            item,
+            new RunToolCallOutputItem(
+              replacement.rawItem,
+              item.agent,
+              OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+              undefined,
+              replacement.executionStatus,
+            ),
+          );
+        } else {
+          return undefined;
+        }
+      }
+    }
+    return {
+      responseOutput: sanitizedItems.flatMap((item): FunctionCallItem[] =>
+        item instanceof RunToolCallItem && item.rawItem.type === 'function_call'
+          ? [item.rawItem]
+          : [],
+      ),
+      replacements,
+      sanitizedItems,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function replaceRunItems(
+  state: RunState<any, any>,
+  replacements: ReadonlyMap<RunItem, RunItem | undefined>,
+  responseOutput: AgentInputItem[] | undefined,
+  canonicalResponseOutput: FunctionCallItem[],
+): void {
+  const rawReplacements = new Map<AgentInputItem, AgentInputItem | undefined>();
+  for (const [item, replacement] of replacements) {
+    if ('rawItem' in item) {
+      rawReplacements.set(
+        item.rawItem as AgentInputItem,
+        replacement && 'rawItem' in replacement
+          ? (replacement.rawItem as AgentInputItem)
+          : undefined,
+      );
+    }
+  }
+  for (const [index, item] of (responseOutput ?? []).entries()) {
+    rawReplacements.set(item, canonicalResponseOutput[index]);
+  }
+  const replace = (items: RunItem[]): RunItem[] =>
+    items.flatMap((item) => {
+      if (!replacements.has(item)) return [item];
+      const replacement = replacements.get(item);
+      return replacement ? [replacement] : [];
+    });
+  state._generatedItems = replace(state._generatedItems);
+  if (state._lastProcessedResponse) {
+    const processed = state._lastProcessedResponse;
+    processed.newItems = replace(processed.newItems);
+    const replaceToolActions = <T extends { toolCall: AgentInputItem }>(
+      actions: T[] | undefined,
+      allowRestoredCurrentPosition = false,
+    ): T[] | undefined =>
+      actions?.flatMap((action, index) => {
+        const currentIndex =
+          index - (actions.length - canonicalResponseOutput.length);
+        if (
+          !rawReplacements.has(action.toolCall) &&
+          allowRestoredCurrentPosition &&
+          state._serializedCurrentStep !== undefined &&
+          state._serializedCurrentStep === state._currentStep &&
+          action.toolCall.type === 'function_call' &&
+          currentIndex >= 0 &&
+          canonicalResponseOutput[currentIndex] &&
+          JSON.stringify(buildCanonicalFunctionCall(action.toolCall)) ===
+            JSON.stringify(canonicalResponseOutput[currentIndex])
+        ) {
+          rawReplacements.set(
+            action.toolCall,
+            canonicalResponseOutput[currentIndex],
+          );
+        }
+        if (!rawReplacements.has(action.toolCall)) return [action];
+        const replacement = rawReplacements.get(action.toolCall);
+        if (!replacement || replacement.type !== action.toolCall.type)
+          return [];
+        action.toolCall = replacement;
+        return [action];
+      });
+    if (processed.functions) {
+      processed.functions = replaceToolActions(processed.functions, true)!;
+    }
+    if (processed.handoffs) {
+      processed.handoffs = replaceToolActions(processed.handoffs)!;
+    }
+    if (processed.functionToolsNotFound) {
+      processed.functionToolsNotFound = replaceToolActions(
+        processed.functionToolsNotFound,
+      );
+    }
+    if (processed.computerActions) {
+      processed.computerActions = replaceToolActions(
+        processed.computerActions,
+      )!;
+    }
+    if (processed.shellActions) {
+      processed.shellActions = replaceToolActions(processed.shellActions)!;
+    }
+    if (processed.applyPatchActions) {
+      processed.applyPatchActions = replaceToolActions(
+        processed.applyPatchActions,
+      )!;
+    }
+  }
+  for (const [agent, invocations] of state._completedToolInvocationEvidence) {
+    for (const [callId, evidence] of invocations) {
+      const items = replace(evidence.items);
+      if (items.length !== 2) {
+        invocations.delete(callId);
+        state._completedToolInvocations.get(agent)?.delete(callId);
+      } else {
+        evidence.items = items as [RunItem, RunItem];
+      }
+    }
+  }
+}
+
+function replaceCurrentResponse(
+  state: RunState<any, any>,
+  response: BlockedModelResponse,
+  output: AgentInputItem[],
+): void {
+  const replacement = cloneBlockedResponse(response, output);
+  let replacedResponse = false;
+  state._modelResponses = state._modelResponses.map((candidate) => {
+    if (candidate !== response) return candidate;
+    replacedResponse = true;
+    return replacement;
+  });
+  if (
+    !replacedResponse &&
+    state._serializedCurrentStep !== undefined &&
+    state._serializedCurrentStep === state._currentStep &&
+    state._modelResponses.length > 0
+  ) {
+    const archivedResponse = state._modelResponses.at(-1);
+    try {
+      if (
+        archivedResponse &&
+        JSON.stringify(getResponseOutput(archivedResponse)) ===
+          JSON.stringify(getResponseOutput(response))
+      ) {
+        state._modelResponses[state._modelResponses.length - 1] = replacement;
+      }
+    } catch {
+      // An unrelated or unreadable archived response is not current ownership.
+    }
+  }
+  if (state._lastTurnResponse === response)
+    state._lastTurnResponse = replacement;
+}
+
+function markBlockedState(state: RunState<any, any>): void {
+  if (state._currentStep?.type === 'next_step_final_output') {
+    state._currentStep.output = OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT;
+  }
+  invalidateOutputItemNormalization(state._generatedItems);
+  if (state._lastProcessedResponse) {
+    invalidateOutputItemNormalization(state._lastProcessedResponse.newItems);
+  }
+}
+
+/** Replaces a rejected function response with allowlisted replay-safe values. */
+export function redactBlockedResponseToolOutputs(
+  state: RunState<any, any>,
+): boolean {
+  const response = currentResponse(state);
+  const responseOutput = getResponseOutput(response);
+  const selection = currentRunItemSelection(state, responseOutput ?? []);
+  const plan =
+    response && responseOutput
+      ? buildCurrentFunctionPairPlan(state, responseOutput, selection)
+      : undefined;
+
+  if (!plan) {
+    const replacements = new Map<RunItem, RunItem | undefined>();
+    for (const item of selection.aliases) replacements.set(item, undefined);
+    replaceRunItems(state, replacements, responseOutput, []);
+    if (response) replaceCurrentResponse(state, response, []);
+    markBlockedState(state);
+    return selection.aliases.length > 0 || response !== undefined;
+  }
+
+  replaceRunItems(
+    state,
+    plan.replacements,
+    responseOutput,
+    plan.responseOutput,
+  );
+  replaceCurrentResponse(state, response!, plan.responseOutput);
+  markBlockedState(state);
+  return plan.replacements.size > 0 || plan.responseOutput.length > 0;
+}
+
+export function getBlockedOutputSessionSnapshotRunItems(
+  state: RunState<any, any>,
+): RunItem[] {
+  const responseOutput = getResponseOutput(currentResponse(state));
+  if (!responseOutput) return [];
+  const selection = currentRunItemSelection(state, responseOutput);
+  const plan = buildCurrentFunctionPairPlan(state, responseOutput, selection);
+  return plan?.sanitizedItems ?? [];
+}
+
+export function isCanonicalBlockedOutputPayload(item: AgentInputItem): boolean {
+  if (item?.type !== 'function_call_result') return false;
+  try {
+    return (
+      JSON.stringify(item) ===
+      JSON.stringify(buildBlockedToolOutputRawItem(item))
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function hasOutputBearingApprovalCheckpoint(
+  state: RunState<any, any>,
+): boolean {
+  const responseOutput = getResponseOutput(currentResponse(state));
+  if (!responseOutput) return true;
+  if (responseOutput.some((item) => item.type !== 'function_call')) return true;
+  const selection = currentRunItemSelection(state, responseOutput);
+  if (!selection.proven) return true;
+  return selection.primary.some(
+    (item) =>
+      item instanceof RunToolCallOutputItem ||
+      (item instanceof RunToolCallItem &&
+        item.rawItem.type === 'hosted_tool_call'),
+  );
 }

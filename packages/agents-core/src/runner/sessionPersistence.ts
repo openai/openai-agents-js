@@ -34,8 +34,10 @@ import logger, { logModelAndToolActionWarning } from '../logger';
 import { getRunStateUsageRecorder } from './usageTracking';
 import {
   buildRunItemPersistencePlan as buildCanonicalRunItemPersistencePlan,
+  getBlockedOutputSessionSnapshotRunItems,
   hasBlockedOutputExecutionEffect,
   selectRunItemIndexesForBlockedOutput,
+  type RunItemPersistencePlan,
 } from './blockedOutputPersistence';
 
 export { selectRunItemIndexesForBlockedOutput } from './blockedOutputPersistence';
@@ -436,12 +438,78 @@ function buildRunItemPersistencePlan(
   outputBlocked: boolean,
   canUseHistoryTransactions: boolean,
 ) {
+  const blockedSnapshot = outputBlocked
+    ? getBlockedOutputSessionSnapshotRunItems(state)
+    : [];
+  const blockedSnapshotStart =
+    state._generatedItems.length - blockedSnapshot.length;
   return buildCanonicalRunItemPersistencePlan({
     items,
     alreadyPersistedCount: state._currentTurnPersistedItemCount ?? 0,
     currentDeferredIndexes: state._currentTurnDeferredSessionItemIndexes,
     outputBlocked,
     canUseHistoryTransactions,
+    blockedSnapshot:
+      blockedSnapshot.length > 0 ||
+      (outputBlocked &&
+        canUseHistoryTransactions &&
+        items.length === (state._currentTurnPersistedItemCount ?? 0))
+        ? {
+            items: canUseHistoryTransactions
+              ? state._generatedItems.slice(blockedSnapshotStart)
+              : blockedSnapshot,
+            startIndex: blockedSnapshotStart,
+            alreadyPersistedCount:
+              state._currentTurnBlockedSessionStartIndex ??
+              state._currentTurnPersistedItemCount,
+          }
+        : undefined,
+  });
+}
+
+async function persistSessionRunItemPlan(options: {
+  session: Session | undefined;
+  state: RunState<any, any>;
+  persistencePlan: RunItemPersistencePlan;
+  sessionInputItems: AgentInputItem[] | undefined;
+  lastResponseId: string | undefined;
+  persistenceOptions: SessionPersistenceOptions;
+}): Promise<void> {
+  const {
+    session,
+    state,
+    persistencePlan,
+    sessionInputItems,
+    lastResponseId,
+    persistenceOptions,
+  } = options;
+  if (
+    persistenceOptions.outputBlocked === true &&
+    persistencePlan.useHistoryTransaction &&
+    persistencePlan.runItemsToPersist.length === 0 &&
+    (sessionInputItems?.length ?? 0) === 0
+  ) {
+    return;
+  }
+  await persistRunItemsToSession({
+    session,
+    state,
+    newRunItems: persistencePlan.runItemsToPersist,
+    runItemsToReplace: persistencePlan.runItemsToReplace,
+    processedRunItemCount: persistencePlan.processedRunItemCount,
+    deferredRunItemIndexes: persistencePlan.deferredRunItemIndexes,
+    useHistoryTransaction: persistencePlan.useHistoryTransaction,
+    transactionKind: persistencePlan.transactionKind,
+    extraInputItems: sessionInputItems,
+    lastResponseId: persistenceOptions.outputBlocked
+      ? undefined
+      : lastResponseId,
+    alreadyPersistedCount: persistencePlan.alreadyPersistedCount,
+    runCompaction:
+      persistenceOptions.outputBlocked === true
+        ? false
+        : (persistenceOptions.runCompaction ?? true),
+    compactionMode: persistenceOptions.compactionMode,
   });
 }
 
@@ -1104,29 +1172,13 @@ export async function saveToSession(
     );
   }
 
-  if (
-    options.outputBlocked === true &&
-    !persistencePlan.useHistoryTransaction
-  ) {
-    await saveStreamInputToSession(session, sessionInputItems, state._context);
-    return;
-  }
-
-  await persistRunItemsToSession({
+  await persistSessionRunItemPlan({
     session,
     state,
-    newRunItems: persistencePlan.runItemsToPersist,
-    runItemsToReplace: persistencePlan.runItemsToReplace,
-    processedRunItemCount: persistencePlan.processedRunItemCount,
-    deferredRunItemIndexes: persistencePlan.deferredRunItemIndexes,
-    useHistoryTransaction: persistencePlan.useHistoryTransaction,
-    transactionKind: persistencePlan.transactionKind,
-    extraInputItems: sessionInputItems,
-    lastResponseId: options.outputBlocked ? undefined : result.lastResponseId,
-    alreadyPersistedCount: persistencePlan.alreadyPersistedCount,
-    runCompaction:
-      options.outputBlocked === true ? false : (options.runCompaction ?? true),
-    compactionMode: options.compactionMode,
+    persistencePlan,
+    sessionInputItems,
+    lastResponseId: result.lastResponseId,
+    persistenceOptions: options,
   });
 }
 
@@ -1202,29 +1254,13 @@ export async function saveStreamResultToSession(
     isSessionHistoryTransactionAwareSession(session),
   );
 
-  if (
-    options.outputBlocked === true &&
-    !persistencePlan.useHistoryTransaction
-  ) {
-    await saveStreamInputToSession(session, sessionInputItems, state._context);
-    return;
-  }
-
-  await persistRunItemsToSession({
+  await persistSessionRunItemPlan({
     session,
     state,
-    newRunItems: persistencePlan.runItemsToPersist,
-    runItemsToReplace: persistencePlan.runItemsToReplace,
-    processedRunItemCount: persistencePlan.processedRunItemCount,
-    deferredRunItemIndexes: persistencePlan.deferredRunItemIndexes,
-    useHistoryTransaction: persistencePlan.useHistoryTransaction,
-    transactionKind: persistencePlan.transactionKind,
-    extraInputItems: sessionInputItems,
-    lastResponseId: options.outputBlocked ? undefined : result.lastResponseId,
-    alreadyPersistedCount: persistencePlan.alreadyPersistedCount,
-    runCompaction:
-      options.outputBlocked === true ? false : (options.runCompaction ?? true),
-    compactionMode: options.compactionMode,
+    persistencePlan,
+    sessionInputItems,
+    lastResponseId: result.lastResponseId,
+    persistenceOptions: options,
   });
 }
 
@@ -1667,10 +1703,11 @@ async function persistRunItemsToSession(options: {
 
   const effectiveReasoningItemIdPolicy =
     getEffectiveSessionReasoningItemIdPolicy(session, state);
-  const frozenReasoningItemIdPolicy = useHistoryTransaction
-    ? (state._currentTurnSessionReasoningItemIdPolicy ??
-      effectiveReasoningItemIdPolicy)
-    : effectiveReasoningItemIdPolicy;
+  const frozenReasoningItemIdPolicy =
+    useHistoryTransaction || transactionKind === 'blocked_append'
+      ? (state._currentTurnSessionReasoningItemIdPolicy ??
+        effectiveReasoningItemIdPolicy)
+      : effectiveReasoningItemIdPolicy;
   if (
     useHistoryTransaction &&
     transactionKind === 'accepted_replace' &&
@@ -1749,7 +1786,9 @@ async function persistRunItemsToSession(options: {
       alreadyPersistedCount,
       persistedItemCount,
     );
-    state._currentTurnBlockedSessionStartIndex ??= alreadyPersistedCount;
+    if (newRunItems.length > 0 || deferredRunItemIndexes.length > 0) {
+      state._currentTurnBlockedSessionStartIndex ??= alreadyPersistedCount;
+    }
     state._pendingSessionHistoryTransaction = structuredClone({
       operationId,
       transactionKind,
