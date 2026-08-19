@@ -132,6 +132,58 @@ describe('runInputGuardrails', () => {
     expect(state._currentTurn).toBe(0);
   });
 
+  it('reads a successful input guardrail verdict once', async () => {
+    const agent = makeAgent({ name: 'SingleReadInput' });
+    const state = makeState(agent);
+    let reads = 0;
+    const output = {
+      outputInfo: { reason: 'blocked' },
+      get tripwireTriggered() {
+        reads += 1;
+        if (reads >= 2) {
+          throw new Error('input verdict was read twice');
+        }
+        return true;
+      },
+    };
+    const guardrail = defineInputGuardrail({
+      name: 'single-read-input',
+      execute: async () => output,
+    });
+
+    await expect(
+      withTrace('guardrails-input-single-read', () =>
+        runInputGuardrails(state, [guardrail]),
+      ),
+    ).rejects.toBeInstanceOf(InputGuardrailTripwireTriggered);
+    expect(reads).toBe(1);
+    expect(state._inputGuardrailResults[0]?.output).toBe(output);
+  });
+
+  it('does not publish an input result when its first verdict read fails', async () => {
+    const agent = makeAgent({ name: 'UnreadableInput' });
+    const state = makeState(agent);
+    let reads = 0;
+    const guardrail = defineInputGuardrail({
+      name: 'unreadable-input',
+      execute: async () => ({
+        outputInfo: { reason: 'unknown' },
+        get tripwireTriggered(): boolean {
+          reads += 1;
+          throw new Error('input verdict is unreadable');
+        },
+      }),
+    });
+
+    await expect(
+      withTrace('guardrails-input-unreadable', () =>
+        runInputGuardrails(state, [guardrail]),
+      ),
+    ).rejects.toBeInstanceOf(GuardrailExecutionError);
+    expect(reads).toBe(1);
+    expect(state._inputGuardrailResults).toEqual([]);
+  });
+
   it('wraps execution failures without mutating runner-owned turn state', async () => {
     const agent = makeAgent({ name: 'Error' });
     const state = makeState(agent);
@@ -302,6 +354,76 @@ describe('runOutputGuardrails', () => {
       ),
     ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
     expect(state._outputGuardrailResults).toHaveLength(1);
+  });
+
+  it('observes a successful output guardrail verdict once', async () => {
+    const agent = makeAgent({ name: 'SingleReadOutput' });
+    const state = makeState(agent);
+    let reads = 0;
+    const output = {
+      outputInfo: { reason: 'blocked' },
+      get tripwireTriggered() {
+        reads += 1;
+        if (reads >= 2) {
+          throw new Error('output verdict was read twice');
+        }
+        return true;
+      },
+    };
+    const guardrail = defineOutputGuardrail({
+      name: 'single-read-output',
+      execute: async () => output,
+    });
+    const observed: Array<{ result: object; tripwireTriggered: boolean }> = [];
+
+    await expect(
+      withTrace('guardrails-output-single-read', () =>
+        runOutputGuardrails(
+          state,
+          [guardrail as any],
+          'blocked',
+          (result, tripwireTriggered) => {
+            observed.push({ result, tripwireTriggered });
+          },
+        ),
+      ),
+    ).rejects.toBeInstanceOf(OutputGuardrailTripwireTriggered);
+    expect(reads).toBe(1);
+    expect(observed).toEqual([
+      {
+        result: state._outputGuardrailResults[0],
+        tripwireTriggered: true,
+      },
+    ]);
+    expect(state._outputGuardrailResults[0]?.output).toBe(output);
+  });
+
+  it('does not publish or observe an output result when its first verdict read fails', async () => {
+    const agent = makeAgent({ name: 'UnreadableOutput' });
+    const state = makeState(agent);
+    let reads = 0;
+    let observationCount = 0;
+    const guardrail = defineOutputGuardrail({
+      name: 'unreadable-output',
+      execute: async () => ({
+        outputInfo: { reason: 'unknown' },
+        get tripwireTriggered(): boolean {
+          reads += 1;
+          throw new Error('output verdict is unreadable');
+        },
+      }),
+    });
+
+    await expect(
+      withTrace('guardrails-output-unreadable', () =>
+        runOutputGuardrails(state, [guardrail as any], 'unknown', () => {
+          observationCount += 1;
+        }),
+      ),
+    ).rejects.toBeInstanceOf(GuardrailExecutionError);
+    expect(reads).toBe(1);
+    expect(observationCount).toBe(0);
+    expect(state._outputGuardrailResults).toEqual([]);
   });
 
   it('awaits sibling output guardrails before surfacing a tripwire', async () => {
