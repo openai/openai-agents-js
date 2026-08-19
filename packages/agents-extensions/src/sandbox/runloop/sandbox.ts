@@ -21,6 +21,7 @@ import {
   type WorkspaceArchiveOptions,
 } from '@openai/agents-core/sandbox';
 import {
+  assertProcessEnvValuesUnsupported,
   assertLiveMountCredentialAuthorityMatches,
   captureLiveMountCredentialAuthority,
   copyManifestMountCredentialExposurePolicy,
@@ -1660,6 +1661,7 @@ export class RunloopSandboxClient implements SandboxClient<
       resolvedOptions.userParameters,
       false,
     );
+    assertProcessEnvValuesUnsupported(manifest, 'runloop');
     assertSandboxManifestMetadataSupported(
       'RunloopSandboxClient',
       manifest,
@@ -1923,6 +1925,7 @@ export class RunloopSandboxClient implements SandboxClient<
     state: RunloopSandboxSessionState,
     options: SandboxClientResumeOptions<RunloopSandboxClientOptions> = {},
   ): Promise<RunloopSandboxSession> {
+    assertProcessEnvValuesUnsupported(state.manifest, 'runloop');
     assertRemoteSandboxSessionStateCanResume(state);
     const mountSecretAuthorityTrusted =
       trustedRunloopMountSecretAuthorityStates.has(state);

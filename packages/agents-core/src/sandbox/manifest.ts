@@ -30,7 +30,12 @@ import {
   relativePosixPathWithinRoot,
 } from './shared/posixPath';
 import { isRecord } from './shared/typeGuards';
-import { SandboxGitSubpathError } from './errors';
+import {
+  SandboxGitSubpathError,
+  SandboxLifecycleError,
+  SandboxUnsupportedFeatureError,
+} from './errors';
+import { UserError } from '../errors';
 import { typedMountProviderConfig } from './shared/typedMountConfig';
 
 export type EnvResolver = () => string | Promise<string>;
@@ -45,6 +50,20 @@ export type EnvValue = {
 export type SerializedEnvValueReference = {
   type: string;
   [key: string]: unknown;
+};
+
+export type ProcessEnvironmentAccessOptions = {
+  /**
+   * Grants same-name bindings from each SDK process environment key to the
+   * matching sandbox environment destination.
+   */
+  allowedProcessEnvironmentKeys?: readonly string[];
+  /**
+   * Grants exact sandbox destination to SDK process environment source
+   * bindings. A destination listed here must map to the same source declared
+   * by its `ProcessEnvValue`.
+   */
+  processEnvironmentBindings?: Readonly<Record<string, string>>;
 };
 
 export type EnvEntry =
@@ -433,6 +452,409 @@ export abstract class EnvValueReference extends Environment {
   }
 }
 
+const processEnvironmentSources = new WeakMap<ProcessEnvValue, string>();
+const processEnvironmentBindings = new WeakMap<
+  Manifest,
+  ReadonlyMap<string, string>
+>();
+const protectedProcessEnvironmentSessionStates = new WeakSet<object>();
+
+/**
+ * A serializable reference to a value in the current SDK process environment.
+ *
+ * The source name defaults to the containing manifest environment key. Access
+ * is granted only by trusted sandbox client configuration and is never
+ * serialized with the reference.
+ */
+export class ProcessEnvValue extends EnvValueReference {
+  static readonly type = 'openai.agents.process_env';
+  readonly name?: string;
+
+  constructor(
+    options: {
+      name?: string;
+      description?: string;
+    } = {},
+  ) {
+    if ('ephemeral' in options) {
+      throw new TypeError(
+        'ProcessEnvValue does not support ephemeral references because safe resume requires persisting the non-secret reference marker.',
+      );
+    }
+    super(
+      options.description === undefined
+        ? {}
+        : { description: options.description },
+    );
+    if (options.name !== undefined) {
+      validateProcessEnvironmentName(options.name);
+      this.name = options.name;
+    }
+  }
+
+  serialize(): Record<string, unknown> {
+    return {
+      ...(this.name ? { name: this.name } : {}),
+      ...(this.description ? { description: this.description } : {}),
+    };
+  }
+
+  async resolve(): Promise<string> {
+    const sourceName = processEnvironmentSources.get(this);
+    if (!sourceName) {
+      throw new TypeError(
+        'ProcessEnvValue must be resolved through a sandbox client with explicit process environment access.',
+      );
+    }
+    const value = process.env[sourceName];
+    if (value === undefined) {
+      throw new TypeError(
+        `Process environment variable "${sourceName}" is not set.`,
+      );
+    }
+    return value;
+  }
+}
+
+registerEnvValueReference(ProcessEnvValue, (payload) => {
+  if ('ephemeral' in payload) {
+    throw new TypeError(
+      'Serialized ProcessEnvValue references must not include ephemeral.',
+    );
+  }
+  const name = payload.name;
+  if (name !== undefined && typeof name !== 'string') {
+    throw new TypeError('ProcessEnvValue name must be a string.');
+  }
+  return new ProcessEnvValue({
+    ...(name === undefined ? {} : { name }),
+    ...(typeof payload.description === 'string'
+      ? { description: payload.description }
+      : {}),
+  });
+});
+
+export function manifestHasProcessEnvValues(manifest: Manifest): boolean {
+  return processEnvironmentDestinationNames(manifest).length > 0;
+}
+
+export function processEnvironmentDestinationNames(
+  manifest: Manifest,
+): readonly string[] {
+  const destinations = new Set(
+    processEnvironmentBindings.get(manifest)?.keys(),
+  );
+  for (const [destination, value] of Object.entries(manifest.environment)) {
+    if (value instanceof ProcessEnvValue) {
+      destinations.add(destination);
+    }
+  }
+  return [...destinations];
+}
+
+export function copyProcessEnvironmentProtection(
+  target: Manifest,
+  ...sources: Manifest[]
+): void {
+  const bindings = new Map<string, string>();
+  for (const source of sources) {
+    const sourceBindings = processEnvironmentBindings.get(source) ?? [];
+    for (const [destination, sourceName] of sourceBindings) {
+      const existingSource = bindings.get(destination);
+      if (existingSource !== undefined && existingSource !== sourceName) {
+        throw new TypeError(
+          `Conflicting protected process environment bindings for destination "${destination}".`,
+        );
+      }
+      bindings.set(destination, sourceName);
+    }
+    for (const [destination, sourceValue] of Object.entries(
+      source.environment,
+    )) {
+      if (!(sourceValue instanceof ProcessEnvValue)) {
+        continue;
+      }
+      const sourceName = processEnvironmentSources.get(sourceValue);
+      const targetValue = target.environment[destination];
+      if (
+        sourceName !== undefined &&
+        targetValue instanceof ProcessEnvValue &&
+        (targetValue.name ?? destination) === sourceName
+      ) {
+        processEnvironmentSources.set(targetValue, sourceName);
+      }
+    }
+  }
+  if (bindings.size > 0) {
+    processEnvironmentBindings.set(target, bindings);
+  }
+}
+
+export function invalidProtectedProcessEnvironmentReferences(
+  manifest: Manifest,
+): readonly string[] {
+  const bindings = processEnvironmentBindings.get(manifest);
+  if (!bindings) {
+    return [];
+  }
+  const destinations = new Set([
+    ...bindings.keys(),
+    ...Object.entries(manifest.environment)
+      .filter(([, value]) => value instanceof ProcessEnvValue)
+      .map(([destination]) => destination),
+  ]);
+  const invalid: string[] = [];
+  for (const destination of destinations) {
+    const sourceName = bindings.get(destination);
+    const value = manifest.environment[destination];
+    if (
+      sourceName === undefined ||
+      !(value instanceof ProcessEnvValue) ||
+      (value.name ?? destination) !== sourceName ||
+      processEnvironmentSources.get(value) !== sourceName
+    ) {
+      invalid.push(destination);
+    }
+  }
+  return invalid;
+}
+
+export function protectProcessEnvironmentSessionStateManifest<
+  TState extends { manifest: Manifest },
+>(state: TState): TState {
+  if (protectedProcessEnvironmentSessionStates.has(state)) {
+    return state;
+  }
+  const expectedBindings = processEnvironmentBindings.get(state.manifest);
+  if (!expectedBindings || expectedBindings.size === 0) {
+    return state;
+  }
+
+  const requiredBindings = new Map(expectedBindings);
+  let currentManifest = state.manifest;
+  Object.defineProperty(state, 'manifest', {
+    enumerable: true,
+    configurable: false,
+    get: () => currentManifest,
+    set: (nextManifest: Manifest) => {
+      const nextBindings =
+        nextManifest instanceof Manifest
+          ? processEnvironmentBindings.get(nextManifest)
+          : undefined;
+      const declaredBindings =
+        nextManifest instanceof Manifest
+          ? new Map(
+              Object.entries(nextManifest.environment)
+                .filter(
+                  (entry): entry is [string, ProcessEnvValue] =>
+                    entry[1] instanceof ProcessEnvValue,
+                )
+                .map(([destination, value]) => [
+                  destination,
+                  value.name ?? destination,
+                ]),
+            )
+          : undefined;
+      const validReplacement =
+        nextBindings !== undefined &&
+        declaredBindings !== undefined &&
+        nextBindings.size === requiredBindings.size &&
+        declaredBindings.size === requiredBindings.size &&
+        [...requiredBindings].every(
+          ([destination, sourceName]) =>
+            nextBindings.get(destination) === sourceName &&
+            declaredBindings.get(destination) === sourceName,
+        ) &&
+        invalidProtectedProcessEnvironmentReferences(nextManifest).length === 0;
+      if (!validReplacement) {
+        throw new UserError(
+          'A live sandbox manifest cannot remove or replace protected ProcessEnvValue bindings. Create a fresh Docker sandbox session instead.',
+        );
+      }
+      currentManifest = nextManifest;
+    },
+  });
+  protectedProcessEnvironmentSessionStates.add(state);
+  return state;
+}
+
+export function unmatchedProcessEnvironmentReferences(
+  persistedManifest: Manifest,
+  trustedManifest: Manifest,
+): readonly string[] {
+  const destinations = new Set([
+    ...processEnvironmentDestinationNames(persistedManifest),
+    ...processEnvironmentDestinationNames(trustedManifest),
+  ]);
+  const unmatched: string[] = [];
+  for (const destination of destinations) {
+    const persistedValue = persistedManifest.environment[destination];
+    const trustedValue = trustedManifest.environment[destination];
+    if (
+      !(persistedValue instanceof ProcessEnvValue) ||
+      !(trustedValue instanceof ProcessEnvValue) ||
+      (trustedValue.name ?? destination) !==
+        (persistedValue.name ?? destination)
+    ) {
+      unmatched.push(destination);
+    }
+  }
+  return unmatched;
+}
+
+export function environmentWithoutProcessEnvValues(
+  manifest: Manifest,
+  environment: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const processDestinations = new Set(
+    processEnvironmentDestinationNames(manifest),
+  );
+  return Object.fromEntries(
+    Object.entries(environment).filter(
+      ([destination]) => !processDestinations.has(destination),
+    ),
+  );
+}
+
+export function bindProcessEnvironmentAccess(
+  manifest: Manifest,
+  options: ProcessEnvironmentAccessOptions,
+): Manifest {
+  const bindings = normalizeProcessEnvironmentAccess(options);
+  const boundBindings = new Map<string, string>();
+  for (const [destination, value] of Object.entries(manifest.environment)) {
+    if (!(value instanceof ProcessEnvValue)) {
+      continue;
+    }
+    validateProcessEnvironmentName(destination);
+    const sourceName = value.name ?? destination;
+    const configuredSource = bindings.get(destination);
+    if (configuredSource !== sourceName) {
+      throw new TypeError(
+        `Process environment binding "${sourceName}" -> "${destination}" is not granted; configure the sandbox client with an allowed process environment binding.`,
+      );
+    }
+    if (process.env[sourceName] === undefined) {
+      throw new TypeError(
+        `Process environment variable "${sourceName}" is not set.`,
+      );
+    }
+    processEnvironmentSources.set(value, sourceName);
+    boundBindings.set(destination, sourceName);
+  }
+  if (boundBindings.size > 0) {
+    processEnvironmentBindings.set(manifest, boundBindings);
+  }
+  return manifest;
+}
+
+export function cloneManifestWithProcessEnvironmentAccess(
+  manifest: Manifest,
+  options: ProcessEnvironmentAccessOptions,
+): Manifest {
+  if (!manifestHasProcessEnvValues(manifest)) {
+    return manifest;
+  }
+  const invalidReferences =
+    invalidProtectedProcessEnvironmentReferences(manifest);
+  if (invalidReferences.length > 0) {
+    throw new UserError(
+      `A bound sandbox manifest contains changed ProcessEnvValue references: ${invalidReferences.join(', ')}. Create a fresh Docker sandbox session instead.`,
+    );
+  }
+  return bindProcessEnvironmentAccess(cloneManifest(manifest), options);
+}
+
+export function assertProcessEnvValuesUnsupported(
+  manifest: Manifest,
+  backendId: string,
+): void {
+  if (!manifestHasProcessEnvValues(manifest)) {
+    return;
+  }
+  throw new SandboxUnsupportedFeatureError(
+    `${backendId} does not support ProcessEnvValue because it cannot transport protected values through an isolated provider-native creation environment. Use DockerSandboxClient instead.`,
+  );
+}
+
+export function assertProcessEnvironmentAccessBound(manifest: Manifest): void {
+  for (const [destination, value] of Object.entries(manifest.environment)) {
+    if (!(value instanceof ProcessEnvValue)) {
+      continue;
+    }
+    const sourceName = value.name ?? destination;
+    if (processEnvironmentSources.get(value) !== sourceName) {
+      throw new SandboxUnsupportedFeatureError(
+        'The configured sandbox client cannot prepare ProcessEnvValue references through trusted runtime options. Use DockerSandboxClient instead.',
+      );
+    }
+  }
+}
+
+export async function withProcessEnvironmentErrorRedaction<T>(
+  manifest: Manifest,
+  context: {
+    provider: string;
+    operation: string;
+    details?: Readonly<Record<string, unknown>>;
+  },
+  callback: () => Promise<T>,
+): Promise<T> {
+  const shouldRedact = manifestHasProcessEnvValues(manifest);
+  try {
+    return await callback();
+  } catch (error) {
+    if (!shouldRedact) {
+      throw error;
+    }
+    throw new SandboxLifecycleError(
+      `${context.provider} ${context.operation} failed for a sandbox with protected process environment values.`,
+      {
+        provider: context.provider,
+        operation: context.operation,
+        ...context.details,
+      },
+    );
+  }
+}
+
+function normalizeProcessEnvironmentAccess(
+  options: ProcessEnvironmentAccessOptions,
+): Map<string, string> {
+  const normalized = new Map<string, string>();
+  for (const key of options.allowedProcessEnvironmentKeys ?? []) {
+    validateProcessEnvironmentName(key);
+    normalized.set(key, key);
+  }
+  for (const [destination, sourceName] of Object.entries(
+    options.processEnvironmentBindings ?? {},
+  )) {
+    validateProcessEnvironmentName(destination);
+    validateProcessEnvironmentName(sourceName);
+    const existing = normalized.get(destination);
+    if (existing !== undefined && existing !== sourceName) {
+      throw new TypeError(
+        `Process environment client configuration has conflicting bindings for destination "${destination}".`,
+      );
+    }
+    normalized.set(destination, sourceName);
+  }
+  return normalized;
+}
+
+function validateProcessEnvironmentName(name: string): void {
+  if (!name) {
+    throw new TypeError(
+      'Process environment variable names must not be empty.',
+    );
+  }
+  if (name.includes('=') || name.includes('\0')) {
+    throw new TypeError(
+      'Process environment variable names must not contain "=" or NUL.',
+    );
+  }
+}
+
 /**
  * Registers one environment reference subtype for JSON reconstruction.
  *
@@ -662,6 +1084,7 @@ export function cloneManifest(manifest: ManifestInput): Manifest {
   });
   if (manifest instanceof Manifest) {
     copyManifestMountCredentialExposurePolicy(cloned, manifest);
+    copyProcessEnvironmentProtection(cloned, manifest);
   }
   return cloned;
 }

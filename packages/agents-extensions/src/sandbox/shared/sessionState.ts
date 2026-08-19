@@ -3,6 +3,7 @@ import type {
   SandboxSessionState,
 } from '@openai/agents-core/sandbox';
 import {
+  assertProcessEnvValuesUnsupported,
   assertMountCredentialsRebound,
   assertSandboxStateGenerationUnchanged,
   assertSandboxSessionStateUsable,
@@ -51,6 +52,7 @@ export function assertRemoteSandboxSessionStateUsable(
 export function serializeRemoteSandboxSessionState<
   TState extends RemoteSandboxSessionStateValues,
 >(state: TState, mutationState: object = state): Record<string, unknown> {
+  assertProcessEnvValuesUnsupported(state.manifest, 'remote sandbox providers');
   const stateGeneration = captureSandboxStateGeneration(mutationState);
   assertRemoteSandboxSessionStateUsable(state);
   validateMountEnvironmentCredentialBoundaries(
@@ -79,6 +81,7 @@ export function deserializeRemoteSandboxSessionStateValues(
   const manifest = deserializeManifest(
     state.manifest as Record<string, unknown> | undefined,
   );
+  assertProcessEnvValuesUnsupported(manifest, 'remote sandbox providers');
   return {
     manifest,
     environment: deserializeRemotePersistedEnvironmentForRuntime(
@@ -94,10 +97,17 @@ export function deserializeRemoteSandboxSessionStateValues(
 export async function rehydrateRemoteSandboxSessionStateValues(
   state: Record<string, unknown>,
   configuredEnvironment?: Record<string, string>,
+  prepareManifest: (manifest: Manifest) => Manifest = (manifest) => manifest,
 ): Promise<RemoteSandboxSessionStateValues> {
-  const manifest = deserializeManifest(
+  const persistedManifest = deserializeManifest(
     state.manifest as Record<string, unknown> | undefined,
   );
+  assertProcessEnvValuesUnsupported(
+    persistedManifest,
+    'remote sandbox providers',
+  );
+  const manifest = prepareManifest(persistedManifest);
+  assertProcessEnvValuesUnsupported(manifest, 'remote sandbox providers');
   return {
     manifest,
     environment: await rehydrateRemotePersistedEnvironmentForRuntime(

@@ -14,9 +14,11 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   assertExistingMountTopologyPreserved,
+  assertProcessEnvironmentDestinationsPreserved,
   captureLiveMountCredentialAuthority,
   copyValidatedMountEffectivePaths,
   copyManifestMountCredentialExposurePolicy,
+  copyProcessEnvironmentProtection,
   deserializeManifest,
   mountCredentialFileReferences,
   mergeManifestDelta,
@@ -137,6 +139,7 @@ function cloneManifestWithOverrides(
   });
   // Preserve runtime-only trusted mount policy while cloning provider manifests.
   copyManifestMountCredentialExposurePolicy(cloned, manifest);
+  copyProcessEnvironmentProtection(cloned, manifest);
   return cloned;
 }
 
@@ -437,6 +440,10 @@ export async function prepareMaterializedManifestTransition<
 ): Promise<PreparedMaterializedManifestTransition> {
   const previousManifest = state.manifest;
   const deltaManifest = cloneManifestWithOverrides(manifest);
+  assertProcessEnvironmentDestinationsPreserved(
+    previousManifest,
+    deltaManifest,
+  );
   const nextManifest = mergeManifestDelta(previousManifest, deltaManifest);
   assertExistingMountTopologyPreserved(previousManifest, nextManifest);
   const nextEnvironment = await mergeMaterializedEnvironment(

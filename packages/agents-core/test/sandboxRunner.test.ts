@@ -48,14 +48,18 @@ import {
 } from '../src';
 import { SandboxRuntimeManager } from '../src/sandbox/runtime';
 import {
+  bindProcessEnvironmentAccess,
   captureLiveMountCredentialAuthority,
+  environmentWithoutProcessEnvValues,
   liveMountCredentialAuthorityMatches,
   liveMountEnvironmentAuthorityMatches,
   markSandboxSessionStateUnsafe,
   NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
   recordLiveMountCredentialAuthority,
+  sanitizeEnvironmentForPersistence,
   serializeManifestRecord,
   mergeManifestDelta,
+  mergeMaterializedEnvironment,
   withExclusiveSandboxManifestMutation,
 } from '../src/sandbox/internal';
 import {
@@ -76,7 +80,10 @@ import {
 } from '../src/sandbox/runtime/sessionLifecycle';
 import {
   Capability,
+  addSandboxEventSink,
+  clearSandboxEventSinks,
   compaction,
+  cloneManifest,
   Entry,
   EnvValueReference,
   file,
@@ -84,6 +91,7 @@ import {
   isEnvValueReference,
   Manifest,
   memory,
+  ProcessEnvValue,
   type MemoryStore,
   SANDBOX_SESSION_STATE_VERSION,
   StaticCompactionPolicy,
@@ -1248,6 +1256,127 @@ describe('sandbox runner integration', () => {
     },
   );
 
+  it('rejects explicit Docker ordinary state when the trusted manifest adds a ProcessEnvValue', async () => {
+    const client = new FakeSandboxClient();
+    Object.defineProperty(client, 'backendId', { value: 'docker' });
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({
+        environment: { SANDBOX_TOKEN: new ProcessEnvValue() },
+      }),
+    });
+    const sessionState: FakeSandboxSessionState = {
+      manifest: new Manifest(),
+      sessionId: 'persisted',
+    };
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client, sessionState },
+      runState,
+    });
+
+    await expect(
+      manager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      }),
+    ).rejects.toThrow(
+      'Sandbox session state contains ProcessEnvValue references that do not exactly match the current trusted manifest: SANDBOX_TOKEN.',
+    );
+    expect(client.resumeCalls).toHaveLength(0);
+    expect(client.closeCalls).toHaveLength(0);
+  });
+
+  it('rejects unbound protected explicit state before a custom client resumes', async () => {
+    const client = new FakeSandboxClient();
+    const protectedManifest = new Manifest({
+      environment: {
+        SANDBOX_TOKEN: new ProcessEnvValue({ name: 'SANDBOX_SOURCE' }),
+      },
+    });
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: protectedManifest,
+    });
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState: {
+          manifest: cloneManifest(protectedManifest),
+          sessionId: 'persisted',
+        },
+      },
+      runState,
+    });
+
+    await expect(
+      manager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      }),
+    ).rejects.toThrow(/Use DockerSandboxClient instead/u);
+    expect(client.resumeCalls).toHaveLength(0);
+  });
+
+  it('rejects protected explicit state before non-Docker resume validation hooks', async () => {
+    const validateSessionStateForResume = vi.fn();
+    const resolveTrustedManifestForResume = vi.fn((manifest: Manifest) =>
+      cloneManifest(manifest),
+    );
+    const client = Object.assign(new FakeSandboxClient(), {
+      validateSessionStateForResume,
+      resolveTrustedManifestForResume,
+    });
+    const resume = vi.spyOn(client, 'resume');
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest(),
+    });
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState: {
+          manifest: new Manifest({
+            environment: {
+              SANDBOX_TOKEN: new ProcessEnvValue({ name: 'SANDBOX_SOURCE' }),
+            },
+          }),
+          sessionId: 'persisted',
+        },
+      },
+      runState,
+    });
+
+    await expect(
+      manager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      }),
+    ).rejects.toThrow(/Use DockerSandboxClient instead/u);
+
+    expect(validateSessionStateForResume).not.toHaveBeenCalled();
+    expect(resolveTrustedManifestForResume).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(client.createCalls).toHaveLength(0);
+  });
+
   it.each([false, true])(
     'persists reordered equal-content session input when a sandbox capability clones context (stream=%s)',
     async (stream) => {
@@ -2142,6 +2271,7 @@ describe('sandbox runner integration', () => {
   });
 
   afterEach(() => {
+    clearSandboxEventSinks();
     setTraceProcessors([]);
     setTracingDisabled(true);
     setTracingContextStorage(undefined);
@@ -3123,6 +3253,69 @@ describe('sandbox runner integration', () => {
     },
   );
 
+  it('rejects persisted ordinary state when the trusted manifest adds a ProcessEnvValue before deserialization', async () => {
+    const client = new FakeSandboxClient();
+    Object.defineProperty(client, 'backendId', { value: 'docker' });
+    const deserializeSessionState = vi.spyOn(client, 'deserializeSessionState');
+
+    await expect(
+      deserializeSandboxSessionStateEntry(
+        client,
+        {
+          backendId: 'docker',
+          currentAgentKey: 'SandboxWorker',
+          currentAgentName: 'SandboxWorker',
+          sessionState: fakeSandboxSessionStateEnvelope(
+            { sessionId: 'persisted' },
+            {
+              backendId: 'docker',
+              manifest: serializeManifestRecord(new Manifest()),
+            },
+          ),
+        },
+        new Manifest({
+          environment: { TOKEN: new ProcessEnvValue() },
+        }),
+      ),
+    ).rejects.toThrow(
+      'RunState sandbox session state contains ProcessEnvValue references that do not exactly match the current trusted manifest: TOKEN.',
+    );
+    expect(deserializeSessionState).not.toHaveBeenCalled();
+  });
+
+  it('rejects persisted-only protected RunState before custom resolution or deserialization', async () => {
+    const resolveTrustedManifestForResume = vi.fn((manifest: Manifest) =>
+      cloneManifest(manifest),
+    );
+    const client = Object.assign(new FakeSandboxClient(), {
+      resolveTrustedManifestForResume,
+    });
+    const deserializeSessionState = vi.spyOn(client, 'deserializeSessionState');
+    const protectedManifest = new Manifest({
+      environment: {
+        TOKEN: new ProcessEnvValue({ name: 'PERSISTED_SOURCE' }),
+      },
+    });
+
+    await expect(
+      deserializeSandboxSessionStateEntry(
+        client,
+        {
+          backendId: 'fake-sandbox',
+          currentAgentKey: 'SandboxWorker',
+          currentAgentName: 'SandboxWorker',
+          sessionState: fakeSandboxSessionStateEnvelope(
+            { sessionId: 'persisted' },
+            { manifest: serializeManifestRecord(protectedManifest) },
+          ),
+        },
+        new Manifest(),
+      ),
+    ).rejects.toThrow(/Use DockerSandboxClient instead/u);
+    expect(resolveTrustedManifestForResume).not.toHaveBeenCalled();
+    expect(deserializeSessionState).not.toHaveBeenCalled();
+  });
+
   it('rejects explicit non-resumable state before resolving trusted secrets', async () => {
     let resolveCalls = 0;
 
@@ -3730,6 +3923,129 @@ describe('sandbox runner integration', () => {
     await manager.cleanup(runState);
   });
 
+  it('preserves process environment authority for explicit Docker session state without mounts', async () => {
+    process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE = 'manager-secret';
+    try {
+      const client = Object.assign(new FakeSandboxClient(), {
+        resolveTrustedManifestForResume(
+          manifest: Manifest,
+          options: Record<string, unknown> = {},
+        ) {
+          return bindProcessEnvironmentAccess(cloneManifest(manifest), options);
+        },
+      });
+      Object.defineProperty(client, 'backendId', { value: 'docker' });
+      const trustedManifest = new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+          }),
+        },
+      });
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: trustedManifest,
+      });
+      const sessionState: FakeSandboxSessionState = {
+        manifest: cloneManifest(trustedManifest),
+        sessionId: 'persisted',
+        environment: {},
+      };
+      const runState = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: {
+          client,
+          sessionState,
+          options: {
+            processEnvironmentBindings: {
+              SANDBOX_TOKEN: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            },
+          },
+        },
+        runState,
+      });
+
+      await manager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+
+      expect(client.resumeCalls[0]?.state.environment).toEqual({
+        SANDBOX_TOKEN: 'manager-secret',
+      });
+      expect(
+        client.resumeCalls[0]?.state.manifest.environment.SANDBOX_TOKEN,
+      ).toBeInstanceOf(ProcessEnvValue);
+      expect(sessionState.environment).toEqual({});
+
+      await manager.cleanup(runState);
+    } finally {
+      delete process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE;
+    }
+  });
+
+  it.each([
+    [
+      'an ordinary value',
+      new Manifest({
+        environment: { SANDBOX_TOKEN: 'ordinary-value' },
+      }),
+    ],
+    [
+      'a different source',
+      new Manifest({
+        environment: {
+          SANDBOX_TOKEN: new ProcessEnvValue({ name: 'NEW_SOURCE' }),
+        },
+      }),
+    ],
+  ])(
+    'rejects explicit Docker protected state when the trusted reference becomes %s',
+    async (_description, trustedManifest) => {
+      const client = new FakeSandboxClient();
+      Object.defineProperty(client, 'backendId', { value: 'docker' });
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: trustedManifest,
+      });
+      const sessionState: FakeSandboxSessionState = {
+        manifest: new Manifest({
+          environment: { SANDBOX_TOKEN: new ProcessEnvValue() },
+        }),
+        sessionId: 'persisted',
+        environment: { SANDBOX_TOKEN: 'old-process-secret' },
+      };
+      const runState = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client, sessionState },
+        runState,
+      });
+
+      await expect(
+        manager.prepareAgent({
+          currentAgent: sandboxAgent,
+          turnInput: [],
+        }),
+      ).rejects.toThrow(
+        'Sandbox session state contains ProcessEnvValue references that do not exactly match the current trusted manifest: SANDBOX_TOKEN.',
+      );
+      expect(client.resumeCalls).toHaveLength(0);
+      expect(sessionState.environment).toEqual({
+        SANDBOX_TOKEN: 'old-process-secret',
+      });
+    },
+  );
+
   it('rejects explicit Docker session state when trusted environment removes a key', async () => {
     const client = new FakeSandboxClient();
     Object.defineProperty(client, 'backendId', { value: 'docker' });
@@ -4329,6 +4645,139 @@ describe('sandbox runner integration', () => {
     }
   });
 
+  it.each([
+    [
+      'an ordinary value',
+      new Manifest({ environment: { TOKEN: 'ordinary-value' } }),
+    ],
+    [
+      'a different source',
+      new Manifest({
+        environment: {
+          TOKEN: new ProcessEnvValue({ name: 'CURRENT_SOURCE' }),
+        },
+      }),
+    ],
+  ])(
+    'rejects a persisted ProcessEnvValue when the trusted reference becomes %s before deserialization',
+    async (_description, trustedManifest) => {
+      const client = new FakeSandboxClient();
+      Object.defineProperty(client, 'backendId', { value: 'docker' });
+      const deserializeSessionState = vi.spyOn(
+        client,
+        'deserializeSessionState',
+      );
+
+      await expect(
+        deserializeSandboxSessionStateEntry(
+          client,
+          {
+            backendId: 'docker',
+            currentAgentKey: 'SandboxWorker',
+            currentAgentName: 'SandboxWorker',
+            sessionState: fakeSandboxSessionStateEnvelope(
+              { sessionId: 'persisted' },
+              {
+                backendId: 'docker',
+                manifest: serializeManifestRecord(
+                  new Manifest({
+                    environment: {
+                      TOKEN: new ProcessEnvValue({
+                        name: 'PERSISTED_SOURCE',
+                      }),
+                    },
+                  }),
+                ),
+              },
+            ),
+          },
+          trustedManifest,
+        ),
+      ).rejects.toThrow(
+        'RunState sandbox session state contains ProcessEnvValue references that do not exactly match the current trusted manifest: TOKEN.',
+      );
+      expect(deserializeSessionState).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['missing', undefined],
+    ['an array', []],
+  ])(
+    'rejects a newly trusted ProcessEnvValue when the persisted environment is %s before deserialization',
+    async (_description, persistedEnvironment) => {
+      const client = new FakeSandboxClient();
+      Object.defineProperty(client, 'backendId', { value: 'docker' });
+      const deserializeSessionState = vi.spyOn(
+        client,
+        'deserializeSessionState',
+      );
+      const persistedManifest: Record<string, unknown> = {
+        version: 1,
+        root: '/workspace',
+        entries: {},
+      };
+      if (persistedEnvironment !== undefined) {
+        persistedManifest.environment = persistedEnvironment;
+      }
+
+      await expect(
+        deserializeSandboxSessionStateEntry(
+          client,
+          {
+            backendId: 'docker',
+            currentAgentKey: 'SandboxWorker',
+            currentAgentName: 'SandboxWorker',
+            sessionState: fakeSandboxSessionStateEnvelope(
+              { sessionId: 'persisted' },
+              { backendId: 'docker', manifest: persistedManifest },
+            ),
+          },
+          new Manifest({
+            environment: {
+              TOKEN: new ProcessEnvValue({ name: 'CURRENT_SOURCE' }),
+            },
+          }),
+        ),
+      ).rejects.toThrow(
+        'RunState sandbox session state contains ProcessEnvValue references that do not exactly match the current trusted manifest: TOKEN.',
+      );
+      expect(deserializeSessionState).not.toHaveBeenCalled();
+    },
+  );
+
+  it('resumes an ordinary legacy manifest without an environment field', async () => {
+    const client = new FakeSandboxClient();
+    const deserializeSessionState = vi.spyOn(client, 'deserializeSessionState');
+
+    const state = await deserializeSandboxSessionStateEntry(
+      client,
+      {
+        backendId: 'fake-sandbox',
+        currentAgentKey: 'SandboxWorker',
+        currentAgentName: 'SandboxWorker',
+        sessionState: fakeSandboxSessionStateEnvelope(
+          { sessionId: 'persisted' },
+          {
+            manifest: {
+              version: 1,
+              root: '/workspace',
+              entries: {},
+            },
+          },
+        ),
+      },
+      new Manifest({ environment: { ORDINARY: 'current-value' } }),
+    );
+
+    expect(deserializeSessionState).toHaveBeenCalledTimes(1);
+    expect(deserializeSessionState.mock.calls[0]).toHaveLength(1);
+    expect(state?.sessionId).toBe('persisted');
+    expect(await state?.manifest.resolveEnvironment()).toEqual({
+      ORDINARY: 'current-value',
+    });
+  });
+
   it('rejects persisted mount topology before resolving trusted environment references', async () => {
     let resolveCalls = 0;
     class ObservableSecretReference extends EnvValueReference {
@@ -4602,6 +5051,19 @@ describe('sandbox runner integration', () => {
     await transition;
     await serializing;
     expect(serializeSessionState).toHaveBeenCalledOnce();
+  });
+
+  it('preserves ordinary manifest mutation error identity', async () => {
+    const original = new Error('ordinary mutation failure');
+
+    await expect(
+      withExclusiveSandboxManifestMutation(
+        { manifest: new Manifest() },
+        async () => {
+          throw original;
+        },
+      ),
+    ).rejects.toBe(original);
   });
 
   it('holds manifest mutations across awaited persistence checks', async () => {
@@ -7625,6 +8087,428 @@ describe('sandbox runner integration', () => {
     expect(applyManifest).not.toHaveBeenCalled();
   });
 
+  it('retains process environment authority after managed sandbox creation', async () => {
+    process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE = 'manager-secret';
+    try {
+      const client = Object.assign(new FakeSandboxClient(), {
+        resolveTrustedManifestForResume(
+          manifest: Manifest,
+          options: Record<string, unknown> = {},
+        ) {
+          return bindProcessEnvironmentAccess(cloneManifest(manifest), options);
+        },
+      });
+      Object.defineProperty(client, 'backendId', { value: 'docker' });
+      const sandboxAgent = new SandboxAgent({
+        name: 'SandboxWorker',
+        defaultManifest: new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            }),
+          },
+        }),
+      });
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          options: {
+            processEnvironmentBindings: {
+              SANDBOX_TOKEN: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            },
+          },
+        },
+      });
+
+      await withTrace('managed process environment test', async () => {
+        await manager.prepareAgent({
+          currentAgent: sandboxAgent as Agent<unknown, any>,
+          turnInput: [],
+        });
+      });
+
+      expect(client.createdSessions).toHaveLength(1);
+      expect(client.createdSessions[0]?.state.environment).toMatchObject({
+        SANDBOX_TOKEN: 'manager-secret',
+      });
+      const state = client.createdSessions[0]!.state;
+      const additiveManifest = mergeManifestDelta(
+        state.manifest,
+        new Manifest({ environment: { ORDINARY: 'added' } }),
+      );
+      await expect(
+        mergeMaterializedEnvironment(
+          state.manifest,
+          additiveManifest,
+          state.environment ?? {},
+        ),
+      ).resolves.toEqual({
+        SANDBOX_TOKEN: 'manager-secret',
+        ORDINARY: 'added',
+      });
+      delete state.manifest.environment.SANDBOX_TOKEN;
+      expect(
+        environmentWithoutProcessEnvValues(
+          state.manifest,
+          state.environment ?? {},
+        ),
+      ).not.toHaveProperty('SANDBOX_TOKEN');
+      expect(sanitizeEnvironmentForPersistence(state)).not.toHaveProperty(
+        'SANDBOX_TOKEN',
+      );
+      expect(() => serializeManifestRecord(state.manifest)).toThrow(
+        'protected ProcessEnvValue references changed after binding: SANDBOX_TOKEN',
+      );
+    } finally {
+      delete process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE;
+    }
+  });
+
+  it('redacts protected environment resolver errors before managed sandbox instrumentation', async () => {
+    process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE = 'manager-resolver-secret';
+    try {
+      const client = Object.assign(new FakeSandboxClient(), {
+        resolveTrustedManifestForResume(
+          manifest: Manifest,
+          options: Record<string, unknown> = {},
+        ) {
+          return bindProcessEnvironmentAccess(cloneManifest(manifest), options);
+        },
+      });
+      Object.defineProperty(client, 'backendId', { value: 'docker' });
+      const events: unknown[] = [];
+      addSandboxEventSink((event) => {
+        events.push(event);
+      });
+      const sandboxAgent = new SandboxAgent({
+        name: 'SandboxWorker',
+        defaultManifest: new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            }),
+            FAILING: async () => {
+              throw Object.assign(
+                new Error('resolver echoed manager-resolver-secret'),
+                { cause: new Error('nested manager-resolver-secret') },
+              );
+            },
+          },
+        }),
+      });
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          options: {
+            processEnvironmentBindings: {
+              SANDBOX_TOKEN: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            },
+          },
+        },
+      });
+
+      let thrown: unknown;
+      try {
+        await withTrace(
+          'managed process environment resolver failure',
+          async () => {
+            await manager.prepareAgent({
+              currentAgent: sandboxAgent as Agent<unknown, any>,
+              turnInput: [],
+            });
+          },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(String(thrown)).not.toContain('manager-resolver-secret');
+      expect(JSON.stringify(thrown)).not.toContain('manager-resolver-secret');
+      expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
+      expect(JSON.stringify(events)).not.toContain('manager-resolver-secret');
+      expect(client.createdSessions).toHaveLength(0);
+    } finally {
+      delete process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE;
+    }
+  });
+
+  it('redacts protected session start errors before sandbox instrumentation', async () => {
+    process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE = 'manager-secret';
+    try {
+      class FailingStartClient extends FakeSandboxClient {
+        override readonly backendId = 'docker';
+
+        resolveTrustedManifestForResume(
+          manifest: Manifest,
+          options: Record<string, unknown> = {},
+        ) {
+          return bindProcessEnvironmentAccess(cloneManifest(manifest), options);
+        }
+
+        protected override lifecycleHandlers(
+          state: FakeSandboxSessionState,
+        ): Partial<SandboxSessionLike<FakeSandboxSessionState>> {
+          return {
+            start: async () => {
+              throw Object.assign(new Error('start echoed manager-secret'), {
+                cause: new Error('nested manager-secret'),
+              });
+            },
+            close: async () => {
+              this.closeCalls.push(state.sessionId);
+            },
+          };
+        }
+      }
+
+      const events: unknown[] = [];
+      addSandboxEventSink((event) => {
+        events.push(event);
+      });
+      const client = new FailingStartClient();
+      const sandboxAgent = new SandboxAgent({
+        name: 'SandboxWorker',
+        defaultManifest: new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            }),
+          },
+        }),
+      });
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          options: {
+            processEnvironmentBindings: {
+              SANDBOX_TOKEN: 'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            },
+          },
+        },
+      });
+
+      let thrown: unknown;
+      try {
+        await withTrace(
+          'managed process environment start failure',
+          async () => {
+            await manager.prepareAgent({
+              currentAgent: sandboxAgent as Agent<unknown, any>,
+              turnInput: [],
+            });
+          },
+        );
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(String(thrown)).not.toContain('manager-secret');
+      expect(JSON.stringify(thrown)).not.toContain('manager-secret');
+      expect(JSON.stringify(events)).not.toContain('manager-secret');
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'sandbox_operation',
+          name: 'sandbox.start',
+          phase: 'error',
+          error: expect.objectContaining({
+            message:
+              'sandbox session start failed for a sandbox with protected process environment values.',
+          }),
+        }),
+      );
+      expect(client.closeCalls).toEqual(['session-1']);
+    } finally {
+      delete process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE;
+    }
+  });
+
+  it('rejects process environment values before invoking a non-Docker client resolver', async () => {
+    process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE = 'manager-secret';
+    try {
+      const resolveTrustedManifestForResume = vi.fn(
+        (manifest: Manifest, options: Record<string, unknown> = {}) =>
+          bindProcessEnvironmentAccess(cloneManifest(manifest), options),
+      );
+      const client = Object.assign(new FakeSandboxClient(), {
+        resolveTrustedManifestForResume,
+      });
+      const sandboxAgent = new SandboxAgent({
+        name: 'SandboxWorker',
+        defaultManifest: new Manifest({
+          environment: {
+            AGENTS_TEST_MANAGER_PROCESS_SOURCE: new ProcessEnvValue(),
+          },
+        }),
+      });
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent as Agent<unknown, any>,
+        sandboxConfig: {
+          client,
+          options: {
+            allowedProcessEnvironmentKeys: [
+              'AGENTS_TEST_MANAGER_PROCESS_SOURCE',
+            ],
+          },
+        },
+      });
+
+      await expect(
+        withTrace('unsupported managed process environment test', async () => {
+          await manager.prepareAgent({
+            currentAgent: sandboxAgent as Agent<unknown, any>,
+            turnInput: [],
+          });
+        }),
+      ).rejects.toThrow(/Use DockerSandboxClient instead/u);
+
+      expect(resolveTrustedManifestForResume).not.toHaveBeenCalled();
+      expect(client.createCalls).toHaveLength(0);
+    } finally {
+      delete process.env.AGENTS_TEST_MANAGER_PROCESS_SOURCE;
+    }
+  });
+
+  it.each([false, true])(
+    'rejects protected non-Docker state before persistence hooks (preserve=%s)',
+    async (includeOwnedSessions) => {
+      const canPersistOwnedSessionState = vi.fn(async () => true);
+      const canReusePreservedOwnedSession = vi.fn(async () => true);
+      const serializeSessionState = vi.fn(async () => ({}));
+      const client = Object.assign(new FakeSandboxClient(), {
+        canPersistOwnedSessionState,
+        canReusePreservedOwnedSession,
+        serializeSessionState,
+      });
+      const session = client.makeSession({
+        manifest: new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({ name: 'SANDBOX_SOURCE' }),
+          },
+        }),
+        sessionId: 'protected-session',
+      });
+
+      await expect(
+        serializeSandboxRuntimeState({
+          client,
+          sandboxState: undefined,
+          sessionsByAgentKey: new Map([['SandboxWorker', session]]),
+          sessionAgentNamesByKey: new Map([['SandboxWorker', 'SandboxWorker']]),
+          ownedSessionAgentKeys: new Set(['SandboxWorker']),
+          trustedManifestForAgentKey: () => new Manifest(),
+          includeOwnedSessions,
+        }),
+      ).rejects.toThrow(/Use DockerSandboxClient instead/u);
+
+      expect(canPersistOwnedSessionState).not.toHaveBeenCalled();
+      expect(canReusePreservedOwnedSession).not.toHaveBeenCalled();
+      expect(serializeSessionState).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects process environment values already present in a provided session before side effects', async () => {
+    const applyManifest = vi.fn();
+    const setArchiveLimits = vi.fn();
+    const manifest = new Manifest({
+      environment: { TOKEN: new ProcessEnvValue() },
+    });
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      defaultManifest: manifest,
+    });
+    const providedSession: SandboxSessionLike<FakeSandboxSessionState> = {
+      state: {
+        sessionId: 'provided-session',
+        manifest,
+      },
+      createEditor: () => new StubEditor(),
+      execCommand: async () => 'ok',
+      viewImage: async () => ({
+        type: 'image',
+        image: {
+          data: Uint8Array.from([137, 80, 78, 71]),
+          mediaType: 'image/png',
+        },
+      }),
+      applyManifest,
+      setArchiveLimits,
+    };
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        session: providedSession,
+        archiveLimits: { maxMembers: 10 },
+      },
+    });
+
+    await expect(
+      withTrace('provided session process environment test', async () => {
+        await manager.prepareAgent({
+          currentAgent: sandboxAgent as Agent<unknown, any>,
+          turnInput: [],
+        });
+      }),
+    ).rejects.toThrow(/provided sandbox sessions/u);
+
+    expect(setArchiveLimits).not.toHaveBeenCalled();
+    expect(applyManifest).not.toHaveBeenCalled();
+  });
+
+  it('rejects configured process environment values for a provided session before side effects', async () => {
+    const applyManifest = vi.fn();
+    const setArchiveLimits = vi.fn();
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      defaultManifest: new Manifest({
+        environment: { TOKEN: new ProcessEnvValue() },
+      }),
+    });
+    const providedSession: SandboxSessionLike<FakeSandboxSessionState> = {
+      state: {
+        sessionId: 'provided-session',
+        manifest: new Manifest(),
+      },
+      createEditor: () => new StubEditor(),
+      execCommand: async () => 'ok',
+      viewImage: async () => ({
+        type: 'image',
+        image: {
+          data: Uint8Array.from([137, 80, 78, 71]),
+          mediaType: 'image/png',
+        },
+      }),
+      applyManifest,
+      setArchiveLimits,
+    };
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        session: providedSession,
+        archiveLimits: { maxMembers: 10 },
+      },
+    });
+
+    await expect(
+      withTrace(
+        'provided session configured process environment test',
+        async () => {
+          await manager.prepareAgent({
+            currentAgent: sandboxAgent as Agent<unknown, any>,
+            turnInput: [],
+          });
+        },
+      ),
+    ).rejects.toThrow(/provided sandbox sessions/u);
+
+    expect(setArchiveLimits).not.toHaveBeenCalled();
+    expect(applyManifest).not.toHaveBeenCalled();
+  });
+
   it('preserves an existing provider-native mount in additive provided-session overrides', async () => {
     const liveManifest = new Manifest({
       root: '/workspace',
@@ -9880,6 +10764,110 @@ describe('sandbox runner integration', () => {
     ).rejects.toThrow('Unknown process session 1');
     expect(client.closeCalls).toEqual([liveSession?.state.sessionId]);
 
+    await secondManager.cleanup(state);
+  });
+
+  it('rejects a preserved ordinary live session when the trusted manifest adds a ProcessEnvValue', async () => {
+    const client = new DockerRevalidatingLiveProcessFakeSandboxClient();
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        client,
+        manifest: new Manifest(),
+      },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+    const reuseCheckCount = client.reuseChecks.length;
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: {
+        client,
+        manifest: new Manifest({
+          environment: { TOKEN: new ProcessEnvValue() },
+        }),
+      },
+      runState: state,
+    });
+
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      'Preserved sandbox session state contains ProcessEnvValue references that do not exactly match the current trusted manifest: TOKEN.',
+    );
+    expect(client.reuseChecks).toHaveLength(reuseCheckCount);
+    expect(client.resumeCalls).toHaveLength(0);
+    expect(client.closeCalls).toHaveLength(0);
+
+    await secondManager.cleanup(state);
+  });
+
+  it('rejects a protected non-Docker live session before reuse callbacks', async () => {
+    const resolveTrustedManifestForResume = vi.fn((manifest: Manifest) =>
+      cloneManifest(manifest),
+    );
+    const client = Object.assign(
+      new RevalidatingLiveProcessFakeSandboxClient(),
+      { resolveTrustedManifestForResume },
+    );
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client, manifest: new Manifest() },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+    const resolverCallCount = resolveTrustedManifestForResume.mock.calls.length;
+    const reuseCheckCount = client.reuseChecks.length;
+    const liveSession = client.createdSessions[0]!;
+    liveSession.state.manifest = new Manifest({
+      environment: {
+        SANDBOX_TOKEN: new ProcessEnvValue({ name: 'SANDBOX_SOURCE' }),
+      },
+    });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client, manifest: new Manifest() },
+      runState: state,
+    });
+
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      /Use DockerSandboxClient instead/u,
+    );
+    expect(resolveTrustedManifestForResume).toHaveBeenCalledTimes(
+      resolverCallCount,
+    );
+    expect(client.reuseChecks).toHaveLength(reuseCheckCount);
+    expect(client.resumeCalls).toHaveLength(0);
+
+    liveSession.state.manifest = new Manifest();
     await secondManager.cleanup(state);
   });
 

@@ -66,6 +66,7 @@ import {
   type ManifestMountMaterializationContext,
 } from '../shared';
 import {
+  assertProcessEnvValuesUnsupported,
   configuredMountCredentialFields,
   validateMountCredentialBoundaries,
 } from '@openai/agents-core/sandbox/internal';
@@ -862,6 +863,7 @@ export class BlaxelSandboxClient implements SandboxClient<
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
     assertCoreSnapshotUnsupported('BlaxelSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
+    assertProcessEnvValuesUnsupported(manifest, 'blaxel');
     const resolvedOptions = {
       ...this.options,
       ...createArgs.options,
@@ -1058,6 +1060,7 @@ export class BlaxelSandboxClient implements SandboxClient<
   async resume(
     state: BlaxelSandboxSessionState,
   ): Promise<BlaxelSandboxSession> {
+    assertProcessEnvValuesUnsupported(state.manifest, 'blaxel');
     assertRemoteSandboxSessionStateCanResume(state);
     const SandboxInstance = await loadBlaxelSandboxClass();
     let sandbox: BlaxelSandboxLike;

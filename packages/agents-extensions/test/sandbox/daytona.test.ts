@@ -1,6 +1,7 @@
 import {
   boxMount,
   Manifest,
+  ProcessEnvValue,
   SandboxMountError,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
@@ -124,6 +125,25 @@ describe('DaytonaSandboxClient', () => {
         snapshot: { type: 'remote' },
       }),
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects process environment values before provider effects', async () => {
+    const client = new DaytonaSandboxClient();
+
+    await expect(
+      client.create(
+        new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_DAYTONA_PROCESS_SOURCE',
+            }),
+          },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+
+    expect(daytonaConstructorMock).not.toHaveBeenCalled();
     expect(createMock).not.toHaveBeenCalled();
   });
 
@@ -696,6 +716,29 @@ describe('DaytonaSandboxClient', () => {
 
     expect(getMock).toHaveBeenCalledWith('daytona-test');
     expect(startMock).toHaveBeenCalledOnce();
+  });
+
+  test('rejects process environment values on resume before provider effects', async () => {
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(new Manifest());
+    session.state.manifest = new Manifest({
+      environment: {
+        SANDBOX_TOKEN: new ProcessEnvValue({
+          name: 'AGENTS_TEST_DAYTONA_PROCESS_SOURCE',
+        }),
+      },
+    });
+    daytonaConstructorMock.mockClear();
+    getMock.mockClear();
+    startMock.mockClear();
+
+    await expect(client.resume(session.state)).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+
+    expect(daytonaConstructorMock).not.toHaveBeenCalled();
+    expect(getMock).not.toHaveBeenCalled();
+    expect(startMock).not.toHaveBeenCalled();
   });
 
   test('rejects raw credentialed resume state before provider calls', async () => {
@@ -1695,6 +1738,28 @@ describe('DaytonaSandboxClient', () => {
       '/home/daytona/workspace',
       {},
     ]);
+  });
+
+  test('rejects process environment values in live manifest updates before provider effects', async () => {
+    const client = new DaytonaSandboxClient();
+    const session = await client.create(new Manifest());
+    executeCommandMock.mockClear();
+    uploadFileMock.mockClear();
+
+    await expect(
+      session.applyManifest(
+        new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_DAYTONA_PROCESS_SOURCE',
+            }),
+          },
+        }),
+      ),
+    ).rejects.toThrow(/new Docker sandbox session/);
+
+    expect(executeCommandMock).not.toHaveBeenCalled();
+    expect(uploadFileMock).not.toHaveBeenCalled();
   });
 
   test('rejects paused resume state containing cloud mounts', async () => {

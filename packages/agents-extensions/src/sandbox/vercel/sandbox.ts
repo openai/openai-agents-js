@@ -67,6 +67,7 @@ import {
 } from '../shared';
 import type { PreparedManifestMount } from '../shared/manifest';
 import {
+  assertProcessEnvValuesUnsupported,
   assertLiveMountCredentialAuthorityMatches,
   assertLiveMountEnvironmentAuthorityMatches,
   assertSandboxStateGenerationUnchanged,
@@ -1591,6 +1592,7 @@ export class VercelSandboxClient implements SandboxClient<
     );
     assertCoreSnapshotUnsupported('VercelSandboxClient', createArgs.snapshot);
     const resolvedManifest = resolveManifestRoot(createArgs.manifest);
+    assertProcessEnvValuesUnsupported(resolvedManifest, 'vercel');
     assertSandboxManifestMetadataSupported(
       'VercelSandboxClient',
       resolvedManifest,
@@ -1843,6 +1845,7 @@ export class VercelSandboxClient implements SandboxClient<
   async resume(
     state: VercelSandboxSessionState,
   ): Promise<VercelSandboxSession> {
+    assertProcessEnvValuesUnsupported(state.manifest, 'vercel');
     assertRemoteSandboxSessionStateCanResume(state);
     if (hasVercelMounts(state.manifest)) {
       // This is an intentional lifecycle boundary, not a missing restore path.

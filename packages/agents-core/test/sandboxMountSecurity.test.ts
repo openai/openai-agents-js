@@ -5,16 +5,19 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   boxMount,
   dockerVolumeMountStrategy,
+  Environment,
   file,
   gcsMount,
   inContainerMountStrategy,
   Manifest,
+  ProcessEnvValue,
   s3Mount,
   s3FilesMount,
   type MountStrategy,
 } from '../src/sandbox';
 import {
   assertExistingMountTopologyPreserved,
+  bindProcessEnvironmentAccess,
   captureLiveMountCredentialAuthorityIfAbsent,
   deserializeManifest,
   deserializeMountCredentialRedactionMetadata,
@@ -25,6 +28,7 @@ import {
   NON_RESUMABLE_MOUNT_AUTHORITY_KEY,
   recordLiveMountCredentialAuthority,
   rebindPersistedMountCredentials,
+  resolveAndValidateMountEnvironment,
   sanitizeMountCredentialEnvironmentForPersistence,
   serializeManifestRecord,
   serializeMountCredentialRedactionMetadata,
@@ -70,6 +74,44 @@ function credentialedS3Manifest(
 }
 
 describe('sandbox mount credential boundaries', () => {
+  it('preserves protected process environment references while validating mount credentials', async () => {
+    process.env.AGENTS_TEST_MOUNT_PROCESS_SOURCE = 'process-secret';
+    const manifest = bindProcessEnvironmentAccess(
+      new Manifest({
+        environment: {
+          AWS_ACCESS_KEY_ID: new Environment({ value: 'access-key' }),
+          AWS_SECRET_ACCESS_KEY: new Environment({ value: 'secret-key' }),
+          SANDBOX_TOKEN: new ProcessEnvValue({
+            name: 'AGENTS_TEST_MOUNT_PROCESS_SOURCE',
+          }),
+        },
+        entries: {
+          remote: s3Mount({
+            bucket: 'example',
+            mountStrategy: inContainerMountStrategy(),
+          }),
+        },
+      }).withInContainerMountBroadCredentialExposureAcknowledged('remote'),
+      {
+        processEnvironmentBindings: {
+          SANDBOX_TOKEN: 'AGENTS_TEST_MOUNT_PROCESS_SOURCE',
+        },
+      },
+    );
+
+    const resolved = await resolveAndValidateMountEnvironment(manifest);
+
+    expect(resolved.environment.AWS_ACCESS_KEY_ID).toBeInstanceOf(Environment);
+    expect(resolved.environment.SANDBOX_TOKEN).toBe(
+      manifest.environment.SANDBOX_TOKEN,
+    );
+    expect(resolved.environment.SANDBOX_TOKEN).toBeInstanceOf(ProcessEnvValue);
+    await expect(resolved.resolveEnvironment()).resolves.toMatchObject({
+      SANDBOX_TOKEN: 'process-secret',
+    });
+    expect(JSON.stringify(resolved)).not.toContain('process-secret');
+  });
+
   it('rejects credential-bearing in-container mounts without exposing values', () => {
     const manifest = credentialedS3Manifest(inContainerMountStrategy());
 

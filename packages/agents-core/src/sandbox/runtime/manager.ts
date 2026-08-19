@@ -15,10 +15,17 @@ import type {
 } from '../client';
 import { SandboxLifecycleError, SandboxMountError } from '../errors';
 import {
+  assertProcessEnvironmentAccessBound,
+  assertProcessEnvValuesUnsupported,
   cloneManifest,
+  copyProcessEnvironmentProtection,
+  environmentWithoutProcessEnvValues,
   isEnvValueReference,
   Manifest,
+  manifestHasProcessEnvValues,
   replaceManifestMountCredentialExposurePolicy,
+  unmatchedProcessEnvironmentReferences,
+  withProcessEnvironmentErrorRedaction,
 } from '../manifest';
 import {
   captureLiveMountCredentialAuthorityIfAbsent,
@@ -856,10 +863,18 @@ export class SandboxRuntimeManager<TContext> {
     if (this.sandboxConfig?.session) {
       const session = this.sandboxConfig.session;
       assertSandboxSessionStateUsable(session.state);
-      this.applyArchiveLimits(session);
       const configuredManifest = this.resolveConfiguredManifest(agent, {
         providedSession: session,
       });
+      assertProcessEnvValuesUnsupported(
+        session.state.manifest,
+        'provided sandbox sessions',
+      );
+      assertProcessEnvValuesUnsupported(
+        configuredManifest.manifest,
+        'provided sandbox sessions',
+      );
+      this.applyArchiveLimits(session);
       // Provided sessions are already running, so only a safe additive manifest delta can
       // be applied instead of reprovisioning root, env, users, groups, or mounts.
       await applyManifestToProvidedSession(
@@ -899,50 +914,93 @@ export class SandboxRuntimeManager<TContext> {
         'Sandbox execution requires a sandbox client with create() support.',
       );
     }
-    const createManifest = await resolveAndValidateMountEnvironment(
+    const trustedCreateManifest = manifestHasProcessEnvValues(
       configuredManifest.manifest,
-    );
+    )
+      ? resolveTrustedManifestForResume(
+          client,
+          configuredManifest.manifest,
+          this.sandboxConfig?.options,
+        )!
+      : configuredManifest.manifest;
+    if (manifestHasProcessEnvValues(configuredManifest.manifest)) {
+      assertProcessEnvironmentAccessBound(trustedCreateManifest);
+    }
     const createSession = client.create.bind(client);
-    const createArgs: SandboxClientCreateArgs = {
-      snapshot: this.resolveSnapshotSpec(client),
-      options: this.sandboxConfig?.options,
-      concurrencyLimits: this.sandboxConfig?.concurrencyLimits,
-      archiveLimits: this.sandboxConfig?.archiveLimits,
-    };
-    if (configuredManifest.passToCreate) {
-      createArgs.manifest = createManifest;
-    }
-
-    const session = await withSandboxSpan(
-      'sandbox.create_session',
-      {
-        agent_name: agent.name,
-        backend_id: client.backendId,
+    return await withProcessEnvironmentErrorRedaction(
+      trustedCreateManifest,
+      { provider: 'sandbox', operation: 'session setup' },
+      async () => {
+        const createManifest = manifestHasProcessEnvValues(
+          trustedCreateManifest,
+        )
+          ? trustedCreateManifest
+          : await resolveAndValidateMountEnvironment(trustedCreateManifest);
+        if (manifestHasProcessEnvValues(createManifest)) {
+          validateMountEnvironmentCredentialBoundaries(
+            createManifest,
+            environmentWithoutProcessEnvValues(
+              createManifest,
+              await createManifest.resolveEnvironment(),
+            ),
+          );
+        }
+        const createArgs: SandboxClientCreateArgs = {
+          snapshot: this.resolveSnapshotSpec(client),
+          options: this.sandboxConfig?.options,
+          concurrencyLimits: this.sandboxConfig?.concurrencyLimits,
+          archiveLimits: this.sandboxConfig?.archiveLimits,
+        };
+        if (configuredManifest.passToCreate) {
+          createArgs.manifest = createManifest;
+        }
+        const session = await withSandboxSpan(
+          'sandbox.create_session',
+          {
+            agent_name: agent.name,
+            backend_id: client.backendId,
+          },
+          async () => await createSession(createArgs),
+          tracingParent,
+        );
+        try {
+          if (configuredManifest.passToCreate) {
+            session.state.environment = {
+              ...(session.state.environment ?? {}),
+              ...(await createManifest.resolveEnvironment()),
+            };
+            const manifestWithTrustedPolicies =
+              manifestWithTrustedRuntimePolicies(
+                session.state.manifest,
+                manifestHasProcessEnvValues(createManifest)
+                  ? createManifest
+                  : configuredManifest.manifest,
+              );
+            recordLiveMountCredentialAuthority(
+              manifestWithTrustedPolicies,
+              session.state.manifest,
+            );
+            session.state.manifest = manifestWithTrustedPolicies;
+          }
+          this.applyArchiveLimits(session);
+          await this.ensureSessionStarted(session, agent, 'create', {
+            tracingParent,
+          });
+          this.registerSessionForAgent(agent, session, { owned: true });
+          return session;
+        } catch (error) {
+          try {
+            await cleanupSandboxSession(session, { reason: 'create_failed' });
+          } catch (cleanupError) {
+            throw new SandboxLifecycleError(
+              'Sandbox session setup failed and cleanup could not complete.',
+              { errors: [error, cleanupError] },
+            );
+          }
+          throw error;
+        }
       },
-      async () => await createSession(createArgs),
-      tracingParent,
     );
-    if (configuredManifest.passToCreate) {
-      session.state.environment = {
-        ...(session.state.environment ?? {}),
-        ...(await createManifest.resolveEnvironment()),
-      };
-      const manifestWithTrustedPolicies = manifestWithTrustedRuntimePolicies(
-        session.state.manifest,
-        configuredManifest.manifest,
-      );
-      recordLiveMountCredentialAuthority(
-        manifestWithTrustedPolicies,
-        session.state.manifest,
-      );
-      session.state.manifest = manifestWithTrustedPolicies;
-    }
-    this.applyArchiveLimits(session);
-    await this.ensureSessionStarted(session, agent, 'create', {
-      tracingParent,
-    });
-    this.registerSessionForAgent(agent, session, { owned: true });
-    return session;
   }
 
   private applyArchiveLimits(
@@ -1009,9 +1067,14 @@ export class SandboxRuntimeManager<TContext> {
       {
         agent_name: agent.name,
       },
-      async () => {
-        await session.start!({ reason });
-      },
+      async () =>
+        await withProcessEnvironmentErrorRedaction(
+          session.state.manifest,
+          { provider: 'sandbox', operation: 'session start' },
+          async () => {
+            await session.start!({ reason });
+          },
+        ),
       options.tracingParent,
     );
     if (options.oncePerSession) {
@@ -1104,6 +1167,13 @@ export class SandboxRuntimeManager<TContext> {
     const explicitSessionStateInput = this.sandboxConfig?.sessionState;
     const hasExplicitSessionState = explicitSessionStateInput !== undefined;
     if (explicitSessionStateInput) {
+      if (client.backendId !== 'docker') {
+        assertProcessEnvValuesUnsupported(trustedManifest, client.backendId);
+        assertProcessEnvValuesUnsupported(
+          explicitSessionStateInput.manifest,
+          client.backendId,
+        );
+      }
       client.validateSessionStateForResume?.(
         { source: 'explicit', state: explicitSessionStateInput },
         {
@@ -1251,6 +1321,11 @@ export class SandboxRuntimeManager<TContext> {
       trustedManifest,
       this.sandboxConfig?.options,
     )!;
+    assertTrustedProcessEnvironmentReferences(
+      persistedState.manifest,
+      resolvedTrustedManifest,
+      'Sandbox session state',
+    );
     if (
       client.backendId === 'docker' &&
       Object.keys(persistedState.manifest.environment).some(
@@ -1278,33 +1353,39 @@ export class SandboxRuntimeManager<TContext> {
         'mount_config_invalid',
       );
     }
-    const materializedTrustedManifest =
-      await resolveAndValidateMountEnvironment(resolvedTrustedManifest);
-    const credentialReboundState = rebindPersistedMountCredentials(
-      topologyReboundState,
-      materializedTrustedManifest,
-    );
-    const sessionState = rebindPersistedPathGrants(
-      credentialReboundState,
-      materializedTrustedManifest,
-      {
-        replaceWithTrustedManifest: client.backendId === 'docker',
+    return await withProcessEnvironmentErrorRedaction(
+      resolvedTrustedManifest,
+      { provider: client.backendId, operation: 'session state preparation' },
+      async () => {
+        const materializedTrustedManifest =
+          await resolveAndValidateMountEnvironment(resolvedTrustedManifest);
+        const credentialReboundState = rebindPersistedMountCredentials(
+          topologyReboundState,
+          materializedTrustedManifest,
+        );
+        const sessionState = rebindPersistedPathGrants(
+          credentialReboundState,
+          materializedTrustedManifest,
+          {
+            replaceWithTrustedManifest: client.backendId === 'docker',
+          },
+        );
+        if (client.backendId === 'docker') {
+          sessionState.environment = {
+            ...(sessionState.environment ?? {}),
+            ...(await materializedTrustedManifest.resolveEnvironment()),
+          };
+        }
+        assertMountCredentialsRebound(sessionState);
+        validateMountCredentialBoundaries(sessionState.manifest);
+        validateMountEnvironmentCredentialBoundaries(
+          sessionState.manifest,
+          sessionState.environment ?? {},
+        );
+        assertHostPathGrantsRebound(sessionState);
+        return sessionState;
       },
     );
-    if (client.backendId === 'docker') {
-      sessionState.environment = {
-        ...(sessionState.environment ?? {}),
-        ...(await materializedTrustedManifest.resolveEnvironment()),
-      };
-    }
-    assertMountCredentialsRebound(sessionState);
-    validateMountCredentialBoundaries(sessionState.manifest);
-    validateMountEnvironmentCredentialBoundaries(
-      sessionState.manifest,
-      sessionState.environment ?? {},
-    );
-    assertHostPathGrantsRebound(sessionState);
-    return sessionState;
   }
 
   private async inspectLivePreservedOwnedSessionReuse(args: {
@@ -1321,6 +1402,19 @@ export class SandboxRuntimeManager<TContext> {
     });
     if (!liveEntry) {
       return undefined;
+    }
+
+    if (args.client.backendId !== 'docker') {
+      if (args.trustedManifest) {
+        assertProcessEnvValuesUnsupported(
+          args.trustedManifest,
+          args.client.backendId,
+        );
+      }
+      assertProcessEnvValuesUnsupported(
+        liveEntry.session.state.manifest,
+        args.client.backendId,
+      );
     }
 
     assertTrustedManifestForDockerRunState(args.client, args.trustedManifest);
@@ -1364,6 +1458,13 @@ export class SandboxRuntimeManager<TContext> {
       args.trustedManifest,
       this.sandboxConfig?.options,
     );
+    if (trustedManifest) {
+      assertTrustedProcessEnvironmentReferences(
+        liveEntry.session.state.manifest,
+        trustedManifest,
+        'Preserved sandbox session state',
+      );
+    }
     if (
       !trustedManifest ||
       manifestHasNonResumableMountAuthority(trustedManifest) ||
@@ -1416,11 +1517,25 @@ export class SandboxRuntimeManager<TContext> {
     if (args.client.backendId === 'docker') {
       candidateState.environment = {
         ...(liveEntry.session.state.environment ?? {}),
-        ...(await trustedManifest.resolveEnvironment()),
+        ...(await withProcessEnvironmentErrorRedaction(
+          trustedManifest,
+          {
+            provider: args.client.backendId,
+            operation: 'preserved session reuse preparation',
+          },
+          async () => await trustedManifest.resolveEnvironment(),
+        )),
       };
     }
     if (!canReuse) {
-      const trustedEnvironment = await trustedManifest.resolveEnvironment();
+      const trustedEnvironment = await withProcessEnvironmentErrorRedaction(
+        trustedManifest,
+        {
+          provider: args.client.backendId,
+          operation: 'preserved session reuse preparation',
+        },
+        async () => await trustedManifest.resolveEnvironment(),
+      );
       if (
         !liveMountEnvironmentAuthorityMatches(
           liveEntry.session.state.manifest,
@@ -1674,11 +1789,7 @@ export class SandboxRuntimeManager<TContext> {
       sessionAgentNamesByKey: this.sessionAgentNamesByKey,
       ownedSessionAgentKeys: this.ownedSessionAgentKeys,
       trustedManifestForAgentKey: (agentKey) =>
-        resolveTrustedManifestForResume(
-          this.sandboxConfig!.client!,
-          this.resolveTrustedManifestForAgentKey(agentKey),
-          this.sandboxConfig?.options,
-        ),
+        this.resolveTrustedManifestForAgentKey(agentKey),
       clientOptions: this.sandboxConfig?.options,
       includeOwnedSessions: args.includeOwnedSessions,
       preferredCurrentAgentKey,
@@ -1938,7 +2049,26 @@ function manifestWithTrustedRuntimePolicies(
     ],
   });
   replaceManifestMountCredentialExposurePolicy(merged, trustedManifest);
+  copyProcessEnvironmentProtection(merged, trustedManifest, manifest);
   return merged;
+}
+
+function assertTrustedProcessEnvironmentReferences(
+  persistedManifest: Manifest,
+  trustedManifest: Manifest,
+  stateDescription: string,
+): void {
+  const unmatchedDestinations = unmatchedProcessEnvironmentReferences(
+    persistedManifest,
+    trustedManifest,
+  );
+  if (unmatchedDestinations.length === 0) {
+    assertProcessEnvironmentAccessBound(trustedManifest);
+    return;
+  }
+  throw new UserError(
+    `${stateDescription} contains ProcessEnvValue references that do not exactly match the current trusted manifest: ${unmatchedDestinations.join(', ')}. Create a fresh Docker sandbox from the current trusted manifest instead.`,
+  );
 }
 
 async function refreshLiveEnvironmentReferences(

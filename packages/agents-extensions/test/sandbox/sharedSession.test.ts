@@ -2,12 +2,16 @@ import {
   file,
   gcsMount,
   Manifest,
+  ProcessEnvValue,
   s3Mount,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   type SandboxSessionState,
 } from '@openai/agents-core/sandbox';
-import { withExclusiveSandboxManifestMutation } from '@openai/agents-core/sandbox/internal';
+import {
+  bindProcessEnvironmentAccess,
+  withExclusiveSandboxManifestMutation,
+} from '@openai/agents-core/sandbox/internal';
 import { describe, expect, test, vi } from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
 import {
@@ -19,6 +23,7 @@ import {
   isProviderSandboxNotFoundError,
   closeRemoteSessionOnManifestError,
   serializeRemoteSandboxSessionState,
+  rehydrateRemoteSandboxSessionStateValues,
   withProviderError,
   providerErrorRetryability,
   RemoteSandboxSessionBase,
@@ -453,6 +458,64 @@ describe('shared sandbox session helpers', () => {
 
     releaseMutation();
     await mutation;
+  });
+
+  test('rejects protected process environment values at remote persistence boundaries', async () => {
+    const manifest = new Manifest({
+      environment: {
+        SANDBOX_TOKEN: new ProcessEnvValue({ name: 'SANDBOX_SOURCE' }),
+      },
+    });
+
+    expect(() =>
+      serializeRemoteSandboxSessionState({ manifest, environment: {} }),
+    ).toThrow(SandboxUnsupportedFeatureError);
+
+    const serialized = {
+      manifest: serializeManifestRecord(manifest),
+      environment: {},
+    };
+    expect(() =>
+      deserializeRemoteSandboxSessionStateValues(serialized),
+    ).toThrow(SandboxUnsupportedFeatureError);
+    const prepareManifest = vi.fn((value: Manifest) => value);
+    await expect(
+      rehydrateRemoteSandboxSessionStateValues(
+        serialized,
+        undefined,
+        prepareManifest,
+      ),
+    ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+    expect(prepareManifest).not.toHaveBeenCalled();
+  });
+
+  test('rejects bound process environment values before remote manifest effects', async () => {
+    process.env.AGENTS_TEST_REMOTE_PROCESS_SOURCE = 'remote-process-secret';
+    try {
+      const session = new FakeRemoteSession();
+      const manifest = bindProcessEnvironmentAccess(
+        new Manifest({
+          environment: {
+            SANDBOX_TOKEN: new ProcessEnvValue({
+              name: 'AGENTS_TEST_REMOTE_PROCESS_SOURCE',
+            }),
+          },
+        }),
+        {
+          processEnvironmentBindings: {
+            SANDBOX_TOKEN: 'AGENTS_TEST_REMOTE_PROCESS_SOURCE',
+          },
+        },
+      );
+
+      await expect(session.applyManifest(manifest)).rejects.toThrow(
+        /protected process environment destinations/u,
+      );
+      expect(session.commands).toHaveLength(0);
+      expect(session.state.environment).not.toHaveProperty('SANDBOX_TOKEN');
+    } finally {
+      delete process.env.AGENTS_TEST_REMOTE_PROCESS_SOURCE;
+    }
   });
 
   test('retains actual mount authority for environment-only updates', async () => {

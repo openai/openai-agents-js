@@ -1,6 +1,7 @@
 import {
   EnvValueReference,
   Manifest,
+  ProcessEnvValue,
   registerEnvValueReference,
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
@@ -199,6 +200,27 @@ describe('E2BSandboxClient', () => {
       }),
     ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  test('rejects process environment values before provider effects', async () => {
+    process.env.AGENTS_TEST_E2B_PROCESS_SOURCE = 'unused-secret';
+    try {
+      const client = new E2BSandboxClient();
+      await expect(
+        client.create(
+          new Manifest({
+            environment: {
+              SANDBOX_TOKEN: new ProcessEnvValue({
+                name: 'AGENTS_TEST_E2B_PROCESS_SOURCE',
+              }),
+            },
+          }),
+        ),
+      ).rejects.toBeInstanceOf(SandboxUnsupportedFeatureError);
+      expect(createMock).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.AGENTS_TEST_E2B_PROCESS_SOURCE;
+    }
   });
 
   test('creates a sandbox, materializes the manifest, and executes commands', async () => {

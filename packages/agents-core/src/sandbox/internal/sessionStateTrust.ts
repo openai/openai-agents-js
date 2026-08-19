@@ -20,12 +20,19 @@ export function markRunStateSessionState<TState extends SandboxSessionState>(
   return state;
 }
 
-export function isRunStateSessionState(state: SandboxSessionState): boolean {
+export function markRunStateDeserializationInput<
+  TState extends Record<string, unknown>,
+>(state: TState, trustedConfig: RunStateSessionTrustedConfig = {}): TState {
+  runStateSessionTrust.set(state, trustedConfig);
+  return state;
+}
+
+export function isRunStateSessionState(state: object): boolean {
   return runStateSessionTrust.has(state);
 }
 
 export function getRunStateSessionTrustedConfig(
-  state: SandboxSessionState,
+  state: object,
 ): RunStateSessionTrustedConfig | undefined {
   return runStateSessionTrust.get(state);
 }

@@ -1,5 +1,5 @@
 import type { SandboxClient, SandboxClientOptions } from '../client';
-import type { Manifest } from '../manifest';
+import { assertProcessEnvValuesUnsupported, type Manifest } from '../manifest';
 import {
   assertSandboxSessionStateUsable,
   withExclusiveSandboxStateInspection,
@@ -11,6 +11,7 @@ import {
 } from '../session';
 import {
   getPreviousSerializedSessionsByAgent,
+  resolveTrustedManifestForResume,
   toSessionStateEnvelope,
   type SerializedSandboxSessionEntry,
   type SerializedSandboxState,
@@ -65,6 +66,19 @@ export async function serializeSandboxRuntimeState(args: {
       async () =>
         await withExclusiveSandboxStateInspection(session.state, async () => {
           assertSandboxSessionStateUsable(session.state);
+          const trustedManifest = trustedManifestForAgentKey?.(currentAgentKey);
+          if (client.backendId !== 'docker') {
+            assertProcessEnvValuesUnsupported(
+              session.state.manifest,
+              client.backendId,
+            );
+            if (trustedManifest) {
+              assertProcessEnvValuesUnsupported(
+                trustedManifest,
+                client.backendId,
+              );
+            }
+          }
           if (
             isOwnedSession &&
             !includeOwnedSessions &&
@@ -79,8 +93,11 @@ export async function serializeSandboxRuntimeState(args: {
             client.canReusePreservedOwnedSession
               ? await client.canReusePreservedOwnedSession(session.state, {
                   clientOptions,
-                  trustedManifest:
-                    trustedManifestForAgentKey?.(currentAgentKey),
+                  trustedManifest: resolveTrustedManifestForResume(
+                    client,
+                    trustedManifest,
+                    clientOptions,
+                  ),
                 })
               : true;
           const requiresFreshCreation =

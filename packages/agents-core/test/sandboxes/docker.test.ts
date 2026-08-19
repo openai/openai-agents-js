@@ -8,6 +8,7 @@ import {
   inContainerMountStrategy,
   Manifest,
   NoopSnapshotSpec,
+  ProcessEnvValue,
 } from '../../src/sandbox/local';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
@@ -68,6 +69,149 @@ describe('DockerSandboxClient', () => {
           }).withInContainerMountCredentialExposureAcknowledged('mounted'),
         ),
       ).rejects.toThrow(/SDK-supported strategy/u);
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
+    'delivers protected values to workloads without persisting them in the container environment',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
+      );
+      process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE =
+        'docker-protected-environment-sentinel';
+      process.env.AGENTS_TEST_DOCKER_LARGE_PROCESS_SOURCE = 'x'.repeat(8192);
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+        processEnvironmentBindings: {
+          SANDBOX_TOKEN: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+          LARGE_TOKEN: 'AGENTS_TEST_DOCKER_LARGE_PROCESS_SOURCE',
+        },
+      });
+      try {
+        const session = await client.create(
+          new Manifest({
+            environment: {
+              SANDBOX_TOKEN: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_PROCESS_SOURCE',
+              }),
+              LARGE_TOKEN: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_LARGE_PROCESS_SOURCE',
+              }),
+            },
+          }),
+        );
+        cleanupContainerIds.add(session.state.containerId);
+
+        const environment = await session.exec({ cmd: 'env' });
+        const ttyEnvironment = await session.exec({
+          cmd: 'printf %s "$SANDBOX_TOKEN"',
+          tty: true,
+        });
+        const started = await session.execCommand({
+          cmd: 'printf "%s:%s:ready\\n" "$SANDBOX_TOKEN" "${#LARGE_TOKEN}"; read value; printf "%s\\n" "$value"',
+          tty: true,
+          yieldTimeMs: 0,
+        });
+        const sessionId = Number(
+          started.match(/Process running with session ID (\d+)/)?.[1],
+        );
+        const finished = await writeUntilExit(
+          { writeStdin: (args) => session.writeStdin(args) },
+          sessionId,
+          'protected stdin remains available\n',
+        );
+        const controlStarted = await session.execCommand({
+          cmd: 'while :; do sleep 1; done',
+          tty: true,
+          yieldTimeMs: 0,
+        });
+        const controlSessionId = Number(
+          controlStarted.match(/Process running with session ID (\d+)/)?.[1],
+        );
+        const controlFinished = await writeUntilExit(
+          { writeStdin: (args) => session.writeStdin(args) },
+          controlSessionId,
+          '\u0003',
+        );
+        const initEnvironment = await session.exec({
+          cmd: "tr '\\000' '\\n' < /proc/1/environ",
+        });
+        expect(environment.stdout).toContain(
+          'docker-protected-environment-sentinel',
+        );
+        expect(ttyEnvironment.stdout).toContain(
+          'docker-protected-environment-sentinel',
+        );
+        expect(ttyEnvironment.stdout).not.toContain(
+          Buffer.from(
+            "export 'SANDBOX_TOKEN=docker-protected-environment-sentinel'",
+          ).toString('base64'),
+        );
+        expect(finished).toContain('protected stdin remains available');
+        expect(controlFinished).toContain('Process exited with code');
+        expect(initEnvironment.stdout).not.toContain(
+          'docker-protected-environment-sentinel',
+        );
+      } finally {
+        delete process.env.AGENTS_TEST_DOCKER_PROCESS_SOURCE;
+        delete process.env.AGENTS_TEST_DOCKER_LARGE_PROCESS_SOURCE;
+      }
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
+    'restores TTY state before starting a workload with a protected PATH',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sandbox-test-'),
+      );
+      process.env.AGENTS_TEST_DOCKER_PATH_SOURCE = '/does-not-exist';
+      process.env.AGENTS_TEST_DOCKER_STTY_COMMAND_SOURCE = 'command-value';
+      process.env.AGENTS_TEST_DOCKER_STTY_STATE_SOURCE = 'state-value';
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+        processEnvironmentBindings: {
+          PATH: 'AGENTS_TEST_DOCKER_PATH_SOURCE',
+          protected_stty_command: 'AGENTS_TEST_DOCKER_STTY_COMMAND_SOURCE',
+          protected_stty_state: 'AGENTS_TEST_DOCKER_STTY_STATE_SOURCE',
+        },
+      });
+      try {
+        const session = await client.create(
+          new Manifest({
+            environment: {
+              PATH: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_PATH_SOURCE',
+              }),
+              protected_stty_command: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_STTY_COMMAND_SOURCE',
+              }),
+              protected_stty_state: new ProcessEnvValue({
+                name: 'AGENTS_TEST_DOCKER_STTY_STATE_SOURCE',
+              }),
+            },
+          }),
+        );
+        cleanupContainerIds.add(session.state.containerId);
+
+        const result = await session.exec({
+          cmd: 'printf "%s:%s:%s" protected-path-workload-started "$protected_stty_command" "$protected_stty_state"',
+          tty: true,
+        });
+
+        expect(result.stdout).toContain(
+          'protected-path-workload-started:command-value:state-value',
+        );
+      } finally {
+        delete process.env.AGENTS_TEST_DOCKER_PATH_SOURCE;
+        delete process.env.AGENTS_TEST_DOCKER_STTY_COMMAND_SOURCE;
+        delete process.env.AGENTS_TEST_DOCKER_STTY_STATE_SOURCE;
+      }
     },
     DOCKER_TEST_TIMEOUT_MS,
   );

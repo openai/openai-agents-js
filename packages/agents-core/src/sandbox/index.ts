@@ -8,6 +8,7 @@ export {
   Environment,
   EnvValueReference,
   Manifest,
+  ProcessEnvValue,
   cloneManifest,
   isEnvValueReference,
   isSerializedEnvValueReference,
@@ -29,6 +30,7 @@ export type {
   ManifestMountTarget,
   RenderManifestDescriptionOptions,
   SerializedEnvValueReference,
+  ProcessEnvironmentAccessOptions,
 } from './manifest';
 export * from './pathGrants';
 export * from './permissions';
