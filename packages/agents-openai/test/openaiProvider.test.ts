@@ -59,6 +59,26 @@ describe('OpenAIProvider', () => {
     ).toThrow();
   });
 
+  it('throws when organization and openAIClient are provided', () => {
+    expect(
+      () =>
+        new OpenAIProvider({
+          organization: 'org-test',
+          openAIClient: {} as any,
+        }),
+    ).toThrow('Cannot provide both organization and openAIClient');
+  });
+
+  it('throws when project and openAIClient are provided', () => {
+    expect(
+      () =>
+        new OpenAIProvider({
+          project: 'proj-test',
+          openAIClient: {} as any,
+        }),
+    ).toThrow('Cannot provide both project and openAIClient');
+  });
+
   it('returns responses model when useResponses true', async () => {
     const provider = new OpenAIProvider({
       openAIClient: new FakeClient() as any,
