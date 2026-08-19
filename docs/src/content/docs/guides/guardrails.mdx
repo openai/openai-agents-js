@@ -10,10 +10,11 @@ import toolGuardrailsExample from '../../../../../examples/docs/guardrails/toolG
 
 Guardrails can run alongside your agents or block execution until they complete, allowing you to perform checks and validations on user input or agent output. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
 
-There are two kinds of guardrails:
+There are three guardrail families:
 
 1. **Input guardrails** run on the initial user input.
 2. **Output guardrails** run on the final agent output.
+3. **Tool guardrails** run around each custom function-tool invocation.
 
 ## Workflow boundaries
 
@@ -52,6 +53,16 @@ Output guardrails run in 3 steps:
 
 Output guardrail functions also receive an optional `details` object with the underlying `modelResponse` and the generated output items for the turn. Use this when the final output alone is not enough to decide whether the response should pass, for example when you want to inspect the full generated item list or provider response metadata before tripping the guardrail.
 
+### Rejected terminal tool outputs
+
+When `toolUseBehavior` makes a completed function-tool result the run's final output, output guardrails evaluate that result before the SDK treats the result as replayable final data. The guardrail receives the original candidate output. If the guardrail trips, the SDK replaces the rejected terminal result with `Output withheld by an output guardrail.` in SDK-owned run state, replay data, session history, and the public tripwire error.
+
+The SDK also sanitizes metadata that could retain aliases of the rejected output. For the current response, `OutputGuardrailResult.agentOutput` becomes the same placeholder and `OutputGuardrailResult.outputInfo` is removed. Current tool output guardrail results retain their verdict but omit `outputInfo`; a `rejectContent` result uses the placeholder as its message. Results and history from earlier accepted turns remain unchanged.
+
+For a recognized function call and result pair, the SDK preserves replay-safe identity and status fields while replacing the result content. If the SDK cannot prove which current response items belong to the rejected terminal output, it discards the ambiguous current-response suffix or fails closed instead of replaying it.
+
+This protection does not undo external tool side effects, retract output already emitted to application code, erase data already stored outside the SDK's control, or modify application-owned references to raw provider data.
+
 ## Tool guardrails
 
 Tool guardrails wrap **function tools** and let you validate or block tool calls before and after execution. They are configured on the tool itself (via `tool()` options) and run for every invocation of that tool.
@@ -73,7 +84,7 @@ Tool guardrails apply to function tools you define with `tool()`. Handoffs are p
 
 ## Tripwires
 
-When a guardrail fails, it signals this via a tripwire. As soon as a tripwire is triggered, the runner throws the corresponding error and halts execution.
+When a guardrail fails, it signals this via a tripwire. The runner first waits for sibling guardrails that started in the same batch to settle and records their completed results. The runner then throws the corresponding error and halts further run processing. With parallel input guardrails, model or tool work may already have started as described in [Execution modes](#execution-modes).
 
 ## Implementing a guardrail
 
