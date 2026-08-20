@@ -127,21 +127,20 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-  test: {
-    allowOnly: mode === 'watch',
-    pool: 'threads',
-    maxWorkers,
-    projects: createProjects(reviewTestProfile),
-    // Coverage options are global in Vitest workspaces.
-    // Keep the filter at the root to avoid scanning docs/examples/dist output.
-    coverage: {
-      provider: 'v8',
-      reporter: ['text', 'html', 'json', 'json-summary', 'lcov'],
-      all: true,
-      include: ['packages/**/src/**/*.ts'],
-      exclude: ['**/*.d.ts', 'packages/**/test/**', 'packages/**/dist/**'],
+    test: {
+      allowOnly: mode === 'watch',
+      pool: 'threads',
+      maxWorkers,
+      projects: createProjects(reviewTestProfile),
+      // Coverage options are global in Vitest workspaces.
+      // Keep the filter at the root to avoid scanning docs/examples/dist output.
+      coverage: {
+        provider: 'v8',
+        reporter: ['text', 'html', 'json', 'json-summary', 'lcov'],
+        all: true,
+        include: ['packages/**/src/**/*.ts'],
+        exclude: ['**/*.d.ts', 'packages/**/test/**', 'packages/**/dist/**'],
+      },
     },
-  },
-  },
   };
 });
