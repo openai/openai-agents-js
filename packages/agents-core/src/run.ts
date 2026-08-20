@@ -515,6 +515,15 @@ function rollbackUnstartedTurn(
   return true;
 }
 
+function recordModelFailureUsage(
+  usage: Usage,
+  state: RunState<any, any>,
+  recordUsage: (usage: Usage) => void,
+): void {
+  state.usage.add(usage);
+  recordUsage(usage);
+}
+
 function assertPendingInputServerOwnership(
   state: RunState<any, any>,
   conversationId: string | undefined,
@@ -1735,12 +1744,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const pendingModelResponse = getResponseWithRetry(
               preparedCall.model,
               modelRequest,
-              serverConversationTracker
-                ? {
-                    onPossiblyAcceptedRequestFailure: () =>
-                      markServerInputAccepted(false),
-                  }
-                : undefined,
+              {
+                onModelFailureUsage: (usage) =>
+                  recordModelFailureUsage(usage, state, recordUsage),
+                ...(serverConversationTracker
+                  ? {
+                      onPossiblyAcceptedRequestFailure: () =>
+                        markServerInputAccepted(false),
+                    }
+                  : {}),
+              },
             );
             if (deferLocalPendingInputAdmission) {
               const modelResponseOutcome = pendingModelResponse.then(
@@ -2638,6 +2651,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     this.config.traceIncludeSensitiveData,
                   ),
                 },
+                {
+                  onModelFailureUsage: (usage) =>
+                    recordModelFailureUsage(usage, result.state, recordUsage),
+                },
               );
               markAbortReconciliationComplete(
                 abortReconciliationState,
@@ -2696,6 +2713,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.model,
               modelRequest,
               {
+                onModelFailureUsage: (usage) =>
+                  recordModelFailureUsage(usage, result.state, recordUsage),
                 onModelTimeout: () => {
                   timedOutModelCallFailed = true;
                 },

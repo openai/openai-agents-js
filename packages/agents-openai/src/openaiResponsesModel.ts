@@ -7,6 +7,7 @@ import {
   resetCurrentSpan,
   protocol,
   UserError,
+  ModelBehaviorError,
 } from '@openai/agents-core';
 import type {
   ModelRetryAdvice,
@@ -78,6 +79,7 @@ import {
   normalizeHostedMcpRequireApproval,
 } from '@openai/agents-core/utils';
 import {
+  reportModelFailureUsage,
   assertValidCompactionItems,
   formatInlineData,
   getInlineMediaType,
@@ -379,8 +381,10 @@ function markUnsafeWebSocketReplayError(
     unsafeToReplay?: boolean;
     responseStarted?: boolean;
   };
-  replayError.unsafeToReplay = true;
-  if (responseStarted) {
+  if (replayError.unsafeToReplay !== true) {
+    replayError.unsafeToReplay = true;
+  }
+  if (responseStarted && replayError.responseStarted !== true) {
     replayError.responseStarted = true;
   }
 }
@@ -3227,6 +3231,7 @@ const TERMINAL_RESPONSES_STREAM_EVENT_TYPES = new Set([
   'response.failed',
   'response.incomplete',
   'response.error',
+  'error',
 ]);
 
 function isTerminalResponsesStreamEventType(
@@ -3236,6 +3241,51 @@ function isTerminalResponsesStreamEventType(
     typeof eventType === 'string' &&
     TERMINAL_RESPONSES_STREAM_EVENT_TYPES.has(eventType)
   );
+}
+
+type UnsuccessfulResponseError = ModelBehaviorError & {
+  readonly unsafeToReplay: true;
+  readonly responseStarted: true;
+};
+
+function getUnsuccessfulResponseTerminalType(
+  response: OpenAI.Responses.Response | undefined,
+  eventType?: string,
+): string | undefined {
+  if (
+    eventType === 'response.failed' ||
+    eventType === 'response.incomplete' ||
+    eventType === 'response.error' ||
+    eventType === 'error' ||
+    (eventType === 'response.completed' && !response)
+  ) {
+    return eventType;
+  }
+
+  const status = (response as { status?: unknown } | undefined)?.status;
+  return status === 'failed' || status === 'incomplete'
+    ? `response.${status}`
+    : undefined;
+}
+
+function createUnsuccessfulResponseError(
+  terminalType: string,
+  request: ModelRequest,
+  usage?: Usage,
+): UnsuccessfulResponseError {
+  const error = new ModelBehaviorError(
+    terminalType === 'response.completed'
+      ? 'OpenAI Responses terminal event "response.completed" is missing its required response payload.'
+      : `OpenAI Responses request ended with unsuccessful terminal state "${terminalType}".`,
+  ) as UnsuccessfulResponseError;
+  Object.defineProperties(error, {
+    unsafeToReplay: { value: true },
+    responseStarted: { value: true },
+  });
+  if (usage) {
+    reportModelFailureUsage(request, error, usage);
+  }
+  return error;
 }
 
 type ResponseStreamWithRequestID =
@@ -3331,6 +3381,16 @@ export class OpenAIResponsesModel implements Model {
     response: OpenAI.Responses.Response,
   ): OpenAI.Responses.Response {
     return response;
+  }
+
+  /**
+   * @internal
+   */
+  protected _getUnsuccessfulResponseTerminalType(
+    response: OpenAI.Responses.Response | undefined,
+    eventType?: string,
+  ): string | undefined {
+    return getUnsuccessfulResponseTerminalType(response, eventType);
   }
 
   /**
@@ -3653,11 +3713,23 @@ export class OpenAIResponsesModel implements Model {
             : undefined;
         const preservedUsage =
           rawUsage !== undefined ? this._getResponseUsage(response) : undefined;
+        const terminalType =
+          this._getUnsuccessfulResponseTerminalType(response);
 
         if (request.tracing) {
           span.spanData.response_id = response.id;
-          span.spanData._input = request.input;
-          span.spanData._response = response;
+          if (request.tracing === true || !terminalType) {
+            span.spanData._input = request.input;
+            span.spanData._response = response;
+          }
+        }
+
+        if (terminalType) {
+          throw createUnsuccessfulResponseError(
+            terminalType,
+            request,
+            preservedUsage ?? this._getResponseUsage(response),
+          );
         }
 
         return { response, rawUsage, preservedUsage };
@@ -3692,6 +3764,7 @@ export class OpenAIResponsesModel implements Model {
     const span = request.tracing
       ? createResponseSpan(undefined, getModelTracingParent(request))
       : undefined;
+    let terminalError: UnsuccessfulResponseError | undefined;
     try {
       if (span) {
         span.start();
@@ -3734,33 +3807,64 @@ export class OpenAIResponsesModel implements Model {
         } else if (isTerminalResponsesStreamEventType(eventType)) {
           const terminalEvent =
             event as OpenAI.Responses.ResponseStreamEvent & {
-              response: OpenAI.Responses.Response;
+              response?: OpenAI.Responses.Response;
             };
-          finalResponse = terminalEvent.response;
-          const { response, ...remainingEvent } = terminalEvent;
-          const {
-            output: _output,
-            usage: _usage,
-            id,
-            ...remainingResponse
-          } = response;
-          const responseForSDKOutput = this._getResponseForSDKOutput(response);
-          yield {
-            type: 'response_done',
-            response: {
-              id: id,
-              requestId: getOpenAIResponseRequestId(response),
-              output: this._convertResponseOutputItems(
-                responseForSDKOutput.output as Array<Record<string, any>>,
-              ),
-              usage: this._getStreamedResponseUsage(response),
-              ...(request.modelSettings.preserveRawUsage === true
-                ? { rawUsage: snapshotRawUsage(response.usage) }
-                : {}),
-              providerData: remainingResponse,
-            },
-            providerData: remainingEvent,
-          };
+          const terminalResponse = terminalEvent.response;
+          const unsuccessfulTerminalType =
+            this._getUnsuccessfulResponseTerminalType(
+              terminalResponse,
+              eventType,
+            );
+          if (unsuccessfulTerminalType) {
+            terminalError = createUnsuccessfulResponseError(
+              unsuccessfulTerminalType,
+              request,
+              terminalResponse
+                ? this._getResponseUsage(terminalResponse)
+                : undefined,
+            );
+            if (terminalResponse) {
+              finalResponse = terminalResponse;
+            }
+            if (span && terminalResponse) {
+              span.spanData.response_id = terminalResponse.id;
+              if (request.tracing === true) {
+                span.spanData._response = terminalResponse;
+              }
+            }
+            if (span?.error === null) {
+              span.setError({
+                message: terminalError.message,
+              });
+            }
+          } else if (terminalResponse) {
+            finalResponse = terminalResponse;
+            const { response: _response, ...remainingEvent } = terminalEvent;
+            const {
+              output: _output,
+              usage: _usage,
+              id,
+              ...remainingResponse
+            } = terminalResponse;
+            const responseForSDKOutput =
+              this._getResponseForSDKOutput(terminalResponse);
+            yield {
+              type: 'response_done',
+              response: {
+                id: id,
+                requestId: getOpenAIResponseRequestId(terminalResponse),
+                output: this._convertResponseOutputItems(
+                  responseForSDKOutput.output as Array<Record<string, any>>,
+                ),
+                usage: this._getStreamedResponseUsage(terminalResponse),
+                ...(request.modelSettings.preserveRawUsage === true
+                  ? { rawUsage: snapshotRawUsage(terminalResponse.usage) }
+                  : {}),
+                providerData: remainingResponse,
+              },
+              providerData: remainingEvent,
+            };
+          }
         } else if (eventType === 'response.output_text.delta') {
           const { delta, ...remainingEvent } = event as unknown as {
             delta: string;
@@ -3796,26 +3900,32 @@ export class OpenAIResponsesModel implements Model {
             },
           };
         }
+        if (terminalError) {
+          throw terminalError;
+        }
       }
 
       if (request.tracing && span && finalResponse) {
         span.spanData.response_id = finalResponse.id;
-        span.spanData._response = finalResponse;
+        if (request.tracing === true || !terminalError) {
+          span.spanData._response = finalResponse;
+        }
       }
     } catch (error) {
-      if (span) {
+      const errorToThrow = terminalError ?? error;
+      if (span?.error === null) {
         span.setError({
           message: 'Error streaming response',
           data: {
             error: request.tracing
-              ? String(error)
-              : error instanceof Error
-                ? error.name
+              ? String(errorToThrow)
+              : errorToThrow instanceof Error
+                ? errorToThrow.name
                 : undefined,
           },
         });
       }
-      throw error;
+      throw errorToThrow;
     } finally {
       if (span) {
         span.end();
@@ -3933,8 +4043,21 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         receivedResponseEvent = true;
         const eventType = (event as { type?: string }).type;
         if (isTerminalResponsesStreamEventType(eventType)) {
-          finalResponse = (event as { response: OpenAI.Responses.Response })
-            .response;
+          const terminalResponse = (
+            event as { response?: OpenAI.Responses.Response }
+          ).response;
+          const unsuccessfulTerminalType =
+            this._getUnsuccessfulResponseTerminalType(
+              terminalResponse,
+              eventType,
+            );
+          if (unsuccessfulTerminalType && !terminalResponse) {
+            throw createUnsuccessfulResponseError(
+              unsuccessfulTerminalType,
+              request,
+            );
+          }
+          finalResponse = terminalResponse;
         }
       }
 
@@ -4055,12 +4178,6 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
           isRecord(payload) && typeof payload.type === 'string'
             ? payload.type
             : undefined;
-
-        if (eventType === 'error') {
-          throw new Error(
-            `Responses websocket error: ${JSON.stringify(payload)}`,
-          );
-        }
 
         const event = payload as OpenAI.Responses.ResponseStreamEvent;
         const isTerminalResponseEvent =
