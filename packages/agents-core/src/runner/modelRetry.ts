@@ -163,6 +163,20 @@ export function validateModelTimeoutMs(
   return timeoutMs;
 }
 
+export function validateModelMaxRetries(modelSettings: ModelSettings): number {
+  const maxRetries = modelSettings.retry?.maxRetries ?? 0;
+  if (
+    !Number.isFinite(maxRetries) ||
+    maxRetries < 0 ||
+    !Number.isInteger(maxRetries)
+  ) {
+    throw new UserError(
+      'modelSettings.retry.maxRetries must be a non-negative finite integer when provided.',
+    );
+  }
+  return maxRetries;
+}
+
 function createModelTimeoutError(
   timeoutMs: number,
   cause?: unknown,
@@ -1063,7 +1077,7 @@ export async function getResponseWithRetry(
   request: ModelRequest,
   handlers: ModelRetryHandlers = {},
 ): Promise<ModelResponse> {
-  const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
+  const maxRetries = validateModelMaxRetries(request.modelSettings);
   const retryPolicy = request.modelSettings.retry?.policy;
   const retryBackoff = request.modelSettings.retry?.backoff;
   const timeoutMs = validateModelTimeoutMs(request.modelSettings);
@@ -1185,7 +1199,7 @@ export async function* getStreamedResponseWithRetry(
   request: ModelRequest,
   handlers: ModelRetryHandlers = {},
 ): AsyncIterable<StreamEvent> {
-  const maxRetries = request.modelSettings.retry?.maxRetries ?? 0;
+  const maxRetries = validateModelMaxRetries(request.modelSettings);
   const retryPolicy = request.modelSettings.retry?.policy;
   const retryBackoff = request.modelSettings.retry?.backoff;
   const timeoutMs = validateModelTimeoutMs(request.modelSettings);
