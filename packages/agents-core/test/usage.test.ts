@@ -243,6 +243,118 @@ describe('Usage', () => {
     ]);
   });
 
+  it('detaches existing request usage entries from source mutations', () => {
+    const firstEntry = new RequestUsage({
+      inputTokens: 5,
+      outputTokens: 6,
+      totalTokens: 11,
+      inputTokensDetails: { cached_tokens: 1 },
+      outputTokensDetails: { reasoning_tokens: 2 },
+      endpoint: 'responses.create',
+    });
+    const secondEntry = new RequestUsage({
+      inputTokens: 3,
+      outputTokens: 1,
+      totalTokens: 4,
+      inputTokensDetails: { cached_tokens: 0 },
+      outputTokensDetails: { reasoning_tokens: 1 },
+      endpoint: 'responses.compact',
+    });
+    const source = new Usage({
+      requests: 2,
+      inputTokens: 8,
+      outputTokens: 7,
+      totalTokens: 15,
+      requestUsageEntries: [firstEntry, secondEntry],
+    });
+    const aggregated = new Usage();
+
+    aggregated.add(source);
+
+    expect(aggregated.requestUsageEntries).toHaveLength(2);
+    expect(aggregated.requestUsageEntries?.[0]).toBeInstanceOf(RequestUsage);
+    expect(aggregated.requestUsageEntries?.[1]).toBeInstanceOf(RequestUsage);
+    expect(aggregated.requestUsageEntries?.[0]).not.toBe(firstEntry);
+    expect(aggregated.requestUsageEntries?.[1]).not.toBe(secondEntry);
+    expect(aggregated.requestUsageEntries?.[0].inputTokensDetails).not.toBe(
+      firstEntry.inputTokensDetails,
+    );
+    expect(aggregated.requestUsageEntries?.[0].outputTokensDetails).not.toBe(
+      firstEntry.outputTokensDetails,
+    );
+
+    firstEntry.inputTokens = 99;
+    firstEntry.inputTokensDetails.cached_tokens = 99;
+    firstEntry.outputTokensDetails.reasoning_tokens = 99;
+    secondEntry.endpoint = 'mutated';
+
+    expect(aggregated.requests).toBe(2);
+    expect(aggregated.inputTokens).toBe(8);
+    expect(aggregated.outputTokens).toBe(7);
+    expect(aggregated.totalTokens).toBe(15);
+    expect(aggregated.requestUsageEntries).toEqual([
+      new RequestUsage({
+        inputTokens: 5,
+        outputTokens: 6,
+        totalTokens: 11,
+        inputTokensDetails: { cached_tokens: 1 },
+        outputTokensDetails: { reasoning_tokens: 2 },
+        endpoint: 'responses.create',
+      }),
+      new RequestUsage({
+        inputTokens: 3,
+        outputTokens: 1,
+        totalTokens: 4,
+        inputTokensDetails: { cached_tokens: 0 },
+        outputTokensDetails: { reasoning_tokens: 1 },
+        endpoint: 'responses.compact',
+      }),
+    ]);
+  });
+
+  it('detaches synthesized and top-level details from source mutations', () => {
+    const source = new Usage({
+      requests: 1,
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      inputTokensDetails: { cached_tokens: 2 },
+      outputTokensDetails: { reasoning_tokens: 3 },
+    });
+    const aggregated = new Usage();
+
+    aggregated.add(source);
+
+    expect(aggregated.inputTokensDetails[0]).not.toBe(
+      source.inputTokensDetails[0],
+    );
+    expect(aggregated.outputTokensDetails[0]).not.toBe(
+      source.outputTokensDetails[0],
+    );
+    expect(aggregated.requestUsageEntries?.[0]).toBeInstanceOf(RequestUsage);
+    expect(aggregated.requestUsageEntries?.[0].inputTokensDetails).not.toBe(
+      source.inputTokensDetails[0],
+    );
+    expect(aggregated.requestUsageEntries?.[0].outputTokensDetails).not.toBe(
+      source.outputTokensDetails[0],
+    );
+
+    source.inputTokensDetails[0].cached_tokens = 99;
+    source.outputTokensDetails[0].reasoning_tokens = 99;
+
+    expect(aggregated.inputTokensDetails).toEqual([{ cached_tokens: 2 }]);
+    expect(aggregated.outputTokensDetails).toEqual([{ reasoning_tokens: 3 }]);
+    expect(aggregated.requestUsageEntries).toEqual([
+      new RequestUsage({
+        inputTokens: 10,
+        outputTokens: 5,
+        totalTokens: 15,
+        inputTokensDetails: { cached_tokens: 2 },
+        outputTokensDetails: { reasoning_tokens: 3 },
+      }),
+    ]);
+  });
+
   it('preserves endpoint metadata on request usage entries', () => {
     const aggregated = new Usage();
 

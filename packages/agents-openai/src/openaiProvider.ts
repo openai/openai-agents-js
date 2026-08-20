@@ -63,6 +63,12 @@ export class OpenAIProvider implements ModelProvider {
           'Cannot provide both websocketBaseURL and openAIClient',
         );
       }
+      if (typeof this.#options.organization !== 'undefined') {
+        throw new Error('Cannot provide both organization and openAIClient');
+      }
+      if (typeof this.#options.project !== 'undefined') {
+        throw new Error('Cannot provide both project and openAIClient');
+      }
       this.#client = this.#options.openAIClient as OpenAI;
     }
     this.#useResponses = this.#options.useResponses;
@@ -79,9 +85,17 @@ export class OpenAIProvider implements ModelProvider {
   #getClient(): OpenAI {
     // If the constructor does not accept the OpenAI client,
     if (!this.#client) {
+      const hasProviderClientOptions = [
+        this.#options.apiKey,
+        this.#options.baseURL,
+        this.#options.organization,
+        this.#options.project,
+      ].some((value) => typeof value !== 'undefined');
       this.#client =
-        // this provider checks if there is the default client first,
-        (getDefaultOpenAIClient() as OpenAI | undefined) ??
+        // Provider-specific construction options take precedence over the SDK-wide default client.
+        (!hasProviderClientOptions
+          ? (getDefaultOpenAIClient() as OpenAI | undefined)
+          : undefined) ??
         // and then manually creates a new one.
         new OpenAI({
           apiKey: this.#options.apiKey ?? getDefaultOpenAIKey(),

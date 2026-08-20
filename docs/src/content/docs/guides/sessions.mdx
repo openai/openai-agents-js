@@ -24,9 +24,7 @@ This removes the need to manually call `toInputList()` or stitch history between
 
 > Tip: To run the `OpenAIConversationsSession` examples on this page, set the `OPENAI_API_KEY` environment variable (or provide an `apiKey` when constructing the session) so the SDK can call the Conversations API.
 
-Use sessions when you want the SDK to manage client-side memory for you. If you are already using
-OpenAI server-managed state with `conversationId` or `previousResponseId`, you usually do not also
-need a session for the same conversation history.
+Use sessions when you want the SDK to manage client-side memory for you. If you are already using OpenAI server-managed state with `conversationId` or `previousResponseId`, you usually do not also need a session for the same conversation history.
 
 ---
 
@@ -44,8 +42,7 @@ Use `OpenAIConversationsSession` to sync memory with the [Conversations API](htt
 
 Reusing the same session instance ensures the agent receives the full conversation history before every turn and automatically persists new items. Switching to a different `Session` implementation requires no other code changes.
 
-For local demos, tests, or process-local chat state, `MemorySession` provides the same interface
-without talking to OpenAI:
+For local demos, tests, or process-local chat state, `MemorySession` provides the same interface without talking to OpenAI:
 
 <Code
   lang="typescript"
@@ -55,27 +52,26 @@ without talking to OpenAI:
 
 `OpenAIConversationsSession` constructor options:
 
-| Option           | Type     | Notes                                                          |
-| ---------------- | -------- | -------------------------------------------------------------- |
+| Option | Type | Notes |
+| --- | --- | --- |
 | `conversationId` | `string` | Reuse an existing conversation instead of creating one lazily. |
-| `client`         | `OpenAI` | Pass a preconfigured OpenAI client.                            |
-| `apiKey`         | `string` | API key used when creating an internal OpenAI client.          |
-| `baseURL`        | `string` | Base URL for OpenAI-compatible endpoints.                      |
-| `organization`   | `string` | OpenAI organization ID for requests.                           |
-| `project`        | `string` | OpenAI project ID for requests.                                |
+| `client` | `OpenAI` | Pass a preconfigured OpenAI client. |
+| `apiKey` | `string` | API key used when creating an internal OpenAI client. |
+| `baseURL` | `string` | Base URL for OpenAI-compatible endpoints. |
+| `organization` | `string` | OpenAI organization ID for requests. |
+| `project` | `string` | OpenAI project ID for requests. |
 
 `MemorySession` constructor options:
 
-| Option         | Type               | Notes                                                                    |
-| -------------- | ------------------ | ------------------------------------------------------------------------ |
-| `sessionId`    | `string`           | Stable identifier for logs or tests. Generated automatically by default. |
-| `initialItems` | `AgentInputItem[]` | Seed the session with existing history.                                  |
-| `logger`       | `Logger`           | Override the logger used for debug output.                               |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `sessionId` | `string` | Stable identifier for logs or tests. Generated automatically by default. |
+| `initialItems` | `AgentInputItem[]` | Seed the session with existing history. |
+| `logger` | `Logger` | Override the logger used for debug output. |
 
 `MemorySession` stores everything in local process memory, so it is reset when your process exits.
 
-If you need to pre-create a conversation ID before constructing the session, use
-`startOpenAIConversationsSession(client?)` and pass the returned ID as `conversationId`.
+If you need to pre-create a conversation ID before constructing the session, use `startOpenAIConversationsSession(client?)` and pass the returned ID as `conversationId`.
 
 ---
 
@@ -87,6 +83,8 @@ If you need to pre-create a conversation ID before constructing the session, use
 - **After a non-streaming run** one call to `session.addItems()` persists both the original user input and the model outputs from the latest turn.
 - **For streaming runs** it writes the user input first and appends streamed outputs once the turn completes.
 - **When resuming from `RunResult.state`** (for approvals or other interruptions) keep passing the same `session`. The resumed turn is added to memory without re-preparing the input.
+
+When an output guardrail rejects a terminal function-tool result, the runner does not add the raw rejected result to new session history. The runner persists a replay-safe placeholder for a recognized function call and result pair, and omits an ambiguous current-response suffix rather than storing output whose ownership it cannot prove. This protection does not undo external tool side effects or erase data that an application stored outside the session pipeline.
 
 ---
 
@@ -153,13 +151,9 @@ When you pass an array of `AgentInputItem`s as the run input, provide a `session
   title="Truncate history with sessionInputCallback"
 />
 
-For string inputs the runner merges history automatically, so the callback is optional. The callback
-only runs when your turn input is already an item array.
+For string inputs the runner merges history automatically, so the callback is optional. The callback only runs when your turn input is already an item array.
 
-If you are also using `conversationId` or `previousResponseId`, keep at least one new item from the
-current turn in the callback result. Those server-managed APIs depend on the current-turn delta. If
-the callback drops every new item, the SDK restores the original new inputs and logs a warning
-instead of sending an empty delta.
+If you are also using `conversationId` or `previousResponseId`, keep at least one new item from the current turn in the callback result. Those server-managed APIs depend on the current-turn delta. If the callback drops every new item, the SDK restores the original new inputs and logs a warning instead of sending an empty delta.
 
 ---
 
@@ -175,7 +169,9 @@ Human-in-the-loop flows often pause a run to wait for approval:
   title="Resume a run with the same session"
 />
 
-When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Human-in-the-loop (HITL) flows stay fully compatible—approval checkpoints still round-trip through `RunState` while the session keeps the conversation history complete.
+When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Most human-in-the-loop (HITL) approval checkpoints round-trip through `RunState` while the session keeps the conversation history complete.
+
+Output guardrails impose a stricter boundary when an approved function-tool result can become the final output. If a serialized checkpoint does not contain enough provenance to identify the current output safely, the SDK fails closed before further model, tool, or session side effects. Some output-bearing approval checkpoints therefore cannot be resumed from serialized state with a session attached. Start a new run from safe input when the SDK reports this condition; do not work around it by replaying the rejected raw items.
 
 ---
 
@@ -193,27 +189,24 @@ When you resume from a previous `RunState`, the new turn is appended to the same
 
 `OpenAIResponsesCompactionSession` constructor options:
 
-| Option                    | Type                                          | Notes                                                                                                                                                 |
-| ------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `client`                  | `OpenAI`                                      | OpenAI client used for `responses.compact`.                                                                                                           |
-| `underlyingSession`       | `Session`                                     | Backing session store to clear/rewrite with compacted items. Defaults to an in-memory session for demos and must not be `OpenAIConversationsSession`. |
-| `model`                   | `OpenAI.ResponsesModel`                       | Model used for compaction requests. Defaults to the SDK's current default OpenAI model.                                                               |
-| `compactionMode`          | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items.                                                                       |
-| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>`    | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items.                                              |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `client` | `OpenAI` | OpenAI client used for `responses.compact`. |
+| `underlyingSession` | `Session` | Backing session store to clear/rewrite with compacted items. Defaults to an in-memory session for demos and must not be `OpenAIConversationsSession`. |
+| `model` | `OpenAI.ResponsesModel` | Model used for compaction requests. Defaults to the SDK's current default OpenAI model. |
+| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | Controls whether compaction uses server response chaining or local input items. |
+| `shouldTriggerCompaction` | `(context) => boolean \| Promise<boolean>` | Custom trigger hook based on `responseId`, `compactionMode`, candidate items, and current session items. |
 
-`compactionMode: 'previous_response_id'` is useful when you are already chaining turns with
-Responses API response IDs. `compactionMode: 'input'` rebuilds compaction requests from the current
-session items instead, which is helpful when the response chain is unavailable or you want the
-underlying session contents to be the source of truth.
+`compactionMode: 'previous_response_id'` is useful when you are already chaining turns with Responses API response IDs. `compactionMode: 'input'` rebuilds compaction requests from the current session items instead, which is helpful when the response chain is unavailable or you want the underlying session contents to be the source of truth.
 
 `runCompaction(args)` options:
 
-| Option           | Type                                          | Notes                                                             |
-| ---------------- | --------------------------------------------- | ----------------------------------------------------------------- |
-| `responseId`     | `string`                                      | Latest Responses API response id for `previous_response_id` mode. |
-| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | Optional per-call override of the configured mode.                |
-| `store`          | `boolean`                                     | Indicates whether the last run stored server state.               |
-| `force`          | `boolean`                                     | Bypass `shouldTriggerCompaction` and compact immediately.         |
+| Option | Type | Notes |
+| --- | --- | --- |
+| `responseId` | `string` | Latest Responses API response id for `previous_response_id` mode. |
+| `compactionMode` | `'auto' \| 'previous_response_id' \| 'input'` | Optional per-call override of the configured mode. |
+| `store` | `boolean` | Indicates whether the last run stored server state. |
+| `force` | `boolean` | Bypass `shouldTriggerCompaction` and compact immediately. |
 
 `OpenAIResponsesCompactionSession` serializes mutations issued through the same wrapper instance. Calls to `runCompaction()`, `addItems()`, `popItem()`, and `clearSession()` run in invocation order, and the queue continues after a rejected operation, so later wrapper mutations do not interleave with replacement or rollback. A successful replacement or rollback keeps the wrapper's cached history aligned with the underlying session. If both replacement and restoration fail, recover the underlying session before continuing. This ordering guarantee does not coordinate a different wrapper instance or direct mutation of `underlyingSession`; coordinate those access paths in your application.
 

@@ -1,5 +1,13 @@
 # @openai/agents-openai
 
+## 0.17.0
+
+### Patch Changes
+
+- d80736a: fix: reject organization and project with explicit OpenAIProvider clients
+- Updated dependencies [33fe55c]
+  - @openai/agents-core@0.17.0
+
 ## 0.16.1
 
 ### Patch Changes

@@ -1752,7 +1752,8 @@ export const SerializedRunState = z.object({
   sandbox: sandboxStateSchema.optional(),
 });
 
-export type FinalOutputSource = 'error_handler' | 'turn_resolution';
+export type FinalOutputSource =
+  'error_handler' | 'turn_resolution' | 'tool_result';
 
 type ToolSearchRuntimeToolEntry<TContext = UnknownContext> = {
   order: number;

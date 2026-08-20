@@ -92,6 +92,8 @@ The human-in-the-loop flow is designed to be interruptible for longer periods of
 
 You can serialize the state using `result.state.toString()` (or `JSON.stringify(result.state)`) and resume later on by passing the serialized state into `RunState.fromString(agent, serializedState)` where `agent` is the instance of the agent that triggered the overall run.
 
+Output guardrails impose a stricter resume boundary when an approved function-tool result can become the run's final output. A live `RunState` can retain output ownership information that is not available after serialization. If a serialized checkpoint cannot prove which response owns the pending output, or an ambiguous output-bearing checkpoint is resumed with a session attached, the SDK fails closed with a `UserError` before further model, tool, or session side effects. Start a new run from safe input when this happens. Rebuild the same agent graph and preserve the original `toolUseBehavior`; do not assume that every output-bearing partial approval can round-trip through serialized state.
+
 When `RunState` is serialized, the SDK records stable agent identities for the handoff and `Agent.asTool()` graph. This lets paused runs resume even when distinct agents share the same `name`, as long as the process that resumes the run rebuilds the same agent graph.
 
 The `agent` passed to `RunState.fromString(agent, serializedState)` is the root of that rebuilt graph. During deserialization, the SDK traverses that agent's handoffs and `Agent.asTool()` references, then resolves every serialized agent reference in the state against the rebuilt graph. This includes the current agent and nested references held by generated items, processed model responses, and queued next steps.

@@ -160,6 +160,8 @@ The `runContext` property is the supported public view of the run context on the
 
 `rawResponses` contains the raw model responses collected during the run. Multi-step runs can produce more than one response, for example across handoffs or repeated tool/model cycles.
 
+If an output guardrail rejects a terminal function-tool result, the SDK sanitizes the current response in `rawResponses` together with the other SDK-owned replay surfaces. Do not rely on rejected terminal tool output remaining inspectable through this property. See [Rejected terminal tool outputs](/openai-agents-js/guides/guardrails#rejected-terminal-tool-outputs) for the redaction boundary and limitations.
+
 Each response can also include `requestId`, the provider's request identifier when one is available. The OpenAI Responses and Chat Completions models populate it for streamed and non-streamed HTTP requests; treat it as optional because some providers and transports do not expose one.
 
 For Chat Completions text output, inspect the normalized `output_text` part's `providerData.annotations` to read URL citations. Non-streamed responses preserve the provider's message annotations. Streamed responses retain valid `url_citation` annotations received with text, deduplicate repeated citations, and ignore malformed or unsupported annotation shapes.
@@ -173,6 +175,8 @@ When `modelSettings.preserveRawUsage` is `true`, each completed response can als
 The `inputGuardrailResults` and `outputGuardrailResults` properties contain agent-level guardrail results. Tool guardrail results are exposed separately via `toolInputGuardrailResults` and `toolOutputGuardrailResults`.
 
 Use these arrays when you want to log guardrail decisions, inspect extra metadata returned by guardrail functions, or debug why a run was blocked.
+
+For a rejected terminal function-tool result, the SDK intentionally sanitizes current-response guardrail metadata. In `outputGuardrailResults`, `agentOutput` becomes `Output withheld by an output guardrail.` and `outputInfo` is removed. Current `toolOutputGuardrailResults` retain their verdict but omit `outputInfo`, and a `rejectContent` result uses the same placeholder as its message. Earlier accepted historical results remain unchanged.
 
 If one guardrail fails to execute, results from sibling guardrails that completed successfully remain in the run state. For streamed runs, inspect the result arrays after `completed` rejects; for non-streamed runs, the `GuardrailExecutionError` carries the same settled `state`.
 

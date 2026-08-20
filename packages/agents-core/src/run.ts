@@ -4,7 +4,6 @@ import {
   AgentsError,
   ModelBehaviorError,
   ModelTimeoutError,
-  OutputGuardrailTripwireTriggered,
   UserError,
 } from './errors';
 import {
@@ -46,7 +45,6 @@ import type { TracingConfig } from './tracing';
 import { includeTaskAndTurnSpans, mergeTracingConfig } from './tracing/config';
 import { Usage } from './usage';
 import { convertAgentOutputTypeToSerializable } from './utils/tools';
-import { isDataRedactedError } from './utils/finalOutputError';
 import { snapshotRawUsage } from './utils/rawUsage';
 import { DEFAULT_MAX_TURNS } from './runner/constants';
 import { StreamEventResponseCompleted } from './types/protocol';
@@ -62,7 +60,7 @@ import {
 } from './runner/conversation';
 import {
   createGuardrailTracker,
-  runOutputGuardrails,
+  finalizeOutputGuardrails,
 } from './runner/guardrails';
 import {
   adjustModelSettingsForNonGPT5RunnerModel,
@@ -100,7 +98,15 @@ import {
   preflightToolInvocations,
   resolveTurnAfterModelResponse,
 } from './runner/turnResolution';
-import { hasBlockedOutputExecutionEffect } from './runner/blockedOutputPersistence';
+import {
+  assertResumedSessionOutputGuardrailSafety,
+  captureCurrentResponseToolOutputGuardrailResultStart,
+  hasBlockedOutputExecutionEffect,
+  hasTerminalToolOutputSource,
+  OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+  sanitizeBlockedTerminalToolOutput,
+  shouldDeferInterruptedSessionItems,
+} from './runner/blockedOutputPersistence';
 import { prepareTurn } from './runner/turnPreparation';
 import type { NextStep } from './runner/steps';
 import {
@@ -509,6 +515,15 @@ function rollbackUnstartedTurn(
   return true;
 }
 
+function recordModelFailureUsage(
+  usage: Usage,
+  state: RunState<any, any>,
+  recordUsage: (usage: Usage) => void,
+): void {
+  state.usage.add(usage);
+  recordUsage(usage);
+}
+
 function assertPendingInputServerOwnership(
   state: RunState<any, any>,
   conversationId: string | undefined,
@@ -790,6 +805,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         undefined;
       const portableInputItems =
         resumedState._currentTurnSessionHistoryTransactionInputItems;
+      assertResumedSessionOutputGuardrailSafety(
+        resumedState,
+        session,
+        this.#agentHasOutputGuardrail(resumedState._currentAgent),
+      );
       resumedState.setReasoningItemIdPolicy(reasoningItemIdPolicy);
       await prepareSessionHistoryTransactionsForRun(session, resumedState, {
         serverManagesConversation,
@@ -998,6 +1018,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     OutputGuardrailMetadata,
     AgentOutputType<unknown>
   >[];
+
+  #agentHasOutputGuardrail(agent: Agent<any, any>): boolean {
+    return Boolean(
+      this.outputGuardrailDefs.length > 0 || agent.outputGuardrails.length > 0,
+    );
+  }
+
+  #shouldDeferInterruptedSessionItems(state: RunState<any, any>): boolean {
+    return shouldDeferInterruptedSessionItems(
+      state,
+      this.#agentHasOutputGuardrail(state._currentAgent),
+    );
+  }
 
   /**
    * @internal
@@ -1266,6 +1299,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         result: RunResult<TContext, TAgent>,
         overrideOptions?: SessionPersistenceOptions,
       ) => {
+        if (this.#shouldDeferInterruptedSessionItems(result.state)) {
+          return;
+        }
         const hasUnpersistedItems =
           result.newItems.length > state._currentTurnPersistedItemCount ||
           (overrideOptions?.additionalRunItems?.length ?? 0) > 0;
@@ -1320,42 +1356,29 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
         }
         markAcceptedResponseFinalizationStarted(state);
-        try {
-          await runOutputGuardrails(
-            state,
-            this.outputGuardrailDefs,
-            currentStep.output,
-          );
-        } catch (error) {
-          if (
-            error instanceof OutputGuardrailTripwireTriggered &&
-            persistResult
-          ) {
-            try {
-              await persistResult(new RunResult<TContext, TAgent>(state), {
-                outputBlocked: true,
-              });
-            } catch (persistenceError) {
-              error.state ??= state;
-              (error as Error & { cause?: unknown }).cause = persistenceError;
-            }
-            releaseUnusedSessionHistoryTransactionBinding(state);
-          } else if (error instanceof OutputGuardrailTripwireTriggered) {
-            releaseUnusedSessionHistoryTransactionBinding(state);
-          } else {
-            try {
-              await persistNonStreamingResult(
-                new RunResult<TContext, TAgent>(state),
-              );
-              completedResultPersisted = true;
-            } catch (persistenceError) {
-              if (!isDataRedactedError(error)) {
-                (error as Error & { cause?: unknown }).cause = persistenceError;
-              }
-            }
-          }
-          throw error;
-        }
+        await finalizeOutputGuardrails({
+          state,
+          runnerOutputGuardrails: this.outputGuardrailDefs,
+          output: currentStep.output,
+          redactedOutput: OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+          guardedTerminalToolOutput: hasTerminalToolOutputSource(state),
+          signal: options.signal,
+          sanitizeRejectedOutput: sanitizeBlockedTerminalToolOutput,
+          persistBlockedOutput: persistResult
+            ? async () =>
+                persistResult(new RunResult<TContext, TAgent>(state), {
+                  outputBlocked: true,
+                })
+            : undefined,
+          persistUnblockedFailure: async () => {
+            await persistNonStreamingResult(
+              new RunResult<TContext, TAgent>(state),
+            );
+            completedResultPersisted = true;
+          },
+          releaseBlockedOutputPersistence:
+            releaseUnusedSessionHistoryTransactionBinding,
+        });
         if (
           state._serializedCurrentStep === currentStep &&
           hasRetainableBlockedOutputEffect(state)
@@ -1414,14 +1437,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           };
 
           if (isAcceptedResponseCheckpoint(state)) {
+            captureCurrentResponseToolOutputGuardrailResultStart(state, false);
             await resumeAcceptedModelResponse({
               state,
               runner: this,
               toolErrorFormatter,
               agentToolParentRunConfig,
               signal: options.signal,
-              validateHandoffAgent: (handoffAgent) =>
-                this.#validateModelTimeoutForAgent(handoffAgent),
+              validateHandoffAgent: (handoffAgent) => {
+                this.#validateModelTimeoutForAgent(handoffAgent);
+              },
             });
           }
 
@@ -1448,26 +1473,38 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               setRunStateTurnSpanParent(state, currentTurnSpan.span);
             }
 
+            captureCurrentResponseToolOutputGuardrailResultStart(state, false);
             const interruptedOutcome = await resumeInterruptedTurn({
               state,
               runner: this,
               toolErrorFormatter,
               agentToolParentRunConfig,
               signal: options.signal,
-              validateHandoffAgent: (handoffAgent) =>
-                this.#validateModelTimeoutForAgent(handoffAgent),
+              validateHandoffAgent: (handoffAgent) => {
+                this.#validateModelTimeoutForAgent(handoffAgent);
+              },
             });
-            if (interruptedOutcome.approvedToolResumed && persistResult) {
+            const approvedToolCheckpointDeferred =
+              interruptedOutcome.approvedToolResumed &&
+              interruptedOutcome.nextStep.type === 'next_step_final_output' &&
+              this.#agentHasOutputGuardrail(state._currentAgent);
+            if (interruptedOutcome.approvedToolResumed) {
               const approvedToolResult = new RunResult<TContext, TAgent>(state);
               approvedToolCheckpointRequiresLocalInputCompaction = true;
-              await persistResult(approvedToolResult, {
-                compactionMode: 'input',
-              });
-              approvedToolCheckpointCompacted = true;
-              approvedToolCheckpointModelResponseCount =
-                approvedToolResult.rawResponses.length;
+              if (
+                persistResult &&
+                interruptedOutcome.nextStep.type !== 'next_step_final_output' &&
+                !this.#shouldDeferInterruptedSessionItems(state)
+              ) {
+                await persistResult(approvedToolResult, {
+                  compactionMode: 'input',
+                });
+                approvedToolCheckpointCompacted = true;
+                approvedToolCheckpointModelResponseCount =
+                  approvedToolResult.rawResponses.length;
+              }
             }
-            if (options.signal?.aborted) {
+            if (options.signal?.aborted && !approvedToolCheckpointDeferred) {
               persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
             }
             options.signal?.throwIfAborted();
@@ -1707,12 +1744,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             const pendingModelResponse = getResponseWithRetry(
               preparedCall.model,
               modelRequest,
-              serverConversationTracker
-                ? {
-                    onPossiblyAcceptedRequestFailure: () =>
-                      markServerInputAccepted(false),
-                  }
-                : undefined,
+              {
+                onModelFailureUsage: (usage) =>
+                  recordModelFailureUsage(usage, state, recordUsage),
+                ...(serverConversationTracker
+                  ? {
+                      onPossiblyAcceptedRequestFailure: () =>
+                        markServerInputAccepted(false),
+                    }
+                  : {}),
+              },
             );
             if (deferLocalPendingInputAdmission) {
               const modelResponseOutcome = pendingModelResponse.then(
@@ -1788,11 +1829,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
             markAcceptedResponseProcessingStarted(state);
 
+            captureCurrentResponseToolOutputGuardrailResultStart(state, true);
             const turnResult = await resolveTurnAfterModelResponse(
               state._currentAgent,
               state._originalInput,
               state._generatedItems,
-              state._lastTurnResponse,
+              state._lastTurnResponse!,
               state._lastProcessedResponse!,
               this,
               state,
@@ -2054,7 +2096,6 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const agentToolParentRunConfig = this.#getAgentToolParentRunConfig(options);
     const useTaskAndTurnSpans =
       !this.config.tracingDisabled && includeTaskAndTurnSpans(options.tracing);
-
     // Tracks when we resume an approval interruption so the next run-again step stays in the same turn.
     let continuingInterruptedTurn = false;
     let runError: unknown;
@@ -2077,6 +2118,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const saveStreamResultWithCompactionOwnership = async (
       overrideOptions?: SessionPersistenceOptions,
     ) => {
+      if (this.#shouldDeferInterruptedSessionItems(result.state)) {
+        return;
+      }
       const hasUnpersistedItems =
         result.newItems.length > result.state._currentTurnPersistedItemCount ||
         (overrideOptions?.additionalRunItems?.length ?? 0) > 0;
@@ -2143,39 +2187,26 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       markAcceptedResponseFinalizationStarted(result.state);
       result._hideFinalOutput();
-      try {
-        await runOutputGuardrails(
-          result.state,
-          this.outputGuardrailDefs,
-          currentStep.output,
-        );
-      } catch (error) {
-        if (
-          error instanceof OutputGuardrailTripwireTriggered &&
-          !serverManagesConversation
-        ) {
-          try {
-            await saveStreamResultWithCompactionOwnership({
-              outputBlocked: true,
-            });
-          } catch (persistenceError) {
-            error.state ??= result.state;
-            (error as Error & { cause?: unknown }).cause = persistenceError;
-          }
-          releaseUnusedSessionHistoryTransactionBinding(result.state);
-        } else if (error instanceof OutputGuardrailTripwireTriggered) {
-          releaseUnusedSessionHistoryTransactionBinding(result.state);
-        } else if (!serverManagesConversation) {
-          try {
-            await saveStreamResultWithCompactionOwnership();
-          } catch (persistenceError) {
-            if (!isDataRedactedError(error)) {
-              (error as Error & { cause?: unknown }).cause = persistenceError;
-            }
-          }
-        }
-        throw error;
-      }
+      await finalizeOutputGuardrails({
+        state: result.state,
+        runnerOutputGuardrails: this.outputGuardrailDefs,
+        output: currentStep.output,
+        redactedOutput: OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+        guardedTerminalToolOutput: hasTerminalToolOutputSource(result.state),
+        signal: options.signal,
+        sanitizeRejectedOutput: sanitizeBlockedTerminalToolOutput,
+        persistBlockedOutput: !serverManagesConversation
+          ? async () =>
+              saveStreamResultWithCompactionOwnership({
+                outputBlocked: true,
+              })
+          : undefined,
+        persistUnblockedFailure: !serverManagesConversation
+          ? async () => saveStreamResultWithCompactionOwnership()
+          : undefined,
+        releaseBlockedOutputPersistence:
+          releaseUnusedSessionHistoryTransactionBinding,
+      });
       if (
         result.state._serializedCurrentStep === currentStep &&
         hasRetainableBlockedOutputEffect(result.state)
@@ -2266,14 +2297,19 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         };
 
         if (isAcceptedResponseCheckpoint(result.state)) {
+          captureCurrentResponseToolOutputGuardrailResultStart(
+            result.state,
+            false,
+          );
           await resumeAcceptedModelResponse({
             state: result.state,
             runner: this,
             toolErrorFormatter,
             agentToolParentRunConfig,
             signal: options.signal,
-            validateHandoffAgent: (handoffAgent) =>
-              this.#validateModelTimeoutForAgent(handoffAgent),
+            validateHandoffAgent: (handoffAgent) => {
+              this.#validateModelTimeoutForAgent(handoffAgent);
+            },
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
@@ -2304,30 +2340,38 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             setRunStateTurnSpanParent(result.state, currentTurnSpan.span);
           }
 
+          captureCurrentResponseToolOutputGuardrailResultStart(
+            result.state,
+            false,
+          );
           const interruptedOutcome = await resumeInterruptedTurn({
             state: result.state,
             runner: this,
             toolErrorFormatter,
             agentToolParentRunConfig,
             signal: options.signal,
-            validateHandoffAgent: (handoffAgent) =>
-              this.#validateModelTimeoutForAgent(handoffAgent),
+            validateHandoffAgent: (handoffAgent) => {
+              this.#validateModelTimeoutForAgent(handoffAgent);
+            },
             onStepItems: (turnResult) => {
               addStepToRunResult(result, turnResult);
             },
           });
-          if (
-            interruptedOutcome.approvedToolResumed &&
-            !serverManagesConversation &&
-            options.session
-          ) {
+          if (interruptedOutcome.approvedToolResumed) {
             approvedToolCheckpointRequiresLocalInputCompaction = true;
-            await saveStreamResultToSession(options.session, result, {
-              compactionMode: 'input',
-            });
-            approvedToolCheckpointCompacted = true;
-            approvedToolCheckpointModelResponseCount =
-              result.rawResponses.length;
+            if (
+              interruptedOutcome.nextStep.type !== 'next_step_final_output' &&
+              !serverManagesConversation &&
+              options.session &&
+              !this.#shouldDeferInterruptedSessionItems(result.state)
+            ) {
+              await saveStreamResultToSession(options.session, result, {
+                compactionMode: 'input',
+              });
+              approvedToolCheckpointCompacted = true;
+              approvedToolCheckpointModelResponseCount =
+                result.rawResponses.length;
+            }
           }
 
           // Don't reset counter here - resolveInterruptedTurn already adjusted it via rewind logic
@@ -2607,6 +2651,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     this.config.traceIncludeSensitiveData,
                   ),
                 },
+                {
+                  onModelFailureUsage: (usage) =>
+                    recordModelFailureUsage(usage, result.state, recordUsage),
+                },
               );
               markAbortReconciliationComplete(
                 abortReconciliationState,
@@ -2665,6 +2713,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.model,
               modelRequest,
               {
+                onModelFailureUsage: (usage) =>
+                  recordModelFailureUsage(usage, result.state, recordUsage),
                 onModelTimeout: () => {
                   timedOutModelCallFailed = true;
                 },
@@ -2822,11 +2872,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
           markAcceptedResponseProcessingStarted(result.state);
 
+          captureCurrentResponseToolOutputGuardrailResultStart(
+            result.state,
+            true,
+          );
           const turnResult = await resolveTurnAfterModelResponse(
             currentAgent,
             result.state._originalInput,
             result.state._generatedItems,
-            result.state._lastTurnResponse,
+            result.state._lastTurnResponse!,
             result.state._lastProcessedResponse!,
             this,
             result.state,

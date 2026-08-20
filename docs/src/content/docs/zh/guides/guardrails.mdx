@@ -8,76 +8,87 @@ import inputGuardrailExample from '../../../../../../examples/docs/guardrails/gu
 import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
 
-护栏可以与智能体并行运行，也可以阻塞执行直至检查完成，从而对用户输入或智能体输出进行检查和验证。例如，您可以在调用成本较高的模型之前，先运行一个轻量级模型作为护栏。如果护栏检测到恶意使用行为，它可以触发错误并阻止高成本模型运行。
+护栏可以与智能体并行运行，也可以阻止执行直至检查完成，从而对用户输入或智能体输出进行检查和验证。例如，您可以在调用高成本模型之前，先运行一个轻量级模型作为护栏。如果护栏检测到恶意使用，它可以触发错误并阻止高成本模型运行。
 
-护栏分为两种：
+护栏分为三类：
 
 1. **输入护栏**针对初始用户输入运行。
 2. **输出护栏**针对最终智能体输出运行。
+3. **工具护栏**在每次调用自定义函数工具前后运行。
 
 ## 工作流边界
 
-护栏附加到智能体，但不一定会对工作流中的每个智能体运行：
+护栏附加到智能体，但不一定会针对工作流中的每个智能体运行：
 
 - **输入护栏**仅针对链中的第一个智能体运行。
 - **输出护栏**仅针对生成最终输出的智能体运行。
 - **工具护栏**针对每次函数工具调用运行，其中输入护栏在执行前运行，输出护栏在执行后运行。
 
-如果您需要在包含管理器或交接的工作流中检查每次自定义函数工具调用，请使用**工具护栏**，而不是智能体级输入护栏和输出护栏。
+如果需要检查包含管理器或交接的工作流中的每次自定义函数工具调用，请使用**工具护栏**，而不是智能体级输入护栏和输出护栏。
 
 ## 输入护栏
 
-输入护栏分 3 个步骤运行：
+输入护栏分三个步骤运行：
 
 1. 护栏接收传递给智能体的相同输入。
-2. 护栏函数执行并返回一个 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)，该输出封装在 [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) 中。
+2. 护栏函数执行并返回一个封装在 [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult) 中的 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)。
 3. 如果 `tripwireTriggered` 为 `true`，则抛出 [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) 错误。
 
-> **注意**输入护栏用于处理用户输入，因此仅当智能体是工作流中的*第一个*智能体时才会运行。护栏配置在智能体本身，因为不同的智能体通常需要不同的护栏。
+> **注意** 输入护栏用于处理用户输入，因此仅当智能体是工作流中的*第一个*智能体时才会运行。护栏配置在智能体本身，因为不同的智能体通常需要不同的护栏。
 
 ### 执行模式
 
-- `runInParallel: true`（默认）会让输入护栏与智能体同时开始执行。并发执行可最大限度降低延迟，但如果护栏之后触发，模型可能已经消耗了 token 或运行了工具。
-- `runInParallel: false` 会在调用模型**之前**运行护栏，以便在护栏阻止请求时避免消耗 token 和执行工具。当您更看重安全性和成本而非延迟时，请使用此模式。
+- `runInParallel: true`（默认值）会让输入护栏与智能体并发执行。并发执行可以最大限度地降低延迟，但如果护栏之后触发，模型可能已经消耗了 token 或运行了工具。
+- `runInParallel: false` 会在调用模型**之前**运行护栏。当护栏阻止请求时，这可以避免消耗 token 和执行工具。如果您更重视安全性和成本而非延迟，请使用此模式。
 
 ## 输出护栏
 
 输出护栏分 3 个步骤运行：
 
 1. 护栏接收智能体生成的输出。
-2. 护栏函数执行并返回一个 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)，该输出封装在 [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) 中。
+2. 护栏函数执行并返回一个封装在 [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) 中的 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)。
 3. 如果 `tripwireTriggered` 为 `true`，则抛出 [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) 错误。
 
-> **注意**输出护栏仅在智能体是工作流中的*最后一个*智能体时运行。对于实时语音交互，请参阅[构建实时智能体](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
+> **注意** 输出护栏仅当智能体是工作流中的*最后一个*智能体时才会运行。有关实时语音交互，请参阅[构建实时智能体](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
 
-输出护栏函数还会接收一个可选的 `details` 对象，其中包含底层 `modelResponse` 和该轮生成的输出项。当仅凭最终输出不足以判断响应是否应通过时，可以使用此对象。例如，您可能希望在触发护栏前检查完整的生成项列表或提供商响应元数据。
+输出护栏函数还会接收一个可选的 `details` 对象，其中包含底层 `modelResponse` 以及本轮生成的输出项。当仅凭最终输出不足以决定响应是否应通过时，可以使用此对象。例如，在触发护栏之前，您可能希望检查完整的生成项列表或提供商响应元数据。
+
+### 被拒绝的终止工具输出
+
+当 `toolUseBehavior` 将已完成的函数工具结果设为本次运行的最终输出时，输出护栏会先评估该结果，之后 SDK 才会将结果视为可重放的最终数据。护栏接收原始候选输出。如果护栏触发，SDK 会在 SDK 管理的运行状态、重放数据、会话历史记录和公开触发器错误中，将被拒绝的终止结果替换为 `Output withheld by an output guardrail.`。
+
+SDK 还会清理可能保留被拒绝输出别名的元数据。对于当前响应，`OutputGuardrailResult.agentOutput` 会变为相同的占位文本，同时删除 `OutputGuardrailResult.outputInfo`。当前的工具输出护栏结果会保留其判定，但省略 `outputInfo`；`rejectContent` 结果会使用该占位文本作为消息。之前已接受轮次中的结果和历史记录保持不变。
+
+对于可识别的函数调用和结果对，SDK 会保留可安全重放的标识和状态字段，同时替换结果内容。如果 SDK 无法确认当前响应中的哪些项属于被拒绝的终止输出，它会丢弃当前响应中存在歧义的后缀，或以安全失败方式处理，而不是对其进行重放。
+
+这种保护不会撤销外部工具的副作用、收回已经发送给应用程序代码的输出、删除已经存储在 SDK 控制范围之外的数据，也不会修改应用程序持有的原始提供商数据引用。
 
 ## 工具护栏
 
 工具护栏封装**函数工具**，让您可以在执行前后验证或阻止工具调用。它们配置在工具本身（通过 `tool()` 选项），并在每次调用该工具时运行。
 
-具体而言，这适用于您通过 `tool({...})` 设置了 `inputGuardrails`、`outputGuardrails` 或两者的自定义函数工具。
+实际上，这指的是您在 `tool({...})` 上设置了 `inputGuardrails`、`outputGuardrails` 或两者的自定义函数工具。
 
-- **输入工具护栏**在工具执行前运行，可以通过消息拒绝调用或触发错误。
-- **输出工具护栏**在工具执行后运行，可以用拒绝消息替换输出或触发错误。
+- **工具输入护栏**在工具执行前运行，可以通过消息拒绝调用或抛出触发器错误。
+- **工具输出护栏**在工具执行后运行，可以用拒绝消息替换输出或抛出触发器错误。
 
-如果本地函数工具还需要人工批准，输入工具护栏通常会在批准后、执行前立即运行。若还要在发起待处理的批准请求前运行这些输入护栏，请在 `run()` 或 `Runner` 上设置 `toolExecution: { preApprovalInputGuardrails: true }`。批准后、工具执行前，这些护栏仍会再次运行。
+如果本地函数工具还需要人工审批，工具输入护栏通常会在审批完成后、执行前立即运行。若还要在发出待审批请求之前运行这些输入护栏，请在 `run()` 或 `Runner` 上设置 `toolExecution: { preApprovalInputGuardrails: true }`。审批完成后、工具执行之前，护栏仍会再次运行。
 
-工具护栏会返回一个 `behavior`：
+工具护栏返回一个 `behavior`：
 
-- `allow`——继续执行下一个护栏或工具。
-- `rejectContent`——通过一条消息短路执行（跳过工具调用或替换输出）。
-- `throwException`——立即抛出触发错误。
+- `allow` — 继续执行下一个护栏或工具。
+- `rejectContent` — 使用一条消息进行短路处理（跳过工具调用或替换输出）。
+- `throwException` — 立即抛出触发器错误。
 
-工具护栏适用于使用 `tool()` 定义的函数工具。交接以类似函数工具的形式呈现给模型，但它们通过 SDK 的交接路径运行，而不是常规函数工具管线，因此工具护栏不适用于交接调用本身。托管工具和内置执行工具（`computerTool`、`shellTool`、`applyPatchTool`）也不使用此护栏管线，并且 `agent.asTool()` 目前不会直接公开工具护栏选项。
+工具护栏适用于使用 `tool()` 定义的函数工具。交接会作为类似函数的工具呈现给模型，但它们通过 SDK 的交接路径运行，而不是常规的函数工具管线，因此工具护栏不适用于交接调用本身。托管工具和内置执行工具（`computerTool`、`shellTool`、`applyPatchTool`）也不使用此护栏管线，并且 `agent.asTool()` 目前不直接公开工具护栏选项。
 
-## 触发机制
+## 触发器
 
-护栏失败时，会通过触发机制发出信号。触发后，运行器会立即抛出相应错误并停止执行。
+护栏失败时，会通过触发器发出信号。运行器首先等待同一批次中启动的其他护栏完成，并记录它们已完成的结果。然后，运行器会抛出相应错误并停止后续运行处理。使用并行输入护栏时，模型或工具可能已经开始工作，如[执行模式](#execution-modes)中所述。
 
 ## 护栏实现
 
-护栏就是一个返回 `GuardrailFunctionOutput` 的函数。以下是一个最小示例，它会在底层运行另一个智能体，以检查用户是否在请求数学作业帮助。
+护栏只是一个返回 `GuardrailFunctionOutput` 的函数。下面是一个最小代码示例，它通过在底层运行另一个智能体，检查用户是否在寻求数学作业帮助。
 
 <Code lang="typescript" code={inputGuardrailExample} title="输入护栏示例" />
 
