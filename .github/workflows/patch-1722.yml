@@ -23,17 +23,21 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          from textwrap import dedent
 
           guardrail = Path('packages/agents-realtime/src/guardrail.ts')
           text = guardrail.read_text()
-          old = '''function stringifyOutputInfo(outputInfo: unknown): string {
+          old = dedent('''\
+          function stringifyOutputInfo(outputInfo: unknown): string {
             try {
               return JSON.stringify(outputInfo) ?? '{}';
             } catch {
               return toSmartString(outputInfo);
             }
-          }'''.replace('          ', '')
-          new = '''export function formatRealtimeGuardrailOutputInfo(
+          }
+          ''')
+          new = dedent('''\
+          export function formatRealtimeGuardrailOutputInfo(
             outputInfo: unknown,
           ): string {
             const normalizedOutputInfo = outputInfo ?? {};
@@ -42,28 +46,33 @@ jobs:
             } catch {
               return toSmartString(normalizedOutputInfo);
             }
-          }'''.replace('          ', '')
+          }
+          ''')
           if old not in text:
               raise SystemExit('guardrail formatter block not found')
           text = text.replace(old, new, 1)
-          text = text.replace(
-              'Failure Details: ${stringifyOutputInfo(result.output.outputInfo ?? {})}.',
-              'Failure Details: ${formatRealtimeGuardrailOutputInfo(result.output.outputInfo)}.',
-              1,
-          )
+          old_feedback = 'Failure Details: ${stringifyOutputInfo(result.output.outputInfo ?? {})}.'
+          new_feedback = 'Failure Details: ${formatRealtimeGuardrailOutputInfo(result.output.outputInfo)}.'
+          if old_feedback not in text:
+              raise SystemExit('guardrail feedback formatting call not found')
+          text = text.replace(old_feedback, new_feedback, 1)
           guardrail.write_text(text)
 
           session = Path('packages/agents-realtime/src/realtimeSession.ts')
           text = session.read_text()
-          old_import = '''import {
+          old_import = dedent('''\
+          import {
             defineRealtimeOutputGuardrail,
             getRealtimeGuardrailFeedbackMessage,
-            getRealtimeGuardrailSettings,'''.replace('          ', '')
-          new_import = '''import {
+            getRealtimeGuardrailSettings,
+          ''')
+          new_import = dedent('''\
+          import {
             defineRealtimeOutputGuardrail,
             formatRealtimeGuardrailOutputInfo,
             getRealtimeGuardrailFeedbackMessage,
-            getRealtimeGuardrailSettings,'''.replace('          ', '')
+            getRealtimeGuardrailSettings,
+          ''')
           if old_import not in text:
               raise SystemExit('realtimeSession guardrail import not found')
           text = text.replace(old_import, new_import, 1)
@@ -75,7 +84,8 @@ jobs:
           session.write_text(text)
 
           test = Path('packages/agents-realtime/test/realtimeSessionGuardrailSerialization.test.ts')
-          test.write_text('''import { once } from 'node:events';
+          test.write_text(dedent('''\
+          import { once } from 'node:events';
           import { Usage } from '@openai/agents-core';
           import { afterEach, describe, expect, it, vi } from 'vitest';
           import * as guardrailModule from '../src/guardrail';
@@ -146,7 +156,7 @@ jobs:
               session.close();
             });
           });
-          '''.replace(/^          /gm, ''))
+          '''))
           PY
 
           rm .github/workflows/patch-1722.yml
