@@ -4,7 +4,6 @@ import { availableParallelism } from 'node:os';
 import { configDefaults, defineConfig } from 'vitest/config';
 import {
   assertReviewOptionalFilesExist,
-  isReviewTestProfile,
   reviewOptionalFilesForRoot,
 } from './helpers/vitest/reviewTestProfile';
 import { recommendedTestWorkers } from './helpers/vitest/testConcurrency';
@@ -17,7 +16,6 @@ const rootDir = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(rootDir, 'packages');
 const workspacePackages = readWorkspacePackages(packagesDir);
 const testAliases = createWorkspacePackageAliases(workspacePackages);
-const reviewTestProfile = isReviewTestProfile();
 const maxWorkers = recommendedTestWorkers(availableParallelism());
 const financialResearchExampleRoot = resolve(
   rootDir,
@@ -35,7 +33,10 @@ const baseTestConfig = {
 
 assertReviewOptionalFilesExist(rootDir);
 
-function reviewExcludes(projectRoot: string): { exclude?: string[] } {
+function reviewExcludes(
+  projectRoot: string,
+  reviewTestProfile: boolean,
+): { exclude?: string[] } {
   if (!reviewTestProfile) {
     return {};
   }
@@ -48,51 +49,74 @@ function reviewExcludes(projectRoot: string): { exclude?: string[] } {
   };
 }
 
-const packageProjects = workspacePackages.map(({ name, root }) => {
-  return {
+function createProjects(reviewTestProfile: boolean) {
+  const packageProjects = workspacePackages.map(({ name, root }) => ({
     root,
-    resolve: {
-      alias: testAliases,
-    },
+    resolve: { alias: testAliases },
     test: {
       ...baseTestConfig,
-      ...reviewExcludes(root),
+      ...reviewExcludes(root, reviewTestProfile),
       alias: testAliases,
       name,
     },
+  }));
+
+  const financialResearchExampleProject = {
+    root: financialResearchExampleRoot,
+    resolve: { alias: testAliases },
+    test: {
+      ...baseTestConfig,
+      ...reviewExcludes(financialResearchExampleRoot, reviewTestProfile),
+      alias: testAliases,
+      name: 'financial-research-agent-example',
+      include: ['manager.test.ts'],
+    },
   };
-});
 
-const financialResearchExampleProject = {
-  root: financialResearchExampleRoot,
-  resolve: {
-    alias: testAliases,
-  },
-  test: {
-    ...baseTestConfig,
-    ...reviewExcludes(financialResearchExampleRoot),
-    alias: testAliases,
-    name: 'financial-research-agent-example',
-    include: ['manager.test.ts'],
-  },
-};
+  const realtimeReactNativeExampleProject = {
+    root: realtimeReactNativeExampleRoot,
+    resolve: { alias: testAliases },
+    test: {
+      ...baseTestConfig,
+      ...reviewExcludes(realtimeReactNativeExampleRoot, reviewTestProfile),
+      alias: testAliases,
+      name: 'realtime-react-native-example',
+      include: ['test/**/*.test.ts'],
+    },
+  };
 
-const realtimeReactNativeExampleProject = {
-  root: realtimeReactNativeExampleRoot,
-  resolve: {
-    alias: testAliases,
-  },
-  test: {
-    ...baseTestConfig,
-    ...reviewExcludes(realtimeReactNativeExampleRoot),
-    alias: testAliases,
-    name: 'realtime-react-native-example',
-    include: ['test/**/*.test.ts'],
-  },
-};
+  return [
+    {
+      root: rootDir,
+      resolve: { alias: testAliases },
+      test: {
+        ...baseTestConfig,
+        ...reviewExcludes(rootDir, reviewTestProfile),
+        alias: testAliases,
+        name: 'workspace-test-config',
+        maxConcurrency: 4,
+        include: [
+          'helpers/tests/consoleGuard.test.ts',
+          'helpers/vitest/codeChangeVerificationPolicy.test.ts',
+          'helpers/vitest/reviewTestProfile.test.ts',
+          'helpers/vitest/testConcurrency.test.ts',
+          'helpers/vitest/workspacePackageAliases.test.ts',
+          'scripts/update-rclone-pin.test.mjs',
+          'scripts/released-api-contract.test.mjs',
+          'scripts/run-integration-tests-managed.test.mjs',
+          'scripts/workflow-contracts.test.mjs',
+        ],
+      },
+    },
+    ...packageProjects,
+    financialResearchExampleProject,
+    realtimeReactNativeExampleProject,
+  ];
+}
 
 export default defineConfig(({ mode }) => {
   process.env.NODE_ENV = 'test';
+  const reviewTestProfile = mode === 'review';
   if (mode === 'review') {
     process.env.OPENAI_AGENTS_TEST_PROFILE = 'review';
   } else if (mode === 'full' || mode === 'watch') {
@@ -107,35 +131,7 @@ export default defineConfig(({ mode }) => {
     allowOnly: mode === 'watch',
     pool: 'threads',
     maxWorkers,
-    projects: [
-      {
-        root: rootDir,
-        resolve: {
-          alias: testAliases,
-        },
-        test: {
-          ...baseTestConfig,
-          ...reviewExcludes(rootDir),
-          alias: testAliases,
-          name: 'workspace-test-config',
-          maxConcurrency: 4,
-          include: [
-            'helpers/tests/consoleGuard.test.ts',
-            'helpers/vitest/codeChangeVerificationPolicy.test.ts',
-            'helpers/vitest/reviewTestProfile.test.ts',
-            'helpers/vitest/testConcurrency.test.ts',
-            'helpers/vitest/workspacePackageAliases.test.ts',
-            'scripts/update-rclone-pin.test.mjs',
-            'scripts/released-api-contract.test.mjs',
-            'scripts/run-integration-tests-managed.test.mjs',
-            'scripts/workflow-contracts.test.mjs',
-          ],
-        },
-      },
-      ...packageProjects,
-      financialResearchExampleProject,
-      realtimeReactNativeExampleProject,
-    ],
+    projects: createProjects(reviewTestProfile),
     // Coverage options are global in Vitest workspaces.
     // Keep the filter at the root to avoid scanning docs/examples/dist output.
     coverage: {
