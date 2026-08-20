@@ -67,7 +67,7 @@ describe('review test profile', () => {
       readFileSync(resolve(rootDir, 'package.json'), 'utf8'),
     ) as { scripts: Record<string, string> };
 
-    expect(packageJson.scripts.test).toContain('vitest --mode full');
+    expect(packageJson.scripts.test).toContain('vitest run --mode full');
     expect(packageJson.scripts['test:coverage']).toContain(
       'vitest run --mode full',
     );
@@ -75,7 +75,7 @@ describe('review test profile', () => {
       'vitest --watch --mode watch',
     );
     expect(packageJson.scripts['test:review']).toContain(
-      'vitest --mode review',
+      'vitest run --mode review',
     );
 
     const vitestConfig = readFileSync(
