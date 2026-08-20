@@ -77,7 +77,7 @@ const MCP_FUNCTION_TOOL_NAME_MAX_LENGTH = 64;
 const MCP_FUNCTION_TOOL_HASH_LENGTH = 8;
 
 function snapshotMcpTools(tools: MCPTool[]): MCPTool[] {
-  return [...tools];
+  return structuredClone(tools);
 }
 
 type PrefixedToolNameCandidate = {
@@ -629,7 +629,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
   const listToolsForServer = async (
     span?: Span<MCPListToolsSpanData>,
   ): Promise<MCPTool[]> => {
-    const fetchedMcpTools = await server.listTools();
+    const fetchedMcpTools = snapshotMcpTools(await server.listTools());
     let mcpTools: MCPTool[] = fetchedMcpTools;
 
     if (runContext && agent) {
@@ -639,7 +639,8 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
         const filter = server.toolFilter;
         if (filter) {
           if (typeof filter === 'function') {
-            const filtered = await filter(context, tool);
+            const [detachedTool] = snapshotMcpTools([tool]);
+            const filtered = await filter(context, detachedTool);
             if (!filtered) {
               logMcpToolFilterDebug(
                 () =>
@@ -692,7 +693,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
       }
       _cachedToolKeysByServer[serverName].add(cacheKey);
     }
-    return mcpTools;
+    return snapshotMcpTools(mcpTools);
   };
 
   try {

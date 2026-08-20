@@ -364,6 +364,69 @@ describe('MCP tools cache invalidation', () => {
       'b',
     ]);
   });
+
+  it.each([
+    { cacheToolsList: true, expectedListCalls: 1, expectedFilterCalls: 1 },
+    { cacheToolsList: false, expectedListCalls: 2, expectedFilterCalls: 2 },
+  ])(
+    'isolates callable filter and FunctionTool mutations with cacheToolsList=$cacheToolsList',
+    async ({ cacheToolsList, expectedListCalls, expectedFilterCalls }) => {
+      const serverName = `filter-snapshot-${cacheToolsList}`;
+      await invalidateServerToolsCache(serverName);
+      const listedTool = toolWithNestedMetadata('original_tool');
+      const callTool = vi.fn(async () => [] as CallToolResultContent);
+      let listCalls = 0;
+      let filterCalls = 0;
+      const server: MCPServer = {
+        name: serverName,
+        cacheToolsList,
+        toolFilter: async (_context, tool) => {
+          filterCalls += 1;
+          mutateToolDefinition(tool);
+          return true;
+        },
+        async connect() {},
+        async close() {},
+        async listTools() {
+          listCalls += 1;
+          return [listedTool];
+        },
+        callTool,
+        async invalidateToolsCache() {
+          await invalidateServerToolsCache(serverName);
+        },
+      };
+      const options = {
+        mcpServers: [server],
+        convertSchemasToStrict: true,
+        runContext: new RunContext({}),
+        agent: new Agent({ name: 'FilterSnapshotAgent' }),
+      };
+
+      const firstListing = (await getAllMcpTools(options)) as FunctionTool[];
+      expectFunctionToolDefinition(firstListing[0], 'original_tool');
+      expectOriginalToolDefinition(listedTool, 'original_tool');
+
+      const firstParameters = firstListing[0].parameters as any;
+      firstListing[0].description = 'caller mutation';
+      firstParameters.required.length = 0;
+      firstParameters.properties.query.type = 'number';
+
+      const secondListing = (await getAllMcpTools(options)) as FunctionTool[];
+      expectFunctionToolDefinition(secondListing[0], 'original_tool');
+      expect(secondListing[0].parameters).not.toBe(firstParameters);
+      expectOriginalToolDefinition(listedTool, 'original_tool');
+
+      await secondListing[0].invoke(
+        new RunContext({}),
+        JSON.stringify({ query: 'safe' }),
+      );
+
+      expect(callTool).toHaveBeenCalledWith('original_tool', { query: 'safe' });
+      expect(listCalls).toBe(expectedListCalls);
+      expect(filterCalls).toBe(expectedFilterCalls);
+    },
+  );
 });
 
 describe('MCP tools static filters', () => {
@@ -1120,6 +1183,69 @@ function toolNamed(name: string): MCPTool {
   };
 }
 
+type MCPToolWithNestedMetadata = MCPTool & {
+  outputSchema: {
+    type: 'object';
+    properties: { answer: { type: string } };
+    required: string[];
+  };
+  annotations: { audience: string[] };
+  _meta: { owner: { name: string } };
+};
+
+function toolWithNestedMetadata(name: string): MCPToolWithNestedMetadata {
+  return {
+    name,
+    description: 'original description',
+    inputSchema: {
+      type: 'object',
+      properties: { query: { type: 'string' } },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    outputSchema: {
+      type: 'object',
+      properties: { answer: { type: 'string' } },
+      required: ['answer'],
+    },
+    annotations: { audience: ['user'] },
+    _meta: { owner: { name: 'server' } },
+  };
+}
+
+function mutateToolDefinition(tool: MCPTool): void {
+  const toolWithMetadata = tool as MCPToolWithNestedMetadata;
+  toolWithMetadata.name = 'mutated_tool';
+  toolWithMetadata.description = 'mutated description';
+  toolWithMetadata.inputSchema.required.length = 0;
+  (toolWithMetadata.inputSchema.properties.query as { type: string }).type =
+    'number';
+  toolWithMetadata.outputSchema.required.length = 0;
+  toolWithMetadata.outputSchema.properties.answer.type = 'number';
+  toolWithMetadata.annotations.audience[0] = 'assistant';
+  toolWithMetadata._meta.owner.name = 'caller';
+}
+
+function expectOriginalToolDefinition(tool: MCPTool, name: string): void {
+  const toolWithMetadata = tool as MCPToolWithNestedMetadata;
+  expect(toolWithMetadata).toEqual(toolWithNestedMetadata(name));
+}
+
+function expectFunctionToolDefinition(
+  functionTool: FunctionTool,
+  name: string,
+): void {
+  expect(functionTool.name).toBe(name);
+  expect(functionTool.description).toBe('original description');
+  expect(functionTool.parameters).toMatchObject({
+    type: 'object',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+    additionalProperties: false,
+  });
+  expect(functionTool.strict).toBe(true);
+}
+
 function createDeferredVoid() {
   let resolve!: () => void;
   const promise = new Promise<void>((innerResolve) => {
@@ -1280,7 +1406,7 @@ describe.each(wrapperCacheCases)(
         invalidateCalls,
         listCalls,
         underlyingCachedTools,
-      } = createStubUnderlying(serverName, [toolNamed('a')]);
+      } = createStubUnderlying(serverName, [toolWithNestedMetadata('a')]);
       (server as unknown as { underlying: typeof stub }).underlying = stub;
       return {
         server,
@@ -1294,30 +1420,35 @@ describe.each(wrapperCacheCases)(
       };
     }
 
-    it('does not expose its cached tools array to callers', async () => {
+    it('does not expose its cached tool definitions to callers', async () => {
       const { server, listCalls } = createHarness();
       await server.connect();
 
       const firstListing = await server.listTools();
       const firstTool = firstListing[0];
       firstListing.length = 0;
+      mutateToolDefinition(firstTool);
 
       const secondListing = await server.listTools();
 
       expect(secondListing.map((tool) => tool.name)).toEqual(['a']);
-      expect(secondListing[0]).toBe(firstTool);
+      expect(secondListing[0]).not.toBe(firstTool);
+      expectOriginalToolDefinition(secondListing[0], 'a');
       expect(listCalls()).toBe(1);
     });
 
-    it('does not expose underlying listed arrays without wrapper caching', async () => {
+    it('does not expose underlying tool definitions without wrapper caching', async () => {
       const { server, underlyingCachedTools } = createHarness();
       server.cacheToolsList = false;
       await server.connect();
 
       const listing = await server.listTools();
+      const listedTool = listing[0];
       listing.length = 0;
+      mutateToolDefinition(listedTool);
 
       expect(underlyingCachedTools()?.map((tool) => tool.name)).toEqual(['a']);
+      expectOriginalToolDefinition(underlyingCachedTools()![0], 'a');
     });
 
     it('returns fresh shared tools after explicit invalidation', async () => {
