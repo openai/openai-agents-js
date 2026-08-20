@@ -85,9 +85,17 @@ export class OpenAIProvider implements ModelProvider {
   #getClient(): OpenAI {
     // If the constructor does not accept the OpenAI client,
     if (!this.#client) {
+      const hasProviderClientOptions = [
+        this.#options.apiKey,
+        this.#options.baseURL,
+        this.#options.organization,
+        this.#options.project,
+      ].some((value) => typeof value !== 'undefined');
       this.#client =
-        // this provider checks if there is the default client first,
-        (getDefaultOpenAIClient() as OpenAI | undefined) ??
+        // Provider-specific construction options take precedence over the SDK-wide default client.
+        (!hasProviderClientOptions
+          ? (getDefaultOpenAIClient() as OpenAI | undefined)
+          : undefined) ??
         // and then manually creates a new one.
         new OpenAI({
           apiKey: this.#options.apiKey ?? getDefaultOpenAIKey(),

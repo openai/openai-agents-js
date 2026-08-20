@@ -191,6 +191,88 @@ describe('OpenAIProvider', () => {
     expect(OpenAIMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      optionName: 'apiKey',
+      providerOptions: { apiKey: 'provider-key' },
+      expectedClientOptions: { apiKey: 'provider-key' },
+    },
+    {
+      optionName: 'baseURL',
+      providerOptions: { baseURL: 'https://provider.example.test/v1' },
+      expectedClientOptions: {
+        baseURL: 'https://provider.example.test/v1',
+      },
+    },
+    {
+      optionName: 'organization',
+      providerOptions: { organization: 'org-provider' },
+      expectedClientOptions: { organization: 'org-provider' },
+    },
+    {
+      optionName: 'project',
+      providerOptions: { project: 'proj-provider' },
+      expectedClientOptions: { project: 'proj-provider' },
+    },
+  ])(
+    'uses provider $optionName instead of the default client',
+    async ({ providerOptions, expectedClientOptions }) => {
+      setDefaultOpenAIClient({ client: 'default' } as any);
+      setDefaultOpenAIKey('default-key');
+      const provider = new OpenAIProvider({
+        ...providerOptions,
+        useResponses: true,
+      });
+
+      const model = await provider.getModel('gpt-4.1');
+
+      expect(model).toBeInstanceOf(OpenAIResponsesModel);
+      expect(OpenAIMock).toHaveBeenCalledTimes(1);
+      expect(OpenAIMock).toHaveBeenCalledWith(
+        expect.objectContaining(expectedClientOptions),
+      );
+    },
+  );
+
+  it.each(['apiKey', 'baseURL', 'organization', 'project'])(
+    'treats an explicit empty %s as a client construction option',
+    async (optionName) => {
+      setDefaultOpenAIClient({ client: 'default' } as any);
+      setDefaultOpenAIKey('default-key');
+      const provider = new OpenAIProvider({
+        [optionName]: '',
+        useResponses: true,
+      });
+
+      await provider.getModel('gpt-4.1');
+
+      expect(OpenAIMock).toHaveBeenCalledTimes(1);
+      expect(OpenAIMock).toHaveBeenCalledWith(
+        expect.objectContaining({ [optionName]: '' }),
+      );
+    },
+  );
+
+  it('does not treat websocketBaseURL as an HTTP client construction option', async () => {
+    const defaultClient = {
+      baseURL: 'https://default-client.example/v1',
+      responses: { create: vi.fn(), compact: vi.fn() },
+      chat: { completions: { create: vi.fn() } },
+    } as any;
+    setDefaultOpenAIClient(defaultClient);
+    const provider = new OpenAIProvider({
+      websocketBaseURL: 'wss://provider.example.test/v1',
+      useResponses: true,
+      useResponsesWebSocket: true,
+    });
+
+    const model = await provider.getModel('gpt-4.1');
+
+    expect(model).toBeInstanceOf(OpenAIResponsesWSModel);
+    expect((model as any)._client).toBe(defaultClient);
+    expect(OpenAIMock).not.toHaveBeenCalled();
+  });
+
   it('passes strict feature validation to chat completions models', async () => {
     const provider = new OpenAIProvider({
       openAIClient: new FakeClient() as any,
