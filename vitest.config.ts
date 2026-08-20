@@ -91,8 +91,20 @@ const realtimeReactNativeExampleProject = {
   },
 };
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  process.env.NODE_ENV = 'test';
+  if (mode === 'review') {
+    process.env.OPENAI_AGENTS_TEST_PROFILE = 'review';
+  } else if (mode === 'full' || mode === 'watch') {
+    process.env.OPENAI_AGENTS_TEST_PROFILE = 'full';
+  }
+  if (mode !== 'watch') {
+    process.env.CI = '1';
+  }
+
+  return {
   test: {
+    allowOnly: mode === 'watch',
     pool: 'threads',
     maxWorkers,
     projects: [
@@ -134,4 +146,6 @@ export default defineConfig({
       exclude: ['**/*.d.ts', 'packages/**/test/**', 'packages/**/dist/**'],
     },
   },
+  },
+  };
 });
