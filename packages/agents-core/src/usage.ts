@@ -88,6 +88,19 @@ export class RequestUsage {
   }
 }
 
+function cloneTokenDetails(
+  details: Record<string, number>,
+): Record<string, number> {
+  return { ...details };
+}
+
+function cloneRequestUsage(input: RequestUsageInput): RequestUsage {
+  const cloned = new RequestUsage(input);
+  cloned.inputTokensDetails = cloneTokenDetails(cloned.inputTokensDetails);
+  cloned.outputTokensDetails = cloneTokenDetails(cloned.outputTokensDetails);
+  return cloned;
+}
+
 /**
  * Tracks token usage and request counts for an agent run.
  */
@@ -196,11 +209,15 @@ export class Usage {
     this.totalTokens += newUsage.totalTokens ?? 0;
     if (newUsage.inputTokensDetails) {
       // The type does not allow undefined, but it could happen runtime
-      this.inputTokensDetails.push(...newUsage.inputTokensDetails);
+      this.inputTokensDetails.push(
+        ...newUsage.inputTokensDetails.map(cloneTokenDetails),
+      );
     }
     if (newUsage.outputTokensDetails) {
       // The type does not allow undefined, but it could happen runtime
-      this.outputTokensDetails.push(...newUsage.outputTokensDetails);
+      this.outputTokensDetails.push(
+        ...newUsage.outputTokensDetails.map(cloneTokenDetails),
+      );
     }
 
     if (
@@ -209,14 +226,12 @@ export class Usage {
     ) {
       this.requestUsageEntries ??= [];
       this.requestUsageEntries.push(
-        ...newUsage.requestUsageEntries.map((entry) =>
-          entry instanceof RequestUsage ? entry : new RequestUsage(entry),
-        ),
+        ...newUsage.requestUsageEntries.map(cloneRequestUsage),
       );
     } else if (newUsage.requests === 1 && newUsage.totalTokens > 0) {
       this.requestUsageEntries ??= [];
       this.requestUsageEntries.push(
-        new RequestUsage({
+        cloneRequestUsage({
           inputTokens: newUsage.inputTokens,
           outputTokens: newUsage.outputTokens,
           totalTokens: newUsage.totalTokens,
