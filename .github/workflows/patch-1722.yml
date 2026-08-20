@@ -1,0 +1,161 @@
+name: Apply PR 1722 review follow-up
+
+on:
+  push:
+    branches:
+      - fix/realtime-guardrail-safe-feedback
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/realtime-guardrail-safe-feedback
+          fetch-depth: 0
+
+      - name: Apply review follow-up
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          guardrail = Path('packages/agents-realtime/src/guardrail.ts')
+          text = guardrail.read_text()
+          old = '''function stringifyOutputInfo(outputInfo: unknown): string {
+            try {
+              return JSON.stringify(outputInfo) ?? '{}';
+            } catch {
+              return toSmartString(outputInfo);
+            }
+          }'''.replace('          ', '')
+          new = '''export function formatRealtimeGuardrailOutputInfo(
+            outputInfo: unknown,
+          ): string {
+            const normalizedOutputInfo = outputInfo ?? {};
+            try {
+              return JSON.stringify(normalizedOutputInfo) ?? '{}';
+            } catch {
+              return toSmartString(normalizedOutputInfo);
+            }
+          }'''.replace('          ', '')
+          if old not in text:
+              raise SystemExit('guardrail formatter block not found')
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              'Failure Details: ${stringifyOutputInfo(result.output.outputInfo ?? {})}.',
+              'Failure Details: ${formatRealtimeGuardrailOutputInfo(result.output.outputInfo)}.',
+              1,
+          )
+          guardrail.write_text(text)
+
+          session = Path('packages/agents-realtime/src/realtimeSession.ts')
+          text = session.read_text()
+          old_import = '''import {
+            defineRealtimeOutputGuardrail,
+            getRealtimeGuardrailFeedbackMessage,
+            getRealtimeGuardrailSettings,'''.replace('          ', '')
+          new_import = '''import {
+            defineRealtimeOutputGuardrail,
+            formatRealtimeGuardrailOutputInfo,
+            getRealtimeGuardrailFeedbackMessage,
+            getRealtimeGuardrailSettings,'''.replace('          ', '')
+          if old_import not in text:
+              raise SystemExit('realtimeSession guardrail import not found')
+          text = text.replace(old_import, new_import, 1)
+          old_message = '`Output guardrail triggered: ${JSON.stringify(firstTripwireTriggered.output.outputInfo)}`'
+          new_message = '`Output guardrail triggered: ${formatRealtimeGuardrailOutputInfo(firstTripwireTriggered.output.outputInfo)}`'
+          if old_message not in text:
+              raise SystemExit('realtimeSession tripwire message not found')
+          text = text.replace(old_message, new_message, 1)
+          session.write_text(text)
+
+          test = Path('packages/agents-realtime/test/realtimeSessionGuardrailSerialization.test.ts')
+          test.write_text('''import { once } from 'node:events';
+          import { Usage } from '@openai/agents-core';
+          import { afterEach, describe, expect, it, vi } from 'vitest';
+          import * as guardrailModule from '../src/guardrail';
+          import { RealtimeAgent } from '../src/realtimeAgent';
+          import { RealtimeSession } from '../src/realtimeSession';
+          import { FakeTransport, fakeModelMessage } from './stubs';
+
+          async function waitForEvent<T extends unknown[]>(
+            emitter: object,
+            eventName: string,
+          ): Promise<T> {
+            return (await once(emitter as any, eventName)) as T;
+          }
+
+          describe('RealtimeSession guardrail outputInfo serialization', () => {
+            afterEach(() => {
+              vi.restoreAllMocks();
+            });
+
+            it.each([
+              [
+                'circular outputInfo',
+                () => {
+                  const value: Record<string, unknown> = { reason: 'blocked' };
+                  value.self = value;
+                  return value;
+                },
+              ],
+              ['BigInt outputInfo', () => 42n],
+            ])('preserves guardrail recovery for %s', async (_name, makeOutputInfo) => {
+              const outputInfo = makeOutputInfo();
+              const runMock = vi.fn(async () => ({
+                guardrail: { name: 'test', version: '1', policyHint: 'bad' },
+                output: { tripwireTriggered: true, outputInfo },
+              }));
+              vi.spyOn(
+                guardrailModule,
+                'defineRealtimeOutputGuardrail',
+              ).mockReturnValue({ run: runMock } as any);
+
+              const transport = new FakeTransport();
+              const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
+              const session = new RealtimeSession(agent, {
+                transport,
+                outputGuardrails: [
+                  { name: 'test', execute: async () => ({}) } as any,
+                ],
+                outputGuardrailSettings: { debounceTextLength: -1 },
+              });
+              await session.connect({ apiKey: 'test' });
+
+              const guardrailTripped = waitForEvent<any[]>(
+                session,
+                'guardrail_tripped',
+              );
+              transport.emit('turn_done', {
+                response: {
+                  output: [fakeModelMessage('bad output')],
+                  usage: new Usage(),
+                },
+              } as any);
+
+              const [, , error, details] = await guardrailTripped;
+              expect(error.message).toContain('Output guardrail triggered:');
+              expect(transport.interruptCalls).toBe(1);
+              expect(transport.sendMessageCalls.at(-1)?.[0]).toContain('blocked');
+              expect(details).toEqual({ itemId: '123' });
+              session.close();
+            });
+          });
+          '''.replace(/^          /gm, ''))
+          PY
+
+          rm .github/workflows/patch-1722.yml
+
+      - name: Commit follow-up
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(realtime): share safe guardrail output formatter"
+          git push origin HEAD:fix/realtime-guardrail-safe-feedback
