@@ -10,6 +10,9 @@ import { isRecord } from './typeGuards';
 
 export { withSandboxSpan };
 
+const UNINSPECTABLE_PROVIDER_ERROR =
+  'Provider error could not be inspected safely.';
+
 export async function closeRemoteSessionOnManifestError(
   providerName: string,
   session: { close(): Promise<void> },
@@ -95,7 +98,7 @@ export async function withProviderError<T>(
         },
       );
     }
-    if (error instanceof UserError) {
+    if (safelyIsUserError(error)) {
       throw error;
     }
     const cause = providerErrorMessage(error);
@@ -115,11 +118,15 @@ export async function withProviderError<T>(
 }
 
 export function isProviderSandboxNotFoundError(error: unknown): boolean {
-  if (isNotFoundErrorRecord(error, new Set())) {
-    return true;
+  try {
+    if (isNotFoundErrorRecord(error, new Set())) {
+      return true;
+    }
+  } catch {
+    // Fall through to the fail-safe text path below.
   }
 
-  const text = errorMessage(error).trim();
+  const text = providerErrorMessage(error).trim();
   return isNotFoundErrorMessage(text);
 }
 
@@ -133,7 +140,7 @@ export function assertResumeRecreateAllowed(
   error: unknown,
   context: ResumeRecreateErrorContext,
 ): void {
-  if (error instanceof UserError) {
+  if (safelyIsUserError(error)) {
     throw error;
   }
 
@@ -155,7 +162,13 @@ export function assertResumeRecreateAllowed(
 }
 
 export function providerErrorMessage(error: unknown): string {
-  const message = errorMessage(error);
+  let message = UNINSPECTABLE_PROVIDER_ERROR;
+  try {
+    const inspectedMessage = errorMessage(error);
+    message = safelyCoerceProviderErrorText(inspectedMessage) ?? message;
+  } catch {
+    // Keep the generic fail-safe message.
+  }
   const details = providerErrorDetails(error);
   const detailText = formatProviderErrorDetailSummary(details);
   if (!detailText) {
@@ -165,25 +178,52 @@ export function providerErrorMessage(error: unknown): string {
 }
 
 export function providerErrorDetails(error: unknown): Record<string, unknown> {
-  return collectProviderErrorDetails(error, new Set<object>(), 0);
+  try {
+    return collectProviderErrorDetails(error, new Set<object>(), 0);
+  } catch {
+    return {};
+  }
 }
 
 export function providerErrorRetryability(error: unknown): boolean | null {
-  return readProviderErrorRetryability(error, new Set<object>(), 0);
-}
-
-function safelyReadProviderErrorRetryability(error: unknown): boolean | null {
   try {
-    return providerErrorRetryability(error);
+    return readProviderErrorRetryability(error, new Set<object>(), 0);
   } catch {
     return null;
   }
 }
 
-function errorMessage(error: unknown): string {
+function safelyReadProviderErrorRetryability(error: unknown): boolean | null {
+  return providerErrorRetryability(error);
+}
+
+function safelyIsUserError(error: unknown): error is UserError {
+  try {
+    return error instanceof UserError;
+  } catch {
+    return false;
+  }
+}
+
+function safelyCoerceProviderErrorText(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return value;
+  }
+  try {
+    return String(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function errorMessage(error: unknown): unknown {
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof SandboxProviderError && error.details) {
-    return `${message} Details: ${formatErrorDetails(error.details)}`;
+    const safeMessage = safelyCoerceProviderErrorText(message);
+    if (safeMessage === undefined) {
+      return undefined;
+    }
+    return `${safeMessage} Details: ${formatErrorDetails(error.details)}`;
   }
   return message;
 }
