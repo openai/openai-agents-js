@@ -113,7 +113,6 @@ export function recordStreamEventForAbortReconciliation(
 ): void {
   if (event.type === 'response_done') {
     state.pendingFunctionCalls.clear();
-    state.pendingComputerCalls.clear();
     state.pendingShellCalls.clear();
     state.pendingApplyPatchCalls.clear();
     state.pendingProgramCalls.clear();
