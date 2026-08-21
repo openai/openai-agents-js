@@ -1,6 +1,6 @@
 ---
 name: implementation-final-review
-description: Perform a risk-tiered zero-base final review loop before an implementation is declared complete. Use only when the user explicitly invokes $implementation-final-review or repository instructions authorize automatic invocation after implementation. Audit the complete merge-base diff for requirement fit, contract-surface coverage, await-boundary and lifecycle gaps, released compatibility, security, protocol, and persistence boundaries, unnecessary complexity, package and generated public surfaces, and adversarial test coverage; use compact self-contained reviewer packets and two concurrent no-history independent reviewers per round, defer broad final repository verification until review is clean and observable host capacity is available, preserve clean evidence for unchanged semantic components, close repeated root-cause groups instead of accumulating local patches, and enforce bounded review cycles in one task-global ledger.
+description: Perform the repository's risk-tiered independent final review before implementation completion. Use only when explicitly invoked or when repository instructions require it after behavior-impacting implementation work; audit the complete task diff, supported contracts, lifecycle and security boundaries, complexity, and tests before final verification.
 ---
 
 # Implementation Final Review
@@ -171,6 +171,9 @@ Choose dimensions based on the changed boundary; do not mechanically invent find
 ### Tests and generated public surfaces
 
 - Prefer public-boundary or caller-visible adversarial tests.
+- Exercise the highest stable caller boundary that reproduces the required behavior. A helper-only test is insufficient when a caller transforms the input, owns the lifecycle, or determines the observable result before or after invoking that helper.
+- Require expected values and failure signals to come from the contract, a worked example, a baseline, or another independent oracle. Do not accept an assertion that recomputes the expected result with the same logic as the implementation.
+- Use a narrower internal boundary when a lifecycle, concurrency, provider-wire, or malformed-stream scenario cannot be controlled reliably through a public entry point, and record why that boundary is necessary.
 - Add controlled interleavings for concurrency instead of relying only on sequential tests.
 - Test the required behavior, the nearest supported alternative, and one representative input per unsupported category.
 - Do not accept passing existing tests as proof when they encode the same assumptions as the implementation.
