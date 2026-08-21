@@ -83,7 +83,7 @@ describe('review test profile', () => {
       'utf8',
     );
     expect(vitestConfig).toContain(
-      "const reviewTestProfile = mode === 'review';",
+      'const reviewTestProfile = isReviewTestProfile();',
     );
     expect(vitestConfig).toContain(
       "process.env.OPENAI_AGENTS_TEST_PROFILE = 'review';",

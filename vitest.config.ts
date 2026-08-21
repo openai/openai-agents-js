@@ -4,6 +4,7 @@ import { availableParallelism } from 'node:os';
 import { configDefaults, defineConfig } from 'vitest/config';
 import {
   assertReviewOptionalFilesExist,
+  isReviewTestProfile,
   reviewOptionalFilesForRoot,
 } from './helpers/vitest/reviewTestProfile';
 import { recommendedTestWorkers } from './helpers/vitest/testConcurrency';
@@ -116,12 +117,12 @@ function createProjects(reviewTestProfile: boolean) {
 
 export default defineConfig(({ mode }) => {
   process.env.NODE_ENV = 'test';
-  const reviewTestProfile = mode === 'review';
   if (mode === 'review') {
     process.env.OPENAI_AGENTS_TEST_PROFILE = 'review';
   } else if (mode === 'full' || mode === 'watch') {
     process.env.OPENAI_AGENTS_TEST_PROFILE = 'full';
   }
+  const reviewTestProfile = isReviewTestProfile();
   if (mode !== 'watch') {
     process.env.CI = '1';
   }
