@@ -67,7 +67,7 @@ export const createGuardrailTracker = (): GuardrailTracker => {
   };
 
   const throwIfError = async () => {
-    if (error) {
+    if (failed) {
       if (promise) {
         await promise;
       }
@@ -79,7 +79,7 @@ export const createGuardrailTracker = (): GuardrailTracker => {
     if (promise) {
       await promise;
     }
-    if (error && !options?.suppressErrors) {
+    if (failed && !options?.suppressErrors) {
       throw error;
     }
   };
