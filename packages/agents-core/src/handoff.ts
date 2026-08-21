@@ -377,12 +377,9 @@ export function handoff<
           'Handoff function expected non empty input',
         );
       }
+      let parsed: any;
       try {
-        // verify that it's valid input but we don't care about the result
-        const parsed = await parser(inputJsonString);
-        if (config.onHandoff) {
-          await config.onHandoff(context, parsed);
-        }
+        parsed = await parser(inputJsonString);
       } catch (error) {
         addErrorToCurrentSpan({
           message: `Invalid JSON provided`,
@@ -394,6 +391,9 @@ export function handoff<
           );
         }
         throw new ModelBehaviorError('Invalid JSON provided');
+      }
+      if (config.onHandoff) {
+        await config.onHandoff(context, parsed);
       }
     } else {
       await config.onHandoff?.(context);
