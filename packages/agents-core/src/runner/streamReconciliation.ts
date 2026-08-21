@@ -1,6 +1,6 @@
 import { randomUUID } from '@openai/agents-core/_shims';
 
-import type { ModelRequest, ModelResponse } from '../model';
+import type { ModelRequest, ModelResponse, ModelSettings } from '../model';
 import type {
   ApplyPatchCallResultItem,
   ComputerCallResultItem,
@@ -273,6 +273,12 @@ export function buildAbortReconciliationInput(
     ...applyPatchOutputs,
     ...programOutputs,
   ];
+}
+
+export function getAbortReconciliationModelSettings(
+  modelSettings: ModelSettings,
+): ModelSettings {
+  return { ...modelSettings, toolChoice: 'none' };
 }
 
 export function getAbortReconciliationPreviousResponseId(
