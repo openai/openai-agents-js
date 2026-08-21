@@ -277,7 +277,30 @@ export function buildAbortReconciliationInput(
 export function getAbortReconciliationModelSettings(
   modelSettings: ModelSettings,
 ): ModelSettings {
-  return { ...modelSettings, toolChoice: 'none' };
+  const providerData = modelSettings.providerData;
+  if (!isRecord(providerData) || Array.isArray(providerData)) {
+    return { ...modelSettings, toolChoice: 'none' };
+  }
+
+  const sanitizedProviderData = { ...providerData };
+  delete sanitizedProviderData.tool_choice;
+
+  for (const key of ['extra_body', 'extraBody'] as const) {
+    const extraBody = sanitizedProviderData[key];
+    if (!isRecord(extraBody) || Array.isArray(extraBody)) {
+      continue;
+    }
+
+    const sanitizedExtraBody = { ...extraBody };
+    delete sanitizedExtraBody.tool_choice;
+    sanitizedProviderData[key] = sanitizedExtraBody;
+  }
+
+  return {
+    ...modelSettings,
+    toolChoice: 'none',
+    providerData: sanitizedProviderData,
+  };
 }
 
 export function getAbortReconciliationPreviousResponseId(
