@@ -44,8 +44,16 @@ import {
   CONTENT_FILTER_REFUSAL_MESSAGE,
   shouldSynthesizeContentFilterRefusal,
 } from './openaiChatCompletionsContentFilter';
-import { snapshotRawUsage } from '@openai/agents-core/utils/internal';
+import {
+  reportModelFailureUsage,
+  snapshotRawUsage,
+} from '@openai/agents-core/utils/internal';
 import { FAKE_ID } from './openaiItemIds';
+import {
+  createTruncatedEmptyChatCompletionError,
+  isTruncatedEmptyChatCompletion,
+  isTruncatedEmptyChatCompletionError,
+} from './openaiChatCompletionsTruncation';
 
 export { FAKE_ID };
 
@@ -199,6 +207,47 @@ export class OpenAIChatCompletionsModel implements Model {
           if (span && request.tracing === true) {
             span.spanData.output = [response];
           }
+          const normalizedMessage = response.choices?.[0]?.message;
+          const hasStrictCustomToolCall = Boolean(
+            this.#strictFeatureValidation &&
+            normalizedMessage?.tool_calls?.some(
+              (toolCall) => toolCall.type === 'custom',
+            ),
+          );
+          if (
+            normalizedMessage &&
+            !hasStrictCustomToolCall &&
+            isTruncatedEmptyChatCompletion({
+              finishReason: response.choices[0]?.finish_reason,
+              hasText:
+                typeof normalizedMessage.content === 'string' &&
+                normalizedMessage.content.length > 0,
+              hasRefusal:
+                typeof normalizedMessage.refusal === 'string' &&
+                normalizedMessage.refusal.length > 0,
+              hasAudio: normalizedMessage.audio != null,
+              hasReasoning: hasReasoningContent(normalizedMessage),
+              hasFunctionCall: Boolean(
+                normalizedMessage.tool_calls?.some(
+                  (toolCall) => toolCall.type === 'function',
+                ),
+              ),
+            })
+          ) {
+            const error = createTruncatedEmptyChatCompletionError();
+            const failureUsage = toResponseUsage(
+              response.usage ?? {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+              },
+            );
+            if (span) {
+              span.spanData.usage = failureUsage;
+            }
+            reportModelFailureUsage(request, error, new Usage(failureUsage));
+            throw error;
+          }
           return { response, rawResponse, rawUsage, preservedUsage };
         },
         undefined,
@@ -334,6 +383,7 @@ export class OpenAIChatCompletionsModel implements Model {
     const span = request.tracing
       ? createGenerationSpan(undefined, getModelTracingParent(request))
       : undefined;
+    let response: OpenAI.Chat.Completions.ChatCompletion | undefined;
     try {
       if (span) {
         span.spanData.model = this.#model;
@@ -356,7 +406,7 @@ export class OpenAIChatCompletionsModel implements Model {
         true,
       );
 
-      const response: OpenAI.Chat.Completions.ChatCompletion = {
+      response = {
         id: FAKE_ID,
         created: Math.floor(Date.now() / 1000),
         model: this.#model,
@@ -408,7 +458,38 @@ export class OpenAIChatCompletionsModel implements Model {
         span.spanData.output = [response];
       }
     } catch (error) {
+      const truncatedResponse =
+        response !== undefined && isTruncatedEmptyChatCompletionError(error)
+          ? response
+          : undefined;
+      if (truncatedResponse) {
+        reportModelFailureUsage(
+          request,
+          error,
+          new Usage(
+            toResponseUsage(
+              truncatedResponse.usage ?? {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+              },
+            ),
+          ),
+        );
+      }
       if (span) {
+        if (truncatedResponse) {
+          if (request.tracing === true) {
+            span.spanData.output = [truncatedResponse];
+          }
+          span.spanData.usage = toResponseUsage(
+            truncatedResponse.usage ?? {
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_tokens: 0,
+            },
+          );
+        }
         span.setError({
           message: 'Error streaming response',
           data: {

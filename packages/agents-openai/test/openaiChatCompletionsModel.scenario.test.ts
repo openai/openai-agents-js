@@ -8,6 +8,7 @@ import {
 } from '@openai/agents-core';
 import * as AgentsCore from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
+import { CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR } from '../src/openaiChatCompletionsTruncation';
 import { HEADERS } from '../src/defaults';
 
 type ChunkDelta = {
@@ -375,6 +376,279 @@ describe('OpenAIChatCompletionsModel streaming scenarios', () => {
         prompt_tokens: 3,
         completion_tokens: 6,
         total_tokens: 9,
+      });
+    } finally {
+      createGenerationSpanSpy.mockRestore();
+      setTracingDisabled(true);
+    }
+  });
+
+  it('records response, usage, and error evidence for a truncated empty stream', async () => {
+    setTracingDisabled(false);
+    const createGenerationSpanSpy = vi.spyOn(
+      AgentsCore,
+      'createGenerationSpan',
+    );
+
+    try {
+      const stream = {
+        async *[Symbol.asyncIterator]() {
+          yield makeChunk(
+            {},
+            {
+              prompt_tokens: 11,
+              completion_tokens: 7,
+              total_tokens: 18,
+              prompt_tokens_details: { cached_tokens: 2 },
+              completion_tokens_details: { reasoning_tokens: 6 },
+            },
+          );
+          yield {
+            ...makeChunk({}),
+            choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+          } as any;
+        },
+      };
+
+      const create = vi.fn().mockResolvedValue(stream);
+      const client = {
+        chat: { completions: { create } },
+        baseURL: 'https://example',
+      };
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt-stream');
+      const request: any = {
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+        signal: undefined,
+      };
+
+      const error = await withTrace('truncated-stream-trace', async () => {
+        for await (const _event of model.getStreamedResponse(request)) {
+          // Drain.
+        }
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(AgentsCore.ModelBehaviorError);
+      expect(error).toMatchObject({
+        unsafeToReplay: true,
+        responseStarted: true,
+      });
+      const generationSpan = createGenerationSpanSpy.mock.results
+        .map((result) => result.value as AgentsCore.Span<any>)
+        .find((span) => span?.spanData?.type === 'generation');
+      expect(generationSpan?.spanData.output?.[0]).toMatchObject({
+        choices: [],
+        usage: {
+          prompt_tokens: 11,
+          completion_tokens: 7,
+          total_tokens: 18,
+        },
+      });
+      expect(generationSpan?.spanData.usage).toEqual({
+        requests: 1,
+        input_tokens: 11,
+        output_tokens: 7,
+        total_tokens: 18,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens_details: { reasoning_tokens: 6 },
+      });
+      expect(generationSpan?.error).toMatchObject({
+        message: 'Error streaming response',
+        data: { error: expect.stringContaining("finish_reason='length'") },
+      });
+    } finally {
+      createGenerationSpanSpy.mockRestore();
+      setTracingDisabled(true);
+    }
+  });
+
+  it.each([
+    [
+      'reported',
+      { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+      { requests: 1, inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+    ],
+    [
+      'omitted',
+      undefined,
+      { requests: 1, inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    ],
+  ])(
+    'records failed usage when streamed usage is %s',
+    async (_label, usage, expectedUsage) => {
+      const stream = {
+        async *[Symbol.asyncIterator]() {
+          yield makeChunk({}, usage);
+          yield {
+            ...makeChunk({}),
+            choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+          } as any;
+        },
+      };
+      const create = vi.fn().mockResolvedValue(stream);
+      const model = new OpenAIChatCompletionsModel(
+        {
+          chat: { completions: { create } },
+          baseURL: 'https://example',
+        } as any,
+        'gpt-stream',
+      );
+      const agent = new Agent({ name: 'Truncated stream agent', model });
+      const result = await new Runner().run(agent, 'hello', { stream: true });
+
+      const error = await (async () => {
+        try {
+          for await (const _event of result) {
+            // Consume the stream.
+          }
+        } catch (caught) {
+          return caught;
+        }
+        return undefined;
+      })();
+
+      expect(error).toBeInstanceOf(AgentsCore.ModelBehaviorError);
+      expect(result.state.usage).toMatchObject(expectedUsage);
+      expect(create).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not classify a same-message iterator error as terminal truncation', async () => {
+    setTracingDisabled(false);
+    const createGenerationSpanSpy = vi.spyOn(
+      AgentsCore,
+      'createGenerationSpan',
+    );
+
+    try {
+      const iteratorError = new AgentsCore.ModelBehaviorError(
+        CHAT_COMPLETIONS_EMPTY_TRUNCATION_ERROR,
+      );
+      const stream = {
+        async *[Symbol.asyncIterator]() {
+          yield makeChunk(
+            {},
+            {
+              prompt_tokens: 11,
+              completion_tokens: 7,
+              total_tokens: 18,
+            },
+          );
+          yield {
+            ...makeChunk({}),
+            choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+          } as any;
+          throw iteratorError;
+        },
+      };
+      const create = vi.fn().mockResolvedValue(stream);
+      const model = new OpenAIChatCompletionsModel(
+        {
+          chat: { completions: { create } },
+          baseURL: 'https://example',
+        } as any,
+        'gpt-stream',
+      );
+      const request: any = {
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+        signal: undefined,
+      };
+
+      const error = await withTrace('same-message-iterator-error', async () => {
+        for await (const _event of model.getStreamedResponse(request)) {
+          // Drain.
+        }
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBe(iteratorError);
+      expect(error).not.toHaveProperty('unsafeToReplay');
+      expect(error).not.toHaveProperty('responseStarted');
+      const generationSpan = createGenerationSpanSpy.mock.results
+        .map((result) => result.value as AgentsCore.Span<any>)
+        .find((span) => span?.spanData?.type === 'generation');
+      expect(generationSpan?.spanData.output).toBeUndefined();
+      expect(generationSpan?.spanData.usage).toBeUndefined();
+    } finally {
+      createGenerationSpanSpy.mockRestore();
+      setTracingDisabled(true);
+    }
+  });
+
+  it('does not synthesize terminal trace evidence for malformed streamed audio', async () => {
+    setTracingDisabled(false);
+    const createGenerationSpanSpy = vi.spyOn(
+      AgentsCore,
+      'createGenerationSpan',
+    );
+
+    try {
+      const stream = {
+        async *[Symbol.asyncIterator]() {
+          yield {
+            ...makeChunk({}),
+            choices: [
+              {
+                index: 0,
+                delta: { audio: 'not-an-object' },
+                finish_reason: null,
+              },
+            ],
+            usage: {
+              prompt_tokens: 11,
+              completion_tokens: 7,
+              total_tokens: 18,
+            },
+          } as any;
+        },
+      };
+
+      const create = vi.fn().mockResolvedValue(stream);
+      const client = {
+        chat: { completions: { create } },
+        baseURL: 'https://example',
+      };
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt-stream');
+      const request: any = {
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+        signal: undefined,
+      };
+
+      const error = await withTrace('malformed-audio-trace', async () => {
+        for await (const _event of model.getStreamedResponse(request)) {
+          // Drain.
+        }
+      }).catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(AgentsCore.ModelBehaviorError);
+      expect((error as Error).message).toContain(
+        'expected delta.audio to be an object',
+      );
+      const generationSpan = createGenerationSpanSpy.mock.results
+        .map((result) => result.value as AgentsCore.Span<any>)
+        .find((span) => span?.spanData?.type === 'generation');
+      expect(generationSpan?.spanData.output).toBeUndefined();
+      expect(generationSpan?.spanData.usage).toBeUndefined();
+      expect(generationSpan?.error).toMatchObject({
+        message: 'Error streaming response',
+        data: {
+          error: expect.stringContaining(
+            'expected delta.audio to be an object',
+          ),
+        },
       });
     } finally {
       createGenerationSpanSpy.mockRestore();
