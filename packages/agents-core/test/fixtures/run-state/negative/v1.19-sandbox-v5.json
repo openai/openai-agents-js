@@ -1,5 +1,5 @@
 {
-  "$schemaVersion": "1.20",
+  "$schemaVersion": "1.19",
   "currentTurn": 0,
   "currentAgent": {
     "name": "HistoricalAgent"
@@ -36,5 +36,18 @@
   "completedToolInvocations": [],
   "completedToolInvocationEvidence": [],
   "ambiguousToolInvocationCallIds": [],
-  "trace": null
+  "trace": null,
+  "sandbox": {
+    "backendId": "fixture-sandbox",
+    "currentAgentKey": "HistoricalAgent",
+    "currentAgentName": "HistoricalAgent",
+    "sessionState": {
+      "version": 5,
+      "backendId": "fixture-sandbox",
+      "manifest": {},
+      "workspaceReady": true,
+      "providerState": {}
+    },
+    "sessionsByAgent": {}
+  }
 }

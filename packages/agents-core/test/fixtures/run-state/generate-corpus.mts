@@ -441,6 +441,8 @@ function generateNegativeFixtures(outputRoot: string) {
   sandboxV3.sandbox = sandbox(3);
   const sandboxV4 = readHistorical('1.18');
   sandboxV4.sandbox = sandbox(4);
+  const sandboxV5 = readHistorical('1.19');
+  sandboxV5.sandbox = sandbox(5);
   const protoKey = readHistorical('1.0');
   const protoContext = JSON.parse(
     '{"__proto__":{"polluted":"sentinel-not-a-secret"}}',
@@ -471,6 +473,11 @@ function generateNegativeFixtures(outputRoot: string) {
       'v1.18-sandbox-v4',
       sandboxV4,
       'does not support sandbox session state version 4',
+    ],
+    [
+      'v1.19-sandbox-v5',
+      sandboxV5,
+      'does not support sandbox session state version 5',
     ],
   ] as const;
   const records = fixtures.map(([scenario, payload, expectedError]) => {
