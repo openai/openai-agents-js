@@ -2812,6 +2812,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           await commitDeferredLocalPendingInput?.();
 
           if (result.cancelled) {
+            await reconcileStreamAbortIfNeeded();
             return;
           }
 
