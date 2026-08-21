@@ -1,5 +1,5 @@
 {
-  "$schemaVersion": "1.20",
+  "$schemaVersion": "1.19",
   "currentTurn": 0,
   "currentAgent": {
     "name": "HistoricalAgent"

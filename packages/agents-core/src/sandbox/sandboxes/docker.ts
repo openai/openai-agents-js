@@ -145,6 +145,7 @@ import {
   normalizeExposedPorts,
 } from './shared/sessionStateValues';
 import {
+  isStringRecord,
   readOptionalNumberArray,
   readOptionalString,
   readString,
@@ -168,6 +169,11 @@ const DOCKER_OWNERSHIP_LABEL = 'openai-agents-sandbox';
 const DOCKER_SESSION_IDENTITY_LABEL = 'openai-agents-sandbox.session-identity';
 const DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL =
   'openai-agents-sandbox.mount-authority-fingerprint';
+const RESERVED_DOCKER_LABELS = new Set([
+  DOCKER_OWNERSHIP_LABEL,
+  DOCKER_SESSION_IDENTITY_LABEL,
+  DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL,
+]);
 
 type DockerNetworkMode = 'none';
 
@@ -175,6 +181,13 @@ export interface DockerSandboxClientOptions extends SandboxClientOptions {
   image?: string;
   exposedPorts?: number[];
   networkMode?: DockerNetworkMode;
+  /**
+   * User-defined labels applied to created Docker containers.
+   *
+   * The SDK-owned ownership, session identity, and mount-authority labels are
+   * reserved and cannot be overridden.
+   */
+  labels?: Record<string, string>;
   workspaceBaseDir?: string;
   snapshot?: LocalSandboxSnapshotSpec;
   concurrencyLimits?: SandboxConcurrencyLimits;
@@ -194,6 +207,7 @@ export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState 
   defaultUser?: string;
   configuredExposedPorts?: number[];
   networkMode?: DockerNetworkMode;
+  labels?: Record<string, string>;
   dockerVolumeNames?: string[];
   snapshotExcludedPaths?: string[];
 }
@@ -1011,7 +1025,17 @@ export class DockerSandboxClient implements SandboxClient<
   >();
 
   constructor(options: DockerSandboxClientOptions = {}) {
-    this.options = options;
+    this.options = {
+      ...options,
+      ...(options.labels === undefined
+        ? {}
+        : {
+            labels: normalizeDockerLabels(
+              options.labels,
+              'DockerSandboxClient labels',
+            ),
+          }),
+    };
   }
 
   async create(
@@ -1036,6 +1060,7 @@ export class DockerSandboxClient implements SandboxClient<
     };
     const { configuredExposedPorts, networkMode } =
       resolveDockerNetworkConfiguration(this.options, createArgs.options);
+    const labels = resolveDockerLabels(this.options, createArgs.options);
     const environment = await manifest.resolveEnvironment();
     validateMountEnvironmentCredentialBoundaries(manifest, environment);
     await ensureDockerAvailable();
@@ -1075,6 +1100,7 @@ export class DockerSandboxClient implements SandboxClient<
       defaultUser,
       exposedPorts: configuredExposedPorts,
       networkMode,
+      labels,
     });
     const session = new DockerSandboxSession({
       state: {
@@ -1092,6 +1118,7 @@ export class DockerSandboxClient implements SandboxClient<
         defaultUser,
         configuredExposedPorts,
         networkMode,
+        labels: { ...labels },
         dockerVolumeNames: container.volumeNames,
       },
       archiveLimits: resolvedOptions.archiveLimits,
@@ -1163,6 +1190,15 @@ export class DockerSandboxClient implements SandboxClient<
           exposedPorts: undefined,
         };
       }
+      const labels = resolveDockerLabels(
+        this.options,
+        options.clientOptions,
+        state,
+      );
+      resumeState = {
+        ...resumeState,
+        labels,
+      };
     }
     assertMountCredentialsRebound(resumeState);
     assertHostPathGrantsRebound(resumeState);
@@ -1209,6 +1245,15 @@ export class DockerSandboxClient implements SandboxClient<
         ? { configuredExposedPorts, networkMode }
         : undefined,
     );
+    const persistedLabels = normalizeDockerLabels(
+      input.state.labels,
+      'Docker sandbox session state labels',
+    );
+    resolveDockerLabels(
+      this.options,
+      options.clientOptions,
+      input.source === 'explicit' ? { labels: persistedLabels } : undefined,
+    );
   }
 
   async canReusePreservedOwnedSession(
@@ -1238,6 +1283,11 @@ export class DockerSandboxClient implements SandboxClient<
       ...this.options,
       ...options.clientOptions,
     };
+    try {
+      resolveDockerLabels(this.options, options.clientOptions, state);
+    } catch {
+      return false;
+    }
     const { configuredExposedPorts, networkMode } =
       resolveDockerNetworkConfiguration(this.options, options.clientOptions);
     if (
@@ -1280,6 +1330,10 @@ export class DockerSandboxClient implements SandboxClient<
     options: SandboxSessionSerializationOptions = {},
   ): Promise<Record<string, unknown>> {
     assertSandboxSessionStateUsable(state);
+    const labels = normalizeDockerLabels(
+      state.labels,
+      'Docker sandbox session state labels',
+    );
     validateMountEnvironmentCredentialBoundaries(
       state.manifest,
       state.environment,
@@ -1325,6 +1379,7 @@ export class DockerSandboxClient implements SandboxClient<
       ...(state.networkMode !== undefined
         ? { networkMode: state.networkMode }
         : {}),
+      labels,
       dockerVolumeNames: state.dockerVolumeNames ?? [],
       exposedPorts: state.exposedPorts ?? null,
     };
@@ -1354,6 +1409,10 @@ export class DockerSandboxClient implements SandboxClient<
       defaultUser:
         readOptionalString(state, 'defaultUser') ?? getHostDockerUser(),
       networkMode,
+      labels: normalizeDockerLabels(
+        state.labels,
+        'Serialized Docker sandbox session state labels',
+      ),
       dockerVolumeNames: readStringArray(state.dockerVolumeNames),
     };
   }
@@ -1376,6 +1435,10 @@ export class DockerSandboxClient implements SandboxClient<
           trustedConfig?.clientOptions as
             DockerSandboxClientOptions | undefined,
         );
+      const labels = resolveDockerLabels(
+        this.options,
+        trustedConfig?.clientOptions as DockerSandboxClientOptions | undefined,
+      );
       const trustedState: DockerSandboxSessionState = {
         ...state,
         sessionIdentity: undefined,
@@ -1389,6 +1452,7 @@ export class DockerSandboxClient implements SandboxClient<
         defaultUser: getHostDockerUser(),
         configuredExposedPorts,
         networkMode,
+        labels,
         dockerVolumeNames: [],
         exposedPorts: undefined,
       };
@@ -1412,6 +1476,14 @@ export class DockerSandboxClient implements SandboxClient<
         const inspection = await inspectRunningDockerContainerForReuse(state);
         if (inspection.reusable) {
           return state;
+        }
+        if (
+          inspection.ownershipVerified &&
+          inspection.requiredLabelsMatch === false
+        ) {
+          throw new UserError(
+            'Existing Docker sandbox labels do not match required labels. Start a fresh sandbox session instead.',
+          );
         }
         if (!inspection.ownershipVerified) {
           throw new UserError(
@@ -1448,16 +1520,18 @@ export class DockerSandboxClient implements SandboxClient<
       }
     }
 
-    if (
-      containerRunning &&
-      !dockerContainerIdentityMatches(
-        state.sessionIdentity,
-        await inspectDockerContainerLabels(state.containerId),
-      )
-    ) {
-      throw new UserError(
-        'Docker sandbox container identity could not be verified. Refusing to resume or replace the running container.',
-      );
+    if (containerRunning) {
+      const labels = await inspectDockerContainerLabels(state.containerId);
+      if (!dockerContainerIdentityMatches(state.sessionIdentity, labels)) {
+        throw new UserError(
+          'Docker sandbox container identity could not be verified. Refusing to resume or replace the running container.',
+        );
+      }
+      if (!dockerRequiredLabelsMatch(state.labels, labels)) {
+        throw new UserError(
+          'Existing Docker sandbox labels do not match required labels. Start a fresh sandbox session instead.',
+        );
+      }
     }
     if (!(await localSnapshotIsRestorable(state))) {
       throw new UserError(
@@ -1541,6 +1615,10 @@ export class DockerSandboxClient implements SandboxClient<
       defaultUser: state.defaultUser,
       exposedPorts: state.configuredExposedPorts,
       networkMode: state.networkMode,
+      labels: normalizeDockerLabels(
+        state.labels,
+        'Docker sandbox session state labels',
+      ),
     });
     const nextState = {
       ...state,
@@ -1550,6 +1628,10 @@ export class DockerSandboxClient implements SandboxClient<
       ),
       workspaceRootPath,
       containerId: container.containerId,
+      labels: normalizeDockerLabels(
+        state.labels,
+        'Docker sandbox session state labels',
+      ),
       dockerVolumeNames: container.volumeNames,
       exposedPorts: undefined,
     };
@@ -1653,6 +1735,7 @@ function assertDockerManifestSupported(manifest: Manifest): void {
 type DockerContainerReuseInspection = {
   ownershipVerified: boolean;
   reusable: boolean;
+  requiredLabelsMatch?: boolean;
 };
 
 async function inspectRunningDockerContainerForReuse(
@@ -1668,6 +1751,13 @@ async function inspectRunningDockerContainerForReuse(
   }
   if (!dockerContainerIdentityMatches(sessionIdentity, labels)) {
     return { ownershipVerified: false, reusable: false };
+  }
+  if (!dockerRequiredLabelsMatch(state.labels, labels)) {
+    return {
+      ownershipVerified: true,
+      reusable: false,
+      requiredLabelsMatch: false,
+    };
   }
   const workspaceMountBeforeInspect = await resolveDockerWorkspaceMount(
     state.workspaceRootPath,
@@ -1750,6 +1840,13 @@ async function inspectLegacyDockerContainerForReuse(
     labels[DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL] !== undefined
   ) {
     return { ownershipVerified: false, reusable: false };
+  }
+  if (!dockerRequiredLabelsMatch(state.labels, labels)) {
+    return {
+      ownershipVerified: true,
+      reusable: false,
+      requiredLabelsMatch: false,
+    };
   }
 
   const workspaceMountBeforeInspect = await resolveDockerWorkspaceMount(
@@ -2182,6 +2279,86 @@ function dockerExposedPortSetsEqual(left: number[], right: number[]): boolean {
   );
 }
 
+function normalizeDockerLabels(
+  value: unknown,
+  source: string,
+): Record<string, string> {
+  if (value === undefined) {
+    return {};
+  }
+  if (!isStringRecord(value)) {
+    throw new UserError(`${source} must be a record of string values.`);
+  }
+  const labels = { ...value };
+  for (const key of Object.keys(labels)) {
+    if (RESERVED_DOCKER_LABELS.has(key)) {
+      throw new UserError(
+        `${source} cannot override reserved SDK label "${key}".`,
+      );
+    }
+  }
+  return labels;
+}
+
+function dockerLabelRecordsEqual(
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  return (
+    leftKeys.length === Object.keys(right).length &&
+    leftKeys.every((key) => right[key] === left[key])
+  );
+}
+
+function resolveDockerLabels(
+  clientOptions: DockerSandboxClientOptions,
+  perRunOptions?: DockerSandboxClientOptions,
+  explicitStateFallback?: Pick<DockerSandboxSessionState, 'labels'>,
+): Record<string, string> {
+  const trustedLabels =
+    perRunOptions?.labels !== undefined
+      ? normalizeDockerLabels(
+          perRunOptions.labels,
+          'DockerSandboxClient per-run labels',
+        )
+      : clientOptions.labels !== undefined
+        ? normalizeDockerLabels(
+            clientOptions.labels,
+            'DockerSandboxClient labels',
+          )
+        : undefined;
+  const persistedLabels = explicitStateFallback
+    ? normalizeDockerLabels(
+        explicitStateFallback.labels,
+        'Docker sandbox session state labels',
+      )
+    : undefined;
+  if (
+    trustedLabels !== undefined &&
+    persistedLabels !== undefined &&
+    !dockerLabelRecordsEqual(trustedLabels, persistedLabels)
+  ) {
+    throw new UserError(
+      'DockerSandboxClient labels cannot be changed when resuming explicit session state. Start a fresh sandbox session instead.',
+    );
+  }
+  return { ...(trustedLabels ?? persistedLabels ?? {}) };
+}
+
+function dockerRequiredLabelsMatch(
+  requiredLabels: Record<string, string> | undefined,
+  actualLabels: Record<string, unknown> | undefined,
+): boolean {
+  const normalizedRequiredLabels = normalizeDockerLabels(
+    requiredLabels,
+    'Docker sandbox session state labels',
+  );
+  return Object.entries(normalizedRequiredLabels).every(
+    ([key, value]) => actualLabels?.[key] === value,
+  );
+}
+
 function validateDockerNetworkConfiguration(
   networkMode: unknown,
   exposedPorts: number[] | undefined,
@@ -2497,7 +2674,12 @@ async function startDockerContainer(args: {
   defaultUser?: string;
   exposedPorts?: number[];
   networkMode?: DockerNetworkMode;
+  labels?: Record<string, string>;
 }): Promise<{ containerId: string; volumeNames: string[] }> {
+  const labels = normalizeDockerLabels(
+    args.labels,
+    'Docker sandbox container labels',
+  );
   validateDockerNetworkConfiguration(args.networkMode, args.exposedPorts);
   const envArgs = Object.entries(args.environment).flatMap(([key, value]) => [
     '-e',
@@ -2509,6 +2691,10 @@ async function startDockerContainer(args: {
     `127.0.0.1::${port}`,
   ]);
   const networkArgs = args.networkMode ? ['--network', args.networkMode] : [];
+  const labelArgs = Object.entries(labels).flatMap(([key, value]) => [
+    '--label',
+    `${key}=${value}`,
+  ]);
   const containerName = `openai-agents-sandbox-${randomUUID().slice(0, 8)}`;
   const workspaceMount = await resolveDockerWorkspaceMount(
     args.workspaceRootPath,
@@ -2531,6 +2717,7 @@ async function startDockerContainer(args: {
       '-d',
       '--name',
       containerName,
+      ...labelArgs,
       '--label',
       `${DOCKER_OWNERSHIP_LABEL}=true`,
       '--label',
