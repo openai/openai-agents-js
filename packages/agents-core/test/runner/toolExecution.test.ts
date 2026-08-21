@@ -2248,7 +2248,7 @@ describe('executeComputerActions', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
     expect(needsApproval).not.toHaveBeenCalled();
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 });
 
