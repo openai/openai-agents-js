@@ -11,7 +11,7 @@ Use this skill whenever coverage needs assessment or improvement (coverage regre
 
 ## Quick Start
 
-1. From the repo root run `pnpm test:coverage` (set `CI=1` if needed) to regenerate `coverage/`.
+1. From the repo root run `pnpm test:coverage` to regenerate `coverage/`.
 2. Collect artifacts: `coverage/coverage-summary.json` (preferred) or `coverage/coverage-final.json`, plus `coverage/lcov.info` and `coverage/lcov-report/index.html` for drill-downs.
 3. Summarize coverage: total percentages, lowest files, branches under 80%, and uncovered lines/paths.
 4. Draft test ideas per file: scenario, behavior under test, expected outcome, and likely coverage gain.
