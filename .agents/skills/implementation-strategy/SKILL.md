@@ -61,6 +61,9 @@ Example: if successive findings require traversing a direct wrapper, nested wrap
 - Unreleased persisted schema versions may be renumbered or folded into the next schema when intermediate snapshots are intentionally unsupported; update the support set and tests together.
 - Do not equate a broad structural type, overload, generic, JavaScript reflection surface, module boundary, or third-party interface with support for every representable shape.
 - Prefer the nearest existing pipeline and one source of truth for schema, documentation, validation, identity, package exports, conversion, and invocation.
+- Treat an interface as everything a caller must know to use the behavior correctly, including ordering, errors, lifecycle, configuration, and performance constraints when relevant; do not judge its size from the signature alone.
+- Apply the deletion test before retaining a new abstraction: keep it when removing it would distribute required complexity across callers, but remove it when the complexity itself would disappear.
+- Add a replaceable boundary only for demonstrated variation, ownership, or testability. One hypothetical adapter or a test-only indirection is not enough when the existing pipeline already provides a stable boundary.
 - Add abstractions, state, classifications, branches, configuration, dependencies, or parallel paths only for a stated requirement, supported contract, or verified risk.
 - Prefer deletion or direct replacement for unreleased code. Treat branch-local implementation and tests as disposable.
 - Prefer an actionable construction- or validation-time error plus an existing alternative over partial interface emulation.
@@ -128,7 +131,9 @@ Before declaring the design complete, answer all of these with concrete evidence
 - Can the required behavior be described without naming internal helper types or reflection mechanics?
 - Does the implementation reuse the nearest existing pipeline rather than maintain a parallel interpretation?
 - Does every new abstraction and branch map to the scope contract or a verified risk?
+- Would deleting each new abstraction merely push required complexity into multiple callers, and does each new boundary correspond to demonstrated variation, ownership, or testability?
 - Are unsupported neighboring cases rejected before side effects with an existing alternative identified?
+- Do tests exercise the highest stable caller boundary that reproduces the required behavior, with expected values independent of the implementation logic?
 - Do the complete diff and tests cover the contract without making every constructible permutation supported?
 - Does the latest review revision shrink or preserve the behavior space rather than widen it without evidence?
 - When a complexity reset occurred, does every retained abstraction, branch, and test map to the frozen reset spec, with later findings classified against it?

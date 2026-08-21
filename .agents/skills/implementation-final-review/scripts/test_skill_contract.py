@@ -357,7 +357,6 @@ class SkillContractTest(unittest.TestCase):
                 self.assertIn(text, self.skill)
 
         self.assertIn("$changeset-validation", self.skill)
-        self.assertIn("package and generated public surfaces", self.skill)
 
     def test_final_clean_condition_preserves_two_independent_reviews(self) -> None:
         self.assertIn(

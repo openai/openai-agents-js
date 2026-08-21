@@ -1,6 +1,6 @@
 ---
 name: maintainer-review
-description: Review a GitHub issue or pull request URL as an openai-agents-js maintainer, with a staged assessment of whether the claim is real, practically important, already solvable with supported functionality, correctly scoped, better served by another design, and worth maintainer and contributor effort. Use when assessing issue validity or severity, deciding whether an issue should be prioritized or closed, determining whether a requested feature represents an unmet need rather than a discoverability or usage gap, judging whether a PR is worth bringing to mergeable quality, comparing open PRs or alternative designs, separating code quality from repository readiness, or drafting a concise maintainer assessment. When closure, additional evidence, or code changes should be requested, also produce a polite, concise, complete, copy-paste-ready maintainer comment.
+description: Assess an openai-agents-js GitHub issue or pull request as a maintainer. Use to verify the claimed need and practical impact, compare supported alternatives or competing approaches, separate code quality from repository readiness, recommend the maintainer action, and draft a copy-ready comment when evidence, changes, or closure should be requested.
 ---
 
 # Maintainer Review

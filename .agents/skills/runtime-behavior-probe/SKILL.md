@@ -1,6 +1,6 @@
 ---
 name: runtime-behavior-probe
-description: Plan and execute runtime-behavior investigations with temporary TypeScript probe scripts, validation matrices, state controls, and findings-first reports. Use only when the user explicitly invokes this skill to verify actual runtime behavior beyond normal code-level checks, especially to uncover edge cases, undocumented behavior, or common failure modes in local or live integrations. A baseline smoke check is fine as an entry point, but do not stop at happy-path confirmation.
+description: Plan and, after explicit approval, execute runtime-behavior probes for local or live integrations. Use only when explicitly invoked to verify behavior that code review and normal tests cannot settle; define a controlled validation matrix, keep disposable JS probes outside tracked paths, and report observed evidence.
 ---
 
 # Runtime Behavior Probe
@@ -50,23 +50,24 @@ Use this skill to investigate real runtime behavior, not to restate code or docu
 1. Restate the investigation target in operational terms. Name the runtime surface, the key uncertainty, and the highest-risk behaviors to test.
 2. For `openai-agents-js`, declare the allowed write scope before you do any implementation work. For a normal disposable probe, that means a temporary directory only.
 3. Do a short preflight. Check the relevant code or docs first, decide whether the question needs local or live validation, and note any repo, baseline, or release boundary that matters.
-4. Create a validation matrix before executing probes. Cover both baseline behavior and the most relevant failure or drift cases. The matrix can live in a scratch note, a temporary file, or a structured header inside the probe script.
-5. For each case, choose an execution mode up front:
+4. Define the decision signal before building the matrix. For a suspected defect, name the exact user-visible symptom, the command or probe that can distinguish it from correct behavior, the expected failing observation, and a known-good control. Confirm that the signal exercises the real producer and caller path rather than only an adjacent helper. Prefer a fast, deterministic local loop when one can answer the question. If no credible signal can be built, state the missing access or artifact and do not substitute a nearby behavior as proof.
+5. Create a validation matrix before executing probes. Cover both baseline behavior and the most relevant failure or drift cases. The matrix can live in a scratch note, a temporary file, or a structured header inside the probe script.
+6. For each case, choose an execution mode up front:
    - `single-shot` for deterministic one-run checks.
    - `repeat-N` for cache, retry, streaming, interruption, rate-limit, concurrency, or other run-to-run-sensitive behavior.
    - `warm-up + repeat-N` when first-run cold-start effects could distort the result. Use these defaults unless the task clearly needs something else:
    - Quick screen of a repeat-sensitive question: `repeat-3`.
    - Decision-grade latency or release recommendation: `warm-up + repeat-10`.
    - Costly live cases: start at `repeat-3`, then expand only if the answer remains unclear. If it is genuinely unclear whether extra runs are worth the time or cost, ask the user before expanding the probe.
-6. When the question is benchmark-like or comparative, run in phases. Start with a high-signal pilot matrix against a control, then expand only the surviving candidates or unresolved cases.
-7. If the question is about a suspected regression or behavior change, add at least one known-good control case such as `origin/main`, the latest release, or the same request without the suspected option.
-8. For comparative probes, define parity before execution. Record prompt or input shape, tool-choice setup, model-settings parity, state reuse rules, and any response-shape constraint that keeps the comparison fair. If materially different output length could bias the result, record usage or token notes too.
-9. If the question asks whether one option has the same intelligence or quality as another, decide whether the matrix supports only example-pattern parity or a broader quality claim. For broader claims, add at least one harder or more open-ended case. Otherwise say explicitly that the result is limited to the covered patterns.
-10. Plan state controls before execution when hidden state could affect the result. Record whether each case uses fresh or reused state, how cache reuse or cache busting is handled, what unique IDs isolate repeated runs, and how cleanup is verified.
-11. If any live case will read environment variables, list the exact variable names and purpose for each case, then ask the user for approval before execution. Prefer `request_user_input` for this gate when it is available, with no auto-resolution and choices that grant or deny only this specific probe. Keep the approval ask short and include destination, read-only versus mutating or costly risk, exact variable names, and cleanup or rollback if relevant.
-12. Build task-specific probe scripts in a temporary location. Keep the script small, observable, and easy to discard.
-13. If you are about to propose a checked-in script, example, benchmark, or workspace script for `openai-agents-js`, stop and verify that the user explicitly asked for a reusable repository artifact. If not, keep the probe temporary.
-14. In `openai-agents-js`, make the runtime context explicit:
+7. When the question is benchmark-like or comparative, run in phases. Start with a high-signal pilot matrix against a control, then expand only the surviving candidates or unresolved cases.
+8. If the question is about a suspected regression or behavior change, add at least one known-good control case such as `origin/main`, the latest release, or the same request without the suspected option.
+9. For comparative probes, define parity before execution. Record prompt or input shape, tool-choice setup, model-settings parity, state reuse rules, and any response-shape constraint that keeps the comparison fair. If materially different output length could bias the result, record usage or token notes too.
+10. If the question asks whether one option has the same intelligence or quality as another, decide whether the matrix supports only example-pattern parity or a broader quality claim. For broader claims, add at least one harder or more open-ended case. Otherwise say explicitly that the result is limited to the covered patterns.
+11. Plan state controls before execution when hidden state could affect the result. Record whether each case uses fresh or reused state, how cache reuse or cache busting is handled, what unique IDs isolate repeated runs, and how cleanup is verified.
+12. If any live case will read environment variables, list the exact variable names and purpose for each case, then ask the user for approval before execution. Prefer `request_user_input` for this gate when it is available, with no auto-resolution and choices that grant or deny only this specific probe. Keep the approval ask short and include destination, read-only versus mutating or costly risk, exact variable names, and cleanup or rollback if relevant.
+13. Build task-specific probe scripts in a temporary location. Keep the script small, observable, and easy to discard.
+14. If you are about to propose a checked-in script, example, benchmark, or workspace script for `openai-agents-js`, stop and verify that the user explicitly asked for a reusable repository artifact. If not, keep the probe temporary.
+15. In `openai-agents-js`, make the runtime context explicit:
 
 - Run TypeScript probes from the repository root with `pnpm exec tsx` when practical.
 - For probe authoring, create both `probe.ts` and a sibling temporary `tsconfig.json` under `mktemp -d`, then run `pnpm exec tsc --noEmit -p <tmp-tsconfig>` before the first live execution.
@@ -75,12 +76,12 @@ Use this skill to investigate real runtime behavior, not to restate code or docu
 - Prefer current-branch `src/` imports when the question is "what does this branch do now?" and prefer `dist/` imports only when the question is specifically about packaged output after a build.
 - Do not run a repository-wide build just to typecheck a disposable probe. Reserve `pnpm build` for `dist/` probes or when emitted output is itself part of the question.
 
-15. Present the complete probe proposal with the disclosures required above, including the exact command for each case or approved matrix, then ask the user for explicit approval and wait.
-16. Execute only the approved matrix and capture evidence. Record request shape, setup, observation summary, unexpected or negative result, error details, timing, runtime context, approved environment-variable names, repeat counts, warm-up handling, variance when relevant, cleanup behavior, and for comparisons note what was held constant plus any response-shape or usage notes that affect interpretation.
-17. Update the matrix with actual outcomes, not guesses.
-18. Keep temporary artifacts until the final response is drafted. Then delete them unless the user asked to keep them or they are needed for follow-up. Benchmark and repeat-heavy probes often need follow-up, so keeping artifacts is normal when the result may be revisited. If deleted, retain and report a short run summary.
-19. Report findings first, with unexpected or negative findings first. Then summarize how the validation was performed and which cases were covered.
-20. If the probe isolates one clear defect, you may include a short implementation hypothesis or minimal repro direction. Do not expand into a larger next-step plan unless the user asked for it.
+16. Present the complete probe proposal with the disclosures required above, including the exact command for each case or approved matrix, then ask the user for explicit approval and wait.
+17. Execute only the approved matrix and capture evidence. Record request shape, setup, observation summary, unexpected or negative result, error details, timing, runtime context, approved environment-variable names, repeat counts, warm-up handling, variance when relevant, cleanup behavior, and for comparisons note what was held constant plus any response-shape or usage notes that affect interpretation.
+18. Update the matrix with actual outcomes, not guesses.
+19. Keep temporary artifacts until the final response is drafted. Then delete them unless the user asked to keep them or they are needed for follow-up. Benchmark and repeat-heavy probes often need follow-up, so keeping artifacts is normal when the result may be revisited. If deleted, retain and report a short run summary.
+20. Report findings first, with unexpected or negative findings first. Then summarize how the validation was performed and which cases were covered.
+21. If the probe isolates one clear defect, you may include a short implementation hypothesis or minimal repro direction. Do not expand into a larger next-step plan unless the user asked for it.
 
 ## Validation Matrix
 

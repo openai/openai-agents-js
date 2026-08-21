@@ -1,6 +1,6 @@
 interface:
   display_name: "Runtime Behavior Probe"
   short_description: "Plan and run runtime behavior probes"
-  default_prompt: "Use $runtime-behavior-probe to plan an investigation of actual runtime behavior with a validation matrix and disposable TypeScript probes outside git-tracked paths. Before executing every probe, disclose the source identity, exact command, transitively executed material, available filesystem, environment, network, and host-service capabilities, side effects, and control, then wait for explicit user approval of that exact probe or matrix. Invoking this skill is not execution approval. After approval, run only the approved scope and produce a findings-first report. For openai-agents-js, the default write scope is a temporary directory only. Do not modify examples/, packages/, package.json files, README.md, workspace config, or build config, and do not add checked-in examples, benchmarks, or package scripts unless the user explicitly asks for a reusable repository artifact."
+  default_prompt: "Use $runtime-behavior-probe to plan this investigation with disposable TypeScript probes in a temporary directory; invocation authorizes planning only, so disclose the exact probe and capabilities and obtain explicit approval before execution, then report only observed evidence from the approved scope."
 policy:
   allow_implicit_invocation: false

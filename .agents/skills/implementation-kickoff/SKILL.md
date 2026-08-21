@@ -35,6 +35,8 @@ Do not create the final branch yet. A detached worktree makes the eventual `$pr-
 
 Keep the task diff uncommitted through implementation, focused tests, formatting, and review fixes. Track new files explicitly because ordinary diff statistics omit untracked files. Maintain one canonical shipped-path manifest separately from operational artifacts and require a concrete deliverable reason for every path in it. Use the applicable repository skills and references, including `$implementation-strategy` before user-facing or runtime changes.
 
+When the task can be decomposed without temporarily breaking a supported contract, implement one narrow end-to-end behavior slice at a time and run its focused test before adding the next slice. Do not force cross-cutting migrations or atomic compatibility changes into artificial slices that cannot remain valid independently.
+
 Do not create checkpoint commits. If an external interruption requires extra protection, leave the dedicated worktree intact or use a clearly named temporary stash; restore the changes before continuing and do not treat the stash as a deliverable.
 
 ### Taking over an existing pull request
