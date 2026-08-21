@@ -1,0 +1,38 @@
+name: Patch screenshot regression expectation
+
+on:
+  push:
+    branches:
+      - fix/computer-screenshot-reuse
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/computer-screenshot-reuse
+      - name: Update existing approved-computer regression
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('packages/agents-core/test/runner/toolExecution.test.ts')
+          text = path.read_text()
+          old = """    expect(result).toHaveLength(1);\n    expect(result[0]).toBeInstanceOf(RunToolCallOutputItem);\n    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);\n"""
+          new = """    expect(result).toHaveLength(1);\n    expect(result[0]).toBeInstanceOf(RunToolCallOutputItem);\n    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one target block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+      - name: Commit patch and remove temporary workflow
+        run: |
+          git rm .github/workflows/temporary-fix-screenshot-test.yml
+          git add packages/agents-core/test/runner/toolExecution.test.ts
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "test(core): update approved screenshot expectation"
+          git push origin HEAD:fix/computer-screenshot-reuse
