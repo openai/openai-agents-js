@@ -2034,7 +2034,7 @@ describe('executeComputerActions', () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('passes RunContext to computer actions', async () => {
