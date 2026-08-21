@@ -75,6 +75,20 @@ Treat an explicit public TypeScript literal union, enum, discriminated union, or
 
 When an upstream server or provider already rejects an unsupported request, treat that boundary as the source of truth and avoid duplicating the same acceptance rules in the client. Add fail-fast client validation only when waiting for the server rejection creates a demonstrated, substantial pitfall or material efficiency problem, such as avoidable billable work, repeated network latency or resource consumption, an irreversible side effect or state mutation, or an error that arrives too late or is too opaque for reasonable correction. Prefer the server's evolving validation over copied provider allowlists or constraints that can drift.
 
+#### Synthetic edge-case and extreme-value gate
+
+Do not accept an issue or PR whose need is established only by constructing values that ordinary supported producers cannot emit or that have no realistic origin in supported use. This includes non-finite numbers such as `NaN` or infinity, astronomically large magnitudes, impossible enum or discriminated-union members, manually corrupted typed objects, and direct helper calls that bypass the owning public or wire boundary. A unit test that reaches such a branch proves constructibility, not a problem worth maintaining code for.
+
+Default these reports to `Close` or `Not worth completing`, even when the patch is small and technically correct, unless the evidence establishes at least one of the following:
+
+1. A supported provider, parser, public API workflow, or credible user report produces the exact value under realistic conditions.
+2. The released public contract intentionally accepts the value category and ordinary caller code can generate it without first violating that contract.
+3. A complete security trace shows that attacker-controlled input can cross an actual trust boundary and cause realistically exploitable resource exhaustion or another concrete security-boundary violation.
+
+Claims such as "this could sleep forever," "this could overflow," or "this might disable a limit" are insufficient without proving the realistic source of the value and the complete supported path to the consequence. Do not treat a security label as an exception by itself: identify the trust boundary, who can control the input, how it reaches the SDK, and the concrete protected outcome. A malformed value from an actually untrusted wire boundary may justify a fix when that trace is complete; a hypothetical hostile provider, monkeypatched object, or manually constructed payload does not by itself do so.
+
+When this gate fails, do not spend review effort refining implementation, tests, or error wording. Recommend closing both the issue and its PR, if one exists, and state the exact real-world evidence that would justify reconsideration only when such evidence is plausible.
+
 If the need is not `Demonstrated`, inspect the patch only far enough to understand its contract, risk, and maintenance cost. Do not turn implementation defects, missing tests, or documentation gaps into a request-changes recommendation, because those questions become merge-blocking only after the need gate passes. If the report provides no concrete scenario, the existing functionality appears sufficient, or the requested mechanism solves only a hypothetical convenience problem, prefer `Needs evidence`, `Close`, `Supersede with a simpler alternative`, or `Not worth completing` over designing the requested feature on the reporter's behalf.
 
 An existing workaround may change priority or solution shape, but it does not by itself erase a demonstrated correctness, security, compatibility, or lifecycle defect in supported behavior. Evaluate both the unmet outcome and the violated contract.
