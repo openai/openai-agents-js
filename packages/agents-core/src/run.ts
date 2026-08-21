@@ -179,6 +179,7 @@ import {
 import {
   buildAbortReconciliationInput,
   createStreamAbortReconciliationState,
+  getAbortReconciliationModelSettings,
   getAbortReconciliationPreviousResponseId,
   markAbortReconciliationComplete,
   recordStreamEventForAbortReconciliation,
@@ -2638,7 +2639,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     preparedCall,
                   ),
                   conversationId: preparedCall.conversationId,
-                  modelSettings: preparedCall.modelSettings,
+                  modelSettings: getAbortReconciliationModelSettings(
+                    preparedCall.modelSettings,
+                  ),
                   _internal: preparedCall.modelRequestInternal,
                   tools: preparedCall.serializedTools,
                   toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
