@@ -1,3 +1,4 @@
+# Triggered after workflow registration.
 name: Simplify computer screenshot capture
 
 on:
