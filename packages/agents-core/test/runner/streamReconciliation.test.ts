@@ -70,6 +70,45 @@ describe('stream abort reconciliation', () => {
     ]);
   });
 
+  it('preserves pending computer calls through response_done for late cancellation', () => {
+    const state = createStreamAbortReconciliationState();
+
+    recordStreamEventForAbortReconciliation(state, {
+      type: 'model',
+      event: {
+        type: 'response.output_item.done',
+        item: {
+          type: 'computer_call',
+          id: 'computer_terminal',
+          call_id: 'call_computer_terminal',
+          status: 'completed',
+          action: { type: 'screenshot' },
+        },
+      },
+    });
+    recordStreamEventForAbortReconciliation(state, {
+      type: 'response_done',
+      response: {
+        id: 'response_terminal',
+        output: [],
+        usage: {},
+      } as any,
+    });
+
+    expect(shouldReconcileStreamAbort(state)).toBe(true);
+    expect(buildAbortReconciliationInput(state)).toEqual([
+      {
+        type: 'computer_call_result',
+        callId: 'call_computer_terminal',
+        output: {
+          type: 'computer_screenshot',
+          data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+        },
+        providerData: { status: 'incomplete' },
+      },
+    ]);
+  });
+
   it('reconciles program-owned shell and apply_patch calls', () => {
     const state = createStreamAbortReconciliationState();
 
