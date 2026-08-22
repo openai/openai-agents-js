@@ -40,6 +40,7 @@ import type {
 } from './clientMessages';
 import {
   defineRealtimeOutputGuardrail,
+  formatRealtimeGuardrailOutputInfo,
   getRealtimeGuardrailFeedbackMessage,
   getRealtimeGuardrailSettings,
   RealtimeOutputGuardrail,
@@ -1492,7 +1493,7 @@ export class RealtimeSession<
       }
       this.#interruptedByGuardrail[responseId] = true;
       const error = new OutputGuardrailTripwireTriggered(
-        `Output guardrail triggered: ${JSON.stringify(firstTripwireTriggered.output.outputInfo)}`,
+        `Output guardrail triggered: ${formatRealtimeGuardrailOutputInfo(firstTripwireTriggered.output.outputInfo)}`,
         firstTripwireTriggered,
       );
       this.emit('guardrail_tripped', this.#context, sourceAgent, error, {
