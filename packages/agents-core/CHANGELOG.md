@@ -1,5 +1,15 @@
 # @openai/agents-core
 
+## 0.17.1
+
+### Patch Changes
+
+- dd1becb: feat: allow labels on Docker sandbox containers
+- 0b94437: fix: detach source usage records during aggregation
+- 6721ccd: fix: isolate cached MCP tool definitions from caller and filter mutations
+- cd5a2c8: fix(core): preserve handoff callback errors after input validation
+- c3bfb2c: fix: reject unsuccessful OpenAI Responses terminal states without losing billed usage
+
 ## 0.17.0
 
 ### Minor Changes
