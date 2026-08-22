@@ -565,25 +565,35 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
-  it('resetHistory warns on function call additions', () => {
+  it('resetHistory replays function call additions', () => {
     const base = new TestBase();
     const newHist = [
       {
         itemId: 'f1',
-        type: 'function_call',
-        status: 'completed',
+        type: 'function_call' as const,
+        status: 'in_progress' as const,
         arguments: '{}',
-        name: 'calc',
+        name: 'tool',
         output: null,
       },
     ];
 
-    base.resetHistory([], newHist as any);
+    base.resetHistory([], newHist);
 
-    expect(logger.warn).toHaveBeenCalledWith(
-      'Function calls cannot be manually added or updated at the moment. Ignoring.',
-    );
-    expect(base.events).toHaveLength(0);
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        event_id: expect.any(String),
+        item: {
+          type: 'function_call',
+          id: 'f1',
+          call_id: 'f1',
+          name: 'tool',
+          arguments: '{}',
+          status: 'in_progress',
+        },
+      },
+    ]);
   });
 
   it('sendMcpResponse emits approval response items', () => {
