@@ -35,6 +35,7 @@ Lead with the current review state. Use `Preliminary assessment` while decision-
 - For a PR, inspect the current remote base and head, full patch, commit history when relevant, tests, linked issue, and review discussion. Do not substitute the current local checkout for the remote change.
 - State the claim in one falsifiable sentence. Separate the observed symptom from the proposed cause or fix.
 - Identify the latest released boundary when compatibility or regression claims matter.
+- When a proposed change removes, reorders, or reinterprets an established observable or an explicit existing test expectation, inspect the introducing commit, blame, and original tests before any positive assessment. Intentional released coverage is compatibility-risk evidence even when it is not by itself a permanent public contract.
 - Verify whether linked evidence matches the PR's exact runtime variant, provider or tool type, triggering condition, and user outcome. A generic issue title, conceptual similarity, or wording such as `Related to` does not transfer evidence of need to an adjacent extension. If the reported scenario has already been fixed, treat additional variants as new needs requiring their own evidence.
 
 Use read-only GitHub access. On this laptop, do not run `gh` unless the user explicitly asks in the same turn. A review never authorizes comments, labels, branch changes, pushes, merges, or other remote writes.
@@ -43,7 +44,7 @@ Use read-only GitHub access. On this laptop, do not run `gh` unless the user exp
 
 Complete this pass before deeply evaluating a proposed implementation and before any positive issue or PR assessment.
 
-First assign one `Need evidence` status:
+First assign one `Need status`:
 
 - **Demonstrated**: The exact scope has a concrete supported scenario, a real-path reproduction, a released compatibility requirement, a violated supported contract, repeated demand, or a broad invariant with a meaningful consequence.
 - **Plausible but unproven**: The path can exist, but realistic provider behavior, user reach, frequency, consequence, or demand is not established.
@@ -52,12 +53,25 @@ First assign one `Need evidence` status:
 
 Only `Demonstrated` need may receive `Merge-worthy as-is` or `Merge-worthy after focused changes`. For `Plausible but unproven`, prefer `Needs evidence` or `Not worth completing`; for `Already covered` or `Unsupported`, prefer closure or the relevant simpler alternative.
 
+Keep four decisions separate and record them before comparing implementations:
+
+1. **Observation validity**: whether the reported output, state, or code-path difference is real.
+2. **Downstream consequence**: what concrete user, operational, compatibility, or durable-state result changes because of it.
+3. **Need status**: one of the four evidence classifications above.
+4. **Issue action**: prioritize, accept, narrow, request evidence, or close.
+
+A real observation can still have no demonstrated need and a `Close` action. Do not describe an issue as simply "valid" when only the observation is confirmed. If the downstream consequence is missing, do not choose among proposed semantic contracts, select a competing PR, or draft implementation changes yet.
+
 Before assigning `Demonstrated`, require one of these evidence paths:
 
 1. **Observed impact**: A supported scenario, real-path reproduction, or credible user report shows a meaningful user-visible, operational, compatibility, or durable-state consequence.
 2. **Material prevention**: A supported or ordinary failure path can reach the condition, the violated invariant protects against intrinsically material harm, and a complete code-path trace or realistic probe establishes that consequence. A known incident is not required for this path.
 
 For both paths, trace `realistic trigger -> supported execution path -> observable or durable effect`. A local intermediate inconsistency, constructible branch, redundant operation, defensive improvement, or theoretically cleaner invariant is not a demonstrated need without a meaningful downstream effect. A small diff, technically correct patch, or inexpensive test does not lower this threshold. Material preventive outcomes include security or privacy exposure, credential leakage, persistent data or state corruption, duplicate external side effects, unrecoverable compatibility breaks, deadlock or indefinite hangs, and realistically repeatable resource exhaustion.
+
+For a representation-only change, identify one concrete consumer computation, decision, or persisted interpretation that differs before and after the patch, then establish why the current result is wrong. If the patch only changes list shape, placeholder presence, metadata, ordering, or terminology without recovering information or changing a meaningful consumer outcome, the need is not `Demonstrated`.
+
+An ambiguous contract is not itself evidence that the contract should change. When multiple current shapes are released or intentionally test-covered, prefer no code change until a demonstrated outcome justifies selecting a different semantic contract. Do not choose one shape only because it is more symmetric or easier to explain.
 
 When a report establishes only a harmless or speculative logic-level improvement, prefer `Not worth completing` or `Close` rather than requesting implementation refinements. Use `Needs evidence` only when a specific missing reproduction or consequence trace could realistically change the practical-impact decision.
 
@@ -174,7 +188,7 @@ Read [the evaluation framework](references/evaluation-framework.md) when validit
 
 Assess claim validity, realistic reach, consequence, breadth, frequency, recoverability, compatibility, and severity. Keep observed facts separate from inference and name missing evidence that could change the result.
 
-Report the `Need evidence` status before classifying the need as a capability gap, ergonomics or discoverability gap, unsupported use case, no demonstrated gap, or a defect in supported behavior. Do not assign practical impact to the absence of the requested mechanism when an existing supported workflow already produces the requested outcome. Do not infer practical importance merely from reachability, API asymmetry, or a technically successful patch.
+Report the `Need status` before classifying the need as a capability gap, ergonomics or discoverability gap, unsupported use case, no demonstrated gap, or a defect in supported behavior. Do not assign practical impact to the absence of the requested mechanism when an existing supported workflow already produces the requested outcome. Do not infer practical importance merely from reachability, API asymmetry, or a technically successful patch.
 
 For a PR, make `Severity` describe the underlying issue or user need. Report patch-induced regression, compatibility, lifecycle, or maintenance risk separately as `Patch risk`.
 
@@ -189,7 +203,7 @@ Use one code recommendation:
 - **Supersede with a simpler alternative**: real need, but a smaller or more coherent fix is preferable.
 - **Not worth completing**: negligible/unsupported impact, no-op behavior, wrong abstraction, or excessive completion cost.
 
-`Merge-worthy as-is` and `Merge-worthy after focused changes` are invalid unless `Need evidence` is `Demonstrated`. A bounded set of implementation fixes cannot promote a `Plausible but unproven` need into a merge-worthy recommendation.
+`Merge-worthy as-is` and `Merge-worthy after focused changes` are invalid unless `Need status` is `Demonstrated`. A bounded set of implementation fixes cannot promote a `Plausible but unproven` need into a merge-worthy recommendation.
 
 For merge-worthy recommendations, use one repository-readiness status when useful:
 
@@ -212,13 +226,15 @@ Choose the assessment language from the current user request and governing repos
 
 Use the matching compact report in the evaluation framework. While decision-relevant evidence is pending, use its preliminary-assessment variant and end with the evidence limitation and optional suggestion for a separate runtime investigation instead of presenting a final recommendation. Keep the report decision-oriented, put unexpected/negative evidence first, and use no more than five evidence bullets by default.
 
-For PRs, put `Need evidence` before the code recommendation. When the need is not `Demonstrated`, lead with that result, omit repository readiness, and avoid presenting patch fixes as the primary maintainer action.
+For PRs, put `Need status` before the code recommendation. When the need is not `Demonstrated`, lead with that result, omit repository readiness, and avoid presenting patch fixes as the primary maintainer action.
 
 When existing functionality or a better alternative materially affects the decision, state it explicitly in the evidence and recommendation. Name the exact supported path, what it does and does not cover, and why it is preferable. Do not bury a `Not worth completing` or `Supersede with a simpler alternative` conclusion beneath praise for implementation quality.
 
 When recommending closure, more evidence, focused changes, or superseding a PR, append a polite, complete, copy-paste-ready English maintainer comment. Include only merge-blocking work in its required-action paragraph. Do not produce a line-by-line review unless requested, equate passing tests with merge-worthiness, or equate a logically correct patch with practical value.
 
 Before returning any maintainer comment draft, perform a GitHub paste-readiness pass using the repository-wide rule in `AGENTS.md` and the detailed guidance in `references/evaluation-framework.md`. In the draft, use `#123` for same-repository issues or PRs and `owner/repo#123` for cross-repository references. Remove Markdown-linked issue or PR labels, Codex navigation links, local file links, Codex-only citation markers or footnotes, and app directives from the copy-ready draft. Preserve ordinary descriptive links to API docs, design notes, and other targets without native GitHub issue or pull-request syntax.
+
+Also perform an action-delta pass. Every imperative sentence must correspond to a concrete difference between the current remote head and the desired state. Remove requests to "keep", "preserve", document, test, or change behavior that the current head already satisfies or that is not merge-blocking. A `Merge-worthy as-is` result must not contain change-request language. Keep portfolio comparisons out of a contributor-facing draft unless duplicate or supersession handling is the action for that target.
 
 For request-changes comments, phrase maintainer-owned semantic decisions as a directive, not as a menu. It is fine to mention the rejected alternative briefly in the rationale, but the requested action must identify the chosen behavior, scope, or compatibility boundary. Use "please do X because..." instead of "either do X or Y" when X versus Y changes the SDK contract or user-visible semantics.
 

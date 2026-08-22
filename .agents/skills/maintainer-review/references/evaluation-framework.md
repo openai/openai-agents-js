@@ -29,7 +29,7 @@ Treat validity, severity, and merge-worthiness as separate outputs. Also disting
 | Consequence | What fails, and is it silent or recoverable? | Observed output/error/state and downstream effect |
 | Breadth | Which packages, runtimes, providers, and versions are affected? | Explicit path and compatibility matrix |
 | Frequency | Is it normal, intermittent, or pathological? | Repeats, deterministic preconditions, reports, or telemetry |
-| Need evidence | Is the exact scope demonstrated, merely plausible, already covered, or unsupported? | Observed impact or a complete realistic trigger-to-material-consequence trace for prevention |
+| Need status | Is the exact scope demonstrated, merely plausible, already covered, or unsupported? | Observed impact or a complete realistic trigger-to-material-consequence trace for prevention |
 | Unmet need | What user outcome cannot be achieved through supported behavior today, or what supported contract is violated? | Concrete scenario plus a trace showing why the closest existing path is insufficient or defective |
 | Existing capability | Can configuration, composition, cloning, callbacks, extension points, or a caller-owned layer already satisfy the outcome? | Current release code, tests, docs, and an exact supported workflow |
 | Compatibility | Is released API, package resolution, protocol, or durable state changed? | Latest release comparison and contract inspection |
@@ -58,6 +58,7 @@ Before calling a claim confirmed, answer:
 - Are stale `dist`, wrong worktree/imports, dependency drift, proxies, caches, runtime conditions, unavailable Docker/sandbox, authentication, quota, and service failures excluded?
 - Does an equivalent streaming/non-streaming, provider, runtime, resume, or package-export path differ?
 - Is behavior prohibited by a real contract or merely surprising?
+- If the patch removes or reinterprets an established observable or explicit test expectation, what did the introducing commit and original tests intend? Treat that history as compatibility-risk evidence, not automatic proof that the behavior must never change.
 - For latency, timeout, buffering, backpressure, or cleanup, was observable time or state measured rather than inferred only from mocks?
 - For shared asynchronous state, do tests control completion order and prove that a stale failure or cleanup cannot affect the surviving operation?
 
@@ -71,7 +72,7 @@ Issue reports often combine a desired outcome with a proposed API or implementat
 
 Evidence from a linked issue applies only when the issue and PR share the same runtime variant, provider or tool type, trigger, supported configuration, and user outcome. A broad title, ordinary reference, `Related to` statement, or conceptual similarity is not enough. If an earlier change already resolved the concrete reported scenario, an adjacent extension starts with no inherited evidence of need.
 
-### Need evidence status
+### Need status
 
 Assign one status before deep implementation review:
 
@@ -82,6 +83,8 @@ Assign one status before deep implementation review:
 
 Only `Demonstrated` need can support a merge-worthy code recommendation. `Plausible but unproven` maps to `Needs evidence` or `Not worth completing`, even when the patch is technically correct and its remaining fixes are bounded. `Already covered` and `Unsupported` normally map to closure or a simpler non-core alternative.
 
+The need status is an evidence classification, not the issue action. Record observation validity, downstream consequence, need status, and issue action separately. A reported shape or branch difference can be confirmed while the need remains `Plausible but unproven` and the correct issue action is `Close`.
+
 ### Practical-impact gate
 
 Do not accept a change merely because desk review identifies a local logical flaw, defensive improvement, or constructible edge case. Trace the complete consequence chain:
@@ -89,6 +92,8 @@ Do not accept a change merely because desk review identifies a local logical fla
 `realistic trigger -> supported execution path -> observable or durable effect`
 
 A local intermediate inconsistency, redundant operation, surprising branch, or theoretically cleaner invariant is not a demonstrated need when it has no meaningful downstream effect. Reachability, a passing new test, a small diff, and low implementation cost establish neither practical impact nor maintenance value.
+
+For representation-only changes, name the concrete consumer computation, decision, or persisted interpretation that changes before and after the patch. If the patch only changes list shape, placeholder presence, metadata, ordering, or terminology without recovering information or changing a meaningful result, it does not establish practical impact. Contract ambiguity and API symmetry are insufficient by themselves, especially when the current shapes are released or intentionally test-covered.
 
 Use one of these evidence paths:
 
@@ -136,6 +141,8 @@ Choose one:
 - **Close**: duplicate, unsupported, unreachable, contradicted, no-op, already addressed by a reasonable supported path, or not worth permanent complexity.
 
 Ask only for evidence that could change the disposition.
+
+For external contribution triage, default a `Plausible but unproven` need to `Close` when the current report shows only a logic-level or representation-level inconsistency. Use the `Needs evidence` issue action only when maintainers intentionally want to keep the issue open and can name one bounded piece of evidence likely to change the decision. A closed issue may still state the concrete evidence that would justify reconsideration.
 
 ## PR Quality and Value
 
@@ -269,6 +276,13 @@ Use GitHub-native references in every draft:
 
 Before returning the draft, normalize any same-repository URL or qualified reference to `#<number>`, normalize any cross-repository issue or pull-request URL to `owner/repo#<number>`, and rescan the draft. Do not return it while a Markdown-linked issue or pull-request label, `openai/openai-agents-js#<number>`, or bare GitHub issue or pull-request URL remains.
 
+Perform an action-delta pass after the paste-readiness pass:
+
+- Map every imperative sentence to a concrete difference between the current remote head and the desired state.
+- Remove requests for behavior, tests, documentation, or scope that the current head already satisfies or that the recommendation does not require.
+- Do not use change-request language for `Merge-worthy as-is`.
+- Keep portfolio comparisons out of a contributor-facing draft unless that target is being closed or redirected as a duplicate or superseded implementation.
+
 Do not include internal severity labels, speculate about authorship/intent, repeat the full review, or soften the requested action until it is unclear.
 
 Do not ask contributors to choose maintainer-owned semantics. If two implementations are technically possible but one changes the SDK contract, decide the contract in the review and make the comment actionable. Use a short rationale such as "This keeps the new handler scoped to the existing raise site" or "This makes the handler name match all invalid final messages", then request the exact code and tests for that decision.
@@ -357,7 +371,7 @@ Use `Maintainer decision` for a concluded review. Use `Preliminary assessment` w
 
 <Need, practical impact, and merge-worthiness.>
 
-- Need evidence: <Demonstrated / Plausible but unproven / Already covered / Unsupported>
+- Need status: <Demonstrated / Plausible but unproven / Already covered / Unsupported>
 - Code recommendation: <code disposition>
 - Repository readiness: <one allowed status; only when useful for a merge-worthy recommendation>
 
