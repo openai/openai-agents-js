@@ -14,6 +14,10 @@ import {
   CONTENT_FILTER_REFUSAL_MESSAGE,
   shouldSynthesizeContentFilterRefusal,
 } from './openaiChatCompletionsContentFilter';
+import {
+  createTruncatedEmptyChatCompletionError,
+  isTruncatedEmptyChatCompletion,
+} from './openaiChatCompletionsTruncation';
 
 type StreamingState = {
   started: boolean;
@@ -420,6 +424,19 @@ export async function* convertChatCompletionsStreamToResponses(
     prompt_tokens_details: usage?.prompt_tokens_details,
     completion_tokens_details: usage?.completion_tokens_details,
   };
+
+  if (
+    isTruncatedEmptyChatCompletion({
+      finishReason: state.finishReason,
+      hasText: Boolean(state.text_content?.text),
+      hasRefusal: Boolean(state.refusal_content?.refusal),
+      hasAudio: state.audio !== null,
+      hasReasoning: state.reasoning.length > 0,
+      hasFunctionCall: Object.keys(state.function_calls).length > 0,
+    })
+  ) {
+    throw createTruncatedEmptyChatCompletionError();
+  }
 
   // Compose final response
   const finalEvent: protocol.StreamEventResponseCompleted = {

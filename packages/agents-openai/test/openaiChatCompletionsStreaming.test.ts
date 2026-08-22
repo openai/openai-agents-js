@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { UserError } from '@openai/agents-core';
+import { ModelBehaviorError, UserError } from '@openai/agents-core';
 import { convertChatCompletionsStreamToResponses } from '../src/openaiChatCompletionsStreaming';
 import { FAKE_ID } from '../src/openaiChatCompletionsModel';
 import logger from '../src/logger';
@@ -96,6 +96,160 @@ describe('convertChatCompletionsStreamToResponses', () => {
         },
       },
     ]);
+  });
+
+  it('rejects an annotation-only truncated stream after emitting raw events', async () => {
+    const response = {
+      id: 'truncated-response',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    const usage = {
+      prompt_tokens: 11,
+      completion_tokens: 7,
+      total_tokens: 18,
+      completion_tokens_details: { reasoning_tokens: 6 },
+    };
+    const annotationChunk = makeChunk({ annotations: [urlCitation()] }, usage);
+    const terminalChunk = {
+      ...makeChunk({}),
+      choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+    } as any;
+
+    async function* stream() {
+      yield annotationChunk;
+      yield terminalChunk;
+    }
+
+    const events: any[] = [];
+    let caught: unknown;
+    try {
+      for await (const event of convertChatCompletionsStreamToResponses(
+        response,
+        stream() as any,
+        { preserveRawUsage: true },
+      )) {
+        events.push(event);
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ModelBehaviorError);
+    expect((caught as Error).message).toContain("finish_reason='length'");
+    expect(events.filter((event) => event.type === 'model')).toEqual([
+      expect.objectContaining({ event: annotationChunk }),
+      expect.objectContaining({ event: terminalChunk }),
+    ]);
+    expect(events.some((event) => event.type === 'response_done')).toBe(false);
+    expect(response.usage).toEqual({
+      prompt_tokens: 11,
+      completion_tokens: 7,
+      total_tokens: 18,
+      prompt_tokens_details: undefined,
+      completion_tokens_details: { reasoning_tokens: 6 },
+    });
+  });
+
+  it('preserves a late iterator error after an empty length terminal chunk', async () => {
+    const response = {
+      id: 'truncated-response',
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    } as any;
+    const usageChunk = makeChunk(
+      {},
+      {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18,
+      },
+    );
+    const terminalChunk = {
+      ...makeChunk({}),
+      choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+    } as any;
+    const transportError = new Error('stream connection failed');
+
+    async function* stream() {
+      yield usageChunk;
+      yield terminalChunk;
+      throw transportError;
+    }
+
+    const events: any[] = [];
+    let caught: unknown;
+    try {
+      for await (const event of convertChatCompletionsStreamToResponses(
+        response,
+        stream() as any,
+        { preserveRawUsage: true },
+      )) {
+        events.push(event);
+      }
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(transportError);
+    expect(events.filter((event) => event.type === 'model')).toEqual([
+      expect.objectContaining({ event: usageChunk }),
+      expect.objectContaining({ event: terminalChunk }),
+    ]);
+    expect(events.some((event) => event.type === 'response_done')).toBe(false);
+    expect(response).toMatchObject({
+      choices: [],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    });
+  });
+
+  it.each([
+    ['whitespace text', { content: ' ' }],
+    ['refusal', { refusal: 'provider refusal' }],
+    ['audio', { audio: { id: 'audio-1', data: 'abc' } }],
+    ['reasoning', { reasoning: 'partial reasoning' }],
+    [
+      'function call',
+      {
+        tool_calls: [
+          {
+            index: 0,
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{}' },
+          },
+        ],
+      },
+    ],
+  ])('preserves a truncated stream containing %s', async (_label, delta) => {
+    const response = { id: 'partial-response' } as any;
+    const usage = {
+      prompt_tokens: 3,
+      completion_tokens: 4,
+      total_tokens: 7,
+    };
+
+    async function* stream() {
+      yield makeChunk(delta, usage);
+      yield {
+        ...makeChunk({}),
+        choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+      } as any;
+    }
+
+    const events: any[] = [];
+    for await (const event of convertChatCompletionsStreamToResponses(
+      response,
+      stream() as any,
+      { preserveRawUsage: true },
+    )) {
+      events.push(event);
+    }
+
+    const final = events.at(-1);
+    expect(final.type).toBe('response_done');
+    expect(final.response.output).toHaveLength(1);
+    expect(final.response.rawUsage).toEqual(usage);
   });
 
   it('emits protocol events for streamed chat completions', async () => {
@@ -1299,11 +1453,43 @@ describe('convertChatCompletionsStreamToResponses', () => {
     ).toBe(false);
   });
 
-  it('rejects streamed custom tool calls in strict mode', async () => {
+  it('rejects a truncated stream containing only an ignored custom tool call', async () => {
     async function* stream() {
       yield makeChunk({
         tool_calls: [{ index: 0, id: 'call1', type: 'custom' }],
       });
+      yield {
+        ...makeChunk({}),
+        choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+      } as any;
+    }
+
+    await expect(async () => {
+      for await (const _event of convertChatCompletionsStreamToResponses(
+        { id: 'r' } as any,
+        stream() as any,
+      )) {
+        // Consume the stream.
+      }
+    }).rejects.toThrow(ModelBehaviorError);
+  });
+
+  it('rejects streamed custom tool calls in strict mode', async () => {
+    async function* stream() {
+      yield {
+        ...makeChunk({
+          tool_calls: [{ index: 0, id: 'call1', type: 'custom' }],
+        }),
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [{ index: 0, id: 'call1', type: 'custom' }],
+            },
+            finish_reason: 'length',
+          },
+        ],
+      } as any;
     }
 
     await expect(async () => {
