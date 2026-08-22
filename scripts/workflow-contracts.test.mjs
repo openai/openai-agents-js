@@ -15,6 +15,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  CODEX_SANDBOX_AUTO_SKIP,
+  DEFAULT_AUTO_SKIP,
+  getConditionalAutoSkipReason,
+} from './run-example-starts.mjs';
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -31,6 +36,25 @@ async function pathExists(filePath) {
 }
 
 describe('repository workflow contracts', () => {
+  it('skips unsupported provider and process examples in automatic runs', () => {
+    expect(DEFAULT_AUTO_SKIP).toContain('sandbox:start:cloudflare');
+
+    expect([...CODEX_SANDBOX_AUTO_SKIP.keys()].sort()).toEqual([
+      'agent-patterns:start:hosted-multi-agent',
+      'sandbox:start:e2b',
+      'sandbox:start:runloop',
+      'tools:start:computer-use',
+      'tools:start:computer-use-hitl',
+    ]);
+
+    for (const name of CODEX_SANDBOX_AUTO_SKIP.keys()) {
+      expect(
+        getConditionalAutoSkipReason(name, { CODEX_SANDBOX: 'seatbelt' }),
+      ).toContain('Codex sandbox');
+      expect(getConditionalAutoSkipReason(name, {})).toBeNull();
+    }
+  });
+
   it('exposes the example lifecycle through pnpm scripts without rerun state', async () => {
     const packageJson = JSON.parse(
       await readFile(path.join(repositoryRoot, 'package.json'), 'utf8'),

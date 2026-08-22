@@ -92,6 +92,29 @@ const CONDITIONAL_AUTO_SKIP_RULES = [
   },
 ];
 
+export const CODEX_SANDBOX_AUTO_SKIP = new Map([
+  [
+    'agent-patterns:start:hosted-multi-agent',
+    "Codex sandbox does not support this example's WebSocket connection",
+  ],
+  [
+    'sandbox:start:e2b',
+    'Codex sandbox blocks this external sandbox provider connection',
+  ],
+  [
+    'sandbox:start:runloop',
+    'Codex sandbox blocks this external sandbox provider connection',
+  ],
+  [
+    'tools:start:computer-use',
+    'Codex sandbox blocks the local Playwright browser process',
+  ],
+  [
+    'tools:start:computer-use-hitl',
+    'Codex sandbox blocks the local Playwright browser process',
+  ],
+]);
+
 export const DEFAULT_AUTO_SKIP = [
   // Tends to loop multiple times and produce very long output; skip in auto runs.
   'agent-patterns:start:llm-as-a-judge',
@@ -99,6 +122,8 @@ export const DEFAULT_AUTO_SKIP = [
   'connectors:start',
   // Approval-prompt example that still needs manual input.
   'mcp:start:hosted-mcp-on-approval',
+  // This remote worker can return an HTML provider restriction instead of the API response.
+  'sandbox:start:cloudflare',
   // Temporarily disabled due to the credential issues.
   'sandbox:start:vercel',
   // Depends on a local Codex binary that macOS may quarantine or remove.
@@ -325,15 +350,26 @@ const getStartName = (startOrName) =>
 const isExcludedStart = (startOrName) =>
   EXCLUDED_STARTS.has(getStartName(startOrName));
 
-const getConditionalAutoSkipReason = (startOrName) => {
+export const getConditionalAutoSkipReason = (
+  startOrName,
+  environment = process.env,
+) => {
   const name = getStartName(startOrName);
+
+  if (environment.CODEX_SANDBOX?.trim()) {
+    const codexSandboxReason = CODEX_SANDBOX_AUTO_SKIP.get(name);
+    if (codexSandboxReason) {
+      return codexSandboxReason;
+    }
+  }
+
   const rule = CONDITIONAL_AUTO_SKIP_RULES.find((entry) => entry.name === name);
   if (!rule) {
     return null;
   }
 
   const missingEnv = rule.requiredEnv.find((key) => {
-    const value = process.env[key];
+    const value = environment[key];
     return typeof value !== 'string' || value.trim().length === 0;
   });
 
