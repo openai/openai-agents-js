@@ -171,7 +171,7 @@ Human-in-the-loop flows often pause a run to wait for approval:
 
 When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Most human-in-the-loop (HITL) approval checkpoints round-trip through `RunState` while the session keeps the conversation history complete.
 
-Output guardrails impose a stricter boundary when an approved function-tool result can become the final output. If a serialized checkpoint does not contain enough provenance to identify the current output safely, the SDK fails closed before further model, tool, or session side effects. Some output-bearing approval checkpoints therefore cannot be resumed from serialized state with a session attached. Start a new run from safe input when the SDK reports this condition; do not work around it by replaying the rejected raw items.
+Output guardrails impose a stricter boundary when an approved function-tool result can become the final output. The current `RunState` schema records exact current-response generated-item ownership when the SDK can prove it, allowing supported output-bearing approval checkpoints to resume with their session history intact. The SDK validates that ownership before further model, tool, or session side effects. Older snapshots and checkpoints with missing, invalid, or ambiguous ownership still fail closed. Start a new run from safe input when the SDK reports this condition; do not work around it by replaying raw items.
 
 ---
 
@@ -209,6 +209,8 @@ Output guardrails impose a stricter boundary when an approved function-tool resu
 | `force` | `boolean` | Bypass `shouldTriggerCompaction` and compact immediately. |
 
 `OpenAIResponsesCompactionSession` serializes mutations issued through the same wrapper instance. Calls to `runCompaction()`, `addItems()`, `popItem()`, and `clearSession()` run in invocation order, and the queue continues after a rejected operation, so later wrapper mutations do not interleave with replacement or rollback. A successful replacement or rollback keeps the wrapper's cached history aligned with the underlying session. If both replacement and restoration fail, recover the underlying session before continuing. This ordering guarantee does not coordinate a different wrapper instance or direct mutation of `underlyingSession`; coordinate those access paths in your application.
+
+Automatic compaction also verifies that the run still owns the history snapshot it read. If another operation changes the wrapper's history before automatic compaction starts, the SDK preserves the newer history and skips that compaction attempt. A later run or an explicit `runCompaction()` call can compact the updated history.
 
 #### Manual compaction for low-latency streaming
 

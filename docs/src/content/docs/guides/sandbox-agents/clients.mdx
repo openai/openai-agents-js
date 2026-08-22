@@ -52,6 +52,10 @@ The same agent can usually run with either local client:
 
 `DockerSandboxClient` uses Docker's default networking unless you set `networkMode: 'none'` in the client constructor or the per-run `sandbox.options`. The `'none'` mode starts the container with networking disabled. It cannot be combined with `exposedPorts`; the SDK rejects that configuration before creating or resuming a container. No other explicit `networkMode` value is currently supported.
 
+Set `labels: Record<string, string>` in the `DockerSandboxClient` constructor or per-run `sandbox.options` to apply user-defined labels to the created container. A per-run `labels` record replaces the constructor record instead of merging with it. The SDK rejects non-string values and reserves `openai-agents-sandbox`, `openai-agents-sandbox.session-identity`, and `openai-agents-sandbox.mount-authority-fingerprint` for its own ownership checks.
+
+The SDK copies user-defined labels into serialized Docker session state. When you explicitly resume that state, caller-provided labels must exactly match the persisted label record; start a fresh sandbox session to change them. Live-container reuse also verifies that every configured label still has its required value. Unrelated labels added outside the SDK do not prevent reuse.
+
 ### Session ownership
 
 There are two lifecycle styles.

@@ -158,6 +158,8 @@ Constructor options:
 | `clientSessionTimeoutSeconds` | `number` | Timeout for MCP client sessions. |
 | `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
 | `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `toolInputGuardrails` | `ToolInputGuardrailDefinition[]` | Run these guardrails before every tool call converted from this server. |
+| `toolOutputGuardrails` | `ToolOutputGuardrailDefinition[]` | Run these guardrails after every tool call converted from this server. |
 | `useStructuredContent` | `boolean` | Use JSON-serialized MCP `structuredContent` as the model-visible output when available and the result is not an error. Defaults to `false`. |
 | `customDataExtractor` | `MCPToolCustomDataExtractor` | Attach SDK-only JSON metadata to emitted local MCP tool output items. The callback can read MCP result `_meta`, `structuredContent`, `isError`, and the model-visible tool output. |
 | `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |
@@ -170,6 +172,8 @@ Constructor options:
 | `sessionId` | `string` | Explicit session id for MCP connections. |
 
 The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `fetch`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
+
+`toolInputGuardrails` and `toolOutputGuardrails` use the SDK's local function-tool guardrail pipeline. They apply to every tool converted from this server in streaming and non-streaming runs. They do not apply to hosted MCP tools, which the Responses API executes remotely. See [Tool guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) for rejection behavior and approval ordering.
 
 ## 3. Stdio MCP servers
 
@@ -196,6 +200,8 @@ Constructor options:
 | `encodingErrorHandler` | `'strict' \| 'ignore' \| 'replace'` | Encoding error strategy. |
 | `toolFilter` | `MCPToolFilterCallable \| MCPToolFilterStatic` | Filter available tools. |
 | `toolMetaResolver` | `MCPToolMetaResolver` | Inject per-call MCP `_meta` request fields. |
+| `toolInputGuardrails` | `ToolInputGuardrailDefinition[]` | Run these guardrails before every tool call converted from this server. |
+| `toolOutputGuardrails` | `ToolOutputGuardrailDefinition[]` | Run these guardrails after every tool call converted from this server. |
 | `useStructuredContent` | `boolean` | Use JSON-serialized MCP `structuredContent` as the model-visible output when available and the result is not an error. Defaults to `false`. |
 | `customDataExtractor` | `MCPToolCustomDataExtractor` | Attach SDK-only JSON metadata to emitted local MCP tool output items. The callback can read MCP result `_meta`, `structuredContent`, `isError`, and the model-visible tool output. |
 | `errorFunction` | `MCPToolErrorFunction \| null` | Map MCP call failures to model-visible text. |

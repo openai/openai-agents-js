@@ -54,14 +54,16 @@ The SDK provides helper functions that return hosted tool definitions:
 
 | Helper function | Notes |
 | --- | --- |
-| `webSearchTool(options?)` | JS-friendly options such as `searchContextSize`, `userLocation`, and `filters.allowedDomains`. |
+| `webSearchTool(options?)` | JS-friendly options such as `searchContextSize`, `userLocation`, `filters.allowedDomains`, `searchContentTypes`, and `imageSettings`. |
 | `fileSearchTool(ids, options?)` | Accepts one or more vector store IDs as the first argument, plus options like `maxNumResults`, `includeSearchResults`, `rankingOptions`, and filters. |
 | `codeInterpreterTool(options?)` | Defaults to an auto-managed container when no `container` is provided. |
 | `imageGenerationTool(options?)` | Supports image generation configuration such as `model`, `size`, `quality`, `background`, `inputFidelity`, `inputImageMask`, `moderation`, `outputCompression`, `partialImages`, and output format. |
 | `toolSearchTool(options?)` | Adds the built-in `tool_search` helper. Pair it with deferred function tools or hosted MCP tools that set `deferLoading: true`. Supports hosted execution by default or client execution with `execution: 'client'` plus `execute`. |
 | `programmaticToolCallingTool()` | Enables Programmatic Tool Calling. Pair it with tools whose `allowedCallers` includes `'programmatic'`. |
 
-These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters, the official [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the current built-in tool-search flow and model availability, and the official [Programmatic Tool Calling guide](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) for model support and wire-level behavior.
+These helpers map JavaScript/TypeScript-friendly option names to the underlying OpenAI Responses API tool payloads. To request image search results, include `'image'` in `webSearchTool({ searchContentTypes })`. Use `imageSettings.maxResults` to request a positive number of images and `imageSettings.caption` to request captions when available. The SDK requests raw web search results whenever `searchContentTypes` includes `'image'` and exposes the returned image URLs and metadata on the web search call item's `providerData.results`.
+
+Refer to the official [OpenAI tools guide](https://developers.openai.com/api/docs/guides/tools) for the full tool schemas and advanced options like ranking options or semantic filters, the official [Web search guide](https://developers.openai.com/api/docs/guides/tools-web-search#image-search-results) for image result fields, the official [Tool search guide](https://developers.openai.com/api/docs/guides/tools-tool-search) for the current built-in tool-search flow and model availability, and the official [Programmatic Tool Calling guide](https://developers.openai.com/api/docs/guides/tools-programmatic-tool-calling) for model support and wire-level behavior.
 
 ---
 
@@ -221,6 +223,7 @@ When you use tool search:
 - Leave `modelSettings.toolChoice` on `'auto'`. The SDK rejects forcing the built-in `tool_search` tool or a deferred function tool by name.
 - Hosted execution is the default. If you set `toolSearchTool({ execution: 'client', execute })`, the standard `run()` loop only supports the built-in `{ paths: string[] }` client query shape; custom client-side schemas require your own Responses loop.
 - A namespace can mix immediate and deferred members. Immediate members stay callable without tool search, while deferred members in the same namespace are loaded on demand.
+- Tool discovery belongs to the Agent that performed the search and does not transfer through a handoff. The SDK preserves discovery for the same logical Agent across history or Session replay when that Agent's name is unique in the run graph. Missing or ambiguous ownership requires a new search, so give Agents unique names when persisted discovery must survive reconstruction.
 - Deferred function tools and `toolNamespace()` are Responses-only. Chat Completions rejects them, and the AI SDK adapter does not support deferred Responses tool-loading flows.
 
 ---
