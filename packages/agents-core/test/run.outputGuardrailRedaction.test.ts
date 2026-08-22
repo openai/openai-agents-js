@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -7,6 +7,7 @@ import {
   MemorySession,
   OutputGuardrailTripwireTriggered,
   RunContext,
+  Runner,
   RunState,
   RunToolCallItem,
   RunToolCallOutputItem,
@@ -19,6 +20,7 @@ import {
   tool,
   toolNamespace,
   type AgentInputItem,
+  type OutputGuardrailBlockedMessageArgs,
   type Session,
   type SessionHistoryTransactionArgs,
 } from '../src';
@@ -42,6 +44,23 @@ import {
 type RunMode = 'non_streamed' | 'streamed';
 
 describe('output guardrail replay redaction', () => {
+  it('preserves typed run context in per-run blocked-message formatters', () => {
+    type Context = { locale: string };
+    const agent = new Agent<Context>({
+      name: 'Typed blocked-message formatter agent',
+    });
+    const typecheckRunOptions = () =>
+      run(agent, 'input', {
+        context: { locale: 'ja' },
+        outputGuardrailBlockedMessage: (args) => {
+          expectTypeOf(args.runContext.context).toEqualTypeOf<Context>();
+          return args.defaultMessage;
+        },
+      });
+
+    expectTypeOf(typecheckRunOptions).toBeFunction();
+  });
+
   it.each([
     {
       outputType: 'text',
@@ -1613,6 +1632,7 @@ describe('output guardrail replay redaction', () => {
     'redacts parsed structured output fields from $mode $failureSurface errors',
     async ({ mode, failureSurface }) => {
       const token = 'parsed-structured-terminal-secret';
+      const blockedMessage = 'Structured output blocked by policy.';
       const rejectedOutput = JSON.stringify({ token });
       const terminalTool = tool({
         name: 'structured_error_terminal_tool',
@@ -1679,10 +1699,17 @@ describe('output guardrail replay redaction', () => {
 
       try {
         if (mode === 'streamed') {
-          const result = await run(agent, 'input', { session, stream: true });
+          const result = await run(agent, 'input', {
+            session,
+            stream: true,
+            outputGuardrailBlockedMessage: blockedMessage,
+          });
           await result.completed;
         } else {
-          await run(agent, 'input', { session });
+          await run(agent, 'input', {
+            session,
+            outputGuardrailBlockedMessage: blockedMessage,
+          });
         }
       } catch (error) {
         failure = error;
@@ -1697,11 +1724,14 @@ describe('output guardrail replay redaction', () => {
       expect((failure as Error).stack).not.toContain(token);
       expect(JSON.stringify(failure)).not.toContain(token);
       if (failure instanceof GuardrailExecutionError) {
+        expect(failure.message).toBe('Error details are redacted.');
+        expect(failure.error.message).toBe('Error details are redacted.');
         expect(failure.error.message).not.toContain(token);
         expect(failure.error.stack).not.toContain(token);
       }
       const cause = (failure as Error & { cause?: unknown }).cause;
       if (cause instanceof Error) {
+        expect(cause.message).toBe('Error details are redacted.');
         expect(cause.message).not.toContain(token);
         expect(cause.stack).not.toContain(token);
       }
@@ -1717,14 +1747,24 @@ describe('output guardrail replay redaction', () => {
   it.each<{
     mode: RunMode;
     includeRejectedOutput: boolean;
-  }>([
-    { mode: 'non_streamed', includeRejectedOutput: false },
-    { mode: 'streamed', includeRejectedOutput: false },
-    { mode: 'non_streamed', includeRejectedOutput: true },
-    { mode: 'streamed', includeRejectedOutput: true },
-  ])(
+    blockedMessage?: string;
+  }>(
+    [
+      { mode: 'non_streamed', includeRejectedOutput: false },
+      { mode: 'streamed', includeRejectedOutput: false },
+      { mode: 'non_streamed', includeRejectedOutput: true },
+      { mode: 'streamed', includeRejectedOutput: true },
+    ].flatMap((entry) => [
+      { ...entry, mode: entry.mode as RunMode },
+      {
+        ...entry,
+        mode: entry.mode as RunMode,
+        blockedMessage: 'Blocked by the configured policy.',
+      },
+    ]),
+  )(
     'redacts a terminal tool verdict and preserves safe sibling diagnostics in $mode mode with rejected output exposed: $includeRejectedOutput',
-    async ({ mode, includeRejectedOutput }) => {
+    async ({ mode, includeRejectedOutput, blockedMessage }) => {
       const rejectedOutput = 'sibling-error terminal tool secret';
       const siblingError = new Error(
         includeRejectedOutput
@@ -1790,10 +1830,17 @@ describe('output guardrail replay redaction', () => {
 
       try {
         if (mode === 'streamed') {
-          const result = await run(agent, 'input', { session, stream: true });
+          const result = await run(agent, 'input', {
+            session,
+            stream: true,
+            outputGuardrailBlockedMessage: blockedMessage,
+          });
           await result.completed;
         } else {
-          await run(agent, 'input', { session });
+          await run(agent, 'input', {
+            session,
+            outputGuardrailBlockedMessage: blockedMessage,
+          });
         }
       } catch (error) {
         failure = error;
@@ -1801,6 +1848,19 @@ describe('output guardrail replay redaction', () => {
 
       expect(failure).toBeInstanceOf(GuardrailExecutionError);
       expect((failure as Error).message).toContain('sibling guardrail failed');
+      const expectedMessage =
+        blockedMessage ?? 'Output withheld by an output guardrail.';
+      const expectedDiagnostic = includeRejectedOutput
+        ? `sibling guardrail failed: ${expectedMessage}`
+        : 'sibling guardrail failed';
+      expect((failure as Error).message).toContain(expectedDiagnostic);
+      expect((failure as Error).stack).toContain(expectedDiagnostic);
+      expect((failure as GuardrailExecutionError).error.message).toBe(
+        expectedDiagnostic,
+      );
+      expect((failure as GuardrailExecutionError).error.stack).toContain(
+        expectedDiagnostic,
+      );
       expect((failure as Error).message).not.toContain(rejectedOutput);
       expect((failure as Error).stack).not.toContain(rejectedOutput);
       expect((failure as GuardrailExecutionError).error.message).not.toContain(
@@ -1834,7 +1894,7 @@ describe('output guardrail replay redaction', () => {
       );
       expect(state.toString()).not.toContain('sibling-trip-output-info-secret');
       const persisted = JSON.stringify(await session.getItems());
-      expect(persisted).toContain('Output withheld by an output guardrail.');
+      expect(persisted).toContain(expectedMessage);
       expect(persisted).not.toContain('sibling-error terminal tool secret');
       expect(persisted).not.toContain('sibling-trip-output-info-secret');
     },
@@ -1843,14 +1903,24 @@ describe('output guardrail replay redaction', () => {
   it.each<{
     mode: RunMode;
     includeSiblingFailure: boolean;
-  }>([
-    { mode: 'non_streamed', includeSiblingFailure: false },
-    { mode: 'streamed', includeSiblingFailure: false },
-    { mode: 'non_streamed', includeSiblingFailure: true },
-    { mode: 'streamed', includeSiblingFailure: true },
-  ])(
+    blockedMessage?: string;
+  }>(
+    [
+      { mode: 'non_streamed', includeSiblingFailure: false },
+      { mode: 'streamed', includeSiblingFailure: false },
+      { mode: 'non_streamed', includeSiblingFailure: true },
+      { mode: 'streamed', includeSiblingFailure: true },
+    ].flatMap((entry) => [
+      { ...entry, mode: entry.mode as RunMode },
+      {
+        ...entry,
+        mode: entry.mode as RunMode,
+        blockedMessage: 'Blocked before persistence.',
+      },
+    ]),
+  )(
     'never attaches unsafe blocked-output persistence causes in $mode mode with sibling failure: $includeSiblingFailure',
-    async ({ mode, includeSiblingFailure }) => {
+    async ({ mode, includeSiblingFailure, blockedMessage }) => {
       const rejectedOutput = 'blocked-persistence-cause-secret';
       const persistenceError = new Error(
         `Persistence rejected ${rejectedOutput}`,
@@ -1918,10 +1988,14 @@ describe('output guardrail replay redaction', () => {
           const result = await run(agent, 'input', {
             session: new RejectingSession(),
             stream: true,
+            outputGuardrailBlockedMessage: blockedMessage,
           });
           await result.completed;
         } else {
-          await run(agent, 'input', { session: new RejectingSession() });
+          await run(agent, 'input', {
+            session: new RejectingSession(),
+            outputGuardrailBlockedMessage: blockedMessage,
+          });
         }
       } catch (error) {
         failure = error;
@@ -1938,7 +2012,7 @@ describe('output guardrail replay redaction', () => {
       expect(safePersistenceError).not.toBe(persistenceError);
       expect(safePersistenceError.message).toContain('Persistence rejected');
       expect(safePersistenceError.message).toContain(
-        'Output withheld by an output guardrail.',
+        blockedMessage ?? 'Output withheld by an output guardrail.',
       );
       expect(safePersistenceError.message).not.toContain(rejectedOutput);
       expect(safePersistenceError.stack).not.toContain(rejectedOutput);
@@ -2045,14 +2119,27 @@ describe('output guardrail replay redaction', () => {
         ],
       });
       const session = new MemorySession();
+      const formatterGuardrailNames: string[] = [];
+      const runOptions = {
+        session,
+        outputGuardrailBlockedMessage: (
+          args: OutputGuardrailBlockedMessageArgs,
+        ) => {
+          formatterGuardrailNames.push(args.guardrailName);
+          return args.defaultMessage;
+        },
+      };
       let failure: unknown;
 
       try {
         if (mode === 'streamed') {
-          const result = await run(agent, 'input', { session, stream: true });
+          const result = await run(agent, 'input', {
+            ...runOptions,
+            stream: true,
+          });
           await result.completed;
         } else {
-          await run(agent, 'input', { session });
+          await run(agent, 'input', runOptions);
         }
       } catch (error) {
         failure = error;
@@ -2066,6 +2153,7 @@ describe('output guardrail replay redaction', () => {
         expect(persisted).not.toContain(
           'Output withheld by an output guardrail.',
         );
+        expect(formatterGuardrailNames).toEqual([]);
         return;
       }
 
@@ -2081,6 +2169,7 @@ describe('output guardrail replay redaction', () => {
       expect(safeTripwire.result.guardrail.name).toBe(
         'completed sibling rejection',
       );
+      expect(formatterGuardrailNames).toEqual(['completed sibling rejection']);
       expect(safeTripwire.result.agentOutput).toBe(
         'Output withheld by an output guardrail.',
       );
@@ -2270,6 +2359,1613 @@ describe('output guardrail replay redaction', () => {
       expect(
         tripwire?.state?._toolOutputGuardrailResults[0]?.output.outputInfo,
       ).toBe('accepted-tool-output-info');
+    },
+  );
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      (['fixed', 'sync', 'async'] as const).map((customizerKind) => ({
+        mode,
+        customizerKind,
+      })),
+    ),
+  )(
+    'uses a $customizerKind custom blocked message across $mode retained views',
+    async ({ mode, customizerKind }) => {
+      const blockedMessage = '出力ガードレールにより非表示になりました。';
+      const context = { locale: 'ja' };
+      const formatterArgs: OutputGuardrailBlockedMessageArgs<typeof context>[] =
+        [];
+      const recordArgs = (
+        args: OutputGuardrailBlockedMessageArgs<typeof context>,
+      ) => {
+        formatterArgs.push(args);
+        return blockedMessage;
+      };
+      const customizer =
+        customizerKind === 'fixed'
+          ? blockedMessage
+          : customizerKind === 'sync'
+            ? recordArgs
+            : async (
+                args: OutputGuardrailBlockedMessageArgs<typeof context>,
+              ) => {
+                await Promise.resolve();
+                return recordArgs(args);
+              };
+      const terminalTool = tool({
+        name: 'localized_blocked_terminal_tool',
+        description: 'Returns output rejected by an output guardrail.',
+        parameters: z.object({}),
+        outputGuardrails: [
+          defineToolOutputGuardrail({
+            name: 'retaining tool output guardrail',
+            run: async () =>
+              ToolGuardrailFunctionOutputFactory.allow(
+                'blocked-tool-output-info',
+              ),
+          }),
+        ],
+        execute: async () => 'blocked-terminal-secret',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            functionCall(
+              'localized_blocked_terminal_tool',
+              {},
+              { callId: 'localized-blocked-call' },
+            ),
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'Localized blocked output agent',
+        model,
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'localized output guardrail',
+            execute: async () => ({
+              outputInfo: 'blocked-output-guardrail-info',
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      const configuredRunner = new Runner({
+        outputGuardrailBlockedMessage: customizer,
+      });
+      let streamedResult: any;
+      let tripwire: OutputGuardrailTripwireTriggered<any, any> | undefined;
+
+      try {
+        if (mode === 'streamed') {
+          streamedResult =
+            customizerKind === 'fixed'
+              ? await configuredRunner.run(agent, 'input', {
+                  context,
+                  session,
+                  stream: true,
+                })
+              : await run(agent, 'input', {
+                  context,
+                  session,
+                  stream: true,
+                  outputGuardrailBlockedMessage: customizer,
+                });
+          await streamedResult.completed;
+        } else {
+          if (customizerKind === 'fixed') {
+            await configuredRunner.run(agent, 'input', { context, session });
+          } else {
+            await run(agent, 'input', {
+              context,
+              session,
+              outputGuardrailBlockedMessage: customizer,
+            });
+          }
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        tripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+
+      expect(tripwire?.result.agentOutput).toBe(blockedMessage);
+      expect(tripwire?.result.output.outputInfo).toBeUndefined();
+      expect(tripwire?.state?._currentStep).toMatchObject({
+        type: 'next_step_final_output',
+        output: blockedMessage,
+      });
+      expect(
+        tripwire?.state?._toolOutputGuardrailResults[0]?.output.outputInfo,
+      ).toBeUndefined();
+      expect(tripwire?.state?.toString()).toContain(blockedMessage);
+      const stored = JSON.stringify(await session.getItems());
+      expect(stored).toContain(blockedMessage);
+      if (streamedResult) {
+        expect(JSON.stringify(streamedResult.newItems)).toContain(
+          blockedMessage,
+        );
+      }
+
+      if (customizerKind === 'fixed') {
+        expect(formatterArgs).toEqual([]);
+      } else {
+        expect(formatterArgs).toHaveLength(1);
+        expect(formatterArgs[0]).toMatchObject({
+          defaultMessage: 'Output withheld by an output guardrail.',
+          guardrailName: 'localized output guardrail',
+          agent,
+          runContext: tripwire?.state?._context,
+        });
+        expect(formatterArgs[0]?.runContext.context).toBe(context);
+      }
+
+      const retainedViews = [
+        tripwire?.state?.toString() ?? '',
+        stored,
+        JSON.stringify(tripwire?.state?._toolOutputGuardrailResults),
+        JSON.stringify(streamedResult?.newItems ?? []),
+      ];
+      for (const view of retainedViews) {
+        expect(view).not.toContain('blocked-terminal-secret');
+        expect(view).not.toContain('blocked-tool-output-info');
+        expect(view).not.toContain('blocked-output-guardrail-info');
+      }
+
+      agent.outputGuardrails = [];
+      model.enqueue(
+        modelResponse({
+          output: [assistantMessage('done')],
+          usage: new Usage(),
+        }),
+      );
+      if (mode === 'streamed') {
+        const followup = await run(agent, 'continue', {
+          context,
+          session,
+          stream: true,
+        });
+        await followup.completed;
+        expect(followup.finalOutput).toBe('done');
+      } else {
+        const followup = await run(agent, 'continue', { context, session });
+        expect(followup.finalOutput).toBe('done');
+      }
+      expect(JSON.stringify(model.lastCall?.request.input)).toContain(
+        blockedMessage,
+      );
+    },
+  );
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      (['fixed', 'sync', 'async'] as const).map((customizerKind) => ({
+        mode,
+        customizerKind,
+      })),
+    ),
+  )(
+    'resumes a serialized $customizerKind custom-blocked $mode terminal output',
+    async ({ mode, customizerKind }) => {
+      const blockedMessage = 'Output blocked by the configured policy.';
+      let formatterCalls = 0;
+      const recordFormatterCall = (
+        args: OutputGuardrailBlockedMessageArgs<{ label: string }>,
+      ) => {
+        formatterCalls += 1;
+        return `${args.runContext.context.label}: blocked message ${formatterCalls}.`;
+      };
+      const customizer =
+        customizerKind === 'fixed'
+          ? blockedMessage
+          : customizerKind === 'sync'
+            ? recordFormatterCall
+            : async (
+                args: OutputGuardrailBlockedMessageArgs<{ label: string }>,
+              ) => {
+                await Promise.resolve();
+                return recordFormatterCall(args);
+              };
+      let guardrailCalls = 0;
+      const guardedOutputs: string[] = [];
+      const terminalTool = tool({
+        name: 'restored_custom_blocked_terminal_tool',
+        description: 'Returns terminal output rejected by an output guardrail.',
+        parameters: z.object({}),
+        execute: async () => 'restored-custom-blocked-secret',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            functionCall(
+              'restored_custom_blocked_terminal_tool',
+              {},
+              { callId: 'restored-custom-blocked-call' },
+            ),
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent<{ label: string }>({
+        name: 'Restored custom blocked output agent',
+        model,
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'restored custom blocked output guardrail',
+            execute: async ({ agentOutput }) => {
+              guardrailCalls += 1;
+              guardedOutputs.push(agentOutput);
+              return {
+                outputInfo: 'restored-custom-blocked-output-info',
+                tripwireTriggered: true,
+              };
+            },
+          },
+        ],
+      });
+      const runOnce = async (
+        input: string | RunState<any, any>,
+        includeCustomizer = true,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, {
+            stream: true,
+            context: { label: 'initial' },
+            ...(includeCustomizer
+              ? { outputGuardrailBlockedMessage: customizer }
+              : {}),
+          });
+          await result.completed;
+          return;
+        }
+        await run(agent, input, {
+          context: { label: 'initial' },
+          ...(includeCustomizer
+            ? { outputGuardrailBlockedMessage: customizer }
+            : {}),
+        });
+      };
+
+      let initialTripwire:
+        OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce('input');
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        initialTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+      const serializedState = JSON.parse(
+        initialTripwire!.state!.toString(),
+      ) as {
+        generatedItems: Array<{ type?: string; output?: unknown }>;
+      };
+      const serializedToolOutput = serializedState.generatedItems.find(
+        (item) => item.type === 'tool_call_output_item',
+      );
+      expect(serializedToolOutput).toBeDefined();
+      serializedToolOutput!.output = 'forged blocked output';
+      const tamperedState = await RunState.fromString(
+        agent,
+        JSON.stringify(serializedState),
+      );
+      let resumeError: unknown;
+      try {
+        await runOnce(tamperedState);
+      } catch (error) {
+        resumeError = error;
+      }
+      expect(resumeError).toBeInstanceOf(UserError);
+      expect((resumeError as UserError).message).toContain(
+        'previous output guardrail result ownership was not preserved',
+      );
+
+      const unconfiguredState = await RunState.fromString(
+        agent,
+        initialTripwire!.state!.toString(),
+      );
+      resumeError = undefined;
+      try {
+        await runOnce(unconfiguredState, false);
+      } catch (error) {
+        resumeError = error;
+      }
+      expect(resumeError).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+      expect(
+        (resumeError as OutputGuardrailTripwireTriggered<any, any>).result
+          .agentOutput,
+      ).toBe('Output withheld by an output guardrail.');
+
+      const restoredState = await RunState.fromString<
+        { label: string },
+        typeof agent
+      >(agent, initialTripwire!.state!.toString());
+      restoredState._context.context.label = 'restored';
+
+      let restoredTripwire:
+        OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce(restoredState);
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        restoredTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+
+      expect(model.calls).toHaveLength(1);
+      expect(guardrailCalls).toBe(3);
+      expect(formatterCalls).toBe(customizerKind === 'fixed' ? 0 : 2);
+      expect(guardedOutputs).toEqual([
+        'restored-custom-blocked-secret',
+        'Output withheld by an output guardrail.',
+        'Output withheld by an output guardrail.',
+      ]);
+      const expectedMessage =
+        customizerKind === 'fixed'
+          ? blockedMessage
+          : 'restored: blocked message 2.';
+      expect(restoredTripwire?.result.agentOutput).toBe(expectedMessage);
+      expect(
+        restoredTripwire?.state?._outputGuardrailResults.every(
+          (result) => result.agentOutput === expectedMessage,
+        ),
+      ).toBe(true);
+      expect(restoredTripwire?.state?.toString()).not.toContain(
+        'initial: blocked message',
+      );
+      expect(restoredTripwire?.result.output.outputInfo).toBeUndefined();
+      expect(restoredTripwire?.state?.toString()).not.toContain(
+        'restored-custom-blocked-secret',
+      );
+      expect(restoredTripwire?.state?.toString()).not.toContain(
+        'restored-custom-blocked-output-info',
+      );
+      const restoredAgain = await RunState.fromString<
+        { label: string },
+        typeof agent
+      >(agent, restoredTripwire!.state!.toString());
+      restoredAgain._context.context.label = 'restored again';
+      await expect(runOnce(restoredAgain)).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(guardedOutputs.at(-1)).toBe(
+        'Output withheld by an output guardrail.',
+      );
+      expect(restoredAgain._outputGuardrailResults).toHaveLength(3);
+      expect(
+        restoredAgain._outputGuardrailResults.every(
+          (result) =>
+            result.agentOutput ===
+            (customizerKind === 'fixed'
+              ? blockedMessage
+              : 'restored again: blocked message 3.'),
+        ),
+      ).toBe(true);
+      expect(model.calls).toHaveLength(1);
+
+      // Even internally consistent serialized text cannot authorize the retained message.
+      const forgedState = await RunState.fromString(
+        agent,
+        initialTripwire!
+          .state!.toString()
+          .split(
+            customizerKind === 'fixed'
+              ? blockedMessage
+              : 'initial: blocked message 1.',
+          )
+          .join('forged stored blocked text'),
+      );
+      await expect(runOnce(forgedState)).rejects.toBeInstanceOf(
+        OutputGuardrailTripwireTriggered,
+      );
+      expect(guardedOutputs.at(-1)).toBe(
+        'Output withheld by an output guardrail.',
+      );
+      expect(forgedState.toString()).not.toContain(
+        'forged stored blocked text',
+      );
+      expect(model.calls).toHaveLength(1);
+
+      const invalidResultsState = await RunState.fromString(
+        agent,
+        initialTripwire!.state!.toString(),
+      );
+      invalidResultsState._outputGuardrailResults[0].output.outputInfo =
+        'unverified metadata';
+      const callsBeforeInvalidResume = formatterCalls;
+      await expect(runOnce(invalidResultsState)).rejects.toBeInstanceOf(
+        UserError,
+      );
+      expect(formatterCalls).toBe(callsBeforeInvalidResume);
+    },
+  );
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      [
+        'another configured output guardrail',
+        'fabricated output guardrail',
+      ].map((storedName) => ({ mode, storedName })),
+    ),
+  )(
+    'uses only fresh guardrail identity after restoring $storedName in $mode mode',
+    async ({ mode, storedName }) => {
+      const blockedMessage = 'Output blocked by the trusted policy.';
+      let guardrailCalls = 0;
+      let failGuardrail = false;
+      const events: string[] = [];
+      const guardedOutputs: string[] = [];
+      const terminalTool = tool({
+        name: 'fabricated_guardrail_name_terminal_tool',
+        description: 'Returns terminal output rejected by an output guardrail.',
+        parameters: z.object({}),
+        execute: async () => 'fabricated-guardrail-name-secret',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            functionCall(
+              'fabricated_guardrail_name_terminal_tool',
+              {},
+              { callId: 'fabricated-guardrail-name-call' },
+            ),
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'Fabricated serialized guardrail name agent',
+        model,
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'trusted restored output guardrail',
+            execute: async ({ agentOutput }) => {
+              guardrailCalls += 1;
+              events.push('guardrail:A');
+              guardedOutputs.push(agentOutput);
+              if (failGuardrail) {
+                throw new Error('Current guardrail execution failed.');
+              }
+              return {
+                outputInfo: 'fabricated-guardrail-name-output-info',
+                tripwireTriggered: true,
+              };
+            },
+          },
+          {
+            name: 'another configured output guardrail',
+            execute: async () => {
+              events.push('guardrail:B');
+              return { tripwireTriggered: false, outputInfo: undefined };
+            },
+          },
+        ],
+      });
+      const runOnce = async (
+        input: string | RunState<any, any>,
+        outputGuardrailBlockedMessage:
+          string | ((args: OutputGuardrailBlockedMessageArgs) => string),
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, {
+            stream: true,
+            outputGuardrailBlockedMessage,
+          });
+          await result.completed;
+          return;
+        }
+        await run(agent, input, { outputGuardrailBlockedMessage });
+      };
+
+      let initialTripwire:
+        OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce('input', blockedMessage);
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        initialTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+      const serializedState = JSON.parse(
+        initialTripwire!.state!.toString(),
+      ) as {
+        outputGuardrailResults: Array<{
+          guardrail: { name: string };
+          agentOutput: unknown;
+          output: { tripwireTriggered: boolean };
+        }>;
+      };
+      const serializedTripwire = serializedState.outputGuardrailResults.find(
+        (result) =>
+          result.output.tripwireTriggered === true &&
+          result.agentOutput === blockedMessage,
+      );
+      expect(serializedTripwire).toBeDefined();
+      serializedTripwire!.guardrail.name = storedName;
+      const restoredState = await RunState.fromString(
+        agent,
+        JSON.stringify(serializedState),
+      );
+      events.length = 0;
+      const formatter = vi.fn((args: OutputGuardrailBlockedMessageArgs) => {
+        events.push(`formatter:${args.guardrailName}`);
+        return blockedMessage;
+      });
+
+      let resumeError: unknown;
+      try {
+        await runOnce(restoredState, formatter);
+      } catch (error) {
+        resumeError = error;
+      }
+
+      expect(resumeError).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+      expect(formatter).toHaveBeenCalledOnce();
+      expect(events).toEqual([
+        'guardrail:A',
+        'guardrail:B',
+        'formatter:trusted restored output guardrail',
+      ]);
+      expect(guardedOutputs.at(-1)).toBe(
+        'Output withheld by an output guardrail.',
+      );
+      expect(guardrailCalls).toBe(2);
+      expect(model.calls).toHaveLength(1);
+
+      const failedRetryState = await RunState.fromString(
+        agent,
+        JSON.stringify(serializedState),
+      );
+      failGuardrail = true;
+      events.length = 0;
+      formatter.mockClear();
+      await expect(runOnce(failedRetryState, formatter)).rejects.toBeInstanceOf(
+        GuardrailExecutionError,
+      );
+      expect(events).toEqual(['guardrail:A', 'guardrail:B']);
+      expect(formatter).not.toHaveBeenCalled();
+      expect(model.calls).toHaveLength(1);
+    },
+  );
+
+  it('rejects an unsanitized string tool result as custom blocked-message authority', async () => {
+    const terminalSecret = 'unsanitized-terminal-secret';
+    let retry = false;
+    let retryingGuardrailCalls = 0;
+    const terminalTool = tool({
+      name: 'unsanitized_string_terminal_tool',
+      description: 'Returns an unsanitized string terminal result.',
+      parameters: z.object({}),
+      execute: async () => terminalSecret,
+    });
+    const model = new ScriptedModel([
+      modelResponse({
+        output: [
+          functionCall(
+            'unsanitized_string_terminal_tool',
+            {},
+            { callId: 'unsanitized-string-terminal-call' },
+          ),
+        ],
+        usage: new Usage(),
+      }),
+    ]);
+    const agent = new Agent({
+      name: 'Unsanitized string terminal agent',
+      model,
+      tools: [terminalTool],
+      toolUseBehavior: 'stop_on_first_tool',
+      outputGuardrails: [
+        {
+          name: 'unsanitized passing output guardrail',
+          execute: async () => ({
+            outputInfo: undefined,
+            tripwireTriggered: false,
+          }),
+        },
+        {
+          name: 'unsanitized retrying output guardrail',
+          execute: async () => {
+            retryingGuardrailCalls += 1;
+            if (!retry) {
+              throw new Error('unsanitized first-attempt failure');
+            }
+            return {
+              outputInfo: 'unsanitized retry metadata',
+              tripwireTriggered: true,
+            };
+          },
+        },
+      ],
+    });
+    const runner = new Runner({ tracingDisabled: true });
+    let failedState: RunState<any, any> | undefined;
+    try {
+      await runner.run(agent, 'input');
+    } catch (error) {
+      expect(error).toBeInstanceOf(GuardrailExecutionError);
+      failedState = (error as GuardrailExecutionError).state;
+    }
+
+    const restoredState = await RunState.fromString(
+      agent,
+      failedState!.toString(),
+    );
+    retry = true;
+
+    let resumeError: unknown;
+    try {
+      await runner.run(agent, restoredState);
+    } catch (error) {
+      resumeError = error;
+    }
+
+    expect(resumeError).toBeInstanceOf(UserError);
+    expect((resumeError as UserError).message).toContain(
+      'previous output guardrail result ownership was not preserved',
+    );
+    expect(model.calls).toHaveLength(1);
+    expect(retryingGuardrailCalls).toBe(1);
+  });
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'cancels a $mode restored retry formatter after a fresh tripwire',
+    async (mode) => {
+      const blockedMessage = 'Restored safe blocked message.';
+      let guardrailCalls = 0;
+      const terminalTool = tool({
+        name: 'cancelled_restored_message_terminal_tool',
+        description: 'Returns output rejected by an output guardrail.',
+        parameters: z.object({}),
+        execute: async () => 'cancelled-restored-message-secret',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            functionCall(
+              'cancelled_restored_message_terminal_tool',
+              {},
+              { callId: 'cancelled-restored-message-call' },
+            ),
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'Cancelled restored message agent',
+        model,
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'cancelled restored message output guardrail',
+            execute: async () => {
+              guardrailCalls += 1;
+              return {
+                outputInfo: 'cancelled-restored-message-output-info',
+                tripwireTriggered: true,
+              };
+            },
+          },
+        ],
+      });
+      let initialTripwire:
+        OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        if (mode === 'streamed') {
+          const result = await run(agent, 'input', {
+            stream: true,
+            outputGuardrailBlockedMessage: blockedMessage,
+          });
+          await result.completed;
+        } else {
+          await run(agent, 'input', {
+            outputGuardrailBlockedMessage: blockedMessage,
+          });
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        initialTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+      const restoredState = await RunState.fromString(
+        agent,
+        initialTripwire!.state!.toString(),
+      );
+      const controller = new AbortController();
+      const abortReason = new Error('cancel restored retry formatter');
+      let markFormatterStarted!: () => void;
+      const formatterStarted = new Promise<void>((resolve) => {
+        markFormatterStarted = resolve;
+      });
+      let releaseFormatter!: () => void;
+      const formatterCanSettle = new Promise<void>((resolve) => {
+        releaseFormatter = resolve;
+      });
+      const formatter = async () => {
+        markFormatterStarted();
+        await formatterCanSettle;
+        return blockedMessage;
+      };
+      let outcome: Promise<
+        { status: 'resolved' } | { status: 'rejected'; error: unknown }
+      >;
+
+      if (mode === 'streamed') {
+        const result = await run(agent, restoredState, {
+          signal: controller.signal,
+          stream: true,
+          outputGuardrailBlockedMessage: formatter,
+        });
+        outcome = result.completed.then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      } else {
+        outcome = run(agent, restoredState, {
+          signal: controller.signal,
+          outputGuardrailBlockedMessage: formatter,
+        }).then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      }
+
+      await formatterStarted;
+      controller.abort(abortReason);
+      const settledOutcome = await outcome;
+      releaseFormatter();
+
+      expect(settledOutcome).toEqual({
+        status: 'rejected',
+        error: abortReason,
+      });
+      expect(model.calls).toHaveLength(1);
+      expect(guardrailCalls).toBe(2);
+      expect(restoredState.toString()).toContain(
+        'Output withheld by an output guardrail.',
+      );
+      expect(restoredState.toString()).not.toContain(blockedMessage);
+      expect(restoredState.toString()).not.toContain(
+        'cancelled-restored-message-secret',
+      );
+      expect(restoredState.toString()).not.toContain(
+        'cancelled-restored-message-output-info',
+      );
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'uses the surfaced $mode tripwire guardrail name when completion order differs',
+    async (mode) => {
+      let releaseFirstGuardrail!: () => void;
+      const firstGuardrailCanFinish = new Promise<void>((resolve) => {
+        releaseFirstGuardrail = resolve;
+      });
+      const formatterArgs: OutputGuardrailBlockedMessageArgs[] = [];
+      const terminalTool = tool({
+        name: 'ordered_guardrail_terminal_tool',
+        description: 'Returns output rejected by multiple output guardrails.',
+        parameters: z.object({}),
+        execute: async () => 'ordered-guardrail-terminal-secret',
+      });
+      const agent = new Agent({
+        name: 'Ordered output guardrail agent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              functionCall(
+                'ordered_guardrail_terminal_tool',
+                {},
+                { callId: 'ordered-guardrail-call' },
+              ),
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'first declared output guardrail',
+            execute: async () => {
+              await firstGuardrailCanFinish;
+              return {
+                outputInfo: 'first-declared-output-info',
+                tripwireTriggered: true,
+              };
+            },
+          },
+          {
+            name: 'second completed output guardrail',
+            execute: async () => {
+              setTimeout(releaseFirstGuardrail, 0);
+              return {
+                outputInfo: 'second-completed-output-info',
+                tripwireTriggered: true,
+              };
+            },
+          },
+        ],
+      });
+      let tripwire: OutputGuardrailTripwireTriggered<any, any> | undefined;
+
+      try {
+        const options = {
+          outputGuardrailBlockedMessage: (
+            args: OutputGuardrailBlockedMessageArgs,
+          ) => {
+            formatterArgs.push(args);
+            return `Blocked by ${args.guardrailName}.`;
+          },
+        };
+        if (mode === 'streamed') {
+          const result = await run(agent, 'input', {
+            ...options,
+            stream: true,
+          });
+          await result.completed;
+        } else {
+          await run(agent, 'input', options);
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        tripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+
+      expect(tripwire?.result.guardrail.name).toBe(
+        'first declared output guardrail',
+      );
+      expect(formatterArgs).toHaveLength(1);
+      expect(formatterArgs[0]?.guardrailName).toBe(
+        'first declared output guardrail',
+      );
+      expect(tripwire?.result.agentOutput).toBe(
+        'Blocked by first declared output guardrail.',
+      );
+      expect(tripwire?.state?.toString()).not.toContain(
+        'ordered-guardrail-terminal-secret',
+      );
+      expect(tripwire?.state?.toString()).not.toContain(
+        'first-declared-output-info',
+      );
+      expect(tripwire?.state?.toString()).not.toContain(
+        'second-completed-output-info',
+      );
+    },
+  );
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      (['live', 'restored'] as const).map((continuation) => ({
+        mode,
+        continuation,
+      })),
+    ),
+  )(
+    'keeps the current $mode guardrail name across $continuation retries and repeated restoration',
+    async ({ mode, continuation }) => {
+      const executeTerminalTool = vi.fn(
+        async () => 'restored-identity-terminal-secret',
+      );
+      const terminalTool = tool({
+        name: 'restored_identity_terminal_tool',
+        description: 'Returns terminal output checked again after restoration.',
+        parameters: z.object({}),
+        execute: executeTerminalTool,
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            functionCall(
+              'restored_identity_terminal_tool',
+              {},
+              { callId: 'restored-identity-call' },
+            ),
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'Restored output guardrail identity agent',
+        model,
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'prior restored output guardrail',
+            execute: async () => ({
+              outputInfo: 'prior-restored-output-info',
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const runOnce = async (
+        input: string | RunState<any, any>,
+        outputGuardrailBlockedMessage?: (
+          args: OutputGuardrailBlockedMessageArgs,
+        ) => string,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(agent, input, {
+            stream: true,
+            outputGuardrailBlockedMessage,
+          });
+          await result.completed;
+          return result;
+        }
+        return run(agent, input, { outputGuardrailBlockedMessage });
+      };
+
+      let priorTripwire: OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce('input');
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        priorTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+      const retryState =
+        continuation === 'restored'
+          ? await RunState.fromString(agent, priorTripwire!.state!.toString())
+          : priorTripwire!.state!;
+      agent.outputGuardrails = [
+        {
+          name: 'current restored output guardrail',
+          execute: async () => ({
+            outputInfo: 'current-restored-output-info',
+            tripwireTriggered: true,
+          }),
+        },
+      ];
+      const formatterGuardrailNames: string[] = [];
+      let currentTripwire:
+        OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce(retryState, (args) => {
+          formatterGuardrailNames.push(args.guardrailName);
+          return `Blocked by ${args.guardrailName}.`;
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        currentTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+
+      expect(model.calls).toHaveLength(1);
+      expect(formatterGuardrailNames).toEqual([
+        'current restored output guardrail',
+      ]);
+      expect(currentTripwire?.result.guardrail.name).toBe(
+        'current restored output guardrail',
+      );
+      expect(currentTripwire?.result.agentOutput).toBe(
+        'Blocked by current restored output guardrail.',
+      );
+      expect(currentTripwire?.state?.toString()).not.toContain(
+        'restored-identity-terminal-secret',
+      );
+      expect(currentTripwire?.state?.toString()).not.toContain(
+        'prior-restored-output-info',
+      );
+      expect(currentTripwire?.state?.toString()).not.toContain(
+        'current-restored-output-info',
+      );
+
+      const secondRestoredState = await RunState.fromString(
+        agent,
+        currentTripwire!.state!.toString(),
+      );
+      let secondTripwire:
+        OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce(secondRestoredState, (args) => {
+          formatterGuardrailNames.push(args.guardrailName);
+          return `Blocked by ${args.guardrailName}.`;
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        secondTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+
+      expect(secondTripwire?.result.agentOutput).toBe(
+        'Blocked by current restored output guardrail.',
+      );
+      expect(formatterGuardrailNames).toEqual([
+        'current restored output guardrail',
+        'current restored output guardrail',
+      ]);
+      expect(model.calls).toHaveLength(1);
+
+      const updatedMessage = 'Updated safe blocked message.';
+      let updatedTripwire:
+        OutputGuardrailTripwireTriggered<any, any> | undefined;
+      try {
+        await runOnce(secondTripwire!.state!, () => updatedMessage);
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        updatedTripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+      expect(updatedTripwire?.state?._outputGuardrailResults).toHaveLength(4);
+      for (const result of updatedTripwire!.state!._outputGuardrailResults) {
+        expect(result.agentOutput).toBe(updatedMessage);
+        expect(result.output.outputInfo).toBeUndefined();
+      }
+      expect(model.calls).toHaveLength(1);
+      expect(executeTerminalTool).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'settles a cancelled $mode run with a pending blocked-message formatter',
+    async (mode) => {
+      let markFormatterStarted!: () => void;
+      const formatterStarted = new Promise<void>((resolve) => {
+        markFormatterStarted = resolve;
+      });
+      const terminalTool = tool({
+        name: 'cancelled_formatter_terminal_tool',
+        description: 'Returns output rejected while the formatter is pending.',
+        parameters: z.object({}),
+        execute: async () => 'cancelled-formatter-terminal-secret',
+      });
+      const agent = new Agent({
+        name: 'Cancelled blocked-message formatter agent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              functionCall(
+                'cancelled_formatter_terminal_tool',
+                {},
+                { callId: 'cancelled-formatter-call' },
+              ),
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'cancelled formatter output guardrail',
+            execute: async () => ({
+              outputInfo: 'cancelled-formatter-output-info',
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const controller = new AbortController();
+      const session = new MemorySession();
+      const abortReason = new Error('cancel blocked-message formatter');
+      let streamedResult: any;
+      let completionOutcome: Promise<
+        { status: 'resolved' } | { status: 'rejected'; error: unknown }
+      >;
+      const outputGuardrailBlockedMessage = async () => {
+        markFormatterStarted();
+        return await new Promise<string>(() => {});
+      };
+
+      if (mode === 'streamed') {
+        streamedResult = await run(agent, 'input', {
+          session,
+          signal: controller.signal,
+          stream: true,
+          outputGuardrailBlockedMessage,
+        });
+        completionOutcome = streamedResult.completed.then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      } else {
+        completionOutcome = run(agent, 'input', {
+          session,
+          signal: controller.signal,
+          outputGuardrailBlockedMessage,
+        }).then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      }
+
+      await formatterStarted;
+      controller.abort(abortReason);
+      const outcome = await completionOutcome;
+
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status === 'rejected') {
+        expect(outcome.error).toBe(abortReason);
+      }
+      if (streamedResult) {
+        await streamedResult._getStreamLoopPromise();
+        expect(streamedResult.state._currentStep).toMatchObject({
+          type: 'next_step_final_output',
+          output: 'Output withheld by an output guardrail.',
+        });
+        expect(streamedResult.state.toString()).not.toContain(
+          'cancelled-formatter-terminal-secret',
+        );
+        expect(streamedResult.state.toString()).not.toContain(
+          'cancelled-formatter-output-info',
+        );
+      }
+      const stored = JSON.stringify(await session.getItems());
+      expect(stored).not.toContain('cancelled-formatter-terminal-secret');
+      expect(stored).not.toContain('cancelled-formatter-output-info');
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'does not start a $mode blocked-message formatter after cancellation',
+    async (mode) => {
+      let markGuardrailStarted!: () => void;
+      const guardrailStarted = new Promise<void>((resolve) => {
+        markGuardrailStarted = resolve;
+      });
+      let releaseGuardrail!: () => void;
+      const guardrailCanFinish = new Promise<void>((resolve) => {
+        releaseGuardrail = resolve;
+      });
+      const terminalTool = tool({
+        name: 'pre_cancelled_formatter_terminal_tool',
+        description: 'Returns output rejected after cancellation wins.',
+        parameters: z.object({}),
+        execute: async () => 'pre-cancelled-formatter-terminal-secret',
+      });
+      const agent = new Agent({
+        name: 'Pre-cancelled blocked-message formatter agent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              functionCall(
+                'pre_cancelled_formatter_terminal_tool',
+                {},
+                { callId: 'pre-cancelled-formatter-call' },
+              ),
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'pre-cancelled formatter output guardrail',
+            execute: async () => {
+              markGuardrailStarted();
+              await guardrailCanFinish;
+              return {
+                outputInfo: 'pre-cancelled-formatter-output-info',
+                tripwireTriggered: true,
+              };
+            },
+          },
+        ],
+      });
+      const controller = new AbortController();
+      const abortReason = new Error('cancel before blocked-message formatter');
+      const outputGuardrailBlockedMessage = vi.fn(
+        () => 'formatter must not start',
+      );
+      let streamedResult: any;
+      let completionOutcome: Promise<
+        { status: 'resolved' } | { status: 'rejected'; error: unknown }
+      >;
+
+      if (mode === 'streamed') {
+        streamedResult = await run(agent, 'input', {
+          signal: controller.signal,
+          stream: true,
+          outputGuardrailBlockedMessage,
+        });
+        completionOutcome = streamedResult.completed.then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      } else {
+        completionOutcome = run(agent, 'input', {
+          signal: controller.signal,
+          outputGuardrailBlockedMessage,
+        }).then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      }
+
+      await guardrailStarted;
+      controller.abort(abortReason);
+      releaseGuardrail();
+      const outcome = await completionOutcome;
+
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status === 'rejected') {
+        expect(outcome.error).toBe(abortReason);
+      }
+      expect(outputGuardrailBlockedMessage).not.toHaveBeenCalled();
+      if (streamedResult) {
+        await streamedResult._getStreamLoopPromise();
+        expect(streamedResult.state.toString()).not.toContain(
+          'pre-cancelled-formatter-terminal-secret',
+        );
+        expect(streamedResult.state.toString()).not.toContain(
+          'pre-cancelled-formatter-output-info',
+        );
+      }
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'revalidates $mode cancellation before applying a settled blocked message',
+    async (mode) => {
+      const terminalTool = tool({
+        name: 'settled_formatter_terminal_tool',
+        description: 'Returns output rejected as formatter cancellation wins.',
+        parameters: z.object({}),
+        execute: async () => 'settled-formatter-terminal-secret',
+      });
+      const agent = new Agent({
+        name: 'Settled blocked-message formatter agent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              functionCall(
+                'settled_formatter_terminal_tool',
+                {},
+                { callId: 'settled-formatter-call' },
+              ),
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'settled formatter output guardrail',
+            execute: async () => ({
+              outputInfo: 'settled-formatter-output-info',
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const controller = new AbortController();
+      const abortReason = new Error('cancel settled blocked message');
+      const outputGuardrailBlockedMessage = () => {
+        queueMicrotask(() =>
+          queueMicrotask(() =>
+            queueMicrotask(() => controller.abort(abortReason)),
+          ),
+        );
+        return 'settled custom message must not be applied';
+      };
+      let streamedResult: any;
+      let completionOutcome: Promise<
+        { status: 'resolved' } | { status: 'rejected'; error: unknown }
+      >;
+
+      if (mode === 'streamed') {
+        streamedResult = await run(agent, 'input', {
+          signal: controller.signal,
+          stream: true,
+          outputGuardrailBlockedMessage,
+        });
+        completionOutcome = streamedResult.completed.then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      } else {
+        completionOutcome = run(agent, 'input', {
+          signal: controller.signal,
+          outputGuardrailBlockedMessage,
+        }).then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      }
+
+      const outcome = await completionOutcome;
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status === 'rejected') {
+        expect(outcome.error).toBe(abortReason);
+      }
+      if (streamedResult) {
+        await streamedResult._getStreamLoopPromise();
+        expect(streamedResult.state._currentStep).toMatchObject({
+          type: 'next_step_final_output',
+          output: 'Output withheld by an output guardrail.',
+        });
+        expect(streamedResult.state.toString()).not.toContain(
+          'settled custom message must not be applied',
+        );
+        expect(streamedResult.state.toString()).not.toContain(
+          'settled-formatter-terminal-secret',
+        );
+        expect(streamedResult.state.toString()).not.toContain(
+          'settled-formatter-output-info',
+        );
+      }
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'revalidates $mode cancellation after blocked-message sanitization settles',
+    async (mode) => {
+      const terminalTool = tool({
+        name: 'sanitized_formatter_terminal_tool',
+        description:
+          'Returns output rejected before formatter sanitization settles.',
+        parameters: z.object({}),
+        execute: async () => 'sanitized-formatter-terminal-secret',
+      });
+      const agent = new Agent({
+        name: 'Sanitized blocked-message formatter agent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              functionCall(
+                'sanitized_formatter_terminal_tool',
+                {},
+                { callId: 'sanitized-formatter-call' },
+              ),
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'sanitized formatter output guardrail',
+            execute: async () => ({
+              outputInfo: 'sanitized-formatter-output-info',
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const controller = new AbortController();
+      const abortReason = new Error('cancel sanitized blocked message');
+      let blockedOutputCancellationChecks = 0;
+      const installSanitizerCancellation = (signal: AbortSignal) => {
+        const throwIfAborted = signal.throwIfAborted.bind(signal);
+        signal.throwIfAborted = () => {
+          throwIfAborted();
+          if (!new Error().stack?.includes('blockedOutputPersistence.ts')) {
+            return;
+          }
+          blockedOutputCancellationChecks += 1;
+          if (blockedOutputCancellationChecks === 2) {
+            controller.abort(abortReason);
+          }
+        };
+      };
+      let releaseFormatter!: () => void;
+      const formatterCanSettle = new Promise<void>((resolve) => {
+        releaseFormatter = resolve;
+      });
+      const outputGuardrailBlockedMessage = async () => {
+        await formatterCanSettle;
+        return 'sanitized custom message must not be surfaced';
+      };
+      let streamedResult: any;
+      let completionOutcome: Promise<
+        { status: 'resolved' } | { status: 'rejected'; error: unknown }
+      >;
+
+      if (mode === 'streamed') {
+        streamedResult = await run(agent, 'input', {
+          signal: controller.signal,
+          stream: true,
+          outputGuardrailBlockedMessage,
+        });
+        installSanitizerCancellation(streamedResult._getAbortSignal());
+        releaseFormatter();
+        completionOutcome = streamedResult.completed.then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+      } else {
+        installSanitizerCancellation(controller.signal);
+        completionOutcome = run(agent, 'input', {
+          signal: controller.signal,
+          outputGuardrailBlockedMessage,
+        }).then(
+          () => ({ status: 'resolved' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+        releaseFormatter();
+      }
+
+      const outcome = await completionOutcome;
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status === 'rejected') {
+        expect(outcome.error).toBe(abortReason);
+      }
+      expect(blockedOutputCancellationChecks).toBe(2);
+      if (streamedResult) {
+        await streamedResult._getStreamLoopPromise();
+        expect(streamedResult.state.toString()).not.toContain(
+          'sanitized-formatter-terminal-secret',
+        );
+        expect(streamedResult.state.toString()).not.toContain(
+          'sanitized-formatter-output-info',
+        );
+      }
+    },
+  );
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      (
+        [
+          'empty_config',
+          'invalid_config',
+          'undefined',
+          'empty',
+          'non_string',
+          'throw',
+          'reject',
+        ] as const
+      ).map((formatterOutcome) => ({ mode, formatterOutcome })),
+    ),
+  )(
+    'falls back safely for a $formatterOutcome blocked-message formatter in $mode mode',
+    async ({ mode, formatterOutcome }) => {
+      const formatter = async (): Promise<any> => {
+        if (formatterOutcome === 'undefined') return undefined;
+        if (formatterOutcome === 'empty') return '';
+        if (formatterOutcome === 'non_string') return 123;
+        if (formatterOutcome === 'throw') {
+          throw new Error('formatter-sync-secret');
+        }
+        await Promise.resolve();
+        throw new Error('formatter-async-secret');
+      };
+      const customizer: any =
+        formatterOutcome === 'empty_config'
+          ? ''
+          : formatterOutcome === 'invalid_config'
+            ? 123
+            : formatter;
+      const terminalTool = tool({
+        name: 'fallback_blocked_terminal_tool',
+        description: 'Returns output rejected by an output guardrail.',
+        parameters: z.object({}),
+        execute: async () => 'fallback-terminal-secret',
+      });
+      const agent = new Agent({
+        name: 'Blocked output fallback agent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              functionCall(
+                'fallback_blocked_terminal_tool',
+                {},
+                { callId: 'fallback-blocked-call' },
+              ),
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'fallback output guardrail',
+            execute: async () => ({
+              outputInfo: 'fallback-output-info-secret',
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const session = new MemorySession();
+      let tripwire: OutputGuardrailTripwireTriggered<any, any> | undefined;
+
+      try {
+        if (mode === 'streamed') {
+          const result = await run(agent, 'input', {
+            session,
+            stream: true,
+            outputGuardrailBlockedMessage: customizer,
+          });
+          await result.completed;
+        } else {
+          await run(agent, 'input', {
+            session,
+            outputGuardrailBlockedMessage: customizer,
+          });
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        tripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+
+      const defaultMessage = 'Output withheld by an output guardrail.';
+      expect(tripwire?.result.agentOutput).toBe(defaultMessage);
+      const retained = [
+        tripwire?.state?.toString() ?? '',
+        JSON.stringify(await session.getItems()),
+      ].join('\n');
+      expect(retained).toContain(defaultMessage);
+      expect(retained).not.toContain('fallback-terminal-secret');
+      expect(retained).not.toContain('fallback-output-info-secret');
+      expect(retained).not.toContain('formatter-sync-secret');
+      expect(retained).not.toContain('formatter-async-secret');
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'treats an explicit null per-run blocked message as invalid in $mode mode',
+    async (mode) => {
+      const runnerMessage = 'Runner-level blocked message.';
+      const terminalTool = tool({
+        name: 'null_override_terminal_tool',
+        description: 'Returns output rejected by an output guardrail.',
+        parameters: z.object({}),
+        execute: async () => 'null-override-terminal-secret',
+      });
+      const agent = new Agent({
+        name: 'Null blocked-message override agent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              functionCall(
+                'null_override_terminal_tool',
+                {},
+                { callId: 'null-override-call' },
+              ),
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [terminalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'null override output guardrail',
+            execute: async () => ({
+              outputInfo: 'null-override-output-info',
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const configuredRunner = new Runner({
+        outputGuardrailBlockedMessage: runnerMessage,
+      });
+      const options: any = {
+        stream: mode === 'streamed',
+        outputGuardrailBlockedMessage: null,
+      };
+      let tripwire: OutputGuardrailTripwireTriggered<any, any> | undefined;
+
+      try {
+        const result = await configuredRunner.run(agent, 'input', options);
+        if (mode === 'streamed') {
+          await (result as any).completed;
+        }
+      } catch (error) {
+        expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+        tripwire = error as OutputGuardrailTripwireTriggered<any, any>;
+      }
+
+      expect(tripwire?.result.agentOutput).toBe(
+        'Output withheld by an output guardrail.',
+      );
+      expect(tripwire?.state?.toString()).not.toContain(runnerMessage);
+      expect(tripwire?.state?.toString()).not.toContain(
+        'null-override-terminal-secret',
+      );
+      expect(tripwire?.state?.toString()).not.toContain(
+        'null-override-output-info',
+      );
     },
   );
 

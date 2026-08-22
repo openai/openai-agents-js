@@ -122,6 +122,29 @@ const currentResponseOutputGuardrailResults = new WeakMap<
   }
 >();
 
+/** Validates restored result ownership without publishing live ownership evidence. */
+export function getSerializedOutputGuardrailResults(
+  state: RunState<any, any>,
+  blockedOutput: string,
+): Set<OutputGuardrailResult<any, any>> {
+  const results = new Set<OutputGuardrailResult<any, any>>();
+  for (const result of state._outputGuardrailResults) {
+    if (result.agent !== state._currentAgent) {
+      continue;
+    }
+    if (
+      result.agentOutput !== blockedOutput ||
+      result.output.outputInfo !== undefined
+    ) {
+      throw new UserError(
+        'Cannot resume this serialized terminal output because previous output guardrail result ownership was not preserved. Continue the live RunState or start a new run from safe input.',
+      );
+    }
+    results.add(result);
+  }
+  return results;
+}
+
 function getCurrentResponseOutputGuardrailResults(
   state: RunState<any, any>,
   guardedTerminalToolOutput: boolean,
@@ -132,24 +155,11 @@ function getCurrentResponseOutputGuardrailResults(
     return existing.results;
   }
 
-  const results = new Set<OutputGuardrailResult<any, any>>();
-  if (
+  const results =
     guardedTerminalToolOutput &&
     state._serializedCurrentStep === state._currentStep
-  ) {
-    if (
-      state._outputGuardrailResults.some(
-        (result) =>
-          result.agent === state._currentAgent &&
-          (result.agentOutput !== redactedOutput ||
-            result.output.outputInfo !== undefined),
-      )
-    ) {
-      throw new UserError(
-        'Cannot resume this serialized terminal output because previous output guardrail result ownership was not preserved. Continue the live RunState or start a new run from safe input.',
-      );
-    }
-  }
+      ? getSerializedOutputGuardrailResults(state, redactedOutput)
+      : new Set<OutputGuardrailResult<any, any>>();
 
   currentResponseOutputGuardrailResults.set(state, {
     response: state._lastTurnResponse,
@@ -405,7 +415,7 @@ export async function finalizeOutputGuardrails<
     observedResults: ReadonlyMap<OutputGuardrailResult<any, any>, boolean>,
     tripwire?: OutputGuardrailTripwireTriggered<any, any>,
     ownedGuardrailResults?: ReadonlySet<OutputGuardrailResult<any, any>>,
-  ) => boolean;
+  ) => false | string | Promise<false | string>;
   persistBlockedOutput?: () => Promise<void>;
   persistUnblockedFailure?: () => Promise<void>;
   releaseBlockedOutputPersistence: (state: RunState<TContext, TAgent>) => void;
@@ -451,20 +461,36 @@ export async function finalizeOutputGuardrails<
       },
     );
   } catch (error) {
-    const outputBlocked = sanitizeRejectedOutput(
+    const currentTripwireResult =
+      state._outputGuardrailResults
+        .slice(outputGuardrailResultStart)
+        .find(
+          (result) =>
+            ownedGuardrailResults.has(result) &&
+            observedResults.get(result) === true,
+        ) ?? completedTripwireResult;
+    const outputBlockedResult = sanitizeRejectedOutput(
       state,
       outputGuardrailResultStart,
-      completedTripwireResult,
+      currentTripwireResult,
       observedResults,
       error instanceof OutputGuardrailTripwireTriggered ? error : undefined,
       ownedGuardrailResults,
     );
+    const outputBlockedMessage =
+      typeof outputBlockedResult === 'string' || outputBlockedResult === false
+        ? outputBlockedResult
+        : await outputBlockedResult;
+    signal?.throwIfAborted();
+    const outputBlocked = outputBlockedMessage !== false;
+    const blockedMessage = outputBlockedMessage || redactedOutput;
     const guardrailError = outputBlocked
       ? sanitizeBlockedOutputGuardrailError(
           error,
           output,
-          redactedOutput,
+          blockedMessage,
           state,
+          currentTripwireResult,
         )
       : error;
     const completedOutputTripwireError =
@@ -488,7 +514,7 @@ export async function finalizeOutputGuardrails<
                 ? sanitizeBlockedOutputGuardrailErrorDetails(
                     persistenceError,
                     output,
-                    redactedOutput,
+                    blockedMessage,
                     state,
                   )
                 : persistenceError;
@@ -515,12 +541,10 @@ export function sanitizeBlockedOutputGuardrailError(
   rejectedOutput: string,
   redactedOutput: string,
   state: RunState<any, any>,
+  currentTripwireResult?: OutputGuardrailResult<any, any>,
 ): unknown {
   if (error instanceof OutputGuardrailTripwireTriggered) {
-    const completedResult = state._outputGuardrailResults.find(
-      (result) =>
-        result.agent === state._currentAgent && result.output.tripwireTriggered,
-    ) ?? {
+    const completedResult = {
       guardrail: { type: 'output' as const, name: 'output_guardrail' },
       agent: state._currentAgent,
       agentOutput: redactedOutput,
@@ -529,6 +553,14 @@ export function sanitizeBlockedOutputGuardrailError(
         outputInfo: undefined,
       },
     };
+    try {
+      const guardrailName = currentTripwireResult?.guardrail.name;
+      if (typeof guardrailName === 'string' && guardrailName.length > 0) {
+        completedResult.guardrail.name = guardrailName;
+      }
+    } catch {
+      // Keep the safe fallback name when caller-owned metadata is unreadable.
+    }
     return new OutputGuardrailTripwireTriggered(
       'Output guardrail triggered.',
       completedResult,
@@ -610,13 +642,14 @@ export function sanitizeBlockedOutputGuardrailResults(
   ownedGuardrailResults: ReadonlySet<
     OutputGuardrailResult<any, any>
   > = new Set(),
-): void {
+): ReadonlySet<OutputGuardrailResult<any, any>> {
   const results = state._outputGuardrailResults;
   const sanitizedResults: OutputGuardrailResult<any, any>[] = [];
   const replacements = new Map<
     object,
     (typeof state._outputGuardrailResults)[number]
   >();
+  const sanitizedOwnedResults = new Set<OutputGuardrailResult<any, any>>();
   for (let index = 0; index < resultStartIndex; index += 1) {
     try {
       const result = results[index];
@@ -631,6 +664,7 @@ export function sanitizeBlockedOutputGuardrailResults(
       );
       if (replacement) {
         replacements.set(result, replacement);
+        sanitizedOwnedResults.add(replacement);
         sanitizedResults.push(replacement);
       }
     } catch {
@@ -656,6 +690,7 @@ export function sanitizeBlockedOutputGuardrailResults(
         }
         replacements.set(result, replacement);
       }
+      sanitizedOwnedResults.add(replacement);
       sanitizedResults.push(replacement);
     } catch {
       // Omit unreadable caller-owned results instead of retaining sensitive data.
@@ -680,9 +715,58 @@ export function sanitizeBlockedOutputGuardrailResults(
           outputInfo: undefined,
         },
       };
+    sanitizedOwnedResults.add(tripwire.result);
     tripwire.message = 'Output guardrail triggered.';
     tripwire.stack = `${tripwire.name}: ${tripwire.message}`;
   }
+  currentResponseOutputGuardrailResults.set(state, {
+    response: state._lastTurnResponse,
+    results: sanitizedOwnedResults,
+  });
+  return sanitizedOwnedResults;
+}
+
+export function replaceSanitizedOutputGuardrailMessages(
+  state: RunState<any, any>,
+  sanitizedOwnedResults: ReadonlySet<OutputGuardrailResult<any, any>>,
+  redactedOutput: string,
+  tripwire?: OutputGuardrailTripwireTriggered<any, any>,
+): void {
+  const replacements = new Map<
+    OutputGuardrailResult<any, any>,
+    OutputGuardrailResult<any, any>
+  >();
+  state._outputGuardrailResults = state._outputGuardrailResults.map(
+    (result) => {
+      if (!sanitizedOwnedResults.has(result)) {
+        return result;
+      }
+      const replacement = cloneSanitizedOutputGuardrailResult(
+        result,
+        redactedOutput,
+        result.output.tripwireTriggered,
+      );
+      if (!replacement) {
+        return result;
+      }
+      replacements.set(result, replacement);
+      return replacement;
+    },
+  );
+  if (tripwire && sanitizedOwnedResults.has(tripwire.result)) {
+    tripwire.result =
+      replacements.get(tripwire.result) ??
+      cloneSanitizedOutputGuardrailResult(
+        tripwire.result,
+        redactedOutput,
+        true,
+      ) ??
+      tripwire.result;
+  }
+  currentResponseOutputGuardrailResults.set(state, {
+    response: state._lastTurnResponse,
+    results: new Set(replacements.values()),
+  });
 }
 
 export function sanitizeBlockedToolOutputGuardrailResults(
