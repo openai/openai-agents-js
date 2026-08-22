@@ -193,7 +193,7 @@ export type MCPServersReconnectOptions = {
  */
 export class MCPServers {
   private readonly allServers: MCPServer[];
-  private activeServers: MCPServer[];
+  private connectedServerSet = new Set<MCPServer>();
   private failedServers: MCPServer[] = [];
   private failedServerSet = new Set<MCPServer>();
   private errorsByServer = new Map<MCPServer, Error>();
@@ -224,8 +224,7 @@ export class MCPServers {
   }
 
   private constructor(servers: MCPServer[], options?: MCPServersOptions) {
-    this.allServers = [...servers];
-    this.activeServers = [...servers];
+    this.allServers = uniqueServers(servers);
 
     this.connectTimeoutMs =
       options?.connectTimeoutMs === undefined
@@ -258,7 +257,12 @@ export class MCPServers {
   }
 
   get active(): MCPServer[] {
-    return [...this.activeServers];
+    if (!this.dropFailed) {
+      return [...this.allServers];
+    }
+    return this.allServers.filter((server) =>
+      this.connectedServerSet.has(server),
+    );
   }
 
   get failed(): MCPServer[] {
@@ -378,7 +382,6 @@ export class MCPServers {
         ...this.failedServers,
       ]);
       await this.closeServers(serversToCleanup);
-      this.activeServers = [];
       throw error;
     }
 
@@ -387,8 +390,12 @@ export class MCPServers {
   }
 
   private async closeAll(): Promise<void> {
-    for (const server of [...this.allServers].reverse()) {
-      await this.closeServer(server);
+    try {
+      for (const server of [...this.allServers].reverse()) {
+        await this.closeServer(server);
+      }
+    } finally {
+      this.refreshActiveServers();
     }
   }
 
@@ -397,6 +404,7 @@ export class MCPServers {
     try {
       logger.debug(`Connecting ${getMcpServerLogLabel(server)}.`);
       await this.runConnect(server);
+      this.connectedServerSet.add(server);
       logger.debug(`Connected ${getMcpServerLogLabel(server)}.`);
       if (this.failedServerSet.has(server)) {
         this.removeFailedServer(server);
@@ -422,16 +430,8 @@ export class MCPServers {
   }
 
   private refreshActiveServers(): void {
-    if (this.dropFailed) {
-      const failed = new Set(this.failedServerSet);
-      this.activeServers = this.allServers.filter(
-        (server) => !failed.has(server),
-      );
-    } else {
-      this.activeServers = [...this.allServers];
-    }
     logger.debug(
-      `Active MCP servers: ${this.activeServers.length}; failed: ${this.failedServers.length}.`,
+      `Active MCP servers: ${this.active.length}; failed: ${this.failedServers.length}.`,
     );
   }
 
@@ -493,6 +493,8 @@ export class MCPServers {
       );
       this.errorsByServer.set(server, err);
       return false;
+    } finally {
+      this.connectedServerSet.delete(server);
     }
   }
 

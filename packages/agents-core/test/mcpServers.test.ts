@@ -152,12 +152,14 @@ class SlowCloseServer extends BaseTestServer {
   constructor(
     name: string,
     private readonly closeGate: Deferred<void>,
+    private readonly closeStarted?: Deferred<void>,
   ) {
     super(name);
   }
 
   async close(): Promise<void> {
     this.closeCalls += 1;
+    this.closeStarted?.resolve();
     await this.closeGate.promise;
     this.cleaned = true;
   }
@@ -431,6 +433,89 @@ describe('MCPServers', () => {
   });
 
   it.each([false, true])(
+    'owns repeated server instances once while preserving order (parallel=%s)',
+    async (connectInParallel) => {
+      const lifecycleEvents: string[] = [];
+      const first = new ResourceTrackingServer('first', lifecycleEvents);
+      const second = new ResourceTrackingServer('second', lifecycleEvents);
+      const session = await connectMcpServers([first, second, first], {
+        connectInParallel,
+        connectTimeoutMs: null,
+        closeTimeoutMs: null,
+      });
+
+      expect(session.all).toEqual([first, second]);
+      expect(session.active).toEqual([first, second]);
+      expect(first.connectCalls).toBe(1);
+      expect(second.connectCalls).toBe(1);
+
+      lifecycleEvents.length = 0;
+      await session.close();
+
+      expect(lifecycleEvents).toEqual(['second:close', 'first:close']);
+      expect(first.closeCalls).toBe(1);
+      expect(second.closeCalls).toBe(1);
+      expect(session.active).toEqual([]);
+    },
+  );
+
+  it.each([false, true])(
+    'keeps servers inactive after close until reconnecting all (parallel=%s)',
+    async (connectInParallel) => {
+      const server = new BaseTestServer('server');
+      const session = await connectMcpServers([server], {
+        connectInParallel,
+      });
+
+      await session.close();
+
+      expect(session.active).toEqual([]);
+      await expect(session.reconnect()).resolves.toEqual([]);
+      expect(server.connectCalls).toBe(1);
+
+      await expect(session.reconnect({ failedOnly: false })).resolves.toEqual([
+        server,
+      ]);
+      expect(session.active).toEqual([server]);
+      expect(server.connectCalls).toBe(2);
+
+      await session.close();
+    },
+  );
+
+  it.each(['close', 'reconnect'] as const)(
+    'updates active servers while a later %s cleanup is pending',
+    async (operation) => {
+      const closeGate = createDeferred<void>();
+      const closeStarted = createDeferred<void>();
+      const slow = new SlowCloseServer('slow', closeGate, closeStarted);
+      const fast = new BaseTestServer('fast');
+      const session = await connectMcpServers([slow, fast], {
+        closeTimeoutMs: null,
+      });
+
+      const operationPromise =
+        operation === 'close'
+          ? session.close()
+          : session.reconnect({ failedOnly: false });
+      await closeStarted.promise;
+
+      expect(fast.cleaned).toBe(true);
+      expect(session.active).toEqual([slow]);
+
+      closeGate.resolve();
+      await operationPromise;
+
+      if (operation === 'close') {
+        expect(session.active).toEqual([]);
+      } else {
+        expect(session.active).toEqual([slow, fast]);
+        await session.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
     'serializes overlapping close calls (parallel=%s)',
     async (connectInParallel) => {
       const closeGate = createDeferred<void>();
@@ -536,6 +621,7 @@ describe('MCPServers', () => {
 
       await withTimeout(session.close(), 500);
       expect(session.errors.get(server)?.name).toBe('TimeoutError');
+      expect(session.active).toEqual([]);
 
       await expect(
         withTimeout(session.reconnect({ failedOnly: false }), 500),
@@ -829,6 +915,15 @@ describe('MCPServers', () => {
     expect(session.errors.get(server)?.message).toBe('connect failed');
   });
 
+  it('keeps cleaned servers active when dropFailed is false', async () => {
+    const server = new BaseTestServer('server');
+    const session = await connectMcpServers([server], { dropFailed: false });
+
+    await session.close();
+
+    expect(session.active).toEqual([server]);
+  });
+
   it('cleans up connected servers on strict connect failure', async () => {
     const connected = new BaseTestServer('connected');
     const failing = new FlakyServer('failing', 1);
@@ -917,6 +1012,22 @@ describe('MCPServers', () => {
   );
 
   it.each([false, true])(
+    'refreshes active servers when close abort propagates (parallel=%s)',
+    async (connectInParallel) => {
+      const aborting = new AbortCloseServer('aborting');
+      const session = await connectMcpServers([aborting], {
+        connectInParallel,
+        suppressAbortError: false,
+      });
+
+      await expect(session.close()).rejects.toThrow('close aborted');
+
+      expect(session.active).toEqual([]);
+      expect(aborting.closeCalls).toBe(1);
+    },
+  );
+
+  it.each([false, true])(
     'skips reconnect-all targets after suppressed cleanup aborts (parallel=%s)',
     async (connectInParallel) => {
       const aborting = new AbortCloseServer('aborting');
@@ -945,6 +1056,7 @@ describe('MCPServers', () => {
       });
 
       await session.close();
+      expect(session.active).toEqual([]);
       const reconnectPromise = session.reconnect({ failedOnly: false });
       await expect(withTimeout(reconnectPromise, 500)).resolves.toEqual([]);
       expect(session.failed).toEqual([server]);
@@ -964,10 +1076,12 @@ describe('MCPServers', () => {
       await session.close();
       expect(server.cleaned).toBe(false);
       expect(server.closeCalls).toBe(1);
+      expect(session.active).toEqual([]);
 
       await session.close();
       expect(server.cleaned).toBe(true);
       expect(server.closeCalls).toBe(2);
+      expect(session.active).toEqual([]);
     },
   );
 
