@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.19",
+  "currentSchemaAtCreation": "1.20",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -316,15 +316,31 @@
     },
     {
       "schemaVersion": "1.19",
+      "status": "published_writer",
+      "packageVersion": "0.17.0",
+      "tag": "v0.17.0",
+      "commit": "0319b657e64e0c132629fe9ed4d524f7cde93445",
+      "npmIntegrity": "sha512-lyoF860313ypeKSPRsdmyNK1ypF8/ocShN2EwCcKUpF4VvRWa5AUVKL6VXO/keQMwNPZw5SACAf1siU9uMvUNg==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.19-minimal.json",
+          "sha256": "e2ac4f6f2ba1631eb8c95c35c7d1895a30d40a5077dbd5476107e57a01de1edb"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.20",
       "status": "current_unreleased",
-      "reason": "Supported on main but not emitted by the latest released package v0.16.0; includes exact-call approval precedence and sandbox envelope version 4."
+      "reason": "Supported on main but not emitted by the latest released package v0.17.0; adds sandbox envelope version 5 for Docker labels."
     }
   ],
   "expectedNormalizedFixtures": [
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "e2ac4f6f2ba1631eb8c95c35c7d1895a30d40a5077dbd5476107e57a01de1edb"
+      "sha256": "d0b04e02da08785999fbdb02e2478903371358408015d112c6c0c663578d75cb"
     }
   ],
   "negativeFixtures": [
@@ -369,6 +385,12 @@
       "path": "negative/v1.18-sandbox-v4.json",
       "sha256": "7792da13fda1bd76b59499ea13051cef593d59f391a125920d299cf9e6c24869",
       "expectedError": "does not support sandbox session state version 4"
+    },
+    {
+      "scenario": "v1.19-sandbox-v5",
+      "path": "negative/v1.19-sandbox-v5.json",
+      "sha256": "9d57447885d36c6d1bbc71cb4ba3c7de2c4fd2fcc3d8053b1704a791cd003c90",
+      "expectedError": "does not support sandbox session state version 5"
     },
     {
       "scenario": "prototype-key",

@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
+  ModelBehaviorError,
   Runner,
   Span,
   Trace,
   setTraceProcessors,
   withTrace,
   setTracingDisabled,
+  type RetryPolicyContext,
   type TracingProcessor,
 } from '@openai/agents-core';
 import { OpenAIChatCompletionsModel } from '../src/openaiChatCompletionsModel';
@@ -275,6 +277,10 @@ describe('OpenAIChatCompletionsModel', () => {
       total_tokens: 5,
     });
     expect(result.usage.inputTokens).toBe(3);
+    const generationSpan = processor.spansEnded.find(
+      (span) => span.spanData.type === 'generation',
+    );
+    expect(generationSpan?.spanData.usage).toBeUndefined();
   });
 
   it('counts the request when the provider omits usage', async () => {
@@ -687,6 +693,222 @@ describe('OpenAIChatCompletionsModel', () => {
       },
     ]);
   });
+
+  it.each([null, ''])(
+    'rejects a truncated empty message (content: %j)',
+    async (content) => {
+      const client = new FakeClient();
+      client.chat.completions.create.mockResolvedValue({
+        id: 'truncated-response',
+        choices: [
+          {
+            finish_reason: 'length',
+            message: { role: 'assistant', content },
+          },
+        ],
+        usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+      } as any);
+
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      await expect(
+        withTrace('truncated-empty', () =>
+          model.getResponse({
+            input: 'u',
+            modelSettings: {},
+            tools: [],
+            outputType: 'text',
+            handoffs: [],
+            tracing: false,
+          } as any),
+        ),
+      ).rejects.toThrow(ModelBehaviorError);
+    },
+  );
+
+  it.each([
+    ['text', { role: 'assistant', content: 'partial' }],
+    ['whitespace text', { role: 'assistant', content: ' ' }],
+    [
+      'refusal',
+      { role: 'assistant', content: null, refusal: 'provider refusal' },
+    ],
+    ['audio', { role: 'assistant', content: null, audio: { data: 'abc' } }],
+    [
+      'reasoning',
+      { role: 'assistant', content: null, reasoning: 'partial reasoning' },
+    ],
+    [
+      'function call',
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'call-1',
+            type: 'function',
+            function: { name: 'lookup', arguments: '{}' },
+          },
+        ],
+      },
+    ],
+  ])('preserves truncated output containing %s', async (_label, message) => {
+    const client = new FakeClient();
+    const response = {
+      id: 'partial-response',
+      choices: [{ finish_reason: 'length', message }],
+      usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
+    } as any;
+    Object.defineProperty(response, '_request_id', {
+      value: 'req_partial_123',
+      enumerable: false,
+    });
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const result = await withTrace('truncated-partial', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: { preserveRawUsage: true },
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      } as any),
+    );
+
+    expect(result.output).toHaveLength(1);
+    expect(result.providerData).toBe(response);
+    expect(result.requestId).toBe('req_partial_123');
+    expect(result.rawUsage).toEqual({
+      prompt_tokens: 3,
+      completion_tokens: 4,
+      total_tokens: 7,
+    });
+  });
+
+  it('records response, usage, and error evidence for a truncated empty message', async () => {
+    const processor = new RecordingProcessor();
+    setTraceProcessors([processor]);
+    setTracingDisabled(false);
+
+    const client = new FakeClient();
+    const response = {
+      id: 'truncated-response',
+      choices: [
+        {
+          finish_reason: 'length',
+          message: { role: 'assistant', content: null },
+        },
+      ],
+      usage: {
+        prompt_tokens: 11,
+        completion_tokens: 7,
+        total_tokens: 18,
+        prompt_tokens_details: { cached_tokens: 2 },
+        completion_tokens_details: { reasoning_tokens: 6 },
+      },
+    } as any;
+    client.chat.completions.create.mockResolvedValue(response);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    const error = await withTrace('truncated-empty-trace', () =>
+      model.getResponse({
+        input: 'u',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+      } as any),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ModelBehaviorError);
+    expect(error).toMatchObject({
+      unsafeToReplay: true,
+      responseStarted: true,
+    });
+    const generationSpan = processor.spansEnded.find(
+      (span) => span.spanData.type === 'generation',
+    );
+    expect(generationSpan?.spanData.output).toEqual([response]);
+    expect(generationSpan?.spanData.usage).toEqual({
+      requests: 1,
+      input_tokens: 11,
+      output_tokens: 7,
+      total_tokens: 18,
+      input_tokens_details: { cached_tokens: 2 },
+      output_tokens_details: { reasoning_tokens: 6 },
+    });
+    expect(generationSpan?.error?.message).toContain("finish_reason='length'");
+  });
+
+  it.each([
+    [
+      'reported',
+      { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+      { requests: 1, input_tokens: 11, output_tokens: 7, total_tokens: 18 },
+    ],
+    [
+      'omitted',
+      undefined,
+      { requests: 1, input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    ],
+  ])(
+    'vetoes replay and records task and turn usage when usage is %s',
+    async (_label, usage, expectedUsage) => {
+      const processor = new RecordingProcessor();
+      setTraceProcessors([processor]);
+      setTracingDisabled(false);
+
+      const client = new FakeClient();
+      client.chat.completions.create.mockResolvedValue({
+        id: 'truncated-response',
+        choices: [
+          {
+            finish_reason: 'length',
+            message: { role: 'assistant', content: null },
+          },
+        ],
+        usage,
+      } as any);
+      const retryPolicy = vi.fn((_context: RetryPolicyContext) => true);
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+      const runner = new Runner({
+        model: 'gpt',
+        modelProvider: { getModel: () => model },
+        modelSettings: {
+          retry: {
+            maxRetries: 1,
+            policy: retryPolicy,
+            backoff: { initialDelayMs: 0, jitter: false },
+          },
+        },
+      });
+
+      const error = await runner
+        .run(new Agent({ name: 'Truncated response agent' }), 'hello')
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect(client.chat.completions.create).toHaveBeenCalledTimes(1);
+      expect(retryPolicy).toHaveBeenCalledTimes(1);
+      expect(retryPolicy.mock.calls[0]?.[0]).toMatchObject({
+        replaySafety: 'unsafe',
+        responseStarted: true,
+      });
+      const taskSpan = processor.spansEnded.find(
+        (candidate) => candidate.spanData.type === 'task',
+      );
+      expect(taskSpan?.spanData.usage).toMatchObject(expectedUsage);
+      const turnSpan = processor.spansEnded.find(
+        (candidate) => candidate.spanData.type === 'turn',
+      );
+      expect(turnSpan?.spanData.usage).toMatchObject({
+        input_tokens: expectedUsage.input_tokens,
+        output_tokens: expectedUsage.output_tokens,
+      });
+    },
+  );
 
   it.each([null, ''])(
     'surfaces an empty content-filtered message as a refusal (content: %j)',
@@ -1454,12 +1676,48 @@ describe('OpenAIChatCompletionsModel', () => {
     expect(result.output).toEqual([]);
   });
 
+  it('rejects a truncated message containing only an ignored custom tool call', async () => {
+    const client = new FakeClient();
+    client.chat.completions.create.mockResolvedValue({
+      id: 'r',
+      choices: [
+        {
+          finish_reason: 'length',
+          message: {
+            tool_calls: [
+              {
+                id: 'call1',
+                type: 'custom',
+                custom: { name: 'raw_tool', input: 'payload' },
+              },
+            ],
+          },
+        },
+      ],
+    } as any);
+
+    const model = new OpenAIChatCompletionsModel(client as any, 'gpt');
+    await expect(
+      withTrace('truncated-custom', () =>
+        model.getResponse({
+          input: 'u',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      ),
+    ).rejects.toThrow(ModelBehaviorError);
+  });
+
   it('rejects custom tool calls in strict mode', async () => {
     const client = new FakeClient();
     const response = {
       id: 'r',
       choices: [
         {
+          finish_reason: 'length',
           message: {
             tool_calls: [
               {

@@ -348,6 +348,7 @@ describe('DockerSandboxClient unit behavior', () => {
       ]),
     );
     expect(runCall?.[1]).not.toContain('--network');
+    expect(Object.keys(dockerRunLabels(runCall?.[1] ?? []))).toHaveLength(3);
     const imageArgIndex = runCall?.[1].indexOf('custom:image') ?? -1;
     expect(runCall?.[1].slice(imageArgIndex + 1, imageArgIndex + 3)).toEqual([
       '/bin/sh',
@@ -385,6 +386,114 @@ describe('DockerSandboxClient unit behavior', () => {
       { timeoutMs: 30_000 },
     );
     await expect(stat(session.state.workspaceRootPath)).rejects.toThrow();
+  });
+
+  it('applies, copies, overrides, and serializes user-defined labels', async () => {
+    let runCount = 0;
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          runCount += 1;
+          return success(`container-labels-${runCount}\n`);
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const constructorLabels = { team: 'platform', tier: 'default' };
+    const perRunLabels = { workload: 'eval', tier: 'override' };
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      labels: constructorLabels,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    constructorLabels.team = 'mutated';
+
+    const constructorSession = await client.create(new Manifest());
+    const session = await client.create(new Manifest(), {
+      labels: perRunLabels,
+    });
+    perRunLabels.workload = 'mutated';
+
+    const runCalls = processMocks.runSandboxProcess.mock.calls.filter(
+      ([, args]) => args[0] === 'run',
+    );
+    expect(dockerRunLabels(runCalls[0]?.[1] ?? [])).toMatchObject({
+      team: 'platform',
+      tier: 'default',
+      'openai-agents-sandbox': 'true',
+      [dockerSessionIdentityLabel]: constructorSession.state.sessionIdentity,
+    });
+    const runArgs = runCalls[1]?.[1];
+    expect(dockerRunLabels(runArgs ?? [])).toMatchObject({
+      workload: 'eval',
+      tier: 'override',
+      'openai-agents-sandbox': 'true',
+      [dockerSessionIdentityLabel]: session.state.sessionIdentity,
+    });
+    expect(dockerRunLabels(runArgs ?? [])).not.toHaveProperty('team');
+    expect(session.state.labels).toEqual({
+      workload: 'eval',
+      tier: 'override',
+    });
+    expect(session.state.labels).not.toBe(perRunLabels);
+
+    const serialized = await client.serializeSessionState(session.state);
+    expect(serialized.labels).toEqual({
+      workload: 'eval',
+      tier: 'override',
+    });
+    expect(serialized.labels).not.toBe(session.state.labels);
+    const deserialized = await client.deserializeSessionState(serialized);
+    expect(deserialized.labels).toEqual({
+      workload: 'eval',
+      tier: 'override',
+    });
+    expect(deserialized.labels).not.toBe(serialized.labels);
+
+    const legacy = { ...serialized };
+    delete legacy.labels;
+    await expect(client.deserializeSessionState(legacy)).resolves.toMatchObject(
+      { labels: {} },
+    );
+
+    await constructorSession.close();
+    await session.close();
+  });
+
+  it.each([
+    'openai-agents-sandbox',
+    dockerSessionIdentityLabel,
+    dockerMountAuthorityFingerprintLabel,
+  ])('rejects reserved label %s before side effects', async (label) => {
+    expect(
+      () =>
+        new DockerSandboxClient({
+          workspaceBaseDir: rootDir,
+          labels: { [label]: 'caller-value' },
+        }),
+    ).toThrow(`cannot override reserved SDK label "${label}"`);
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    await expect(readdir(rootDir)).resolves.toEqual([]);
+  });
+
+  it('rejects non-string per-run labels before Docker or filesystem effects', async () => {
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+
+    await expect(
+      client.create(new Manifest(), {
+        labels: { invalid: 42 } as never,
+      }),
+    ).rejects.toThrow('per-run labels must be a record of string values');
+
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    await expect(readdir(rootDir)).resolves.toEqual([]);
   });
 
   it.each(['bridge', 'host', null, 42])(
@@ -3189,6 +3298,98 @@ describe('DockerSandboxClient unit behavior', () => {
     await session.close();
   });
 
+  it('requires configured labels for live reuse while allowing unrelated labels', async () => {
+    const inspections = new Map<string, DockerContainerInspection>();
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          inspections.set('container-labels', dockerRunInspection(args));
+          return success('container-labels\n');
+        }
+        if (args[0] === 'inspect') {
+          return dockerInspectionResult(inspections, args) ?? success('true\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest(), {
+      labels: { team: 'platform' },
+    });
+    const inspection = inspections.get('container-labels')!;
+    inspection.labels.unrelated = 'allowed';
+
+    await expect(
+      client.canReusePreservedOwnedSession(session.state),
+    ).resolves.toBe(true);
+    await expect(
+      client.canReusePreservedOwnedSession(session.state, {
+        clientOptions: { labels: { team: 'other' } },
+      }),
+    ).resolves.toBe(false);
+
+    inspection.labels.team = 'other';
+    await expect(client.resume(session.state)).rejects.toThrow(
+      'Existing Docker sandbox labels do not match required labels',
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalledWith(
+      'docker',
+      ['rm', '-f', 'container-labels'],
+      { timeoutMs: 30_000 },
+    );
+    expect(
+      processMocks.runSandboxProcess.mock.calls.filter(
+        ([, args]) => args[0] === 'run',
+      ),
+    ).toHaveLength(1);
+
+    inspection.labels.team = 'platform';
+    const resumed = await client.resume(session.state);
+    expect(resumed.state.containerId).toBe('container-labels');
+    await resumed.close();
+  });
+
+  it('rejects explicit resume label changes before provider side effects', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') {
+          return success('Docker version test');
+        }
+        if (args[0] === 'run') {
+          return success('container-labels\n');
+        }
+        if (args[0] === 'rm') {
+          return success();
+        }
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(new Manifest(), {
+      labels: { team: 'platform' },
+    });
+    processMocks.runSandboxProcess.mockClear();
+
+    await expect(
+      client.resume(session.state, {
+        clientOptions: { labels: { team: 'other' } },
+      }),
+    ).rejects.toThrow(
+      'DockerSandboxClient labels cannot be changed when resuming explicit session state',
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+
+    await session.close();
+  });
+
   it('verifies actual Docker network isolation before live reuse', async () => {
     const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(
@@ -5010,9 +5211,15 @@ describe('DockerSandboxClient unit behavior', () => {
       snapshot: null,
       image: 'custom:image',
       containerId: 'container-stopped',
+      labels: { team: 'platform' },
     });
 
     expect(session.state.containerId).toBe('container-restarted');
+    expect(session.state.labels).toEqual({ team: 'platform' });
+    const runArgs = processMocks.runSandboxProcess.mock.calls.find(
+      ([, args]) => args[0] === 'run',
+    )?.[1];
+    expect(dockerRunLabels(runArgs ?? [])).toMatchObject({ team: 'platform' });
     expect(processMocks.runSandboxProcess).toHaveBeenCalledWith(
       'docker',
       [
@@ -5209,6 +5416,7 @@ describe('DockerSandboxClient unit behavior', () => {
       workspaceBaseDir: rootDir,
       image: 'client:image',
       exposedPorts: [3000],
+      labels: { source: 'constructor' },
       snapshot: {
         type: 'local',
         baseDir: rootDir,
@@ -5240,6 +5448,7 @@ describe('DockerSandboxClient unit behavior', () => {
     };
     serialized.defaultUser = 'root';
     serialized.configuredExposedPorts = [9999];
+    serialized.labels = { source: 'untrusted-state' };
     expect(serialized.snapshotFingerprint).toEqual(expect.any(String));
     expect(serialized.snapshotFingerprintVersion).toBe(
       'workspace_tree_sha256_v1',
@@ -5269,6 +5478,7 @@ describe('DockerSandboxClient unit behavior', () => {
         clientOptions: {
           image: 'run:image',
           exposedPorts: [4000],
+          labels: { source: 'trusted-run' },
           workspaceBaseDir: rootDir,
         },
         snapshot: {
@@ -5300,6 +5510,7 @@ describe('DockerSandboxClient unit behavior', () => {
     });
     expect(restored.state.defaultUser).not.toBe('root');
     expect(restored.state.configuredExposedPorts).toEqual([4000]);
+    expect(restored.state.labels).toEqual({ source: 'trusted-run' });
     const restoredRunArgs = processMocks.runSandboxProcess.mock.calls.filter(
       ([, args]) => args[0] === 'run',
     )[1]?.[1];
@@ -5316,6 +5527,12 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(restoredRunArgs).not.toContain('UNTRUSTED_ENV=untrusted-value');
     expect(restoredRunArgs).not.toContain('127.0.0.1::9999');
     expect(restoredRunArgs).not.toContain('untrusted:image');
+    expect(dockerRunLabels(restoredRunArgs ?? [])).toMatchObject({
+      source: 'trusted-run',
+    });
+    expect(dockerRunLabels(restoredRunArgs ?? [])).not.toMatchObject({
+      source: 'untrusted-state',
+    });
     await expect(
       readFile(join(session.state.workspaceRootPath, 'notes.txt'), 'utf8'),
     ).resolves.toBe('drifted\n');
