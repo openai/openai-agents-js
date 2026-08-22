@@ -1944,7 +1944,19 @@ export function registerRunStateCompactionTests(): void {
         id: 'cmp_1',
         encrypted_content: 'ciphertext',
         created_by: 'compaction_endpoint',
-        providerData: { extra: 'value' },
+        providerData: {
+          created_by: 'third-party-provider',
+          extra: 'value',
+        },
+      };
+      const replayedCompactionItem: protocol.CompactionItem = {
+        type: 'compaction',
+        id: 'cmp_1',
+        encrypted_content: 'ciphertext',
+        providerData: {
+          created_by: 'third-party-provider',
+          extra: 'value',
+        },
       };
 
       function stateWithCompaction(agent: Agent<any, any>) {
@@ -3088,7 +3100,7 @@ export function registerRunStateCompactionTests(): void {
         expect(
           restored._lastProcessedResponse?.newItems.map((item) => item.type),
         ).toEqual(['tool_call_item', 'tool_approval_item']);
-        expect(restored.history[0]).toEqual(compactionItem);
+        expect(restored.history[0]).toEqual(replayedCompactionItem);
         expect(restored.getInterruptions()).toHaveLength(1);
       });
 
@@ -3157,7 +3169,7 @@ export function registerRunStateCompactionTests(): void {
           'tool_call_item',
           'tool_approval_item',
         ]);
-        expect(restored.history[0]).toEqual(compactionItem);
+        expect(restored.history[0]).toEqual(replayedCompactionItem);
         expect(restored.getInterruptions()).toHaveLength(1);
         expect((restored._generatedItems[0] as RunCompactionItem).agent).toBe(
           agent,
@@ -3270,7 +3282,7 @@ export function registerRunStateCompactionTests(): void {
           'tool_call_item',
           'tool_approval_item',
         ]);
-        expect(restored.history[0]).toEqual(compactionItem);
+        expect(restored.history[0]).toEqual(replayedCompactionItem);
         expect(restored.getInterruptions()).toHaveLength(1);
         expect((restored._generatedItems[0] as RunCompactionItem).agent).toBe(
           agent,

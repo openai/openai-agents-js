@@ -10282,7 +10282,19 @@ describe('Runner.run', () => {
       id: 'cmp_inline',
       encrypted_content: 'ciphertext',
       created_by: 'compaction_endpoint',
-      providerData: { extra: 'value' },
+      providerData: {
+        created_by: 'third-party-provider',
+        extra: 'value',
+      },
+    };
+    const REPLAYED_COMPACTION_ITEM: protocol.CompactionItem = {
+      type: 'compaction',
+      id: 'cmp_inline',
+      encrypted_content: 'ciphertext',
+      providerData: {
+        created_by: 'third-party-provider',
+        extra: 'value',
+      },
     };
 
     it('replays a compaction marker in provider order on the next request', async () => {
@@ -10322,7 +10334,7 @@ describe('Runner.run', () => {
       expect(model.requests).toHaveLength(2);
       const secondInput = getRequestInputItems(model.requests[1]);
       expect(secondInput).toHaveLength(3);
-      expect(secondInput[0]).toEqual(COMPACTION_ITEM);
+      expect(secondInput[0]).toEqual(REPLAYED_COMPACTION_ITEM);
       expect(secondInput[1]).toMatchObject({
         type: 'function_call',
         callId: 'call_lookup',
@@ -10336,8 +10348,9 @@ describe('Runner.run', () => {
           content: 'identifiable old user input',
         }),
       );
-      expect(result.output).toContainEqual(COMPACTION_ITEM);
-      expect(result.history[0]).toEqual(COMPACTION_ITEM);
+      expect(result.output).toContainEqual(REPLAYED_COMPACTION_ITEM);
+      expect(result.history[0]).toEqual(REPLAYED_COMPACTION_ITEM);
+      expect(result.newItems[0]?.rawItem).toEqual(COMPACTION_ITEM);
     });
 
     it('rewrites ordinary session history from the latest compaction marker', async () => {
@@ -10364,12 +10377,12 @@ describe('Runner.run', () => {
 
       expect(clearSession).toHaveBeenCalledOnce();
       const stored = await session.getItems();
-      expect(stored[0]).toEqual(COMPACTION_ITEM);
+      expect(stored[0]).toEqual(REPLAYED_COMPACTION_ITEM);
       expect(stored).toHaveLength(2);
 
       await run(agent, 'later user input', { session });
       const laterInput = getRequestInputItems(model.requests[1]);
-      expect(laterInput[0]).toEqual(COMPACTION_ITEM);
+      expect(laterInput[0]).toEqual(REPLAYED_COMPACTION_ITEM);
       expect(laterInput).not.toContainEqual(
         expect.objectContaining({ content: 'earlier stored input' }),
       );

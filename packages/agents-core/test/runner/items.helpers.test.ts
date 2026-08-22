@@ -725,6 +725,154 @@ describe('prepareModelInputItems', () => {
 });
 
 describe('extractOutputItemsFromRunItems', () => {
+  it('strips protocol created_by metadata without mutating provider data or raw items', () => {
+    const agent = new Agent({ name: 'HelperAgent' });
+    const functionCall = {
+      type: 'function_call',
+      id: 'fc_created_by',
+      callId: 'call_created_by',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      providerData: {
+        created_by: 'server',
+        retained: 'function metadata',
+      },
+    } satisfies protocol.FunctionCallItem;
+    const compaction = {
+      type: 'compaction',
+      id: 'cmp_created_by',
+      encrypted_content: 'ciphertext',
+      created_by: 'compaction_endpoint',
+      providerData: {
+        created_by: 'third-party-provider',
+        retained: 'compaction metadata',
+      },
+    } satisfies protocol.CompactionItem;
+    const shellOutput = {
+      type: 'shell_call_output',
+      callId: 'shell_created_by',
+      status: 'completed',
+      providerData: {
+        created_by: 'server',
+        retained: 'shell metadata',
+      },
+      output: [
+        {
+          stdout: 'ok',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+          created_by: 'server',
+          retained: 'chunk metadata',
+        },
+      ],
+    } satisfies protocol.ShellCallResultItem;
+    const functionRunItem = new RunToolCallItem(functionCall, agent);
+    const compactionRunItem = new RunCompactionItem(compaction, agent);
+    const shellRunItem = new RunToolCallOutputItem(shellOutput, agent, 'ok');
+
+    const [convertedFunctionCall, convertedCompaction, convertedShellOutput] =
+      extractOutputItemsFromRunItems([
+        functionRunItem,
+        compactionRunItem,
+        shellRunItem,
+      ]);
+
+    expect(convertedFunctionCall).toEqual({
+      type: 'function_call',
+      id: 'fc_created_by',
+      callId: 'call_created_by',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      providerData: {
+        created_by: 'server',
+        retained: 'function metadata',
+      },
+    });
+    expect(convertedCompaction).toEqual({
+      type: 'compaction',
+      id: 'cmp_created_by',
+      encrypted_content: 'ciphertext',
+      providerData: {
+        created_by: 'third-party-provider',
+        retained: 'compaction metadata',
+      },
+    });
+    expect(convertedShellOutput).toEqual({
+      type: 'shell_call_output',
+      callId: 'shell_created_by',
+      status: 'completed',
+      providerData: {
+        created_by: 'server',
+        retained: 'shell metadata',
+      },
+      output: [
+        {
+          stdout: 'ok',
+          stderr: '',
+          outcome: { type: 'exit', exitCode: 0 },
+          retained: 'chunk metadata',
+        },
+      ],
+    });
+    expect(functionRunItem.rawItem).toBe(functionCall);
+    expect(convertedFunctionCall).toBe(functionCall);
+    expect(functionRunItem.rawItem.providerData).toHaveProperty(
+      'created_by',
+      'server',
+    );
+    expect(compactionRunItem.rawItem).toBe(compaction);
+    expect(compactionRunItem.rawItem).toHaveProperty(
+      'created_by',
+      'compaction_endpoint',
+    );
+    expect(shellRunItem.rawItem).toBe(shellOutput);
+    expect(shellRunItem.rawItem.providerData).toHaveProperty(
+      'created_by',
+      'server',
+    );
+    expect(shellOutput.output[0]).toHaveProperty('created_by', 'server');
+    expect(functionRunItem.toJSON().rawItem).toBe(functionCall);
+    expect(compactionRunItem.toJSON().rawItem).toBe(compaction);
+    expect(shellRunItem.toJSON().rawItem).toBe(shellOutput);
+
+    const [cachedFunctionCall, cachedCompaction, cachedShellOutput] =
+      extractOutputItemsFromRunItems([
+        functionRunItem,
+        compactionRunItem,
+        shellRunItem,
+      ]);
+    expect(cachedFunctionCall).toBe(convertedFunctionCall);
+    expect(cachedCompaction).toBe(convertedCompaction);
+    expect(cachedShellOutput).toBe(convertedShellOutput);
+  });
+
+  it('preserves identity when output-only metadata does not need normalization', () => {
+    const agent = new Agent({ name: 'HelperAgent' });
+    const message: protocol.AssistantMessageItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        { type: 'output_text', text: 'hello' },
+        { type: 'refusal', refusal: 'no' },
+        {
+          type: 'audio',
+          audio: 'base64-audio',
+          format: 'wav',
+          transcript: 'hello',
+        },
+      ],
+    };
+    const runItem = new RunMessageOutputItem(message, agent);
+
+    const [converted] = extractOutputItemsFromRunItems([runItem]);
+
+    expect(converted).toBe(message);
+    expect(extractOutputItemsFromRunItems([runItem])[0]).toBe(converted);
+  });
+
   it('omits null statuses from model input history', () => {
     const agent = new Agent({ name: 'HelperAgent' });
     const message = {

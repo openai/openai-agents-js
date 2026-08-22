@@ -1212,7 +1212,7 @@ describe('getInputItems', () => {
     });
   });
 
-  it('preserves official tool search metadata when replaying tool search outputs', () => {
+  it('strips output-only created_by when replaying tool search outputs', () => {
     const items = getInputItems([
       {
         type: 'tool_search_output',
@@ -1234,7 +1234,33 @@ describe('getInputItems', () => {
       tools: [],
       call_id: 'call_ts_1',
       execution: 'client',
-      created_by: 'assistant',
+    });
+  });
+
+  it('strips output-only created_by after expanding provider data', () => {
+    const items = getInputItems([
+      {
+        type: 'function_call',
+        id: 'fc_created_by',
+        callId: 'call_created_by',
+        name: 'lookup',
+        arguments: '{}',
+        status: 'completed',
+        providerData: {
+          created_by: 'assistant',
+          retained: 'provider metadata',
+        },
+      },
+    ] as any);
+
+    expect(items[0]).toEqual({
+      type: 'function_call',
+      id: 'fc_created_by',
+      call_id: 'call_created_by',
+      name: 'lookup',
+      arguments: '{}',
+      status: 'completed',
+      retained: 'provider metadata',
     });
   });
 

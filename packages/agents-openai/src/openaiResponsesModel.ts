@@ -2194,6 +2194,19 @@ function stripSdkGeneratedPlaceholderItemId<
   return itemWithoutId as T;
 }
 
+function stripOutputOnlyCreatedBy<T extends OpenAI.Responses.ResponseInputItem>(
+  item: T,
+): T {
+  if (!Object.prototype.hasOwnProperty.call(item, 'created_by')) {
+    return item;
+  }
+
+  const { created_by: _createdBy, ...withoutCreatedBy } = item as T & {
+    created_by?: string;
+  };
+  return withoutCreatedBy as T;
+}
+
 function getInputItems(
   input: ModelRequest['input'],
 ): OpenAI.Responses.ResponseInputItem[] {
@@ -2206,7 +2219,7 @@ function getInputItems(
     ];
   }
 
-  return input.map((item): OpenAI.Responses.ResponseInputItem => {
+  const inputItems = input.map((item): OpenAI.Responses.ResponseInputItem => {
     if (isMessageItem(item)) {
       return getMessageItem(item);
     }
@@ -2743,6 +2756,7 @@ function getInputItems(
     const exhaustive = item satisfies never;
     throw new UserError(`Unsupported item ${JSON.stringify(exhaustive)}`);
   });
+  return inputItems.map(stripOutputOnlyCreatedBy);
 }
 
 // As of May 29, the output is always screenshot putput
