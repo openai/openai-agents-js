@@ -67,7 +67,7 @@ This compiles TypeScript into `dist/` directories for each package.
 Run the full test suite with:
 
 ```bash
-CI=1 pnpm test
+pnpm test
 ```
 
 Tests use Vitest and are located alongside source files in each package under `packages/*/test`.

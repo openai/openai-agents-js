@@ -76,8 +76,7 @@ describe('repository workflow contracts', () => {
       'examples:workflow:stop': 'bash scripts/run-examples-workflow.sh stop',
       'examples:workflow:logs': 'bash scripts/run-examples-workflow.sh logs',
       'examples:workflow:tail': 'bash scripts/run-examples-workflow.sh tail',
-      'test:integration':
-        'NODE_ENV=test vitest run --config=vitest.integration.config.ts',
+      'test:integration': 'vitest run --config=vitest.integration.config.ts',
       'test:integration:managed':
         'node scripts/run-integration-tests-managed.mjs',
     });

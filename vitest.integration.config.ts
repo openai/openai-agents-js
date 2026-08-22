@@ -1,5 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
+process.env.NODE_ENV = 'test';
+
 export default defineConfig({
   test: {
     include: ['./integration-tests/*.test.ts'],

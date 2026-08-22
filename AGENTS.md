@@ -216,7 +216,7 @@ When `$code-change-verification` applies (see Mandatory Skill Usage), invoke it 
 
 - Run the full test suite:
   ```bash
-  CI=1 pnpm test
+  pnpm test
   ```
 - Tests are located under each package in `packages/<pkg>/test/`.
 - The test script already sets `CI=1` to avoid watch mode.

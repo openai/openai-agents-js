@@ -62,22 +62,34 @@ describe('review test profile', () => {
     ).toThrow(`Unsupported ${REVIEW_TEST_PROFILE_ENV} value: fast`);
   });
 
-  it('makes full and review package scripts override inherited profiles', () => {
+  it('selects full and review profiles through Vitest modes', () => {
     const packageJson = JSON.parse(
       readFileSync(resolve(rootDir, 'package.json'), 'utf8'),
     ) as { scripts: Record<string, string> };
 
-    expect(packageJson.scripts.test).toContain(
-      `${REVIEW_TEST_PROFILE_ENV}=full`,
-    );
+    expect(packageJson.scripts.test).toContain('vitest run --mode full');
     expect(packageJson.scripts['test:coverage']).toContain(
-      `${REVIEW_TEST_PROFILE_ENV}=full`,
+      'vitest run --mode full',
     );
     expect(packageJson.scripts['test:watch']).toContain(
-      `${REVIEW_TEST_PROFILE_ENV}=full`,
+      'vitest --watch --mode watch',
     );
     expect(packageJson.scripts['test:review']).toContain(
-      `${REVIEW_TEST_PROFILE_ENV}=review`,
+      'vitest run --mode review',
+    );
+
+    const vitestConfig = readFileSync(
+      resolve(rootDir, 'vitest.config.ts'),
+      'utf8',
+    );
+    expect(vitestConfig).toContain(
+      'const reviewTestProfile = isReviewTestProfile();',
+    );
+    expect(vitestConfig).toContain(
+      "process.env.OPENAI_AGENTS_TEST_PROFILE = 'review';",
+    );
+    expect(vitestConfig).toContain(
+      "process.env.OPENAI_AGENTS_TEST_PROFILE = 'full';",
     );
   });
 });
