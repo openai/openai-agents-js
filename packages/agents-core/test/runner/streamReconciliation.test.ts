@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildAbortReconciliationInput,
+  COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
   createStreamAbortReconciliationState,
   recordStreamEventForAbortReconciliation,
   shouldReconcileStreamAbort,
@@ -34,6 +35,76 @@ describe('stream abort reconciliation', () => {
         status: 'incomplete',
         output: { type: 'text', text: 'aborted' },
         caller: { type: 'program', callerId: 'call_prog_1' },
+      },
+    ]);
+  });
+
+  it('reconciles pending computer calls', () => {
+    const state = createStreamAbortReconciliationState();
+
+    recordStreamEventForAbortReconciliation(state, {
+      type: 'model',
+      event: {
+        type: 'response.output_item.done',
+        item: {
+          type: 'computer_call',
+          id: 'computer_1',
+          call_id: 'call_computer_1',
+          status: 'completed',
+          action: { type: 'screenshot' },
+        },
+      },
+    });
+
+    expect(shouldReconcileStreamAbort(state)).toBe(true);
+    expect(buildAbortReconciliationInput(state)).toEqual([
+      {
+        type: 'computer_call_result',
+        callId: 'call_computer_1',
+        output: {
+          type: 'computer_screenshot',
+          data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+        },
+        providerData: { status: 'incomplete' },
+      },
+    ]);
+  });
+
+  it('preserves pending computer calls through response_done for late cancellation', () => {
+    const state = createStreamAbortReconciliationState();
+
+    recordStreamEventForAbortReconciliation(state, {
+      type: 'model',
+      event: {
+        type: 'response.output_item.done',
+        item: {
+          type: 'computer_call',
+          id: 'computer_terminal',
+          call_id: 'call_computer_terminal',
+          status: 'completed',
+          action: { type: 'screenshot' },
+        },
+      },
+    });
+    recordStreamEventForAbortReconciliation(state, {
+      type: 'response_done',
+      response: {
+        id: 'response_terminal',
+        output: [],
+        usage: {},
+      } as any,
+    });
+
+    expect(shouldReconcileStreamAbort(state)).toBe(true);
+    expect(buildAbortReconciliationInput(state)).toEqual([
+      {
+        type: 'computer_call_result',
+        callId: 'call_computer_terminal',
+        output: {
+          type: 'computer_screenshot',
+          data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+        },
+        providerData: { status: 'incomplete' },
       },
     ]);
   });
