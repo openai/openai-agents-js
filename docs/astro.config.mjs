@@ -1,10 +1,12 @@
 // @ts-check
+import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import tailwindcss from '@tailwindcss/vite';
 import starlightLlmsTxt from 'starlight-llms-txt';
+import { rehypeCanonicalHeadingIds } from './src/plugins/rehypeCanonicalHeadingIds';
 
 const [mainStarlightTypeDoc, mainTypeDocSidebarGroup] =
   createStarlightTypeDocPlugin();
@@ -472,6 +474,19 @@ const sidebar = [
 export default defineConfig({
   site: 'https://openai.github.io',
   base: 'openai-agents-js',
+
+  markdown: {
+    rehypePlugins: [
+      [
+        rehypeCanonicalHeadingIds,
+        {
+          contentRoot: fileURLToPath(
+            new URL('./src/content/docs/', import.meta.url),
+          ),
+        },
+      ],
+    ],
+  },
 
   integrations: [
     starlight({

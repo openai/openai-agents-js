@@ -106,6 +106,7 @@ function createProjects(reviewTestProfile: boolean) {
           'scripts/released-api-contract.test.mjs',
           'scripts/run-integration-tests-managed.test.mjs',
           'scripts/workflow-contracts.test.mjs',
+          'docs/src/scripts/headingAnchors.test.ts',
         ],
       },
     },
