@@ -103,7 +103,7 @@ describe('OpenAI realtime history replay', () => {
     ]);
   });
 
-  it('warns instead of silently dropping an updated mcp_call item', () => {
+  it('warns that the item was removed for an updated mcp_call item', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     try {
       const base = new TestBase();
@@ -112,7 +112,10 @@ describe('OpenAI realtime history replay', () => {
 
       base.resetHistory(oldHistory, newHistory);
 
-      expect(base.events).toEqual([
+      const deleteEvents = base.events.filter(
+        (event) => event.type === 'conversation.item.delete',
+      );
+      expect(deleteEvents).toEqual([
         {
           type: 'conversation.item.delete',
           item_id: 'mcp-1',
@@ -124,9 +127,39 @@ describe('OpenAI realtime history replay', () => {
         ),
       ).toEqual([]);
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'MCP items cannot be manually added or updated',
+        expect.stringContaining('MCP items cannot be manually updated'),
+      );
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('cannot be manually added'),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('warns without claiming removal for a newly added mcp_call item', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const base = new TestBase();
+      const oldHistory: RealtimeMcpCallItem[] = [];
+      const newHistory = [mcpCall('mcp-1', 'new')];
+
+      base.resetHistory(oldHistory, newHistory);
+
+      const deleteEvents = base.events.filter(
+        (event) => event.type === 'conversation.item.delete',
+      );
+      expect(deleteEvents).toEqual([]);
+      expect(
+        base.events.filter(
+          (event) => event.type === 'conversation.item.create',
         ),
+      ).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('MCP items cannot be manually added'),
+      );
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining('was removed'),
       );
     } finally {
       warnSpy.mockRestore();

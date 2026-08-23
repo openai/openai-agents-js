@@ -979,6 +979,7 @@ export abstract class OpenAIRealtimeBase
     );
 
     const removalIds = new Set(removals.map((item) => item.itemId));
+    const updateIds = new Set(updates.map((item) => item.itemId));
     // we don't have an update event for items so we will remove and re-add what's there
     for (const update of updates) {
       removalIds.add(update.itemId);
@@ -1019,9 +1020,15 @@ export abstract class OpenAIRealtimeBase
         addition.type === 'mcp_tool_call' ||
         addition.type === 'mcp_approval_request'
       ) {
-        logger.warn(
-          'MCP items cannot be manually added or updated at the moment. The existing item was removed and will not be recreated.',
-        );
+        if (updateIds.has(addition.itemId)) {
+          logger.warn(
+            'MCP items cannot be manually updated at the moment. The existing item was removed and will not be recreated.',
+          );
+        } else {
+          logger.warn(
+            'MCP items cannot be manually added at the moment. Ignoring.',
+          );
+        }
       }
     }
   }
