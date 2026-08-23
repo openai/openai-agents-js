@@ -271,8 +271,11 @@ export function extractOutputItemsFromRunItems(
       if (cached) {
         return cached;
       }
-      const withoutNullStatusItem = withoutNullStatus(
+      const withoutOutputOnlyMetadata = stripOutputOnlyCreatedBy(
         item.rawItem as AgentInputItem,
+      );
+      const withoutNullStatusItem = withoutNullStatus(
+        withoutOutputOnlyMetadata,
       );
       const normalizedItem =
         normalizationKey === 'omit'
@@ -286,6 +289,52 @@ export function extractOutputItemsFromRunItems(
       normalizedOutputItemByRunItem.set(item, cachedByPolicy);
       return normalizedItem;
     });
+}
+
+function stripOutputOnlyCreatedBy(item: AgentInputItem): AgentInputItem {
+  if (!item || typeof item !== 'object') {
+    return item;
+  }
+
+  const candidate = item as Record<string, unknown>;
+  const hasTopLevelCreatedBy = Object.prototype.hasOwnProperty.call(
+    candidate,
+    'created_by',
+  );
+  const output = candidate.output;
+  const hasShellOutputCreatedBy =
+    candidate.type === 'shell_call_output' &&
+    Array.isArray(output) &&
+    output.some(
+      (entry) =>
+        entry !== null &&
+        typeof entry === 'object' &&
+        Object.prototype.hasOwnProperty.call(entry, 'created_by'),
+    );
+
+  if (!hasTopLevelCreatedBy && !hasShellOutputCreatedBy) {
+    return item;
+  }
+
+  const { created_by: _createdBy, ...withoutCreatedBy } = candidate;
+  const normalized = withoutCreatedBy as Record<string, unknown>;
+
+  if (hasShellOutputCreatedBy) {
+    normalized.output = (output as unknown[]).map((entry) => {
+      if (
+        entry === null ||
+        typeof entry !== 'object' ||
+        !Object.prototype.hasOwnProperty.call(entry, 'created_by')
+      ) {
+        return entry;
+      }
+      const { created_by: _chunkCreatedBy, ...withoutChunkCreatedBy } =
+        entry as Record<string, unknown>;
+      return withoutChunkCreatedBy;
+    });
+  }
+
+  return normalized as AgentInputItem;
 }
 
 function withoutNullStatus(item: AgentInputItem): AgentInputItem {
