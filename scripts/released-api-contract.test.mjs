@@ -20,12 +20,15 @@ import {
   isPublicDeclaration,
   isDirectObjectTypeAliasDeclaration,
   isReadonlyDeclarations,
+  normalizeSelectedPublicTypeAliases,
+  preservedSelectionPolicies,
   resolveConditionalTarget,
   selectDeclarationSurface,
   validateExportLeafConditions,
   validatePackageExportTarget,
   validateExportTreeTerminals,
   validateSelectedProperties,
+  validateSelectedPublicTypeAliases,
   withAcquiredResources,
 } from './released-api-contract.mjs';
 
@@ -43,7 +46,7 @@ const member = (name, callable = false) => ({
   callable,
 });
 
-function describeDeclaration(sourceText, kind = 'type') {
+function describeDeclaration(sourceText, kind = 'type', symbolOptions) {
   const fileName = '/released-api-contract-literal.ts';
   const options = {
     strict: true,
@@ -65,9 +68,12 @@ function describeDeclaration(sourceText, kind = 'type') {
     requested === fileName ? sourceText : undefined;
   const program = ts.createProgram([fileName], options, host);
   const checker = program.getTypeChecker();
-  const declaration = sourceFile.statements[0];
+  const declaration =
+    sourceFile.statements.find(
+      (statement) => statement.name?.text === 'Formatter',
+    ) ?? sourceFile.statements[0];
   const symbol = checker.getSymbolAtLocation(declaration.name);
-  return describeOwnedSymbol(checker, symbol, kind);
+  return describeOwnedSymbol(checker, symbol, kind, symbolOptions);
 }
 
 describe('released API contract comparisons', () => {
@@ -86,6 +92,125 @@ type Combined = Imported & { value: string };`,
       false,
       false,
     ]);
+  });
+
+  test('describes only selected direct callable type aliases', () => {
+    const source = `type Promise<T> = { value: T };
+    type Formatter<TContext = unknown> = (
+      args: Args<TContext>,
+    ) => Promise<string | undefined> | string | undefined;
+    type Args<TContext> = { context: TContext };`;
+    expect(describeDeclaration(source)).toEqual({});
+    expect(
+      describeDeclaration(source, 'type', {
+        selectedTypeAliasKind: 'callable',
+      }),
+    ).toEqual({
+      callableSignature: {
+        typeParameters: [{ constraint: null, default: 'unknown' }],
+        parameters: [
+          {
+            optional: false,
+            rest: false,
+            type: 'Args<[[type-parameter:0]]>',
+          },
+        ],
+        returnType: 'string | Promise<string | undefined> | undefined',
+      },
+    });
+  });
+
+  test('normalizes callable type parameter and parameter names', () => {
+    const first = describeDeclaration(
+      'type Formatter<TContext = unknown> = (args: TContext) => TContext;',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    const renamed = describeDeclaration(
+      'type Formatter<TValue = unknown> = (value: TValue) => TValue;',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    expect(renamed).toEqual(first);
+  });
+
+  test('normalizes only callable type parameter references', () => {
+    const collidingNames = describeDeclaration(
+      'type Formatter<T, T0> = (first: T, second: T0) => [T, T0];',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    const renamed = describeDeclaration(
+      'type Formatter<Left, Right> = (left: Left, right: Right) => [Left, Right];',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    const swapped = describeDeclaration(
+      'type Formatter<T, T0> = (first: T0, second: T) => [T, T0];',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    const propertyName = describeDeclaration(
+      'type Formatter<value> = (arg: { value: string; data: value }) => value;',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    const renamedPropertyType = describeDeclaration(
+      'type Formatter<other> = (arg: { value: string; data: other }) => other;',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    const externalSymbol = describeDeclaration(
+      'interface T0 { value: string } type Formatter<T> = (first: T0, second: T) => T;',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+    const swappedExternalSymbol = describeDeclaration(
+      'interface T0 { value: string } type Formatter<T> = (first: T, second: T0) => T;',
+      'type',
+      { selectedTypeAliasKind: 'callable' },
+    );
+
+    expect(renamed).toEqual(collidingNames);
+    expect(swapped).not.toEqual(collidingNames);
+    expect(renamedPropertyType).toEqual(propertyName);
+    expect(swappedExternalSymbol).not.toEqual(externalSymbol);
+  });
+
+  test('rejects unsupported selected callable alias shapes', () => {
+    expect(() =>
+      describeDeclaration('type Formatter = string | (() => string);', 'type', {
+        selectedTypeAliasKind: 'callable',
+      }),
+    ).toThrow('must be declared as a direct function type alias');
+    expect(() =>
+      describeDeclaration('type Formatter = <T>(value: T) => T;', 'type', {
+        selectedTypeAliasKind: 'callable',
+      }),
+    ).toThrow('must not declare call-signature type parameters');
+    expect(() =>
+      describeDeclaration(
+        'type Formatter = (this: { value: string }) => string;',
+        'type',
+        { selectedTypeAliasKind: 'callable' },
+      ),
+    ).toThrow('must not declare a this parameter');
+    expect(() =>
+      describeDeclaration(
+        'type Formatter<in T> = (value: T) => string;',
+        'type',
+        {
+          selectedTypeAliasKind: 'callable',
+        },
+      ),
+    ).toThrow('must not declare type parameter modifiers');
+    expect(() =>
+      describeDeclaration(
+        'type Formatter = (value: string) => Formatter;',
+        'type',
+        { selectedTypeAliasKind: 'callable' },
+      ),
+    ).toThrow('must not recursively reference itself');
   });
 
   test('rejects removed and moved exports', () => {
@@ -521,6 +646,74 @@ type Combined = Imported & { value: string };`,
     ).toEqual([]);
   });
 
+  test('rejects selected callable signature changes in shallow comparisons', () => {
+    const callableSignature = {
+      typeParameters: [{ constraint: null, default: 'unknown' }],
+      parameters: [
+        {
+          optional: false,
+          rest: false,
+          type: 'OutputGuardrailBlockedMessageArgs<T0>',
+        },
+      ],
+      returnType: 'string | Promise<string | undefined> | undefined',
+    };
+    const released = {
+      name: 'OutputGuardrailBlockedMessageFormatter',
+      spaces: ['type'],
+      sdkOwned: true,
+      kind: 'type',
+      callableSignature,
+    };
+    const candidate = {
+      ...released,
+      callableSignature: {
+        typeParameters: [{ constraint: 'object', default: null }],
+        parameters: [
+          {
+            optional: true,
+            rest: true,
+            type: 'OutputGuardrailBlockedMessageArgs<unknown>',
+          },
+        ],
+        returnType: 'string',
+      },
+    };
+    expect(
+      compareSurfaceRecords([released], [candidate], '@openai/agents-core', {
+        deep: false,
+      }),
+    ).toEqual([
+      '@openai/agents-core.OutputGuardrailBlockedMessageFormatter callable type parameter 0 changed constraint',
+      '@openai/agents-core.OutputGuardrailBlockedMessageFormatter callable type parameter 0 changed default',
+      '@openai/agents-core.OutputGuardrailBlockedMessageFormatter callable parameter 0 changed optionality',
+      '@openai/agents-core.OutputGuardrailBlockedMessageFormatter callable parameter 0 changed rest kind',
+      '@openai/agents-core.OutputGuardrailBlockedMessageFormatter callable parameter 0 changed type',
+      '@openai/agents-core.OutputGuardrailBlockedMessageFormatter changed callable return type',
+    ]);
+  });
+
+  test('rejects losing a selected callable signature', () => {
+    const released = {
+      name: 'Formatter',
+      spaces: ['type'],
+      sdkOwned: true,
+      kind: 'type',
+      callableSignature: {
+        typeParameters: [],
+        parameters: [],
+        returnType: 'string',
+      },
+    };
+    expect(
+      compareSurfaceRecords(
+        [released],
+        [{ ...released, callableSignature: undefined }],
+        '@openai/test',
+      ),
+    ).toEqual(['@openai/test.Formatter lost its selected callable signature']);
+  });
+
   test('rejects missing namespace members and changed convenience identity', () => {
     const released = {
       name: 'realtime',
@@ -907,6 +1100,79 @@ type Combined = Imported & { value: string };`,
         },
       ]),
     ).toEqual(['@openai/test/platform.Platform.secrets was removed']);
+  });
+
+  test('validates selected public type aliases across declaration conditions', () => {
+    const callableRecord = {
+      name: 'Formatter',
+      spaces: ['type'],
+      sdkOwned: true,
+      kind: 'type',
+      callableSignature: {
+        typeParameters: [],
+        parameters: [],
+        returnType: 'string',
+      },
+    };
+    const policy = [
+      {
+        package: '@openai/test',
+        subpath: '.',
+        export: 'Formatter',
+        kind: 'callable',
+      },
+    ];
+    expect(
+      validateSelectedPublicTypeAliases(
+        {
+          '@openai/test': {
+            '.': {
+              types: [callableRecord],
+              'browser.types': [
+                { ...callableRecord, callableSignature: undefined },
+              ],
+            },
+          },
+        },
+        policy,
+      ),
+    ).toEqual([
+      '@openai/test.Formatter selected public type alias has no callable definition in browser.types',
+    ]);
+    expect(validateSelectedPublicTypeAliases({}, policy)).toEqual([
+      '@openai/test.Formatter selected public type alias is missing',
+    ]);
+  });
+
+  test('normalizes selected public type alias policy', () => {
+    const policy = [
+      {
+        package: '@openai/agents-core',
+        subpath: '.',
+        export: 'OutputGuardrailBlockedMessageFormatter',
+        kind: 'callable',
+      },
+    ];
+    expect(normalizeSelectedPublicTypeAliases(policy)).toEqual(policy);
+    expect(() =>
+      normalizeSelectedPublicTypeAliases([...policy, { ...policy[0] }]),
+    ).toThrow(
+      'selectedPublicTypeAliases repeats @openai/agents-core.OutputGuardrailBlockedMessageFormatter',
+    );
+    expect(() =>
+      normalizeSelectedPublicTypeAliases([{ ...policy[0], kind: 'union' }]),
+    ).toThrow('has unsupported kind union');
+  });
+
+  test('preserves selection policies during promotion', () => {
+    const selectedPublicProperties = [{ export: 'Client' }];
+    const selectedPublicTypeAliases = [{ export: 'Formatter' }];
+    expect(
+      preservedSelectionPolicies({
+        selectedPublicProperties,
+        selectedPublicTypeAliases,
+      }),
+    ).toEqual({ selectedPublicProperties, selectedPublicTypeAliases });
   });
 
   test('rejects missing runtime and convenience bindings', () => {

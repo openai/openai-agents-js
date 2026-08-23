@@ -445,12 +445,119 @@ export function isReadonlyDeclarations(declarations = []) {
   return hasGetter && !hasSetter;
 }
 
-function canonicalType(checker, type, node) {
-  return checker
-    .typeToString(type, node, typeFormatFlags)
+function normalizeCanonicalType(value) {
+  return value
     .replace(/import\("[^"\n]*node_modules\/(@?[^"\n]+?)"\)/g, 'import("$1")')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function canonicalType(checker, type, node) {
+  return normalizeCanonicalType(
+    checker.typeToString(type, node, typeFormatFlags),
+  );
+}
+
+function canonicalTypeNode(checker, node, typeParameterNames) {
+  const writer = ts.createTextWriter('\n');
+  const writeSymbol = writer.writeSymbol.bind(writer);
+  writer.writeSymbol = (text, symbol) => {
+    writeSymbol(typeParameterNames.get(symbol) ?? text, symbol);
+  };
+  checker.writeType(
+    checker.getTypeFromTypeNode(node),
+    node,
+    typeFormatFlags,
+    writer,
+  );
+  return normalizeCanonicalType(writer.getText());
+}
+
+function containsSymbolReference(checker, node, targetSymbol) {
+  let found = false;
+  const visit = (current) => {
+    if (found) return;
+    if (
+      ts.isIdentifier(current) &&
+      checker.getSymbolAtLocation(current) === targetSymbol
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function describeDirectCallableTypeAlias(checker, declaration) {
+  if (
+    !ts.isTypeAliasDeclaration(declaration) ||
+    !ts.isFunctionTypeNode(declaration.type)
+  ) {
+    throw new Error('must be declared as a direct function type alias');
+  }
+  if ((declaration.type.typeParameters ?? []).length > 0) {
+    throw new Error('must not declare call-signature type parameters');
+  }
+
+  const aliasSymbol = checker.getSymbolAtLocation(declaration.name);
+  if (!aliasSymbol) {
+    throw new Error('could not resolve callable type alias');
+  }
+  if (containsSymbolReference(checker, declaration.type, aliasSymbol)) {
+    throw new Error('must not recursively reference itself');
+  }
+
+  const typeParameters = declaration.typeParameters ?? [];
+  const typeParameterNames = new Map(
+    typeParameters.map((parameter, index) => {
+      const symbol = checker.getSymbolAtLocation(parameter.name);
+      if (!symbol) {
+        throw new Error('could not resolve callable type parameter');
+      }
+      return [symbol, `[[type-parameter:${index}]]`];
+    }),
+  );
+  if (
+    typeParameters.some(
+      (parameter) =>
+        ts.canHaveModifiers(parameter) &&
+        (ts.getModifiers(parameter) ?? []).length > 0,
+    )
+  ) {
+    throw new Error('must not declare type parameter modifiers');
+  }
+  if (
+    declaration.type.parameters.some(
+      (parameter) =>
+        ts.isIdentifier(parameter.name) && parameter.name.text === 'this',
+    )
+  ) {
+    throw new Error('must not declare a this parameter');
+  }
+  return {
+    callableSignature: {
+      typeParameters: typeParameters.map((parameter) => ({
+        constraint: parameter.constraint
+          ? canonicalTypeNode(checker, parameter.constraint, typeParameterNames)
+          : null,
+        default: parameter.default
+          ? canonicalTypeNode(checker, parameter.default, typeParameterNames)
+          : null,
+      })),
+      parameters: declaration.type.parameters.map((parameter) => ({
+        optional: Boolean(parameter.questionToken),
+        rest: Boolean(parameter.dotDotDotToken),
+        type: canonicalTypeNode(checker, parameter.type, typeParameterNames),
+      })),
+      returnType: canonicalTypeNode(
+        checker,
+        declaration.type.type,
+        typeParameterNames,
+      ),
+    },
+  };
 }
 
 function describeMembers(checker, type, excludedNames = new Set()) {
@@ -567,7 +674,12 @@ function isUnitLiteralType(type) {
   );
 }
 
-export function describeOwnedSymbol(checker, symbol, kind) {
+export function describeOwnedSymbol(
+  checker,
+  symbol,
+  kind,
+  { selectedTypeAliasKind } = {},
+) {
   const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
   if (kind === 'enum') {
     return { enumMembers: enumMembers(checker, symbol) };
@@ -597,6 +709,9 @@ export function describeOwnedSymbol(checker, symbol, kind) {
     };
   }
   if (kind === 'type') {
+    if (selectedTypeAliasKind === 'callable') {
+      return describeDirectCallableTypeAlias(checker, declaration);
+    }
     const type = checker.getDeclaredTypeOfSymbol(symbol);
     const literalTypes = type.isUnion() ? type.types : [type];
     if (literalTypes.every(isUnitLiteralType)) {
@@ -625,6 +740,67 @@ export function describeOwnedSymbol(checker, symbol, kind) {
     return {};
   }
   return {};
+}
+
+export function normalizeSelectedPublicTypeAliases(value = []) {
+  if (!Array.isArray(value)) {
+    throw new Error('selectedPublicTypeAliases must be an array');
+  }
+  const identities = new Set();
+  return value.map((entry) => {
+    const requiredFields = ['package', 'subpath', 'export', 'kind'];
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      Object.keys(entry).sort().join('\0') !== requiredFields.sort().join('\0')
+    ) {
+      throw new Error(
+        'selectedPublicTypeAliases entries must contain exactly package, subpath, export, and kind',
+      );
+    }
+    for (const field of ['package', 'subpath', 'export']) {
+      if (typeof entry[field] !== 'string' || entry[field].length === 0) {
+        throw new Error(
+          `selectedPublicTypeAliases ${field} values must be non-empty strings`,
+        );
+      }
+    }
+    if (entry.kind !== 'callable') {
+      throw new Error(
+        `selectedPublicTypeAliases ${entry.package}${entry.subpath === '.' ? '' : entry.subpath.slice(1)}.${entry.export} has unsupported kind ${String(entry.kind)}`,
+      );
+    }
+    const identity = `${entry.package}\0${entry.subpath}\0${entry.export}`;
+    if (identities.has(identity)) {
+      throw new Error(
+        `selectedPublicTypeAliases repeats ${entry.package}${entry.subpath === '.' ? '' : entry.subpath.slice(1)}.${entry.export}`,
+      );
+    }
+    identities.add(identity);
+    return { ...entry };
+  });
+}
+
+export function preservedSelectionPolicies(contract) {
+  return {
+    selectedPublicProperties: contract.selectedPublicProperties ?? [],
+    selectedPublicTypeAliases: contract.selectedPublicTypeAliases ?? [],
+  };
+}
+
+function selectedTypeAliasesForEntry(
+  selectedPublicTypeAliases,
+  packageName,
+  subpath,
+) {
+  return new Map(
+    selectedPublicTypeAliases
+      .filter(
+        (entry) => entry.package === packageName && entry.subpath === subpath,
+      )
+      .map((entry) => [entry.export, entry.kind]),
+  );
 }
 
 function symbolOwnedByRoots(symbol, ownedRoots) {
@@ -671,7 +847,13 @@ function createProgram(rootNames, sourceMode = false) {
   });
 }
 
-function inspectEntry(program, entryFile, ownedRoots) {
+function inspectEntry(
+  program,
+  entryFile,
+  ownedRoots,
+  selectedTypeAliases = new Map(),
+  location,
+) {
   const checker = program.getTypeChecker();
   const sourceFile = program.getSourceFile(path.resolve(entryFile));
   if (!sourceFile) {
@@ -690,6 +872,26 @@ function inspectEntry(program, entryFile, ownedRoots) {
     }
     const sdkOwned = symbolOwnedByRoots(targetSymbol, ownedRoots);
     const kind = symbolKind(targetSymbol);
+    const selectedTypeAliasKind = selectedTypeAliases.get(
+      exportSymbol.getName(),
+    );
+    if (selectedTypeAliasKind && (!sdkOwned || kind !== 'type')) {
+      throw new Error(
+        `${location}.${exportSymbol.getName()} must resolve to an SDK-owned type alias`,
+      );
+    }
+    let descriptor = {};
+    if (sdkOwned) {
+      try {
+        descriptor = describeOwnedSymbol(checker, targetSymbol, kind, {
+          selectedTypeAliasKind,
+        });
+      } catch (error) {
+        throw new Error(
+          `${location}.${exportSymbol.getName()} selected ${selectedTypeAliasKind} type alias ${error.message}`,
+        );
+      }
+    }
     const record = {
       name: exportSymbol.getName(),
       spaces,
@@ -697,7 +899,7 @@ function inspectEntry(program, entryFile, ownedRoots) {
       ...(sdkOwned
         ? {
             kind,
-            ...describeOwnedSymbol(checker, targetSymbol, kind),
+            ...descriptor,
           }
         : {}),
     };
@@ -745,7 +947,11 @@ async function loadPackageSet(roots, mode) {
   return packages;
 }
 
-async function inspectPackageSet(packages, mode) {
+async function inspectPackageSet(
+  packages,
+  mode,
+  selectedPublicTypeAliases = [],
+) {
   const roots = Object.values(packages).map((item) => item.packageRoot);
   const entryFiles = Object.values(packages).flatMap((item) =>
     Object.values(item.entries).flatMap((entry) =>
@@ -764,10 +970,21 @@ async function inspectPackageSet(packages, mode) {
   for (const [name, packageInfo] of Object.entries(packages)) {
     surfaces[name] = {};
     for (const [subpath, entry] of Object.entries(packageInfo.entries)) {
+      const selectedTypeAliases = selectedTypeAliasesForEntry(
+        selectedPublicTypeAliases,
+        name,
+        subpath,
+      );
       surfaces[name][subpath] = Object.fromEntries(
         entry.declarations.map((declaration) => [
           declaration.condition,
-          inspectEntry(program, declaration.entryFile, roots),
+          inspectEntry(
+            program,
+            declaration.entryFile,
+            roots,
+            selectedTypeAliases,
+            packageKey(name, subpath),
+          ),
         ]),
       );
     }
@@ -883,6 +1100,58 @@ function compareMemberShape(
   return errors;
 }
 
+function compareCallableSignatures(baseline, candidate, location) {
+  const errors = [];
+  const baselineTypeParameters = baseline.typeParameters ?? [];
+  const candidateTypeParameters = candidate.typeParameters ?? [];
+  if (baselineTypeParameters.length !== candidateTypeParameters.length) {
+    errors.push(`${location} changed callable type parameter count`);
+  } else {
+    for (let index = 0; index < baselineTypeParameters.length; index += 1) {
+      const baselineParameter = baselineTypeParameters[index];
+      const candidateParameter = candidateTypeParameters[index];
+      if (baselineParameter.constraint !== candidateParameter.constraint) {
+        errors.push(
+          `${location} callable type parameter ${index} changed constraint`,
+        );
+      }
+      if (baselineParameter.default !== candidateParameter.default) {
+        errors.push(
+          `${location} callable type parameter ${index} changed default`,
+        );
+      }
+    }
+  }
+
+  const baselineParameters = baseline.parameters ?? [];
+  const candidateParameters = candidate.parameters ?? [];
+  if (baselineParameters.length !== candidateParameters.length) {
+    errors.push(`${location} changed callable parameter count`);
+  } else {
+    for (let index = 0; index < baselineParameters.length; index += 1) {
+      const baselineParameter = baselineParameters[index];
+      const candidateParameter = candidateParameters[index];
+      if (baselineParameter.optional !== candidateParameter.optional) {
+        errors.push(
+          `${location} callable parameter ${index} changed optionality`,
+        );
+      }
+      if (baselineParameter.rest !== candidateParameter.rest) {
+        errors.push(
+          `${location} callable parameter ${index} changed rest kind`,
+        );
+      }
+      if (baselineParameter.type !== candidateParameter.type) {
+        errors.push(`${location} callable parameter ${index} changed type`);
+      }
+    }
+  }
+  if (baseline.returnType !== candidate.returnType) {
+    errors.push(`${location} changed callable return type`);
+  }
+  return errors;
+}
+
 export function compareOwnedDescriptors(baseline, candidate, location) {
   const errors = [];
   if (baseline.kind === 'enum') {
@@ -932,6 +1201,19 @@ export function compareOwnedDescriptors(baseline, candidate, location) {
       if (!candidateLiterals.has(literal)) {
         errors.push(`${location} removed literal ${literal}`);
       }
+    }
+  }
+  if (baseline.callableSignature) {
+    if (!candidate.callableSignature) {
+      errors.push(`${location} lost its selected callable signature`);
+    } else {
+      errors.push(
+        ...compareCallableSignatures(
+          baseline.callableSignature,
+          candidate.callableSignature,
+          location,
+        ),
+      );
     }
   }
   if (baseline.namespaceMembers) {
@@ -995,10 +1277,18 @@ export function compareSurfaceRecords(
       errors.push(
         ...compareOwnedDescriptors(baseline, candidate, bindingLocation),
       );
-    } else if (baseline.enumMembers) {
+    } else if (baseline.enumMembers || baseline.callableSignature) {
       errors.push(
         ...compareOwnedDescriptors(
-          { kind: 'enum', enumMembers: baseline.enumMembers },
+          {
+            kind: baseline.kind,
+            ...(baseline.enumMembers
+              ? { enumMembers: baseline.enumMembers }
+              : {}),
+            ...(baseline.callableSignature
+              ? { callableSignature: baseline.callableSignature }
+              : {}),
+          },
           candidate,
           bindingLocation,
         ),
@@ -1021,6 +1311,38 @@ export function validateSelectedProperties(surfaces, selectedProperties) {
       if (!members.has(property)) {
         errors.push(
           `${packageKey(policy.package, policy.subpath)}.${policy.export}.${property} was removed`,
+        );
+      }
+    }
+  }
+  return errors;
+}
+
+export function validateSelectedPublicTypeAliases(
+  surfaces,
+  selectedPublicTypeAliases,
+) {
+  const errors = [];
+  for (const policy of selectedPublicTypeAliases) {
+    const location = `${packageKey(policy.package, policy.subpath)}.${policy.export}`;
+    const variants = surfaces[policy.package]?.[policy.subpath];
+    if (!variants || Object.keys(variants).length === 0) {
+      errors.push(`${location} selected public type alias is missing`);
+      continue;
+    }
+    for (const [condition, records] of Object.entries(variants)) {
+      const exported = records.find((item) => item.name === policy.export);
+      if (!exported) {
+        errors.push(
+          `${location} selected public type alias is missing in ${condition}`,
+        );
+      } else if (
+        !exported.sdkOwned ||
+        exported.kind !== 'type' ||
+        !exported.callableSignature
+      ) {
+        errors.push(
+          `${location} selected public type alias has no ${policy.kind} definition in ${condition}`,
         );
       }
     }
@@ -1101,6 +1423,10 @@ function comparePackageSets(
       candidateSurfaces,
       contract.selectedPublicProperties ?? [],
     ),
+    ...validateSelectedPublicTypeAliases(
+      candidateSurfaces,
+      contract.selectedPublicTypeAliases ?? [],
+    ),
   );
   return sortedUnique(errors);
 }
@@ -1110,8 +1436,17 @@ async function inspectAndComparePackageSets(
   baselinePackages,
   candidatePackages,
 ) {
-  const baselineSurfaces = await inspectPackageSet(baselinePackages, 'dist');
-  const candidateSurfaces = await inspectPackageSet(candidatePackages, 'dist');
+  const selectedPublicTypeAliases = contract.selectedPublicTypeAliases ?? [];
+  const baselineSurfaces = await inspectPackageSet(
+    baselinePackages,
+    'dist',
+    selectedPublicTypeAliases,
+  );
+  const candidateSurfaces = await inspectPackageSet(
+    candidatePackages,
+    'dist',
+    selectedPublicTypeAliases,
+  );
   return {
     errors: comparePackageSets(
       contract,
@@ -1698,9 +2033,18 @@ async function validateSource(contract) {
   );
   try {
     const baselinePackages = await loadPackageSet(baseline.roots, 'dist');
-    const baselineSurfaces = await inspectPackageSet(baselinePackages, 'dist');
+    const selectedPublicTypeAliases = contract.selectedPublicTypeAliases ?? [];
+    const baselineSurfaces = await inspectPackageSet(
+      baselinePackages,
+      'dist',
+      selectedPublicTypeAliases,
+    );
     const packages = await loadPackageSet(workspaceRoots(), 'source');
-    const surfaces = await inspectPackageSet(packages, 'source');
+    const surfaces = await inspectPackageSet(
+      packages,
+      'source',
+      selectedPublicTypeAliases,
+    );
     const errors = comparePackageSets(
       contract,
       baselineSurfaces,
@@ -1818,7 +2162,11 @@ async function validatePackage(contract, registry) {
     [() => installFromRegistry(registry, false)],
     async ([noExtra]) => {
       const packages = await loadPackageSet(noExtra.roots, 'dist');
-      const surfaces = await inspectPackageSet(packages, 'dist');
+      const surfaces = await inspectPackageSet(
+        packages,
+        'dist',
+        contract.selectedPublicTypeAliases ?? [],
+      );
       const errors = [
         ...(await validateRuntime(
           packages,
@@ -1913,7 +2261,11 @@ async function promote(contract, version, contractPath) {
         surfaces = candidateSurfaces;
         errors.push(...comparisonErrors);
       } else {
-        surfaces = await inspectPackageSet(packages, 'dist');
+        surfaces = await inspectPackageSet(
+          packages,
+          'dist',
+          contract.selectedPublicTypeAliases ?? [],
+        );
       }
       errors.push(
         ...(await validateRuntime(
@@ -1941,6 +2293,10 @@ async function promote(contract, version, contractPath) {
         ...validateSelectedProperties(
           surfaces,
           contract.selectedPublicProperties ?? [],
+        ),
+        ...validateSelectedPublicTypeAliases(
+          surfaces,
+          contract.selectedPublicTypeAliases ?? [],
         ),
       );
       if (errors.length > 0) {
@@ -1981,7 +2337,7 @@ async function promote(contract, version, contractPath) {
         schemaVersion: 1,
         baseline: { tag: `v${version}`, commit },
         packages: promotedPackages,
-        selectedPublicProperties: contract.selectedPublicProperties ?? [],
+        ...preservedSelectionPolicies(contract),
       };
       const temporary = `${contractPath}.tmp`;
       await writeFile(temporary, `${JSON.stringify(promoted, null, 2)}\n`);
@@ -2002,6 +2358,9 @@ async function main() {
     argumentValue(args, '--contract') ?? defaultContractPath,
   );
   const contract = await readJson(contractPath);
+  contract.selectedPublicTypeAliases = normalizeSelectedPublicTypeAliases(
+    contract.selectedPublicTypeAliases,
+  );
   if (command === 'source') {
     await validateSource(contract);
     return;
