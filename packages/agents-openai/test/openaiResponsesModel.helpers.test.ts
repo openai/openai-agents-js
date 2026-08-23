@@ -2449,6 +2449,28 @@ describe('convertToOutputItem', () => {
     expect(output.providerData).not.toHaveProperty('caller');
   });
 
+  it('preserves empty hosted MCP outputs', () => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'mcp_call',
+        id: 'mcp_1',
+        name: 'lookup',
+        arguments: '{}',
+        server_label: 'server',
+        status: 'completed',
+        output: '',
+      },
+    ] as any);
+
+    expect(output).toMatchObject({
+      type: 'hosted_tool_call',
+      id: 'mcp_1',
+      name: 'mcp_call',
+      output: '',
+    });
+    expect(output.providerData).not.toHaveProperty('output');
+  });
+
   it('converts Programmatic Tool Calling items and caller linkage', () => {
     const out = convertToOutputItem([
       {
