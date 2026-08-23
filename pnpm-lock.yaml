@@ -111,6 +111,12 @@ importers:
         specifier: ^4.12.0
         version: 4.12.0(typedoc@0.28.19(typescript@5.9.3))
     devDependencies:
+      '@astrojs/markdown-remark':
+        specifier: ^7.2.0
+        version: 7.2.0(supports-color@8.1.1)
+      remark-mdx:
+        specifier: ^3.1.1
+        version: 3.1.1(supports-color@8.1.1)
       tailwindcss:
         specifier: ^4.3.2
         version: 4.3.2
