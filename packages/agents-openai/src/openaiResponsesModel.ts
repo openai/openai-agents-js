@@ -3163,7 +3163,7 @@ function convertToOutputItem(
         id: item.id!,
         name: item.type,
         status: 'completed',
-        output: outputData || undefined,
+        output: outputData ?? undefined,
         ...(caller ? { caller } : {}),
         providerData,
       };
