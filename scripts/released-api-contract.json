@@ -281,5 +281,19 @@
       "export": "RunloopSandboxClient",
       "properties": ["platform"]
     }
+  ],
+  "selectedPublicTypeAliases": [
+    {
+      "package": "@openai/agents-core",
+      "subpath": ".",
+      "export": "OutputGuardrailBlockedMessageFormatter",
+      "kind": "callable"
+    },
+    {
+      "package": "@openai/agents",
+      "subpath": ".",
+      "export": "OutputGuardrailBlockedMessageFormatter",
+      "kind": "callable"
+    }
   ]
 }
