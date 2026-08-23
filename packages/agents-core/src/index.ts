@@ -200,6 +200,8 @@ export type {
   CallModelInputFilterArgs,
   ToolErrorFormatter,
   ToolErrorFormatterArgs,
+  OutputGuardrailBlockedMessageArgs,
+  OutputGuardrailBlockedMessageFormatter,
   ToolExecutionConfig,
   ToolNameCollisionPolicy,
   ToolNotFoundBehavior,

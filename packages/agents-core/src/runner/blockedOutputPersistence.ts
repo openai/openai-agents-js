@@ -33,8 +33,10 @@ import type { RunState } from '../runState';
 import type { Session } from '../memory/session';
 import { Usage } from '../usage';
 import {
+  getSerializedOutputGuardrailResults,
   sanitizeBlockedOutputGuardrailResults,
   sanitizeBlockedToolOutputGuardrailResults,
+  replaceSanitizedOutputGuardrailMessages,
 } from './guardrails';
 import { invalidateOutputItemNormalization } from './items';
 import {
@@ -43,11 +45,9 @@ import {
   getToolResultCorrelationKey,
 } from './toolResultCorrelation';
 import { addLoadedToolNamesFromToolSearchOutput } from './toolSearch';
+import { OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT } from './outputGuardrailBlockedMessage';
 
 type BlockedPairKind = 'tool' | 'handoff';
-
-export const OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT =
-  'Output withheld by an output guardrail.';
 
 const currentResponseToolOutputGuardrailResultStarts = new WeakMap<
   RunState<any, any>,
@@ -133,7 +133,9 @@ export function sanitizeBlockedTerminalToolOutput(
   >,
   tripwire?: OutputGuardrailTripwireTriggered<any, any>,
   ownedOutputGuardrailResults?: ReadonlySet<OutputGuardrailResult<any, any>>,
-): boolean {
+  resolveBlockedMessage?: (guardrailName: string) => Promise<string>,
+  signal?: AbortSignal,
+): false | string | Promise<false | string> {
   if (
     !hasTerminalToolOutputSource(state) ||
     !completedOutputGuardrailTripwireResult
@@ -141,7 +143,7 @@ export function sanitizeBlockedTerminalToolOutput(
     return false;
   }
   redactBlockedResponseToolOutputs(state);
-  sanitizeBlockedOutputGuardrailResults(
+  const sanitizedOutputGuardrailResults = sanitizeBlockedOutputGuardrailResults(
     state,
     outputGuardrailResultStart,
     OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
@@ -154,7 +156,98 @@ export function sanitizeBlockedTerminalToolOutput(
     currentResponseToolOutputGuardrailResultStarts.get(state) ?? 0,
     OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
   );
-  return true;
+  if (!resolveBlockedMessage) {
+    return OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT;
+  }
+  const blockedOutputGuardrailResult = completedOutputGuardrailTripwireResult;
+  let guardrailName = 'output_guardrail';
+  try {
+    const candidate = blockedOutputGuardrailResult.guardrail.name;
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      guardrailName = candidate;
+    }
+  } catch {
+    // Keep the safe fallback name when caller-owned metadata is unreadable.
+  }
+  signal?.throwIfAborted();
+  return awaitBlockedMessageWithAbort(
+    resolveBlockedMessage(guardrailName),
+    signal,
+  )
+    .then((blockedMessage) => {
+      signal?.throwIfAborted();
+      if (
+        typeof blockedMessage !== 'string' ||
+        blockedMessage.length === 0 ||
+        blockedMessage === OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT
+      ) {
+        return OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT;
+      }
+      redactBlockedResponseToolOutputs(state, blockedMessage);
+      replaceSanitizedOutputGuardrailMessages(
+        state,
+        sanitizedOutputGuardrailResults,
+        blockedMessage,
+        tripwire,
+      );
+      return blockedMessage;
+    })
+    .catch(() => {
+      signal?.throwIfAborted();
+      return OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT;
+    });
+}
+
+function awaitBlockedMessageWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    promise.then(
+      (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 export function shouldDeferInterruptedSessionItems(
@@ -1003,6 +1096,7 @@ function buildCanonicalFunctionCall(rawItem: AgentInputItem): FunctionCallItem {
 
 export function buildBlockedToolOutputRawItem(
   rawItem: AgentInputItem,
+  blockedMessage = OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
 ): FunctionCallResultItem {
   const parsed = FunctionCallResultItemSchema.parse(rawItem);
   return FunctionCallResultItemSchema.parse({
@@ -1010,7 +1104,7 @@ export function buildBlockedToolOutputRawItem(
     name: parsed.name,
     ...optionalField('namespace', parsed.namespace),
     callId: parsed.callId,
-    output: OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+    output: blockedMessage,
     ...optionalField('id', parsed.id),
     ...optionalField('status', parsed.status),
   });
@@ -1344,6 +1438,7 @@ function buildCurrentFunctionPairPlan(
   state: RunState<any, any>,
   responseOutput: AgentInputItem[],
   selection: CurrentRunItemSelection,
+  blockedMessage = OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
 ): CurrentFunctionPairPlan | undefined {
   if (!selection.proven) return undefined;
 
@@ -1393,9 +1488,9 @@ function buildCurrentFunctionPairPlan(
         resultIndexes.set(key, index);
         sanitizedItems.push(
           new RunToolCallOutputItem(
-            buildBlockedToolOutputRawItem(item.rawItem),
+            buildBlockedToolOutputRawItem(item.rawItem, blockedMessage),
             item.agent,
-            OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+            blockedMessage,
             undefined,
             item.executionStatus,
           ),
@@ -1466,7 +1561,7 @@ function buildCurrentFunctionPairPlan(
             new RunToolCallOutputItem(
               replacement.rawItem,
               item.agent,
-              OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+              blockedMessage,
               undefined,
               replacement.executionStatus,
             ),
@@ -1623,9 +1718,12 @@ function replaceCurrentResponse(
     state._lastTurnResponse = replacement;
 }
 
-function markBlockedState(state: RunState<any, any>): void {
+function markBlockedState(
+  state: RunState<any, any>,
+  blockedMessage: string,
+): void {
   if (state._currentStep?.type === 'next_step_final_output') {
-    state._currentStep.output = OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT;
+    state._currentStep.output = blockedMessage;
   }
   invalidateOutputItemNormalization(state._generatedItems);
   if (state._lastProcessedResponse) {
@@ -1636,13 +1734,19 @@ function markBlockedState(state: RunState<any, any>): void {
 /** Replaces a rejected function response with allowlisted replay-safe values. */
 export function redactBlockedResponseToolOutputs(
   state: RunState<any, any>,
+  blockedMessage = OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
 ): boolean {
   const response = currentResponse(state);
   const responseOutput = getResponseOutput(response);
   const selection = currentRunItemSelection(state, responseOutput ?? []);
   const plan =
     response && responseOutput
-      ? buildCurrentFunctionPairPlan(state, responseOutput, selection)
+      ? buildCurrentFunctionPairPlan(
+          state,
+          responseOutput,
+          selection,
+          blockedMessage,
+        )
       : undefined;
 
   if (!plan) {
@@ -1650,7 +1754,7 @@ export function redactBlockedResponseToolOutputs(
     for (const item of selection.aliases) replacements.set(item, undefined);
     replaceRunItems(state, replacements, responseOutput, []);
     if (response) replaceCurrentResponse(state, response, []);
-    markBlockedState(state);
+    markBlockedState(state, blockedMessage);
     return selection.aliases.length > 0 || response !== undefined;
   }
 
@@ -1661,7 +1765,7 @@ export function redactBlockedResponseToolOutputs(
     plan.responseOutput,
   );
   replaceCurrentResponse(state, response!, plan.responseOutput);
-  markBlockedState(state);
+  markBlockedState(state, blockedMessage);
   return plan.replacements.size > 0 || plan.responseOutput.length > 0;
 }
 
@@ -1671,20 +1775,134 @@ export function getBlockedOutputSessionSnapshotRunItems(
   const responseOutput = getResponseOutput(currentResponse(state));
   if (!responseOutput) return [];
   const selection = currentRunItemSelection(state, responseOutput);
-  const plan = buildCurrentFunctionPairPlan(state, responseOutput, selection);
+  const blockedMessage =
+    state._currentStep?.type === 'next_step_final_output' &&
+    typeof state._currentStep.output === 'string' &&
+    state._currentStep.output.length > 0
+      ? state._currentStep.output
+      : OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT;
+  const plan = buildCurrentFunctionPairPlan(
+    state,
+    responseOutput,
+    selection,
+    blockedMessage,
+  );
   return plan?.sanitizedItems ?? [];
 }
 
 export function isCanonicalBlockedOutputPayload(item: AgentInputItem): boolean {
+  return isCanonicalBlockedOutputPayloadForMessage(
+    item,
+    OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+  );
+}
+
+function isCanonicalBlockedOutputPayloadForMessage(
+  item: AgentInputItem,
+  blockedMessage: string,
+): boolean {
   if (item?.type !== 'function_call_result') return false;
   try {
     return (
       JSON.stringify(item) ===
-      JSON.stringify(buildBlockedToolOutputRawItem(item))
+      JSON.stringify(buildBlockedToolOutputRawItem(item, blockedMessage))
     );
   } catch {
     return false;
   }
+}
+
+/** Returns a custom blocked message only when the restored response owns its canonical payload. */
+function getCanonicalSerializedOutputGuardrailBlockedMessage(
+  state: RunState<any, any>,
+): string | undefined {
+  if (
+    state._serializedCurrentStep !== state._currentStep ||
+    state._currentStep?.type !== 'next_step_final_output' ||
+    typeof state._currentStep.output !== 'string' ||
+    state._currentStep.output.length === 0 ||
+    state._currentStep.output === OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT
+  ) {
+    return undefined;
+  }
+
+  const blockedMessage = state._currentStep.output;
+  const responseOutput = getResponseOutput(currentResponse(state));
+  if (!responseOutput) return undefined;
+  const selection = currentRunItemSelection(state, responseOutput);
+  const plan = buildCurrentFunctionPairPlan(
+    state,
+    responseOutput,
+    selection,
+    blockedMessage,
+  );
+  if (
+    !plan ||
+    JSON.stringify(responseOutput) !== JSON.stringify(plan.responseOutput)
+  ) {
+    return undefined;
+  }
+
+  for (const [item, canonicalItem] of plan.replacements) {
+    if (
+      item instanceof RunToolCallItem &&
+      canonicalItem instanceof RunToolCallItem
+    ) {
+      if (
+        JSON.stringify(item.rawItem) !== JSON.stringify(canonicalItem.rawItem)
+      ) {
+        return undefined;
+      }
+      continue;
+    }
+    if (
+      item instanceof RunToolCallOutputItem &&
+      canonicalItem instanceof RunToolCallOutputItem
+    ) {
+      if (
+        item.output !== blockedMessage ||
+        item.customData !== undefined ||
+        !isCanonicalBlockedOutputPayloadForMessage(item.rawItem, blockedMessage)
+      ) {
+        return undefined;
+      }
+      continue;
+    }
+    return undefined;
+  }
+
+  return blockedMessage;
+}
+
+/** Neutralizes a canonical restored placeholder without trusting serialized guardrail identity. */
+export function normalizeSerializedOutputGuardrailBlockedMessage(
+  state: RunState<any, any>,
+): void {
+  const blockedMessage =
+    getCanonicalSerializedOutputGuardrailBlockedMessage(state);
+  if (
+    !blockedMessage ||
+    !state._outputGuardrailResults.some(
+      (result) =>
+        result.agent === state._currentAgent &&
+        result.agentOutput === blockedMessage &&
+        result.output.tripwireTriggered === true &&
+        result.output.outputInfo === undefined,
+    )
+  ) {
+    return;
+  }
+  const ownedResults = getSerializedOutputGuardrailResults(
+    state,
+    blockedMessage,
+  );
+  // A saved verdict only identifies data to neutralize; current guards must rerun.
+  redactBlockedResponseToolOutputs(state);
+  replaceSanitizedOutputGuardrailMessages(
+    state,
+    ownedResults,
+    OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+  );
 }
 
 export function hasOutputBearingApprovalCheckpoint(

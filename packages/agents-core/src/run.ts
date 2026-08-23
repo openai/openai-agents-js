@@ -101,12 +101,17 @@ import {
 import {
   assertResumedSessionOutputGuardrailSafety,
   captureCurrentResponseToolOutputGuardrailResultStart,
+  normalizeSerializedOutputGuardrailBlockedMessage,
   hasBlockedOutputExecutionEffect,
   hasTerminalToolOutputSource,
-  OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
   sanitizeBlockedTerminalToolOutput,
   shouldDeferInterruptedSessionItems,
 } from './runner/blockedOutputPersistence';
+import {
+  createOutputGuardrailBlockedMessageResolver,
+  OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
+} from './runner/outputGuardrailBlockedMessage';
+import type { OutputGuardrailBlockedMessage } from './runner/outputGuardrailBlockedMessage';
 import { prepareTurn } from './runner/turnPreparation';
 import type { NextStep } from './runner/steps';
 import {
@@ -283,6 +288,11 @@ export type ToolErrorFormatter<TContext = unknown> = (
   args: ToolErrorFormatterArgs<TContext>,
 ) => Promise<string | undefined> | string | undefined;
 
+export type {
+  OutputGuardrailBlockedMessageArgs,
+  OutputGuardrailBlockedMessageFormatter,
+} from './runner/outputGuardrailBlockedMessage';
+
 /**
  * SDK-side execution settings for local tool calls.
  */
@@ -413,6 +423,13 @@ export type RunConfig = {
   toolErrorFormatter?: ToolErrorFormatter;
 
   /**
+   * Customizes the data-free placeholder retained when an output guardrail rejects terminal tool
+   * output. A formatter receives safe run metadata and may return a string or a Promise. Invalid
+   * values and formatter failures fall back to the SDK default.
+   */
+  outputGuardrailBlockedMessage?: OutputGuardrailBlockedMessage<any>;
+
+  /**
    * Controls how run items are converted into model input for subsequent turns.
    */
   reasoningItemIdPolicy?: ReasoningItemIdPolicy;
@@ -434,6 +451,7 @@ type SharedRunOptions<
   sessionInputCallback?: SessionInputCallback;
   callModelInputFilter?: CallModelInputFilter;
   toolErrorFormatter?: ToolErrorFormatter;
+  outputGuardrailBlockedMessage?: OutputGuardrailBlockedMessage<TContext>;
   reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   tracing?: TracingConfig;
   sandbox?: SandboxRunConfig;
@@ -625,6 +643,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback: config.sessionInputCallback,
       callModelInputFilter: config.callModelInputFilter,
       toolErrorFormatter: config.toolErrorFormatter,
+      outputGuardrailBlockedMessage: config.outputGuardrailBlockedMessage,
       reasoningItemIdPolicy: config.reasoningItemIdPolicy,
     };
     this.traceOverrides = {
@@ -726,6 +745,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // Per-run callback can override runner-level tool error formatting defaults.
     const toolErrorFormatter =
       resolvedOptions.toolErrorFormatter ?? this.config.toolErrorFormatter;
+    const outputGuardrailBlockedMessage =
+      resolvedOptions.outputGuardrailBlockedMessage === undefined
+        ? this.config.outputGuardrailBlockedMessage
+        : resolvedOptions.outputGuardrailBlockedMessage;
     const reasoningItemIdPolicy =
       resolvedOptions.reasoningItemIdPolicy ??
       (input instanceof RunState ? input._reasoningItemIdPolicy : undefined) ??
@@ -763,6 +786,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       sessionInputCallback,
       callModelInputFilter,
       toolErrorFormatter,
+      outputGuardrailBlockedMessage,
       reasoningItemIdPolicy,
       toolExecution,
       toolNotFoundBehavior,
@@ -1235,6 +1259,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       const toolErrorFormatter =
         options.toolErrorFormatter ?? this.config.toolErrorFormatter;
+      const outputGuardrailBlockedMessage =
+        options.outputGuardrailBlockedMessage === undefined
+          ? this.config.outputGuardrailBlockedMessage
+          : options.outputGuardrailBlockedMessage;
 
       const useTaskAndTurnSpans =
         !this.config.tracingDisabled &&
@@ -1356,6 +1384,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           );
         }
         markAcceptedResponseFinalizationStarted(state);
+        normalizeSerializedOutputGuardrailBlockedMessage(state);
+        const resolveBlockedMessage =
+          createOutputGuardrailBlockedMessageResolver(
+            outputGuardrailBlockedMessage,
+            state,
+          );
         await finalizeOutputGuardrails({
           state,
           runnerOutputGuardrails: this.outputGuardrailDefs,
@@ -1363,7 +1397,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           redactedOutput: OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
           guardedTerminalToolOutput: hasTerminalToolOutputSource(state),
           signal: options.signal,
-          sanitizeRejectedOutput: sanitizeBlockedTerminalToolOutput,
+          sanitizeRejectedOutput: (...args) =>
+            sanitizeBlockedTerminalToolOutput(
+              ...args,
+              resolveBlockedMessage,
+              options.signal,
+            ),
           persistBlockedOutput: persistResult
             ? async () =>
                 persistResult(new RunResult<TContext, TAgent>(state), {
@@ -2093,6 +2132,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     }
     const toolErrorFormatter =
       options.toolErrorFormatter ?? this.config.toolErrorFormatter;
+    const outputGuardrailBlockedMessage =
+      options.outputGuardrailBlockedMessage === undefined
+        ? this.config.outputGuardrailBlockedMessage
+        : options.outputGuardrailBlockedMessage;
     const agentToolParentRunConfig = this.#getAgentToolParentRunConfig(options);
     const useTaskAndTurnSpans =
       !this.config.tracingDisabled && includeTaskAndTurnSpans(options.tracing);
@@ -2187,6 +2230,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       }
       markAcceptedResponseFinalizationStarted(result.state);
       result._hideFinalOutput();
+      normalizeSerializedOutputGuardrailBlockedMessage(result.state);
+      const resolveBlockedMessage = createOutputGuardrailBlockedMessageResolver(
+        outputGuardrailBlockedMessage,
+        result.state,
+      );
       await finalizeOutputGuardrails({
         state: result.state,
         runnerOutputGuardrails: this.outputGuardrailDefs,
@@ -2194,7 +2242,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         redactedOutput: OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT,
         guardedTerminalToolOutput: hasTerminalToolOutputSource(result.state),
         signal: options.signal,
-        sanitizeRejectedOutput: sanitizeBlockedTerminalToolOutput,
+        sanitizeRejectedOutput: (...args) =>
+          sanitizeBlockedTerminalToolOutput(
+            ...args,
+            resolveBlockedMessage,
+            options.signal,
+          ),
         persistBlockedOutput: !serverManagesConversation
           ? async () =>
               saveStreamResultWithCompactionOwnership({
