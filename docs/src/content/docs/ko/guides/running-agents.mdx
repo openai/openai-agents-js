@@ -1,6 +1,95 @@
 ---
 title: 에이전트 실행
 description: Configure and execute agent workflows with the Runner class
+canonicalHeadingIds:
+  - depth: 2
+    id: 'runner-lifecycle-and-configuration'
+    aliases:
+      - 'runner-수명-주기-및-설정'
+  - depth: 3
+    id: 'the-agent-loop'
+    aliases:
+      - '에이전트-루프'
+  - depth: 4
+    id: 'runner-lifecycle'
+    aliases:
+      - 'runner-수명-주기'
+  - depth: 3
+    id: 'run-arguments'
+    aliases:
+      - '실행-인수'
+  - depth: 3
+    id: 'streaming'
+    aliases:
+      - '스트리밍'
+  - depth: 3
+    id: 'run-config'
+    aliases:
+      - '실행-설정'
+  - depth: 2
+    id: 'state-and-conversation-management'
+    aliases:
+      - '상태-및-대화-관리'
+  - depth: 3
+    id: 'choose-one-memory-strategy'
+    aliases:
+      - '메모리-전략-선택'
+  - depth: 3
+    id: 'conversations--chat-threads'
+    aliases:
+      - '대화채팅-스레드'
+  - depth: 4
+    id: 'server-managed-conversations'
+    aliases:
+      - '서버-관리형-대화'
+  - depth: 5
+    id: '1-conversationid-for-an-entire-conversation'
+    aliases:
+      - '1-전체-대화를-위한-conversationid'
+  - depth: 5
+    id: '2-previousresponseid-to-continue-from-the-last-turn'
+    aliases:
+      - '2-마지막-턴부터-계속하기-위한-previousresponseid'
+  - depth: 2
+    id: 'hooks-and-customization'
+    aliases:
+      - '훅-및-사용자-지정'
+  - depth: 3
+    id: 'call-model-input-filter'
+    aliases:
+      - '모델-호출-입력-필터'
+  - depth: 3
+    id: 'tool-error-formatter'
+    aliases:
+      - '도구-오류-포매터'
+  - depth: 3
+    id: 'reasoning-item-id-policy'
+    aliases:
+      - '추론-항목-id-정책'
+  - depth: 4
+    id: 'interaction-with-callmodelinputfilter'
+    aliases:
+      - 'callmodelinputfilter와의-상호-작용'
+  - depth: 4
+    id: 'when-to-use-omit'
+    aliases:
+      - 'omit-사용-시점'
+  - depth: 2
+    id: 'errors-and-recovery'
+    aliases:
+      - '오류-및-복구'
+  - depth: 3
+    id: 'error-handlers'
+    aliases:
+      - '오류-핸들러'
+  - depth: 3
+    id: 'exceptions'
+    aliases:
+      - '예외'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '관련-가이드'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

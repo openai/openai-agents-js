@@ -1,6 +1,140 @@
 ---
 title: コンセプト
 description: Understand manifests, capabilities, permissions, snapshots, sandbox lifecycle, run config, and composition patterns.
+canonicalHeadingIds:
+  - depth: 3
+    id: 'how-the-pieces-fit-together'
+    aliases:
+      - '各要素の関係'
+  - depth: 2
+    id: 'when-to-use-them'
+    aliases:
+      - '利用に適した場面'
+  - depth: 2
+    id: 'choose-a-sandbox-client'
+    aliases:
+      - 'サンドボックスクライアントの選択'
+  - depth: 2
+    id: 'core-pieces'
+    aliases:
+      - '主要コンポーネント'
+  - depth: 2
+    id: 'how-a-sandbox-run-is-prepared'
+    aliases:
+      - 'サンドボックス実行の準備'
+  - depth: 2
+    id: 'sandboxagent-options'
+    aliases:
+      - 'sandboxagent-のオプション'
+  - depth: 3
+    id: 'defaultmanifest'
+    aliases: []
+  - depth: 3
+    id: 'instructions-and-baseinstructions'
+    aliases:
+      - 'instructions-と-baseinstructions'
+  - depth: 3
+    id: 'capabilities'
+    aliases: []
+  - depth: 2
+    id: 'concepts'
+    aliases:
+      - 'コンセプト'
+  - depth: 3
+    id: 'manifest'
+    aliases:
+      - 'マニフェスト'
+  - depth: 3
+    id: 'permissions'
+    aliases:
+      - '権限'
+  - depth: 3
+    id: 'snapshotspec'
+    aliases: []
+  - depth: 3
+    id: 'sandbox-lifecycle'
+    aliases:
+      - 'サンドボックスのライフサイクル'
+  - depth: 3
+    id: 'observe-sandbox-operations'
+    aliases:
+      - 'サンドボックス操作の監視'
+  - depth: 2
+    id: 'sandbox-run-options'
+    aliases:
+      - 'sandbox-実行オプション'
+  - depth: 3
+    id: 'sandbox-source'
+    aliases:
+      - 'サンドボックスの取得元'
+  - depth: 3
+    id: 'working-directory'
+    aliases:
+      - '作業ディレクトリ'
+  - depth: 3
+    id: 'fresh-session-inputs'
+    aliases:
+      - '新しいセッションの入力'
+  - depth: 3
+    id: 'materialization-controls'
+    aliases:
+      - '実体化の制御'
+  - depth: 3
+    id: 'archive-safety-limits'
+    aliases:
+      - 'アーカイブの安全性上限'
+  - depth: 2
+    id: 'full-example-coding-task'
+    aliases:
+      - '完全なコード例コーディングタスク'
+  - depth: 2
+    id: 'common-patterns'
+    aliases:
+      - '一般的なパターン'
+  - depth: 3
+    id: 'switch-sandbox-clients'
+    aliases:
+      - 'サンドボックスクライアントの切り替え'
+  - depth: 3
+    id: 'override-the-workspace'
+    aliases:
+      - 'ワークスペースの上書き'
+  - depth: 3
+    id: 'inject-a-sandbox-session'
+    aliases:
+      - 'サンドボックスセッションの注入'
+  - depth: 3
+    id: 'resume-from-session-state'
+    aliases:
+      - 'セッション状態からの再開'
+  - depth: 3
+    id: 'start-from-a-snapshot'
+    aliases:
+      - 'スナップショットからの開始'
+  - depth: 3
+    id: 'load-skills-from-git'
+    aliases:
+      - 'git-からのスキル読み込み'
+  - depth: 3
+    id: 'expose-as-tools'
+    aliases:
+      - 'ツールとしての公開'
+  - depth: 3
+    id: 'combine-with-local-tools-and-mcp'
+    aliases:
+      - 'ローカルツールおよび-mcp-との組み合わせ'
+  - depth: 2
+    id: 'memory'
+    aliases:
+      - 'メモリ'
+  - depth: 2
+    id: 'composition-patterns'
+    aliases:
+      - '構成パターン'
+  - depth: 2
+    id: 'further-reading'
+    aliases:
+      - '関連情報'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

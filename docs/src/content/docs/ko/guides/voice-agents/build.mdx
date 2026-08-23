@@ -1,6 +1,103 @@
 ---
 title: 실시간 에이전트 구축
 description: Learn how to build realtime agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
+canonicalHeadingIds:
+  - depth: 2
+    id: 'session-setup'
+    aliases:
+      - '세션-설정'
+  - depth: 3
+    id: 'audio-handling'
+    aliases:
+      - '오디오-처리'
+  - depth: 3
+    id: 'session-configuration'
+    aliases:
+      - '세션-구성'
+  - depth: 3
+    id: 'conversation-lifecycle'
+    aliases:
+      - '대화-수명-주기'
+  - depth: 2
+    id: 'interaction-flow'
+    aliases:
+      - '상호작용-흐름'
+  - depth: 3
+    id: 'turn-detection-and-voice-activity-detection'
+    aliases:
+      - '턴-감지와-음성-활동-감지'
+  - depth: 3
+    id: 'interruptions'
+    aliases:
+      - '인터럽션중단-처리'
+  - depth: 3
+    id: 'text-input'
+    aliases:
+      - '텍스트-입력'
+  - depth: 3
+    id: 'image-input'
+    aliases:
+      - '이미지-입력'
+  - depth: 3
+    id: 'manual-response-control'
+    aliases:
+      - '수동-응답-제어'
+  - depth: 2
+    id: 'agent-capabilities'
+    aliases:
+      - '에이전트-기능'
+  - depth: 3
+    id: 'handoffs'
+    aliases:
+      - '핸드오프'
+  - depth: 3
+    id: 'tools'
+    aliases:
+      - '도구'
+  - depth: 4
+    id: 'function-tools'
+    aliases:
+      - '함수-도구'
+  - depth: 4
+    id: 'hosted-mcp-tools'
+    aliases:
+      - '호스티드-mcp-도구'
+  - depth: 4
+    id: 'background-results'
+    aliases:
+      - '백그라운드-결과'
+  - depth: 4
+    id: 'timeouts'
+    aliases:
+      - '제한-시간'
+  - depth: 4
+    id: 'accessing-the-conversation-history'
+    aliases:
+      - '대화-기록-접근'
+  - depth: 4
+    id: 'approval-before-tool-execution'
+    aliases:
+      - '도구-실행-전-승인'
+  - depth: 3
+    id: 'guardrails'
+    aliases:
+      - '가드레일'
+  - depth: 2
+    id: 'conversation-state-and-delegation'
+    aliases:
+      - '대화-상태와-위임'
+  - depth: 3
+    id: 'conversation-history-management'
+    aliases:
+      - '대화-기록-관리'
+  - depth: 4
+    id: 'limitations'
+    aliases:
+      - '제한-사항'
+  - depth: 3
+    id: 'delegation-through-tools'
+    aliases:
+      - '도구를-통한-위임'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

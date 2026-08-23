@@ -1,6 +1,23 @@
 ---
 title: 에이전트 오케스트레이션
 description: Coordinate the flow between several agents
+canonicalHeadingIds:
+  - depth: 2
+    id: 'orchestrating-via-llm'
+    aliases:
+      - 'llm을-통한-에이전트-오케스트레이션'
+  - depth: 3
+    id: 'core-sdk-patterns'
+    aliases:
+      - '핵심-sdk-패턴'
+  - depth: 2
+    id: 'orchestrating-via-code'
+    aliases:
+      - '코드를-통한-에이전트-오케스트레이션'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '관련-가이드'
 ---
 
 에이전트 오케스트레이션은 앱에서 에이전트가 동작하는 흐름을 의미합니다. 어떤 에이전트가 어떤 순서로 실행되며, 다음에 일어날 일을 어떻게 결정할까요? 에이전트를 오케스트레이션하는 주요 방법은 두 가지입니다.

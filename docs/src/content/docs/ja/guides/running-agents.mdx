@@ -1,6 +1,95 @@
 ---
 title: エージェントの実行
 description: Configure and execute agent workflows with the Runner class
+canonicalHeadingIds:
+  - depth: 2
+    id: 'runner-lifecycle-and-configuration'
+    aliases:
+      - 'runner-のライフサイクルと設定'
+  - depth: 3
+    id: 'the-agent-loop'
+    aliases:
+      - 'エージェントループ'
+  - depth: 4
+    id: 'runner-lifecycle'
+    aliases:
+      - 'runner-のライフサイクル'
+  - depth: 3
+    id: 'run-arguments'
+    aliases:
+      - '実行引数'
+  - depth: 3
+    id: 'streaming'
+    aliases:
+      - 'ストリーミング'
+  - depth: 3
+    id: 'run-config'
+    aliases:
+      - '実行設定'
+  - depth: 2
+    id: 'state-and-conversation-management'
+    aliases:
+      - '状態と会話の管理'
+  - depth: 3
+    id: 'choose-one-memory-strategy'
+    aliases:
+      - 'メモリ戦略の選択'
+  - depth: 3
+    id: 'conversations--chat-threads'
+    aliases:
+      - '会話チャットスレッド'
+  - depth: 4
+    id: 'server-managed-conversations'
+    aliases:
+      - 'サーバー管理の会話'
+  - depth: 5
+    id: '1-conversationid-for-an-entire-conversation'
+    aliases:
+      - '1-会話全体での-conversationid'
+  - depth: 5
+    id: '2-previousresponseid-to-continue-from-the-last-turn'
+    aliases:
+      - '2-最後のターンから継続する-previousresponseid'
+  - depth: 2
+    id: 'hooks-and-customization'
+    aliases:
+      - 'フックとカスタマイズ'
+  - depth: 3
+    id: 'call-model-input-filter'
+    aliases:
+      - 'モデル入力フィルターの呼び出し'
+  - depth: 3
+    id: 'tool-error-formatter'
+    aliases:
+      - 'ツールエラーフォーマッター'
+  - depth: 3
+    id: 'reasoning-item-id-policy'
+    aliases:
+      - '推論アイテムの-id-ポリシー'
+  - depth: 4
+    id: 'interaction-with-callmodelinputfilter'
+    aliases:
+      - 'callmodelinputfilter-との相互作用'
+  - depth: 4
+    id: 'when-to-use-omit'
+    aliases:
+      - 'omit-の使用場面'
+  - depth: 2
+    id: 'errors-and-recovery'
+    aliases:
+      - 'エラーと復旧'
+  - depth: 3
+    id: 'error-handlers'
+    aliases:
+      - 'エラーハンドラー'
+  - depth: 3
+    id: 'exceptions'
+    aliases:
+      - '例外'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '関連ガイド'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

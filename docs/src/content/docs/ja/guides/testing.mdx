@@ -1,6 +1,135 @@
 ---
 title: テスト
 description: Cookbook and API cheat sheet for deterministic Agent, sandbox, and Realtime tests
+canonicalHeadingIds:
+  - depth: 2
+    id: 'find-the-recipe-you-need'
+    aliases:
+      - '必要なレシピ'
+  - depth: 2
+    id: 'imports'
+    aliases:
+      - 'インポート'
+  - depth: 2
+    id: 'agent-workflow-recipes'
+    aliases:
+      - 'エージェントワークフローのレシピ'
+  - depth: 3
+    id: 'return-a-fixed-response'
+    aliases:
+      - '固定レスポンスの返却'
+  - depth: 3
+    id: 'test-a-tool-workflow'
+    aliases:
+      - 'ツールワークフローのテスト'
+  - depth: 3
+    id: 'derive-a-response-from-the-request'
+    aliases:
+      - 'リクエストからのレスポンス導出'
+  - depth: 3
+    id: 'inspect-model-calls'
+    aliases:
+      - 'モデル呼び出しの確認'
+  - depth: 3
+    id: 'test-streaming'
+    aliases:
+      - 'ストリーミングのテスト'
+  - depth: 3
+    id: 'inject-model-failures'
+    aliases:
+      - 'モデル失敗の注入'
+  - depth: 3
+    id: 'detect-workflow-drift'
+    aliases:
+      - 'ワークフロードリフトの検出'
+  - depth: 2
+    id: 'sandbox-agent-recipes'
+    aliases:
+      - 'サンドボックスエージェントのレシピ'
+  - depth: 3
+    id: 'test-a-sandbox-agent-workflow'
+    aliases:
+      - 'サンドボックスエージェントワークフローのテスト'
+  - depth: 3
+    id: 'configure-sandbox-steps'
+    aliases:
+      - 'サンドボックスステップの設定'
+  - depth: 2
+    id: 'realtime-agent-and-session-recipes'
+    aliases:
+      - 'realtime-エージェントとセッションのレシピ'
+  - depth: 3
+    id: 'test-a-realtime-agent-tool-workflow'
+    aliases:
+      - 'realtime-エージェントのツールワークフローのテスト'
+  - depth: 3
+    id: 'test-a-realtime-session'
+    aliases:
+      - 'realtime-セッションのテスト'
+  - depth: 3
+    id: 'test-interruption'
+    aliases:
+      - '割り込みのテスト'
+  - depth: 3
+    id: 'inject-a-realtime-failure'
+    aliases:
+      - 'realtime-失敗の注入'
+  - depth: 3
+    id: 'test-a-remote-disconnect'
+    aliases:
+      - 'リモート切断のテスト'
+  - depth: 3
+    id: 'inspect-realtime-calls'
+    aliases:
+      - 'realtime-呼び出しの確認'
+  - depth: 3
+    id: 'verify-completion-and-cleanup'
+    aliases:
+      - '完了とクリーンアップの検証'
+  - depth: 2
+    id: 'api-cheat-sheet'
+    aliases:
+      - 'api-早見表'
+  - depth: 3
+    id: 'model-step-factories'
+    aliases:
+      - 'モデルステップファクトリー'
+  - depth: 3
+    id: 'common-output-helpers'
+    aliases:
+      - '一般的な出力ヘルパー'
+  - depth: 3
+    id: 'sandbox-session-controls'
+    aliases:
+      - 'サンドボックスセッションの制御'
+  - depth: 3
+    id: 'realtime-controls'
+    aliases:
+      - 'realtime-の制御'
+  - depth: 2
+    id: 'choose-the-correct-boundary'
+    aliases:
+      - '正しい境界の選択'
+  - depth: 2
+    id: 'final-checklist'
+    aliases:
+      - '最終チェックリスト'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '関連ガイド'
+  - depth: 2
+    id: 'scope-and-current-limitations'
+    aliases:
+      - '適用範囲と現在の制限事項'
+  - depth: 3
+    id: 'deliberately-outside-the-testing-module'
+    aliases:
+      - 'テストモジュールの意図的な対象外'
+  - depth: 3
+    id: 'not-currently-provided'
+    aliases:
+      - '現在提供されていない機能'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

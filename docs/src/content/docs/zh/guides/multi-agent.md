@@ -1,6 +1,23 @@
 ---
 title: 智能体编排
 description: Coordinate the flow between several agents
+canonicalHeadingIds:
+  - depth: 2
+    id: 'orchestrating-via-llm'
+    aliases:
+      - '基于-llm-的编排'
+  - depth: 3
+    id: 'core-sdk-patterns'
+    aliases:
+      - 'sdk-核心模式'
+  - depth: 2
+    id: 'orchestrating-via-code'
+    aliases:
+      - '基于代码的编排'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '相关指南'
 ---
 
 编排是指应用中智能体的运行流程：运行哪些智能体、按什么顺序运行，以及它们如何决定下一步操作？智能体编排主要有两种方式：

@@ -1,6 +1,140 @@
 ---
 title: 概念
 description: Understand manifests, capabilities, permissions, snapshots, sandbox lifecycle, run config, and composition patterns.
+canonicalHeadingIds:
+  - depth: 3
+    id: 'how-the-pieces-fit-together'
+    aliases:
+      - '各组件的协作方式'
+  - depth: 2
+    id: 'when-to-use-them'
+    aliases:
+      - '适用场景'
+  - depth: 2
+    id: 'choose-a-sandbox-client'
+    aliases:
+      - '沙盒客户端选择'
+  - depth: 2
+    id: 'core-pieces'
+    aliases:
+      - '核心组件'
+  - depth: 2
+    id: 'how-a-sandbox-run-is-prepared'
+    aliases:
+      - '沙盒运行的准备方式'
+  - depth: 2
+    id: 'sandboxagent-options'
+    aliases:
+      - 'sandboxagent-选项'
+  - depth: 3
+    id: 'defaultmanifest'
+    aliases: []
+  - depth: 3
+    id: 'instructions-and-baseinstructions'
+    aliases:
+      - 'instructions-和-baseinstructions'
+  - depth: 3
+    id: 'capabilities'
+    aliases: []
+  - depth: 2
+    id: 'concepts'
+    aliases:
+      - '概念'
+  - depth: 3
+    id: 'manifest'
+    aliases:
+      - '清单'
+  - depth: 3
+    id: 'permissions'
+    aliases:
+      - '权限'
+  - depth: 3
+    id: 'snapshotspec'
+    aliases: []
+  - depth: 3
+    id: 'sandbox-lifecycle'
+    aliases:
+      - '沙盒生命周期'
+  - depth: 3
+    id: 'observe-sandbox-operations'
+    aliases:
+      - '沙盒操作观测'
+  - depth: 2
+    id: 'sandbox-run-options'
+    aliases:
+      - 'sandbox-运行选项'
+  - depth: 3
+    id: 'sandbox-source'
+    aliases:
+      - '沙盒来源'
+  - depth: 3
+    id: 'working-directory'
+    aliases:
+      - '工作目录'
+  - depth: 3
+    id: 'fresh-session-inputs'
+    aliases:
+      - '全新会话输入'
+  - depth: 3
+    id: 'materialization-controls'
+    aliases:
+      - '具体化控制'
+  - depth: 3
+    id: 'archive-safety-limits'
+    aliases:
+      - '归档安全限制'
+  - depth: 2
+    id: 'full-example-coding-task'
+    aliases:
+      - '完整示例编码任务'
+  - depth: 2
+    id: 'common-patterns'
+    aliases:
+      - '常见模式'
+  - depth: 3
+    id: 'switch-sandbox-clients'
+    aliases:
+      - '沙盒客户端切换'
+  - depth: 3
+    id: 'override-the-workspace'
+    aliases:
+      - '工作区覆盖'
+  - depth: 3
+    id: 'inject-a-sandbox-session'
+    aliases:
+      - '沙盒会话注入'
+  - depth: 3
+    id: 'resume-from-session-state'
+    aliases:
+      - '会话状态恢复'
+  - depth: 3
+    id: 'start-from-a-snapshot'
+    aliases:
+      - '快照启动'
+  - depth: 3
+    id: 'load-skills-from-git'
+    aliases:
+      - '从-git-加载技能'
+  - depth: 3
+    id: 'expose-as-tools'
+    aliases:
+      - '工具形式公开'
+  - depth: 3
+    id: 'combine-with-local-tools-and-mcp'
+    aliases:
+      - '与本地工具和-mcp-的组合'
+  - depth: 2
+    id: 'memory'
+    aliases:
+      - '智能体记忆'
+  - depth: 2
+    id: 'composition-patterns'
+    aliases:
+      - '组合模式'
+  - depth: 2
+    id: 'further-reading'
+    aliases:
+      - '延伸阅读'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

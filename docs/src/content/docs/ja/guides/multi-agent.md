@@ -1,6 +1,23 @@
 ---
 title: エージェントオーケストレーション
 description: Coordinate the flow between several agents
+canonicalHeadingIds:
+  - depth: 2
+    id: 'orchestrating-via-llm'
+    aliases:
+      - 'llm-によるオーケストレーション'
+  - depth: 3
+    id: 'core-sdk-patterns'
+    aliases:
+      - 'sdk-の主要パターン'
+  - depth: 2
+    id: 'orchestrating-via-code'
+    aliases:
+      - 'コードによるオーケストレーション'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '関連ガイド'
 ---
 
 オーケストレーションとは、アプリ内でのエージェントの流れを指します。どのエージェントが、どの順序で実行され、次に何をするかをどのように決定するのでしょうか。エージェントをオーケストレーションする主な方法は 2 つあります。

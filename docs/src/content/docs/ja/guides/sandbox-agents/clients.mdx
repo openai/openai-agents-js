@@ -1,6 +1,47 @@
 ---
 title: サンドボックスクライアント
 description: Choose where sandbox work should run and how sessions, snapshots, mounts, and ports behave.
+canonicalHeadingIds:
+  - depth: 2
+    id: 'decision-guide'
+    aliases:
+      - '選択ガイド'
+  - depth: 2
+    id: 'local-clients'
+    aliases:
+      - 'ローカルクライアント'
+  - depth: 3
+    id: 'session-ownership'
+    aliases:
+      - 'セッションの所有権'
+  - depth: 3
+    id: 'resume-and-snapshots'
+    aliases:
+      - '再開とスナップショット'
+  - depth: 3
+    id: 'manifest-materialization'
+    aliases:
+      - 'マニフェストの実体化'
+  - depth: 3
+    id: 'filesystem-existence-checks'
+    aliases:
+      - 'ファイルシステムの存在確認'
+  - depth: 2
+    id: 'mounts-and-remote-storage'
+    aliases:
+      - 'マウントとリモートストレージ'
+  - depth: 2
+    id: 'supported-hosted-platforms'
+    aliases:
+      - 'サポート対象のホステッドプラットフォーム'
+  - depth: 3
+    id: 'exposed-ports'
+    aliases:
+      - '公開ポート'
+  - depth: 3
+    id: 'capability-support-matrix'
+    aliases:
+      - '機能サポートマトリクス'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

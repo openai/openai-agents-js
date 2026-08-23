@@ -1,6 +1,47 @@
 ---
 title: 샌드박스 클라이언트
 description: Choose where sandbox work should run and how sessions, snapshots, mounts, and ports behave.
+canonicalHeadingIds:
+  - depth: 2
+    id: 'decision-guide'
+    aliases:
+      - '선택-가이드'
+  - depth: 2
+    id: 'local-clients'
+    aliases:
+      - '로컬-클라이언트'
+  - depth: 3
+    id: 'session-ownership'
+    aliases:
+      - '세션-소유권'
+  - depth: 3
+    id: 'resume-and-snapshots'
+    aliases:
+      - '재개-및-스냅샷'
+  - depth: 3
+    id: 'manifest-materialization'
+    aliases:
+      - '매니페스트-구체화'
+  - depth: 3
+    id: 'filesystem-existence-checks'
+    aliases:
+      - '파일-시스템-존재-여부-확인'
+  - depth: 2
+    id: 'mounts-and-remote-storage'
+    aliases:
+      - '마운트-및-원격-스토리지'
+  - depth: 2
+    id: 'supported-hosted-platforms'
+    aliases:
+      - '지원되는-호스티드-플랫폼'
+  - depth: 3
+    id: 'exposed-ports'
+    aliases:
+      - '노출-포트'
+  - depth: 3
+    id: 'capability-support-matrix'
+    aliases:
+      - '기능-지원-매트릭스'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

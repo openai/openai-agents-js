@@ -1,6 +1,135 @@
 ---
 title: 테스트
 description: Cookbook and API cheat sheet for deterministic Agent, sandbox, and Realtime tests
+canonicalHeadingIds:
+  - depth: 2
+    id: 'find-the-recipe-you-need'
+    aliases:
+      - '필요한-레시피-찾기'
+  - depth: 2
+    id: 'imports'
+    aliases:
+      - '임포트'
+  - depth: 2
+    id: 'agent-workflow-recipes'
+    aliases:
+      - '에이전트-워크플로-레시피'
+  - depth: 3
+    id: 'return-a-fixed-response'
+    aliases:
+      - '고정-응답-반환'
+  - depth: 3
+    id: 'test-a-tool-workflow'
+    aliases:
+      - '도구-워크플로-테스트'
+  - depth: 3
+    id: 'derive-a-response-from-the-request'
+    aliases:
+      - '요청에서-응답-도출'
+  - depth: 3
+    id: 'inspect-model-calls'
+    aliases:
+      - '모델-호출-검사'
+  - depth: 3
+    id: 'test-streaming'
+    aliases:
+      - '스트리밍-테스트'
+  - depth: 3
+    id: 'inject-model-failures'
+    aliases:
+      - '모델-실패-주입'
+  - depth: 3
+    id: 'detect-workflow-drift'
+    aliases:
+      - '워크플로-변동-감지'
+  - depth: 2
+    id: 'sandbox-agent-recipes'
+    aliases:
+      - '샌드박스-에이전트-레시피'
+  - depth: 3
+    id: 'test-a-sandbox-agent-workflow'
+    aliases:
+      - '샌드박스-에이전트-워크플로-테스트'
+  - depth: 3
+    id: 'configure-sandbox-steps'
+    aliases:
+      - '샌드박스-단계-설정'
+  - depth: 2
+    id: 'realtime-agent-and-session-recipes'
+    aliases:
+      - 'realtime-에이전트-및-세션-레시피'
+  - depth: 3
+    id: 'test-a-realtime-agent-tool-workflow'
+    aliases:
+      - 'realtime-에이전트-도구-워크플로-테스트'
+  - depth: 3
+    id: 'test-a-realtime-session'
+    aliases:
+      - 'realtime-세션-테스트'
+  - depth: 3
+    id: 'test-interruption'
+    aliases:
+      - '인터럽션중단-처리-테스트'
+  - depth: 3
+    id: 'inject-a-realtime-failure'
+    aliases:
+      - 'realtime-실패-주입'
+  - depth: 3
+    id: 'test-a-remote-disconnect'
+    aliases:
+      - '원격-연결-해제-테스트'
+  - depth: 3
+    id: 'inspect-realtime-calls'
+    aliases:
+      - 'realtime-호출-검사'
+  - depth: 3
+    id: 'verify-completion-and-cleanup'
+    aliases:
+      - '완료-및-정리-확인'
+  - depth: 2
+    id: 'api-cheat-sheet'
+    aliases:
+      - 'api-요약표'
+  - depth: 3
+    id: 'model-step-factories'
+    aliases:
+      - '모델-단계-팩토리'
+  - depth: 3
+    id: 'common-output-helpers'
+    aliases:
+      - '일반-출력-헬퍼'
+  - depth: 3
+    id: 'sandbox-session-controls'
+    aliases:
+      - '샌드박스-세션-제어'
+  - depth: 3
+    id: 'realtime-controls'
+    aliases:
+      - 'realtime-제어'
+  - depth: 2
+    id: 'choose-the-correct-boundary'
+    aliases:
+      - '올바른-경계-선택'
+  - depth: 2
+    id: 'final-checklist'
+    aliases:
+      - '최종-체크리스트'
+  - depth: 2
+    id: 'related-guides'
+    aliases:
+      - '관련-가이드'
+  - depth: 2
+    id: 'scope-and-current-limitations'
+    aliases:
+      - '범위-및-현재-제한-사항'
+  - depth: 3
+    id: 'deliberately-outside-the-testing-module'
+    aliases:
+      - '테스트-모듈에서-의도적으로-제외된-항목'
+  - depth: 3
+    id: 'not-currently-provided'
+    aliases:
+      - '현재-제공되지-않는-항목'
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';

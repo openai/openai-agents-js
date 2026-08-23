@@ -1,6 +1,67 @@
 ---
 title: 会话
 description: Persist multi-turn conversation history so agents can resume context across runs.
+canonicalHeadingIds:
+  - depth: 2
+    id: 'getting-started'
+    aliases:
+      - '入门'
+  - depth: 3
+    id: 'quick-start'
+    aliases:
+      - '快速开始'
+  - depth: 2
+    id: 'core-session-behavior'
+    aliases:
+      - '核心会话行为'
+  - depth: 3
+    id: 'how-the-runner-uses-sessions'
+    aliases:
+      - '运行器的会话使用方式'
+  - depth: 3
+    id: 'inspecting-and-editing-history'
+    aliases:
+      - '历史记录的查看与编辑'
+  - depth: 2
+    id: 'custom-storage-and-merge-behavior'
+    aliases:
+      - '自定义存储与合并行为'
+  - depth: 3
+    id: 'bring-your-own-storage'
+    aliases:
+      - '自定义存储'
+  - depth: 3
+    id: 'make-custom-persistence-atomic-and-idempotent'
+    aliases:
+      - '自定义持久化的原子性与幂等性'
+  - depth: 3
+    id: 'scope-custom-sessions-with-the-run-context'
+    aliases:
+      - '使用运行上下文限定自定义会话作用域'
+  - depth: 3
+    id: 'control-how-history-and-new-items-merge'
+    aliases:
+      - '历史记录与新项目的合并控制'
+  - depth: 2
+    id: 'resumable-runs'
+    aliases:
+      - '可恢复运行'
+  - depth: 3
+    id: 'handling-approvals-and-resumable-runs'
+    aliases:
+      - '审批与可恢复运行的处理'
+  - depth: 2
+    id: 'advanced-history-compaction'
+    aliases:
+      - '高级历史记录压缩'
+  - depth: 3
+    id: 'compact-openai-responses-history-automatically'
+    aliases:
+      - 'openai-responses-历史记录的自动压缩'
+  - depth: 4
+    id: 'manual-compaction-for-low-latency-streaming'
+    aliases:
+      - '低延迟流式传输的手动压缩'
 ---
 
 import { Code } from '@astrojs/starlight/components';
