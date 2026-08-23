@@ -2,7 +2,8 @@ import { UserError } from '@openai/agents-core';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RealtimeClientMessage } from '../src/clientMessages';
-import type { RealtimeMessageItem } from '../src/items';
+import type { RealtimeMcpCallItem, RealtimeMessageItem } from '../src/items';
+import logger from '../src/logger';
 import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 
 class TestBase extends OpenAIRealtimeBase {
@@ -41,6 +42,17 @@ function userText(itemId: string, text: string): RealtimeMessageItem {
     role: 'user',
     status: 'completed',
     content: [{ type: 'input_text', text }],
+  };
+}
+
+function mcpCall(itemId: string, output: string): RealtimeMcpCallItem {
+  return {
+    itemId,
+    type: 'mcp_call',
+    status: 'completed',
+    arguments: '{}',
+    name: 'some_tool',
+    output,
   };
 }
 
@@ -89,5 +101,35 @@ describe('OpenAI realtime history replay', () => {
         item_id: 'remove-me',
       },
     ]);
+  });
+
+  it('warns instead of silently dropping an updated mcp_call item', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      const base = new TestBase();
+      const oldHistory = [mcpCall('mcp-1', 'old')];
+      const newHistory = [mcpCall('mcp-1', 'new')];
+
+      base.resetHistory(oldHistory, newHistory);
+
+      expect(base.events).toEqual([
+        {
+          type: 'conversation.item.delete',
+          item_id: 'mcp-1',
+        },
+      ]);
+      expect(
+        base.events.filter(
+          (event) => event.type === 'conversation.item.create',
+        ),
+      ).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'MCP items cannot be manually added or updated',
+        ),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

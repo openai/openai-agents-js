@@ -1014,6 +1014,14 @@ export abstract class OpenAIRealtimeBase
         logger.warn(
           'Function calls cannot be manually added or updated at the moment. Ignoring.',
         );
+      } else if (
+        addition.type === 'mcp_call' ||
+        addition.type === 'mcp_tool_call' ||
+        addition.type === 'mcp_approval_request'
+      ) {
+        logger.warn(
+          'MCP items cannot be manually added or updated at the moment. The existing item was removed and will not be recreated.',
+        );
       }
     }
   }
