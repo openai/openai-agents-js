@@ -457,6 +457,43 @@ describe('CloudflareSandboxClient', () => {
     expect(output).toContain('lost exit');
   });
 
+  test('preserves multi-byte characters split across streamed output chunks', async () => {
+    const client = new CloudflareSandboxClient();
+    const session = await client.create(new Manifest(), {
+      workerUrl: 'https://worker.example.com',
+    });
+    const stdoutText = 'café \u{1f680} 日本語\n';
+    const stdoutBytes = Buffer.from(stdoutText, 'utf8');
+    const stderrText = '✓ fertig\n';
+    const stderrBytes = Buffer.from(stderrText, 'utf8');
+    // Split in the middle of the multi-byte sequences the worker streams back.
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      sseExecResponse([
+        {
+          event: 'stdout',
+          data: stdoutBytes.subarray(0, 4).toString('base64'),
+        },
+        {
+          event: 'stdout',
+          data: stdoutBytes.subarray(4, 9).toString('base64'),
+        },
+        { event: 'stdout', data: stdoutBytes.subarray(9).toString('base64') },
+        {
+          event: 'stderr',
+          data: stderrBytes.subarray(0, 2).toString('base64'),
+        },
+        { event: 'stderr', data: stderrBytes.subarray(2).toString('base64') },
+        { event: 'exit', data: JSON.stringify({ exit_code: 0 }) },
+      ]),
+    );
+
+    const output = await session.execCommand({ cmd: 'emit-unicode' });
+
+    expect(output).toContain(stdoutText.trimEnd());
+    expect(output).toContain(stderrText.trimEnd());
+    expect(output).not.toContain('�');
+  });
+
   test('applies provider timeout bundles to Cloudflare requests', async () => {
     const client = new CloudflareSandboxClient({
       workerUrl: 'https://worker.example.com',

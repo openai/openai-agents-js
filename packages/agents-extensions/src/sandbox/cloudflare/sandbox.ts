@@ -840,6 +840,11 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     }
 
     const decoder = new TextDecoder();
+    // The worker splits stdout/stderr into base64 chunks at arbitrary byte
+    // offsets, so a multi-byte character can straddle two events. Keep one
+    // streaming decoder per stream so those sequences survive the split.
+    const stdoutDecoder = new TextDecoder();
+    const stderrDecoder = new TextDecoder();
     const reader = response.body.getReader();
     let buffer = '';
     let rawStream = '';
@@ -848,11 +853,15 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     let exitCode: number | undefined;
     const processEvent = (event: { event: string; data: string }): void => {
       if (event.event === 'stdout') {
-        stdout += decodeBase64Text(event.data);
+        stdout += stdoutDecoder.decode(decodeBase64Bytes(event.data), {
+          stream: true,
+        });
         return;
       }
       if (event.event === 'stderr') {
-        stderr += decodeBase64Text(event.data);
+        stderr += stderrDecoder.decode(decodeBase64Bytes(event.data), {
+          stream: true,
+        });
         return;
       }
       if (event.event === 'exit') {
@@ -908,6 +917,8 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         processEvent(event);
       }
     }
+    stdout += stdoutDecoder.decode();
+    stderr += stderrDecoder.decode();
     if (exitCode === undefined && !stdout && !stderr && rawStream.trim()) {
       throw new SandboxProviderError(
         'CloudflareSandboxClient failed to execute command.',
@@ -1772,10 +1783,6 @@ function collectSseEvents(text: string): string[] {
     events.push(remaining);
   }
   return events;
-}
-
-function decodeBase64Text(value: string): string {
-  return new TextDecoder().decode(decodeBase64Bytes(value));
 }
 
 const STREAMED_PAYLOAD_SSE_SNIFF_BYTES = 256;
