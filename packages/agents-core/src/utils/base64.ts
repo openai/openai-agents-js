@@ -57,17 +57,19 @@ export function decodeBase64ToUint8Array(value: string): Uint8Array {
     return new Uint8Array();
   }
 
+  const padded = normalizeBase64(value);
+
   const globalBuffer =
     typeof globalThis !== 'undefined' && (globalThis as any).Buffer
       ? (globalThis as any).Buffer
       : undefined;
 
   if (globalBuffer) {
-    return Uint8Array.from(globalBuffer.from(value, 'base64'));
+    return Uint8Array.from(globalBuffer.from(padded, 'base64'));
   }
 
   if (typeof (globalThis as any).atob === 'function') {
-    const binary = (globalThis as any).atob(value);
+    const binary = (globalThis as any).atob(padded);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index);
@@ -77,15 +79,6 @@ export function decodeBase64ToUint8Array(value: string): Uint8Array {
 
   const chars =
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const normalized = value.replace(/[\t\n\f\r ]/g, '');
-  if (normalized.length % 4 === 1) {
-    throw new TypeError('Invalid base64 string.');
-  }
-
-  const padded = normalized.padEnd(
-    normalized.length + ((4 - (normalized.length % 4)) % 4),
-    '=',
-  );
   const padding = padded.endsWith('==') ? 2 : padded.endsWith('=') ? 1 : 0;
   const bytes = new Uint8Array((padded.length / 4) * 3 - padding);
   let outputIndex = 0;
@@ -120,4 +113,31 @@ export function decodeBase64ToUint8Array(value: string): Uint8Array {
   }
 
   return bytes;
+}
+
+function normalizeBase64(value: string): string {
+  const normalized = value.replace(/[\t\n\f\r ]/g, '');
+
+  if (normalized.includes('=')) {
+    const isValidPaddedBase64 =
+      normalized.length % 4 === 0 &&
+      /^(?:[a-zA-Z0-9+/]{4})*(?:[a-zA-Z0-9+/]{2}==|[a-zA-Z0-9+/]{3}=)?$/u.test(
+        normalized,
+      );
+
+    if (!isValidPaddedBase64) {
+      throw new TypeError('Invalid base64 string.');
+    }
+
+    return normalized;
+  }
+
+  if (normalized.length % 4 === 1 || !/^[a-zA-Z0-9+/]*$/u.test(normalized)) {
+    throw new TypeError('Invalid base64 string.');
+  }
+
+  return normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    '=',
+  );
 }

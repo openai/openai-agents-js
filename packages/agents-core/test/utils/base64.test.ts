@@ -110,4 +110,41 @@ describe('decodeBase64ToUint8Array', () => {
       expect(decodeBase64ToUint8Array(value)).toEqual(new Uint8Array(expected));
     }
   });
+
+  it('accepts whitespace and omitted padding consistently', () => {
+    const backends = [
+      { Buffer: originalBuffer, atob: originalAtob },
+      { Buffer: undefined, atob: originalAtob },
+      { Buffer: undefined, atob: undefined },
+    ];
+
+    for (const backend of backends) {
+      (globalThis as any).Buffer = backend.Buffer;
+      (globalThis as any).atob = backend.atob;
+
+      expect(decodeBase64ToUint8Array(' A Q I \n')).toEqual(
+        new Uint8Array([1, 2]),
+      );
+    }
+  });
+
+  it('rejects malformed input consistently', () => {
+    const backends = [
+      { Buffer: originalBuffer, atob: originalAtob },
+      { Buffer: undefined, atob: originalAtob },
+      { Buffer: undefined, atob: undefined },
+    ];
+    const malformedValues = ['AQI!', 'AQI-', 'A', 'AA=', 'AA=A', 'A==='];
+
+    for (const backend of backends) {
+      (globalThis as any).Buffer = backend.Buffer;
+      (globalThis as any).atob = backend.atob;
+
+      for (const value of malformedValues) {
+        expect(() => decodeBase64ToUint8Array(value)).toThrow(
+          new TypeError('Invalid base64 string.'),
+        );
+      }
+    }
+  });
 });

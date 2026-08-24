@@ -602,6 +602,21 @@ describe('sandbox shared helpers', () => {
     expect((restored.entries['payload.bin'] as any).content).toEqual(bytes);
   });
 
+  it('rejects malformed persisted binary manifest content', () => {
+    const serialized = serializeManifestRecord(
+      new Manifest({
+        entries: {
+          'payload.bin': file({ content: Uint8Array.from([1, 2]) }),
+        },
+      }),
+    );
+    ((serialized.entries as any)['payload.bin'].content as any).data = 'AQI!';
+
+    expect(() => deserializeManifest(serialized)).toThrow(
+      new TypeError('Invalid base64 string.'),
+    );
+  });
+
   it('materializes manifest environment values and preserves runtime overrides', async () => {
     const previous = new Manifest({
       environment: {
