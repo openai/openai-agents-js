@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import {
   Agent,
+  GuardrailExecutionError,
   MemorySession,
   OutputGuardrailTripwireTriggered,
   RunContext,
@@ -12,6 +13,7 @@ import {
   ToolGuardrailFunctionOutputFactory,
   Usage,
   defineToolOutputGuardrail,
+  handoff,
   run,
   tool,
   toolNamespace,
@@ -536,7 +538,11 @@ describe('output guardrails with Session persistence', () => {
         'completed nonterminal sibling',
       );
       expect(first.state._currentTurnPersistedItemCount).toBeGreaterThan(0);
-      first.state.approve(first.interruptions[0]!);
+      const resumeState =
+        behavior === 'run_llm_again'
+          ? await RunState.fromString(agent, first.state.toString())
+          : first.state;
+      resumeState.approve(resumeState.getInterruptions()[0]!);
 
       if (behavior !== 'run_llm_again') {
         agent.toolUseBehavior =
@@ -552,7 +558,7 @@ describe('output guardrails with Session persistence', () => {
                       ?.output,
                   ),
                 });
-        await expect(runOnce(first.state)).rejects.toThrow(
+        await expect(runOnce(resumeState)).rejects.toThrow(
           'persisted response ownership cannot be proven',
         );
         expect(approveExecute).not.toHaveBeenCalled();
@@ -562,7 +568,7 @@ describe('output guardrails with Session persistence', () => {
         return;
       }
 
-      const resumed = await runOnce(first.state);
+      const resumed = await runOnce(resumeState);
       expect(resumed.finalOutput).toBe('approved sibling continuation');
       expect(approveExecute).toHaveBeenCalledTimes(1);
       expect(siblingExecute).toHaveBeenCalledTimes(1);
@@ -586,9 +592,13 @@ describe('output guardrails with Session persistence', () => {
     },
   );
 
-  it.each<RunMode>(['non_streamed', 'streamed'])(
-    'resumes a later call-only approval after an earlier $mode tool result',
-    async (mode) => {
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      ([false, true] as const).map((trip) => ({ mode, trip })),
+    ),
+  )(
+    'resumes a later call-only approval after an earlier $mode tool result with trip=$trip',
+    async ({ mode, trip }) => {
       const historicalExecute = vi.fn(async () => 'accepted earlier result');
       const approvedExecute = vi.fn(async () => 'approved later result');
       const historicalTool = tool({
@@ -630,22 +640,18 @@ describe('output guardrails with Session persistence', () => {
           ],
           usage: new Usage(),
         }),
-        modelResponse({
-          output: [assistantMessage('approved continuation complete')],
-          usage: new Usage(),
-        }),
       ]);
       const agent = new Agent({
         name: 'Historical result before approval agent',
         model,
         tools: [historicalTool, approvalTool],
-        toolUseBehavior: 'run_llm_again',
+        toolUseBehavior: { stopAtToolNames: ['later_approval_tool'] },
         outputGuardrails: [
           {
             name: 'passing approval output guardrail',
             execute: async () => ({
               outputInfo: undefined,
-              tripwireTriggered: false,
+              tripwireTriggered: trip,
             }),
           },
         ],
@@ -667,7 +673,7 @@ describe('output guardrails with Session persistence', () => {
         return run(agent, input, options);
       };
 
-      const first = await runOnce('Run both tools.', false);
+      const first = await runOnce('Run both tools.');
       expect(first.interruptions).toHaveLength(1);
       expect(historicalExecute).toHaveBeenCalledTimes(1);
       expect(approvedExecute).not.toHaveBeenCalled();
@@ -677,14 +683,43 @@ describe('output guardrails with Session persistence', () => {
 
       const restored = await RunState.fromString(agent, first.state.toString());
       restored.approve(restored.getInterruptions()[0]!);
+      if (trip) {
+        let tripwire: OutputGuardrailTripwireTriggered<any> | undefined;
+        try {
+          await runOnce(restored);
+        } catch (error) {
+          expect(error).toBeInstanceOf(OutputGuardrailTripwireTriggered);
+          tripwire = error as OutputGuardrailTripwireTriggered<any>;
+        }
+        expect(tripwire).toBeDefined();
+        const blockedState = tripwire!.state!;
+        expect(JSON.stringify(blockedState._generatedItems)).toContain(
+          'accepted earlier result',
+        );
+        expect(JSON.stringify(blockedState._generatedItems)).not.toContain(
+          'approved later result',
+        );
+        expect(
+          blockedState._toolOutputGuardrailResults[0]?.output.outputInfo,
+        ).toBe('accepted historical guardrail metadata');
+        const stored = JSON.stringify(await session.getItems());
+        expect(stored).toContain('accepted earlier result');
+        expect(stored).not.toContain('approved later result');
+        expect(historicalExecute).toHaveBeenCalledTimes(1);
+        expect(approvedExecute).toHaveBeenCalledTimes(1);
+        expect(model.calls).toHaveLength(2);
+        return;
+      }
+
       const resumed = await runOnce(restored);
 
-      expect(resumed.finalOutput).toBe('approved continuation complete');
+      expect(resumed.finalOutput).toBe('approved later result');
       expect(historicalExecute).toHaveBeenCalledTimes(1);
       expect(approvedExecute).toHaveBeenCalledTimes(1);
       expect(
         resumed.state._toolOutputGuardrailResults[0]?.output.outputInfo,
       ).toBe('accepted historical guardrail metadata');
+      expect(model.calls).toHaveLength(2);
       const stored = JSON.stringify(await session.getItems());
       expect(stored).toContain('accepted earlier result');
       expect(stored).toContain('approved later result');
@@ -692,8 +727,111 @@ describe('output guardrails with Session persistence', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'rejects a legacy persisted partial approval before $mode resume side effects',
+    'resumes a serialized $mode approval after a handoff filter clears the generated prefix',
     async (mode) => {
+      const execute = vi.fn(async () => 'handoff approval output');
+      const approvalTool = tool({
+        name: 'handoff_approval_tool',
+        description: 'Requires approval after the handoff.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute,
+      });
+      const targetModel = new ScriptedModel([
+        modelResponse({
+          output: [
+            functionCall(
+              'handoff_approval_tool',
+              {},
+              { callId: 'handoff-approval-call' },
+            ),
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const targetAgent = new Agent({
+        name: 'Filtered handoff approval target',
+        model: targetModel,
+        tools: [approvalTool],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'passing handoff approval guardrail',
+            execute: async () => ({
+              outputInfo: undefined,
+              tripwireTriggered: false,
+            }),
+          },
+        ],
+      });
+      const filteredHandoff = handoff(targetAgent, {
+        inputFilter: ({ runContext }) => ({
+          inputHistory: [],
+          preHandoffItems: [],
+          newItems: [],
+          runContext,
+        }),
+      });
+      const sourceModel = new ScriptedModel([
+        modelResponse({
+          output: [
+            functionCall(
+              filteredHandoff.toolName,
+              {},
+              { callId: 'filtered-handoff-call' },
+            ),
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const sourceAgent = new Agent({
+        name: 'Filtered handoff approval source',
+        model: sourceModel,
+        handoffs: [filteredHandoff],
+      });
+      const runOnce = async (
+        input: string | RunState<unknown, typeof sourceAgent>,
+      ) => {
+        if (mode === 'streamed') {
+          const result = await run(sourceAgent, input, { stream: true });
+          await result.completed;
+          return result;
+        }
+        return run(sourceAgent, input);
+      };
+
+      const first = await runOnce('Transfer and request approval.');
+      expect(first.interruptions).toHaveLength(1);
+      const serialized = first.state.toJSON();
+      expect(
+        serialized.currentResponseGeneratedItemOwnership
+          ?.generatedItemStartIndex,
+      ).toBe(0);
+
+      const restored = await RunState.fromString(
+        sourceAgent,
+        JSON.stringify(serialized),
+      );
+      restored.approve(restored.getInterruptions()[0]!);
+      const completed = await runOnce(restored);
+
+      expect(completed.finalOutput).toBe('handoff approval output');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(sourceModel.calls).toHaveLength(1);
+      expect(targetModel.calls).toHaveLength(1);
+    },
+  );
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      (['1.20', '1.19', '1.18'] as const).map((schemaVersion) => ({
+        mode,
+        schemaVersion,
+      })),
+    ),
+  )(
+    'rejects a schema $schemaVersion partial approval without ownership before $mode resume side effects',
+    async ({ mode, schemaVersion }) => {
       const firstExecute = vi.fn(async () => 'legacy first secret');
       const secondExecute = vi.fn(async () => 'legacy second secret');
       const firstTool = tool({
@@ -766,9 +904,16 @@ describe('output guardrails with Session persistence', () => {
       expect(firstExecute).toHaveBeenCalledTimes(1);
       expect(secondExecute).not.toHaveBeenCalled();
 
-      partial.state._currentTurnPersistedItemCount = 1;
-      partial.state.approve(partial.interruptions[0]);
-      partial.state.setReasoningItemIdPolicy('preserve');
+      const serialized = partial.state.toJSON();
+      serialized.$schemaVersion = schemaVersion;
+      delete serialized.currentResponseGeneratedItemOwnership;
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      restored._currentTurnPersistedItemCount = 1;
+      restored.approve(restored.getInterruptions()[0]);
+      restored.setReasoningItemIdPolicy('preserve');
       const sessionBefore = structuredClone(await session.getItems());
       const modelCallCount = model.calls.length;
       const callback = vi.fn(
@@ -778,15 +923,15 @@ describe('output guardrails with Session persistence', () => {
         ],
       );
 
-      await expect(runOnce(partial.state, callback, 'omit')).rejects.toThrow(
-        'persisted response ownership cannot be proven',
+      await expect(runOnce(restored, callback, 'omit')).rejects.toThrow(
+        'current-response provenance was not preserved',
       );
       expect(firstExecute).toHaveBeenCalledTimes(1);
       expect(secondExecute).not.toHaveBeenCalled();
       expect(model.calls).toHaveLength(modelCallCount);
       expect(callback).not.toHaveBeenCalled();
       expect(await session.getItems()).toEqual(sessionBefore);
-      expect(partial.state._reasoningItemIdPolicy).toBe('preserve');
+      expect(restored._reasoningItemIdPolicy).toBe('preserve');
     },
   );
 
@@ -1012,6 +1157,7 @@ describe('output guardrails with Session persistence', () => {
         [
           'pass',
           'trip',
+          'error',
           'ambiguous',
           'namespace_mismatch',
           'session',
@@ -1057,6 +1203,7 @@ describe('output guardrails with Session persistence', () => {
         description: 'Namespaced approval tools.',
         tools: [firstTool, secondTool],
       });
+      const guardrailError = new Error('serialized approval guardrail error');
       const model = new ScriptedModel([
         modelResponse({
           output: [
@@ -1082,10 +1229,15 @@ describe('output guardrails with Session persistence', () => {
         outputGuardrails: [
           {
             name: 'passing portable approval guardrail',
-            execute: async () => ({
-              outputInfo: undefined,
-              tripwireTriggered: verdict === 'trip',
-            }),
+            execute: async () => {
+              if (verdict === 'error') {
+                throw guardrailError;
+              }
+              return {
+                outputInfo: undefined,
+                tripwireTriggered: verdict === 'trip',
+              };
+            },
           },
         ],
       });
@@ -1108,9 +1260,13 @@ describe('output guardrails with Session persistence', () => {
       const partial = await runOnce(first.state, session);
       expect(partial.state._currentTurnPersistedItemCount).toBeGreaterThan(0);
       const historicalSessionItems = await session.getItems();
-      const restored = await RunState.fromString(
+      const onceRestored = await RunState.fromString(
         agent,
         partial.state.toString(),
+      );
+      const restored = await RunState.fromString(
+        agent,
+        onceRestored.toString(),
       );
       restored.approve(restored.getInterruptions()[0]!);
 
@@ -1123,23 +1279,29 @@ describe('output guardrails with Session persistence', () => {
           responseCall.namespace = 'billing';
         }
       }
-      if (
-        verdict === 'ambiguous' ||
-        verdict === 'namespace_mismatch' ||
-        verdict === 'session' ||
-        verdict === 'prior_tool_guardrail'
-      ) {
-        await expect(
-          runOnce(restored, verdict === 'session' ? session : undefined),
-        ).rejects.toThrow('current-response provenance was not preserved');
+      if (verdict === 'ambiguous' || verdict === 'namespace_mismatch') {
+        await expect(runOnce(restored)).rejects.toThrow(
+          'current-response provenance was not preserved',
+        );
         expect(secondExecute).not.toHaveBeenCalled();
         expect(model.calls).toHaveLength(1);
         expect(await session.getItems()).toEqual(historicalSessionItems);
-        if (verdict === 'prior_tool_guardrail') {
-          expect(
-            restored._toolOutputGuardrailResults[0]?.output.outputInfo,
-          ).toBe('pre-serialization approval guardrail secret');
+        return;
+      }
+
+      if (verdict === 'error') {
+        let executionError: GuardrailExecutionError | undefined;
+        try {
+          await runOnce(restored);
+        } catch (error) {
+          expect(error).toBeInstanceOf(GuardrailExecutionError);
+          executionError = error as GuardrailExecutionError;
         }
+        expect(executionError?.error).toBe(guardrailError);
+        expect(firstExecute).toHaveBeenCalledTimes(1);
+        expect(secondExecute).toHaveBeenCalledTimes(1);
+        expect(model.calls).toHaveLength(1);
+        expect(await session.getItems()).toEqual(historicalSessionItems);
         return;
       }
 
@@ -1181,14 +1343,44 @@ describe('output guardrails with Session persistence', () => {
         return;
       }
 
-      const completed = await runOnce(restored);
+      const completed = await runOnce(
+        restored,
+        verdict === 'session' ? session : undefined,
+      );
 
       expect(completed.finalOutput).toBe('accepted second approval output');
       expect(firstExecute).toHaveBeenCalledTimes(1);
       expect(secondExecute).toHaveBeenCalledTimes(1);
       expect(model.calls).toHaveLength(1);
-      expect(restored._currentTurnPersistedItemCount).toBe(0);
-      expect(await session.getItems()).toEqual(historicalSessionItems);
+      if (verdict === 'session') {
+        expect(restored._currentTurnPersistedItemCount).toBe(
+          restored._generatedItems.length,
+        );
+      } else {
+        expect(restored._currentTurnPersistedItemCount).toBe(0);
+      }
+      if (verdict === 'session') {
+        const stored = await session.getItems();
+        for (const callId of ['portable-first-call', 'portable-second-call']) {
+          expect(
+            stored
+              .filter(
+                (item) =>
+                  (item.type === 'function_call' ||
+                    item.type === 'function_call_result') &&
+                  item.callId === callId,
+              )
+              .map((item) => item.type),
+          ).toEqual(['function_call', 'function_call_result']);
+        }
+      } else {
+        expect(await session.getItems()).toEqual(historicalSessionItems);
+      }
+      if (verdict === 'prior_tool_guardrail') {
+        expect(restored._toolOutputGuardrailResults[0]?.output.outputInfo).toBe(
+          'pre-serialization approval guardrail secret',
+        );
+      }
     },
   );
 

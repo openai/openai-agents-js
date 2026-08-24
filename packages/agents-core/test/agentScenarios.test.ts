@@ -546,6 +546,7 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       const serialized = first.state.toJSON() as any;
       const downgradeToLegacy = (value: any) => {
         value.$schemaVersion = '1.15';
+        delete value.currentResponseGeneratedItemOwnership;
         delete value.context.functionApprovals;
         delete value.context.legacyFunctionApprovals;
         delete value.pendingAgentToolRunAliases;

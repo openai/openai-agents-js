@@ -849,6 +849,7 @@ describe('tool invocation replay binding', () => {
       ).toBeTypeOf('string');
       if (legacySchemaVersion) {
         serialized.$schemaVersion = legacySchemaVersion;
+        delete serialized.currentResponseGeneratedItemOwnership;
         delete serialized.context.approvalInvocations;
         delete serialized.completedToolInvocations;
         delete serialized.completedToolInvocationEvidence;
@@ -1357,6 +1358,7 @@ describe('tool invocation replay binding', () => {
     expect(shell.calls).toEqual([{ commands: ['echo once'] }]);
     const serialized = interrupted.state.toJSON() as any;
     serialized.$schemaVersion = '1.17';
+    delete serialized.currentResponseGeneratedItemOwnership;
     for (const item of serialized.generatedItems) {
       if (item.type === 'tool_call_output_item') {
         item.output = JSON.stringify(item.output);
@@ -1467,6 +1469,7 @@ describe('tool invocation replay binding', () => {
     expect(screenshot).toHaveBeenCalledTimes(2);
     const serialized = interrupted.state.toJSON() as any;
     serialized.$schemaVersion = '1.17';
+    delete serialized.currentResponseGeneratedItemOwnership;
     delete serialized.context.approvalInvocations;
     delete serialized.completedToolInvocations;
 
@@ -1511,6 +1514,7 @@ describe('tool invocation replay binding', () => {
     expect(editor.operations).toHaveLength(1);
     const serialized = interrupted.state.toJSON() as any;
     serialized.$schemaVersion = '1.17';
+    delete serialized.currentResponseGeneratedItemOwnership;
     delete serialized.context.approvalInvocations;
     delete serialized.completedToolInvocations;
 
