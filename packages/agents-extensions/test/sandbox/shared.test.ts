@@ -4697,6 +4697,49 @@ describe('remote sandbox path helpers', () => {
     });
   });
 
+  test('decodes UTF-8 sequences split across PTY frames', async () => {
+    const text = 'caf\u00e9 \u2014 \ud83c\udf89 \u5b8c\u4e86';
+    const bytes = new TextEncoder().encode(text);
+
+    // A remote PTY can end a WebSocket frame in the middle of a multi-byte
+    // UTF-8 sequence, so every possible split has to round-trip.
+    for (let splitAt = 1; splitAt < bytes.length; splitAt++) {
+      const entry = createPtyProcessEntry({});
+      const pendingOutput = collectPtyOutput({ entry, yieldTimeMs: 1_000 });
+
+      appendPtyOutput(entry, bytes.slice(0, splitAt));
+      appendPtyOutput(entry, bytes.slice(splitAt));
+      markPtyDone(entry, 0);
+
+      await expect(pendingOutput).resolves.toEqual({ text });
+    }
+  });
+
+  test('keeps ordering when string chunks follow partial UTF-8 bytes', async () => {
+    const entry = createPtyProcessEntry({});
+    const pendingOutput = collectPtyOutput({ entry, yieldTimeMs: 1_000 });
+
+    const bytes = new TextEncoder().encode('\u5b8c\u4e86');
+    appendPtyOutput(entry, bytes.slice(0, 4));
+    appendPtyOutput(entry, bytes.slice(4));
+    appendPtyOutput(entry, ' done');
+    markPtyDone(entry, 0);
+
+    await expect(pendingOutput).resolves.toEqual({
+      text: '\u5b8c\u4e86 done',
+    });
+  });
+
+  test('flushes dangling incomplete UTF-8 bytes when the PTY completes', async () => {
+    const entry = createPtyProcessEntry({});
+    const pendingOutput = collectPtyOutput({ entry, yieldTimeMs: 1_000 });
+
+    appendPtyOutput(entry, new Uint8Array([0x68, 0x69, 0xf0, 0x9f]));
+    markPtyDone(entry, 0);
+
+    await expect(pendingOutput).resolves.toEqual({ text: 'hi\uFFFD' });
+  });
+
   test('writes PTY stdin, finalizes completed sessions, and reports missing sessions', async () => {
     const sendInput = vi.fn(async (chars: string) => {
       expect(chars).toBe('continue\n');
