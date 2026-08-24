@@ -1,4 +1,4 @@
-import { RuntimeEventEmitter, Usage } from '@openai/agents-core';
+import { RuntimeEventEmitter, UserError, Usage } from '@openai/agents-core';
 import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
 import {
   logModelActionError,
@@ -978,8 +978,23 @@ export abstract class OpenAIRealtimeBase
       newHistory,
     );
 
+    // MCP items cannot be recreated once their conversation entry is deleted, so
+    // reject additions/updates before sending a single client event. Explicit
+    // removals (item present in oldHistory but absent from newHistory) and
+    // unchanged items are unaffected and continue to work.
+    const rejectedMcpItem = [...additions, ...updates].find(
+      (item) =>
+        item.type === 'mcp_call' ||
+        item.type === 'mcp_tool_call' ||
+        item.type === 'mcp_approval_request',
+    );
+    if (rejectedMcpItem) {
+      throw new UserError(
+        `MCP items cannot be added or updated via updateHistory(). Found a '${rejectedMcpItem.type}' item (itemId: ${rejectedMcpItem.itemId}) that would be added or updated. Leave existing MCP items unchanged, or remove them from history entirely, before calling updateHistory().`,
+      );
+    }
+
     const removalIds = new Set(removals.map((item) => item.itemId));
-    const updateIds = new Set(updates.map((item) => item.itemId));
     // we don't have an update event for items so we will remove and re-add what's there
     for (const update of updates) {
       removalIds.add(update.itemId);
@@ -1015,20 +1030,6 @@ export abstract class OpenAIRealtimeBase
         logger.warn(
           'Function calls cannot be manually added or updated at the moment. Ignoring.',
         );
-      } else if (
-        addition.type === 'mcp_call' ||
-        addition.type === 'mcp_tool_call' ||
-        addition.type === 'mcp_approval_request'
-      ) {
-        if (updateIds.has(addition.itemId)) {
-          logger.warn(
-            'MCP items cannot be manually updated at the moment. The existing item was removed and will not be recreated.',
-          );
-        } else {
-          logger.warn(
-            'MCP items cannot be manually added at the moment. Ignoring.',
-          );
-        }
       }
     }
   }

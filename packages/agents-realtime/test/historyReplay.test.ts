@@ -2,8 +2,12 @@ import { UserError } from '@openai/agents-core';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { RealtimeClientMessage } from '../src/clientMessages';
-import type { RealtimeMcpCallItem, RealtimeMessageItem } from '../src/items';
-import logger from '../src/logger';
+import type {
+  RealtimeItem,
+  RealtimeMcpCallApprovalRequestItem,
+  RealtimeMcpCallItem,
+  RealtimeMessageItem,
+} from '../src/items';
 import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 
 class TestBase extends OpenAIRealtimeBase {
@@ -45,15 +49,41 @@ function userText(itemId: string, text: string): RealtimeMessageItem {
   };
 }
 
-function mcpCall(itemId: string, output: string): RealtimeMcpCallItem {
+function mcpCall(
+  itemId: string,
+  output: string,
+  type: 'mcp_call' | 'mcp_tool_call' = 'mcp_call',
+): RealtimeMcpCallItem {
   return {
     itemId,
-    type: 'mcp_call',
+    type,
     status: 'completed',
     arguments: '{}',
     name: 'some_tool',
     output,
   };
+}
+
+function mcpApprovalRequest(
+  itemId: string,
+  approved: boolean | null,
+): RealtimeMcpCallApprovalRequestItem {
+  return {
+    itemId,
+    type: 'mcp_approval_request',
+    serverLabel: 'srv',
+    name: 'some_tool',
+    arguments: {},
+    approved,
+  };
+}
+
+function deleteEvents(events: RealtimeClientMessage[]) {
+  return events.filter((event) => event.type === 'conversation.item.delete');
+}
+
+function createEvents(events: RealtimeClientMessage[]) {
+  return events.filter((event) => event.type === 'conversation.item.create');
 }
 
 describe('OpenAI realtime history replay', () => {
@@ -103,66 +133,139 @@ describe('OpenAI realtime history replay', () => {
     ]);
   });
 
-  it('warns that the item was removed for an updated mcp_call item', () => {
-    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-    try {
-      const base = new TestBase();
-      const oldHistory = [mcpCall('mcp-1', 'old')];
-      const newHistory = [mcpCall('mcp-1', 'new')];
+  it('adds a new message item without touching unrelated history', () => {
+    const base = new TestBase();
+    const oldHistory: RealtimeItem[] = [];
+    const newHistory = [userText('new', 'hi there')];
 
-      base.resetHistory(oldHistory, newHistory);
+    base.resetHistory(oldHistory, newHistory);
 
-      const deleteEvents = base.events.filter(
-        (event) => event.type === 'conversation.item.delete',
-      );
-      expect(deleteEvents).toEqual([
-        {
-          type: 'conversation.item.delete',
-          item_id: 'mcp-1',
+    expect(deleteEvents(base.events)).toEqual([]);
+    expect(createEvents(base.events)).toEqual([
+      {
+        type: 'conversation.item.create',
+        item: {
+          id: 'new',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'hi there' }],
+          status: 'completed',
         },
-      ]);
-      expect(
-        base.events.filter(
-          (event) => event.type === 'conversation.item.create',
-        ),
-      ).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('MCP items cannot be manually updated'),
-      );
-      expect(warnSpy).not.toHaveBeenCalledWith(
-        expect.stringContaining('cannot be manually added'),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
+      },
+    ]);
   });
 
-  it('warns without claiming removal for a newly added mcp_call item', () => {
-    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
-    try {
+  it('updates a message item by deleting and recreating it', () => {
+    const base = new TestBase();
+    const oldHistory = [userText('msg-1', 'old text')];
+    const newHistory = [userText('msg-1', 'new text')];
+
+    base.resetHistory(oldHistory, newHistory);
+
+    expect(deleteEvents(base.events)).toEqual([
+      { type: 'conversation.item.delete', item_id: 'msg-1' },
+    ]);
+    expect(createEvents(base.events)).toEqual([
+      {
+        type: 'conversation.item.create',
+        item: {
+          id: 'msg-1',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'new text' }],
+          status: 'completed',
+        },
+      },
+    ]);
+  });
+
+  it('removes a message item that is absent from the new history', () => {
+    const base = new TestBase();
+    const oldHistory = [userText('msg-1', 'text')];
+    const newHistory: RealtimeItem[] = [];
+
+    base.resetHistory(oldHistory, newHistory);
+
+    expect(deleteEvents(base.events)).toEqual([
+      { type: 'conversation.item.delete', item_id: 'msg-1' },
+    ]);
+    expect(createEvents(base.events)).toEqual([]);
+  });
+
+  it('treats an unchanged MCP item as a no-op', () => {
+    const base = new TestBase();
+    const call = mcpCall('mcp-1', 'result');
+    const oldHistory = [call];
+    const newHistory = [call];
+
+    expect(() => base.resetHistory(oldHistory, newHistory)).not.toThrow();
+    expect(base.events).toEqual([]);
+  });
+
+  it('still emits a delete for an explicit MCP item removal', () => {
+    const base = new TestBase();
+    const oldHistory = [mcpCall('mcp-1', 'result')];
+    const newHistory: RealtimeItem[] = [];
+
+    base.resetHistory(oldHistory, newHistory);
+
+    expect(base.events).toEqual([
+      { type: 'conversation.item.delete', item_id: 'mcp-1' },
+    ]);
+  });
+
+  describe.each([
+    { type: 'mcp_call' as const, build: (id: string) => mcpCall(id, 'out') },
+    {
+      type: 'mcp_tool_call' as const,
+      build: (id: string) => mcpCall(id, 'out', 'mcp_tool_call'),
+    },
+    {
+      type: 'mcp_approval_request' as const,
+      build: (id: string) => mcpApprovalRequest(id, null),
+    },
+  ])('$type items', ({ type, build }) => {
+    it(`throws UserError and sends zero events when added`, () => {
       const base = new TestBase();
-      const oldHistory: RealtimeMcpCallItem[] = [];
-      const newHistory = [mcpCall('mcp-1', 'new')];
+      const oldHistory: RealtimeItem[] = [];
+      const newHistory = [build('mcp-1')];
 
-      base.resetHistory(oldHistory, newHistory);
+      let thrown: unknown;
+      try {
+        base.resetHistory(oldHistory, newHistory);
+      } catch (error) {
+        thrown = error;
+      }
 
-      const deleteEvents = base.events.filter(
-        (event) => event.type === 'conversation.item.delete',
-      );
-      expect(deleteEvents).toEqual([]);
-      expect(
-        base.events.filter(
-          (event) => event.type === 'conversation.item.create',
-        ),
-      ).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('MCP items cannot be manually added'),
-      );
-      expect(warnSpy).not.toHaveBeenCalledWith(
-        expect.stringContaining('was removed'),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
+      expect(thrown).toBeInstanceOf(UserError);
+      expect((thrown as Error).message).toContain(type);
+      expect(deleteEvents(base.events)).toEqual([]);
+      expect(createEvents(base.events)).toEqual([]);
+      expect(base.events).toEqual([]);
+    });
+
+    it(`throws UserError and sends zero events when updated`, () => {
+      const base = new TestBase();
+      const oldHistory = [build('mcp-1')];
+      const updated = build('mcp-1');
+      (updated as { output?: string | null }).output = 'changed';
+      if (type === 'mcp_approval_request') {
+        (updated as RealtimeMcpCallApprovalRequestItem).approved = true;
+      }
+      const newHistory = [updated];
+
+      let thrown: unknown;
+      try {
+        base.resetHistory(oldHistory, newHistory);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UserError);
+      expect((thrown as Error).message).toContain(type);
+      expect(deleteEvents(base.events)).toEqual([]);
+      expect(createEvents(base.events)).toEqual([]);
+      expect(base.events).toEqual([]);
+    });
   });
 });

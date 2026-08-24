@@ -273,6 +273,7 @@ As the conversation changes the session emits `history_updated`. If you need to 
 2. Assistant text in history depends on available transcripts, including `output_audio.transcript`.
 3. Responses truncated by interruption do not retain a final transcript.
 4. Input audio transcription is best treated as a rough guide to what the user said, not an exact copy of how the model interpreted the audio.
+5. You cannot add new `mcp_call`, `mcp_tool_call`, or `mcp_approval_request` items, or update existing ones, through `updateHistory()`. `resetHistory()` rejects those changes with a `UserError` before sending any events, because the current history shape does not retain all of the fields the Realtime API needs to recreate an MCP item once its conversation entry is deleted. Leaving an MCP item unchanged, or removing it from history entirely, is still supported. Full MCP history replay is being considered separately.
 
 ### Delegation through tools
 
