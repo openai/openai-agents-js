@@ -31,7 +31,11 @@ import { getServerConversationOwner } from './runner/conversation';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
 import { createToolRunFunction, type ProcessedResponse } from './runner/types';
-import { hasBlockedOutputExecutionEffect } from './runner/blockedOutputPersistence';
+import {
+  getCurrentResponseToolOutputGuardrailResultStart,
+  hasBlockedOutputExecutionEffect,
+  restoreCurrentResponseToolOutputGuardrailResultStart,
+} from './runner/blockedOutputPersistence';
 import type { AgentSpanData, Span } from './tracing/spans';
 import { ModelBehaviorError, SystemError, UserError } from './errors';
 import { getGlobalTraceProvider } from './tracing/provider';
@@ -162,7 +166,8 @@ import {
  *   so Docker network-isolation state cannot be consumed by older SDKs that would drop it
  *   during container replacement.
  * - 1.20: Adds sandbox session-state envelope version 5 so Docker labels cannot be
- *   consumed by older SDKs that would drop them during container replacement.
+ *   consumed by older SDKs that would drop them during container replacement, and
+ *   preserves exact current-response ownership for serialized approval resumes.
  */
 export const CURRENT_SCHEMA_VERSION = '1.20' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
@@ -1573,6 +1578,19 @@ const serializedProcessedResponseSchema = z.object({
     .optional(),
 });
 
+const currentResponseGeneratedItemOwnershipSchema = z
+  .object({
+    generatedItemStartIndex: z.number().int().min(0),
+    generatedItemEndIndexExclusive: z.number().int().min(0),
+    interruptionGeneratedItemIndexes: z.array(z.number().int().min(0)),
+    toolOutputGuardrailResultStartIndex: z.number().int().min(0),
+  })
+  .strict();
+
+type CurrentResponseGeneratedItemOwnership = z.infer<
+  typeof currentResponseGeneratedItemOwnershipSchema
+>;
+
 const guardrailFunctionOutputSchema = z.object({
   tripwireTriggered: z.boolean(),
   outputInfo: z.any(),
@@ -1714,6 +1732,8 @@ export const SerializedRunState = z.object({
   currentStep: nextStepSchema.optional(),
   lastModelResponse: modelResponseSchema.optional(),
   generatedItems: z.array(itemSchema),
+  currentResponseGeneratedItemOwnership:
+    currentResponseGeneratedItemOwnershipSchema.optional(),
   pendingAgentToolRuns: z.record(z.string(), z.string()).optional().default({}),
   pendingAgentToolRunAliases: z
     .record(z.string(), z.string())
@@ -1763,6 +1783,244 @@ export const SerializedRunState = z.object({
   trace: serializedTraceSchema.nullable(),
   sandbox: sandboxStateSchema.optional(),
 });
+
+function findUniqueContiguousIdentityStart(
+  items: readonly RunItem[],
+  sequence: readonly RunItem[],
+): number | undefined {
+  if (sequence.length === 0 || sequence.length > items.length) {
+    return undefined;
+  }
+  let match: number | undefined;
+  for (let start = 0; start <= items.length - sequence.length; start += 1) {
+    if (
+      !sequence.every((item, offset) => {
+        const candidate = items[start + offset];
+        if (candidate === item) {
+          return true;
+        }
+        try {
+          return (
+            candidate !== undefined &&
+            candidate.type === item.type &&
+            'rawItem' in candidate &&
+            'rawItem' in item &&
+            candidate.rawItem === item.rawItem
+          );
+        } catch {
+          return false;
+        }
+      })
+    ) {
+      continue;
+    }
+    if (match !== undefined) {
+      return undefined;
+    }
+    match = start;
+  }
+  return match;
+}
+
+function captureCurrentResponseGeneratedItemOwnership(
+  state: RunState<any, any>,
+): CurrentResponseGeneratedItemOwnership | undefined {
+  if (state._currentStep?.type !== 'next_step_interruption') {
+    return undefined;
+  }
+  const processedItems = state._lastProcessedResponse?.newItems ?? [];
+  const interruptions = state._currentStep.data.interruptions;
+  if (processedItems.length === 0 || interruptions.length === 0) {
+    return undefined;
+  }
+  const generatedItemStartIndex = findUniqueContiguousIdentityStart(
+    state._generatedItems,
+    processedItems,
+  );
+  if (generatedItemStartIndex === undefined) {
+    return undefined;
+  }
+  const processedEndIndex = generatedItemStartIndex + processedItems.length;
+  const interruptionGeneratedItemIndexes: number[] = [];
+  for (const interruption of interruptions) {
+    const matchingIndexes = state._generatedItems.flatMap((item, index) => {
+      if (index < processedEndIndex) {
+        return [];
+      }
+      if (item === interruption) {
+        return [index];
+      }
+      try {
+        if ('rawItem' in item && item.rawItem === interruption.rawItem) {
+          return [index];
+        }
+        // A partial live resume can recreate the remaining approval wrapper. In that case,
+        // use the existing canonical invocation identity, but only inside the already-proven
+        // terminal current-response range and only when it selects one candidate.
+        return item instanceof RunToolApprovalItem &&
+          item.agent === interruption.agent &&
+          getToolInvocationCallId(item.rawItem) ===
+            getToolInvocationCallId(interruption.rawItem) &&
+          getToolInvocationFingerprint(
+            item.functionToolStateKey ?? item.name ?? '',
+            item.rawItem,
+          ) ===
+            getToolInvocationFingerprint(
+              interruption.functionToolStateKey ?? interruption.name ?? '',
+              interruption.rawItem,
+            )
+          ? [index]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+    if (
+      matchingIndexes.length !== 1 ||
+      matchingIndexes[0] < processedEndIndex
+    ) {
+      return undefined;
+    }
+    interruptionGeneratedItemIndexes.push(matchingIndexes[0]);
+  }
+  if (
+    interruptionGeneratedItemIndexes.some(
+      (index, offset) =>
+        offset > 0 && index <= interruptionGeneratedItemIndexes[offset - 1],
+    )
+  ) {
+    return undefined;
+  }
+  const lastModelResponseIndex = state._modelResponses.lastIndexOf(
+    state._lastTurnResponse!,
+  );
+  if (
+    state._lastTurnResponse === undefined ||
+    lastModelResponseIndex !== state._modelResponses.length - 1 ||
+    state._modelResponses.indexOf(state._lastTurnResponse) !==
+      lastModelResponseIndex
+  ) {
+    return undefined;
+  }
+  const toolOutputGuardrailResultStartIndex =
+    getCurrentResponseToolOutputGuardrailResultStart(state);
+  if (
+    toolOutputGuardrailResultStartIndex === undefined ||
+    toolOutputGuardrailResultStartIndex >
+      state._toolOutputGuardrailResults.length
+  ) {
+    return undefined;
+  }
+  return {
+    generatedItemStartIndex,
+    generatedItemEndIndexExclusive: state._generatedItems.length,
+    interruptionGeneratedItemIndexes,
+    toolOutputGuardrailResultStartIndex,
+  };
+}
+
+function serializedValuesEqual(left: unknown, right: unknown): boolean {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function throwCurrentResponseOwnershipError(
+  reason = 'invalid boundary',
+): never {
+  throw new UserError(
+    `RunState current-response generated-item ownership has an ${reason}. Start a new run from safe input.`,
+  );
+}
+
+function validateCurrentResponseGeneratedItemOwnership(
+  stateJson: z.infer<typeof SerializedRunState>,
+  ownership: CurrentResponseGeneratedItemOwnership,
+): void {
+  // Validate only serialized values here, before tool rehydration or caller-owned context work.
+  // Deserialized object identity is restored only after the complete terminal boundary is proven.
+  const processedItems = stateJson.lastProcessedResponse?.newItems;
+  const serializedInterruptions =
+    stateJson.currentStep?.type === 'next_step_interruption' &&
+    Array.isArray(stateJson.currentStep.data?.interruptions)
+      ? stateJson.currentStep.data.interruptions
+      : undefined;
+  const generatedEnd = ownership.generatedItemEndIndexExclusive;
+  const processedEnd =
+    ownership.generatedItemStartIndex + (processedItems?.length ?? 0);
+  if (
+    !processedItems ||
+    processedItems.length === 0 ||
+    !serializedInterruptions ||
+    serializedInterruptions.length === 0 ||
+    !stateJson.lastModelResponse ||
+    stateJson.modelResponses.length === 0 ||
+    generatedEnd !== stateJson.generatedItems.length ||
+    ownership.generatedItemStartIndex >= generatedEnd ||
+    processedEnd > generatedEnd ||
+    ownership.interruptionGeneratedItemIndexes.length !==
+      serializedInterruptions.length ||
+    ownership.toolOutputGuardrailResultStartIndex >
+      stateJson.toolOutputGuardrailResults.length ||
+    !serializedValuesEqual(
+      stateJson.lastModelResponse,
+      stateJson.modelResponses.at(-1),
+    )
+  ) {
+    throwCurrentResponseOwnershipError();
+  }
+  for (const [offset, processedItem] of processedItems.entries()) {
+    if (
+      !serializedValuesEqual(
+        processedItem,
+        stateJson.generatedItems[ownership.generatedItemStartIndex + offset],
+      )
+    ) {
+      throwCurrentResponseOwnershipError();
+    }
+  }
+  const interruptionIndexes = new Set<number>();
+  for (const [
+    offset,
+    interruptionIndex,
+  ] of ownership.interruptionGeneratedItemIndexes.entries()) {
+    const parsedInterruption = itemSchema.safeParse(
+      serializedInterruptions[offset],
+    );
+    const mismatch = !serializedValuesEqual(
+      parsedInterruption.success ? parsedInterruption.data : undefined,
+      stateJson.generatedItems[interruptionIndex],
+    );
+    if (
+      !parsedInterruption.success ||
+      parsedInterruption.data.type !== 'tool_approval_item' ||
+      interruptionIndexes.has(interruptionIndex) ||
+      interruptionIndex < processedEnd ||
+      interruptionIndex >= generatedEnd ||
+      (offset > 0 &&
+        interruptionIndex <=
+          ownership.interruptionGeneratedItemIndexes[offset - 1]) ||
+      mismatch
+    ) {
+      throwCurrentResponseOwnershipError(
+        mismatch ? 'interruption content mismatch' : 'interruption index error',
+      );
+    }
+    interruptionIndexes.add(interruptionIndex);
+  }
+  const unownedApproval = stateJson.generatedItems
+    .slice(processedEnd, generatedEnd)
+    .some(
+      (item, offset) =>
+        item.type === 'tool_approval_item' &&
+        !interruptionIndexes.has(processedEnd + offset),
+    );
+  if (unownedApproval) {
+    throwCurrentResponseOwnershipError();
+  }
+}
 
 export type FinalOutputSource =
   'error_handler' | 'turn_resolution' | 'tool_result';
@@ -2769,6 +3027,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
 
     const includeTracingApiKey = options.includeTracingApiKey === true;
     const contextJson = this._context._toJSONForRunState(agentIdentity.byAgent);
+    const currentResponseGeneratedItemOwnership =
+      captureCurrentResponseGeneratedItemOwnership(this);
     const output = {
       $schemaVersion: CURRENT_SCHEMA_VERSION,
       currentTurn: this._currentTurn,
@@ -2833,6 +3093,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       generatedItems: this._generatedItems.map(
         (item) => serializeRunItem(item, agentIdentity.byAgent) as any,
       ),
+      currentResponseGeneratedItemOwnership,
       pendingAgentToolRuns: Object.fromEntries(
         this._pendingAgentToolRuns.entries(),
       ),
@@ -3008,6 +3269,10 @@ async function buildRunStateFromString<
     stateJson,
   );
   assertSchemaVersionSupportsOutputGuardrailSessionPersistence(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+  );
+  assertSchemaVersionSupportsCurrentResponseGeneratedItemOwnership(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
   );
@@ -3307,6 +3572,22 @@ function assertSchemaVersionSupportsOutputGuardrailSessionPersistence(
   throw new UserError(
     `Run state schema version ${schemaVersion} does not support output guardrail session persistence state. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
   );
+}
+
+function assertSchemaVersionSupportsCurrentResponseGeneratedItemOwnership(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  const ownership = stateJson.currentResponseGeneratedItemOwnership;
+  if (ownership === undefined) {
+    return;
+  }
+  if (!schemaVersionSupportsV120State(schemaVersion)) {
+    throw new UserError(
+      `Run state schema version ${schemaVersion} does not support current-response generated-item ownership. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+    );
+  }
+  validateCurrentResponseGeneratedItemOwnership(stateJson, ownership);
 }
 
 function assertSchemaVersionSupportsPendingInput(
@@ -5369,6 +5650,45 @@ async function rehydrateToolSearchRuntimeTools<
   return capabilitySnapshotsByAgent;
 }
 
+function restoreCurrentResponseProcessedOwnership(
+  state: RunState<any, any>,
+  stateJson: z.infer<typeof SerializedRunState>,
+): void {
+  const ownership = stateJson.currentResponseGeneratedItemOwnership;
+  if (!ownership || !state._lastProcessedResponse) {
+    return;
+  }
+  const processedItemCount =
+    stateJson.lastProcessedResponse?.newItems.length ?? 0;
+  state._lastProcessedResponse.newItems = state._generatedItems.slice(
+    ownership.generatedItemStartIndex,
+    ownership.generatedItemStartIndex + processedItemCount,
+  );
+  state._lastTurnResponse = state._modelResponses.at(-1);
+  restoreCurrentResponseToolOutputGuardrailResultStart(
+    state,
+    ownership.toolOutputGuardrailResultStartIndex,
+  );
+}
+
+function restoreCurrentResponseInterruptionOwnership(
+  stateJson: z.infer<typeof SerializedRunState>,
+  generatedItems: readonly RunItem[],
+  interruptions: RunToolApprovalItem[],
+): RunToolApprovalItem[] {
+  const ownership = stateJson.currentResponseGeneratedItemOwnership;
+  if (!ownership) {
+    return interruptions;
+  }
+  return ownership.interruptionGeneratedItemIndexes.map((index) => {
+    const interruption = generatedItems[index];
+    if (!(interruption instanceof RunToolApprovalItem)) {
+      throwCurrentResponseOwnershipError();
+    }
+    return interruption;
+  });
+}
+
 async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   initialAgent: TAgent,
   stateJson: z.infer<typeof SerializedRunState>,
@@ -5661,6 +5981,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
         },
       )
     : undefined;
+  restoreCurrentResponseProcessedOwnership(state, stateJson);
   restorePendingAgentToolRunAliases(
     state,
     stateJson.pendingAgentToolRunAliases ?? {},
@@ -5674,10 +5995,14 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       ) as TAgent,
     };
   } else if (stateJson.currentStep?.type === 'next_step_interruption') {
-    const interruptions = deserializeInterruptions(
-      stateJson.currentStep.data?.interruptions,
-      agentMap,
-      state._currentAgent,
+    const interruptions = restoreCurrentResponseInterruptionOwnership(
+      stateJson,
+      generatedItems,
+      deserializeInterruptions(
+        stateJson.currentStep.data?.interruptions,
+        agentMap,
+        state._currentAgent,
+      ),
     );
     rebindInterruptionFunctionToolStateKeys(
       interruptions,

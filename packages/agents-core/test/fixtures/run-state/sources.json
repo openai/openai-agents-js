@@ -333,7 +333,7 @@
     {
       "schemaVersion": "1.20",
       "status": "current_unreleased",
-      "reason": "Supported on main but not emitted by the latest released package v0.17.0; adds sandbox envelope version 5 for Docker labels."
+      "reason": "Supported on main but not emitted by the latest released package v0.17.0; adds sandbox envelope version 5 for Docker labels and exact current-response ownership for serialized approval resumes."
     }
   ],
   "expectedNormalizedFixtures": [

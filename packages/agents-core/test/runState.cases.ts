@@ -60,10 +60,91 @@ import {
   getFunctionToolStateKey,
   getFunctionToolStateKeyForCall,
 } from '../src/toolIdentity';
+import {
+  captureCurrentResponseToolOutputGuardrailResultStart,
+  getCurrentResponseToolOutputGuardrailResultStart,
+} from '../src/runner/blockedOutputPersistence';
 import { z, ZodError } from 'zod';
 
 const REDACTED_TOOL_NAME_COLLISION_WARNING =
   'Tool name collision detected. Assign unique routed tool names or enable tool data logging for details. Only the current dispatch winner will be exposed.';
+
+function buildCurrentResponseOwnershipState() {
+  const approvalTool = tool({
+    name: 'serialized_ownership_tool',
+    description: 'Requires approval for serialized ownership tests.',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: true,
+    execute: async ({ value }) => value,
+  });
+  const agent = new Agent({
+    name: 'Serialized ownership agent',
+    tools: [approvalTool as Tool],
+  });
+  const currentCall = {
+    type: 'function_call',
+    name: approvalTool.name,
+    callId: 'reused-ownership-call',
+    status: 'completed',
+    arguments: '{"value":"same"}',
+  } satisfies protocol.FunctionCallItem;
+  const historicalCall = structuredClone(currentCall);
+  const historicalCallItem = new RunToolCallItem(historicalCall, agent);
+  const historicalApprovalItem = new ToolApprovalItem(
+    historicalCall,
+    agent,
+    approvalTool.name,
+    getFunctionToolStateKey(approvalTool),
+  );
+  const currentCallItem = new RunToolCallItem(currentCall, agent);
+  const currentApprovalItem = new ToolApprovalItem(
+    currentCall,
+    agent,
+    approvalTool.name,
+    getFunctionToolStateKey(approvalTool),
+  );
+  const response: ModelResponse = {
+    output: [currentCall],
+    usage: new Usage(),
+    responseId: 'serialized-ownership-response',
+  };
+  const state = new RunState(new RunContext(), 'input', agent, 2);
+  state._generatedItems = [
+    historicalCallItem,
+    historicalApprovalItem,
+    currentCallItem,
+    currentApprovalItem,
+  ];
+  state._lastProcessedResponse = {
+    newItems: [currentCallItem],
+    toolsUsed: [approvalTool.name],
+    handoffs: [],
+    functions: [{ toolCall: currentCall, tool: approvalTool as any }],
+    functionToolsNotFound: [],
+    computerActions: [],
+    shellActions: [],
+    applyPatchActions: [],
+    mcpApprovalRequests: [],
+    hasToolsOrApprovalsToRun: () => true,
+  };
+  state._currentStep = {
+    type: 'next_step_interruption',
+    data: { interruptions: [currentApprovalItem] },
+  };
+  state._modelResponses = [response];
+  state._lastTurnResponse = response;
+  state._toolOutputGuardrailResults = [
+    {
+      guardrail: { type: 'tool_output', name: 'accepted earlier guardrail' },
+      output: {
+        outputInfo: 'accepted earlier metadata',
+        behavior: { type: 'allow' },
+      },
+    },
+  ];
+  captureCurrentResponseToolOutputGuardrailResultStart(state, true);
+  return { agent, state };
+}
 
 async function expectToolNameCollisionWarnings<T>(
   expectedCount: number,
@@ -215,6 +296,135 @@ export function registerRunStateCoreTests(): void {
 
       const restored = await RunState.fromString(agent, state.toString());
       expect(restored.history).toEqual(state.history);
+    });
+
+    it('restores exact current-response ownership across repeated round trips', async () => {
+      const { agent, state } = buildCurrentResponseOwnershipState();
+      const serialized = state.toJSON();
+
+      expect(serialized.currentResponseGeneratedItemOwnership).toEqual({
+        generatedItemStartIndex: 2,
+        generatedItemEndIndexExclusive: 4,
+        interruptionGeneratedItemIndexes: [3],
+        toolOutputGuardrailResultStartIndex: 1,
+      });
+
+      const onceRestored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+      expect(onceRestored._lastProcessedResponse?.newItems[0]).toBe(
+        onceRestored._generatedItems[2],
+      );
+      expect(
+        onceRestored._currentStep?.type === 'next_step_interruption'
+          ? onceRestored._currentStep.data.interruptions[0]
+          : undefined,
+      ).toBe(onceRestored._generatedItems[3]);
+      expect(onceRestored._lastTurnResponse).toBe(
+        onceRestored._modelResponses.at(-1),
+      );
+      expect(
+        getCurrentResponseToolOutputGuardrailResultStart(onceRestored),
+      ).toBe(1);
+      expect(onceRestored._generatedItems[0]).not.toBe(
+        onceRestored._lastProcessedResponse?.newItems[0],
+      );
+
+      const twiceSerialized = onceRestored.toJSON();
+      expect(twiceSerialized.currentResponseGeneratedItemOwnership).toEqual(
+        serialized.currentResponseGeneratedItemOwnership,
+      );
+      const twiceRestored = await RunState.fromString(
+        agent,
+        JSON.stringify(twiceSerialized),
+      );
+      expect(twiceRestored._lastProcessedResponse?.newItems[0]).toBe(
+        twiceRestored._generatedItems[2],
+      );
+      expect(
+        twiceRestored._currentStep?.type === 'next_step_interruption'
+          ? twiceRestored._currentStep.data.interruptions[0]
+          : undefined,
+      ).toBe(twiceRestored._generatedItems[3]);
+    });
+
+    it.each([
+      {
+        name: 'a non-integer start index',
+        mutate: (serialized: any) => {
+          serialized.currentResponseGeneratedItemOwnership.generatedItemStartIndex = 1.5;
+        },
+      },
+      {
+        name: 'a non-terminal end index',
+        mutate: (serialized: any) => {
+          serialized.currentResponseGeneratedItemOwnership.generatedItemEndIndexExclusive =
+            serialized.generatedItems.length - 1;
+        },
+      },
+      {
+        name: 'an interruption index inside the processed prefix',
+        mutate: (serialized: any) => {
+          serialized.currentResponseGeneratedItemOwnership.interruptionGeneratedItemIndexes =
+            [2];
+        },
+      },
+      {
+        name: 'duplicate interruption indexes',
+        mutate: (serialized: any) => {
+          serialized.currentResponseGeneratedItemOwnership.interruptionGeneratedItemIndexes =
+            [3, 3];
+        },
+      },
+      {
+        name: 'mismatched processed item content',
+        mutate: (serialized: any) => {
+          serialized.lastProcessedResponse.newItems[0].rawItem.arguments =
+            '{"value":"different"}';
+        },
+      },
+      {
+        name: 'an out-of-range guardrail-result boundary',
+        mutate: (serialized: any) => {
+          serialized.currentResponseGeneratedItemOwnership.toolOutputGuardrailResultStartIndex =
+            serialized.toolOutputGuardrailResults.length + 1;
+        },
+      },
+      {
+        name: 'ownership data on released schema 1.19',
+        mutate: (serialized: any) => {
+          serialized.$schemaVersion = '1.19';
+        },
+      },
+    ])('rejects $name before returning a RunState', async ({ mutate }) => {
+      const { agent, state } = buildCurrentResponseOwnershipState();
+      const serialized = JSON.parse(state.toString());
+      mutate(serialized);
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow();
+    });
+
+    it('keeps a released 1.19 snapshot readable without claiming current-response ownership', async () => {
+      const { agent, state } = buildCurrentResponseOwnershipState();
+      const serialized = JSON.parse(state.toString());
+      serialized.$schemaVersion = '1.19';
+      delete serialized.currentResponseGeneratedItemOwnership;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored.getInterruptions()).toHaveLength(1);
+      expect(restored._lastProcessedResponse?.newItems[0]).not.toBe(
+        restored._generatedItems[2],
+      );
+      expect(
+        getCurrentResponseToolOutputGuardrailResultStart(restored),
+      ).toBeUndefined();
     });
 
     it.each(['commentary', 'final_answer'] as const)(
