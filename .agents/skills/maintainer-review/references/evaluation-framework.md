@@ -171,8 +171,10 @@ Make docs merge-blocking only when:
 
 - Existing docs become materially false, unsafe, or misleading.
 - Safe/correct use depends on a non-obvious constraint, migration, compatibility boundary, or operational warning.
-- Repository policy, accepted scope, or an explicit maintainer decision requires docs in the same PR.
+- Repository policy, accepted scope, or an explicit maintainer decision requires docs in the same PR and does not require separate release timing.
 - The feature is practically unusable or undiscoverable without a user-facing entrypoint and generated/API discovery is insufficient.
+
+Decide documentation necessity separately from current-pull-request timing. If the repository's Documentation Release Timing policy defers required `docs/` content because it would describe unreleased behavior, record the need as separately timed work and do not make its absence a blocker for the feature or bug-fix pull request.
 
 Keep optional discoverability/completeness non-blocking. Do not downgrade a code recommendation solely for optional docs or include optional docs in a required-action paragraph.
 
