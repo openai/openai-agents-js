@@ -267,5 +267,24 @@ describe('OpenAI realtime history replay', () => {
       expect(createEvents(base.events)).toEqual([]);
       expect(base.events).toEqual([]);
     });
+
+    it(`throws UserError and sends zero events when replaced by a message with the same ID`, () => {
+      const base = new TestBase();
+      const oldHistory = [build('mcp-1')];
+      const newHistory = [userText('mcp-1', 'same id, different type')];
+
+      let thrown: unknown;
+      try {
+        base.resetHistory(oldHistory, newHistory);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(UserError);
+      expect((thrown as Error).message).toContain(type);
+      expect(deleteEvents(base.events)).toEqual([]);
+      expect(createEvents(base.events)).toEqual([]);
+      expect(base.events).toEqual([]);
+    });
   });
 });

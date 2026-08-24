@@ -979,18 +979,31 @@ export abstract class OpenAIRealtimeBase
     );
 
     // MCP items cannot be recreated once their conversation entry is deleted, so
-    // reject additions/updates before sending a single client event. Explicit
-    // removals (item present in oldHistory but absent from newHistory) and
-    // unchanged items are unaffected and continue to work.
+    // reject additions/updates before sending a single client event. A same-ID
+    // cross-type replacement surfaces in `updates` as the new non-MCP item, so
+    // classify by the old item's type as well. Explicit removals (item present
+    // in oldHistory but absent from newHistory) and unchanged items are
+    // unaffected and continue to work.
+    const isMcpItem = (item: RealtimeItem): boolean =>
+      item.type === 'mcp_call' ||
+      item.type === 'mcp_tool_call' ||
+      item.type === 'mcp_approval_request';
+    const oldMcpItemIds = new Set(
+      oldHistory.filter(isMcpItem).map((item) => item.itemId),
+    );
     const rejectedMcpItem = [...additions, ...updates].find(
-      (item) =>
-        item.type === 'mcp_call' ||
-        item.type === 'mcp_tool_call' ||
-        item.type === 'mcp_approval_request',
+      (item) => isMcpItem(item) || oldMcpItemIds.has(item.itemId),
     );
     if (rejectedMcpItem) {
+      const replaced = oldHistory.find(
+        (item) => item.itemId === rejectedMcpItem.itemId,
+      );
+      const detail =
+        replaced && isMcpItem(replaced)
+          ? `itemId ${rejectedMcpItem.itemId} replaces an existing '${replaced.type}' item with a '${rejectedMcpItem.type}' item`
+          : `a '${rejectedMcpItem.type}' item (itemId: ${rejectedMcpItem.itemId}) would be added or updated`;
       throw new UserError(
-        `MCP items cannot be added or updated via updateHistory(). Found a '${rejectedMcpItem.type}' item (itemId: ${rejectedMcpItem.itemId}) that would be added or updated. Leave existing MCP items unchanged, or remove them from history entirely, before calling updateHistory().`,
+        `MCP items cannot be added or updated via updateHistory(). Found ${detail}. Leave existing MCP items unchanged, or remove them from history entirely, before calling updateHistory().`,
       );
     }
 
