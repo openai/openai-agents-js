@@ -11,7 +11,9 @@ import type OpenAI from 'openai';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 import {
   ModelBehaviorError,
+  setTraceProcessors,
   setTracingDisabled,
+  type Span,
   type ResponseStreamEvent,
   withTrace,
 } from '@openai/agents-core';
@@ -140,6 +142,30 @@ function createFakeClient(): OpenAI & {
   } as unknown as OpenAI & { _callApiKey: ReturnType<typeof vi.fn> };
 }
 
+function captureResponseSpans(): Span<any>[] {
+  const responseSpans: Span<any>[] = [];
+  setTracingDisabled(false);
+  setTraceProcessors([
+    {
+      async onTraceStart() {},
+      async onTraceEnd() {},
+      async onSpanStart() {},
+      async onSpanEnd(span: Span<any>) {
+        if (span.spanData.type === 'response') {
+          responseSpans.push(span);
+        }
+      },
+      async shutdown() {},
+      async forceFlush() {},
+    },
+  ]);
+  return responseSpans;
+}
+
+function getSerializedResponseSpanData(span: Span<any>): Record<string, any> {
+  return (span.toJSON() as { span_data: Record<string, any> }).span_data;
+}
+
 describe('OpenAIResponsesWSModel', () => {
   const originalWebSocket = (globalThis as any).WebSocket;
 
@@ -153,6 +179,8 @@ describe('OpenAIResponsesWSModel', () => {
   });
 
   afterEach(() => {
+    setTracingDisabled(true);
+    setTraceProcessors([]);
     if (typeof originalWebSocket === 'undefined') {
       delete (globalThis as any).WebSocket;
     } else {
@@ -1052,6 +1080,164 @@ describe('OpenAIResponsesWSModel', () => {
     expect(TestWebSocket.instances[0]?.url).toBe(
       'wss://proxy.example.test/v1/responses?base_param=1&tenant=acme',
     );
+  });
+
+  it.each([
+    {
+      label: 'official HTTPS base URL',
+      websocketBaseURL: 'https://api.openai.com/v1',
+      expectedURL: 'wss://api.openai.com/v1/responses',
+      expectedResponseId: 'resp_ws_redacted',
+    },
+    {
+      label: 'official WSS base URL',
+      websocketBaseURL: 'wss://api.openai.com/v1',
+      expectedURL: 'wss://api.openai.com/v1/responses',
+      expectedResponseId: 'resp_ws_redacted',
+    },
+    {
+      label: 'custom WSS base URL',
+      websocketBaseURL: 'wss://provider.example.test/v1',
+      expectedURL: 'wss://provider.example.test/v1/responses',
+      expectedResponseId: undefined,
+    },
+  ])(
+    'gates redacted response IDs for an explicit $label',
+    async ({ websocketBaseURL, expectedURL, expectedResponseId }) => {
+      const responseSpans = captureResponseSpans();
+      const fakeClient = createFakeClient();
+      TestWebSocket.onCreate = (socket) => {
+        socket.onSend(() => {
+          socket.queueJSON({
+            type: 'response.completed',
+            response: {
+              id: 'resp_ws_redacted',
+              status: 'completed',
+              output: [],
+              usage: {},
+            },
+            sequence_number: 0,
+          });
+        });
+      };
+      const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws', {
+        websocketBaseURL,
+      });
+
+      const result = await withTrace('test', () =>
+        model.getResponse({
+          systemInstructions: undefined,
+          input: 'ping',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: 'enabled_without_data',
+          signal: undefined,
+        } as any),
+      );
+
+      expect(result.responseId).toBe('resp_ws_redacted');
+      expect(TestWebSocket.instances[0]?.url).toBe(expectedURL);
+      expect(responseSpans).toHaveLength(1);
+      expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+        expectedResponseId,
+      );
+      await model.close();
+    },
+  );
+
+  it('omits a redacted websocket response ID when the client endpoint changes during the request', async () => {
+    const responseSpans = captureResponseSpans();
+    const fakeClient = createFakeClient();
+    fakeClient.baseURL = 'https://api.openai.com/v1';
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend(() => {
+        fakeClient.baseURL = 'https://provider.example.test/v1';
+        socket.queueJSON({
+          type: 'response.completed',
+          response: {
+            id: 'resp_ws_mutated',
+            status: 'completed',
+            output: [],
+            usage: {},
+          },
+          sequence_number: 0,
+        });
+      });
+    };
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        systemInstructions: undefined,
+        input: 'ping',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: 'enabled_without_data',
+        signal: undefined,
+      } as any),
+    );
+
+    expect(result.responseId).toBe('resp_ws_mutated');
+    expect(TestWebSocket.instances[0]?.url).toBe(
+      'wss://api.openai.com/v1/responses',
+    );
+    expect(responseSpans).toHaveLength(1);
+    expect(
+      getSerializedResponseSpanData(responseSpans[0]!).response_id,
+    ).toBeUndefined();
+    await model.close();
+  });
+
+  it('binds redacted websocket response ID trust to the URL used for the request', async () => {
+    const responseSpans = captureResponseSpans();
+    const fakeClient = createFakeClient();
+    fakeClient.baseURL = 'https://api.openai.com/v1';
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend(() => {
+        fakeClient.baseURL = 'https://api.openai.com/v1';
+        socket.queueJSON({
+          type: 'response.completed',
+          response: {
+            id: 'tenant-customer-response-id',
+            status: 'completed',
+            output: [],
+            usage: {},
+          },
+          sequence_number: 0,
+        });
+      });
+    };
+    const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws');
+
+    const resultPromise = withTrace('test', () =>
+      model.getResponse({
+        systemInstructions: undefined,
+        input: 'ping',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: 'enabled_without_data',
+        signal: undefined,
+      } as any),
+    );
+    fakeClient.baseURL = 'https://provider.example.test/v1';
+    const result = await resultPromise;
+
+    expect(result.responseId).toBe('tenant-customer-response-id');
+    expect(TestWebSocket.instances[0]?.url).toBe(
+      'wss://provider.example.test/v1/responses',
+    );
+    expect(fakeClient.baseURL).toBe('https://api.openai.com/v1');
+    expect(responseSpans).toHaveLength(1);
+    expect(
+      getSerializedResponseSpanData(responseSpans[0]!).response_id,
+    ).toBeUndefined();
+    await model.close();
   });
 
   it.each([

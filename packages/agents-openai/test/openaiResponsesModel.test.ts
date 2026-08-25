@@ -30,6 +30,72 @@ class TestableOpenAIResponsesModel extends OpenAIResponsesModel {
   }
 }
 
+function captureResponseSpans(): Span<any>[] {
+  const responseSpans: Span<any>[] = [];
+  setTracingDisabled(false);
+  setTraceProcessors([
+    {
+      async onTraceStart() {},
+      async onTraceEnd() {},
+      async onSpanStart() {},
+      async onSpanEnd(span: Span<any>) {
+        if (span.spanData.type === 'response') {
+          responseSpans.push(span);
+        }
+      },
+      async shutdown() {},
+      async forceFlush() {},
+    },
+  ]);
+  return responseSpans;
+}
+
+function getSerializedResponseSpanData(span: Span<any>): Record<string, any> {
+  return (span.toJSON() as { span_data: Record<string, any> }).span_data;
+}
+
+function createResponsePromiseWithURL<T>(
+  data: T,
+  url: string,
+  beforeResolve?: () => void,
+): Promise<T> & {
+  withResponse: () => Promise<{
+    data: T;
+    response: Response;
+    request_id: null;
+  }>;
+} {
+  return Object.assign(Promise.resolve(data), {
+    withResponse: async () => {
+      beforeResolve?.();
+      return {
+        data,
+        response: { url } as Response,
+        request_id: null,
+      };
+    },
+  });
+}
+
+function createResponseStreamWithURL<T extends AsyncIterable<unknown>>(
+  data: T,
+  url: string,
+): T & {
+  withResponse: () => Promise<{
+    data: T;
+    response: Response;
+    request_id: null;
+  }>;
+} {
+  return Object.assign(data, {
+    withResponse: async () => ({
+      data,
+      response: { url } as Response,
+      request_id: null,
+    }),
+  });
+}
+
 const serializedFunctionTool = {
   type: 'function',
   name: 'lookup',
@@ -660,14 +726,20 @@ describe('OpenAIResponsesModel', () => {
     const sensitiveDetail = 'sensitive-no-data-response';
     const model = new OpenAIResponsesModel(
       {
+        baseURL: 'https://api.openai.com/v1',
         responses: {
-          create: vi.fn().mockResolvedValue({
-            id: 'resp_no_data_incomplete',
-            status: 'incomplete',
-            usage: {},
-            output: [],
-            incomplete_details: { reason: sensitiveDetail },
-          }),
+          create: vi.fn().mockReturnValue(
+            createResponsePromiseWithURL(
+              {
+                id: 'resp_no_data_incomplete',
+                status: 'incomplete',
+                usage: {},
+                output: [],
+                incomplete_details: { reason: sensitiveDetail },
+              },
+              'https://api.openai.com/v1/responses',
+            ),
+          ),
         },
       } as unknown as OpenAI,
       'gpt-test',
@@ -692,6 +764,187 @@ describe('OpenAIResponsesModel', () => {
     expect(responseSpan?.spanData._input).toBeUndefined();
     expect(responseSpan?.spanData._response).toBeUndefined();
     expect(JSON.stringify(responseSpan?.error)).not.toContain(sensitiveDetail);
+  });
+
+  it.each([
+    {
+      label: 'official endpoint',
+      before: 'https://api.openai.com/v1',
+      requestURL: 'https://api.openai.com/v1/responses',
+      after: 'https://api.openai.com/v1',
+      expectedResponseId: 'resp_redacted_endpoint',
+    },
+    {
+      label: 'custom endpoint',
+      before: 'https://provider.example.test/v1',
+      requestURL: 'https://provider.example.test/v1/responses',
+      after: 'https://provider.example.test/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'custom endpoint changed to official',
+      before: 'https://provider.example.test/v1',
+      requestURL: 'https://api.openai.com/v1/responses',
+      after: 'https://api.openai.com/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'official endpoint changed to custom',
+      before: 'https://api.openai.com/v1',
+      requestURL: 'https://provider.example.test/v1/responses',
+      after: 'https://provider.example.test/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'insecure official host',
+      before: 'http://api.openai.com/v1',
+      requestURL: 'http://api.openai.com/v1/responses',
+      after: 'http://api.openai.com/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'lookalike host',
+      before: 'https://api.openai.com.example.test/v1',
+      requestURL: 'https://api.openai.com.example.test/v1/responses',
+      after: 'https://api.openai.com.example.test/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'nonstandard port',
+      before: 'https://api.openai.com:8443/v1',
+      requestURL: 'https://api.openai.com:8443/v1/responses',
+      after: 'https://api.openai.com:8443/v1',
+      expectedResponseId: undefined,
+    },
+    {
+      label: 'official endpoint routed through custom endpoint and restored',
+      before: 'https://api.openai.com/v1',
+      requestURL: 'https://provider.example.test/v1/responses',
+      after: 'https://api.openai.com/v1',
+      expectedResponseId: undefined,
+    },
+  ])(
+    'gates redacted non-streaming response IDs for $label',
+    async ({ before, requestURL, after, expectedResponseId }) => {
+      const responseSpans = captureResponseSpans();
+      const response = {
+        id: 'resp_redacted_endpoint',
+        status: 'completed',
+        usage: { input_tokens: 1, output_tokens: 2, total_tokens: 3 },
+        output: [],
+        _request_id: 'req_redacted_endpoint',
+      };
+      const client = {
+        baseURL: before,
+        responses: {
+          create: vi.fn(() =>
+            createResponsePromiseWithURL(response, requestURL, () => {
+              client.baseURL = after;
+            }),
+          ),
+        },
+      } as unknown as OpenAI;
+      const model = new OpenAIResponsesModel(client, 'gpt-test');
+
+      const result = await withTrace('test', () =>
+        model.getResponse({
+          systemInstructions: undefined,
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: 'enabled_without_data',
+          signal: undefined,
+        } as any),
+      );
+
+      expect(result.responseId).toBe('resp_redacted_endpoint');
+      expect(result.requestId).toBe('req_redacted_endpoint');
+      expect(result.usage).toMatchObject({
+        inputTokens: 1,
+        outputTokens: 2,
+        totalTokens: 3,
+      });
+      expect(responseSpans).toHaveLength(1);
+      const spanData = getSerializedResponseSpanData(responseSpans[0]!);
+      expect(spanData.response_id).toBe(expectedResponseId);
+      expect(spanData).not.toHaveProperty('_input');
+      expect(spanData).not.toHaveProperty('_response');
+    },
+  );
+
+  it('preserves a custom endpoint response ID for full-data tracing', async () => {
+    const responseSpans = captureResponseSpans();
+    const model = new OpenAIResponsesModel(
+      {
+        baseURL: 'https://provider.example.test/v1',
+        responses: {
+          create: vi.fn().mockResolvedValue({
+            id: 'resp_full_data_custom',
+            status: 'completed',
+            usage: {},
+            output: [],
+          }),
+        },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: true,
+        signal: undefined,
+      } as any),
+    );
+
+    expect(result.responseId).toBe('resp_full_data_custom');
+    expect(responseSpans).toHaveLength(1);
+    expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+      'resp_full_data_custom',
+    );
+    expect(responseSpans[0]?.spanData._response).toBeDefined();
+  });
+
+  it('does not create a response span when tracing is disabled', async () => {
+    const responseSpans = captureResponseSpans();
+    setTracingDisabled(true);
+    const model = new OpenAIResponsesModel(
+      {
+        baseURL: 'https://api.openai.com/v1',
+        responses: {
+          create: vi.fn().mockResolvedValue({
+            id: 'resp_tracing_disabled',
+            status: 'completed',
+            usage: {},
+            output: [],
+          }),
+        },
+      } as unknown as OpenAI,
+      'gpt-test',
+    );
+
+    const result = await withTrace('test', () =>
+      model.getResponse({
+        systemInstructions: undefined,
+        input: 'hello',
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+        signal: undefined,
+      } as any),
+    );
+
+    expect(result.responseId).toBe('resp_tracing_disabled');
+    expect(responseSpans).toEqual([]);
   });
 
   it('does not persist an unsuccessful non-streaming response as a successful turn', async () => {
@@ -5455,8 +5708,14 @@ describe('OpenAIResponsesModel', () => {
     }
     const model = new OpenAIResponsesModel(
       {
+        baseURL: 'https://api.openai.com/v1',
         responses: {
-          create: vi.fn().mockImplementation(async () => fakeStream()),
+          create: vi.fn(() =>
+            createResponseStreamWithURL(
+              fakeStream(),
+              'https://api.openai.com/v1/responses',
+            ),
+          ),
         },
       } as unknown as OpenAI,
       'model-stream',
@@ -5868,7 +6127,15 @@ describe('OpenAIResponsesModel', () => {
     }
     const model = new OpenAIResponsesModel(
       {
-        responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+        baseURL: 'https://api.openai.com/v1',
+        responses: {
+          create: vi.fn(() =>
+            createResponseStreamWithURL(
+              fakeStream(),
+              'https://api.openai.com/v1/responses',
+            ),
+          ),
+        },
       } as unknown as OpenAI,
       'model-stream',
     );
@@ -5901,6 +6168,134 @@ describe('OpenAIResponsesModel', () => {
     expect(responseSpan?.spanData._response).toBeUndefined();
     expect(JSON.stringify(responseSpan?.error)).not.toContain(sensitiveDetail);
   });
+
+  it.each([
+    ['response.incomplete', 'incomplete'],
+    ['response.failed', 'failed'],
+  ] as const)(
+    'omits a custom endpoint response ID for redacted terminal event %s',
+    async (eventType, status) => {
+      const responseSpans = captureResponseSpans();
+      async function* fakeStream() {
+        yield {
+          type: eventType,
+          response: {
+            id: 'tenant-customer-response-id',
+            status,
+            output: [],
+            usage: {},
+          },
+          sequence_number: 0,
+        } as unknown as OpenAIResponseStreamEvent;
+      }
+      const model = new OpenAIResponsesModel(
+        {
+          baseURL: 'https://provider.example.test/v1',
+          responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      const received: ResponseStreamEvent[] = [];
+
+      const error = await withTrace('test', async () => {
+        try {
+          for await (const event of model.getStreamedResponse({
+            systemInstructions: undefined,
+            input: 'data',
+            modelSettings: {},
+            tools: [],
+            outputType: 'text',
+            handoffs: [],
+            tracing: 'enabled_without_data',
+            signal: undefined,
+          } as any)) {
+            received.push(event);
+          }
+        } catch (caught) {
+          return caught;
+        }
+      });
+
+      expect(error).toBeInstanceOf(ModelBehaviorError);
+      expect(
+        received.some(
+          (event) => event.type === 'model' && event.event.type === eventType,
+        ),
+      ).toBe(true);
+      expect(responseSpans).toHaveLength(1);
+      expect(
+        getSerializedResponseSpanData(responseSpans[0]!).response_id,
+      ).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ['https://api.openai.com/v1', 'resp_redacted_stream'],
+    ['https://provider.example.test/v1', undefined],
+  ] as const)(
+    'records a redacted streamed response ID only for a trusted endpoint (%s)',
+    async (baseURL, expectedResponseId) => {
+      const responseSpans = captureResponseSpans();
+      const completedEvent: OpenAIResponseStreamEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'resp_redacted_stream',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+          _request_id: 'req_redacted_stream',
+        } as any,
+        sequence_number: 0,
+      };
+      async function* fakeStream() {
+        yield completedEvent;
+      }
+      const model = new OpenAIResponsesModel(
+        {
+          baseURL,
+          responses: {
+            create: vi.fn(() =>
+              createResponseStreamWithURL(fakeStream(), `${baseURL}/responses`),
+            ),
+          },
+        } as unknown as OpenAI,
+        'model-stream',
+      );
+      await withTrace('test', async () => {
+        const iterator = model
+          .getStreamedResponse({
+            systemInstructions: undefined,
+            input: 'data',
+            modelSettings: {},
+            tools: [],
+            outputType: 'text',
+            handoffs: [],
+            tracing: 'enabled_without_data',
+            signal: undefined,
+          } as any)
+          [Symbol.asyncIterator]();
+
+        const first = await iterator.next();
+        expect(first).toMatchObject({
+          done: false,
+          value: {
+            type: 'response_done',
+            response: {
+              id: 'resp_redacted_stream',
+              requestId: 'req_redacted_stream',
+              usage: { inputTokens: 2, outputTokens: 3, totalTokens: 5 },
+            },
+          },
+        });
+        await iterator.return?.();
+      });
+
+      expect(responseSpans).toHaveLength(1);
+      expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+        expectedResponseId,
+      );
+    },
+  );
 
   it('prevents extra_body from overriding streamed request mode', async () => {
     await withTrace('test', async () => {

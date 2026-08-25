@@ -1,10 +1,12 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
 import {
+  setTraceProcessors,
   setTracingDisabled,
   UserError,
   withTrace,
   type ResponseStreamEvent,
+  type Span,
 } from '@openai/agents-core';
 import { OpenAIResponsesModel } from '../../src/openaiResponsesModel';
 import {
@@ -131,6 +133,30 @@ function withTestTrace<T>(fn: () => Promise<T>): Promise<T> {
   return withTrace('hosted-multi-agent-test', fn);
 }
 
+function captureResponseSpans(): Span<any>[] {
+  const responseSpans: Span<any>[] = [];
+  setTracingDisabled(false);
+  setTraceProcessors([
+    {
+      async onTraceStart() {},
+      async onTraceEnd() {},
+      async onSpanStart() {},
+      async onSpanEnd(span: Span<any>) {
+        if (span.spanData.type === 'response') {
+          responseSpans.push(span);
+        }
+      },
+      async shutdown() {},
+      async forceFlush() {},
+    },
+  ]);
+  return responseSpans;
+}
+
+function getSerializedResponseSpanData(span: Span<any>): Record<string, any> {
+  return (span.toJSON() as { span_data: Record<string, any> }).span_data;
+}
+
 async function getTestResponse(
   model: TestHostedMultiAgentModel,
   modelRequest: ReturnType<typeof request>,
@@ -158,6 +184,53 @@ describe('OpenAIHostedMultiAgentModel', () => {
   beforeAll(() => {
     setTracingDisabled(true);
   });
+
+  it.each([
+    ['non-streaming', false, 'https://api.openai.com/v1', 'resp_hosted'],
+    ['streaming', true, 'https://api.openai.com/v1', 'resp_hosted'],
+    [
+      'non-streaming custom',
+      false,
+      'https://provider.example.test/v1',
+      undefined,
+    ],
+    ['streaming custom', true, 'https://provider.example.test/v1', undefined],
+  ] as const)(
+    'gates redacted response IDs for hosted %s requests',
+    async (_label, stream, baseURL, expectedResponseId) => {
+      const responseSpans = captureResponseSpans();
+      const fakeWebSocket = new FakeResponsesWebSocket([
+        { type: 'response.created', response: emptyResponse('resp_hosted') },
+        {
+          type: 'response.completed',
+          response: emptyResponse('resp_hosted'),
+        },
+      ]);
+      const model = new TestHostedMultiAgentModel(
+        fakeWebSocket,
+        undefined,
+        new OpenAI({ apiKey: 'test-key', baseURL }),
+      );
+
+      try {
+        const response = await getTestResponse(
+          model,
+          request({ tracing: 'enabled_without_data' }),
+          stream,
+        );
+
+        expect(response.responseId ?? response.id).toBe('resp_hosted');
+        expect(responseSpans).toHaveLength(1);
+        expect(
+          getSerializedResponseSpanData(responseSpans[0]!).response_id,
+        ).toBe(expectedResponseId);
+      } finally {
+        await model.close();
+        setTraceProcessors([]);
+        setTracingDisabled(true);
+      }
+    },
+  );
 
   it('uses response.create over WebSocket with the hosted configuration', async () => {
     const fakeWebSocket = new FakeResponsesWebSocket([

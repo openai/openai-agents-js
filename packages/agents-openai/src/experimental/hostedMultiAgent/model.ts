@@ -94,6 +94,10 @@ type HostedWebSocketCreationOptions = {
   headers: Record<string, string>;
 };
 
+type HostedResponseEndpointMetadata = {
+  requestURL?: string;
+};
+
 class HostedMultiAgentWebSocketClosedError extends Error {
   constructor(
     message: string,
@@ -248,6 +252,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
   #webSocket?: ResponsesWebSocketLike;
   #webSocketIterator?: AsyncIterator<Record<string, any>>;
   #webSocketConnectionKey?: string;
+  #webSocketConnectionURL?: string;
   #webSocketTransportOverridesKey?: string;
   #activeResponse?: ActiveHostedResponse;
   #normalizedResponses = new WeakMap<
@@ -295,6 +300,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     const webSocket = this.#webSocket;
     this.#webSocket = undefined;
     this.#webSocketConnectionKey = undefined;
+    this.#webSocketConnectionURL = undefined;
     this.#webSocketTransportOverridesKey = undefined;
     webSocket?.close();
   }
@@ -403,19 +409,22 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
   protected override async _fetchResponse(
     request: ModelRequest,
     stream: true,
+    endpointMetadata?: HostedResponseEndpointMetadata,
   ): Promise<AsyncIterable<OpenAI.Responses.ResponseStreamEvent>>;
   protected override async _fetchResponse(
     request: ModelRequest,
     stream: false,
+    endpointMetadata?: HostedResponseEndpointMetadata,
   ): Promise<OpenAI.Responses.Response>;
   protected override async _fetchResponse(
     request: ModelRequest,
     stream: boolean,
+    endpointMetadata?: HostedResponseEndpointMetadata,
   ): Promise<
     | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
     | OpenAI.Responses.Response
   > {
-    const events = this.#runWebSocketTurn(request);
+    const events = this.#runWebSocketTurn(request, endpointMetadata);
     if (stream) {
       return events as AsyncIterable<OpenAI.Responses.ResponseStreamEvent>;
     }
@@ -436,6 +445,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
 
   async *#runWebSocketTurn(
     request: ModelRequest,
+    endpointMetadata?: HostedResponseEndpointMetadata,
   ): AsyncIterable<Record<string, any>> {
     if (this.#requestInProgress) {
       throw new UserError(
@@ -480,6 +490,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
         Boolean(this.#activeResponse),
         builtRequest.signal,
         requestTimeoutDeadline,
+        endpointMetadata,
       );
       let pendingInjections = 0;
       const injectingCallIds = new Set<string>();
@@ -860,6 +871,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     activeResponse: boolean,
     signal: AbortSignal | undefined,
     requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
+    endpointMetadata: HostedResponseEndpointMetadata | undefined,
   ): Promise<ResponsesWebSocketLike> {
     if (signal?.aborted) {
       throw new OpenAI.APIUserAbortError();
@@ -876,6 +888,9 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       }
       if (this.#webSocket) {
         if (isReusableWebSocket(this.#webSocket)) {
+          if (endpointMetadata) {
+            endpointMetadata.requestURL = this.#webSocketConnectionURL;
+          }
           return this.#webSocket;
         }
         this.#dropWebSocketConnection();
@@ -914,8 +929,12 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
       this.#webSocket = this._createResponsesWebSocket(creationOptions);
       this.#webSocketIterator = this.#webSocket[Symbol.asyncIterator]();
       this.#webSocketConnectionKey = connectionKey;
+      this.#webSocketConnectionURL = connectionURL;
     }
     this.#webSocketTransportOverridesKey = transportOverridesKey;
+    if (endpointMetadata) {
+      endpointMetadata.requestURL = this.#webSocketConnectionURL;
+    }
     return this.#webSocket;
   }
 
