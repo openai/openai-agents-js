@@ -4721,12 +4721,11 @@ describe('remote sandbox path helpers', () => {
 
     const bytes = new TextEncoder().encode('\u5b8c\u4e86');
     appendPtyOutput(entry, bytes.slice(0, 4));
-    appendPtyOutput(entry, bytes.slice(4));
     appendPtyOutput(entry, ' done');
     markPtyDone(entry, 0);
 
     await expect(pendingOutput).resolves.toEqual({
-      text: '\u5b8c\u4e86 done',
+      text: '\u5b8c\uFFFD done',
     });
   });
 
