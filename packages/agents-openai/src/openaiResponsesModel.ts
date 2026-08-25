@@ -89,6 +89,32 @@ import { FAKE_ID } from './openaiItemIds';
 
 type ModelTracingParent = Parameters<typeof createResponseSpan>[1];
 
+type ResponsesEndpointTransport = 'http' | 'websocket';
+
+function isOfficialOpenAIEndpoint(
+  baseURL: string | URL | undefined,
+  transport: ResponsesEndpointTransport,
+): boolean {
+  if (!baseURL) {
+    return false;
+  }
+
+  try {
+    const parsedURL = new URL(baseURL);
+    if (parsedURL.hostname !== 'api.openai.com' || parsedURL.port.length > 0) {
+      return false;
+    }
+
+    if (transport === 'http') {
+      return parsedURL.protocol === 'https:';
+    }
+
+    return parsedURL.protocol === 'https:' || parsedURL.protocol === 'wss:';
+  } catch {
+    return false;
+  }
+}
+
 function getModelTracingParent(request: ModelRequest): ModelTracingParent {
   return (
     request as ModelRequest & {
@@ -3306,9 +3332,22 @@ type ResponseStreamWithRequestID =
   AsyncIterable<OpenAI.Responses.ResponseStreamEvent> & {
     withResponse?: () => Promise<{
       data: AsyncIterable<OpenAI.Responses.ResponseStreamEvent>;
+      response?: Response;
       request_id: string | null;
     }>;
   };
+
+type ResponsePromiseWithRequestMetadata<T> = Promise<T> & {
+  withResponse?: () => Promise<{
+    data: T;
+    response?: Response;
+    request_id: string | null;
+  }>;
+};
+
+type ResponseEndpointMetadata = {
+  requestURL?: string;
+};
 
 function getOpenAIResponseRequestId(
   response: object | undefined,
@@ -3377,6 +3416,22 @@ export class OpenAIResponsesModel implements Model {
 
   getRetryAdvice(args: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
     return getOpenAIRetryAdvice(args);
+  }
+
+  /**
+   * @internal
+   */
+  protected _isOfficialOpenAIEndpoint(
+    baseURL: string | URL | undefined,
+  ): boolean {
+    return isOfficialOpenAIEndpoint(baseURL, 'http');
+  }
+
+  /**
+   * @internal
+   */
+  protected _usesOfficialOpenAIEndpoint(): boolean {
+    return this._isOfficialOpenAIEndpoint(this._client.baseURL);
   }
 
   /**
@@ -3474,14 +3529,17 @@ export class OpenAIResponsesModel implements Model {
   protected async _fetchResponse(
     request: ModelRequest,
     stream: true,
+    endpointMetadata?: ResponseEndpointMetadata,
   ): Promise<AsyncIterable<OpenAI.Responses.ResponseStreamEvent>>;
   protected async _fetchResponse(
     request: ModelRequest,
     stream: false,
+    endpointMetadata?: ResponseEndpointMetadata,
   ): Promise<OpenAI.Responses.Response>;
   protected async _fetchResponse(
     request: ModelRequest,
     stream: boolean,
+    endpointMetadata?: ResponseEndpointMetadata,
   ): Promise<
     | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
     | OpenAI.Responses.Response
@@ -3521,6 +3579,9 @@ export class OpenAIResponsesModel implements Model {
         .withResponse;
       if (typeof withResponse === 'function') {
         const streamedResponse = await withResponse.call(responsePromise);
+        if (endpointMetadata) {
+          endpointMetadata.requestURL = streamedResponse.response?.url;
+        }
         response = withAttachedResponseRequestId(
           streamedResponse.data,
           streamedResponse.request_id ?? undefined,
@@ -3530,7 +3591,16 @@ export class OpenAIResponsesModel implements Model {
           (await responsePromise) as AsyncIterable<OpenAI.Responses.ResponseStreamEvent>;
       }
     } else {
-      response = (await responsePromise) as OpenAI.Responses.Response;
+      const responseWithMetadata =
+        responsePromise as ResponsePromiseWithRequestMetadata<OpenAI.Responses.Response>;
+      const withResponse = responseWithMetadata.withResponse;
+      if (endpointMetadata && typeof withResponse === 'function') {
+        const receivedResponse = await withResponse.call(responsePromise);
+        endpointMetadata.requestURL = receivedResponse.response?.url;
+        response = receivedResponse.data;
+      } else {
+        response = (await responsePromise) as OpenAI.Responses.Response;
+      }
     }
 
     if (logger.dontLogModelData) {
@@ -3720,7 +3790,16 @@ export class OpenAIResponsesModel implements Model {
   async getResponse(request: ModelRequest): Promise<ModelResponse> {
     const { response, rawUsage, preservedUsage } = await withResponseSpan(
       async (span) => {
-        const response = await this._fetchResponse(request, false);
+        const redactedResponseIdEndpointWasTrusted =
+          request.tracing === 'enabled_without_data' &&
+          this._usesOfficialOpenAIEndpoint();
+        const endpointMetadata: ResponseEndpointMetadata | undefined =
+          request.tracing === 'enabled_without_data' ? {} : undefined;
+        const response = await this._fetchResponse(
+          request,
+          false,
+          endpointMetadata,
+        );
         const rawUsage =
           request.modelSettings.preserveRawUsage === true
             ? snapshotRawUsage(response.usage)
@@ -3731,7 +3810,14 @@ export class OpenAIResponsesModel implements Model {
           this._getUnsuccessfulResponseTerminalType(response);
 
         if (request.tracing) {
-          span.spanData.response_id = response.id;
+          if (
+            request.tracing === true ||
+            (redactedResponseIdEndpointWasTrusted &&
+              this._isOfficialOpenAIEndpoint(endpointMetadata?.requestURL) &&
+              this._usesOfficialOpenAIEndpoint())
+          ) {
+            span.spanData.response_id = response.id;
+          }
           if (request.tracing === true || !terminalType) {
             span.spanData._input = request.input;
             span.spanData._response = response;
@@ -3787,7 +3873,16 @@ export class OpenAIResponsesModel implements Model {
           span.spanData._input = request.input;
         }
       }
-      const response = await this._fetchResponse(request, true);
+      const redactedResponseIdEndpointWasTrusted =
+        request.tracing === 'enabled_without_data' &&
+        this._usesOfficialOpenAIEndpoint();
+      const endpointMetadata: ResponseEndpointMetadata | undefined =
+        request.tracing === 'enabled_without_data' ? {} : undefined;
+      const response = await this._fetchResponse(
+        request,
+        true,
+        endpointMetadata,
+      );
 
       let finalResponse: OpenAI.Responses.Response | undefined;
       const outputItemsByIndex = new Map<number, Record<string, any>>();
@@ -3829,6 +3924,16 @@ export class OpenAIResponsesModel implements Model {
               terminalResponse,
               eventType,
             );
+          if (
+            span &&
+            terminalResponse &&
+            request.tracing === 'enabled_without_data' &&
+            redactedResponseIdEndpointWasTrusted &&
+            this._isOfficialOpenAIEndpoint(endpointMetadata?.requestURL) &&
+            this._usesOfficialOpenAIEndpoint()
+          ) {
+            span.spanData.response_id = terminalResponse.id;
+          }
           if (unsuccessfulTerminalType) {
             terminalError = createUnsuccessfulResponseError(
               unsuccessfulTerminalType,
@@ -3841,8 +3946,8 @@ export class OpenAIResponsesModel implements Model {
               finalResponse = terminalResponse;
             }
             if (span && terminalResponse) {
-              span.spanData.response_id = terminalResponse.id;
               if (request.tracing === true) {
+                span.spanData.response_id = terminalResponse.id;
                 span.spanData._response = terminalResponse;
               }
             }
@@ -3920,7 +4025,9 @@ export class OpenAIResponsesModel implements Model {
       }
 
       if (request.tracing && span && finalResponse) {
-        span.spanData.response_id = finalResponse.id;
+        if (request.tracing === true) {
+          span.spanData.response_id = finalResponse.id;
+        }
         if (request.tracing === true || !terminalError) {
           span.spanData._response = finalResponse;
         }
@@ -3990,6 +4097,24 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     );
   }
 
+  /**
+   * @internal
+   */
+  protected override _isOfficialOpenAIEndpoint(
+    baseURL: string | URL | undefined,
+  ): boolean {
+    return isOfficialOpenAIEndpoint(baseURL, 'websocket');
+  }
+
+  /**
+   * @internal
+   */
+  protected override _usesOfficialOpenAIEndpoint(): boolean {
+    return this._isOfficialOpenAIEndpoint(
+      this.#websocketBaseURL ?? this._client.baseURL,
+    );
+  }
+
   override getRetryAdvice(
     args: ModelRetryAdviceRequest,
   ): ModelRetryAdvice | undefined {
@@ -4028,14 +4153,17 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   protected async _fetchResponse(
     request: ModelRequest,
     stream: true,
+    endpointMetadata?: ResponseEndpointMetadata,
   ): Promise<AsyncIterable<OpenAI.Responses.ResponseStreamEvent>>;
   protected async _fetchResponse(
     request: ModelRequest,
     stream: false,
+    endpointMetadata?: ResponseEndpointMetadata,
   ): Promise<OpenAI.Responses.Response>;
   protected async _fetchResponse(
     request: ModelRequest,
     stream: boolean,
+    endpointMetadata?: ResponseEndpointMetadata,
   ): Promise<
     | AsyncIterable<OpenAI.Responses.ResponseStreamEvent>
     | OpenAI.Responses.Response
@@ -4045,7 +4173,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     const builtRequest = this._buildResponsesCreateRequest(request, true);
 
     if (stream) {
-      return this.#iterWebSocketResponseEvents(builtRequest);
+      return this.#iterWebSocketResponseEvents(builtRequest, endpointMetadata);
     }
 
     let receivedResponseEvent = false;
@@ -4053,6 +4181,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
       let finalResponse: OpenAI.Responses.Response | undefined;
       for await (const event of this.#iterWebSocketResponseEvents(
         builtRequest,
+        endpointMetadata,
       )) {
         receivedResponseEvent = true;
         const eventType = (event as { type?: string }).type;
@@ -4096,6 +4225,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
 
   async *#iterWebSocketResponseEvents(
     builtRequest: BuiltResponsesCreateRequest,
+    endpointMetadata?: ResponseEndpointMetadata,
   ): AsyncIterable<OpenAI.Responses.ResponseStreamEvent> {
     const requestTimeoutDeadline =
       this.#createWebSocketRequestTimeoutDeadline();
@@ -4113,6 +4243,9 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         builtRequest,
         requestTimeoutDeadline,
       );
+      if (endpointMetadata) {
+        endpointMetadata.requestURL = wsURL;
+      }
       throwIfAborted(builtRequest.signal);
       let connection = await this.#ensureWebSocketConnection(
         wsURL,
