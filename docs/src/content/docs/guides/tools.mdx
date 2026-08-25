@@ -160,6 +160,12 @@ You can turn **any** function into a tool with the `tool()` helper.
 | `inputGuardrails` | No | Guardrails that run before the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
 | `outputGuardrails` | No | Guardrails that run after the tool executes; can reject or throw. See [Guardrails](/openai-agents-js/guides/guardrails#tool-guardrails). |
 
+#### Conditional tool availability
+
+Use `isEnabled` for request-scoped capability visibility, environment-specific availability, feature flags, or experiments. The runner evaluates the predicate while preparing the model-visible tool set for the current turn.
+
+`isEnabled` does not replace authorization that depends on the tool arguments or the resource being accessed, because the predicate runs before the model produces those arguments. Enforce argument- and resource-level authorization inside `execute`, or add [tool input guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) and [approvals](/openai-agents-js/guides/human-in-the-loop) when appropriate. MCP servers must authorize their own protected operations. See [Context management](/openai-agents-js/guides/context#use-local-context-for-capability-visibility) for a pattern that applies one application policy across function tools, local MCP tools, and handoffs.
+
 Supported Standard Schema parameters are converted to JSON Schema for the model and validated locally before `execute` runs. The validation output type, including library transforms and defaults, becomes the inferred `execute` argument type. See [Schema validation](/openai-agents-js/guides/schemas) for a Valibot example and current limitations.
 
 #### SDK-only custom data
