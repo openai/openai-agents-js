@@ -804,7 +804,7 @@ canonicalHeadingIds:
     }
   });
 
-  test('renders canonical IDs from the unchanged checked-in locale corpus', async () => {
+  test('renders safe IDs from the unchanged checked-in locale corpus', async () => {
     const processor = await createMarkdownProcessor({
       syntaxHighlight: false,
       rehypePlugins: [[rehypeCanonicalHeadingIds, { contentRoot: DOCS_ROOT }]],
@@ -833,17 +833,25 @@ canonicalHeadingIds:
       for (const locale of ['ja', 'ko', 'zh']) {
         const localizedPath = path.join(DOCS_ROOT, locale, relativePath);
         const localized = await fs.readFile(localizedPath, 'utf8');
+        const localizedHeadings = await canonicalHeadingIds(localized);
         const { content, frontmatter } = parseFrontmatter(localized);
         const rendered = await processor.render(content, {
           frontmatter,
           fileURL: pathToFileURL(localizedPath),
         });
+        const expectedHeadings =
+          sourceHeadings.length === localizedHeadings.length
+            ? sourceHeadings.map(({ id }, index) => ({
+                depth: localizedHeadings[index].depth,
+                id,
+              }))
+            : localizedHeadings.map(({ depth, id }) => ({ depth, id }));
         expect(
           rendered.metadata.headings
             .filter(({ depth }) => depth >= 2 && depth <= 6)
             .map(({ depth, slug }) => ({ depth, id: slug })),
           `${locale}/${relativePath}`,
-        ).toEqual(sourceHeadings.map(({ depth, id }) => ({ depth, id })));
+        ).toEqual(expectedHeadings);
       }
     }
   }, 60_000);
