@@ -16,6 +16,11 @@ import { Agent } from '../src/agent';
 import { handoff } from '../src/handoff';
 import { z } from 'zod';
 import logger from '../src/logger';
+import {
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  ToolGuardrailFunctionOutputFactory,
+} from '../src/toolGuardrail';
 
 class StubServer extends NodeMCPServerStdio {
   public toolList: any[];
@@ -534,6 +539,52 @@ describe('MCP tools uniqueness', () => {
         'mcp_calendar__update',
       ]);
     });
+  });
+
+  it('keeps server guardrails isolated through filtering, caching, and name prefixing', async () => {
+    const inputGuardrail = defineToolInputGuardrail({
+      name: 'guarded-input',
+      run: async () => ToolGuardrailFunctionOutputFactory.allow(),
+    });
+    const outputGuardrail = defineToolOutputGuardrail({
+      name: 'guarded-output',
+      run: async () => ToolGuardrailFunctionOutputFactory.allow(),
+    });
+    const guardedServer = new StubServer('guarded', [
+      toolNamed('allowed'),
+      toolNamed('filtered'),
+    ]);
+    guardedServer.toolFilter = { allowedToolNames: ['allowed'] };
+    guardedServer.toolInputGuardrails = [inputGuardrail];
+    guardedServer.toolOutputGuardrails = [outputGuardrail];
+    const unguardedServer = new StubServer('unguarded', [toolNamed('plain')]);
+    const options = {
+      mcpServers: [guardedServer, unguardedServer],
+      runContext: new RunContext({}),
+      agent: new Agent({ name: 'GuardrailIsolationAgent' }),
+      includeServerInToolNames: true,
+    };
+
+    const first = (await getAllMcpTools(options)) as FunctionTool[];
+    const second = (await getAllMcpTools(options)) as FunctionTool[];
+
+    expect(first.map((tool) => tool.name)).toEqual([
+      'mcp_guarded__allowed',
+      'mcp_unguarded__plain',
+    ]);
+    expect(first[0].inputGuardrails).toEqual([inputGuardrail]);
+    expect(first[0].outputGuardrails).toEqual([outputGuardrail]);
+    expect(first[1].inputGuardrails).toEqual([]);
+    expect(first[1].outputGuardrails).toEqual([]);
+    expect(second[0].inputGuardrails).not.toBe(first[0].inputGuardrails);
+    expect(second[0].outputGuardrails).not.toBe(first[0].outputGuardrails);
+
+    first[0].inputGuardrails?.splice(0);
+    first[0].outputGuardrails?.splice(0);
+    expect(guardedServer.toolInputGuardrails).toEqual([inputGuardrail]);
+    expect(guardedServer.toolOutputGuardrails).toEqual([outputGuardrail]);
+    expect(second[0].inputGuardrails).toEqual([inputGuardrail]);
+    expect(second[0].outputGuardrails).toEqual([outputGuardrail]);
   });
 
   it('redacts URL credentials from prefixed tool names while dispatching the original tool name', async () => {

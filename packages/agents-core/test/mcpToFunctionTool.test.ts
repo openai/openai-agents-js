@@ -8,6 +8,11 @@ import { withTrace } from '../src/tracing';
 import { withCustomSpan } from '../src/tracing/createSpans';
 import { getCurrentSpan } from '../src/tracing';
 import { UserError } from '../src/errors';
+import {
+  defineToolInputGuardrail,
+  defineToolOutputGuardrail,
+  ToolGuardrailFunctionOutputFactory,
+} from '../src/toolGuardrail';
 
 const SCHEMA_DEPTH_ERROR =
   'JSON schema is too deeply nested to process safely. Simplify or flatten the schema, or disable strict mode.';
@@ -126,6 +131,58 @@ function convertExpectingStrictFallback(
 }
 
 describe('mcpToFunctionTool', () => {
+  it.each([false, true])(
+    'attaches isolated server guardrail arrays with strict conversion=$convertSchemasToStrict',
+    (convertSchemasToStrict) => {
+      const inputGuardrail = defineToolInputGuardrail({
+        name: 'server-input',
+        run: async () => ToolGuardrailFunctionOutputFactory.allow(),
+      });
+      const outputGuardrail = defineToolOutputGuardrail({
+        name: 'server-output',
+        run: async () => ToolGuardrailFunctionOutputFactory.allow(),
+      });
+      const server: MCPServer = {
+        name: 'guarded-server',
+        cacheToolsList: false,
+        toolInputGuardrails: [inputGuardrail],
+        toolOutputGuardrails: [outputGuardrail],
+        connect: async () => {},
+        close: async () => {},
+        listTools: async () => [],
+        callTool: async () => [],
+        invalidateToolsCache: async () => {},
+      };
+      const mcpTool = {
+        name: 'guarded-tool',
+        description: '',
+        inputSchema: {
+          type: 'object' as const,
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+      };
+
+      const first = mcpToFunctionTool(mcpTool, server, convertSchemasToStrict);
+      const second = mcpToFunctionTool(mcpTool, server, convertSchemasToStrict);
+
+      expect(first.inputGuardrails).toEqual([inputGuardrail]);
+      expect(first.outputGuardrails).toEqual([outputGuardrail]);
+      expect(first.inputGuardrails).not.toBe(server.toolInputGuardrails);
+      expect(first.outputGuardrails).not.toBe(server.toolOutputGuardrails);
+      expect(second.inputGuardrails).not.toBe(first.inputGuardrails);
+      expect(second.outputGuardrails).not.toBe(first.outputGuardrails);
+
+      first.inputGuardrails?.splice(0);
+      first.outputGuardrails?.splice(0);
+      expect(server.toolInputGuardrails).toEqual([inputGuardrail]);
+      expect(server.toolOutputGuardrails).toEqual([outputGuardrail]);
+      expect(second.inputGuardrails).toEqual([inputGuardrail]);
+      expect(second.outputGuardrails).toEqual([outputGuardrail]);
+    },
+  );
+
   it('preserves non-strict behavior when schema conversion is disabled', () => {
     const server: MCPServer = {
       name: 'stub',
