@@ -26,6 +26,7 @@ canonicalHeadingIds:
     id: 'input-filters'
     aliases:
       - '输入过滤器'
+      - '输入筛选器'
   - depth: 2
     id: 'recommended-prompts'
     aliases:
@@ -43,17 +44,17 @@ import handoffInputExample from '../../../../../../examples/docs/handoffs/handof
 import inputFilterExample from '../../../../../../examples/docs/handoffs/inputFilter.ts?raw';
 import recommendedPromptExample from '../../../../../../examples/docs/handoffs/recommendedPrompt.ts?raw';
 
-交接允许一个智能体将对话的一部分委托给另一个智能体。当不同智能体分别专注于特定领域时，这种方式非常有用。例如，在客户支持应用中，您可能会设置分别处理预订、退款或常见问题的智能体。
+交接允许一个智能体将部分对话委派给另一个智能体。当不同智能体分别专注于特定领域时，这种方式非常有用。例如，在客户支持应用中，可以由不同智能体分别处理预订、退款或常见问题。
 
-对于 LLM，交接以工具的形式呈现。如果交接给名为 `Refund Agent` 的智能体，工具名称将是 `transfer_to_refund_agent`。
+交接以工具的形式呈现给 LLM。如果交接给名为 `Refund Agent` 的智能体，工具名称将是 `transfer_to_refund_agent`。
 
 > 当您阅读完[智能体](/openai-agents-js/zh/guides/agents#composition-patterns)，并确定应由专业智能体接管对话后，再阅读本页。如果专业智能体应在原智能体背后提供支持，请改用 [agents as tools](/openai-agents-js/zh/guides/tools#4-agents-as-tools)。
 
 ## 交接的创建
 
-每个智能体都接受一个 `handoffs` 选项。该选项可以包含其他 `Agent` 实例，也可以包含由 `handoff()` 辅助函数返回的 `Handoff` 对象。
+每个智能体都接受一个 `handoffs` 选项。它可以包含其他 `Agent` 实例，也可以包含由 `handoff()` 辅助函数返回的 `Handoff` 对象。
 
-如果传入普通的 `Agent` 实例，其 `handoffDescription`（如果已提供）会附加到默认工具描述中。使用它可以明确说明模型应在何时选择该交接。
+如果传入普通的 `Agent` 实例，其 `handoffDescription`（如有提供）会追加到默认工具描述中。可使用它说明模型应在何时选择该交接。
 
 ### 基本用法
 
@@ -61,67 +62,69 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 ### 通过 `handoff()` 自定义交接
 
-`handoff()` 函数允许您调整生成的工具。
+`handoff()` 函数可用于调整生成的工具。
 
 - `agent` – 要交接到的智能体。
 - `toolNameOverride` – 覆盖默认的 `transfer_to_<agent_name>` 工具名称。
 - `toolDescriptionOverride` – 覆盖默认工具描述。
-- `onHandoff` – 交接发生时调用的回调。它接收一个 `RunContext`；配置 `inputType` 后，还会接收解析后的交接载荷。
+- `onHandoff` – 交接发生时调用的回调。它接收 `RunContext`；配置 `inputType` 后，还会接收解析后的交接有效负载。
 - `inputType` – 交接工具调用参数的模式。
-- `inputFilter` – 过滤传递给下一个智能体的历史记录。
-- `isEnabled` – 布尔值或谓词，仅对匹配的运行公开该交接。
+- `inputFilter` – 对传递给下一个智能体的历史记录进行筛选。
+- `isEnabled` – 布尔值或谓词，仅在符合条件的运行中提供该交接。
 
-`handoff()` 辅助函数始终将控制权转交给您传入的特定 `agent`。如果有多个可能的目标，请为每个目标注册一个交接，并让模型从中选择。如果您自己的交接代码必须在调用时决定返回哪个智能体，请使用自定义 `Handoff`。
+`handoff()` 辅助函数始终将控制权移交给您传入的特定 `agent`。如果存在多个可能的目标，请为每个目标注册一个交接，并让模型从中选择。当您自己的交接代码必须在调用时决定返回哪个智能体时，请使用自定义 `Handoff`。
 
 <Code lang="typescript" code={customizeHandoffExample} title="自定义交接" />
 
 ## 交接输入
 
-有时，您希望模型在选择交接时附带一个小型结构化载荷。在这种情况下，请同时定义 `inputType` 和 `onHandoff`。
+有时，您希望模型在选择交接时附带一个小型结构化有效负载。在这种情况下，请同时定义 `inputType` 和 `onHandoff`。
 
 <Code lang="typescript" code={handoffInputExample} title="交接输入" />
 
-`inputType` 描述交接工具调用本身的参数。SDK 会将该模式作为交接工具的 `parameters` 公开给模型，在本地解析返回的参数，并将解析后的值传递给 `onHandoff`。
+`inputType` 描述交接工具调用本身的参数。SDK 将该模式作为交接工具的 `parameters` 提供给模型，在本地解析返回的参数，并将解析后的值传递给 `onHandoff`。
 
-它不会替换下一个智能体的主要输入，也不会选择其他目标。`handoff()` 辅助函数仍会转交给您封装的特定智能体，并且接收方智能体仍会看到对话历史记录，除非您使用 `inputFilter` 对其进行更改。
+SDK 在准备可供模型使用的交接时评估 `isEnabled`，此时模型尚未返回交接参数，因此它无法对带参数交接中的值进行鉴权。当鉴权取决于解析后的字段时，应在 `onHandoff` 开始执行时、任何应用副作用发生之前进行检查。如果鉴权失败，请抛出异常而不是返回；`onHandoff` 成功返回后，SDK 会继续执行交接。工具输入护栏适用于函数工具，而不适用于交接。
 
-`inputType` 也独立于 `RunContext`。请将它用于模型在交接时决定的元数据，而不是您本地已有的应用状态或依赖项。
+它不会替换下一个智能体的主输入，也不会选择其他目标。`handoff()` 辅助函数仍会交接到您封装的特定智能体，并且接收方智能体仍可看到对话历史记录，除非您使用 `inputFilter` 对其进行修改。
+
+`inputType` 也独立于 `RunContext`。它应当用于模型在交接时决定的元数据，而不是您已在本地拥有的应用状态或依赖项。
 
 ### `inputType` 的适用场景
 
-当交接需要少量由模型生成的路由元数据（例如 `reason`、`language`、`priority` 或 `summary`）时，请使用 `inputType`。例如，分诊智能体可以使用 `{ reason: 'duplicate_charge', priority: 'high' }` 交接给退款智能体，而 `onHandoff` 可以在退款智能体接管之前记录或持久化这些元数据。
+当交接需要一小部分由模型生成的路由元数据（如 `reason`、`language`、`priority` 或 `summary`）时，请使用 `inputType`。例如，分诊智能体可以使用 `{ reason: 'duplicate_charge', priority: 'high' }` 交接给退款智能体，而 `onHandoff` 可以在退款智能体接管前记录或持久化这些元数据。
 
 如果目标不同，请选择其他机制：
 
 - 将现有应用状态放入 `RunContext`。
-- 如果要更改接收方智能体看到的历史记录，请使用 `inputFilter`。
-- 如果有多个可能的专业智能体，请为每个目标注册一个交接。`inputType` 可以为选定的交接添加元数据，但不会负责在不同目标之间进行分派。
-- 如果希望 SDK 在 `onHandoff` 运行前验证解析后的载荷，建议使用 Zod 模式或受支持的 Standard Schema 值；原始 JSON Schema 仅定义发送给模型的工具契约。有关 Standard Schema 示例，请参阅[模式验证](/openai-agents-js/zh/guides/schemas)。
+- 如果要更改接收方智能体可见的历史记录，请使用 `inputFilter`。
+- 如果存在多个可能的专业智能体，请为每个目标注册一个交接。`inputType` 可以为选定的交接添加元数据，但不会在不同目标之间进行分派。
+- 如果希望 SDK 在运行 `onHandoff` 前验证解析后的有效负载，请优先使用 Zod 模式或受支持的 Standard Schema 值；原始 JSON Schema 仅定义发送给模型的工具契约。有关 Standard Schema 的示例，请参阅[模式验证](/openai-agents-js/zh/guides/schemas)。
 
-## 输入过滤器
+## 输入筛选器
 
 默认情况下，交接会接收完整的对话历史记录。要修改传递给下一个智能体的内容，请提供 `inputFilter`。常用辅助函数位于 `@openai/agents-core/extensions` 中。
 
-<Code lang="typescript" code={inputFilterExample} title="输入过滤器" />
+<Code lang="typescript" code={inputFilterExample} title="输入筛选器" />
 
 `inputFilter` 接收并返回一个 `HandoffInputData` 对象：
 
 - `inputHistory` – 运行开始前的输入历史记录。
-- `preHandoffItems` – 发生交接的轮次之前生成的项目。
+- `preHandoffItems` – 交接发生轮次之前生成的项目。
 - `newItems` – 当前轮次中生成的项目，包括交接调用和输出项目。
 - `runContext` – 当前运行上下文。
 
-如果您还在 `Runner` 上配置了 `handoffInputFilter`，则对于该特定交接，交接级别的 `inputFilter` 优先级更高。
+如果您还在 `Runner` 上配置了 `handoffInputFilter`，则该次交接的 `inputFilter` 优先于前者。
 
 <Aside type="note">
-  交接始终在单次运行内进行。输入护栏仍然仅适用于链中的
-  第一个智能体，而输出护栏仅适用于生成最终输出的智能体。当您需要对工作流内
-  每次自定义函数工具调用执行检查时，请使用工具护栏。
+  交接会保持在单次运行内。输入护栏仍然仅适用于链中的
+  第一个智能体，输出护栏仅适用于生成最终输出的智能体。
+  如果需要检查工作流中的每次自定义函数工具调用， 请使用工具护栏。
 </Aside>
 
 ## 推荐提示
 
-当提示中提及交接时，LLM 的响应会更加可靠。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供推荐的前缀。
+如果提示中提及交接，LLM 的响应会更可靠。SDK 通过 `RECOMMENDED_PROMPT_PREFIX` 提供推荐的前缀。
 
 <Code lang="typescript" code={recommendedPromptExample} title="推荐提示" />
 
@@ -129,6 +132,6 @@ import recommendedPromptExample from '../../../../../../examples/docs/handoffs/r
 
 - [智能体](/openai-agents-js/zh/guides/agents#composition-patterns)：用于在管理器与交接之间进行选择。
 - [智能体编排](/openai-agents-js/zh/guides/multi-agent)：用于了解更广泛的工作流权衡。
-- [工具](/openai-agents-js/zh/guides/tools#4-agents-as-tools)：用于了解使用 `agent.asTool()` 的管理器模式替代方案。
+- [工具](/openai-agents-js/zh/guides/tools#4-agents-as-tools)：用于了解使用 `agent.asTool()` 的管理器式替代方案。
 - [运行智能体](/openai-agents-js/zh/guides/running-agents)：用于了解交接在运行时的行为。
-- [执行结果](/openai-agents-js/zh/guides/results#final-output)：用于了解交接图中的类型化 `finalOutput`。
+- [执行结果](/openai-agents-js/zh/guides/results#final-output)：用于了解跨交接图的类型化 `finalOutput`。

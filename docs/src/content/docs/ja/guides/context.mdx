@@ -7,9 +7,14 @@ canonicalHeadingIds:
     aliases:
       - 'ローカルコンテキスト'
   - depth: 3
+    id: 'use-local-context-for-capability-visibility'
+    aliases:
+      - '機能の可視性におけるローカルコンテキストの利用'
+  - depth: 3
     id: 'what-runcontext-exposes'
     aliases:
       - 'runcontext-の公開情報'
+      - 'runcontext-が公開するもの'
   - depth: 2
     id: 'llm-visible-context'
     aliases:
@@ -19,10 +24,10 @@ canonicalHeadingIds:
 import { Aside, Code } from '@astrojs/starlight/components';
 import localContextExample from '../../../../../../examples/docs/context/localContext.ts?raw';
 
-コンテキストは多義的に使われる用語です。主に考慮すべきコンテキストには、次の 2 種類があります。
+コンテキストは、さまざまな意味で使われる用語です。考慮すべきコンテキストには、主に 2 つの種類があります。
 
-1. **ローカルコンテキスト** は、実行中にコードからアクセスできるコンテキストです。これには、ツールが必要とする依存関係やデータ、`onHandoff` などのコールバック、ライフサイクルフックが含まれます。
-2. **LLM から見えるコンテキスト** は、言語モデルが回答を生成するときに参照できるコンテキストです。
+1. 実行中にコードからアクセスできる **ローカルコンテキスト**：ツールが必要とする依存関係やデータ、`onHandoff` などのコールバック、ライフサイクルフック
+2. 言語モデルがレスポンスを生成するときに参照できる **LLM から見えるコンテキスト**
 
 ## ローカルコンテキスト
 
@@ -34,7 +39,7 @@ import localContextExample from '../../../../../../examples/docs/context/localCo
   title="ローカルコンテキストの例"
 />
 
-1 回の実行に関与するすべてのエージェント、ツール、フックでは、同じ **型** のコンテキストを使用する必要があります。
+単一の実行に参加するすべてのエージェント、ツール、フックでは、同じ **型** のコンテキストを使用する必要があります。
 
 ローカルコンテキストは、次のような用途に使用します。
 
@@ -43,41 +48,54 @@ import localContextExample from '../../../../../../examples/docs/context/localCo
 - ヘルパー関数
 
 <Aside type="note">
-  コンテキストオブジェクトは LLM に **送信されません**
-  。これは完全にローカルなものであり、 自由に読み書きできます。
+  コンテキストオブジェクトは LLM に送信
+  **されません**。これは完全にローカルなものであり、 自由に読み書きできます。
 </Aside>
 
-1 回の実行内では、派生コンテキストは、基盤となる同一のアプリコンテキスト、承認状態、使用量の追跡情報を共有します。ネストされた `agent.asTool()` の実行には異なる `toolInput` が設定される場合がありますが、デフォルトではアプリ状態の独立したコピーは作成されません。
+単一の実行内では、派生したコンテキストは、基になる同じアプリケーションコンテキスト、承認、および使用量の追跡を共有します。ネストされた `agent.asTool()` の実行には別の `toolInput` を関連付けられますが、デフォルトではアプリケーション状態の分離されたコピーは作成されません。
 
-### `RunContext` の公開情報
+### 機能の可視性におけるローカルコンテキストの利用
 
-`RunContext<T>` は、アプリで定義したコンテキストオブジェクトのラッパーです。実際には、主に次の項目を使用します。
+関数ツール、ローカル MCP ツール、ハンドオフが同じリクエストポリシーに依存する場合は、ポリシーの入力またはヘルパーをアプリケーションコンテキストに保持します。SDK の各インターフェースでは、それぞれのコールバックを通じて現在の実行コンテキストが公開されます。
 
-- `runContext.context`：アプリ独自の変更可能な状態と依存関係
-- `runContext.usage`：現在の実行で集計されたトークンおよびリクエストの使用量
-- `runContext.toolInput`：現在の実行が `agent.asTool()` 内で行われている場合の構造化入力
-- `runContext.approveTool(...)` / `runContext.rejectTool(...)`：承認状態をプログラムから更新する場合
+- `tool()` で作成された関数ツールでは、その `isEnabled` 述語に、現在の `RunContext` を `runContext` プロパティとして持つオブジェクトが渡されます。
+- ハンドオフの `isEnabled` 述語には、現在の `RunContext` を `runContext` プロパティとして持つオブジェクトが渡されます。
+- 呼び出し可能な MCP [`toolFilter`](/openai-agents-js/ja/guides/mcp#tool-filtering) には、現在の `RunContext` を `runContext` プロパティとして持つ `MCPToolFilterContext` が渡されます。
 
-アプリで定義したオブジェクトは `runContext.context` のみです。その他のフィールドは、SDK が管理する実行時メタデータです。
+機能ごとに個別のリストを管理するのではなく、共有アプリケーションポリシーをこれらのコールバックに適合させてください。コールバックは、現在のターンで SDK がモデルから見えるセットに含める機能を制御します。これらは、モデルがツールまたはハンドオフの引数を生成する前に実行されるため、モデルが生成した引数やリソースの選択を認可することはできません。関数ツールの場合は、`execute` 内でこれらの判断を適用するか、必要に応じて[ツール入力ガードレール](/openai-agents-js/ja/guides/guardrails#tool-guardrails)と[承認](/openai-agents-js/ja/guides/human-in-the-loop)を追加してください。MCP サーバーは、保護された操作を自身で認可する必要があります。`inputType` を持つハンドオフでは、アプリケーションの副作用が発生する前に、`onHandoff` の先頭で解析済みの入力を確認し、認可に失敗した場合は例外をスローしてください。`onHandoff` が正常に終了すると転送が続行されます。また、ツール入力ガードレールはハンドオフでは実行されません。コールバックのライフサイクルについては、[ハンドオフ入力](/openai-agents-js/ja/guides/handoffs#handoff-inputs)を参照してください。
 
-後で [人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop) のために [`RunState`](/openai-agents-js/ja/guides/results#interruptions-and-resumable-state) をシリアライズする場合、この実行時メタデータも状態とともに保存されます。シリアライズした状態を永続化または送信する予定がある場合は、`runContext.context` に機密情報を含めないでください。
+呼び出し可能な MCP `toolFilter` がリクエストコンテキストに依存する場合、エージェントが管理するサーバーでは `cacheToolsList` を無効のままにしてください。キャッシュされたエントリにはフィルタリング済みのツールリストが含まれますが、呼び出し可能なフィルターのデフォルトのキャッシュキーは、リクエストコンテキスト固有ではありません。`getAllMcpTools(...)` を直接呼び出すコードでは、代わりに関連するポリシー ID を含む `generateMCPToolCacheKey` を指定できます。[MCP のキャッシュに関するガイダンス](/openai-agents-js/ja/guides/mcp#other-things-to-know)を参照してください。
+
+### `RunContext` が公開するもの
+
+`RunContext<T>` は、アプリケーションで定義したコンテキストオブジェクトのラッパーです。実際には、主に次のものを使用します。
+
+- 独自の変更可能なアプリケーション状態と依存関係には `runContext.context`
+- 現在の実行で集計されたトークンおよびリクエストの使用量には `runContext.usage`
+- 現在の実行が `agent.asTool()` 内で実行されている場合の構造化入力には `runContext.toolInput`
+- 承認状態をプログラムで更新する必要がある場合は `runContext.approveTool(...)` / `runContext.rejectTool(...)`
+
+アプリケーションで定義するオブジェクトは `runContext.context` だけです。その他のフィールドは、SDK が管理するランタイムメタデータです。
+
+後で [Human in the loop (人間の介入)](/openai-agents-js/ja/guides/human-in-the-loop)のために [`RunState`](/openai-agents-js/ja/guides/results#interruptions-and-resumable-state) をシリアライズすると、そのランタイムメタデータも状態とともに保存されます。シリアライズした状態を永続化または転送する予定がある場合は、`runContext.context` に機密情報を格納しないでください。
 
 <Aside type="note">
-  `RunContext` は、現在の実行におけるローカルなアプリ状態を扱います。会話状態は
-  別の関心事です。会話ターンをどのように引き継ぐかに応じて、`result.history`、`session`、
+  `RunContext`
+  は、現在の実行におけるローカルなアプリケーション状態を扱います。会話状態は
+  別の概念です。ターンをどのように引き継ぐかに応じて、`result.history`、`session`、
   `conversationId`、または `previousResponseId`
-  を使用します。この使い分けについては、
+  を使用してください。この判断については、
   [エージェントの実行](/openai-agents-js/ja/guides/running-agents#state-and-conversation-management)
   を参照してください。
 </Aside>
 
-`RunContext` をサブクラス化する場合は、ネストされた実行や派生した実行でも、依存しているサブクラス固有のインスタンス状態が保持されることを確認してください。SDK は、ネストされた実行中に内部で分岐したコンテキストを作成します。
+`RunContext` をサブクラス化する場合は、ネストされた実行や派生した実行でも、依存しているサブクラス固有のインスタンス状態が保持されることを確認してください。SDK は、ネストされた実行中に内部で分岐コンテキストを作成します。
 
 ## LLM から見えるコンテキスト
 
-LLM が呼び出されたとき、LLM が参照できるデータは会話履歴に含まれるものだけです。追加情報を利用できるようにするには、次の選択肢があります。
+LLM が呼び出されたときに参照できるデータは、会話履歴に含まれるものだけです。追加情報を利用可能にするには、次の方法があります。
 
 1. エージェントの `instructions` に追加します。これは、システムメッセージまたは開発者メッセージとも呼ばれます。静的な文字列のほか、コンテキストを受け取って文字列を返す関数も使用できます。
-2. `Runner.run()` を呼び出すときに `input` に含めます。これは `instructions` を使う方法と似ていますが、メッセージを[指揮系統](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)のより下位に配置できます。
-3. 関数ツールを通じて追加情報を公開し、LLM が必要に応じてその情報を取得できるようにします。
-4. 情報取得ツールまたは Web 検索ツールを使用し、ファイル、データベース、Web の関連データに基づいて回答を生成します。
+2. `Runner.run()` を呼び出すときに `input` に含めます。これは instructions を使う方法と似ていますが、メッセージを[指揮系統](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command)のより下位に配置できます。
+3. 追加情報を関数ツール経由で公開し、LLM が必要に応じてその情報を取得できるようにします。
+4. 検索ツールや Web 検索ツールを使用し、ファイル、データベース、または Web の関連データに基づいてレスポンスを生成します。
