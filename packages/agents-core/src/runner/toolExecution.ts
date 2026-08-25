@@ -1520,7 +1520,10 @@ async function _runComputerActionAndScreenshot(
   runContext: RunContext,
   signal?: AbortSignal,
 ): Promise<{ type: 'completed'; output: string } | { type: 'cancelled' }> {
-  for (const action of getComputerToolActions(toolCall)) {
+  const actions = getComputerToolActions(toolCall);
+  let lastScreenshot: string | undefined;
+
+  for (const action of actions) {
     if (signal?.aborted) {
       return { type: 'cancelled' };
     }
@@ -1544,7 +1547,7 @@ async function _runComputerActionAndScreenshot(
         await computer.move(action.x, action.y, runContext);
         break;
       case 'screenshot':
-        await computer.screenshot(runContext);
+        lastScreenshot = await computer.screenshot(runContext);
         break;
       case 'scroll':
         await computer.scroll(
@@ -1573,6 +1576,12 @@ async function _runComputerActionAndScreenshot(
   if (signal?.aborted) {
     return { type: 'cancelled' };
   }
+
+  // If the last action was an explicit screenshot, reuse its result rather than capturing twice
+  if (actions.length > 0 && actions[actions.length - 1].type === 'screenshot' && typeof lastScreenshot !== 'undefined') {
+    return { type: 'completed', output: lastScreenshot };
+  }
+
   if (typeof computer.screenshot === 'function') {
     const screenshot = await computer.screenshot(runContext);
     if (signal?.aborted) {

@@ -265,4 +265,51 @@ describe('stream abort reconciliation', () => {
     expect(shouldReconcileStreamAbort(state)).toBe(false);
     expect(buildAbortReconciliationInput(state)).toEqual([]);
   });
+
+  it('tracks pending computer calls and reconciles with fallback screenshot on abort (Issue #1737)', () => {
+    const state = createStreamAbortReconciliationState();
+
+    recordStreamEventForAbortReconciliation(state, {
+      type: 'model',
+      event: {
+        type: 'response.output_item.done',
+        item: {
+          type: 'computer_call',
+          id: 'comp_1',
+          call_id: 'call_comp_1',
+          status: 'completed',
+          action: { type: 'screenshot' },
+        },
+      },
+    });
+
+    expect(shouldReconcileStreamAbort(state)).toBe(true);
+    expect(buildAbortReconciliationInput(state)).toEqual([
+      {
+        type: 'computer_call_result',
+        callId: 'call_comp_1',
+        output: {
+          type: 'computer_screenshot',
+          data: expect.stringMatching(/^data:image\/png;base64,/),
+        },
+        providerData: { status: 'incomplete' },
+      },
+    ]);
+
+    // Output clears pending computer call
+    recordStreamEventForAbortReconciliation(state, {
+      type: 'model',
+      event: {
+        type: 'response.output_item.done',
+        item: {
+          type: 'computer_call_output',
+          id: 'comp_out_1',
+          call_id: 'call_comp_1',
+        },
+      },
+    });
+
+    expect(shouldReconcileStreamAbort(state)).toBe(false);
+    expect(buildAbortReconciliationInput(state)).toEqual([]);
+  });
 });

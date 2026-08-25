@@ -988,7 +988,7 @@ describe('AgentToolUseTracker', () => {
 });
 
 describe('executeComputerActions', () => {
-  it('runs action and returns screenshot output', async () => {
+  it('runs action and returns screenshot output without duplicate capture on explicit screenshot (Issue #1735)', async () => {
     setDefaultModelProvider(new ScriptedModelProvider());
     const fakeComputer = {
       environment: 'mac',
@@ -1019,6 +1019,7 @@ describe('executeComputerActions', () => {
     );
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('does not start an action after cancellation', async () => {
@@ -2034,7 +2035,7 @@ describe('executeComputerActions', () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('passes RunContext to computer actions', async () => {
@@ -2248,7 +2249,7 @@ describe('executeComputerActions', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
     expect(needsApproval).not.toHaveBeenCalled();
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 });
 
