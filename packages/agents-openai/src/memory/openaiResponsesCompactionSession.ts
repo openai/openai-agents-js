@@ -241,13 +241,29 @@ export class OpenAIResponsesCompactionSession
     return this.underlyingSession.getItems(limit);
   }
 
+  prepareHistoryItemsForPersistenceComparison(
+    items: AgentInputItem[],
+  ): AgentInputItem[] {
+    const prepare =
+      this.underlyingSession.prepareHistoryItemsForPersistenceComparison;
+    return prepare ? prepare.call(this.underlyingSession, items) : items;
+  }
+
   async addItems(items: AgentInputItem[]) {
     if (items.length === 0) {
       return;
     }
 
     await this.runMutationOperation(async () => {
-      await this.underlyingSession.addItems(items);
+      try {
+        await this.underlyingSession.addItems(items);
+      } catch (error) {
+        // The backend may have committed before its acknowledgement was lost. Cached history
+        // cannot distinguish that outcome, so force the next compaction decision to reload it.
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+        throw error;
+      }
       if (this.compactionCandidateItems) {
         const candidates = selectCompactionCandidateItems(items);
         if (candidates.length > 0) {

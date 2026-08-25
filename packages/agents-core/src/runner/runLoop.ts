@@ -249,6 +249,7 @@ export async function resumeInterruptedTurn<
   signal?: AbortSignal;
   onStepItems?: (turnResult: SingleStepResult) => void;
   validateHandoffAgent?: (agent: Agent<any, any>) => void;
+  beforeApprovedToolResume?: () => Promise<void>;
 }): Promise<InterruptedTurnOutcome> {
   const {
     state,
@@ -258,6 +259,7 @@ export async function resumeInterruptedTurn<
     signal,
     onStepItems,
     validateHandoffAgent,
+    beforeApprovedToolResume,
   } = options;
   const approvedToolWillResume = state.getInterruptions().some((item) => {
     const rawItem = item.rawItem;
@@ -285,6 +287,9 @@ export async function resumeInterruptedTurn<
       ) === true
     );
   });
+  if (approvedToolWillResume) {
+    await beforeApprovedToolResume?.();
+  }
   const turnResult = await resolveInterruptedTurn<TContext>(
     state._currentAgent,
     state._originalInput,
