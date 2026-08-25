@@ -36,6 +36,18 @@ Use local context for things like:
 
 Within a single run, derived contexts share the same underlying app context, approvals, and usage tracking. Nested `agent.asTool()` runs may attach a different `toolInput`, but they do not get an isolated copy of your app state by default.
 
+### Use local context for capability visibility
+
+When function tools, local MCP tools, and handoffs depend on the same request policy, keep the policy inputs or helper on your application context. Each SDK surface exposes the current run context through its own callback:
+
+- A function tool created with `tool()` receives an object whose `runContext` property is the current `RunContext` in its `isEnabled` predicate.
+- A handoff `isEnabled` predicate receives an object whose `runContext` property is the current `RunContext`.
+- A callable MCP [`toolFilter`](/openai-agents-js/guides/mcp#tool-filtering) receives `MCPToolFilterContext`, whose `runContext` property is the current `RunContext`.
+
+Adapt the shared application policy to these callbacks instead of maintaining separate capability lists. The callbacks control which capabilities the SDK includes in the model-visible set for the current turn; they run before the model produces tool or handoff arguments, so they cannot authorize a model-generated argument or resource selection. For function tools, enforce those decisions inside `execute`, or add [tool input guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) and [approvals](/openai-agents-js/guides/human-in-the-loop) when appropriate. MCP servers must authorize their own protected operations. For a handoff with `inputType`, check the parsed input at the start of `onHandoff`, before application side effects, and throw when authorization fails. Returning successfully from `onHandoff` continues the transfer, and tool input guardrails do not run for handoffs. See [Handoff inputs](/openai-agents-js/guides/handoffs#handoff-inputs) for the callback lifecycle.
+
+If a callable MCP `toolFilter` depends on request context, keep `cacheToolsList` disabled for the agent-managed server. Cached entries contain the already-filtered tool list, while the default callable-filter cache key is not request-context-specific. Code that calls `getAllMcpTools(...)` directly can instead provide a `generateMCPToolCacheKey` that includes the relevant policy identity. See the [MCP caching guidance](/openai-agents-js/guides/mcp#other-things-to-know).
+
 ### What `RunContext` exposes
 
 `RunContext<T>` is a wrapper around your app-defined context object. In practice you will most often use:
