@@ -1,4 +1,10 @@
-import { FunctionTool, tool, Tool, type ToolCallDetails } from './tool';
+import {
+  FunctionTool,
+  tool,
+  Tool,
+  type FunctionToolCustomDataContext,
+  type ToolCallDetails,
+} from './tool';
 import { UserError } from './errors';
 import {
   MCPServerStdio as UnderlyingMCPServerStdio,
@@ -51,6 +57,10 @@ import {
   assertOpenAIStrictToolSchemaPreservesOpenObjects,
   isJsonSchemaDepthError,
 } from './utils/strictToolSchema';
+import type {
+  ToolInputGuardrailDefinition,
+  ToolOutputGuardrailDefinition,
+} from './toolGuardrail';
 
 export {
   BaseMCPServerSSE,
@@ -162,6 +172,10 @@ export interface MCPServer {
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   toolMetaResolver?: MCPToolMetaResolver;
   customDataExtractor?: MCPToolCustomDataExtractor;
+  /** Guardrails applied before every tool on this server is invoked. */
+  toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
+  /** Guardrails applied after every tool on this server returns. */
+  toolOutputGuardrails?: ToolOutputGuardrailDefinition<any>[];
   /**
    * Whether to use MCP `structuredContent` as the model-visible tool output when available.
    * Defaults to false to preserve the existing content-based output behavior.
@@ -1151,6 +1165,12 @@ export function mcpToFunctionTool(
   options: MCPFunctionToolConversionOptions = {},
 ) {
   const toolName = options.toolNameOverride ?? mcpTool.name;
+  const inputGuardrails = server.toolInputGuardrails
+    ? [...server.toolInputGuardrails]
+    : undefined;
+  const outputGuardrails = server.toolOutputGuardrails
+    ? [...server.toolOutputGuardrails]
+    : undefined;
   const customDataByCall = new WeakMap<
     RunContext<any>,
     Map<string, MCPToolCustomDataContext<any>>
@@ -1243,6 +1263,22 @@ export function mcpToFunctionTool(
     return toolOutput;
   }
 
+  async function extractCustomData(
+    context: FunctionToolCustomDataContext<any>,
+  ) {
+    const mcpContext = getMcpCustomDataContext(
+      customDataByCall,
+      context.runContext,
+      context.toolCall.callId,
+    );
+    return mcpContext
+      ? maybeExtractToolOutputCustomData(server.customDataExtractor, {
+          ...mcpContext,
+          toolOutput: context.output,
+        })
+      : undefined;
+  }
+
   const inputSchema = mcpTool.inputSchema ?? {};
   const inputSchemaIsEmpty = Object.keys(inputSchema).length === 0;
   const schema = {
@@ -1266,19 +1302,9 @@ export function mcpToFunctionTool(
         strict: true,
         execute: invoke,
         errorFunction,
-        customDataExtractor: async (context) => {
-          const mcpContext = getMcpCustomDataContext(
-            customDataByCall,
-            context.runContext,
-            context.toolCall.callId,
-          );
-          return mcpContext
-            ? maybeExtractToolOutputCustomData(
-                server.customDataExtractor,
-                mcpContext,
-              )
-            : undefined;
-        },
+        inputGuardrails,
+        outputGuardrails,
+        customDataExtractor: extractCustomData,
       });
     } catch (e) {
       if (convertSchemasToStrict && isJsonSchemaDepthError(e)) {
@@ -1307,19 +1333,9 @@ export function mcpToFunctionTool(
     strict: false,
     execute: invoke,
     errorFunction,
-    customDataExtractor: async (context) => {
-      const mcpContext = getMcpCustomDataContext(
-        customDataByCall,
-        context.runContext,
-        context.toolCall.callId,
-      );
-      return mcpContext
-        ? maybeExtractToolOutputCustomData(
-            server.customDataExtractor,
-            mcpContext,
-          )
-        : undefined;
-    },
+    inputGuardrails,
+    outputGuardrails,
+    customDataExtractor: extractCustomData,
   });
 }
 
@@ -1374,6 +1390,10 @@ export interface BaseMCPServerStdioOptions {
    * Optional callback that attaches SDK-only custom data to local MCP tool output items.
    */
   customDataExtractor?: MCPToolCustomDataExtractor;
+  /** Guardrails applied before every tool on this server is invoked. */
+  toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
+  /** Guardrails applied after every tool on this server returns. */
+  toolOutputGuardrails?: ToolOutputGuardrailDefinition<any>[];
   /**
    * Optional function to convert MCP tool failures into model-visible messages.
    * Set to null to rethrow errors instead of converting them.
@@ -1411,6 +1431,10 @@ export interface MCPServerStreamableHttpOptions {
    * Optional callback that attaches SDK-only custom data to local MCP tool output items.
    */
   customDataExtractor?: MCPToolCustomDataExtractor;
+  /** Guardrails applied before every tool on this server is invoked. */
+  toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
+  /** Guardrails applied after every tool on this server returns. */
+  toolOutputGuardrails?: ToolOutputGuardrailDefinition<any>[];
   /**
    * Optional function to convert MCP tool failures into model-visible messages.
    * Set to null to rethrow errors instead of converting them.
@@ -1453,6 +1477,10 @@ export interface MCPServerSSEOptions {
    * Optional callback that attaches SDK-only custom data to local MCP tool output items.
    */
   customDataExtractor?: MCPToolCustomDataExtractor;
+  /** Guardrails applied before every tool on this server is invoked. */
+  toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
+  /** Guardrails applied after every tool on this server returns. */
+  toolOutputGuardrails?: ToolOutputGuardrailDefinition<any>[];
   /**
    * Optional function to convert MCP tool failures into model-visible messages.
    * Set to null to rethrow errors instead of converting them.

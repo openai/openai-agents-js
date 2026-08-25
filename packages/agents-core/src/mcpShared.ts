@@ -21,6 +21,10 @@ import type {
   MCPToolFilterStatic,
   MCPToolMetaResolver,
 } from './mcpUtil';
+import type {
+  ToolInputGuardrailDefinition,
+  ToolOutputGuardrailDefinition,
+} from './toolGuardrail';
 
 export const DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME =
   'openai-agents:stdio-mcp-client';
@@ -37,6 +41,8 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
   public customDataExtractor?: MCPToolCustomDataExtractor;
+  public toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
+  public toolOutputGuardrails?: ToolOutputGuardrailDefinition<any>[];
   public useStructuredContent?: boolean;
   public errorFunction?: MCPToolErrorFunction | null;
 
@@ -48,6 +54,8 @@ export abstract class BaseMCPServerStdio implements MCPServer {
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
     this.customDataExtractor = options.customDataExtractor;
+    this.toolInputGuardrails = options.toolInputGuardrails;
+    this.toolOutputGuardrails = options.toolOutputGuardrails;
     this.useStructuredContent = options.useStructuredContent;
     this.errorFunction = options.errorFunction;
   }
@@ -93,6 +101,8 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
   public customDataExtractor?: MCPToolCustomDataExtractor;
+  public toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
+  public toolOutputGuardrails?: ToolOutputGuardrailDefinition<any>[];
   public useStructuredContent?: boolean;
   public errorFunction?: MCPToolErrorFunction | null;
 
@@ -105,6 +115,8 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
     this.customDataExtractor = options.customDataExtractor;
+    this.toolInputGuardrails = options.toolInputGuardrails;
+    this.toolOutputGuardrails = options.toolOutputGuardrails;
     this.useStructuredContent = options.useStructuredContent;
     this.errorFunction = options.errorFunction;
   }
@@ -151,6 +163,8 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   public toolMetaResolver?: MCPToolMetaResolver;
   public customDataExtractor?: MCPToolCustomDataExtractor;
+  public toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
+  public toolOutputGuardrails?: ToolOutputGuardrailDefinition<any>[];
   public useStructuredContent?: boolean;
   public errorFunction?: MCPToolErrorFunction | null;
 
@@ -162,6 +176,8 @@ export abstract class BaseMCPServerSSE implements MCPServer {
     this.toolFilter = options.toolFilter;
     this.toolMetaResolver = options.toolMetaResolver;
     this.customDataExtractor = options.customDataExtractor;
+    this.toolInputGuardrails = options.toolInputGuardrails;
+    this.toolOutputGuardrails = options.toolOutputGuardrails;
     this.useStructuredContent = options.useStructuredContent;
     this.errorFunction = options.errorFunction;
   }
