@@ -93,6 +93,48 @@ class FailingRestoreSession extends MemorySession {
   }
 }
 
+class CommitThenRejectAppendSession extends MemorySession {
+  failNextAppend = false;
+  comparisonCalls = 0;
+
+  override async addItems(items: AgentInputItem[]): Promise<void> {
+    const shouldFail = this.failNextAppend;
+    const persistedItems = shouldFail
+      ? items.map(
+          (item) =>
+            ({
+              ...item,
+              providerData: {
+                ...((item as any).providerData ?? {}),
+                session_marker: 'assigned',
+              },
+            }) as AgentInputItem,
+        )
+      : items;
+    await super.addItems(persistedItems);
+    if (shouldFail) {
+      this.failNextAppend = false;
+      throw new Error('append acknowledgement lost');
+    }
+  }
+
+  prepareHistoryItemsForPersistenceComparison(
+    items: AgentInputItem[],
+  ): AgentInputItem[] {
+    this.comparisonCalls += 1;
+    return items.map((item) => {
+      const detached = structuredClone(item) as any;
+      if (detached.providerData?.session_marker === 'assigned') {
+        delete detached.providerData.session_marker;
+        if (Object.keys(detached.providerData).length === 0) {
+          delete detached.providerData;
+        }
+      }
+      return detached as AgentInputItem;
+    });
+  }
+}
+
 describe('OpenAIResponsesCompactionSession', () => {
   it('rejects non-OpenAI model names', () => {
     expect(() => {
@@ -204,6 +246,56 @@ describe('OpenAIResponsesCompactionSession', () => {
 
     expect(candidateSnapshots).toEqual([[assistantItem], [assistantItem], []]);
     await expect(session.getItems()).resolves.toEqual([]);
+  });
+
+  it('reloads cached input history after an underlying append commits and rejects', async () => {
+    const initialItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'initial answer' }],
+    } as AgentInputItem;
+    const committedItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'committed answer' }],
+    } as AgentInputItem;
+    const committedStoredItem = {
+      ...committedItem,
+      providerData: { session_marker: 'assigned' },
+    } as AgentInputItem;
+    const underlyingSession = new CommitThenRejectAppendSession({
+      initialItems: [initialItem],
+    });
+    const snapshots: AgentInputItem[][] = [];
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession,
+      compactionMode: 'input',
+      shouldTriggerCompaction: ({ sessionItems }) => {
+        snapshots.push(sessionItems);
+        return false;
+      },
+    });
+
+    await session.runCompaction();
+    underlyingSession.failNextAppend = true;
+    await expect(session.addItems([committedItem])).rejects.toThrow(
+      'append acknowledgement lost',
+    );
+    await session.runCompaction({ compactionMode: 'input' });
+
+    expect(snapshots).toEqual([
+      [initialItem],
+      [initialItem, committedStoredItem],
+    ]);
+    expect(
+      session.prepareHistoryItemsForPersistenceComparison([
+        committedStoredItem,
+      ]),
+    ).toEqual([committedItem]);
+    expect(underlyingSession.comparisonCalls).toBe(1);
   });
 
   it('uses the default compaction threshold for candidate items', async () => {

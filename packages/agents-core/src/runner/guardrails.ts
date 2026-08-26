@@ -418,6 +418,7 @@ export async function finalizeOutputGuardrails<
   ) => false | string | Promise<false | string>;
   persistBlockedOutput?: () => Promise<void>;
   persistUnblockedFailure?: () => Promise<void>;
+  onBlockedOutput?: () => void;
   releaseBlockedOutputPersistence: (state: RunState<TContext, TAgent>) => void;
 }): Promise<void> {
   const {
@@ -430,6 +431,7 @@ export async function finalizeOutputGuardrails<
     sanitizeRejectedOutput,
     persistBlockedOutput,
     persistUnblockedFailure,
+    onBlockedOutput,
     releaseBlockedOutputPersistence,
   } = options;
   if (
@@ -498,6 +500,7 @@ export async function finalizeOutputGuardrails<
       guardrailError instanceof OutputGuardrailTripwireTriggered;
 
     if (outputBlocked || completedOutputTripwireError) {
+      onBlockedOutput?.();
       if (persistBlockedOutput && !signal?.aborted) {
         try {
           await persistBlockedOutput();

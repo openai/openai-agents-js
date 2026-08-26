@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { randomUUID } from '@openai/agents-core/_shims';
-import { Agent } from './agent';
+import { Agent, type ToolUseBehavior } from './agent';
 import type { Handoff } from './handoff';
 import { getAgentToolSourceAgent } from './agentToolSourceRegistry';
 import { buildAgentIdentityMap } from './runStateIdentity';
@@ -27,6 +27,7 @@ import {
   toAgentInputList,
   type ReasoningItemIdPolicy,
 } from './runner/items';
+import { normalizeItemsForSessionPersistence } from './runner/sessionItems';
 import { getServerConversationOwner } from './runner/conversation';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
@@ -34,6 +35,9 @@ import { createToolRunFunction, type ProcessedResponse } from './runner/types';
 import {
   getCurrentResponseToolOutputGuardrailResultStart,
   hasBlockedOutputExecutionEffect,
+  hasDeterministicTerminalToolOutputSource,
+  hasPendingApprovedToolInputCompaction,
+  hasTerminalToolOutputSource,
   restoreCurrentResponseToolOutputGuardrailResultStart,
 } from './runner/blockedOutputPersistence';
 import type { AgentSpanData, Span } from './tracing/spans';
@@ -55,6 +59,7 @@ import type {
   ToolOutputGuardrailResult,
 } from './toolGuardrail';
 import { safeExecute } from './utils/safeExecute';
+import { toSmartString } from './utils/smartString';
 import {
   getClientToolSearchExecutor,
   getToolSearchRuntimeRoutingKey,
@@ -166,8 +171,9 @@ import {
  *   so Docker network-isolation state cannot be consumed by older SDKs that would drop it
  *   during container replacement.
  * - 1.20: Adds sandbox session-state envelope version 5 so Docker labels cannot be
- *   consumed by older SDKs that would drop them during container replacement, and
- *   preserves exact current-response ownership for serialized approval resumes.
+ *   consumed by older SDKs that would drop them during container replacement, preserves
+ *   exact current-response ownership for serialized approval resumes, and checkpoints
+ *   unacknowledged ordinary Session appends completed during approval resume.
  */
 export const CURRENT_SCHEMA_VERSION = '1.20' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
@@ -253,6 +259,123 @@ const pendingSessionHistoryTransactionSchema = z
 type PendingSessionHistoryTransaction = z.infer<
   typeof pendingSessionHistoryTransactionSchema
 >;
+
+const pendingSessionWriteBaseSchema = {
+  sessionId: z.string().min(1),
+  alreadyPersistedCount: z.number().int().min(0),
+  persistedItemCount: z.number().int().min(1),
+  reasoningItemIdPolicy: z.enum(['preserve', 'omit']),
+  terminalToolFinalization: z
+    .object({
+      behavior: z.enum([
+        'stop_on_first_tool',
+        'stop_at_tool_names',
+        'function',
+      ]),
+      selectedCallId: z.string().min(1).optional(),
+      selectedGeneratedItemIndex: z.number().int().min(0).optional(),
+      finalOutput: z.string(),
+    })
+    .strict()
+    .optional(),
+};
+
+const pendingSessionWriteSchema = z.discriminatedUnion('phase', [
+  z
+    .object({
+      ...pendingSessionWriteBaseSchema,
+      phase: z.literal('prepared'),
+    })
+    .strict(),
+  z
+    .object({
+      ...pendingSessionWriteBaseSchema,
+      phase: z.literal('append_ready'),
+      beforeItems: z.array(protocol.ModelItem),
+      comparableAppendItems: z.array(protocol.ModelItem).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...pendingSessionWriteBaseSchema,
+      phase: z.literal('compaction_pending'),
+    })
+    .strict(),
+]);
+
+export type PendingSessionWrite = z.infer<typeof pendingSessionWriteSchema>;
+
+type PendingSessionWriteItemOwnership = Pick<
+  PendingSessionWrite,
+  | 'sessionId'
+  | 'alreadyPersistedCount'
+  | 'persistedItemCount'
+  | 'reasoningItemIdPolicy'
+>;
+
+export function getPendingSessionWriteAppendItems(
+  state: RunState<any, any>,
+  pending: PendingSessionWriteItemOwnership,
+): AgentInputItem[] {
+  const ownedItems = normalizeItemsForSessionPersistence(
+    extractOutputItemsFromRunItems(
+      state._generatedItems.slice(
+        pending.alreadyPersistedCount,
+        pending.persistedItemCount,
+      ),
+      pending.reasoningItemIdPolicy,
+    ),
+  );
+  if (ownedItems.length === 0) {
+    throw new UserError(
+      'RunState pending Session write does not own a persistable generated item.',
+    );
+  }
+  const inputPrefix =
+    state._currentTurnSessionHistoryTransactionInputItems ?? [];
+  if (
+    (inputPrefix.length > 0 &&
+      state._currentTurnSessionHistoryTransactionSessionId === undefined) ||
+    (state._currentTurnSessionHistoryTransactionSessionId !== undefined &&
+      state._currentTurnSessionHistoryTransactionSessionId !==
+        pending.sessionId)
+  ) {
+    throw new UserError(
+      'RunState pending Session write input is missing its transaction-aware Session binding.',
+    );
+  }
+  return normalizeItemsForSessionPersistence([...inputPrefix, ...ownedItems]);
+}
+
+type PendingSessionWriteTerminalProducer = {
+  behavior: ToolUseBehavior;
+  resultCallIds: string[];
+  resultItems: RunToolCallOutputItem[];
+  selectedCallId?: string;
+  finalOutput: string;
+};
+
+const pendingSessionWriteTerminalProducers = new WeakMap<
+  RunState<any, any>,
+  PendingSessionWriteTerminalProducer
+>();
+
+export function recordPendingSessionWriteTerminalProducer(
+  state: RunState<any, any>,
+  producer: PendingSessionWriteTerminalProducer | undefined,
+): void {
+  if (producer) {
+    pendingSessionWriteTerminalProducers.set(state, producer);
+  } else {
+    pendingSessionWriteTerminalProducers.delete(state);
+  }
+}
+
+export function clearPendingSessionWriteTerminalProducer(
+  state: RunState<any, any>,
+): void {
+  pendingSessionWriteTerminalProducers.delete(state);
+}
 
 type RunStateContextOverrideOptions<TContext> = {
   contextOverride?: RunContext<TContext>;
@@ -1741,6 +1864,7 @@ export const SerializedRunState = z.object({
     .default({}),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
+  currentTurnSessionWriteCompactedItemCount: z.number().int().min(1).optional(),
   currentTurnDeferredSessionItemIndexes: z
     .array(z.number().int().min(0))
     .optional(),
@@ -1749,6 +1873,7 @@ export const SerializedRunState = z.object({
   currentTurnSessionInputItems: z.array(protocol.ModelItem).optional(),
   pendingSessionHistoryTransaction:
     pendingSessionHistoryTransactionSchema.optional(),
+  pendingSessionWrite: pendingSessionWriteSchema.optional(),
   completedToolInvocations: z
     .array(
       z.object({
@@ -2245,6 +2370,10 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _currentTurnPersistedItemCount: number;
   /**
+   * Persisted-item count whose resumed-write recovery input compaction has settled.
+   */
+  public _currentTurnSessionWriteCompactedItemCount: number | undefined;
+  /**
    * Current-turn item indexes intentionally deferred when a blocked output persisted only a
    * replay-safe subset. A later accepted resume replaces the sparse suffix in original order.
    */
@@ -2288,6 +2417,15 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _pendingSessionHistoryTransaction:
     PendingSessionHistoryTransaction | undefined;
+  /**
+   * Ordinary Session append whose outcome must be reconciled before another resumed model call.
+   */
+  public _pendingSessionWrite: PendingSessionWrite | undefined;
+  /**
+   * Prevents two live resume attempts from executing or reconciling the same resumed Session
+   * append concurrently.
+   */
+  public _resumedSessionWriteInProgress: boolean;
   /**
    * Compaction marker and persisted suffix that an ordinary session must reconcile once after a
    * pre-1.16 snapshot is restored. The field remains serialized until reconciliation succeeds.
@@ -2376,6 +2514,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._ambiguousToolInvocationCallIds = new Map();
     this._generatedItems = [];
     this._currentTurnPersistedItemCount = 0;
+    this._currentTurnSessionWriteCompactedItemCount = undefined;
     this._currentTurnDeferredSessionItemIndexes = new Set();
     this._currentTurnBlockedSessionStartIndex = undefined;
     this._currentTurnSessionHistoryTransactionSessionId = undefined;
@@ -2386,6 +2525,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     this._serializedCurrentStep = undefined;
     this._sessionHistoryTransactionId = randomUUID();
     this._pendingSessionHistoryTransaction = undefined;
+    this._pendingSessionWrite = undefined;
+    this._resumedSessionWriteInProgress = false;
     this._pendingLegacyCompactionSessionItems = undefined;
     this._maxTurns = maxTurns;
     this._inputGuardrailResults = [];
@@ -2684,6 +2825,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public resetTurnPersistence(): void {
     this._currentTurnPersistedItemCount = 0;
+    this._currentTurnSessionWriteCompactedItemCount = undefined;
     this._currentTurnDeferredSessionItemIndexes.clear();
   }
 
@@ -2698,6 +2840,12 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       0,
       this._currentTurnPersistedItemCount - count,
     );
+    if (
+      this._currentTurnSessionWriteCompactedItemCount !==
+      this._currentTurnPersistedItemCount
+    ) {
+      this._currentTurnSessionWriteCompactedItemCount = undefined;
+    }
   }
 
   /**
@@ -3114,6 +3262,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         agentIdentity.byAgent,
       ),
       currentTurnPersistedItemCount: this._currentTurnPersistedItemCount,
+      currentTurnSessionWriteCompactedItemCount:
+        this._currentTurnSessionWriteCompactedItemCount,
       currentTurnDeferredSessionItemIndexes:
         this._currentTurnDeferredSessionItemIndexes.size > 0
           ? [...this._currentTurnDeferredSessionItemIndexes].sort(
@@ -3131,7 +3281,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           ? true
           : undefined,
       currentTurnSessionInputItems:
-        this._currentTurnSessionHistoryTransactionSessionId === undefined &&
+        (this._pendingSessionWrite !== undefined ||
+          this._currentTurnSessionHistoryTransactionSessionId === undefined) &&
         this._currentTurnSessionHistoryTransactionInputItems !== undefined &&
         this._currentTurnSessionHistoryTransactionInputItems.length > 0 &&
         hasBlockedOutputExecutionEffect(
@@ -3141,6 +3292,9 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           ? this._currentTurnSessionHistoryTransactionInputItems
           : undefined,
       pendingSessionHistoryTransaction: this._pendingSessionHistoryTransaction,
+      pendingSessionWrite: this._pendingSessionWrite
+        ? structuredClone(this._pendingSessionWrite)
+        : undefined,
       pendingLegacyCompactionSessionItems:
         this._pendingLegacyCompactionSessionItems,
       lastProcessedResponse: this._lastProcessedResponse
@@ -3243,6 +3397,14 @@ async function buildRunStateFromString<
     jsonResult !== null &&
     typeof jsonResult === 'object' &&
     hasOwnProperty(jsonResult, 'pendingInput');
+  const hasPendingSessionWriteField =
+    jsonResult !== null &&
+    typeof jsonResult === 'object' &&
+    hasOwnProperty(jsonResult, 'pendingSessionWrite');
+  const hasSessionWriteCompactedItemCountField =
+    jsonResult !== null &&
+    typeof jsonResult === 'object' &&
+    hasOwnProperty(jsonResult, 'currentTurnSessionWriteCompactedItemCount');
   const stateJson = SerializedRunState.parse(jsonResult);
   assertSchemaVersionSupportsStructuredToolOutputs(
     currentSchemaVersion as SupportedSchemaVersion,
@@ -3275,6 +3437,12 @@ async function buildRunStateFromString<
   assertSchemaVersionSupportsCurrentResponseGeneratedItemOwnership(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
+  );
+  assertSchemaVersionSupportsPendingSessionWrite(
+    currentSchemaVersion as SupportedSchemaVersion,
+    stateJson,
+    hasPendingSessionWriteField,
+    hasSessionWriteCompactedItemCountField,
   );
   assertSchemaVersionSupportsPendingInput(
     currentSchemaVersion as SupportedSchemaVersion,
@@ -3590,6 +3758,421 @@ function assertSchemaVersionSupportsCurrentResponseGeneratedItemOwnership(
   validateCurrentResponseGeneratedItemOwnership(stateJson, ownership);
 }
 
+function assertSchemaVersionSupportsPendingSessionWrite(
+  schemaVersion: SupportedSchemaVersion,
+  stateJson: z.infer<typeof SerializedRunState>,
+  hasPendingSessionWriteField: boolean,
+  hasSessionWriteCompactedItemCountField: boolean,
+): void {
+  if (!schemaVersionSupportsV120State(schemaVersion)) {
+    if (
+      !hasPendingSessionWriteField &&
+      !hasSessionWriteCompactedItemCountField
+    ) {
+      return;
+    }
+    throw new UserError(
+      `Run state schema version ${schemaVersion} does not support pending Session writes. Please reserialize the run state with schema ${CURRENT_SCHEMA_VERSION}.`,
+    );
+  }
+
+  const pending = stateJson.pendingSessionWrite;
+  const compactedItemCount =
+    stateJson.currentTurnSessionWriteCompactedItemCount;
+  const persistedItemCount = stateJson.currentTurnPersistedItemCount ?? 0;
+  if (
+    compactedItemCount !== undefined &&
+    (pending !== undefined ||
+      compactedItemCount !== persistedItemCount ||
+      (stateJson.currentStep?.type !== 'next_step_run_again' &&
+        stateJson.currentStep?.type !== 'next_step_interruption' &&
+        stateJson.currentStep?.type !== 'next_step_final_output'))
+  ) {
+    throw new UserError(
+      'RunState resumed Session write compaction marker is invalid.',
+    );
+  }
+  if (pending === undefined) {
+    return;
+  }
+  const alreadyPersistedCount = persistedItemCount;
+  const terminalFinalization = pending.terminalToolFinalization;
+  const terminalStep = stateJson.currentStep?.type === 'next_step_final_output';
+  const terminalFinalizationShapeIsInvalid = terminalFinalization
+    ? terminalFinalization.behavior === 'function'
+      ? terminalFinalization.selectedCallId !== undefined ||
+        terminalFinalization.selectedGeneratedItemIndex !== undefined
+      : terminalFinalization.selectedCallId === undefined ||
+        terminalFinalization.selectedGeneratedItemIndex === undefined
+    : terminalStep;
+  const pendingCompaction = pending.phase === 'compaction_pending';
+  const expectedPersistedItemCount = pendingCompaction
+    ? pending.persistedItemCount
+    : pending.alreadyPersistedCount;
+  if (
+    (stateJson.currentStep?.type !== 'next_step_run_again' &&
+      stateJson.currentStep?.type !== 'next_step_interruption' &&
+      stateJson.currentStep?.type !== 'next_step_final_output') ||
+    terminalStep !== (terminalFinalization !== undefined) ||
+    terminalFinalizationShapeIsInvalid ||
+    expectedPersistedItemCount !== alreadyPersistedCount ||
+    pending.persistedItemCount <= pending.alreadyPersistedCount ||
+    pending.persistedItemCount !== stateJson.generatedItems.length ||
+    stateJson.pendingSessionHistoryTransaction !== undefined ||
+    stateJson.pendingLegacyCompactionSessionItems !== undefined ||
+    (stateJson.currentTurnDeferredSessionItemIndexes?.length ?? 0) > 0 ||
+    stateJson.currentTurnBlockedSessionStartIndex !== undefined ||
+    (pendingCompaction &&
+      (stateJson.currentTurnExecutedWithSessionBinding !== undefined ||
+        stateJson.currentTurnSessionInputItems !== undefined)) ||
+    (stateJson.currentTurnSessionInputItems !== undefined &&
+      stateJson.currentTurnExecutedWithSessionBinding !== true) ||
+    stateJson.conversationId !== undefined ||
+    stateJson.previousResponseId !== undefined
+  ) {
+    throw new UserError('RunState pending Session write is invalid.');
+  }
+}
+
+export function assertPendingSessionWriteOwnership(
+  state: RunState<any, any>,
+  pending: PendingSessionWrite,
+  options: { allowUnhydratedTerminalToolStep?: boolean } = {},
+): void {
+  const pendingCompaction = pending.phase === 'compaction_pending';
+  const ownsTerminalToolFinalization =
+    state._currentStep?.type === 'next_step_final_output' &&
+    ownsPendingTerminalToolFinalization(state, pending, options);
+  if (
+    (state._currentStep?.type !== 'next_step_run_again' &&
+      state._currentStep?.type !== 'next_step_interruption' &&
+      !ownsTerminalToolFinalization) ||
+    state._currentTurnPersistedItemCount !==
+      (pendingCompaction
+        ? pending.persistedItemCount
+        : pending.alreadyPersistedCount) ||
+    pending.persistedItemCount <= pending.alreadyPersistedCount ||
+    pending.persistedItemCount !== state._generatedItems.length ||
+    state._currentTurnSessionWriteCompactedItemCount !== undefined ||
+    state._pendingSessionHistoryTransaction !== undefined ||
+    state._pendingLegacyCompactionSessionItems !== undefined ||
+    state._currentTurnDeferredSessionItemIndexes.size > 0 ||
+    state._currentTurnBlockedSessionStartIndex !== undefined ||
+    (pendingCompaction &&
+      (state._currentTurnSessionHistoryTransactionSessionId !== undefined ||
+        state._currentTurnSessionHistoryTransactionInputItems !== undefined)) ||
+    state._conversationId !== undefined ||
+    state._previousResponseId !== undefined
+  ) {
+    throw new UserError('RunState pending Session write is invalid.');
+  }
+
+  getPendingSessionWriteAppendItems(state, pending);
+}
+
+function getPendingSessionWriteBehaviorKind(
+  behavior: ToolUseBehavior,
+):
+  | NonNullable<PendingSessionWrite['terminalToolFinalization']>['behavior']
+  | undefined {
+  if (behavior === 'stop_on_first_tool') {
+    return 'stop_on_first_tool';
+  }
+  if (typeof behavior === 'object') {
+    return 'stop_at_tool_names';
+  }
+  if (typeof behavior === 'function') {
+    return 'function';
+  }
+  return undefined;
+}
+
+/** @internal */
+export function assertPendingSessionCompactionTerminalAuthority(
+  state: RunState<any, any>,
+): void {
+  const currentStep = state._currentStep;
+  if (currentStep?.type !== 'next_step_final_output') {
+    return;
+  }
+
+  const behavior = state._currentAgent.toolUseBehavior;
+  const producer = pendingSessionWriteTerminalProducers.get(state);
+  if (
+    producer !== undefined &&
+    getPendingSessionWriteBehaviorKind(producer.behavior) !==
+      getPendingSessionWriteBehaviorKind(behavior)
+  ) {
+    throw new UserError(
+      'RunState pending Session compaction terminal output is invalid.',
+    );
+  }
+  if (typeof behavior !== 'function') {
+    if (!hasDeterministicTerminalToolOutputSource(state)) {
+      throw new UserError(
+        'RunState pending Session compaction terminal output is invalid.',
+      );
+    }
+    return;
+  }
+
+  const completedInvocations = state._completedToolInvocationEvidence.get(
+    state._currentAgent,
+  );
+  const validProducer =
+    producer !== undefined &&
+    producer.behavior === behavior &&
+    producer.finalOutput === currentStep.output &&
+    producer.selectedCallId === undefined &&
+    producer.resultItems.length > 0 &&
+    producer.resultItems.length === producer.resultCallIds.length &&
+    producer.resultItems.every((item, index) => {
+      const callId = producer.resultCallIds[index];
+      const generatedItemIndex = state._generatedItems.indexOf(item);
+      return (
+        callId !== undefined &&
+        generatedItemIndex >= 0 &&
+        generatedItemIndex < state._currentTurnPersistedItemCount &&
+        getCompletionOutputCallId(item, state._currentAgent) === callId &&
+        completedInvocations?.get(callId)?.items[1] === item
+      );
+    });
+  if (!validProducer) {
+    throw new UserError(
+      'RunState pending Session compaction terminal output is invalid.',
+    );
+  }
+}
+
+export function capturePendingSessionWriteTerminalFinalization(
+  state: RunState<any, any>,
+): PendingSessionWrite['terminalToolFinalization'] {
+  const producer = pendingSessionWriteTerminalProducers.get(state);
+  if (!producer || state._currentStep?.type !== 'next_step_final_output') {
+    return undefined;
+  }
+  const behavior = getPendingSessionWriteBehaviorKind(producer.behavior);
+  if (!behavior) {
+    return undefined;
+  }
+  const selectedResultIndex = producer.selectedCallId
+    ? producer.resultCallIds.indexOf(producer.selectedCallId)
+    : -1;
+  const selectedGeneratedItemIndex =
+    selectedResultIndex >= 0
+      ? state._generatedItems.indexOf(
+          producer.resultItems[selectedResultIndex]!,
+        )
+      : undefined;
+  if (
+    behavior !== 'function' &&
+    (selectedGeneratedItemIndex === undefined || selectedGeneratedItemIndex < 0)
+  ) {
+    return undefined;
+  }
+  return {
+    behavior,
+    selectedCallId: producer.selectedCallId,
+    selectedGeneratedItemIndex,
+    finalOutput: producer.finalOutput,
+  };
+}
+
+type PendingDeclarativeTerminalCandidate = {
+  callId: string;
+  completionEvidence: ToolInvocationCompletionEvidence;
+  outputItem: RunToolCallOutputItem;
+};
+
+function getPendingDeclarativeTerminalCandidate(
+  state: RunState<any, any>,
+  item: RunItem,
+  completedInvocations:
+    Map<string, ToolInvocationCompletionEvidence> | undefined,
+): PendingDeclarativeTerminalCandidate | undefined {
+  if (
+    !(item instanceof RunToolCallOutputItem) ||
+    item.agent !== state._currentAgent ||
+    item.rawItem.type !== 'function_call_result' ||
+    item.rawItem.status === 'incomplete' ||
+    getCanonicalToolCaller(item.rawItem).type === 'program'
+  ) {
+    return undefined;
+  }
+  const callId = getCompletionOutputCallId(item, state._currentAgent);
+  const completionEvidence = callId
+    ? completedInvocations?.get(callId)
+    : undefined;
+  if (!callId || !completionEvidence || completionEvidence.items[1] !== item) {
+    return undefined;
+  }
+  return { callId, completionEvidence, outputItem: item };
+}
+
+function selectPendingDeclarativeTerminalCandidate(
+  behavior: ToolUseBehavior,
+  candidates: readonly PendingDeclarativeTerminalCandidate[],
+): PendingDeclarativeTerminalCandidate | undefined {
+  if (behavior === 'stop_on_first_tool') {
+    return candidates[0];
+  }
+  if (typeof behavior !== 'object') {
+    return undefined;
+  }
+  return candidates.find(({ completionEvidence }) => {
+    const callItem = completionEvidence.items[0];
+    if (
+      (!(callItem instanceof RunToolCallItem) &&
+        !(callItem instanceof RunToolApprovalItem)) ||
+      callItem.rawItem.type !== 'function_call'
+    ) {
+      return false;
+    }
+    const invocationName = getToolInvocationNameFromFingerprint(
+      completionEvidence.fingerprint,
+    );
+    const qualifiedName = invocationName
+      ? getFunctionToolLegacyStateKeyFromStateKey(invocationName)
+      : undefined;
+    const callName = getToolCallName(callItem.rawItem);
+    return behavior.stopAtToolNames.some(
+      (toolName: string) => toolName === callName || toolName === qualifiedName,
+    );
+  });
+}
+
+function ownsPendingTerminalToolFinalization(
+  state: RunState<any, any>,
+  pending: PendingSessionWrite,
+  options: { allowUnhydratedTerminalToolStep?: boolean },
+): boolean {
+  const provenance = pending.terminalToolFinalization;
+  const currentStep = state._currentStep;
+  if (
+    !provenance ||
+    (provenance.behavior === 'function' &&
+      options.allowUnhydratedTerminalToolStep === true) ||
+    currentStep?.type !== 'next_step_final_output' ||
+    currentStep.output !== provenance.finalOutput ||
+    getPendingSessionWriteBehaviorKind(state._currentAgent.toolUseBehavior) !==
+      provenance.behavior ||
+    (options.allowUnhydratedTerminalToolStep !== true &&
+      !hasTerminalToolOutputSource(state))
+  ) {
+    return false;
+  }
+
+  const completedInvocations = state._completedToolInvocationEvidence.get(
+    state._currentAgent,
+  );
+  const pendingGeneratedItems = state._generatedItems.slice(
+    pending.alreadyPersistedCount,
+    pending.persistedItemCount,
+  );
+  if (
+    pendingGeneratedItems.some((item) => {
+      const callId = getCompletionOutputCallId(item, state._currentAgent);
+      const completionEvidence = callId
+        ? completedInvocations?.get(callId)
+        : undefined;
+      return (
+        completionEvidence !== undefined && completionEvidence.items[1] !== item
+      );
+    })
+  ) {
+    return false;
+  }
+  const liveProducer =
+    options.allowUnhydratedTerminalToolStep === true
+      ? undefined
+      : pendingSessionWriteTerminalProducers.get(state);
+  if (provenance.behavior === 'function') {
+    return Boolean(
+      liveProducer &&
+      liveProducer.behavior === state._currentAgent.toolUseBehavior &&
+      liveProducer.finalOutput === provenance.finalOutput &&
+      liveProducer.selectedCallId === undefined &&
+      liveProducer.resultItems.length > 0 &&
+      liveProducer.resultItems.every((item, index) => {
+        const generatedItemIndex = state._generatedItems.indexOf(item);
+        const callId = liveProducer.resultCallIds[index];
+        return (
+          callId !== undefined &&
+          generatedItemIndex >= pending.alreadyPersistedCount &&
+          generatedItemIndex < pending.persistedItemCount &&
+          completedInvocations?.has(callId)
+        );
+      }),
+    );
+  }
+
+  const selectedCallId = provenance.selectedCallId;
+  const selectedGeneratedItemIndex = provenance.selectedGeneratedItemIndex;
+  if (
+    !selectedCallId ||
+    selectedGeneratedItemIndex === undefined ||
+    selectedGeneratedItemIndex < pending.alreadyPersistedCount ||
+    selectedGeneratedItemIndex >= pending.persistedItemCount
+  ) {
+    return false;
+  }
+  const selectedOutput = state._generatedItems[selectedGeneratedItemIndex];
+  const completionEvidence = completedInvocations?.get(selectedCallId);
+  if (
+    !(selectedOutput instanceof RunToolCallOutputItem) ||
+    getCompletionOutputCallId(selectedOutput, state._currentAgent) !==
+      selectedCallId ||
+    !completionEvidence ||
+    toSmartString(selectedOutput.output) !== provenance.finalOutput
+  ) {
+    return false;
+  }
+  const currentBehavior = state._currentAgent.toolUseBehavior;
+  if (
+    liveProducer &&
+    liveProducer.finalOutput === provenance.finalOutput &&
+    liveProducer.selectedCallId === selectedCallId
+  ) {
+    const liveCandidates = liveProducer.resultItems.map((item, index) => {
+      const candidate = getPendingDeclarativeTerminalCandidate(
+        state,
+        item,
+        completedInvocations,
+      );
+      const generatedItemIndex = state._generatedItems.indexOf(item);
+      return candidate &&
+        liveProducer.resultCallIds[index] === candidate.callId &&
+        generatedItemIndex >= pending.alreadyPersistedCount &&
+        generatedItemIndex < pending.persistedItemCount
+        ? candidate
+        : undefined;
+    });
+    if (liveCandidates.every((candidate) => candidate !== undefined)) {
+      return (
+        selectPendingDeclarativeTerminalCandidate(
+          currentBehavior,
+          liveCandidates,
+        )?.outputItem === selectedOutput
+      );
+    }
+  }
+
+  const restoredCandidates = pendingGeneratedItems.flatMap((item) => {
+    const candidate = getPendingDeclarativeTerminalCandidate(
+      state,
+      item,
+      completedInvocations,
+    );
+    return candidate ? [candidate] : [];
+  });
+  return (
+    selectPendingDeclarativeTerminalCandidate(
+      currentBehavior,
+      restoredCandidates,
+    )?.outputItem === selectedOutput
+  );
+}
+
 function assertSchemaVersionSupportsPendingInput(
   schemaVersion: SupportedSchemaVersion,
   stateJson: z.infer<typeof SerializedRunState>,
@@ -3685,7 +4268,8 @@ function validateOutputGuardrailSessionPersistenceState(
   if (
     deferredIndexes.length > 0 ||
     stateJson.currentTurnBlockedSessionStartIndex !== undefined ||
-    stateJson.currentTurnExecutedWithSessionBinding === true ||
+    (stateJson.currentTurnExecutedWithSessionBinding === true &&
+      stateJson.pendingSessionWrite === undefined) ||
     stateJson.pendingSessionHistoryTransaction !== undefined
   ) {
     throw new UserError(
@@ -5927,6 +6511,10 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   state._generatedItems = generatedItems;
   state._currentTurnPersistedItemCount =
     stateJson.currentTurnPersistedItemCount ?? 0;
+  state._currentTurnSessionWriteCompactedItemCount =
+    schemaVersionSupportsV120State(schemaVersion)
+      ? stateJson.currentTurnSessionWriteCompactedItemCount
+      : undefined;
   const supportsOutputGuardrailSessionPersistence =
     schemaVersionSupportsV117State(schemaVersion);
   const deferredSessionItemIndexes = supportsOutputGuardrailSessionPersistence
@@ -5936,8 +6524,16 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     deferredSessionItemIndexes,
   );
   state._currentTurnBlockedSessionStartIndex = undefined;
-  state._currentTurnSessionHistoryTransactionSessionId = undefined;
-  state._currentTurnSessionReasoningItemIdPolicy = undefined;
+  const restoredPendingSessionBinding =
+    stateJson.currentTurnExecutedWithSessionBinding === true &&
+    stateJson.pendingSessionWrite !== undefined
+      ? stateJson.pendingSessionWrite.sessionId
+      : undefined;
+  state._currentTurnSessionHistoryTransactionSessionId =
+    restoredPendingSessionBinding;
+  state._currentTurnSessionReasoningItemIdPolicy = restoredPendingSessionBinding
+    ? stateJson.pendingSessionWrite?.reasoningItemIdPolicy
+    : undefined;
   state._currentTurnSessionHistoryTransactionInputItems =
     schemaVersionSupportsV117State(schemaVersion)
       ? stateJson.currentTurnSessionInputItems
@@ -5946,8 +6542,26 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     undefined;
   state._sessionHistoryTransactionId = randomUUID();
   state._pendingSessionHistoryTransaction = undefined;
+  state._pendingSessionWrite = stateJson.pendingSessionWrite
+    ? structuredClone(stateJson.pendingSessionWrite)
+    : undefined;
+  state._resumedSessionWriteInProgress = false;
   state._pendingLegacyCompactionSessionItems =
     stateJson.pendingLegacyCompactionSessionItems;
+  if (
+    state._pendingSessionWrite?.phase === 'compaction_pending' &&
+    state._currentStep?.type === 'next_step_final_output' &&
+    typeof state._currentAgent.toolUseBehavior === 'function'
+  ) {
+    throw new UserError(
+      'RunState pending Session compaction terminal output is invalid.',
+    );
+  }
+  if (state._pendingSessionWrite) {
+    assertPendingSessionWriteOwnership(state, state._pendingSessionWrite, {
+      allowUnhydratedTerminalToolStep: true,
+    });
+  }
   state._sandbox = stateJson.sandbox
     ? sanitizeSerializedSandboxState(
         stateJson.sandbox as SerializedSandboxState,
@@ -6111,6 +6725,9 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     state._context = contextOverride;
   }
   state._serializedCurrentStep = state._currentStep;
+  if (hasPendingApprovedToolInputCompaction(state)) {
+    assertPendingSessionCompactionTerminalAuthority(state);
+  }
   return state;
 }
 

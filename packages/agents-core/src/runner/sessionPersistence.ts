@@ -9,14 +9,19 @@ import {
   type SessionInputCallback,
 } from '../memory/session';
 import { RunResult, StreamedRunResult } from '../result';
-import { RunState } from '../runState';
+import {
+  assertPendingSessionWriteOwnership,
+  capturePendingSessionWriteTerminalFinalization,
+  clearPendingSessionWriteTerminalProducer,
+  getPendingSessionWriteAppendItems,
+  RunState,
+  type PendingSessionWrite,
+} from '../runState';
 import type { RunContext } from '../runContext';
 import { RunItem } from '../items';
 import { AgentInputItem } from '../types';
 import { ModelItem } from '../types/protocol';
 import { Usage } from '../usage';
-import { encodeUint8ArrayToBase64 } from '../utils/base64';
-import { toUint8ArrayFromBinary } from '../utils/binary';
 import {
   assertValidCompactionItems,
   buildAgentInputPool,
@@ -36,9 +41,16 @@ import {
   buildRunItemPersistencePlan as buildCanonicalRunItemPersistencePlan,
   getBlockedOutputSessionSnapshotRunItems,
   hasBlockedOutputExecutionEffect,
+  hasPendingApprovedToolInputCompaction,
+  hasTerminalToolOutputSource,
   selectRunItemIndexesForBlockedOutput,
   type RunItemPersistencePlan,
 } from './blockedOutputPersistence';
+import {
+  agentItemRangeMatches,
+  normalizeItemsForSessionPersistence,
+  sessionItemArraysMatch,
+} from './sessionItems';
 
 export { selectRunItemIndexesForBlockedOutput } from './blockedOutputPersistence';
 
@@ -52,6 +64,17 @@ export type SessionPersistenceOptions = {
   compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
   outputBlocked?: boolean;
   additionalRunItems?: RunItem[];
+  /** @internal Evidence captured before resuming approved tool work. */
+  resumedSessionWritePreparation?: ResumedSessionWritePreparation;
+  /** @internal Publish the exact checkpoint without starting Session I/O. */
+  deferResumedSessionWrite?: boolean;
+};
+
+export type ResumedSessionWritePreparation = {
+  readonly session: Session;
+  readonly state: RunState<any, any>;
+  readonly sessionId: string;
+  readonly reasoningItemIdPolicy: ReasoningItemIdPolicy;
 };
 
 const SESSION_LIMIT_UNSET = Symbol('sessionLimitUnset');
@@ -226,6 +249,324 @@ function getEffectiveSessionReasoningItemIdPolicy(
     : (state._reasoningItemIdPolicy ?? 'preserve');
 }
 
+function getComparableSessionItems(
+  session: Session,
+  items: AgentInputItem[],
+): AgentInputItem[] {
+  const detachedItems = structuredClone(items);
+  return structuredClone(
+    session.prepareHistoryItemsForPersistenceComparison?.(detachedItems) ??
+      detachedItems,
+  );
+}
+
+export async function prepareResumedSessionWrite(
+  session: Session,
+  state: RunState<any, any>,
+): Promise<ResumedSessionWritePreparation> {
+  if (state._pendingSessionWrite !== undefined) {
+    throw new UserError(
+      'A pending Session write must be reconciled before another append is prepared.',
+    );
+  }
+  if (!state._resumedSessionWriteInProgress) {
+    throw new UserError(
+      'A resumed Session append requires exclusive ownership of its RunState.',
+    );
+  }
+  if (state._currentStep?.type !== 'next_step_interruption') {
+    throw new UserError(
+      'Only interrupted tool work can prepare a resumed Session append.',
+    );
+  }
+
+  const sessionId = await session.getSessionId();
+  if (sessionId.length === 0) {
+    throw new UserError(
+      'Cannot prepare a Session append without a session ID.',
+    );
+  }
+  return {
+    session,
+    state,
+    sessionId,
+    reasoningItemIdPolicy: getEffectiveSessionReasoningItemIdPolicy(
+      session,
+      state,
+    ),
+  };
+}
+
+export function acquireResumedSessionWriteOperation(
+  state: RunState<any, any>,
+): () => void {
+  if (state._resumedSessionWriteInProgress) {
+    throw new UserError(
+      'The same RunState cannot resume or reconcile a Session write concurrently.',
+    );
+  }
+  state._resumedSessionWriteInProgress = true;
+  let released = false;
+  return () => {
+    if (!released) {
+      released = true;
+      state._resumedSessionWriteInProgress = false;
+    }
+  };
+}
+
+function checkpointPreparedResumedSessionWrite(options: {
+  session: Session;
+  state: RunState<any, any>;
+  preparation: ResumedSessionWritePreparation;
+  items: AgentInputItem[];
+  alreadyPersistedCount: number;
+  persistedItemCount: number;
+  reasoningItemIdPolicy: ReasoningItemIdPolicy;
+}): Extract<PendingSessionWrite, { phase: 'prepared' }> {
+  const {
+    session,
+    state,
+    preparation,
+    items,
+    alreadyPersistedCount,
+    persistedItemCount,
+    reasoningItemIdPolicy,
+  } = options;
+  if (!state._resumedSessionWriteInProgress) {
+    throw new UserError(
+      'A resumed Session append requires exclusive ownership of its RunState.',
+    );
+  }
+  if (preparation.session !== session || preparation.state !== state) {
+    throw new UserError(
+      'Resumed Session write preparation belongs to a different runtime operation.',
+    );
+  }
+  if (
+    state._pendingSessionWrite !== undefined ||
+    state._generatedItems.length !== persistedItemCount ||
+    persistedItemCount <= alreadyPersistedCount ||
+    items.length === 0 ||
+    preparation.reasoningItemIdPolicy !== reasoningItemIdPolicy
+  ) {
+    throw new UserError('Resumed Session write preparation is stale.');
+  }
+  if (
+    state._currentStep?.type !== 'next_step_run_again' &&
+    state._currentStep?.type !== 'next_step_interruption' &&
+    !hasTerminalToolOutputSource(state)
+  ) {
+    throw new UserError(
+      'Only resumed tool work awaiting another model turn, approval, or terminal tool finalization can checkpoint a Session append.',
+    );
+  }
+  const pendingItems = {
+    sessionId: preparation.sessionId,
+    alreadyPersistedCount,
+    persistedItemCount,
+    reasoningItemIdPolicy,
+  };
+  const reconstructedItems = getPendingSessionWriteAppendItems(
+    state,
+    pendingItems,
+  );
+  if (
+    reconstructedItems.length !== items.length ||
+    !agentItemRangeMatches(reconstructedItems, items, 0)
+  ) {
+    throw new UserError(
+      'Resumed Session write items do not match their canonical RunState owners.',
+    );
+  }
+  const pending: Extract<PendingSessionWrite, { phase: 'prepared' }> = {
+    phase: 'prepared',
+    ...pendingItems,
+    terminalToolFinalization:
+      capturePendingSessionWriteTerminalFinalization(state),
+  };
+  state._pendingSessionWrite = structuredClone(pending);
+  assertPendingSessionWriteOwnership(state, pending);
+  return pending;
+}
+
+function promotePreparedSessionWrite(
+  session: Session,
+  state: RunState<any, any>,
+  storedItems: AgentInputItem[],
+): Extract<PendingSessionWrite, { phase: 'append_ready' }> {
+  const pending = state._pendingSessionWrite;
+  if (pending?.phase !== 'prepared') {
+    throw new UserError('Prepared Session write state is missing.');
+  }
+  assertPendingSessionWriteOwnership(state, pending);
+  const appendItems = getPendingSessionWriteAppendItems(state, pending);
+  const beforeItems = getComparableSessionItems(session, storedItems);
+  const comparableAppendItems = getComparableSessionItems(session, appendItems);
+  const combinedItems = getComparableSessionItems(session, [
+    ...storedItems,
+    ...appendItems,
+  ]);
+  const expectedCombinedItems = [...beforeItems, ...comparableAppendItems];
+  if (
+    beforeItems.length !== storedItems.length ||
+    comparableAppendItems.length !== appendItems.length ||
+    combinedItems.length !== storedItems.length + appendItems.length
+  ) {
+    throw new UserError(
+      'Session persistence comparison must preserve stored item boundaries.',
+    );
+  }
+  if (!sessionItemArraysMatch(combinedItems, expectedCombinedItems)) {
+    throw new UserError(
+      'Session history changed before a prepared resumed write could be completed safely.',
+    );
+  }
+  const appendReady: Extract<PendingSessionWrite, { phase: 'append_ready' }> = {
+    ...pending,
+    phase: 'append_ready',
+    beforeItems,
+    comparableAppendItems,
+  };
+  state._pendingSessionWrite = structuredClone(appendReady);
+  assertPendingSessionWriteOwnership(state, appendReady);
+  return appendReady;
+}
+
+async function appendPreparedResumedSessionWrite(options: {
+  session: Session;
+  state: RunState<any, any>;
+  preparation: ResumedSessionWritePreparation;
+}): Promise<void> {
+  const { session, state, preparation } = options;
+  const sessionId = await session.getSessionId();
+  if (sessionId !== preparation.sessionId) {
+    throw new UserError(
+      'A prepared Session write belongs to a different session and cannot be resumed safely.',
+    );
+  }
+  const storedItems = await getSessionItems(session, state._context);
+  const pending = promotePreparedSessionWrite(session, state, storedItems);
+  await addSessionItems(
+    session,
+    getPendingSessionWriteAppendItems(state, pending),
+    state._context,
+  );
+}
+
+export async function reconcilePendingSessionWriteBeforeRun(
+  session: Session | undefined,
+  state: RunState<any, any>,
+  options: {
+    serverManagesConversation: boolean;
+    operationAlreadyOwned?: boolean;
+  },
+): Promise<boolean> {
+  const pending = state._pendingSessionWrite;
+  if (pending === undefined) {
+    return false;
+  }
+  if (
+    options.operationAlreadyOwned === true &&
+    !state._resumedSessionWriteInProgress
+  ) {
+    throw new UserError(
+      'Pending Session write reconciliation lost exclusive RunState ownership.',
+    );
+  }
+  const releaseOperation =
+    options.operationAlreadyOwned === true
+      ? undefined
+      : acquireResumedSessionWriteOperation(state);
+  try {
+    assertPendingSessionWriteOwnership(state, pending);
+    if (options.serverManagesConversation || session === undefined) {
+      throw new UserError(
+        'A pending Session write requires the same ordinary local Session to resume safely.',
+      );
+    }
+    if (pending.phase === 'compaction_pending') {
+      await completePendingApprovedToolInputCompaction(session, state);
+      return true;
+    }
+    if (
+      getEffectiveSessionReasoningItemIdPolicy(session, state) !==
+      pending.reasoningItemIdPolicy
+    ) {
+      throw new UserError(
+        'Session persistence policy changed while a resumed write was pending.',
+      );
+    }
+    if (
+      state._currentTurnSessionHistoryTransactionSessionId !== undefined &&
+      !isSessionHistoryTransactionAwareSession(session)
+    ) {
+      throw new UserError(
+        'A pending transaction-aware Session write requires the same transaction-aware local Session to resume safely.',
+      );
+    }
+    const appendItems = getPendingSessionWriteAppendItems(state, pending);
+    if (pending.phase === 'append_ready') {
+      const comparableAppendItems = getComparableSessionItems(
+        session,
+        appendItems,
+      );
+      if (
+        pending.comparableAppendItems.length !== appendItems.length ||
+        comparableAppendItems.length !== appendItems.length ||
+        !sessionItemArraysMatch(
+          comparableAppendItems,
+          pending.comparableAppendItems,
+        )
+      ) {
+        throw new UserError(
+          'RunState pending Session write comparison evidence does not match the runtime Session.',
+        );
+      }
+    }
+    const sessionId = await session.getSessionId();
+    if (sessionId !== pending.sessionId) {
+      throw new UserError(
+        'A pending Session write belongs to a different session and cannot be resumed safely.',
+      );
+    }
+
+    const storedItems = await getSessionItems(session, state._context);
+    const currentItems = getComparableSessionItems(session, storedItems);
+    if (currentItems.length !== storedItems.length) {
+      throw new UserError(
+        'Session persistence comparison must preserve stored item boundaries.',
+      );
+    }
+    const appendReady =
+      pending.phase === 'prepared'
+        ? promotePreparedSessionWrite(session, state, storedItems)
+        : pending;
+    const expectedAfterItems = [
+      ...appendReady.beforeItems,
+      ...appendReady.comparableAppendItems,
+    ];
+    if (sessionItemArraysMatch(currentItems, appendReady.beforeItems)) {
+      await addSessionItems(session, appendItems, state._context);
+    } else if (!sessionItemArraysMatch(currentItems, expectedAfterItems)) {
+      throw new UserError(
+        'Session history changed while a resumed write was unacknowledged and cannot be reconciled safely.',
+      );
+    }
+
+    commitSessionPersistenceState({
+      state,
+      persistedItemCount: pending.persistedItemCount,
+      deferredRunItemIndexes: [],
+    });
+    markPendingApprovedToolInputCompaction(state);
+    await completePendingApprovedToolInputCompaction(session, state);
+    return true;
+  } finally {
+    releaseOperation?.();
+  }
+}
+
 export function selectRunItemsForBlockedOutput(
   items: RunItem[],
   unpersistedStartIndex = 0,
@@ -371,6 +712,82 @@ function clearSessionHistoryTransactionBinding(
     undefined;
 }
 
+function commitSessionPersistenceState(options: {
+  state: RunState<any, any>;
+  persistedItemCount: number;
+  deferredRunItemIndexes: readonly number[];
+}): void {
+  const { state, persistedItemCount, deferredRunItemIndexes } = options;
+  state._currentTurnPersistedItemCount = persistedItemCount;
+  if (state._currentTurnSessionWriteCompactedItemCount !== persistedItemCount) {
+    state._currentTurnSessionWriteCompactedItemCount = undefined;
+  }
+  state._currentTurnDeferredSessionItemIndexes = new Set(
+    deferredRunItemIndexes,
+  );
+  if (deferredRunItemIndexes.length === 0) {
+    state._currentTurnBlockedSessionStartIndex = undefined;
+    clearSessionHistoryTransactionBinding(state);
+  }
+}
+
+function markPendingApprovedToolInputCompaction(
+  state: RunState<any, any>,
+): void {
+  const pending = state._pendingSessionWrite;
+  if (pending?.phase !== 'append_ready') {
+    throw new UserError(
+      'A settled resumed Session append is missing its compaction authority.',
+    );
+  }
+  const {
+    beforeItems: _beforeItems,
+    comparableAppendItems: _comparableAppendItems,
+    ...ownedCompaction
+  } = pending;
+  state._currentTurnSessionWriteCompactedItemCount = undefined;
+  state._pendingSessionWrite = {
+    ...ownedCompaction,
+    phase: 'compaction_pending',
+  };
+  assertPendingSessionWriteOwnership(state, state._pendingSessionWrite);
+}
+
+function commitApprovedToolInputCompaction(
+  state: RunState<any, any>,
+  persistedItemCount: number,
+): void {
+  state._currentTurnSessionWriteCompactedItemCount = persistedItemCount;
+  state._pendingSessionWrite = undefined;
+  clearPendingSessionWriteTerminalProducer(state);
+}
+
+async function completePendingApprovedToolInputCompaction(
+  session: Session,
+  state: RunState<any, any>,
+): Promise<void> {
+  const pending = state._pendingSessionWrite;
+  if (pending?.phase !== 'compaction_pending') {
+    throw new UserError('Pending Session compaction authority is missing.');
+  }
+  assertPendingSessionWriteOwnership(state, pending);
+  if (
+    getEffectiveSessionReasoningItemIdPolicy(session, state) !==
+    pending.reasoningItemIdPolicy
+  ) {
+    throw new UserError(
+      'Session persistence policy changed while compaction was pending.',
+    );
+  }
+  if ((await session.getSessionId()) !== pending.sessionId) {
+    throw new UserError(
+      'A pending Session compaction belongs to a different session and cannot be resumed safely.',
+    );
+  }
+  await runCompactionOnSession(session, undefined, state, 'input');
+  commitApprovedToolInputCompaction(state, pending.persistedItemCount);
+}
+
 async function assertBlockedSessionSuffixMatches(
   session: Session,
   state: RunState<any, any>,
@@ -489,6 +906,9 @@ async function persistSessionRunItemPlan(options: {
     persistencePlan.runItemsToPersist.length === 0 &&
     (sessionInputItems?.length ?? 0) === 0
   ) {
+    await prepareSessionHistoryTransactionsForRun(session, state, {
+      serverManagesConversation: false,
+    });
     return;
   }
   await persistRunItemsToSession({
@@ -510,6 +930,10 @@ async function persistSessionRunItemPlan(options: {
         ? false
         : (persistenceOptions.runCompaction ?? true),
     compactionMode: persistenceOptions.compactionMode,
+    resumedSessionWritePreparation:
+      persistenceOptions.resumedSessionWritePreparation,
+    deferResumedSessionWrite:
+      persistenceOptions.deferResumedSessionWrite === true,
   });
 }
 
@@ -1129,9 +1553,6 @@ export async function saveToSession(
   options: SessionPersistenceOptions = {},
 ): Promise<void> {
   const state = result.state;
-  await prepareSessionHistoryTransactionsForRun(session, state, {
-    serverManagesConversation: false,
-  });
   const additionalRunItems = options.additionalRunItems ?? [];
   if (additionalRunItems.length > 0) {
     const { additionalRunItems: _additionalRunItems, ...baseOptions } = options;
@@ -1216,9 +1637,6 @@ export async function saveStreamResultToSession(
   sessionInputItems?: AgentInputItem[],
 ): Promise<void> {
   const state = result.state;
-  await prepareSessionHistoryTransactionsForRun(session, state, {
-    serverManagesConversation: false,
-  });
   const additionalRunItems = options.additionalRunItems ?? [];
   if (additionalRunItems.length > 0) {
     const { additionalRunItems: _additionalRunItems, ...baseOptions } = options;
@@ -1537,133 +1955,6 @@ function getHistoryItemModelInputKey(
   );
 }
 
-function normalizeItemsForSessionPersistence(
-  items: AgentInputItem[],
-): AgentInputItem[] {
-  return deduplicateAgentInputItemsPreferringLatest(
-    items.map((item) => sanitizeValueForSession(stripTransientCallIds(item))),
-  );
-}
-
-type SessionBinaryContext = {
-  mediaType?: string;
-};
-
-function sanitizeValueForSession(
-  value: AgentInputItem,
-  context?: SessionBinaryContext,
-): AgentInputItem;
-function sanitizeValueForSession(
-  value: unknown,
-  context?: SessionBinaryContext,
-): unknown;
-function sanitizeValueForSession(
-  value: unknown,
-  context: SessionBinaryContext = {},
-): unknown {
-  if (value === null || value === undefined) {
-    return value;
-  }
-
-  const binary = toUint8ArrayFromBinary(value);
-  if (binary) {
-    return toDataUrlFromBytes(binary, context.mediaType);
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => sanitizeValueForSession(entry, context));
-  }
-
-  if (!isPlainObject(value)) {
-    return value;
-  }
-
-  const record = value as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-
-  const mediaType =
-    typeof record.mediaType === 'string' && record.mediaType.length > 0
-      ? (record.mediaType as string)
-      : context.mediaType;
-
-  for (const [key, entry] of Object.entries(record)) {
-    const nextContext =
-      key === 'data' || key === 'fileData' ? { mediaType } : context;
-    result[key] = sanitizeValueForSession(entry, nextContext);
-  }
-
-  return result;
-}
-
-function toDataUrlFromBytes(bytes: Uint8Array, mediaType?: string): string {
-  const base64 = encodeUint8ArrayToBase64(bytes);
-  const type =
-    mediaType && !mediaType.startsWith('data:') ? mediaType : 'text/plain';
-  return `data:${type};base64,${base64}`;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
-
-function stripTransientCallIds(value: AgentInputItem): AgentInputItem;
-function stripTransientCallIds(value: unknown): unknown;
-function stripTransientCallIds(value: unknown): unknown {
-  if (value === null || value === undefined) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => stripTransientCallIds(entry));
-  }
-  if (!isPlainObject(value)) {
-    return value;
-  }
-  const record = value as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-  const isProtocolItem =
-    typeof record.type === 'string' && record.type.length > 0;
-  const shouldStripId = isProtocolItem && shouldStripIdForProtocolItem(record);
-  for (const [key, entry] of Object.entries(record)) {
-    if (shouldStripId && key === 'id') {
-      continue;
-    }
-    result[key] = stripTransientCallIds(entry);
-  }
-  return result;
-}
-
-function shouldStripIdForProtocolItem(
-  record: Record<string, unknown>,
-): boolean {
-  switch (record.type) {
-    case 'function_call':
-    case 'function_call_result':
-      return true;
-    case 'tool_search_call':
-    case 'tool_search_output':
-      return hasToolSearchCallId(record);
-    default:
-      return false;
-  }
-}
-
-function hasToolSearchCallId(record: Record<string, unknown>): boolean {
-  const topLevelCallId = record.call_id ?? record.callId;
-  if (typeof topLevelCallId === 'string' && topLevelCallId.length > 0) {
-    return true;
-  }
-
-  const providerData = isPlainObject(record.providerData)
-    ? (record.providerData as Record<string, unknown>)
-    : undefined;
-  const providerCallId = providerData?.call_id ?? providerData?.callId;
-  return typeof providerCallId === 'string' && providerCallId.length > 0;
-}
-
 async function persistRunItemsToSession(options: {
   session?: Session;
   state: RunState<any, any>;
@@ -1678,6 +1969,8 @@ async function persistRunItemsToSession(options: {
   alreadyPersistedCount: number;
   runCompaction: boolean;
   compactionMode?: OpenAIResponsesCompactionArgs['compactionMode'];
+  resumedSessionWritePreparation?: ResumedSessionWritePreparation;
+  deferResumedSessionWrite?: boolean;
 }): Promise<void> {
   const {
     session,
@@ -1693,15 +1986,25 @@ async function persistRunItemsToSession(options: {
     alreadyPersistedCount,
     runCompaction,
     compactionMode,
+    resumedSessionWritePreparation,
+    deferResumedSessionWrite = false,
   } = options;
 
   if (!session) {
     return;
   }
 
-  await reconcileLegacyCompactionSessionBeforeResume(session, state);
+  if (
+    state._pendingLegacyCompactionSessionItems !== undefined &&
+    resumedSessionWritePreparation === undefined
+  ) {
+    await prepareSessionHistoryTransactionsForRun(session, state, {
+      serverManagesConversation: false,
+    });
+  }
 
   const effectiveReasoningItemIdPolicy =
+    resumedSessionWritePreparation?.reasoningItemIdPolicy ??
     getEffectiveSessionReasoningItemIdPolicy(session, state);
   const frozenReasoningItemIdPolicy =
     useHistoryTransaction || transactionKind === 'blocked_append'
@@ -1722,23 +2025,75 @@ async function persistRunItemsToSession(options: {
     ...extraInputItems,
     ...extractOutputItemsFromRunItems(newRunItems, frozenReasoningItemIdPolicy),
   ];
-  const commitPersistenceState = () => {
-    state._currentTurnPersistedItemCount =
-      alreadyPersistedCount + processedRunItemCount;
-    state._currentTurnDeferredSessionItemIndexes = new Set(
-      deferredRunItemIndexes,
-    );
-    if (deferredRunItemIndexes.length === 0) {
-      state._currentTurnBlockedSessionStartIndex = undefined;
-      state._currentTurnSessionHistoryTransactionSessionId = undefined;
-      state._currentTurnSessionReasoningItemIdPolicy = undefined;
-      state._currentTurnSessionHistoryTransactionInputItems = undefined;
-      state._currentTurnSessionHistoryTransactionCanReplaceAcceptedOutput =
-        undefined;
+  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
+  const compactedItems = trimToLatestCompaction(sanitizedItems);
+  if (
+    resumedSessionWritePreparation &&
+    !useHistoryTransaction &&
+    compactedItems[0]?.type !== 'compaction'
+  ) {
+    checkpointPreparedResumedSessionWrite({
+      session,
+      state,
+      preparation: resumedSessionWritePreparation,
+      items: sanitizedItems,
+      alreadyPersistedCount,
+      persistedItemCount: alreadyPersistedCount + processedRunItemCount,
+      reasoningItemIdPolicy: frozenReasoningItemIdPolicy,
+    });
+    if (deferResumedSessionWrite) {
+      return;
     }
+    if (
+      getEffectiveSessionReasoningItemIdPolicy(session, state) !==
+      resumedSessionWritePreparation.reasoningItemIdPolicy
+    ) {
+      throw new UserError(
+        'Session persistence policy changed after resumed tool execution.',
+      );
+    }
+  }
+
+  const hadPendingHistoryTransaction =
+    state._pendingSessionHistoryTransaction !== undefined;
+  await prepareSessionHistoryTransactionsForRun(session, state, {
+    serverManagesConversation: false,
+  });
+  if (
+    hadPendingHistoryTransaction &&
+    state._pendingSessionHistoryTransaction === undefined
+  ) {
+    if (runCompaction) {
+      await runCompactionOnSession(
+        session,
+        lastResponseId,
+        state,
+        compactionMode,
+      );
+    }
+    return;
+  }
+  const persistedItemCount = alreadyPersistedCount + processedRunItemCount;
+  const commitPersistenceState = () => {
+    commitSessionPersistenceState({
+      state,
+      persistedItemCount,
+      deferredRunItemIndexes,
+    });
   };
 
   if (itemsToSave.length === 0) {
+    const pendingApprovedToolInputCompaction =
+      hasPendingApprovedToolInputCompaction(state);
+    if (pendingApprovedToolInputCompaction) {
+      if (!runCompaction || compactionMode !== 'input') {
+        throw new UserError(
+          'Pending Session compaction must settle before other persistence work.',
+        );
+      }
+      await completePendingApprovedToolInputCompaction(session, state);
+      return;
+    }
     commitPersistenceState();
     if (runCompaction) {
       await runCompactionOnSession(
@@ -1751,7 +2106,6 @@ async function persistRunItemsToSession(options: {
     return;
   }
 
-  const sanitizedItems = normalizeItemsForSessionPersistence(itemsToSave);
   if (useHistoryTransaction) {
     if (
       !isSessionHistoryTransactionAwareSession(session) ||
@@ -1815,7 +2169,6 @@ async function persistRunItemsToSession(options: {
     }
     return;
   }
-  const compactedItems = trimToLatestCompaction(sanitizedItems);
   assertPersistableCompactionBoundary(compactedItems);
   if (compactedItems[0]?.type === 'compaction') {
     const previousItems = await getSessionItems(session, state._context);
@@ -1826,7 +2179,26 @@ async function persistRunItemsToSession(options: {
       state._context,
     );
   } else {
-    await addSessionItems(session, sanitizedItems, state._context);
+    if (resumedSessionWritePreparation) {
+      await appendPreparedResumedSessionWrite({
+        session,
+        state,
+        preparation: resumedSessionWritePreparation,
+      });
+    } else {
+      await addSessionItems(session, sanitizedItems, state._context);
+    }
+  }
+  if (resumedSessionWritePreparation) {
+    commitPersistenceState();
+    if (runCompaction) {
+      markPendingApprovedToolInputCompaction(state);
+      await completePendingApprovedToolInputCompaction(session, state);
+    } else {
+      state._pendingSessionWrite = undefined;
+      clearPendingSessionWriteTerminalProducer(state);
+    }
+    return;
   }
   commitPersistenceState();
   if (runCompaction) {
@@ -1951,39 +2323,6 @@ async function reconcileLegacyCompactionSessionItems(
 
 function assertPersistableCompactionBoundary(items: AgentInputItem[]): void {
   assertValidCompactionItems(items);
-}
-
-function agentItemRangeMatches(
-  items: AgentInputItem[],
-  expected: AgentInputItem[],
-  start: number,
-): boolean {
-  if (start < 0 || start + expected.length > items.length) {
-    return false;
-  }
-  return expected.every(
-    (item, offset) =>
-      getSessionReconciliationItemKey(items[start + offset]) ===
-      getSessionReconciliationItemKey(item),
-  );
-}
-
-function getSessionReconciliationItemKey(item: AgentInputItem): string {
-  return JSON.stringify(sortSessionReconciliationValue(item));
-}
-
-function sortSessionReconciliationValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortSessionReconciliationValue);
-  }
-  if (!isPlainObject(value)) {
-    return value;
-  }
-  return Object.fromEntries(
-    Object.keys(value)
-      .sort()
-      .map((key) => [key, sortSessionReconciliationValue(value[key])]),
-  );
 }
 
 function throwLegacyCompactionReconciliationError(): never {

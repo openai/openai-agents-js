@@ -73,7 +73,10 @@ import type { FunctionSpanData, Span } from '../tracing/spans';
 import * as protocol from '../types/protocol';
 import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
-import { RunState } from '../runState';
+import {
+  recordPendingSessionWriteTerminalProducer,
+  RunState,
+} from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import {
@@ -2720,6 +2723,7 @@ export async function checkForFinalOutputFromTools<
   state: RunState<TContext, Agent<TContext, TOutput>>,
   additionalInterruptions: RunItem[] = [],
 ): Promise<ToolsToFinalOutputResult> {
+  recordPendingSessionWriteTerminalProducer(state, undefined);
   if (toolResults.length === 0 && additionalInterruptions.length === 0) {
     return NOT_FINAL_OUTPUT;
   }
@@ -2769,6 +2773,22 @@ export async function checkForFinalOutputFromTools<
   if (agent.toolUseBehavior === 'stop_on_first_tool') {
     if (firstToolResult?.type === 'function_output') {
       const stringOutput = toSmartString(firstToolResult.output);
+      const callId = firstToolResult.runItem.rawItem?.callId;
+      const functionOutputs = finalizationResults.flatMap((result) =>
+        result.type === 'function_output' ? [result] : [],
+      );
+      const resultCallIds = functionOutputs.flatMap((result) =>
+        result.runItem.rawItem?.callId ? [result.runItem.rawItem.callId] : [],
+      );
+      if (callId && resultCallIds.length === finalizationResults.length) {
+        recordPendingSessionWriteTerminalProducer(state, {
+          behavior: agent.toolUseBehavior,
+          resultCallIds,
+          resultItems: functionOutputs.map((result) => result.runItem),
+          selectedCallId: callId,
+          finalOutput: stringOutput,
+        });
+      }
       return {
         isFinalOutput: true,
         isInterrupted: undefined,
@@ -2787,6 +2807,16 @@ export async function checkForFinalOutputFromTools<
     });
     if (stoppingTool?.type === 'function_output') {
       const stringOutput = toSmartString(stoppingTool.output);
+      const callId = stoppingTool.runItem.rawItem?.callId;
+      if (callId) {
+        recordPendingSessionWriteTerminalProducer(state, {
+          behavior: toolUseBehavior,
+          resultCallIds: [callId],
+          resultItems: [stoppingTool.runItem],
+          selectedCallId: callId,
+          finalOutput: stringOutput,
+        });
+      }
       return {
         isFinalOutput: true,
         isInterrupted: undefined,
@@ -2797,10 +2827,28 @@ export async function checkForFinalOutputFromTools<
   }
 
   if (typeof toolUseBehavior === 'function') {
-    return toolUseBehavior(
+    const outcome = await toolUseBehavior(
       state._context,
       finalizationResults as FunctionToolResult[],
     );
+    if (outcome.isFinalOutput) {
+      const resultCallIds = finalizationResults.flatMap((result) =>
+        result.type === 'function_output' && result.runItem.rawItem?.callId
+          ? [result.runItem.rawItem.callId]
+          : [],
+      );
+      if (resultCallIds.length === finalizationResults.length) {
+        recordPendingSessionWriteTerminalProducer(state, {
+          behavior: toolUseBehavior,
+          resultCallIds,
+          resultItems: finalizationResults.flatMap((result) =>
+            result.type === 'function_output' ? [result.runItem] : [],
+          ),
+          finalOutput: outcome.finalOutput,
+        });
+      }
+    }
+    return outcome;
   }
 
   throw new UserError(`Invalid toolUseBehavior: ${toolUseBehavior}`, state);

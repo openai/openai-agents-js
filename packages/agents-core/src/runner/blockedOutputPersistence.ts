@@ -33,6 +33,7 @@ import {
 import type { RunState } from '../runState';
 import type { Session } from '../memory/session';
 import { Usage } from '../usage';
+import { toSmartString } from '../utils/smartString';
 import {
   getSerializedOutputGuardrailResults,
   sanitizeBlockedOutputGuardrailResults,
@@ -125,6 +126,58 @@ function currentTerminalToolRuns(state: RunState<any, any>) {
   return completedRuns;
 }
 
+function currentDeclarativeTerminalToolOutput(
+  state: RunState<any, any>,
+): string | undefined {
+  const behavior = state._currentAgent.toolUseBehavior;
+  if (
+    behavior === 'run_llm_again' ||
+    typeof behavior === 'function' ||
+    state._currentStep?.type !== 'next_step_final_output'
+  ) {
+    return undefined;
+  }
+  const completedRuns = currentTerminalToolRuns(state);
+  const selectedRun =
+    behavior === 'stop_on_first_tool'
+      ? completedRuns[0]
+      : completedRuns.find((run) =>
+          behavior.stopAtToolNames.some((toolName: string) =>
+            matchesFunctionToolName(run.tool, toolName),
+          ),
+        );
+  const callId = selectedRun?.toolCall.callId;
+  const outputItem = callId
+    ? state._completedToolInvocationEvidence
+        .get(state._currentAgent)
+        ?.get(callId)?.items[1]
+    : undefined;
+  return outputItem instanceof RunToolCallOutputItem
+    ? toSmartString(outputItem.output)
+    : undefined;
+}
+
+export function hasPersistedToolOutput(state: RunState<any, any>): boolean {
+  return state._generatedItems
+    .slice(0, state._currentTurnPersistedItemCount)
+    .some((item) => item.type === 'tool_call_output_item');
+}
+
+export function hasPendingApprovedToolInputCompaction(
+  state: RunState<any, any>,
+): boolean {
+  return state._pendingSessionWrite?.phase === 'compaction_pending';
+}
+
+export function hasDeterministicTerminalToolOutputSource(
+  state: RunState<any, any>,
+): boolean {
+  return (
+    state._currentStep?.type === 'next_step_final_output' &&
+    currentDeclarativeTerminalToolOutput(state) === state._currentStep.output
+  );
+}
+
 export function hasTerminalToolOutputSource(
   state: RunState<any, any>,
 ): boolean {
@@ -149,6 +202,7 @@ export function sanitizeBlockedTerminalToolOutput(
   ownedOutputGuardrailResults?: ReadonlySet<OutputGuardrailResult<any, any>>,
   resolveBlockedMessage?: (guardrailName: string) => Promise<string>,
   signal?: AbortSignal,
+  onBlockedOutput?: () => void,
 ): false | string | Promise<false | string> {
   if (
     !hasTerminalToolOutputSource(state) ||
@@ -156,6 +210,7 @@ export function sanitizeBlockedTerminalToolOutput(
   ) {
     return false;
   }
+  onBlockedOutput?.();
   redactBlockedResponseToolOutputs(state);
   const sanitizedOutputGuardrailResults = sanitizeBlockedOutputGuardrailResults(
     state,
