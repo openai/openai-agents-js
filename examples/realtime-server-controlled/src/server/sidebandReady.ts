@@ -1,3 +1,5 @@
+import { voiceAgentConfiguration } from './agent';
+
 export type SidebandSession = {
   connect(options: { apiKey: string; callId: string }): Promise<void>;
   on(event: 'transport_event', listener: (event: unknown) => void): unknown;
@@ -20,9 +22,27 @@ export async function connectSidebandAndWaitForReady(
       typeof event === 'object' &&
       event !== null &&
       'type' in event &&
-      event.type === 'session.updated'
+      event.type === 'session.updated' &&
+      'session' in event &&
+      typeof event.session === 'object' &&
+      event.session !== null &&
+      'instructions' in event.session &&
+      event.session.instructions === voiceAgentConfiguration.instructions &&
+      'tools' in event.session &&
+      Array.isArray(event.session.tools)
     ) {
-      resolveReady();
+      const tools = event.session.tools;
+      // This example uses one static agent. A tracing-only acknowledgement
+      // cannot confirm the update containing its instructions and tools.
+      if (
+        voiceAgentConfiguration.tools.every((expected) =>
+          tools.some(
+            (tool) => tool?.type === 'function' && tool.name === expected.name,
+          ),
+        )
+      ) {
+        resolveReady();
+      }
     }
   };
   session.on('transport_event', handleTransportEvent);

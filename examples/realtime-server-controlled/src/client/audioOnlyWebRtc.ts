@@ -4,12 +4,14 @@ export type SdpExchange = (
 ) => Promise<string>;
 
 export type AudioOnlyWebRtcOptions = {
+  onError(): void;
   remoteAudio: Pick<HTMLAudioElement, 'play' | 'srcObject'>;
   getUserMedia?: typeof navigator.mediaDevices.getUserMedia;
   createPeerConnection?: () => RTCPeerConnection;
 };
 
 export class AudioOnlyWebRtc {
+  readonly #onError: () => void;
   readonly #remoteAudio: Pick<HTMLAudioElement, 'play' | 'srcObject'>;
   readonly #getUserMedia: typeof navigator.mediaDevices.getUserMedia;
   readonly #createPeerConnection: () => RTCPeerConnection;
@@ -17,8 +19,10 @@ export class AudioOnlyWebRtc {
   #connectAbortController: AbortController | null = null;
   #peerConnection: RTCPeerConnection | null = null;
   #localStream: MediaStream | null = null;
+  #disconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: AudioOnlyWebRtcOptions) {
+    this.#onError = options.onError;
     this.#remoteAudio = options.remoteAudio;
     this.#getUserMedia =
       options.getUserMedia ??
@@ -69,6 +73,29 @@ export class AudioOnlyWebRtc {
 
       const peerConnection = this.#createPeerConnection();
       this.#peerConnection = peerConnection;
+      peerConnection.onconnectionstatechange = () => {
+        if (this.#peerConnection !== peerConnection) {
+          return;
+        }
+        if (peerConnection.connectionState === 'disconnected') {
+          this.#disconnectTimer ??= setTimeout(() => {
+            this.#disconnectTimer = null;
+            if (
+              this.#peerConnection === peerConnection &&
+              peerConnection.connectionState === 'disconnected'
+            ) {
+              this.close();
+              this.#onError();
+            }
+          }, 10_000);
+          return;
+        }
+        this.#clearDisconnectTimer();
+        if (peerConnection.connectionState === 'failed') {
+          this.close();
+          this.#onError();
+        }
+      };
       peerConnection.ontrack = (event) => {
         const [remoteStream] = event.streams;
         if (!remoteStream) {
@@ -115,6 +142,7 @@ export class AudioOnlyWebRtc {
   }
 
   close(): void {
+    this.#clearDisconnectTimer();
     const abortController = this.#connectAbortController;
     this.#connectAbortController = null;
     abortController?.abort(new Error('The audio connection was closed.'));
@@ -123,6 +151,7 @@ export class AudioOnlyWebRtc {
     this.#peerConnection = null;
     if (peerConnection) {
       peerConnection.ontrack = null;
+      peerConnection.onconnectionstatechange = null;
       peerConnection.close();
     }
 
@@ -131,6 +160,13 @@ export class AudioOnlyWebRtc {
     }
     this.#localStream = null;
     this.#remoteAudio.srcObject = null;
+  }
+
+  #clearDisconnectTimer(): void {
+    if (this.#disconnectTimer !== null) {
+      clearTimeout(this.#disconnectTimer);
+      this.#disconnectTimer = null;
+    }
   }
 
   #ownsConnectAttempt(abortController: AbortController): boolean {

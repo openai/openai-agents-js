@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { IncomingMessage } from 'node:http';
+import { DemoAuthStore } from '../src/server/demoAuth';
+import { requestCsrfToken } from '../src/client/demoAuthClient';
 import {
   VoiceSessionCoordinator,
   type VoiceConnection,
@@ -33,6 +36,69 @@ function connection(connect: VoiceConnection['connect']): VoiceConnection & {
 }
 
 describe('VoiceSessionCoordinator', () => {
+  it('aborts old cookie-setting authentication before admitting a replacement', async () => {
+    const auth = new DemoAuthStore({ secureCookie: false });
+    let cookie = '';
+    let deliverOld!: () => void;
+    let requests = 0;
+    const request = () => ({ headers: { cookie } }) as IncomingMessage;
+    const fetchAuth: typeof fetch = async (_input, init) => {
+      const result = auth.getOrCreate(request());
+      return new Promise<Response>((resolve, reject) => {
+        const deliver = () => {
+          if (init?.signal?.aborted) return;
+          cookie = result.setCookie!.split(';')[0]!;
+          resolve(Response.json({ csrfToken: result.principal.csrfToken }));
+        };
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new Error('Aborted')),
+          { once: true },
+        );
+        if (++requests === 1) deliverOld = deliver;
+        else deliver();
+      });
+    };
+    let replacementOwner = '';
+    let replacementToken = '';
+    const coordinator = new VoiceSessionCoordinator({
+      closeRemoteSession: vi.fn(async () => {}),
+      createConnection: () => {
+        const abort = new AbortController();
+        return {
+          muted: false,
+          setMuted: vi.fn(),
+          close: () => abort.abort(),
+          async connect(exchangeSdp) {
+            await exchangeSdp('offer', abort.signal);
+          },
+        };
+      },
+      async exchangeOffer({ token }) {
+        replacementOwner = auth.authenticate(request())!.ownerId;
+        replacementToken = token;
+        return 'answer';
+      },
+      getCsrfToken: (signal) => requestCsrfToken(fetchAuth, signal),
+      onControls: vi.fn(),
+      onStatus: vi.fn(),
+      openEvents: () => ({ close: vi.fn() }),
+    });
+    const starting = coordinator.start();
+    await vi.waitFor(() => expect(deliverOld).toBeTypeOf('function'));
+    await coordinator.stop();
+    await coordinator.start();
+    deliverOld();
+    await starting;
+
+    const current = auth.authenticate(request())!;
+    expect(current.ownerId).toBe(replacementOwner);
+    const authorizedRequest = request();
+    authorizedRequest.headers['x-csrf-token'] = replacementToken;
+    expect(auth.verifyCsrf(authorizedRequest, current)).toBe(true);
+    await coordinator.stop();
+  });
+
   it.each(['Stop', 'server event'])(
     'retains failed cleanup after %s and allows a deduplicated Stop retry',
     async (trigger) => {

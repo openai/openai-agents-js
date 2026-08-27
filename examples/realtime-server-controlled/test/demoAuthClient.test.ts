@@ -16,9 +16,11 @@ describe('requestCsrfToken', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenNthCalledWith(1, '/api/auth/session', {
       credentials: 'same-origin',
+      signal: undefined,
     });
     expect(fetchImpl).toHaveBeenNthCalledWith(2, '/api/auth/session', {
       credentials: 'same-origin',
+      signal: undefined,
     });
   });
 });

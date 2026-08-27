@@ -42,8 +42,9 @@ function setStatus(state: keyof typeof statusCopy) {
 }
 
 const coordinator = new VoiceSessionCoordinator({
-  getCsrfToken: requestCsrfToken,
-  createConnection: () => new AudioOnlyWebRtc({ remoteAudio }),
+  getCsrfToken: (signal) => requestCsrfToken(fetch, signal),
+  createConnection: ({ onError }) =>
+    new AudioOnlyWebRtc({ remoteAudio, onError }),
   async exchangeOffer({ offerSdp, sessionId, signal, token }) {
     const response = await fetch('/api/realtime/session', {
       method: 'POST',

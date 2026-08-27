@@ -1,8 +1,10 @@
 export async function requestCsrfToken(
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetchImpl('/api/auth/session', {
     credentials: 'same-origin',
+    signal,
   });
   if (!response.ok) {
     throw new Error('Could not initialize the application session.');

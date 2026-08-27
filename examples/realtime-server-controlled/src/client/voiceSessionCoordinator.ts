@@ -33,14 +33,14 @@ export type VoiceSessionControls = {
 
 export type VoiceSessionCoordinatorOptions = {
   closeRemoteSession(sessionId: string, token: string): Promise<void>;
-  createConnection(): VoiceConnection;
+  createConnection(options: { onError(): void }): VoiceConnection;
   exchangeOffer(input: {
     offerSdp: string;
     sessionId: string;
     signal: AbortSignal;
     token: string;
   }): Promise<string>;
-  getCsrfToken(): Promise<string>;
+  getCsrfToken(signal: AbortSignal): Promise<string>;
   onControls(controls: VoiceSessionControls): void;
   onStatus(status: VoiceSessionStatus): void;
   openEvents(input: {
@@ -81,10 +81,16 @@ export class VoiceSessionCoordinator {
     this.#publishControls();
 
     try {
-      const connection = this.#options.createConnection();
+      const connection = this.#options.createConnection({
+        onError: () => {
+          if (!attempt.closed && this.#activeAttempt === attempt) {
+            void this.#finish(attempt, 'error');
+          }
+        },
+      });
       attempt.connection = connection;
       await connection.connect(async (offerSdp, signal) => {
-        const token = await this.#options.getCsrfToken();
+        const token = await this.#options.getCsrfToken(signal);
         if (attempt.closed || this.#activeAttempt !== attempt) {
           throw new Error('The voice-session attempt is no longer active.');
         }
@@ -143,6 +149,9 @@ export class VoiceSessionCoordinator {
       return attempt.cleanupPromise;
     }
     attempt.closed = true;
+    if (status === 'error') {
+      this.#options.onStatus('error');
+    }
     attempt.eventStream?.close();
     attempt.eventStream = null;
     attempt.connection?.close();

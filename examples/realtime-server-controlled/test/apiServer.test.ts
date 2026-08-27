@@ -6,6 +6,9 @@ import { createApiServer } from '../src/server/apiServer';
 import { DemoAuthStore } from '../src/server/demoAuth';
 import { SessionManager } from '../src/server/sessionManager';
 import { shutdownApiServer } from '../src/server/shutdown';
+import { closeRemoteSession } from '../src/client/closeRemoteSession';
+import { requestCsrfToken } from '../src/client/demoAuthClient';
+import { VoiceSessionCoordinator } from '../src/client/voiceSessionCoordinator';
 import type { VoiceController } from '../src/server/voiceController';
 
 const appOrigin = 'http://app.example';
@@ -34,8 +37,8 @@ afterEach(async () => {
   );
 });
 
-async function createHarness(hangup = vi.fn(async () => {})) {
-  const sessions = new SessionManager({ hangup });
+async function createHarness(hangup = vi.fn(async () => {}), now = Date.now) {
+  const sessions = new SessionManager({ hangup, now });
   const start = vi.fn(
     async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
       sessions.reserve(ownerId, sessionId);
@@ -47,7 +50,7 @@ async function createHarness(hangup = vi.fn(async () => {})) {
   const controller = { start } as unknown as VoiceController;
   const server = createApiServer({
     appOrigin,
-    auth: new DemoAuthStore({ secureCookie: false }),
+    auth: new DemoAuthStore({ secureCookie: false, now }),
     controller,
     sessions,
   });
@@ -74,6 +77,81 @@ async function createHarness(hangup = vi.fn(async () => {})) {
 }
 
 describe('createApiServer', () => {
+  it('recovers Stop and Start after cleanup failure and demo authentication expiry', async () => {
+    let now = 1_000;
+    const hangup = vi
+      .fn(async () => {})
+      .mockRejectedValueOnce(new Error('timeout'));
+    const harness = await createHarness(hangup, () => now);
+    let cookie = harness.cookie;
+    const responses: number[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (cookie) headers.set('Cookie', cookie);
+      if (init?.method === 'POST') headers.set('Origin', appOrigin);
+      const response = await fetch(`${harness.baseUrl}${input}`, {
+        ...init,
+        headers,
+      });
+      cookie = response.headers.get('set-cookie') ?? cookie;
+      responses.push(response.status);
+      return response;
+    };
+    const onControls = vi.fn();
+    const coordinator = new VoiceSessionCoordinator({
+      closeRemoteSession: (id, token) =>
+        closeRemoteSession(id, token, fetchImpl),
+      createConnection: () => ({
+        close: vi.fn(),
+        muted: false,
+        setMuted: vi.fn(),
+        async connect(exchangeSdp) {
+          await exchangeSdp(audioSdp, new AbortController().signal);
+        },
+      }),
+      async exchangeOffer({ sessionId, token, offerSdp }) {
+        const response = await fetchImpl('/api/realtime/session', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/sdp',
+            'X-CSRF-Token': token,
+            'X-App-Session-Id': sessionId,
+          },
+          body: offerSdp,
+        });
+        if (!response.ok) throw new Error('Setup failed');
+        return response.text();
+      },
+      getCsrfToken: (signal) => requestCsrfToken(fetchImpl, signal),
+      onControls,
+      onStatus: vi.fn(),
+      openEvents: () => ({ close: vi.fn() }),
+    });
+    await coordinator.start();
+    await coordinator.stop();
+    expect(onControls.mock.lastCall?.[0]).toMatchObject({
+      canStart: false,
+      canStop: true,
+    });
+    expect(responses.at(-1)).toBe(502);
+
+    now += 60 * 60_000 + 1;
+    cookie = ''; // The browser has expired the demo cookie too.
+    await harness.sessions.closeExpired(30 * 60_000);
+    await coordinator.stop();
+
+    expect(responses.slice(-3)).toEqual([401, 200, 404]);
+    expect(onControls.mock.lastCall?.[0]).toMatchObject({
+      canStart: true,
+      canStop: false,
+    });
+    expect(hangup).toHaveBeenCalledTimes(2);
+    await coordinator.start();
+    expect(harness.start).toHaveBeenCalledTimes(2);
+    expect(onControls.mock.lastCall?.[0].canStop).toBe(true);
+    await coordinator.stop();
+  });
+
   it('returns an error for failed hangup and accepts an authenticated close retry', async () => {
     const hangup = vi
       .fn(async () => {})
