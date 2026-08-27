@@ -451,7 +451,7 @@ structured outputs은 실패 처리도 변경합니다.
 - `'error_as_result'`를 사용하려면 반환 값이 `outputSchema`를 충족하는 `timeoutErrorFunction`을 제공해야 합니다.
 - 출력 가드레일이 대체한 값도 `outputSchema`를 충족해야 합니다.
 
-프로그래밍 방식 도구 호출은 Responses 전용입니다. Chat Completions, 실시간 에이전트, AI SDK 모델 어댑터에서는 이러한 옵션이 거부됩니다. 사용 가능한 도구가 지연된 경우, 이후 생성된 프로그램이 호출하기 전에 도구 검색으로 해당 도구를 로드해야 합니다.
+프로그래밍 방식 도구 호출은 Responses 전용입니다. Chat Completions, 음성 에이전트, AI SDK 모델 어댑터에서는 이러한 옵션이 거부됩니다. 사용 가능한 도구가 지연된 경우, 이후 생성된 프로그램이 호출하기 전에 도구 검색으로 해당 도구를 로드해야 합니다.
 
 전체 예제는 [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/programmatic-tool-calling.ts)를 참고하세요.
 

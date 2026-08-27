@@ -49,7 +49,7 @@ Output guardrails run in 3 steps:
 2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult).
 3. If `tripwireTriggered` is `true`, an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) error is thrown.
 
-> **Note** Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime spoken interactions see [the Realtime agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
+> **Note** Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime spoken interactions see [the Voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
 
 Output guardrail functions also receive an optional `details` object with the underlying `modelResponse` and the generated output items for the turn. Use this when the final output alone is not enough to decide whether the response should pass, for example when you want to inspect the full generated item list or provider response metadata before tripping the guardrail.
 

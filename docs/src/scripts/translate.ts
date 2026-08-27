@@ -194,7 +194,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Hosted tool': '組み込みツール（Hosted）',
     'Hosted MCP server tools': 'リモート MCP サーバーツール',
     raw: '元',
-    'Realtime Agents': 'リアルタイムエージェント',
+    'Voice Agents': '音声エージェント',
     'Build your first agent in minutes.':
       'ほんの数分ではじめてのエージェントをつくることができます。',
     "Let's build": 'はじめる',
@@ -226,7 +226,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Hosted tool': '托管工具',
     'Hosted MCP server tools': '远程 MCP 服务器工具',
     raw: '原始',
-    'Realtime Agents': '实时智能体',
+    'Voice Agents': '语音智能体',
     'Build your first agent in minutes.': '几分钟内构建您的第一个智能体。',
     "Let's build": '开始构建',
     Overview: '概述',
@@ -261,7 +261,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Hosted tool': '호스티드 툴',
     'Hosted MCP server tools': '호스티드 MCP 서버 도구',
     raw: '원문',
-    'Realtime Agents': '실시간 에이전트',
+    'Voice Agents': '음성 에이전트',
     'Build your first agent in minutes.':
       '단 몇 분 만에 첫 에이전트를 만들 수 있습니다',
     "Let's build": '시작하기',

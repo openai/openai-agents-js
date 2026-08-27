@@ -1,6 +1,6 @@
 ---
-title: 构建实时智能体
-description: Learn how to build realtime agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
+title: 构建语音智能体
+description: Learn how to build voice agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
 canonicalHeadingIds:
   - depth: 2
     id: 'session-setup'
@@ -266,15 +266,15 @@ Realtime 语音到语音会话也可以包含图像。在 SDK 中，使用 `addI
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-与普通智能体不同，实时智能体的交接行为略有差异。执行交接时，当前会话会直接更新为新的智能体配置。因此，新智能体会自动获得当前对话历史记录，并且目前不会应用输入过滤器。
+与普通智能体不同，语音智能体的交接行为略有差异。执行交接时，当前会话会直接更新为新的智能体配置。因此，新智能体会自动获得当前对话历史记录，并且目前不会应用输入过滤器。
 
 由于会话保持实时运行，该会话使用的模型不会在交接期间发生变化。语音更改遵循底层 Realtime API 的规则：只有在会话尚未生成音频输出时才会生效。Realtime 交接主要用于在同一会话的不同 `RealtimeAgent` 配置之间切换；如果需要使用其他模型，例如 `gpt-5.4` 之类的推理模型，或委派给非 Realtime 后端智能体，请使用[通过工具进行委派](#delegation-through-tools)。
 
 ### 工具
 
-与普通智能体一样，实时智能体可以调用工具来执行操作。Realtime 支持**函数工具**（本地执行）和**托管 MCP 工具**（由 Realtime API 远程执行）。您可以使用与普通智能体相同的 `tool()` 辅助函数定义函数工具。
+与普通智能体一样，语音智能体可以调用工具来执行操作。Realtime 支持**函数工具**（本地执行）和**托管 MCP 工具**（由 Realtime API 远程执行）。您可以使用与普通智能体相同的 `tool()` 辅助函数定义函数工具。
 
-仅适用于 Responses 的工具选项不会沿用到实时智能体。函数工具中包含 `'programmatic'` 的 `outputSchema` 和 `allowedCallers` 值会被拒绝，托管 MCP 工具中的编程式调用方也同样会被拒绝。请在 Realtime 会话中使用可直接调用的函数工具或托管 MCP 工具，或将需要编程式工具调用（Programmatic Tool Calling）的工作委派给 Responses 智能体。
+仅适用于 Responses 的工具选项不会沿用到语音智能体。函数工具中包含 `'programmatic'` 的 `outputSchema` 和 `allowedCallers` 值会被拒绝，托管 MCP 工具中的编程式调用方也同样会被拒绝。请在 Realtime 会话中使用可直接调用的函数工具或托管 MCP 工具，或将需要编程式工具调用（Programmatic Tool Calling）的工作委派给 Responses 智能体。
 
 <Code lang="typescript" code={defineToolExample} />
 
@@ -332,7 +332,7 @@ Realtime 语音到语音会话也可以包含图像。在 SDK 中，使用 `addI
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  实时智能体等待工具调用审批期间， 无法处理用户的新请求。
+  语音智能体等待工具调用审批期间， 无法处理用户的新请求。
 </Aside>
 
 ### 护栏

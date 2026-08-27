@@ -1,6 +1,6 @@
 ---
 title: Realtime Transport Layer
-description: Learn about the different transport layers that can be used with Realtime Agents.
+description: Learn about the different transport layers that can be used with Voice Agents.
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
@@ -111,13 +111,13 @@ Cloudflare Workers and other workerd runtimes cannot open outbound WebSockets us
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-For the full setup, read [Realtime Agents on Cloudflare](/openai-agents-js/extensions/cloudflare).
+For the full setup, read [Voice Agents on Cloudflare](/openai-agents-js/extensions/cloudflare).
 
 ### Twilio phone calls
 
 You can connect a `RealtimeSession` to Twilio using either raw WebSockets or the dedicated Twilio transport in `@openai/agents-extensions`. The dedicated transport is the better default when you want the SDK to handle interruption timing and audio forwarding for Twilio Media Streams.
 
-For the full setup, read [Realtime Agents on Twilio](/openai-agents-js/extensions/twilio).
+For the full setup, read [Voice Agents on Twilio](/openai-agents-js/extensions/twilio).
 
 ### Bring your own transport
 

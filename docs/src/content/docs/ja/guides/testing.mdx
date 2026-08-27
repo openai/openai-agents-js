@@ -169,7 +169,7 @@ SDK は、エージェントワークフロー、サンドボックスセッシ�
 | サンドボックスを起動せずに `SandboxAgent` をテストする | `scriptedSandboxSession()` と `ScriptedModel` | [Test a sandbox agent workflow](#test-a-sandbox-agent-workflow) |
 | サンドボックス呼び出しの照合または結果の導出を行う | サンドボックスステップの `match` または `respond` | [Configure sandbox steps](#configure-sandbox-steps) |
 | サンドボックス操作の失敗を注入する | サンドボックスステップの `error` | [Configure sandbox steps](#configure-sandbox-steps) |
-| `RealtimeAgent` の関数ツールをテストする | `function_call` を発行し、`sendFunctionCallOutput` を期待する | [Test a Realtime agent tool workflow](#test-a-realtime-agent-tool-workflow) |
+| `RealtimeAgent` の関数ツールをテストする | `function_call` を発行し、`sendFunctionCallOutput` を期待する | [音声エージェントのツールワークフローをテスト](#test-a-realtime-agent-tool-workflow) |
 | Realtime 操作を順番に照合する | `runScenario()` と `expectCall()` | [Test a Realtime session](#test-a-realtime-session) |
 | 受信 Realtime イベントを発行する | シナリオ内の `emit()` | [Test a Realtime session](#test-a-realtime-session) |
 | 割り込みリクエストと通知をテストする | `expectCall('interrupt')` と `emit('audio_interrupted')` | [Test interruption](#test-interruption) |
@@ -344,16 +344,16 @@ modelError(error, ({ attempt }) => ({ suggested: attempt === 1 }))
 | `UnconsumedSandboxStepsError` | `remainingSteps`, `pendingMethods` | すべてのステップを使用する前にワークフローが終了した |
 | `InvalidScriptedSandboxStepError` | `reason`, `inputIndex`, `method?` | ステップの形式が不正であるか、サポートされていないメソッドが指定されている |
 
-## Realtime エージェントとセッションのレシピ
+## 音声エージェントとセッションのレシピ
 
-### Realtime エージェントのツールワークフローのテスト
+### 音声エージェントのツールワークフローのテスト
 
 実際の関数ツールを `RealtimeAgent` にアタッチし、スクリプト化されたトランスポートから正規化された `function_call` を発行します。`RealtimeSession` はそのエージェントからツールを解決し、SDK ツールパイプラインを通じて検証および実行して、`sendFunctionCallOutput` を介して結果を返します。
 
 <Code
   lang="typescript"
   code={realtimeAgentToolExample}
-  title="Realtime エージェントの関数ツールのテスト"
+  title="音声エージェントの関数ツールのテスト"
 />
 
 ツールとそのビジネスロジックは `RealtimeAgent` に属するため、これはエージェントテストです。スクリプト化された `function_call` は、そのツールを使用するというモデルの判断を表します。実際のモデルがエージェントの指示に従うことや、ツールを選択することを証明するものではありません。モデルの判断品質は、評価または統合テストで検証してください。
@@ -522,7 +522,7 @@ WebRTC または WebSocket 接続を開かずに、`RealtimeSession` の動作�
 - [エージェントの実行](/openai-agents-js/ja/guides/running-agents)では、`ScriptedModel` が実行する実行ループについて説明しています。
 - [モデル](/openai-agents-js/ja/guides/models)では、`Model` 境界とプロバイダーアダプターについて説明しています。
 - [クイックスタート](/openai-agents-js/ja/guides/sandbox-agents)では、サンドボックスの機能、セッション、プロバイダーのライフサイクルについて説明しています。
-- [リアルタイムエージェントの概要](/openai-agents-js/ja/guides/voice-agents)では、`RealtimeSession` を紹介しています。
+- [音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents)では、`RealtimeSession` を紹介しています。
 - [リアルタイムトランスポート](/openai-agents-js/ja/guides/voice-agents/transport)では、本番環境向けトランスポートとトランスポートイベントについて説明しています。
 
 ## 適用範囲と現在の制限事項

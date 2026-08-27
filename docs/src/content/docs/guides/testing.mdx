@@ -39,7 +39,7 @@ The SDK provides deterministic, provider-neutral test doubles for Agent workflow
 | Test a `SandboxAgent` without starting a sandbox | `scriptedSandboxSession()` plus `ScriptedModel` | [Test a sandbox agent workflow](#test-a-sandbox-agent-workflow) |
 | Match sandbox calls or derive their results | `match` or `respond` on a sandbox step | [Configure sandbox steps](#configure-sandbox-steps) |
 | Inject a sandbox operation failure | `error` on a sandbox step | [Configure sandbox steps](#configure-sandbox-steps) |
-| Test a `RealtimeAgent` function tool | Emit `function_call` and expect `sendFunctionCallOutput` | [Test a Realtime agent tool workflow](#test-a-realtime-agent-tool-workflow) |
+| Test a `RealtimeAgent` function tool | Emit `function_call` and expect `sendFunctionCallOutput` | [Test a Voice agent tool workflow](#test-a-realtime-agent-tool-workflow) |
 | Match Realtime operations in order | `runScenario()` and `expectCall()` | [Test a Realtime session](#test-a-realtime-session) |
 | Emit an inbound Realtime event | `emit()` inside a scenario | [Test a Realtime session](#test-a-realtime-session) |
 | Test an interruption request and notification | `expectCall('interrupt')` plus `emit('audio_interrupted')` | [Test interruption](#test-interruption) |
@@ -210,16 +210,16 @@ Sandbox methods are matched in one global order, including synchronous methods s
 | `UnconsumedSandboxStepsError` | `remainingSteps`, `pendingMethods` | The workflow ended before using every step |
 | `InvalidScriptedSandboxStepError` | `reason`, `inputIndex`, `method?` | A step is malformed or names an unsupported method |
 
-## Realtime agent and session recipes
+## Voice agent and session recipes
 
-### Test a Realtime agent tool workflow
+### Test a Voice agent tool workflow
 
 Attach the real function tool to a `RealtimeAgent`, then emit a normalized `function_call` from the scripted transport. `RealtimeSession` resolves the tool from that agent, validates and executes it through the SDK tool pipeline, and sends the result back through `sendFunctionCallOutput`.
 
 <Code
   lang="typescript"
   code={realtimeAgentToolExample}
-  title="Test a Realtime agent function tool"
+  title="Test a Voice agent function tool"
 />
 
 This is an agent test because the tool and its business logic belong to the `RealtimeAgent`. The scripted `function_call` represents the model's decision to use that tool. It does not prove that a real model will follow the agent's instructions or choose the tool; cover model decision quality with an evaluation or integration test.
@@ -387,7 +387,7 @@ Do not use these doubles to test provider request conversion, HTTP or WebSocket 
 - [Running Agents](/openai-agents-js/guides/running-agents) describes the run loop exercised by `ScriptedModel`.
 - [Models](/openai-agents-js/guides/models) explains the `Model` boundary and provider adapters.
 - [Sandbox agents](/openai-agents-js/guides/sandbox-agents) explains sandbox capabilities, sessions, and provider lifecycle.
-- [Realtime Agents](/openai-agents-js/guides/voice-agents) introduces `RealtimeSession`.
+- [Voice Agents](/openai-agents-js/guides/voice-agents) introduces `RealtimeSession`.
 - [Realtime transport mechanisms](/openai-agents-js/guides/voice-agents/transport) covers production transports and transport events.
 
 ## Scope and current limitations

@@ -1,6 +1,6 @@
 ---
 title: 传输机制
-description: Learn about the different transport layers that can be used with Realtime Agents.
+description: Learn about the different transport layers that can be used with Voice Agents.
 canonicalHeadingIds:
   - depth: 2
     id: 'default-transport-layers'
@@ -164,13 +164,13 @@ Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-有关完整设置，请阅读[Cloudflare 上的实时智能体](/openai-agents-js/zh/extensions/cloudflare)。
+有关完整设置，请阅读[Cloudflare 上的语音智能体](/openai-agents-js/zh/extensions/cloudflare)。
 
 ### Twilio 电话通话
 
 您可以使用原始 WebSocket 或 `@openai/agents-extensions` 中专用的 Twilio 传输层，将 `RealtimeSession` 连接到 Twilio。如果希望由 SDK 处理 Twilio Media Streams 的打断时机和音频转发，专用传输层是更合适的默认选择。
 
-有关完整设置，请阅读[Twilio 上的实时智能体](/openai-agents-js/zh/extensions/twilio)。
+有关完整设置，请阅读[Twilio 上的语音智能体](/openai-agents-js/zh/extensions/twilio)。
 
 ### 自定义传输层
 

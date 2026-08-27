@@ -82,7 +82,7 @@ import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/to
 2. 护栏函数执行并返回一个封装在 [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) 中的 [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput)。
 3. 如果 `tripwireTriggered` 为 `true`，则抛出 [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) 错误。
 
-> **注意** 输出护栏仅当智能体是工作流中的*最后一个*智能体时才会运行。有关实时语音交互，请参阅[构建实时智能体](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
+> **注意** 输出护栏仅当智能体是工作流中的*最后一个*智能体时才会运行。有关实时语音交互，请参阅[构建语音智能体](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
 
 输出护栏函数还会接收一个可选的 `details` 对象，其中包含底层 `modelResponse` 以及本轮生成的输出项。当仅凭最终输出不足以决定响应是否应通过时，可以使用此对象。例如，在触发护栏之前，您可能希望检查完整的生成项列表或提供商响应元数据。
 

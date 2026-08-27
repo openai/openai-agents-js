@@ -363,7 +363,7 @@ Structured outputs also change failure handling:
 - To use `'error_as_result'`, provide a `timeoutErrorFunction` whose return value satisfies `outputSchema`.
 - A value substituted by an output guardrail must also satisfy `outputSchema`.
 
-Programmatic Tool Calling is Responses-only. Chat Completions, Realtime agents, and the AI SDK model adapter reject these options. When an eligible tool is deferred, tool search must load it before a later generated program can call it.
+Programmatic Tool Calling is Responses-only. Chat Completions, Voice agents, and the AI SDK model adapter reject these options. When an eligible tool is deferred, tool search must load it before a later generated program can call it.
 
 See [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/programmatic-tool-calling.ts) for a complete example.
 

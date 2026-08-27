@@ -188,11 +188,11 @@ const sidebar = [
         ],
       },
       {
-        label: 'Realtime agents',
+        label: 'Voice agents',
         translations: {
-          ja: 'リアルタイムエージェント',
-          zh: '实时智能体',
-          ko: '실시간 에이전트',
+          ja: '音声エージェント',
+          zh: '语音智能体',
+          ko: '음성 에이전트',
         },
         collapsed: true,
         items: [
@@ -200,9 +200,9 @@ const sidebar = [
             label: 'Overview',
             link: '/guides/voice-agents',
             translations: {
-              ja: 'リアルタイムエージェントの概要',
-              zh: '实时智能体概述',
-              ko: '실시간 에이전트 개요',
+              ja: '音声エージェントの概要',
+              zh: '语音智能体概述',
+              ko: '음성 에이전트 개요',
             },
           },
           {
@@ -215,12 +215,12 @@ const sidebar = [
             },
           },
           {
-            label: 'Building Realtime Agents',
+            label: 'Building Voice Agents',
             link: '/guides/voice-agents/build',
             translations: {
-              ja: 'リアルタイムエージェントの構築',
-              zh: '构建实时智能体',
-              ko: '실시간 에이전트 구축',
+              ja: '音声エージェントの構築',
+              zh: '构建语音智能体',
+              ko: '음성 에이전트 구축',
             },
           },
           {
@@ -388,21 +388,21 @@ const sidebar = [
             },
           },
           {
-            label: 'Realtime Agents on Twilio',
+            label: 'Voice Agents on Twilio',
             link: '/extensions/twilio',
             translations: {
-              ja: 'Twilio 上の Realtime Agent',
-              zh: 'Twilio 上的实时智能体',
-              ko: 'Twilio용 Realtime 에이전트',
+              ja: 'Twilio 上の音声エージェント',
+              zh: 'Twilio 上的语音智能体',
+              ko: 'Twilio용 음성 에이전트',
             },
           },
           {
-            label: 'Realtime Agents on Cloudflare',
+            label: 'Voice Agents on Cloudflare',
             link: '/extensions/cloudflare',
             translations: {
-              ja: 'Cloudflare 上の Realtime Agent',
-              zh: 'Cloudflare 上的实时智能体',
-              ko: 'Cloudflare용 Realtime 에이전트',
+              ja: 'Cloudflare 上の音声エージェント',
+              zh: 'Cloudflare 上的语音智能体',
+              ko: 'Cloudflare용 음성 에이전트',
             },
           },
         ],

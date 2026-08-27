@@ -13,7 +13,7 @@ import helloWorldSandboxExample from '../../../../examples/docs/toppage/sandboxA
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    Build text, sandbox, and realtime agents with a small set of primitives.
+    Build text, sandbox, and voice agents with a small set of primitives.
   </Fragment>
   <Fragment slot="cta">Let's build</Fragment>
 </Hero>
@@ -24,7 +24,7 @@ The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-j
 
 - **Agents**, which are LLMs equipped with instructions and tools
 - **Sandbox agents**, which pair agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state
-- **Realtime agents**, which support low-latency spoken interactions with tools, guardrails, handoffs, and conversation history
+- **Voice agents**, which support low-latency spoken interactions with tools, guardrails, handoffs, and conversation history
 - **Agents as tools and handoffs**, which allow agents to delegate to other agents for specific tasks
 - **Guardrails**, which enable the inputs to agents to be validated
 
@@ -41,7 +41,7 @@ Here are the main features of the SDK:
 
 - **Agent loop**: A built-in agent loop that handles tool invocation, sends results back to the LLM, and continues until the task is complete.
 - **Sandbox execution**: Run agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state when the work needs a workspace.
-- **Realtime Agents**: Build low-latency spoken interactions with features such as automatic interruption detection, context management, guardrails, and more.
+- **Voice Agents**: Build low-latency spoken interactions with features such as automatic interruption detection, context management, guardrails, and more.
 - **TypeScript-first**: Orchestrate and chain agents using native TypeScript language features, without needing to learn new abstractions.
 - **Agents as tools and handoffs**: A powerful mechanism for coordinating and delegating work across multiple agents.
 - **Guardrails**: Run input validation and safety checks in parallel with agent execution, and fail fast when checks do not pass.
@@ -113,9 +113,9 @@ Pick one path first, get it working end to end, then come back for the deeper gu
 />
 
 <LinkCard
-  title="Realtime Agents Quickstart"
+  title="Voice Agents Quickstart"
   href="/openai-agents-js/guides/voice-agents/quickstart"
-  description="Start with Realtime agents when you are building spoken interactions."
+  description="Start with Voice agents when you are building spoken interactions."
 />
 
 ## Choose your path
@@ -131,4 +131,4 @@ Use this table when you know the job you want to do, but not which page explains
 | Keep memory across turns | [Running agents](/openai-agents-js/guides/running-agents) and [Sessions](/openai-agents-js/guides/sessions) |
 | Use OpenAI models, websocket transport, or non-OpenAI providers | [Models](/openai-agents-js/guides/models) |
 | Review outputs, run items, interruptions, and resume state | [Results](/openai-agents-js/guides/results) |
-| Build a low-latency realtime agent | [Realtime Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |
+| Build a low-latency voice agent | [Voice Agents Quickstart](/openai-agents-js/guides/voice-agents/quickstart) |

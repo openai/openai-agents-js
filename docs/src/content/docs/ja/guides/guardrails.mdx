@@ -82,7 +82,7 @@ import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/to
 2. ガードレール関数が実行され、[`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult) 内にラップされた [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) を返します。
 3. `tripwireTriggered` が `true` の場合、[`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) エラーがスローされます。
 
-> **注記** 出力ガードレールは、エージェントがワークフロー内の _最後_ のエージェントである場合にのみ実行されます。リアルタイムの音声対話については、[リアルタイムエージェントの構築](/openai-agents-js/ja/guides/voice-agents/build#guardrails)を参照してください。
+> **注記** 出力ガードレールは、エージェントがワークフロー内の _最後_ のエージェントである場合にのみ実行されます。リアルタイムの音声対話については、[音声エージェントの構築](/openai-agents-js/ja/guides/voice-agents/build#guardrails)を参照してください。
 
 出力ガードレール関数は、基になる `modelResponse` と、そのターンで生成された出力項目を含む、オプションの `details` オブジェクトも受け取ります。最終出力だけではレスポンスを通過させるべきか判断できない場合に使用してください。たとえば、ガードレールを作動させる前に、生成された項目の完全なリストやプロバイダーのレスポンスメタデータを調べる場合に使用できます。
 

@@ -42,7 +42,7 @@ import helloWorldSandboxExample from '../../../../../examples/docs/toppage/sandb
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    借助少量基本组件，构建文本、沙盒和实时智能体。
+    借助少量基本组件，构建文本、沙盒和语音智能体。
   </Fragment>
   <Fragment slot="cta">开始构建</Fragment>
 </Hero>
@@ -53,7 +53,7 @@ import helloWorldSandboxExample from '../../../../../examples/docs/toppage/sandb
 
 - **智能体**，即配备指令和工具的 LLM
 - **沙盒智能体**，将智能体与隔离的文件系统工作区、Shell 命令、文件编辑、快照和沙盒会话状态结合起来
-- **实时智能体**，支持低延迟语音交互，以及工具、护栏、交接和对话历史记录
+- **语音智能体**，支持低延迟语音交互，以及工具、护栏、交接和对话历史记录
 - **Agents as tools 和交接**，允许智能体针对特定任务将工作委派给其他智能体
 - **护栏**，用于验证智能体的输入
 
@@ -70,7 +70,7 @@ SDK 的主要功能如下：
 
 - **智能体循环**：内置智能体循环，可处理工具调用、将结果发回 LLM，并持续运行直至任务完成。
 - **沙盒执行**：当工作需要工作区时，可在隔离的文件系统工作区中运行智能体，并使用 Shell 命令、文件编辑、快照和沙盒会话状态。
-- **实时智能体**：构建低延迟语音交互，并使用自动中断检测、上下文管理、护栏等功能。
+- **语音智能体**：构建低延迟语音交互，并使用自动中断检测、上下文管理、护栏等功能。
 - **TypeScript 优先**：使用 TypeScript 原生语言功能编排和串联智能体，无需学习新的抽象概念。
 - **Agents as tools 和交接**：用于协调多个智能体并在它们之间委派工作的强大机制。
 - **护栏**：在智能体执行的同时并行运行输入验证和安全检查，并在检查未通过时快速失败。
@@ -144,7 +144,7 @@ export OPENAI_API_KEY=sk-...
 <LinkCard
   title="快速开始"
   href="/openai-agents-js/zh/guides/voice-agents/quickstart"
-  description="构建语音交互时，从实时智能体开始。"
+  description="构建语音交互时，从语音智能体开始。"
 />
 
 ## 路径选择
@@ -160,4 +160,4 @@ export OPENAI_API_KEY=sk-...
 | 跨轮次保留记忆 | [运行智能体](/openai-agents-js/zh/guides/running-agents)和[会话](/openai-agents-js/zh/guides/sessions) |
 | 使用 OpenAI 模型、WebSocket 传输机制或非 OpenAI 提供商 | [模型](/openai-agents-js/zh/guides/models) |
 | 查看输出、运行项、中断和恢复状态 | [执行结果](/openai-agents-js/zh/guides/results) |
-| 构建低延迟实时智能体 | [快速开始](/openai-agents-js/zh/guides/voice-agents/quickstart) |
+| 构建低延迟语音智能体 | [快速开始](/openai-agents-js/zh/guides/voice-agents/quickstart) |

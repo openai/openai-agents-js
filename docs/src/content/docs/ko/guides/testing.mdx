@@ -168,7 +168,7 @@ SDK는 에이전트 워크플로, 샌드박스 세션, Realtime 세션을 위한
 | 샌드박스를 시작하지 않고 `SandboxAgent` 테스트 | `scriptedSandboxSession()`과 `ScriptedModel` | [샌드박스 에이전트 워크플로 테스트](#test-a-sandbox-agent-workflow) |
 | 샌드박스 호출 일치 여부 확인 또는 결과 도출 | 샌드박스 단계의 `match` 또는 `respond` | [샌드박스 단계 설정](#configure-sandbox-steps) |
 | 샌드박스 작업 실패 주입 | 샌드박스 단계의 `error` | [샌드박스 단계 설정](#configure-sandbox-steps) |
-| `RealtimeAgent` 함수 도구 테스트 | `function_call`을 내보내고 `sendFunctionCallOutput` 예상 | [Realtime 에이전트 도구 워크플로 테스트](#test-a-realtime-agent-tool-workflow) |
+| `RealtimeAgent` 함수 도구 테스트 | `function_call`을 내보내고 `sendFunctionCallOutput` 예상 | [음성 에이전트 도구 워크플로 테스트](#test-a-realtime-agent-tool-workflow) |
 | Realtime 작업을 순서대로 일치시킴 | `runScenario()`와 `expectCall()` | [Realtime 세션 테스트](#test-a-realtime-session) |
 | 수신 Realtime 이벤트 내보내기 | 시나리오 내부의 `emit()` | [Realtime 세션 테스트](#test-a-realtime-session) |
 | 인터럽션(중단 처리) 요청과 알림 테스트 | `expectCall('interrupt')`와 `emit('audio_interrupted')` | [인터럽션(중단 처리) 테스트](#test-interruption) |
@@ -335,16 +335,16 @@ Docker 컨테이너나 원격 샌드박스를 생성하지 않고 실제 `Sandbo
 | `UnconsumedSandboxStepsError` | `remainingSteps`, `pendingMethods` | 모든 단계를 사용하기 전에 워크플로가 종료됨 |
 | `InvalidScriptedSandboxStepError` | `reason`, `inputIndex`, `method?` | 단계의 형식이 잘못되었거나 지원되지 않는 메서드 이름을 사용함 |
 
-## Realtime 에이전트 및 세션 레시피
+## 음성 에이전트 및 세션 레시피
 
-### Realtime 에이전트 도구 워크플로 테스트
+### 음성 에이전트 도구 워크플로 테스트
 
 실제 함수 도구를 `RealtimeAgent`에 연결한 다음, 스크립트 기반 전송에서 정규화된 `function_call`을 내보냅니다. `RealtimeSession`은 해당 에이전트에서 도구를 확인하고 SDK 도구 파이프라인을 통해 검증 및 실행한 다음 `sendFunctionCallOutput`을 통해 결과를 다시 전송합니다.
 
 <Code
   lang="typescript"
   code={realtimeAgentToolExample}
-  title="Realtime 에이전트 함수 도구 테스트"
+  title="음성 에이전트 함수 도구 테스트"
 />
 
 도구와 비즈니스 로직이 `RealtimeAgent`에 속하므로 이는 에이전트 테스트입니다. 스크립트 기반 `function_call`은 해당 도구를 사용하겠다는 모델의 결정을 나타냅니다. 실제 모델이 에이전트의 instructions를 따르거나 도구를 선택한다는 것을 입증하지는 않습니다. 모델 결정 품질은 평가 또는 통합 테스트로 다룹니다.
@@ -512,7 +512,7 @@ WebRTC 또는 WebSocket 연결을 열지 않고 `RealtimeSession` 동작이나 `
 - [에이전트 실행](/openai-agents-js/ko/guides/running-agents)에서는 `ScriptedModel`이 실행하는 실행 루프를 설명합니다.
 - [모델](/openai-agents-js/ko/guides/models)에서는 `Model` 경계와 공급자 어댑터를 설명합니다.
 - [빠른 시작](/openai-agents-js/ko/guides/sandbox-agents)에서는 샌드박스 기능, 세션, 공급자 수명 주기를 설명합니다.
-- [실시간 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)에서는 `RealtimeSession`을 소개합니다.
+- [음성 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)에서는 `RealtimeSession`을 소개합니다.
 - [전송 방식](/openai-agents-js/ko/guides/voice-agents/transport)에서는 프로덕션 전송 및 전송 이벤트를 다룹니다.
 
 ## 범위 및 현재 제한 사항

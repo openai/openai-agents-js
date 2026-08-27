@@ -1,6 +1,6 @@
 ---
-title: リアルタイムエージェントの構築
-description: Learn how to build realtime agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
+title: 音声エージェントの構築
+description: Learn how to build voice agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
 canonicalHeadingIds:
   - depth: 2
     id: 'session-setup'
@@ -272,15 +272,15 @@ Realtime の音声対音声セッションには画像も含められます。SD
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-通常のエージェントとは異なり、リアルタイムエージェントではハンドオフの動作が若干異なります。ハンドオフが実行されると、進行中のセッションが新しいエージェント構成に更新されます。そのため、新しいエージェントは進行中の会話履歴へ自動的にアクセスでき、現在のところ入力フィルターは適用されません。
+通常のエージェントとは異なり、音声エージェントではハンドオフの動作が若干異なります。ハンドオフが実行されると、進行中のセッションが新しいエージェント構成に更新されます。そのため、新しいエージェントは進行中の会話履歴へ自動的にアクセスでき、現在のところ入力フィルターは適用されません。
 
 セッションはライブ状態を維持するため、ハンドオフ中にそのセッションのモデルは変更されません。音声の変更は、基盤となる Realtime API のルールに従います。つまり、セッションが音声出力を生成する前にのみ機能します。Realtime のハンドオフは主に、同じセッション上で `RealtimeAgent` の構成を切り替えるためのものです。`gpt-5.4` のような推論モデルなど別のモデルを使用する必要がある場合や、Realtime ではないバックエンドエージェントに委譲する必要がある場合は、[ツールを介した委譲](#delegation-through-tools)を使用してください。
 
 ### ツール
 
-通常のエージェントと同様に、リアルタイムエージェントはツールを呼び出してアクションを実行できます。Realtime は、 **関数ツール** （ローカルで実行）と **リモート MCP サーバーツール** （Realtime API によりリモートで実行）に対応しています。通常のエージェントで使用するものと同じ `tool()` ヘルパーを使用して、関数ツールを定義できます。
+通常のエージェントと同様に、音声エージェントはツールを呼び出してアクションを実行できます。Realtime は、 **関数ツール** （ローカルで実行）と **リモート MCP サーバーツール** （Realtime API によりリモートで実行）に対応しています。通常のエージェントで使用するものと同じ `tool()` ヘルパーを使用して、関数ツールを定義できます。
 
-Responses 専用のツールオプションは、リアルタイムエージェントには引き継がれません。`'programmatic'` を含む関数ツールの `outputSchema` と `allowedCallers` の値は拒否されます。リモート MCP サーバーツールのプログラムによる呼び出し元も同様です。Realtime セッションでは直接呼び出し可能な関数ツールまたはリモート MCP サーバーツールを使用するか、Programmatic Tool Calling が必要な処理を Responses エージェントに委譲してください。
+Responses 専用のツールオプションは、音声エージェントには引き継がれません。`'programmatic'` を含む関数ツールの `outputSchema` と `allowedCallers` の値は拒否されます。リモート MCP サーバーツールのプログラムによる呼び出し元も同様です。Realtime セッションでは直接呼び出し可能な関数ツールまたはリモート MCP サーバーツールを使用するか、Programmatic Tool Calling が必要な処理を Responses エージェントに委譲してください。
 
 <Code lang="typescript" code={defineToolExample} />
 
@@ -338,7 +338,7 @@ Realtime API レベルでは、後続の `session.update` 呼び出しでツー�
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  リアルタイムエージェントがツール呼び出しの承認を待っている間、
+  音声エージェントがツール呼び出しの承認を待っている間、
   エージェントはユーザーからの新しいリクエストを処理できません。
 </Aside>
 

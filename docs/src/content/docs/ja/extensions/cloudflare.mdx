@@ -1,5 +1,5 @@
 ---
-title: Cloudflare 上の Realtime Agent
+title: Cloudflare 上の音声エージェント
 description: Connect your Agents SDK agents from Cloudflare Workers/workerd using a dedicated transport.
 canonicalHeadingIds:
   - depth: 2
@@ -15,7 +15,7 @@ canonicalHeadingIds:
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers やその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使用してアウトバウンド WebSockets を開くことはできません。これらの環境からリアルタイムエージェントに簡単に接続できるように、extensions パッケージは内部で `fetch()` ベースのアップグレードを実行する専用 transport を提供します。
+Cloudflare Workers やその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使用してアウトバウンド WebSockets を開くことはできません。これらの環境から音声エージェントに簡単に接続できるように、extensions パッケージは内部で `fetch()` ベースのアップグレードを実行する専用 transport を提供します。
 
 <Aside type="caution">
   この adapter

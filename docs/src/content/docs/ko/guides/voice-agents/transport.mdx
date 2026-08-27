@@ -1,6 +1,6 @@
 ---
 title: 전송 방식
-description: Learn about the different transport layers that can be used with Realtime Agents.
+description: Learn about the different transport layers that can be used with Voice Agents.
 canonicalHeadingIds:
   - depth: 2
     id: 'default-transport-layers'
@@ -164,13 +164,13 @@ Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자�
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-전체 설정은 [Cloudflare용 Realtime 에이전트](/openai-agents-js/ko/extensions/cloudflare)를 참고하세요.
+전체 설정은 [Cloudflare용 음성 에이전트](/openai-agents-js/ko/extensions/cloudflare)를 참고하세요.
 
 ### Twilio 전화 통화
 
 WebSocket을 직접 사용하거나 `@openai/agents-extensions`의 전용 Twilio 전송 방식을 사용하여 `RealtimeSession`을 Twilio에 연결할 수 있습니다. SDK가 Twilio Media Streams의 인터럽션(중단 처리) 타이밍과 오디오 전달을 처리하도록 하려면 전용 전송 방식이 더 적합한 기본 선택지입니다.
 
-전체 설정은 [Twilio용 Realtime 에이전트](/openai-agents-js/ko/extensions/twilio)를 참고하세요.
+전체 설정은 [Twilio용 음성 에이전트](/openai-agents-js/ko/extensions/twilio)를 참고하세요.
 
 ### 사용자 지정 전송 방식
 

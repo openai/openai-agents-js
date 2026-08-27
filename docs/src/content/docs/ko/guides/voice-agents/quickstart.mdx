@@ -36,7 +36,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 1. **프로젝트 생성**
 
-   이 빠른 시작에서는 브라우저에서 사용할 수 있는 실시간 에이전트를 생성합니다. 새 프로젝트의 기본 구조를 만들려면 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 또는 [`Vite`](https://vite.dev/guide/installation.html)로 시작할 수 있습니다.
+   이 빠른 시작에서는 브라우저에서 사용할 수 있는 음성 에이전트를 생성합니다. 새 프로젝트의 기본 구조를 만들려면 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 또는 [`Vite`](https://vite.dev/guide/installation.html)로 시작할 수 있습니다.
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
@@ -75,7 +75,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
   브라우저는 반환된 `ek_...` 토큰을 `session.connect(...)`에 전달합니다.
 </Aside>
 
-## 실시간 에이전트 생성 및 연결
+## 음성 에이전트 생성 및 연결
 
 <Steps>
 
@@ -94,7 +94,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **세션 생성**
 
-   일반 에이전트와 달리 실시간 에이전트는 `RealtimeSession` 내에서 지속적으로 실행되며, 이 세션은 시간에 따른 대화와 모델 연결을 처리합니다. 또한 이 세션은 오디오 처리, 인터럽션(중단 처리), 이후 구성할 전반적인 대화 수명 주기를 관리합니다.
+   일반 에이전트와 달리 음성 에이전트는 `RealtimeSession` 내에서 지속적으로 실행되며, 이 세션은 시간에 따른 대화와 모델 연결을 처리합니다. 또한 이 세션은 오디오 처리, 인터럽션(중단 처리), 이후 구성할 전반적인 대화 수명 주기를 관리합니다.
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
@@ -141,7 +141,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **앱 실행 및 대화 시작**
 
-   웹 서버를 시작하고 새 실시간 에이전트 코드가 포함된 페이지를 여세요. 마이크 권한 요청이 표시됩니다. 접근을 허용하면 에이전트와 대화를 시작할 수 있습니다.
+   웹 서버를 시작하고 새 음성 에이전트 코드가 포함된 페이지를 여세요. 마이크 권한 요청이 표시됩니다. 접근을 허용하면 에이전트와 대화를 시작할 수 있습니다.
 
    ```bash
    npm run dev
@@ -151,7 +151,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 ## 다음 단계
 
-이제 자체 실시간 에이전트의 설계와 구축을 시작할 수 있습니다.
+이제 자체 음성 에이전트의 설계와 구축을 시작할 수 있습니다.
 
 - [도구](/openai-agents-js/ko/guides/voice-agents/build#tools), [핸드오프](/openai-agents-js/ko/guides/voice-agents/build#handoffs), [가드레일](/openai-agents-js/ko/guides/voice-agents/build#guardrails)을 추가합니다.
 - [턴 감지 및 음성 활동 감지](/openai-agents-js/ko/guides/voice-agents/build#turn-detection-and-voice-activity-detection), [인터럽션(중단 처리)](/openai-agents-js/ko/guides/voice-agents/build#interruptions), [수동 응답 제어](/openai-agents-js/ko/guides/voice-agents/build#manual-response-control)가 대화 루프에 미치는 영향을 알아봅니다.

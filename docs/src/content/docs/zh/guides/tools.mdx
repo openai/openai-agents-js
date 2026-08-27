@@ -448,7 +448,7 @@ Structured outputs 也会改变失败处理方式：
 - 若要使用 `'error_as_result'`，请提供返回值满足 `outputSchema` 的 `timeoutErrorFunction`。
 - 输出护栏替换的值也必须满足 `outputSchema`。
 
-程序化工具调用仅适用于 Responses。Chat Completions、实时智能体和 AI SDK 模型适配器不支持这些选项。如果符合条件的工具被延迟加载，工具搜索必须先加载它，后续生成的程序才能调用它。
+程序化工具调用仅适用于 Responses。Chat Completions、语音智能体和 AI SDK 模型适配器不支持这些选项。如果符合条件的工具被延迟加载，工具搜索必须先加载它，后续生成的程序才能调用它。
 
 有关完整示例，请参阅 [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/programmatic-tool-calling.ts)。
 

@@ -9,7 +9,7 @@ canonicalHeadingIds:
   - depth: 2
     id: 'create-and-connect-the-realtime-agent'
     aliases:
-      - 'リアルタイムエージェントの作成と接続'
+      - '音声エージェントの作成と接続'
   - depth: 2
     id: 'run-and-test-the-app'
     aliases:
@@ -37,7 +37,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 1. **プロジェクトの作成**
 
-   このクイックスタートでは、ブラウザで使用できるリアルタイムエージェントを作成します。新しいプロジェクトのひな型を作成する場合は、[`Next.js`](https://nextjs.org/docs/getting-started/installation) または [`Vite`](https://vite.dev/guide/installation.html) から始められます。
+   このクイックスタートでは、ブラウザで使用できる音声エージェントを作成します。新しいプロジェクトのひな型を作成する場合は、[`Next.js`](https://nextjs.org/docs/getting-started/installation) または [`Vite`](https://vite.dev/guide/installation.html) から始められます。
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
@@ -77,7 +77,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
   `ek_...` トークンを `session.connect(...)` に渡します。
 </Aside>
 
-## リアルタイムエージェントの作成と接続
+## 音声エージェントの作成と接続
 
 <Steps>
 
@@ -96,7 +96,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **セッションの作成**
 
-   通常のエージェントとは異なり、リアルタイムエージェントは `RealtimeSession` 内で継続的に実行され、時間の経過に伴う会話とモデルへの接続を処理します。このセッションは、音声処理、中断、後ほど設定する会話全体のライフサイクルも管理します。
+   通常のエージェントとは異なり、音声エージェントは `RealtimeSession` 内で継続的に実行され、時間の経過に伴う会話とモデルへの接続を処理します。このセッションは、音声処理、中断、後ほど設定する会話全体のライフサイクルも管理します。
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
@@ -143,7 +143,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **アプリの起動と会話の開始**
 
-   Web サーバーを起動し、作成したリアルタイムエージェントのコードを含むページを開きます。マイクの使用許可を求めるメッセージが表示されます。アクセスを許可すると、エージェントとの会話を開始できます。
+   Web サーバーを起動し、作成した音声エージェントのコードを含むページを開きます。マイクの使用許可を求めるメッセージが表示されます。アクセスを許可すると、エージェントとの会話を開始できます。
 
    ```bash
    npm run dev
@@ -153,7 +153,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 ## 次のステップ
 
-ここから、独自のリアルタイムエージェントの設計と構築を始められます。
+ここから、独自の音声エージェントの設計と構築を始められます。
 
 - [ツール](/openai-agents-js/ja/guides/voice-agents/build#tools)、[ハンドオフ](/openai-agents-js/ja/guides/voice-agents/build#handoffs)、[ガードレール](/openai-agents-js/ja/guides/voice-agents/build#guardrails)を追加します。
 - [ターン検出と音声アクティビティ検出](/openai-agents-js/ja/guides/voice-agents/build#turn-detection-and-voice-activity-detection)、[中断](/openai-agents-js/ja/guides/voice-agents/build#interruptions)、[手動レスポンス制御](/openai-agents-js/ja/guides/voice-agents/build#manual-response-control)が会話ループに与える影響を学びます。

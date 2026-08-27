@@ -1,5 +1,5 @@
 ---
-title: 실시간 에이전트 개요
+title: 음성 에이전트 개요
 description: Build realtime assistants using RealtimeAgent and RealtimeSession
 canonicalHeadingIds:
   - depth: 2
@@ -26,13 +26,13 @@ canonicalHeadingIds:
 
 import { Aside, LinkCard } from '@astrojs/starlight/components';
 
-## 실시간 에이전트 개요
+## 음성 에이전트 개요
 
-![실시간 에이전트](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
+![음성 에이전트](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-실시간 에이전트를 사용하면 OpenAI 음성-음성 모델을 기반으로 지연 시간이 짧은 음성 인터페이스를 구축할 수 있습니다. SDK는 Realtime API의 멘탈 모델을 그대로 유지하면서 원문 이벤트 흐름을 `RealtimeAgent`, `RealtimeSession` 및 전송 헬퍼로 래핑하여 도구, 가드레일, 핸드오프 및 세션 기록을 더 쉽게 다룰 수 있도록 합니다.
+음성 에이전트를 사용하면 OpenAI 음성-음성 모델을 기반으로 지연 시간이 짧은 음성 인터페이스를 구축할 수 있습니다. SDK는 Realtime API의 멘탈 모델을 그대로 유지하면서 원문 이벤트 흐름을 `RealtimeAgent`, `RealtimeSession` 및 전송 헬퍼로 래핑하여 도구, 가드레일, 핸드오프 및 세션 기록을 더 쉽게 다룰 수 있도록 합니다.
 
-내부적으로는 공식 [WebRTC를 사용하는 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime 대화](https://developers.openai.com/api/docs/guides/realtime-conversations/) 및 [음성 활동 감지](https://developers.openai.com/api/docs/guides/realtime-vad/) 가이드에서 설명하는 동일한 Realtime 개념이 그대로 적용됩니다. 실시간 에이전트 SDK는 이 API 위에 TypeScript 우선 계층을 추가하므로 전송 및 이벤트 처리를 처음부터 다시 구축하는 대신 제품 로직에 집중할 수 있습니다.
+내부적으로는 공식 [WebRTC를 사용하는 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime 대화](https://developers.openai.com/api/docs/guides/realtime-conversations/) 및 [음성 활동 감지](https://developers.openai.com/api/docs/guides/realtime-vad/) 가이드에서 설명하는 동일한 Realtime 개념이 그대로 적용됩니다. 음성 에이전트 SDK는 이 API 위에 TypeScript 우선 계층을 추가하므로 전송 및 이벤트 처리를 처음부터 다시 구축하는 대신 제품 로직에 집중할 수 있습니다.
 
 <Aside type="note">
   WebRTC로 브라우저 클라이언트를 연결하는 경우 빠른 시작부터 시작하세요. WebRTC,
@@ -49,7 +49,7 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 />
 
 <LinkCard
-  title="실시간 에이전트 구축"
+  title="음성 에이전트 구축"
   href="/openai-agents-js/ko/guides/voice-agents/build"
   description="SDK에서 세션 수명 주기, VAD, 인터럽션(중단 처리), 멀티모달 입력, 도구 및 기록이 작동하는 방식을 알아봅니다."
 />
@@ -74,10 +74,10 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 | 필요한 작업 | 이동할 페이지 |
 | --- | --- |
 | WebRTC와 임시 토큰을 사용하여 브라우저 클라이언트를 안전하게 연결 | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart) |
-| 세션 수명 주기, VAD, 인터럽션(중단 처리), 이미지 입력, 도구 및 기록 이해 | [실시간 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build) |
+| 세션 수명 주기, VAD, 인터럽션(중단 처리), 이미지 입력, 도구 및 기록 이해 | [음성 에이전트 구축](/openai-agents-js/ko/guides/voice-agents/build) |
 | WebRTC, WebSocket, SIP 및 사용자 지정 전송 방식 중에서 선택 | [전송 방식](/openai-agents-js/ko/guides/voice-agents/transport) |
-| Twilio에서 전화 또는 텔레포니 환경 실행 | [Twilio용 Realtime 에이전트](/openai-agents-js/ko/extensions/twilio) |
-| Cloudflare Workers 또는 기타 workerd 런타임에서 연결 | [Cloudflare용 Realtime 에이전트](/openai-agents-js/ko/extensions/cloudflare) |
+| Twilio에서 전화 또는 텔레포니 환경 실행 | [Twilio용 음성 에이전트](/openai-agents-js/ko/extensions/twilio) |
+| Cloudflare Workers 또는 기타 workerd 런타임에서 연결 | [Cloudflare용 음성 에이전트](/openai-agents-js/ko/extensions/cloudflare) |
 
 ## 음성-음성 방식의 이점
 

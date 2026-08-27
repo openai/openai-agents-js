@@ -454,7 +454,7 @@ Structured outputs により、エラー処理も変わります。
 - `'error_as_result'` を使用するには、戻り値が `outputSchema` を満たす `timeoutErrorFunction` を指定します。
 - 出力ガードレールによって置き換えられた値も、`outputSchema` を満たす必要があります。
 
-プログラムによるツール呼び出しは Responses 専用です。Chat Completions、リアルタイムエージェント、AI SDK モデルアダプターでは、これらのオプションは拒否されます。対象ツールが遅延読み込みされる場合、後で生成されるプログラムから呼び出す前に、ツール検索でそのツールを読み込む必要があります。
+プログラムによるツール呼び出しは Responses 専用です。Chat Completions、音声エージェント、AI SDK モデルアダプターでは、これらのオプションは拒否されます。対象ツールが遅延読み込みされる場合、後で生成されるプログラムから呼び出す前に、ツール検索でそのツールを読み込む必要があります。
 
 完全なコード例については、[`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/programmatic-tool-calling.ts) を参照してください。
 

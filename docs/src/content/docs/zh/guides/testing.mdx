@@ -57,11 +57,11 @@ canonicalHeadingIds:
   - depth: 2
     id: 'realtime-agent-and-session-recipes'
     aliases:
-      - '实时智能体与会话方案'
+      - '语音智能体与会话方案'
   - depth: 3
     id: 'test-a-realtime-agent-tool-workflow'
     aliases:
-      - '实时智能体工具工作流测试'
+      - '语音智能体工具工作流测试'
   - depth: 3
     id: 'test-a-realtime-session'
     aliases:
@@ -168,7 +168,7 @@ SDK 为智能体工作流、沙盒会话和实时会话提供了确定性的、�
 | 在不启动沙盒的情况下测试 `SandboxAgent` | `scriptedSandboxSession()` 加 `ScriptedModel` | [Test a sandbox agent workflow](#test-a-sandbox-agent-workflow) |
 | 匹配沙盒调用或推导其结果 | 在沙盒步骤中使用 `match` 或 `respond` | [Configure sandbox steps](#configure-sandbox-steps) |
 | 注入沙盒操作失败 | 在沙盒步骤中使用 `error` | [Configure sandbox steps](#configure-sandbox-steps) |
-| 测试 `RealtimeAgent` 函数工具 | 发出 `function_call` 并预期调用 `sendFunctionCallOutput` | [Test a Realtime agent tool workflow](#test-a-realtime-agent-tool-workflow) |
+| 测试 `RealtimeAgent` 函数工具 | 发出 `function_call` 并预期调用 `sendFunctionCallOutput` | [测试语音智能体工具工作流](#test-a-realtime-agent-tool-workflow) |
 | 按顺序匹配 Realtime 操作 | `runScenario()` 和 `expectCall()` | [Test a Realtime session](#test-a-realtime-session) |
 | 发出入站 Realtime 事件 | 在场景中使用 `emit()` | [Test a Realtime session](#test-a-realtime-session) |
 | 测试中断请求和通知 | `expectCall('interrupt')` 加 `emit('audio_interrupted')` | [Test interruption](#test-interruption) |
@@ -330,16 +330,16 @@ modelError(error, ({ attempt }) => ({ suggested: attempt === 1 }))
 | `UnconsumedSandboxStepsError` | `remainingSteps`、`pendingMethods` | 工作流在使用完所有步骤之前结束 |
 | `InvalidScriptedSandboxStepError` | `reason`、`inputIndex`、`method?` | 某个步骤格式错误或指定了不受支持的方法 |
 
-## 实时智能体与会话方案
+## 语音智能体与会话方案
 
-### 实时智能体工具工作流测试
+### 语音智能体工具工作流测试
 
 将真实函数工具附加到 `RealtimeAgent`，然后从脚本化传输发出规范化的 `function_call`。`RealtimeSession` 会从该智能体解析工具，通过 SDK 工具管线验证并执行工具，再通过 `sendFunctionCallOutput` 将结果发回。
 
 <Code
   lang="typescript"
   code={realtimeAgentToolExample}
-  title="实时智能体函数工具测试"
+  title="语音智能体函数工具测试"
 />
 
 这是一项智能体测试，因为工具及其业务逻辑属于 `RealtimeAgent`。脚本化的 `function_call` 表示模型使用该工具的决策。它无法证明真实模型会遵循智能体的 instructions 或选择该工具；请通过评估或集成测试来覆盖模型决策质量。
@@ -502,7 +502,7 @@ Realtime 错误还会公开结构化状态：
 - [运行智能体](/openai-agents-js/zh/guides/running-agents)介绍了 `ScriptedModel` 所运行的运行循环。
 - [模型](/openai-agents-js/zh/guides/models)解释了 `Model` 边界和提供商适配器。
 - [快速入门](/openai-agents-js/zh/guides/sandbox-agents)解释了沙盒能力、会话和提供商生命周期。
-- [实时智能体概述](/openai-agents-js/zh/guides/voice-agents)介绍了 `RealtimeSession`。
+- [语音智能体概述](/openai-agents-js/zh/guides/voice-agents)介绍了 `RealtimeSession`。
 - [传输机制](/openai-agents-js/zh/guides/voice-agents/transport)介绍了生产环境传输和传输事件。
 
 ## 范围与当前限制

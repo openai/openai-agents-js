@@ -10,7 +10,7 @@ canonicalHeadingIds:
   - depth: 2
     id: 'create-and-connect-the-realtime-agent'
     aliases:
-      - '实时智能体的创建与连接'
+      - '语音智能体的创建与连接'
   - depth: 2
     id: 'run-and-test-the-app'
     aliases:
@@ -37,7 +37,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 1. **项目创建**
 
-   在本快速上手中，我们将创建一个可在浏览器中使用的实时智能体。如果要搭建新项目，可以从 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html) 开始。
+   在本快速上手中，我们将创建一个可在浏览器中使用的语音智能体。如果要搭建新项目，可以从 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html) 开始。
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
@@ -76,7 +76,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
   令牌传递给 `session.connect(...)`。
 </Aside>
 
-## 实时智能体的创建与连接
+## 语音智能体的创建与连接
 
 <Steps>
 
@@ -95,7 +95,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **会话的创建**
 
-   与常规智能体不同，实时智能体会在 `RealtimeSession` 中持续运行，后者负责处理对话以及与模型之间的持续连接。此会话还会管理音频处理、中断和更广泛的对话生命周期，您将在后续对其进行配置。
+   与常规智能体不同，语音智能体会在 `RealtimeSession` 中持续运行，后者负责处理对话以及与模型之间的持续连接。此会话还会管理音频处理、中断和更广泛的对话生命周期，您将在后续对其进行配置。
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
@@ -138,7 +138,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 2. **应用启动与对话**
 
-   启动 Web 服务器，并打开包含新实时智能体代码的页面。您应会看到麦克风权限请求。授予访问权限后，即可开始与智能体对话。
+   启动 Web 服务器，并打开包含新语音智能体代码的页面。您应会看到麦克风权限请求。授予访问权限后，即可开始与智能体对话。
 
    ```bash
    npm run dev
@@ -148,7 +148,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 ## 后续步骤
 
-接下来，您可以开始设计和构建自己的实时智能体：
+接下来，您可以开始设计和构建自己的语音智能体：
 
 - 添加[工具](/openai-agents-js/zh/guides/voice-agents/build#tools)、[交接](/openai-agents-js/zh/guides/voice-agents/build#handoffs)和[护栏](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
 - 了解[轮次检测和语音活动检测](/openai-agents-js/zh/guides/voice-agents/build#turn-detection-and-voice-activity-detection)、[中断](/openai-agents-js/zh/guides/voice-agents/build#interruptions)和[手动响应控制](/openai-agents-js/zh/guides/voice-agents/build#manual-response-control)如何影响对话循环。

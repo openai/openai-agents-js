@@ -1,6 +1,6 @@
 ---
-title: Building Realtime Agents
-description: Learn how to build realtime agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
+title: Building Voice Agents
+description: Learn how to build voice agents using the OpenAI Agents SDK, how session behavior works, and which realtime features are available.
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
@@ -168,15 +168,15 @@ Similarly to regular agents, you can use handoffs to break your agent into multi
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-Unlike regular agents, handoffs behave slightly differently for Realtime Agents. When a handoff is performed, the ongoing session is updated with the new agent configuration in place. Because of this, the new agent automatically has access to the ongoing conversation history and input filters are currently not applied.
+Unlike regular agents, handoffs behave slightly differently for Voice Agents. When a handoff is performed, the ongoing session is updated with the new agent configuration in place. Because of this, the new agent automatically has access to the ongoing conversation history and input filters are currently not applied.
 
 Because the session stays live, the model for that session does not change during a handoff. Voice changes follow the underlying Realtime API rule: they only work before the session has produced audio output. Realtime handoffs are primarily for swapping between `RealtimeAgent` configurations on the same session; if you need to use a different model, for example a reasoning model like `gpt-5.4`, or delegate to a non-realtime backend agent, use [delegation through tools](#delegation-through-tools).
 
 ### Tools
 
-Just like regular agents, Realtime Agents can call tools to perform actions. Realtime supports **function tools** (executed locally) and **hosted MCP tools** (executed remotely by the Realtime API). You can define a function tool using the same `tool()` helper you would use for a regular agent.
+Just like regular agents, Voice Agents can call tools to perform actions. Realtime supports **function tools** (executed locally) and **hosted MCP tools** (executed remotely by the Realtime API). You can define a function tool using the same `tool()` helper you would use for a regular agent.
 
-Responses-only tool options do not carry over to Realtime agents. Function tool `outputSchema` and `allowedCallers` values that include `'programmatic'` are rejected, as are programmatic callers on hosted MCP tools. Use directly callable function or hosted MCP tools in a Realtime session, or delegate work that needs Programmatic Tool Calling to a Responses agent.
+Responses-only tool options do not carry over to Voice agents. Function tool `outputSchema` and `allowedCallers` values that include `'programmatic'` are rejected, as are programmatic callers on hosted MCP tools. Use directly callable function or hosted MCP tools in a Realtime session, or delegate work that needs Programmatic Tool Calling to a Responses agent.
 
 <Code lang="typescript" code={defineToolExample} />
 
@@ -235,7 +235,7 @@ By default, function-tool input guardrails run after approval, immediately befor
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  While the realtime agent is waiting for approval for the tool call, the agent
+  While the voice agent is waiting for approval for the tool call, the agent
   will not be able to process new requests from the user.
 </Aside>
 
