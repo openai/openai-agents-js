@@ -16,12 +16,17 @@ describe('closeRemoteSession', () => {
       expect(fetchImpl).toHaveBeenCalledTimes(3);
       expect(fetchImpl).toHaveBeenNthCalledWith(2, '/api/auth/session', {
         credentials: 'same-origin',
-        signal: undefined,
+        signal: expect.any(AbortSignal),
       });
       expect(fetchImpl).toHaveBeenLastCalledWith(
         '/api/realtime/sessions/session-id/close',
         expect.objectContaining({ headers: { 'X-CSRF-Token': 'fresh-token' } }),
       );
+      expect(fetchImpl.mock.calls.map(([, init]) => init?.signal)).toEqual([
+        fetchImpl.mock.calls[0]![1]!.signal,
+        fetchImpl.mock.calls[0]![1]!.signal,
+        fetchImpl.mock.calls[0]![1]!.signal,
+      ]);
     },
   );
 

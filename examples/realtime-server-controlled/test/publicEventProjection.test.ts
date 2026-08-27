@@ -6,7 +6,8 @@ describe('projectRealtimeEvent', () => {
     ['input_audio_buffer.speech_started', 'listening'],
     ['input_audio_buffer.speech_stopped', 'thinking'],
     ['response.created', 'thinking'],
-    ['response.output_audio.delta', 'speaking'],
+    ['output_audio_buffer.started', 'speaking'],
+    ['output_audio_buffer.stopped', 'idle'],
   ])('maps %s to an allowlisted state', (type, state) => {
     expect(
       projectRealtimeEvent({ type, delta: 'private-audio-payload' }),
@@ -30,6 +31,12 @@ describe('projectRealtimeEvent', () => {
       }),
     ).toBeNull();
     expect(projectRealtimeEvent({ type: 'rate_limits.updated' })).toBeNull();
+    expect(
+      projectRealtimeEvent({
+        type: 'response.output_audio.delta',
+        delta: 'private-audio-payload',
+      }),
+    ).toBeNull();
   });
 
   it('reports failed responses and ignores cancelled responses', () => {

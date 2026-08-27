@@ -6,6 +6,8 @@ describe('createViteConfig', () => {
     const config = createViteConfig({ PORT: '4123' });
 
     expect(config.server?.proxy?.['/api']).toBe('http://127.0.0.1:4123');
+    expect(config.server?.port).toBe(5173);
+    expect(config.server?.strictPort).toBe(true);
   });
 
   it('rejects an invalid backend port', () => {

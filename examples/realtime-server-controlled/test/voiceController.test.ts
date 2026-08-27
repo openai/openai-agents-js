@@ -189,7 +189,12 @@ describe('VoiceController', () => {
     expect(harness.options.connectSideband).not.toHaveBeenCalled();
   });
 
-  it('projects transport events instead of exposing the raw payload', () => {
+  it('projects WebRTC playback state through SSE without exposing raw payloads', async () => {
+    const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
+    const sessionId = sessions.reserve('owner');
+    sessions.activate(sessionId);
+    const client = { send: vi.fn(), close: vi.fn() };
+    sessions.subscribe(sessionId, 'owner', client);
     const sessionListeners = new Map<string, (event: unknown) => void>();
     const transportListeners = new Map<string, () => void>();
     const session = {
@@ -208,17 +213,21 @@ describe('VoiceController', () => {
     const callbacks = {
       onDisconnected: vi.fn(),
       onError: vi.fn(),
-      onPublicEvent: vi.fn(),
+      onPublicEvent: vi.fn((event) => sessions.publish(sessionId, event)),
     };
     VoiceController.wireSessionEvents(session, callbacks);
 
     sessionListeners.get('transport_event')?.({
-      type: 'response.output_audio.delta',
-      delta: 'private-audio',
+      type: 'output_audio_buffer.started',
+      response_id: 'private-response-id',
     });
     sessionListeners.get('transport_event')?.({
       type: 'session.updated',
       session: { instructions: 'private' },
+    });
+    sessionListeners.get('transport_event')?.({
+      type: 'response.done',
+      response: { status: 'completed', output: ['private-output'] },
     });
 
     expect(callbacks.onPublicEvent).toHaveBeenCalledOnce();
@@ -226,7 +235,25 @@ describe('VoiceController', () => {
       type: 'app.agent.state',
       state: 'speaking',
     });
+    expect(client.send).toHaveBeenLastCalledWith({
+      type: 'app.agent.state',
+      state: 'speaking',
+    });
+    const reconnectingClient = { send: vi.fn(), close: vi.fn() };
+    sessions.subscribe(sessionId, 'owner', reconnectingClient);
+    expect(reconnectingClient.send.mock.calls).toEqual([
+      [{ type: 'app.session.ready' }],
+      [{ type: 'app.agent.state', state: 'speaking' }],
+    ]);
+    sessionListeners.get('transport_event')?.({
+      type: 'output_audio_buffer.stopped',
+    });
+    expect(client.send).toHaveBeenLastCalledWith({
+      type: 'app.agent.state',
+      state: 'idle',
+    });
     transportListeners.get('disconnected')?.();
     expect(callbacks.onDisconnected).toHaveBeenCalledOnce();
+    await sessions.closeAll();
   });
 });

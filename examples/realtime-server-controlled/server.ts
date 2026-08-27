@@ -38,7 +38,8 @@ try {
   process.exit(1);
 }
 
-const openai = new OpenAI({ apiKey, timeout: 10_000 });
+// SessionManager owns hangup retries, including the bounded shutdown retry.
+const openai = new OpenAI({ apiKey, timeout: 10_000, maxRetries: 0 });
 const sessions = new SessionManager({
   hangup: (callId) => openai.realtime.calls.hangup(callId),
   maxSessions: 100,

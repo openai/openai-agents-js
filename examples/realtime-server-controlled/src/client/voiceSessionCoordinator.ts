@@ -80,14 +80,13 @@ export class VoiceSessionCoordinator {
     this.#options.onStatus('connecting');
     this.#publishControls();
 
+    const onError = () => {
+      if (!attempt.closed && this.#activeAttempt === attempt) {
+        void this.#finish(attempt, 'error');
+      }
+    };
     try {
-      const connection = this.#options.createConnection({
-        onError: () => {
-          if (!attempt.closed && this.#activeAttempt === attempt) {
-            void this.#finish(attempt, 'error');
-          }
-        },
-      });
+      const connection = this.#options.createConnection({ onError });
       attempt.connection = connection;
       await connection.connect(async (offerSdp, signal) => {
         const token = await this.#options.getCsrfToken(signal);
@@ -109,11 +108,7 @@ export class VoiceSessionCoordinator {
       attempt.eventStream = this.#options.openEvents({
         sessionId: attempt.sessionId,
         onMessage: (value) => this.#handlePublicEvent(attempt, value),
-        onError: () => {
-          if (!attempt.closed && this.#activeAttempt === attempt) {
-            this.#options.onStatus('error');
-          }
-        },
+        onError,
       });
       this.#publishControls();
     } catch {
@@ -209,7 +204,7 @@ export class VoiceSessionCoordinator {
     const connection = this.#activeAttempt?.connection ?? null;
     const active = Boolean(this.#activeAttempt);
     this.#options.onControls({
-      canMute: Boolean(connection),
+      canMute: Boolean(connection && this.#activeAttempt?.eventStream),
       canStart: !active,
       canStop: active && !this.#activeAttempt?.cleanupPromise,
       muted: connection?.muted ?? false,

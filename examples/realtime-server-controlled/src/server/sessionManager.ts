@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { NotFoundError } from 'openai';
-import type { PublicEvent } from '../shared/publicEvents';
+import type { AgentState, PublicEvent } from '../shared/publicEvents';
 
 export type ManagedRealtimeSession = {
   close(): void;
@@ -28,15 +28,13 @@ export class SessionCapacityError extends Error {
 }
 
 type SessionRecord = {
-  agentState: 'idle' | 'listening' | 'speaking' | 'thinking';
+  agentState: AgentState;
   callId?: string;
   clients: Set<PublicEventClient>;
   closePromise?: Promise<void>;
   createdAt: number;
   id: string;
-  lastEvent?: string;
   ownerId: string;
-  ready: boolean;
   realtimeSession?: ManagedRealtimeSession;
   state: SessionState;
 };
@@ -91,7 +89,6 @@ export class SessionManager {
       createdAt: this.#now(),
       id,
       ownerId,
-      ready: false,
       state: 'creating',
     });
     this.#ownerSessions.set(ownerId, id);
@@ -153,14 +150,7 @@ export class SessionManager {
       return;
     }
 
-    const serialized = JSON.stringify(event);
-    if (serialized === session.lastEvent) {
-      return;
-    }
-    session.lastEvent = serialized;
-    if (event.type === 'app.session.ready') {
-      session.ready = true;
-    } else if (event.type === 'app.agent.state') {
+    if (event.type === 'app.agent.state') {
       session.agentState = event.state;
     }
     for (const client of session.clients) {
@@ -183,9 +173,7 @@ export class SessionManager {
       return null;
     }
     session.clients.add(client);
-    if (session.ready) {
-      client.send({ type: 'app.session.ready' });
-    }
+    client.send({ type: 'app.session.ready' });
     client.send({ type: 'app.agent.state', state: session.agentState });
     return () => session.clients.delete(client);
   }

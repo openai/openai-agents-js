@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { IncomingMessage } from 'node:http';
 import { DemoAuthStore } from '../src/server/demoAuth';
 import { requestCsrfToken } from '../src/client/demoAuthClient';
+import { closeRemoteSession as closeWithAuthentication } from '../src/client/closeRemoteSession';
 import {
   VoiceSessionCoordinator,
   type VoiceConnection,
@@ -99,7 +100,7 @@ describe('VoiceSessionCoordinator', () => {
     await coordinator.stop();
   });
 
-  it.each(['Stop', 'server event'])(
+  it.each(['Stop', 'server event', 'event stream error'])(
     'retains failed cleanup after %s and allows a deduplicated Stop retry',
     async (trigger) => {
       const retry = deferred<void>();
@@ -109,6 +110,7 @@ describe('VoiceSessionCoordinator', () => {
       });
       const eventStream = { close: vi.fn() };
       let onMessage: ((value: unknown) => void) | undefined;
+      let onError: (() => void) | undefined;
       let sessionId = '';
       const exchangeOffer = vi.fn(async (input: { sessionId: string }) => {
         sessionId = sessions.reserve('owner-1', input.sessionId);
@@ -132,15 +134,18 @@ describe('VoiceSessionCoordinator', () => {
         onStatus,
         openEvents: (options) => {
           onMessage = options.onMessage;
+          onError = options.onError;
           return eventStream;
         },
       });
       await coordinator.start();
       const originalId = sessionId;
+      const oldError = onError;
       if (trigger === 'Stop') {
         await coordinator.stop();
       } else {
-        onMessage?.({ type: 'app.session.closed' });
+        if (trigger === 'event stream error') onError?.();
+        else onMessage?.({ type: 'app.session.closed' });
         await vi.waitFor(() =>
           expect(onStatus).toHaveBeenLastCalledWith('error'),
         );
@@ -172,13 +177,87 @@ describe('VoiceSessionCoordinator', () => {
       expect(eventStream.close).toHaveBeenCalledOnce();
       expect(onControls.mock.lastCall?.[0].canStart).toBe(true);
       await coordinator.start();
+      oldError?.();
       expect(sessions.ownsActive(sessionId, 'owner-1')).toBe(true);
       expect(sessionId).not.toBe(originalId);
       await coordinator.stop();
     },
   );
 
+  it.each(['Close', 'authentication refresh'])(
+    'keeps cleanup retryable when %s stalls past the deadline',
+    async (phase) => {
+      vi.useFakeTimers();
+      const timeout = vi
+        .spyOn(AbortSignal, 'timeout')
+        .mockImplementation((delay) => {
+          const abort = new AbortController();
+          setTimeout(() => abort.abort(new Error('Request timed out.')), delay);
+          return abort.signal;
+        });
+      try {
+        let stalled = true;
+        const fetchImpl = vi.fn<typeof fetch>(async (url, init) => {
+          if (!stalled) return new Response(null, { status: 204 });
+          if (
+            phase === 'authentication refresh' &&
+            url !== '/api/auth/session'
+          ) {
+            return new Response(null, { status: 401 });
+          }
+          return new Promise<Response>((_resolve, reject) => {
+            init!.signal!.addEventListener(
+              'abort',
+              () => reject(init!.signal!.reason),
+              { once: true },
+            );
+          });
+        });
+        const onControls = vi.fn();
+        const closeRemoteSession = vi.fn((id: string, token: string) =>
+          closeWithAuthentication(id, token, fetchImpl),
+        );
+        const coordinator = new VoiceSessionCoordinator({
+          closeRemoteSession,
+          createConnection: () =>
+            connection(async (exchange) => {
+              await exchange('offer', new AbortController().signal);
+            }),
+          exchangeOffer: async () => 'answer',
+          getCsrfToken: async () => 'token',
+          onControls,
+          onStatus: vi.fn(),
+          openEvents: () => ({ close: vi.fn() }),
+        });
+        await coordinator.start();
+        const stopping = coordinator.stop();
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(onControls.mock.lastCall?.[0]).toMatchObject({
+          canStart: false,
+          canStop: false,
+        });
+        await vi.advanceTimersByTimeAsync(1);
+        await stopping;
+        expect(onControls.mock.lastCall?.[0]).toMatchObject({
+          canStart: false,
+          canStop: true,
+        });
+
+        stalled = false;
+        await coordinator.stop();
+        expect(closeRemoteSession.mock.calls[1]).toEqual(
+          closeRemoteSession.mock.calls[0],
+        );
+        expect(onControls.mock.lastCall?.[0].canStart).toBe(true);
+      } finally {
+        timeout.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it('refreshes authentication immediately before exchanging the SDP offer', async () => {
+    const onControls = vi.fn();
     const getCsrfToken = vi.fn(async () => 'fresh-token');
     const exchangeOffer = vi.fn(async ({ sessionId, token }) => {
       expect(token).toBe('fresh-token');
@@ -187,6 +266,7 @@ describe('VoiceSessionCoordinator', () => {
     });
     const activeConnection = connection(async (exchangeSdp) => {
       expect(getCsrfToken).not.toHaveBeenCalled();
+      expect(onControls.mock.lastCall?.[0].canMute).toBe(false);
       await exchangeSdp('offer', new AbortController().signal);
     });
     const coordinator = new VoiceSessionCoordinator({
@@ -194,7 +274,7 @@ describe('VoiceSessionCoordinator', () => {
       createConnection: () => activeConnection,
       exchangeOffer,
       getCsrfToken,
-      onControls: vi.fn(),
+      onControls,
       onStatus: vi.fn(),
       openEvents: vi.fn(() => ({ close: vi.fn() })),
     });
@@ -203,6 +283,7 @@ describe('VoiceSessionCoordinator', () => {
 
     expect(getCsrfToken).toHaveBeenCalledOnce();
     expect(exchangeOffer).toHaveBeenCalledOnce();
+    expect(onControls.mock.lastCall?.[0].canMute).toBe(true);
     await coordinator.stop();
   });
 
