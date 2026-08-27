@@ -21,6 +21,14 @@ function createOptions(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe('createRealtimeCall', () => {
   it('validates the offer before making a remote request', async () => {
     const fetchImpl = vi.fn();
@@ -59,6 +67,46 @@ describe('createRealtimeCall', () => {
     await expect(
       createRealtimeCall(createOptions({ fetchImpl })),
     ).resolves.toEqual({ answerSdp: audioSdp, callId: 'rtc_test-123' });
+  });
+
+  it('preserves the call ID when the browser aborts after dispatch', async () => {
+    const response = deferred<Response>();
+    const browserAbort = new AbortController();
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      expect(init?.signal).not.toBe(browserAbort.signal);
+      return response.promise;
+    }) as typeof fetch;
+
+    const creating = createRealtimeCall(
+      createOptions({ fetchImpl, signal: browserAbort.signal }),
+    );
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    browserAbort.abort(new Error('The browser cancelled setup.'));
+    response.resolve(
+      new Response(audioSdp, {
+        status: 201,
+        headers: { Location: '/v1/realtime/calls/rtc_after-abort' },
+      }),
+    );
+
+    await expect(creating).resolves.toEqual({
+      answerSdp: audioSdp,
+      callId: 'rtc_after-abort',
+    });
+  });
+
+  it('does not dispatch a provider request after an earlier browser abort', async () => {
+    const browserAbort = new AbortController();
+    const reason = new Error('The browser cancelled setup.');
+    browserAbort.abort(reason);
+    const fetchImpl = vi.fn();
+
+    await expect(
+      createRealtimeCall(
+        createOptions({ fetchImpl, signal: browserAbort.signal }),
+      ),
+    ).rejects.toBe(reason);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('hangs up a created call when the answer violates the policy', async () => {

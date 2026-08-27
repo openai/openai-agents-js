@@ -112,6 +112,29 @@ describe('VoiceController', () => {
     expect(harness.options.connectSideband).not.toHaveBeenCalled();
   });
 
+  it('hangs up a call returned after the browser cancels setup', async () => {
+    const call = deferred<{ answerSdp: string; callId: string }>();
+    const abortController = new AbortController();
+    const harness = createController({
+      createCall: vi.fn(() => call.promise),
+    });
+    const starting = harness.controller.start({
+      ...startOptions,
+      signal: abortController.signal,
+    });
+
+    await Promise.resolve();
+    abortController.abort(new Error('The browser cancelled setup.'));
+    call.resolve({ answerSdp: 'answer-sdp', callId: 'rtc_after-abort' });
+
+    await expect(starting).rejects.toThrow('browser cancelled setup');
+    expect(harness.options.hangupDetachedCall).toHaveBeenCalledOnce();
+    expect(harness.options.hangupDetachedCall).toHaveBeenCalledWith(
+      'rtc_after-abort',
+    );
+    expect(harness.options.connectSideband).not.toHaveBeenCalled();
+  });
+
   it('projects transport events instead of exposing the raw payload', () => {
     const sessionListeners = new Map<string, (event: unknown) => void>();
     const transportListeners = new Map<string, () => void>();

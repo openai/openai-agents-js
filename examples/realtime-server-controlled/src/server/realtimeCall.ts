@@ -38,6 +38,7 @@ export async function createRealtimeCall(
   options: CreateRealtimeCallOptions,
 ): Promise<RealtimeCall> {
   assertAudioOnlySdp(options.offerSdp);
+  options.signal?.throwIfAborted();
 
   const form = new FormData();
   form.set('sdp', options.offerSdp);
@@ -51,9 +52,6 @@ export async function createRealtimeCall(
   );
 
   const timeoutSignal = AbortSignal.timeout(15_000);
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, timeoutSignal])
-    : timeoutSignal;
   const response = await (options.fetchImpl ?? fetch)(
     'https://api.openai.com/v1/realtime/calls',
     {
@@ -64,7 +62,7 @@ export async function createRealtimeCall(
       },
       body: form,
       redirect: 'error',
-      signal,
+      signal: timeoutSignal,
     },
   );
   if (!response.ok) {
