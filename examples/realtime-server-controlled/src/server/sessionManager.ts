@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { NotFoundError } from 'openai';
 import type { PublicEvent } from '../shared/publicEvents';
 
 export type ManagedRealtimeSession = {
@@ -43,6 +44,7 @@ type SessionRecord = {
 export class SessionManager {
   #acceptingSessions = true;
   readonly #cancelledSetups = new Map<string, string>();
+  readonly #detachedCalls = new Map<string, Promise<void> | null>();
   readonly #hangup: (callId: string) => Promise<void>;
   readonly #maxSessions: number;
   readonly #now: () => number;
@@ -199,7 +201,6 @@ export class SessionManager {
     }
 
     session.state = 'closing';
-    this.#ownerSessions.delete(session.ownerId);
     const closePromise = Promise.resolve().then(async () => {
       for (const client of session.clients) {
         client.send({ type: 'app.session.closed' });
@@ -207,37 +208,97 @@ export class SessionManager {
       }
       session.clients.clear();
 
+      const realtimeSession = session.realtimeSession;
+      session.realtimeSession = undefined;
       try {
-        session.realtimeSession?.close();
+        realtimeSession?.close();
       } catch {
         // Cleanup continues so the remote call is still terminated.
       }
 
       if (session.callId) {
-        try {
-          await this.#hangup(session.callId);
-        } catch {
-          // A failed or already-ended call must not block local cleanup.
-        }
+        await this.#hangupCall(session.callId);
       }
       this.#sessions.delete(id);
+      this.#ownerSessions.delete(session.ownerId);
     });
     session.closePromise = closePromise;
-    await closePromise;
+    try {
+      await closePromise;
+    } catch (error) {
+      // Keep the call ID and owner reservation until hangup is confirmed.
+      session.closePromise = undefined;
+      throw error;
+    }
     return true;
+  }
+
+  async closeDetachedCall(callId: string): Promise<void> {
+    const pending = this.#detachedCalls.get(callId);
+    if (pending) {
+      return pending;
+    }
+    const closing = Promise.resolve().then(() => this.#hangupCall(callId));
+    this.#detachedCalls.set(callId, closing);
+    try {
+      await closing;
+      this.#detachedCalls.delete(callId);
+    } catch (error) {
+      // These calls never reached an attached session, but still need cleanup.
+      this.#detachedCalls.set(callId, null);
+      throw error;
+    }
   }
 
   async closeExpired(maxAgeMs: number): Promise<void> {
     const cutoff = this.#now() - maxAgeMs;
     const expired = [...this.#sessions.values()]
-      .filter((session) => session.createdAt < cutoff)
+      .filter(
+        (session) => session.state === 'closing' || session.createdAt < cutoff,
+      )
       .map((session) => session.id);
-    await Promise.all(expired.map((id) => this.close(id)));
+    await Promise.allSettled([
+      ...expired.map((id) => this.close(id)),
+      ...[...this.#detachedCalls.keys()].map((id) =>
+        this.closeDetachedCall(id),
+      ),
+    ]);
   }
 
   async closeAll(): Promise<void> {
     this.#acceptingSessions = false;
     this.#cancelledSetups.clear();
-    await Promise.all([...this.#sessions.keys()].map((id) => this.close(id)));
+    await Promise.allSettled([
+      ...[...this.#sessions.keys()].map((id) => this.close(id)),
+      ...[...this.#detachedCalls.keys()].map((id) =>
+        this.closeDetachedCall(id),
+      ),
+    ]);
+  }
+
+  async #hangupCall(callId: string): Promise<void> {
+    try {
+      await this.#hangup(callId);
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return;
+      }
+      if (this.#acceptingSessions) {
+        throw error;
+      }
+      // Shutdown has no future sweep. Make one bounded extra attempt, also for
+      // calls whose setup completes after shutdown started.
+      try {
+        await this.#hangup(callId);
+      } catch (retryError) {
+        if (retryError instanceof NotFoundError) {
+          return;
+        }
+        console.error(
+          'A Realtime call could not be terminated during shutdown.',
+        );
+        throw retryError;
+      }
+    }
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRealtimeCall } from '../src/server/realtimeCall';
+import { SessionManager } from '../src/server/sessionManager';
 
 const audioSdp = [
   'v=0',
@@ -143,5 +144,30 @@ describe('createRealtimeCall', () => {
     await expect(
       createRealtimeCall(createOptions({ fetchImpl })),
     ).rejects.toThrow('invalid call location');
+  });
+
+  it('keeps an invalid-answer call available for cleanup retry', async () => {
+    const hangup = vi
+      .fn(async () => {})
+      .mockRejectedValueOnce(new Error('timeout'));
+    const sessions = new SessionManager({ hangup });
+    const options = createOptions({
+      fetchImpl: vi.fn(
+        async () =>
+          new Response('invalid SDP', {
+            status: 201,
+            headers: { Location: '/v1/realtime/calls/rtc_invalid-answer' },
+          }),
+      ),
+      hangupCall: (callId: string) => sessions.closeDetachedCall(callId),
+    });
+
+    await expect(createRealtimeCall(options)).rejects.toThrow('SDP');
+    await sessions.closeExpired(30 * 60_000);
+
+    expect(hangup.mock.calls).toEqual([
+      ['rtc_invalid-answer'],
+      ['rtc_invalid-answer'],
+    ]);
   });
 });

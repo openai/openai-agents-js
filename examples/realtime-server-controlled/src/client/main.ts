@@ -1,5 +1,6 @@
 import './style.css';
 import { AudioOnlyWebRtc } from './audioOnlyWebRtc';
+import { closeRemoteSession } from './closeRemoteSession';
 import { requestCsrfToken } from './demoAuthClient';
 import {
   VoiceSessionCoordinator,
@@ -29,7 +30,7 @@ const statusCopy: Record<
   speaking: { title: 'Speaking', detail: 'You can interrupt at any time.' },
   error: {
     title: 'Session error',
-    detail: 'End the session and try again.',
+    detail: 'Retry Stop if it is available, then start a new session.',
   },
 };
 
@@ -64,17 +65,7 @@ const coordinator = new VoiceSessionCoordinator({
     }
     return response.text();
   },
-  async closeRemoteSession(activeSessionId, token) {
-    await fetch(
-      `/api/realtime/sessions/${encodeURIComponent(activeSessionId)}/close`,
-      {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'X-CSRF-Token': token },
-        keepalive: true,
-      },
-    );
-  },
+  closeRemoteSession,
   openEvents({ sessionId: activeSessionId, onMessage, onError }) {
     const eventSource = new EventSource(
       `/api/realtime/sessions/${encodeURIComponent(activeSessionId)}/events`,

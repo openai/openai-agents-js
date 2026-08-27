@@ -34,11 +34,12 @@ afterEach(async () => {
   );
 });
 
-async function createHarness() {
-  const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
+async function createHarness(hangup = vi.fn(async () => {})) {
+  const sessions = new SessionManager({ hangup });
   const start = vi.fn(
     async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
       sessions.reserve(ownerId, sessionId);
+      sessions.attachCall(sessionId, 'rtc_test');
       sessions.activate(sessionId);
       return { answerSdp: audioSdp, sessionId };
     },
@@ -73,6 +74,44 @@ async function createHarness() {
 }
 
 describe('createApiServer', () => {
+  it('returns an error for failed hangup and accepts an authenticated close retry', async () => {
+    const hangup = vi
+      .fn(async () => {})
+      .mockRejectedValueOnce(new Error('private provider failure'));
+    const harness = await createHarness(hangup);
+    const sessionId = randomUUID();
+    const headers = {
+      Cookie: harness.cookie,
+      Origin: appOrigin,
+      'X-CSRF-Token': harness.csrfToken,
+      'X-App-Session-Id': sessionId,
+      'Content-Type': 'application/sdp',
+    };
+    const start = await fetch(`${harness.baseUrl}/api/realtime/session`, {
+      method: 'POST',
+      headers,
+      body: audioSdp,
+    });
+    expect(start.status).toBe(200);
+    const closeUrl = `${harness.baseUrl}/api/realtime/sessions/${sessionId}/close`;
+    const firstClose = await fetch(closeUrl, { method: 'POST', headers });
+    expect(firstClose.status).toBe(502);
+    expect(await firstClose.json()).toEqual({
+      error: 'Could not complete the voice session request.',
+    });
+    const retry = await fetch(closeUrl, { method: 'POST', headers });
+    expect(retry.status).toBe(204);
+    expect(hangup.mock.calls).toEqual([['rtc_test'], ['rtc_test']]);
+
+    const replacement = await fetch(`${harness.baseUrl}/api/realtime/session`, {
+      method: 'POST',
+      headers: { ...headers, 'X-App-Session-Id': randomUUID() },
+      body: audioSdp,
+    });
+    expect(replacement.status).toBe(200);
+    await harness.sessions.closeAll();
+  });
+
   it.each([undefined, 'incorrect-token'])(
     'rejects a mutation with the exact origin and invalid CSRF token %s',
     async (csrfToken) => {

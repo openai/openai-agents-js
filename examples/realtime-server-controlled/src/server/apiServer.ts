@@ -261,7 +261,7 @@ export function createApiServer(options: {
         sendJson(response, 503, { error: error.message });
       } else {
         sendJson(response, 502, {
-          error: 'Could not start the voice session.',
+          error: 'Could not complete the voice session request.',
         });
       }
     }

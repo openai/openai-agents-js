@@ -35,7 +35,6 @@ function createController(overrides: Partial<VoiceControllerOptions> = {}) {
       callId: 'rtc_test',
     })),
     createSession: vi.fn(() => realtimeSession),
-    hangupDetachedCall: vi.fn(async () => {}),
     sessions,
     ...overrides,
   };
@@ -108,8 +107,8 @@ describe('VoiceController', () => {
     call.resolve({ answerSdp: 'answer-sdp', callId: 'rtc_late' });
 
     await expect(starting).rejects.toThrow('closed during call creation');
-    expect(harness.options.hangupDetachedCall).toHaveBeenCalledOnce();
-    expect(harness.options.hangupDetachedCall).toHaveBeenCalledWith('rtc_late');
+    expect(harness.hangup).toHaveBeenCalledOnce();
+    expect(harness.hangup).toHaveBeenCalledWith('rtc_late');
     expect(harness.options.connectSideband).not.toHaveBeenCalled();
   });
 
@@ -129,10 +128,8 @@ describe('VoiceController', () => {
     call.resolve({ answerSdp: 'answer-sdp', callId: 'rtc_after-abort' });
 
     await expect(starting).rejects.toThrow('browser cancelled setup');
-    expect(harness.options.hangupDetachedCall).toHaveBeenCalledOnce();
-    expect(harness.options.hangupDetachedCall).toHaveBeenCalledWith(
-      'rtc_after-abort',
-    );
+    expect(harness.hangup).toHaveBeenCalledOnce();
+    expect(harness.hangup).toHaveBeenCalledWith('rtc_after-abort');
     expect(harness.options.connectSideband).not.toHaveBeenCalled();
   });
 
@@ -157,6 +154,39 @@ describe('VoiceController', () => {
       sessionId: replacementSessionId,
     });
     await harness.sessions.closeAll();
+  });
+
+  it('preserves a setup error while the manager retains a failed hangup', async () => {
+    const harness = createController({
+      connectSideband: vi.fn(async () => {
+        throw new Error('sideband failed');
+      }),
+    });
+    harness.hangup.mockRejectedValueOnce(new Error('hangup failed'));
+
+    await expect(harness.controller.start(startOptions)).rejects.toThrow(
+      'sideband failed',
+    );
+    await harness.sessions.closeExpired(30 * 60_000);
+
+    expect(harness.hangup.mock.calls).toEqual([['rtc_test'], ['rtc_test']]);
+    expect(harness.realtimeClose).toHaveBeenCalledOnce();
+    expect(() => harness.sessions.reserve('owner-1')).not.toThrow();
+  });
+
+  it('retains a late detached call when hangup fails after setup cancellation', async () => {
+    const call = deferred<{ answerSdp: string; callId: string }>();
+    const harness = createController({ createCall: vi.fn(() => call.promise) });
+    harness.hangup.mockRejectedValueOnce(new Error('hangup failed'));
+    const starting = harness.controller.start(startOptions);
+    await harness.sessions.cancel(startOptions.sessionId, startOptions.ownerId);
+    call.resolve({ answerSdp: 'answer', callId: 'rtc_late' });
+
+    await expect(starting).rejects.toThrow('closed during call creation');
+    await harness.sessions.closeExpired(30 * 60_000);
+
+    expect(harness.hangup.mock.calls).toEqual([['rtc_late'], ['rtc_late']]);
+    expect(harness.options.connectSideband).not.toHaveBeenCalled();
   });
 
   it('projects transport events instead of exposing the raw payload', () => {

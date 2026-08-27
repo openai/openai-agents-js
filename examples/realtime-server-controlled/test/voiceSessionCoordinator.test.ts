@@ -33,6 +33,85 @@ function connection(connect: VoiceConnection['connect']): VoiceConnection & {
 }
 
 describe('VoiceSessionCoordinator', () => {
+  it.each(['Stop', 'server event'])(
+    'retains failed cleanup after %s and allows a deduplicated Stop retry',
+    async (trigger) => {
+      const retry = deferred<void>();
+      const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
+      const activeConnection = connection(async (exchangeSdp) => {
+        await exchangeSdp('offer', new AbortController().signal);
+      });
+      const eventStream = { close: vi.fn() };
+      let onMessage: ((value: unknown) => void) | undefined;
+      let sessionId = '';
+      const exchangeOffer = vi.fn(async (input: { sessionId: string }) => {
+        sessionId = sessions.reserve('owner-1', input.sessionId);
+        sessions.activate(sessionId);
+        return 'answer';
+      });
+      const closeRemoteSession = vi
+        .fn(async (id: string, _token: string) => {
+          await retry.promise;
+          await sessions.cancel(id, 'owner-1');
+        })
+        .mockRejectedValueOnce(new Error('Network unavailable.'));
+      const onControls = vi.fn();
+      const onStatus = vi.fn();
+      const coordinator = new VoiceSessionCoordinator({
+        closeRemoteSession,
+        createConnection: () => activeConnection,
+        exchangeOffer,
+        getCsrfToken: vi.fn(async () => 'csrf-token'),
+        onControls,
+        onStatus,
+        openEvents: (options) => {
+          onMessage = options.onMessage;
+          return eventStream;
+        },
+      });
+      await coordinator.start();
+      const originalId = sessionId;
+      if (trigger === 'Stop') {
+        await coordinator.stop();
+      } else {
+        onMessage?.({ type: 'app.session.closed' });
+        await vi.waitFor(() =>
+          expect(onStatus).toHaveBeenLastCalledWith('error'),
+        );
+      }
+      await coordinator.start();
+      expect(exchangeOffer).toHaveBeenCalledOnce();
+      expect(onControls).toHaveBeenLastCalledWith({
+        canMute: false,
+        canStart: false,
+        canStop: true,
+        muted: false,
+      });
+      expect(sessions.ownsActive(originalId, 'owner-1')).toBe(true);
+
+      const stopping = coordinator.stop();
+      const concurrentStop = coordinator.stop();
+      await vi.waitFor(() =>
+        expect(closeRemoteSession).toHaveBeenCalledTimes(2),
+      );
+      expect(onControls.mock.lastCall?.[0].canStop).toBe(false);
+      retry.resolve();
+      await Promise.all([stopping, concurrentStop]);
+
+      expect(closeRemoteSession.mock.calls).toEqual([
+        [originalId, 'csrf-token'],
+        [originalId, 'csrf-token'],
+      ]);
+      expect(activeConnection.close).toHaveBeenCalledOnce();
+      expect(eventStream.close).toHaveBeenCalledOnce();
+      expect(onControls.mock.lastCall?.[0].canStart).toBe(true);
+      await coordinator.start();
+      expect(sessions.ownsActive(sessionId, 'owner-1')).toBe(true);
+      expect(sessionId).not.toBe(originalId);
+      await coordinator.stop();
+    },
+  );
+
   it('refreshes authentication immediately before exchanging the SDP offer', async () => {
     const getCsrfToken = vi.fn(async () => 'fresh-token');
     const exchangeOffer = vi.fn(async ({ sessionId, token }) => {

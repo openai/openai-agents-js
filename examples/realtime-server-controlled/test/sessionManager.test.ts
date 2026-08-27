@@ -1,10 +1,111 @@
 import { describe, expect, it, vi } from 'vitest';
+import { NotFoundError } from 'openai';
 import {
   SessionConflictError,
   SessionManager,
 } from '../src/server/sessionManager';
 
 describe('SessionManager', () => {
+  it('retains failed cleanup and the owner reservation until a retry succeeds', async () => {
+    let finishHangup!: () => void;
+    const hangup = vi
+      .fn(async () => {})
+      .mockRejectedValueOnce(new Error('timeout'));
+    const sessions = new SessionManager({ hangup });
+    const id = sessions.reserve('owner-1');
+    const realtimeSession = { close: vi.fn() };
+    sessions.attachCall(id, 'rtc_retry');
+    sessions.attachRealtimeSession(id, realtimeSession);
+    sessions.activate(id);
+    await expect(sessions.cancel(id, 'owner-1')).rejects.toThrow('timeout');
+    expect(() => sessions.reserve('owner-1')).toThrow(SessionConflictError);
+    expect(sessions.ownsActive(id, 'owner-1')).toBe(false);
+
+    hangup.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishHangup = resolve;
+        }),
+    );
+    const retry = sessions.cancel(id, 'owner-1');
+    const concurrentRetry = sessions.cancel(id, 'owner-1');
+    await vi.waitFor(() => expect(hangup).toHaveBeenCalledTimes(2));
+    expect(() => sessions.reserve('owner-1')).toThrow(SessionConflictError);
+    finishHangup();
+    await Promise.all([retry, concurrentRetry]);
+
+    expect(realtimeSession.close).toHaveBeenCalledOnce();
+    expect(hangup.mock.calls).toEqual([['rtc_retry'], ['rtc_retry']]);
+    expect(() => sessions.reserve('owner-1')).not.toThrow();
+  });
+
+  it('retries failed hangups on the sweep without waiting for session expiry', async () => {
+    const hangup = vi
+      .fn(async () => {})
+      .mockRejectedValueOnce(new Error('timeout'));
+    const sessions = new SessionManager({ hangup, now: () => 1_000 });
+    const id = sessions.reserve('owner-1');
+    sessions.attachCall(id, 'rtc_retry');
+    await expect(sessions.close(id)).rejects.toThrow('timeout');
+
+    await sessions.closeExpired(30 * 60_000);
+
+    expect(hangup).toHaveBeenCalledTimes(2);
+    expect(() => sessions.reserve('owner-1')).not.toThrow();
+  });
+
+  it('treats a provider-confirmed missing call as already cleaned up', async () => {
+    const hangup = vi.fn(async () => {
+      throw new NotFoundError(404, {}, 'Call not found', new Headers());
+    });
+    const sessions = new SessionManager({ hangup });
+    const id = sessions.reserve('owner-1');
+    sessions.attachCall(id, 'rtc_absent');
+
+    await expect(sessions.close(id)).resolves.toBe(true);
+    await sessions.closeExpired(0);
+
+    expect(hangup).toHaveBeenCalledOnce();
+    expect(() => sessions.reserve('owner-1')).not.toThrow();
+  });
+
+  it('retains detached call IDs for the same cleanup sweep', async () => {
+    const hangup = vi
+      .fn(async () => {})
+      .mockRejectedValueOnce(new Error('timeout'));
+    const sessions = new SessionManager({ hangup });
+    await expect(sessions.closeDetachedCall('rtc_detached')).rejects.toThrow(
+      'timeout',
+    );
+
+    await sessions.closeExpired(30 * 60_000);
+    await sessions.closeExpired(30 * 60_000);
+
+    expect(hangup.mock.calls).toEqual([['rtc_detached'], ['rtc_detached']]);
+  });
+
+  it('makes a bounded shutdown retry and reports persistent failure safely', async () => {
+    const hangup = vi.fn(async (): Promise<void> => {
+      throw new Error('private provider error');
+    });
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const sessions = new SessionManager({ hangup });
+      const id = sessions.reserve('owner-1');
+      sessions.attachCall(id, 'rtc_shutdown');
+      await sessions.closeAll();
+      expect(hangup).toHaveBeenCalledTimes(2);
+      expect(warning).toHaveBeenCalledExactlyOnceWith(
+        'A Realtime call could not be terminated during shutdown.',
+      );
+      hangup.mockResolvedValueOnce(undefined);
+      await expect(sessions.close(id)).resolves.toBe(true);
+      expect(hangup).toHaveBeenCalledTimes(3);
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('allows only one session per authenticated owner', () => {
     const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
     sessions.reserve('owner-1');

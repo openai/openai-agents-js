@@ -80,7 +80,7 @@ export async function createRealtimeCall(
     try {
       await options.hangupCall(callId);
     } catch {
-      // Preserve the response validation error after best-effort cleanup.
+      // Preserve the validation error; the server's manager retains failed IDs.
     }
     throw error;
   }

@@ -68,7 +68,7 @@ const controller = new VoiceController({
   createCall: ({ offerSdp, safetyIdentifier, signal }) =>
     createRealtimeCall({
       apiKey,
-      hangupCall: (callId) => openai.realtime.calls.hangup(callId),
+      hangupCall: (callId) => sessions.closeDetachedCall(callId),
       model,
       offerSdp,
       safetyIdentifier,
@@ -83,7 +83,6 @@ const controller = new VoiceController({
     VoiceController.wireSessionEvents(session, callbacks);
     return session;
   },
-  hangupDetachedCall: (callId) => openai.realtime.calls.hangup(callId),
 });
 
 const auth = new DemoAuthStore({

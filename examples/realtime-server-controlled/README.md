@@ -40,7 +40,9 @@ This is not the Agents SDK's standard browser WebRTC transport with a data-chann
 
 The included cookie session is only a runnable localhost authentication seam. It does not identify a real user and does not prevent an arbitrary local caller from creating its own demo principal. Before deploying this pattern, replace `DemoAuthStore` with your application's authentication and authorization, apply production rate limits, and derive `OpenAI-Safety-Identifier` from a stable privacy-preserving user identifier.
 
-The browser disables Start while the previous session's cleanup request is pending. The demo retains cancelled application session IDs in memory until the server stops, so a delayed request cannot recreate a cancelled session after the live-session expiry sweep. A production implementation must account for this storage growth and keep cancellation records for at least as long as it accepts delayed or replayed setup requests.
+The browser disables Start until the previous session's cleanup request succeeds. If that request fails, the browser keeps the application session ID and enables Stop for another attempt. The server retains failed provider hangups and retries them in the existing one-minute cleanup sweep, including calls rejected during setup. During shutdown, the server makes one additional hangup attempt after a failure and reports any remaining failure without logging provider payloads. Cleanup state is in memory only; this example does not guarantee cleanup after process termination.
+
+The demo retains cancelled application session IDs in memory until the server stops, so a delayed request cannot recreate a cancelled session after the live-session expiry sweep. A production implementation must account for this storage growth and keep cancellation records for at least as long as it accepts delayed or replayed setup requests.
 
 Audio-only transport does not prevent spoken prompt injection and does not make system instructions secret from model behavior. Server-side tools must authorize every privileged operation against `runContext.context`, not against tool arguments supplied by the model.
 

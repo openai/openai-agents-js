@@ -30,7 +30,6 @@ export type VoiceControllerOptions = {
     onPublicEvent: (event: PublicEvent) => void;
     ownerId: string;
   }) => ControllerSession;
-  hangupDetachedCall: (callId: string) => Promise<void>;
   sessions: SessionManager;
 };
 
@@ -75,7 +74,9 @@ export class VoiceController {
             type: 'app.error',
             code: 'VOICE_SESSION_DISCONNECTED',
           });
-          void this.#options.sessions.close(sessionId);
+          void this.#options.sessions.close(sessionId).catch(() => {
+            // The session manager retains failed hangups for the next sweep.
+          });
         },
         onError: () => {
           this.#options.sessions.publish(sessionId, {
@@ -106,12 +107,14 @@ export class VoiceController {
       }
       return { answerSdp: call.answerSdp, sessionId };
     } catch (error) {
-      await this.#options.sessions.close(sessionId);
+      await this.#options.sessions.close(sessionId).catch(() => {
+        // Preserve the setup error; cleanup remains owned by the manager.
+      });
       if (detachedCallId) {
         try {
-          await this.#options.hangupDetachedCall(detachedCallId);
+          await this.#options.sessions.closeDetachedCall(detachedCallId);
         } catch {
-          // Preserve the setup error after a best-effort detached-call cleanup.
+          // Preserve the setup error; the manager retains the detached call ID.
         }
       }
       throw error;

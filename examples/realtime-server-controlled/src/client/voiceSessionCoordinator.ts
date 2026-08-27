@@ -19,8 +19,8 @@ type SessionAttempt = {
   closed: boolean;
   connection: VoiceConnection | null;
   eventStream: PublicEventStream | null;
-  remoteClosePromise: Promise<void> | null;
-  sessionId: string | null;
+  cleanupPromise: Promise<void> | null;
+  sessionId: string;
   token: string | null;
 };
 
@@ -72,7 +72,7 @@ export class VoiceSessionCoordinator {
       closed: false,
       connection: null,
       eventStream: null,
-      remoteClosePromise: null,
+      cleanupPromise: null,
       sessionId: crypto.randomUUID(),
       token: null,
     };
@@ -91,18 +91,17 @@ export class VoiceSessionCoordinator {
         attempt.token = token;
         return this.#options.exchangeOffer({
           offerSdp,
-          sessionId: attempt.sessionId!,
+          sessionId: attempt.sessionId,
           signal,
           token,
         });
       });
       if (attempt.closed || this.#activeAttempt !== attempt) {
-        await this.#cleanup(attempt);
         return;
       }
 
       attempt.eventStream = this.#options.openEvents({
-        sessionId: attempt.sessionId!,
+        sessionId: attempt.sessionId,
         onMessage: (value) => this.#handlePublicEvent(attempt, value),
         onError: () => {
           if (!attempt.closed && this.#activeAttempt === attempt) {
@@ -113,17 +112,9 @@ export class VoiceSessionCoordinator {
       this.#publishControls();
     } catch {
       if (attempt.closed || this.#activeAttempt !== attempt) {
-        await this.#cleanup(attempt);
         return;
       }
-      const cleanup = this.#cleanup(attempt);
-      this.#options.onStatus('error');
-      this.#publishControls();
-      await cleanup;
-      if (this.#activeAttempt === attempt) {
-        this.#activeAttempt = null;
-        this.#publishControls();
-      }
+      await this.#finish(attempt, 'error');
     }
   }
 
@@ -135,20 +126,7 @@ export class VoiceSessionCoordinator {
       return;
     }
 
-    if (attempt.closed) {
-      await this.#cleanup(attempt);
-      return;
-    }
-
-    // Keep admission closed until this attempt's cleanup has settled.
-    const cleanup = this.#cleanup(attempt);
-    this.#publishControls();
-    await cleanup;
-    if (this.#activeAttempt === attempt) {
-      this.#activeAttempt = null;
-      this.#options.onStatus('ready');
-      this.#publishControls();
-    }
+    await this.#finish(attempt, 'ready');
   }
 
   toggleMuted(): void {
@@ -160,23 +138,40 @@ export class VoiceSessionCoordinator {
     this.#publishControls();
   }
 
-  async #cleanup(attempt: SessionAttempt): Promise<void> {
+  #finish(attempt: SessionAttempt, status: 'error' | 'ready'): Promise<void> {
+    if (attempt.cleanupPromise) {
+      return attempt.cleanupPromise;
+    }
     attempt.closed = true;
     attempt.eventStream?.close();
     attempt.eventStream = null;
     attempt.connection?.close();
     attempt.connection = null;
-    await this.#closeRemote(attempt);
-  }
-
-  async #closeRemote(attempt: SessionAttempt): Promise<void> {
-    if (!attempt.sessionId || !attempt.token) {
-      return;
-    }
-    attempt.remoteClosePromise ??= this.#options
-      .closeRemoteSession(attempt.sessionId, attempt.token)
-      .catch(() => {});
-    await attempt.remoteClosePromise;
+    attempt.cleanupPromise = Promise.resolve().then(async () => {
+      try {
+        if (attempt.token) {
+          await this.#options.closeRemoteSession(
+            attempt.sessionId,
+            attempt.token,
+          );
+        }
+      } catch {
+        // Retain the attempt and its ID; the next Stop retries this request.
+        attempt.cleanupPromise = null;
+        if (this.#activeAttempt === attempt) {
+          this.#options.onStatus('error');
+          this.#publishControls();
+        }
+        return;
+      }
+      if (this.#activeAttempt === attempt) {
+        this.#activeAttempt = null;
+        this.#options.onStatus(status);
+        this.#publishControls();
+      }
+    });
+    this.#publishControls();
+    return attempt.cleanupPromise;
   }
 
   #handlePublicEvent(attempt: SessionAttempt, value: unknown): void {
@@ -197,7 +192,6 @@ export class VoiceSessionCoordinator {
     } else if (event.type === 'app.error') {
       this.#options.onStatus('error');
     } else if (event.type === 'app.session.closed') {
-      attempt.sessionId = null;
       void this.stop();
     }
   }
@@ -208,7 +202,7 @@ export class VoiceSessionCoordinator {
     this.#options.onControls({
       canMute: Boolean(connection),
       canStart: !active,
-      canStop: active && !this.#activeAttempt?.closed,
+      canStop: active && !this.#activeAttempt?.cleanupPromise,
       muted: connection?.muted ?? false,
     });
   }
