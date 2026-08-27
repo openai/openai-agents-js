@@ -555,6 +555,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
     expect(base.events[1]).toEqual({
       type: 'conversation.item.create',
+      previous_item_id: 'root',
       item: {
         id: '2',
         role: 'user',
@@ -614,10 +615,8 @@ describe('OpenAIRealtimeBase helpers', () => {
       base.resetHistory(oldHistory, newHistory);
       return base.events
         .filter((event: any) => event.type === 'conversation.item.create')
-        .map((event: any) =>
-          'previous_item_id' in event
-            ? `${event.item.id} after ${event.previous_item_id}`
-            : `${event.item.id} unanchored`,
+        .map(
+          (event: any) => `${event.item.id} after ${event.previous_item_id}`,
         );
     }
 
@@ -648,13 +647,13 @@ describe('OpenAIRealtimeBase helpers', () => {
       ).toEqual(['b after a', 'c after b']);
     });
 
-    it('leaves an item with nothing before it unanchored', () => {
+    it('places an item with nothing before it at the beginning', () => {
       expect(
         creates(
           [message('a', '1'), message('b', '2')],
           [message('a', 'edited'), message('b', '2')],
         ),
-      ).toEqual(['a unanchored']);
+      ).toEqual(['a after root']);
     });
 
     it('does not anchor to a function call it could not create', () => {

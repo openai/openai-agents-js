@@ -155,6 +155,12 @@ function cloneRealtimeEvent<T>(event: T): T {
   return JSON.parse(JSON.stringify(event)) as T;
 }
 
+/**
+ * Sentinel accepted by `conversation.item.create` that places the item at the
+ * beginning of the conversation. Omitting `previous_item_id` appends instead.
+ */
+const CONVERSATION_ROOT = 'root';
+
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
   implements RealtimeTransportLayer
@@ -1000,7 +1006,8 @@ export abstract class OpenAIRealtimeBase
     const pendingIds = new Set(
       [...additions, ...updates].map((item) => item.itemId),
     );
-    let previousItemId: string | null = null;
+    // `root` places the item at the beginning; omitting the field appends it.
+    let previousItemId = CONVERSATION_ROOT;
 
     for (const item of newHistory) {
       if (!pendingIds.has(item.itemId)) {
@@ -1021,12 +1028,7 @@ export abstract class OpenAIRealtimeBase
         }
         this.sendEvent({
           type: 'conversation.item.create',
-          // Only when the item has a predecessor. `previous_item_id: null` is
-          // accepted by the protocol but its placement is not documented, so
-          // an item with nothing before it keeps the existing behaviour.
-          ...(previousItemId === null
-            ? {}
-            : { previous_item_id: previousItemId }),
+          previous_item_id: previousItemId,
           item: itemEntry,
         });
         previousItemId = item.itemId;
