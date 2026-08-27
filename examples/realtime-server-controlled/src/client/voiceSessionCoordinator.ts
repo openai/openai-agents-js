@@ -83,14 +83,14 @@ export class VoiceSessionCoordinator {
     this.#publishControls();
 
     try {
-      const token = await this.#options.getCsrfToken();
-      if (this.#activeAttempt !== attempt) {
-        return;
-      }
-      attempt.token = token;
       const connection = this.#options.createConnection();
       attempt.connection = connection;
       await connection.connect(async (offerSdp, signal) => {
+        const token = await this.#options.getCsrfToken();
+        if (attempt.closed || this.#activeAttempt !== attempt) {
+          throw new Error('The voice-session attempt is no longer active.');
+        }
+        attempt.token = token;
         return this.#options.exchangeOffer({
           offerSdp,
           onSessionCreated: async (sessionId) => {

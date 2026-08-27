@@ -32,6 +32,34 @@ function connection(connect: VoiceConnection['connect']): VoiceConnection & {
 }
 
 describe('VoiceSessionCoordinator', () => {
+  it('refreshes authentication immediately before exchanging the SDP offer', async () => {
+    const getCsrfToken = vi.fn(async () => 'fresh-token');
+    const exchangeOffer = vi.fn(async ({ onSessionCreated, token }) => {
+      expect(token).toBe('fresh-token');
+      await onSessionCreated('session-1');
+      return 'answer';
+    });
+    const activeConnection = connection(async (exchangeSdp) => {
+      expect(getCsrfToken).not.toHaveBeenCalled();
+      await exchangeSdp('offer', new AbortController().signal);
+    });
+    const coordinator = new VoiceSessionCoordinator({
+      closeRemoteSession: vi.fn(async () => {}),
+      createConnection: () => activeConnection,
+      exchangeOffer,
+      getCsrfToken,
+      onControls: vi.fn(),
+      onStatus: vi.fn(),
+      openEvents: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    await coordinator.start();
+
+    expect(getCsrfToken).toHaveBeenCalledOnce();
+    expect(exchangeOffer).toHaveBeenCalledOnce();
+    await coordinator.stop();
+  });
+
   it('keeps a replacement active when a cancelled setup fails later', async () => {
     const oldSetup = deferred<void>();
     const oldConnection = connection(() => oldSetup.promise);

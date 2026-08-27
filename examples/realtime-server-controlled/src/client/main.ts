@@ -1,5 +1,6 @@
 import './style.css';
 import { AudioOnlyWebRtc } from './audioOnlyWebRtc';
+import { requestCsrfToken } from './demoAuthClient';
 import {
   VoiceSessionCoordinator,
   type VoiceSessionStatus,
@@ -32,8 +33,6 @@ const statusCopy: Record<
   },
 };
 
-let csrfToken: string | null = null;
-
 function setStatus(state: keyof typeof statusCopy) {
   const copy = statusCopy[state];
   orb.dataset.state = state;
@@ -41,26 +40,8 @@ function setStatus(state: keyof typeof statusCopy) {
   statusDetail.textContent = copy.detail;
 }
 
-async function getCsrfToken(): Promise<string> {
-  if (csrfToken) {
-    return csrfToken;
-  }
-  const response = await fetch('/api/auth/session', {
-    credentials: 'same-origin',
-  });
-  if (!response.ok) {
-    throw new Error('Could not initialize the application session.');
-  }
-  const body = (await response.json()) as { csrfToken?: unknown };
-  if (typeof body.csrfToken !== 'string') {
-    throw new Error('The application session returned an invalid CSRF token.');
-  }
-  csrfToken = body.csrfToken;
-  return csrfToken;
-}
-
 const coordinator = new VoiceSessionCoordinator({
-  getCsrfToken,
+  getCsrfToken: requestCsrfToken,
   createConnection: () => new AudioOnlyWebRtc({ remoteAudio }),
   async exchangeOffer({ offerSdp, onSessionCreated, signal, token }) {
     const response = await fetch('/api/realtime/session', {

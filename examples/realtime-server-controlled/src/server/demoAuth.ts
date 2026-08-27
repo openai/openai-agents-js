@@ -2,7 +2,8 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 
 const COOKIE_NAME = 'realtime_demo_session';
-const SESSION_TTL_MS = 60 * 60 * 1000;
+const SESSION_TTL_SECONDS = 60 * 60;
+const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
 
 export type DemoPrincipal = {
   csrfToken: string;
@@ -43,9 +44,13 @@ export class DemoAuthStore {
     principal: DemoPrincipal;
     setCookie?: string;
   } {
-    const existing = this.authenticate(request);
+    const existing = this.#findStoredPrincipal(request);
     if (existing) {
-      return { principal: existing };
+      existing.expiresAt = this.#now() + SESSION_TTL_MS;
+      return {
+        principal: existing,
+        setCookie: this.#serializeCookie(existing.token),
+      };
     }
 
     const token = randomBytes(32).toString('base64url');
@@ -59,24 +64,17 @@ export class DemoAuthStore {
     };
     this.#principals.set(token, principal);
 
-    const attributes = [
-      `${COOKIE_NAME}=${token}`,
-      'HttpOnly',
-      'Max-Age=3600',
-      'Path=/',
-      'SameSite=Strict',
-    ];
-    if (this.#secureCookie) {
-      attributes.push('Secure');
-    }
-
     return {
       principal,
-      setCookie: attributes.join('; '),
+      setCookie: this.#serializeCookie(token),
     };
   }
 
   authenticate(request: IncomingMessage): DemoPrincipal | null {
+    return this.#findStoredPrincipal(request);
+  }
+
+  #findStoredPrincipal(request: IncomingMessage): StoredPrincipal | null {
     const token = parseCookies(request.headers.cookie).get(COOKIE_NAME);
     if (!token) {
       return null;
@@ -91,6 +89,20 @@ export class DemoAuthStore {
       return null;
     }
     return principal;
+  }
+
+  #serializeCookie(token: string): string {
+    const attributes = [
+      `${COOKIE_NAME}=${token}`,
+      'HttpOnly',
+      `Max-Age=${SESSION_TTL_SECONDS}`,
+      'Path=/',
+      'SameSite=Strict',
+    ];
+    if (this.#secureCookie) {
+      attributes.push('Secure');
+    }
+    return attributes.join('; ');
   }
 
   verifyCsrf(request: IncomingMessage, principal: DemoPrincipal): boolean {
