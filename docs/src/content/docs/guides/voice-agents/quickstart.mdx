@@ -103,8 +103,13 @@ import helloWorldExample from '../../../../../../examples/docs/voice-agents/hell
 </Steps>
 
 <Aside type="note">
-  If you want lower-level control over the peer connection or raw transport
-  events, see the [`/raw-client` example in
+  This quickstart uses the shortest path to get a browser voice agent running:
+  `RealtimeSession` runs in the browser, and the built-in WebRTC transport uses
+  a data channel for Realtime events. If the browser should carry only audio
+  while an application server owns Realtime events, tools, and business logic,
+  see [Browser audio with server-side
+  controls](/openai-agents-js/guides/voice-agents/transport#browser-audio-with-server-side-controls).
+  For lower-level browser control, see the [`/raw-client` example in
   `examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next).
 </Aside>
 
