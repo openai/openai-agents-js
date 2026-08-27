@@ -6,6 +6,7 @@ canonicalHeadingIds:
     id: 'project-setup-and-credentials'
     aliases:
       - '项目设置和凭据'
+      - '项目设置与凭据'
   - depth: 2
     id: 'create-and-connect-the-realtime-agent'
     aliases:
@@ -24,33 +25,33 @@ import { Steps, Aside, Code } from '@astrojs/starlight/components';
 import helloWorldExample from '../../../../../../../examples/docs/voice-agents/helloWorld.ts?raw';
 
 <Aside type="note">
-  此快速上手使用
-  `@openai/agents`，这是大多数应用推荐的默认选择。如果您更倾向于使用 独立的
-  Realtime 软件包，请安装 `@openai/agents-realtime`，并在以下代码示例中将 从
+  本快速上手使用
+  `@openai/agents`，这是大多数应用推荐的默认选项。如果您更倾向于使用独立的
+  Realtime 包，请安装 `@openai/agents-realtime`，并在以下示例中将从
   `@openai/agents/realtime` 导入替换为从 `@openai/agents-realtime` 导入。
 </Aside>
 
-## 项目设置和凭据
+## 项目设置与凭据
 
 <Steps>
 
-1. **创建项目**
+1. **项目创建**
 
-   在此快速上手中，我们将创建一个可在浏览器中使用的实时智能体。如果您想搭建新项目，可以从 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html) 开始。
+   在本快速上手中，我们将创建一个可在浏览器中使用的实时智能体。如果要搭建新项目，可以从 [`Next.js`](https://nextjs.org/docs/getting-started/installation) 或 [`Vite`](https://vite.dev/guide/installation.html) 开始。
 
    ```bash
    npm create vite@latest my-project -- --template vanilla-ts
    ```
 
-2. **安装推荐的软件包**（需要 Zod v4）
+2. **推荐软件包的安装**（需要 Zod v4）
 
    ```bash
    npm install @openai/agents zod
    ```
 
-3. **生成客户端临时令牌**
+3. **临时客户端令牌的生成**
 
-   由于此应用将在用户的浏览器中运行，因此我们需要一种安全的方式，通过 Realtime API 连接到模型。推荐流程与官方[通过 WebRTC 使用 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/)指南一致：后端创建一个短期有效的客户端临时令牌，然后浏览器使用该令牌建立 WebRTC 连接。出于测试目的，您也可以使用 `curl` 和常规 OpenAI API 密钥生成令牌。
+   由于此应用将在用户的浏览器中运行，我们需要通过安全方式经由 Realtime API 连接到模型。推荐流程与官方的 [通过 WebRTC 使用 Realtime API](https://developers.openai.com/api/docs/guides/realtime-webrtc/)指南一致：后端创建一个短期有效的临时客户端令牌，然后浏览器使用该令牌建立 WebRTC 连接。出于测试目的，您也可以使用 `curl` 和常规 OpenAI API 密钥生成令牌。
 
    ```bash
    export OPENAI_API_KEY="sk-proj-...(your own key here)"
@@ -65,7 +66,7 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
       }'
    ```
 
-   响应包含一个以 `ek_` 为前缀的顶层 `value` 字段，以及实际生效的 `session` 对象。建立 WebRTC 连接时，请将 `value` 用作客户端密钥。此令牌的有效期很短，因此后端应在需要时生成新令牌。如果浏览器会话需要带有 `authorization` 或自定义 `headers` 的托管 MCP 工具，请将该托管 MCP 配置包含在服务器端发送至 `POST /v1/realtime/client_secrets` 的 `session` 负载中，而不要在浏览器代码中暴露这些凭据。
+   响应包含一个以 `ek_` 为前缀的顶层 `value` 字段，以及实际生效的 `session` 对象。建立 WebRTC 连接时，请使用 `value` 作为客户端密钥。此令牌有效期很短，因此后端应在需要时生成新令牌。如果浏览器会话需要带有 `authorization` 或自定义 `headers` 的托管 MCP 工具，请将相应的托管 MCP 配置包含在服务器端发送至 `POST /v1/realtime/client_secrets` 的 `session` 载荷中，而不要在浏览器代码中暴露这些凭据。
 
 </Steps>
 
@@ -79,9 +80,9 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 
 <Steps>
 
-1. **创建您的第一个智能体**
+1. **首个智能体的创建**
 
-   创建新的 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建普通的 [`Agent`](/openai-agents-js/zh/guides/agents) 非常相似。
+   创建新的 [`RealtimeAgent`](/openai-agents-js/openai/agents-realtime/classes/realtimeagent/) 与创建常规 [`Agent`](/openai-agents-js/zh/guides/agents) 非常相似。
 
    ```typescript
    import { RealtimeAgent } from '@openai/agents/realtime';
@@ -92,9 +93,9 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
    });
    ```
 
-2. **创建会话**
+2. **会话的创建**
 
-   与普通智能体不同，实时智能体会在 `RealtimeSession` 中持续运行，后者负责处理对话以及与模型的持续连接。此会话还负责管理音频处理、中断，以及您稍后将配置的整体对话生命周期。
+   与常规智能体不同，实时智能体会在 `RealtimeSession` 中持续运行，后者负责处理对话以及与模型之间的持续连接。此会话还会管理音频处理、中断和更广泛的对话生命周期，您将在后续对其进行配置。
 
    ```typescript
    import { RealtimeSession } from '@openai/agents/realtime';
@@ -104,37 +105,40 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
    });
    ```
 
-   `RealtimeSession` 构造函数将 `agent` 作为第一个参数。该智能体将是用户首先与之交互的智能体。
+   `RealtimeSession` 构造函数将 `agent` 作为第一个参数。该智能体将是用户首先交互的智能体。
 
-3. **连接会话**
+3. **会话连接**
 
-   要连接会话，您需要传入之前生成的客户端临时令牌。
+   要连接到会话，需要传入之前生成的临时客户端令牌。
 
    ```typescript
    await session.connect({ apiKey: 'ek_...(put your own key here)' });
    ```
 
-   在浏览器中，这会使用 WebRTC 连接到 Realtime API，并自动为您配置麦克风采集和音频播放。在默认的 WebRTC 路径上，SDK 会在数据通道打开后立即发送初始会话配置，并尝试等待对应的 `session.updated` 确认消息，然后 `connect()` 才会完成；如果始终未收到该确认消息，则会通过超时机制继续。如果您在 Node.js 等服务器运行时中运行 `RealtimeSession`，SDK 会自动改用 WebSocket；在 WebSocket 路径上，套接字打开并发送初始配置后，`connect()` 就会完成，因此 `session.updated` 可能稍后才会到达。您可以在[传输机制](/openai-agents-js/zh/guides/voice-agents/transport)指南中进一步了解传输方式的选择。
+   在浏览器中，这会使用 WebRTC 连接到 Realtime API，并自动为您配置麦克风采集和音频播放。在默认的 WebRTC 路径中，SDK 会在数据通道打开后立即发送初始会话配置，并尝试等待对应的 `session.updated` 确认，然后 `connect()` 才会完成；如果该确认一直未到达，则会在超时后继续。如果在 Node.js 等服务器运行时中运行 `RealtimeSession`，SDK 会自动回退到 WebSocket；在 WebSocket 路径中，套接字打开且初始配置发送后，`connect()` 即会完成，因此 `session.updated` 可能稍后才到达。您可以在[传输机制](/openai-agents-js/zh/guides/voice-agents/transport)指南中进一步了解传输方式的选择。
 
 </Steps>
 
 <Aside type="note">
-  如果您希望对对等连接或原始传输事件进行更底层的控制，请参阅
-  [`examples/realtime-next` 中的 `/raw-client`
-  代码示例](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next)。
+  本快速上手采用最简方式在浏览器中运行语音智能体： `RealtimeSession`
+  在浏览器中运行，内置 WebRTC 传输使用 数据通道传递 Realtime
+  事件。如果浏览器应仅承载音频，而由应用服务器负责 Realtime
+  事件、工具和业务逻辑，请参阅[浏览器音频与服务器端控制](/openai-agents-js/zh/guides/voice-agents/transport#browser-audio-with-server-side-controls)。
+  如需更底层的浏览器控制，请参阅 [`examples/realtime-next` 中的 `/raw-client`
+  示例](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next)。
 </Aside>
 
 ## 应用运行与测试
 
 <Steps>
 
-1. **整体整合**
+1. **完整整合**
 
    <Code lang="typescript" code={helloWorldExample} />
 
-2. **启动应用并开始对话**
+2. **应用启动与对话**
 
-   启动 Web 服务器，并打开包含新实时智能体代码的页面。您应该会看到麦克风权限请求。授予访问权限后，您就可以开始与智能体对话。
+   启动 Web 服务器，并打开包含新实时智能体代码的页面。您应会看到麦克风权限请求。授予访问权限后，即可开始与智能体对话。
 
    ```bash
    npm run dev
@@ -149,4 +153,4 @@ import helloWorldExample from '../../../../../../../examples/docs/voice-agents/h
 - 添加[工具](/openai-agents-js/zh/guides/voice-agents/build#tools)、[交接](/openai-agents-js/zh/guides/voice-agents/build#handoffs)和[护栏](/openai-agents-js/zh/guides/voice-agents/build#guardrails)。
 - 了解[轮次检测和语音活动检测](/openai-agents-js/zh/guides/voice-agents/build#turn-detection-and-voice-activity-detection)、[中断](/openai-agents-js/zh/guides/voice-agents/build#interruptions)和[手动响应控制](/openai-agents-js/zh/guides/voice-agents/build#manual-response-control)如何影响对话循环。
 - 添加[文本输入](/openai-agents-js/zh/guides/voice-agents/build#text-input)、[图像输入](/openai-agents-js/zh/guides/voice-agents/build#image-input)和[会话历史管理](/openai-agents-js/zh/guides/voice-agents/build#conversation-history-management)。
-- 为您的部署选择合适的传输机制：[WebRTC](/openai-agents-js/zh/guides/voice-agents/transport#webrtc-is-the-default-browser-choice)、[WebSocket](/openai-agents-js/zh/guides/voice-agents/transport#websocket-is-the-default-server-choice)或[自定义传输机制](/openai-agents-js/zh/guides/voice-agents/transport#bring-your-own-transport)。
+- 为您的部署选择合适的传输方式：[WebRTC](/openai-agents-js/zh/guides/voice-agents/transport#webrtc-is-the-default-browser-choice)、[WebSocket](/openai-agents-js/zh/guides/voice-agents/transport#websocket-is-the-default-server-choice)或[自定义传输](/openai-agents-js/zh/guides/voice-agents/transport#bring-your-own-transport)。

@@ -26,6 +26,7 @@ canonicalHeadingIds:
     id: 'turn-detection-and-voice-activity-detection'
     aliases:
       - '턴-감지와-음성-활동-감지'
+      - '턴-감지-및-음성-활동-감지'
   - depth: 3
     id: 'interruptions'
     aliases:
@@ -86,6 +87,7 @@ canonicalHeadingIds:
     id: 'conversation-state-and-delegation'
     aliases:
       - '대화-상태와-위임'
+      - '대화-상태-및-위임'
   - depth: 3
     id: 'conversation-history-management'
     aliases:
@@ -121,12 +123,12 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 <Aside type="caution">
 
-아키텍처를 조기에 선택하세요.
+아키텍처를 초기에 선택하세요.
 
-- `OpenAIRealtimeWebRTC`는 가장 간단한 브라우저 경로이며 오디오 입력과 출력을 자동으로 처리합니다.
+- `OpenAIRealtimeWebRTC`는 가장 간단한 브라우저 방식이며 오디오 입력과 출력을 자동으로 처리합니다. 내장 연결은 Realtime 이벤트에 데이터 채널도 사용합니다. 브라우저는 오디오만 전달하고 애플리케이션 서버가 Realtime 이벤트, 도구, 비즈니스 로직을 담당해야 한다면 [서버 측 제어를 사용하는 브라우저 오디오](/openai-agents-js/ko/guides/voice-agents/transport#browser-audio-with-server-side-controls)를 참고하세요.
 - `OpenAIRealtimeWebSocket`을 사용하면 더 세밀하게 제어할 수 있지만, 오디오 캡처와 재생을 직접 관리해야 합니다.
-- 함수 도구는 `RealtimeSession`이 실행되는 곳에서 실행됩니다. 세션이 브라우저에서 실행되면 도구도 브라우저에서 실행됩니다.
-- 실시간 핸드오프는 동일한 라이브 세션 모델을 유지합니다. 음성은 세션에서 오디오 출력을 생성하기 전에만 변경할 수 있습니다. 다른 백엔드 모델이 필요한 경우 핸드오프 대신 도구를 통해 위임하세요.
+- 함수 도구는 `RealtimeSession`이 실행되는 위치에서 실행됩니다. 세션이 브라우저에서 실행되면 도구도 브라우저에서 실행됩니다.
+- Realtime 핸드오프는 동일한 라이브 세션 모델을 유지합니다. 음성 변경은 세션에서 오디오 출력을 생성하기 전에만 적용됩니다. 다른 백엔드 모델이 필요하다면 핸드오프 대신 도구를 통해 위임하세요.
 
 </Aside>
 
@@ -138,27 +140,27 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 
 <Code lang="typescript" code={handleAudioExample} />
 
-기반 전송 방식에서 지원하는 경우 `session.muted`는 현재 음소거 상태를 나타내고 `session.mute(true | false)`는 마이크 캡처를 전환합니다. `OpenAIRealtimeWebSocket`은 음소거를 구현하지 않습니다. `session.muted`는 `null`을 반환하고 `session.mute()`는 예외를 발생시키므로, websocket 설정에서는 직접 캡처를 일시 중지하고 마이크를 다시 활성화할 때까지 `sendAudio()` 호출을 중단해야 합니다.
+기반 전송 방식이 이를 지원하면 `session.muted`는 현재 음소거 상태를 나타내고 `session.mute(true | false)`는 마이크 캡처를 전환합니다. `OpenAIRealtimeWebSocket`은 음소거를 구현하지 않습니다. `session.muted`는 `null`을 반환하고 `session.mute()`는 예외를 발생시키므로, WebSocket 구성에서는 직접 캡처를 일시 중지하고 마이크를 다시 활성화할 때까지 `sendAudio()` 호출을 중단해야 합니다.
 
 ### 세션 구성
 
-[`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/)을 생성할 때 세션 자체를 구성합니다. 일반적으로 `model` 옵션과 `config` 객체를 사용합니다. `connect(...)`는 임의의 세션 필드가 아니라 자격 증명, 엔드포인트 URL, SIP 통화 연결과 같은 연결 시점의 사항을 위한 것입니다.
+[`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/)을 생성할 때 세션 자체를 구성하며, 일반적으로 `model` 옵션과 `config` 객체를 사용합니다. `connect(...)`는 임의의 세션 필드가 아니라 자격 증명, 엔드포인트 URL, 기존 Realtime 통화 연결과 같이 연결 시점에 필요한 설정을 위한 것입니다.
 
 <Code lang="typescript" code={configureSessionExample} />
 
-내부적으로 SDK는 이 구성을 Realtime [`session.update`](https://developers.openai.com/api/reference/resources/realtime/client-events/#session.update) 형식으로 정규화합니다. [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)에 대응하는 속성이 없는 원문 세션 필드가 필요하면 `providerData`를 사용하거나 `session.transport.sendEvent(...)`를 통해 원문 `session.update`를 전송하세요.
+내부적으로 SDK는 이 구성을 Realtime [`session.update`](https://developers.openai.com/api/reference/resources/realtime/client-events/#session.update) 형식으로 정규화합니다. [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)에 대응하는 속성이 없는 원문 세션 필드가 필요하다면 `providerData`를 사용하거나 `session.transport.sendEvent(...)`를 통해 원문 `session.update`를 전송하세요.
 
 `outputModalities`, `audio.input`, `audio.output`을 사용하는 최신 SDK 구성 형식을 권장합니다. `modalities`, `inputAudioFormat`, `outputAudioFormat`, `inputAudioTranscription`, `turnDetection`과 같은 이전 SDK 별칭도 이전 버전과의 호환성을 위해 계속 정규화되지만, 새 코드에서는 여기에 표시된 중첩 `audio` 구조를 사용해야 합니다.
 
 `gpt-realtime-2.1`과 같이 추론을 지원하는 Realtime 모델에서는 세션 구성에 `reasoning.effort`를 설정하세요. 추론 강도가 높아지면 지연 시간과 토큰 사용량이 증가할 수 있습니다. 모델이 여러 도구를 병렬로 호출할 수 있는지를 제어하려면 `parallelToolCalls`도 설정할 수 있습니다.
 
-입력 전사의 경우 `audio.input.transcription`은 GA 전사 모델과 해당 컨텍스트 옵션을 허용합니다. 지연 시간이 짧은 스트리밍 전사에는 `gpt-live-transcribe`를 사용하세요. 이 모델의 `delay` 설정은 더 빠른 중간 전사와 최종 전사 품질 사이의 균형을 조절합니다. `gpt-live-transcribe`와 `gpt-transcribe`는 모두 자유 형식 `prompt`, 리터럴 `keywords`, `languages` 배열을 허용합니다. 이러한 모델은 `languages`를 사용하며, 하나의 언어 힌트를 허용하는 이전 전사 모델은 계속 단수형 `language` 필드를 사용합니다. 모델별 워크플로는 공식 [전사 컨텍스트 가이드](https://developers.openai.com/api/docs/guides/transcription/#improve-transcription-quality)와 [Realtime 전사 가이드](https://developers.openai.com/api/docs/guides/realtime-transcription/)를 참고하세요.
+입력 트랜스크립션의 경우 `audio.input.transcription`은 GA 트랜스크립션 모델과 해당 컨텍스트 옵션을 지원합니다. 지연 시간이 짧은 스트리밍 트랜스크립션에는 `gpt-live-transcribe`를 사용하세요. 이 모델의 `delay` 설정을 사용하면 더 빠른 부분 트랜스크립트와 최종 트랜스크립트 품질 사이의 균형을 조정할 수 있습니다. `gpt-live-transcribe`와 `gpt-transcribe`는 모두 자유 형식 `prompt`, 리터럴 `keywords`, `languages` 배열을 지원합니다. 이 모델들은 `languages`를 사용하며, 하나의 언어 힌트를 지원하는 이전 트랜스크립션 모델에서는 계속 단수형 `language` 필드를 사용합니다. 모델별 워크플로는 공식 [트랜스크립션 컨텍스트 지침](https://developers.openai.com/api/docs/guides/transcription/#improve-transcription-quality)과 [Realtime 트랜스크립션 가이드](https://developers.openai.com/api/docs/guides/realtime-transcription/)를 참고하세요.
 
-음성 대 음성 세션에서는 일반적으로 `outputModalities: ['audio']`를 선택하며, 오디오 출력과 전사를 함께 제공합니다. 텍스트 전용 응답이 필요한 경우에만 `['text']`로 전환하세요.
+음성 대 음성 세션에서는 일반적으로 `outputModalities: ['audio']`를 선택하며, 이를 통해 오디오 출력과 트랜스크립트를 함께 받을 수 있습니다. 텍스트 전용 응답을 원할 때만 `['text']`로 전환하세요.
 
-새로 추가되어 [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)에 대응하는 매개변수가 없는 경우 `providerData`를 사용할 수 있습니다. `providerData`로 전달된 모든 항목은 원문 `session` 객체의 일부로 전달됩니다.
+새로 추가되어 [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/)에 대응하는 매개변수가 없는 매개변수에는 `providerData`를 사용할 수 있습니다. `providerData`에 전달된 모든 값은 원문 `session` 객체의 일부로 전달됩니다.
 
-생성 시점에 설정할 수 있는 추가 `RealtimeSession` 옵션은 다음과 같습니다.
+생성 시 설정할 수 있는 추가 `RealtimeSession` 옵션은 다음과 같습니다.
 
 | 옵션 | 유형 | 용도 |
 | --- | --- | --- |
@@ -169,72 +171,72 @@ import turnDetectionExample from '../../../../../../../examples/docs/voice-agent
 | `tracingDisabled` | `boolean` | 세션의 트레이싱 비활성화 |
 | `groupId` | `string` | 여러 세션 또는 백엔드 실행의 트레이스 그룹화. `workflowName` 필요 |
 | `traceMetadata` | `Record<string, any>` | 세션 트레이스에 첨부할 사용자 지정 메타데이터. `workflowName` 필요 |
-| `workflowName` | `string` | 트레이스 워크플로의 알아보기 쉬운 이름 |
-| `automaticallyTriggerResponseForMcpToolCalls` | `boolean` | MCP 도구 호출이 완료되면 모델 응답을 자동으로 트리거(기본값: `true`) |
+| `workflowName` | `string` | 트레이스 워크플로의 읽기 쉬운 이름 |
+| `automaticallyTriggerResponseForMcpToolCalls` | `boolean` | MCP 도구 호출 완료 시 모델 응답 자동 트리거(기본값: `true`) |
 | `toolErrorFormatter` | `ToolErrorFormatter` | 모델에 반환되는 도구 승인 거부 메시지 사용자 지정 |
-| `toolExecution` | `RealtimeToolExecutionConfig` | 로컬 Realtime 함수 도구에 대한 SDK 측 실행 설정. 승인 대기 요청 전에 입력 가드레일을 실행하려면 `preApprovalInputGuardrails: true` 설정 |
+| `toolExecution` | `RealtimeToolExecutionConfig` | 로컬 Realtime 함수 도구의 SDK 측 실행 설정. 승인 대기 요청 전에 입력 가드레일을 실행하려면 `preApprovalInputGuardrails: true` 설정 |
 
 `connect(...)` 옵션은 다음과 같습니다.
 
 | 옵션 | 유형 | 용도 |
 | --- | --- | --- |
 | `apiKey` | `string \| (() => string \| Promise<string>)` | 이 연결에 사용되는 API 키 또는 지연 로더 |
-| `model` | `OpenAIRealtimeModels \| string` | 전송 수준 옵션 유형에 존재하는 항목. `RealtimeSession`에서는 생성자에 모델을 설정하며, 원문 전송 방식에서는 연결 시점에도 모델 사용 가능 |
+| `model` | `OpenAIRealtimeModels \| string` | 전송 계층 옵션 유형에 포함됩니다. `RealtimeSession`에서는 생성자에 모델을 설정하며, 원문 전송 방식에서는 연결 시점에도 모델을 사용할 수 있음 |
 | `url` | `string` | 선택적 사용자 지정 Realtime 엔드포인트 URL |
-| `callId` | `string` | 기존 SIP 시작 통화/세션에 연결 |
+| `callId` | `string` | WebSocket 전송 방식을 WebRTC 또는 SIP로 설정된 통화를 포함한 기존 Realtime 통화의 사이드밴드 연결로 연결 |
 
 ### 대화 수명 주기
 
-`RealtimeSession`은 장시간 유지되는 Realtime 연결 위에서 동작합니다. 대화 기록의 로컬 복사본을 유지하고, 전송 이벤트를 수신하며, 도구와 출력 가드레일을 실행하고, 활성 에이전트 구성을 전송 방식과 동기화된 상태로 유지합니다.
+`RealtimeSession`은 수명이 긴 Realtime 연결 위에서 동작합니다. 대화 기록의 로컬 복사본을 유지하고, 전송 이벤트를 수신하고, 도구와 출력 가드레일을 실행하며, 활성 에이전트 구성을 전송 방식과 동기화된 상태로 유지합니다.
 
-기반 API의 동작도 중요합니다.
+기반 API 동작도 여전히 중요합니다.
 
-- 연결에 성공하면 `session.created` 이벤트로 시작되며, 이후 구성 변경 시 `session.updated`가 생성됩니다.
-- 대부분의 세션 속성은 시간이 지나도 변경할 수 있지만, 대화 도중에는 `model`을 변경할 수 없고 `voice`는 세션에서 오디오 출력을 생성하기 전에만 변경할 수 있습니다. 또한 Realtime API에서는 트레이싱이 활성화된 후 수정할 수 없으므로 트레이싱 사용 여부는 처음부터 결정해야 합니다.
+- 연결에 성공하면 `session.created` 이벤트로 시작하며 이후 구성이 변경되면 `session.updated`가 생성됩니다.
+- 대부분의 세션 속성은 시간 경과에 따라 변경할 수 있지만, 대화 도중에는 `model`을 변경할 수 없습니다. `voice`는 세션에서 오디오 출력을 생성하기 전에만 변경할 수 있으며, Realtime API에서는 트레이싱이 활성화된 후 변경할 수 없으므로 트레이싱 여부는 처음에 결정해야 합니다.
 - 현재 Realtime API는 단일 세션을 60분으로 제한합니다.
-- 입력 오디오 전사는 비동기식이므로 최신 발화의 전사가 응답 생성이 이미 시작된 후 도착할 수 있습니다.
+- 입력 오디오 트랜스크립션은 비동기식이므로 최신 발화의 트랜스크립트가 응답 생성이 이미 시작된 후 도착할 수 있습니다.
 
-SDK 계층에서 `await session.connect()`는 "전송 방식이 대화를 시작할 수 있을 만큼 준비되었다"는 의미이지만 정확한 시점은 전송 방식에 따라 다릅니다.
+SDK 계층에서 `await session.connect()`는 "대화를 시작할 수 있을 정도로 전송 방식이 준비되었다"는 의미지만, 정확한 시점은 전송 방식마다 다릅니다.
 
-- 기본 브라우저 WebRTC 전송 방식에서 SDK는 데이터 채널이 열리는 즉시 초기 `session.update`를 전송하고, `connect()`를 완료하기 전에 이에 대응하는 `session.updated` 이벤트를 기다리려고 합니다. WebRTC 전송 방식은 사용자의 instructions, tools, modalities가 적용되기 전에 오디오가 서버에 도달하는 것을 방지하기 위해 이 확인 응답을 기다립니다. 확인 응답이 도착하지 않으면 `connect()`는 짧은 제한 시간이 지난 뒤 완료되는 방식으로 대체됩니다.
-- 기본 서버 측 WebSocket 전송 방식에서 `connect()`는 소켓이 열리고 초기 구성이 전송되면 완료됩니다. 따라서 이에 대응하는 `session.updated` 이벤트는 `connect()`가 이미 완료된 후 도착할 수 있습니다.
+- 기본 브라우저 WebRTC 전송 방식에서 SDK는 데이터 채널이 열리자마자 초기 `session.update`를 전송하고, 이에 대응하는 `session.updated` 이벤트를 기다린 후 `connect()`를 완료하려고 합니다. WebRTC 전송 방식은 instructions, 도구, 모달리티가 적용되기 전에 오디오가 서버에 도달하지 않도록 이 확인 응답을 기다립니다. 확인 응답이 도착하지 않으면 `connect()`는 짧은 제한 시간이 지난 후 완료되는 방식으로 대체됩니다.
+- 기본 서버 측 WebSocket 전송 방식에서 `connect()`는 소켓이 열리고 초기 구성이 전송되면 완료됩니다. 따라서 대응하는 `session.updated` 이벤트는 `connect()`가 이미 완료된 후 도착할 수 있습니다.
 
-원문 이벤트 모델이 필요하면 이 페이지와 함께 공식 [Realtime 대화 가이드](https://developers.openai.com/api/docs/guides/realtime-conversations/)를 참고하세요.
+원문 이벤트 모델이 필요하다면 이 페이지와 함께 공식 [Realtime 대화 가이드](https://developers.openai.com/api/docs/guides/realtime-conversations/)를 참고하세요.
 
 ## 상호작용 흐름
 
-### 턴 감지와 음성 활동 감지
+### 턴 감지 및 음성 활동 감지
 
-기본적으로 Realtime 세션은 내장된 음성 활동 감지(VAD)를 사용하므로 API가 사용자의 발화 시작과 종료 시점 및 응답 생성 시점을 판단할 수 있습니다. SDK에서는 `audio.input.turnDetection`을 통해 이를 제공합니다.
+기본적으로 Realtime 세션은 내장 음성 활동 감지(VAD)를 사용하므로 API가 사용자의 발화 시작과 종료 시점, 응답 생성 시점을 결정할 수 있습니다. SDK에서는 이를 `audio.input.turnDetection`을 통해 제공합니다.
 
 <Code lang="typescript" code={turnDetectionExample} />
 
 일반적인 두 가지 모드는 다음과 같습니다.
 
-- `semantic_vad`는 더 자연스러운 턴 경계를 목표로 하며, 사용자의 발화가 아직 끝나지 않은 것처럼 들리면 조금 더 기다릴 수 있습니다.
-- `server_vad`는 임곗값을 더 중점적으로 사용하며 `threshold`, `prefixPaddingMs`, `silenceDurationMs`, `idleTimeoutMs`와 같은 설정을 제공합니다.
+- `semantic_vad`: 더 자연스러운 턴 경계를 목표로 하며, 사용자가 아직 말을 끝내지 않은 것처럼 들릴 때 조금 더 오래 기다릴 수 있음
+- `server_vad`: 임곗값을 더 중점적으로 사용하며 `threshold`, `prefixPaddingMs`, `silenceDurationMs`, `idleTimeoutMs` 등의 설정 제공
 
 턴 경계를 직접 관리하려면 `audio.input.turnDetection`을 `null`로 설정하세요. 공식 [음성 활동 감지 가이드](https://developers.openai.com/api/docs/guides/realtime-vad/)와 [Realtime 대화 가이드](https://developers.openai.com/api/docs/guides/realtime-conversations/#voice-activity-detection)에서 기반 동작을 더 자세히 설명합니다.
 
 ### 인터럽션(중단 처리)
 
-VAD가 활성화된 경우 에이전트가 말하는 도중 사용자가 발화하면 현재 응답을 중단할 수 있습니다. WebSocket 전송 방식에서 SDK는 `input_audio_buffer.speech_started`를 수신하고, 어시스턴트 오디오를 사용자가 실제로 들은 지점까지 잘라낸 다음 `audio_interrupted` 이벤트를 발생시킵니다. 이 이벤트는 WebSocket 설정에서 재생을 직접 관리할 때 특히 유용합니다.
+VAD가 활성화된 경우 에이전트가 말하는 도중 사용자가 발화하면 현재 응답을 인터럽션(중단 처리)할 수 있습니다. WebSocket 전송 방식에서 SDK는 `input_audio_buffer.speech_started`를 수신하고, 어시스턴트 오디오를 사용자가 실제로 들은 부분까지 잘라낸 후 `audio_interrupted` 이벤트를 발생시킵니다. 이 이벤트는 WebSocket 구성에서 재생을 직접 관리할 때 특히 유용합니다.
 
 <Code lang="typescript" code={audioInterruptedExample} />
 
-수동 중지 버튼을 제공하려면 직접 `interrupt()`를 호출하세요.
+수동 중지 버튼을 제공하려면 `interrupt()`를 직접 호출하세요.
 
 <Code lang="typescript" code={sessionInterruptExample} />
 
-WebRTC와 WebSocket 모두 진행 중인 응답을 중단하지만, 저수준 동작 방식은 전송 방식에 따라 다릅니다. WebRTC는 버퍼링된 출력 오디오를 자동으로 지웁니다. WebSocket 설정에서는 로컬 재생을 직접 중단해야 하며, 전송 방식에서 이에 대응하는 잘라내기 및 대화 이벤트가 돌아오면 로컬 기록이 업데이트됩니다.
+WebRTC와 WebSocket은 모두 진행 중인 응답을 중지하지만, 저수준 메커니즘은 전송 방식에 따라 다릅니다. WebRTC는 버퍼링된 출력 오디오를 자동으로 지웁니다. WebSocket 구성에서는 로컬 재생을 직접 중지해야 하며, 대응하는 잘라내기 및 대화 이벤트가 전송 방식에서 돌아오면 로컬 기록이 업데이트됩니다.
 
 ### 텍스트 입력
 
-입력한 텍스트나 추가적인 구조화된 사용자 콘텐츠를 진행 중인 대화로 보내려면 `sendMessage()`를 사용하세요.
+입력한 텍스트나 추가적인 구조화된 사용자 콘텐츠를 라이브 대화에 전송하려면 `sendMessage()`를 사용하세요.
 
 <Code lang="typescript" code={sendMessageExample} />
 
-텍스트와 음성을 혼합한 UI, 대역 외 컨텍스트 삽입 또는 음성 입력에 명시적으로 입력한 설명을 결합할 때 유용합니다.
+텍스트와 음성을 혼합한 UI, 대역 외 컨텍스트 삽입, 음성 입력과 명시적으로 입력한 설명을 함께 사용하는 경우에 유용합니다.
 
 ### 이미지 입력
 
@@ -242,142 +244,142 @@ Realtime 음성 대 음성 세션에는 이미지도 포함할 수 있습니다.
 
 <Code lang="typescript" code={addImageExample} />
 
-`triggerResponse: false`를 전달하면 모델에 응답을 요청하기 전에 이미지를 이후 텍스트 또는 오디오 턴과 일괄 처리할 수 있습니다. 이는 공식 [Realtime 대화 이미지 입력 가이드](https://developers.openai.com/api/docs/guides/realtime-conversations/#image-inputs)와 일치합니다.
+`triggerResponse: false`를 전달하면 모델에 응답을 요청하기 전에 이미지를 이후 텍스트 또는 오디오 턴과 함께 묶을 수 있습니다. 이는 공식 [Realtime 대화 이미지 입력 지침](https://developers.openai.com/api/docs/guides/realtime-conversations/#image-inputs)과 일치합니다.
 
 ### 수동 응답 제어
 
-상위 SDK 계층에서 `sendMessage()`와 `addImage()`는 기본적으로 응답을 자동으로 트리거합니다. 원문 전송 이벤트, 눌러서 말하기 흐름 또는 사용자 지정 검토/검증 단계를 사용할 때는 수동 응답 제어가 중요합니다.
+상위 SDK 계층에서는 `sendMessage()`와 `addImage()`가 기본적으로 응답을 트리거합니다. 원문 전송 이벤트, 눌러서 말하기 흐름 또는 사용자 지정 검토/검증 단계를 사용할 때는 수동 응답 제어가 중요합니다.
 
 <Code lang="typescript" code={transportEventsExample} />
 
 일반적인 두 가지 경우는 다음과 같습니다.
 
-1. `audio.input.turnDetection = null`을 사용해 VAD를 완전히 비활성화하면 오디오 턴을 커밋한 후 `response.create`를 전송해야 합니다.
-2. VAD를 활성화된 상태로 유지하면서 `turnDetection.interruptResponse = false`와 `turnDetection.createResponse = false`를 설정하면 API는 계속 턴을 감지하지만 응답 생성은 직접 제어하게 됩니다.
+1. `audio.input.turnDetection = null`로 VAD를 완전히 비활성화한 경우 오디오 턴을 커밋한 다음 `response.create`를 전송해야 합니다.
+2. VAD를 활성화된 상태로 유지하면서 `turnDetection.interruptResponse = false`와 `turnDetection.createResponse = false`를 설정하면 API는 계속 턴을 감지하지만 응답 생성은 직접 처리해야 합니다.
 
-모델이 응답하기 전에 사용자 입력을 검사하거나 검토하려는 경우 VAD를 활성화된 상태로 유지하면서 `turnDetection.interruptResponse`와 `turnDetection.createResponse`를 모두 `false`로 설정하면 유용합니다. 이 구성은 공식 [자동 응답 비활성화에 관한 Realtime 대화 가이드](https://developers.openai.com/api/docs/guides/realtime-conversations/#keep-vad-but-disable-automatic-responses)와 일치합니다.
+VAD를 활성화한 상태에서 `turnDetection.interruptResponse`와 `turnDetection.createResponse`를 모두 `false`로 설정하면 모델이 응답하기 전에 사용자 입력을 검사하거나 검토하려는 경우에 유용합니다. 이 구성은 공식 [자동 응답 비활성화에 관한 Realtime 대화 지침](https://developers.openai.com/api/docs/guides/realtime-conversations/#keep-vad-but-disable-automatic-responses)과 일치합니다.
 
 ## 에이전트 기능
 
 ### 핸드오프
 
-일반 에이전트와 마찬가지로 핸드오프를 사용해 에이전트를 여러 에이전트로 나누고 이들 사이를 오케스트레이션함으로써 성능을 높이고 문제 범위를 더 명확하게 지정할 수 있습니다.
+일반 에이전트와 마찬가지로 핸드오프를 사용하여 에이전트를 여러 에이전트로 나누고 이들 사이를 오케스트레이션함으로써 성능을 높이고 문제의 범위를 더 명확히 지정할 수 있습니다.
 
 <Code lang="typescript" code={multiAgentsExample} />
 
-일반 에이전트와 달리 실시간 에이전트에서 핸드오프는 약간 다르게 동작합니다. 핸드오프가 수행되면 진행 중인 세션이 새 에이전트 구성으로 업데이트됩니다. 따라서 새 에이전트는 진행 중인 대화 기록에 자동으로 접근할 수 있으며, 현재 입력 필터는 적용되지 않습니다.
+일반 에이전트와 달리 핸드오프는 Realtime Agents에서 약간 다르게 동작합니다. 핸드오프가 수행되면 진행 중인 세션이 새 에이전트 구성으로 업데이트됩니다. 따라서 새 에이전트는 진행 중인 대화 기록에 자동으로 접근할 수 있으며 현재 입력 필터는 적용되지 않습니다.
 
-세션이 계속 활성 상태로 유지되므로 핸드오프 중에는 해당 세션의 모델이 변경되지 않습니다. 음성 변경에는 기반 Realtime API 규칙이 적용됩니다. 즉, 세션에서 오디오 출력을 생성하기 전에만 변경할 수 있습니다. Realtime 핸드오프의 주된 용도는 동일한 세션에서 `RealtimeAgent` 구성을 전환하는 것입니다. `gpt-5.4`와 같은 추론 모델 등 다른 모델을 사용하거나 비 Realtime 백엔드 에이전트에 위임해야 하는 경우 [도구를 통한 위임](#delegation-through-tools)을 사용하세요.
+세션이 계속 활성 상태로 유지되므로 핸드오프 중에는 해당 세션의 모델이 변경되지 않습니다. 음성 변경에는 기반 Realtime API 규칙이 적용됩니다. 세션에서 오디오 출력을 생성하기 전에만 변경할 수 있습니다. Realtime 핸드오프는 주로 같은 세션의 `RealtimeAgent` 구성을 전환하는 데 사용합니다. `gpt-5.4`와 같은 추론 모델 등 다른 모델을 사용해야 하거나 비 Realtime 백엔드 에이전트에 위임해야 한다면 [도구를 통한 위임](#delegation-through-tools)을 사용하세요.
 
 ### 도구
 
-일반 에이전트와 마찬가지로 실시간 에이전트도 도구를 호출하여 작업을 수행할 수 있습니다. Realtime은 **함수 도구**(로컬에서 실행)와 **호스티드 MCP 도구**(Realtime API에서 원격으로 실행)를 지원합니다. 일반 에이전트와 동일한 `tool()` 헬퍼를 사용해 함수 도구를 정의할 수 있습니다.
+일반 에이전트와 마찬가지로 Realtime Agents는 도구를 호출하여 작업을 수행할 수 있습니다. Realtime은 **함수 도구**(로컬에서 실행)와 **호스티드 MCP 도구**(Realtime API가 원격으로 실행)를 지원합니다. 일반 에이전트에 사용하는 것과 동일한 `tool()` 헬퍼를 사용하여 함수 도구를 정의할 수 있습니다.
 
-Responses 전용 도구 옵션은 Realtime 에이전트에 적용되지 않습니다. `'programmatic'`을 포함하는 함수 도구의 `outputSchema`와 `allowedCallers` 값은 거부되며, 호스티드 MCP 도구의 프로그래밍 방식 호출자도 거부됩니다. Realtime 세션에서는 직접 호출 가능한 함수 도구 또는 호스티드 MCP 도구를 사용하고, Programmatic Tool Calling이 필요한 작업은 Responses 에이전트에 위임하세요.
+Responses 전용 도구 옵션은 Realtime 에이전트에 적용되지 않습니다. `'programmatic'`을 포함하는 함수 도구의 `outputSchema` 및 `allowedCallers` 값은 거부되며, 호스티드 MCP 도구의 프로그래매틱 호출자도 거부됩니다. Realtime 세션에서는 직접 호출할 수 있는 함수 또는 호스티드 MCP 도구를 사용하거나 Programmatic Tool Calling이 필요한 작업을 Responses 에이전트에 위임하세요.
 
 <Code lang="typescript" code={defineToolExample} />
 
 #### 함수 도구
 
-함수 도구는 `RealtimeSession`과 동일한 환경에서 실행됩니다. 즉, 세션이 브라우저에서 실행되고 있다면 도구도 브라우저에서 실행됩니다. 민감한 작업을 수행해야 하는 경우 도구 내부에서 백엔드를 호출하고 권한이 필요한 작업은 서버에서 처리하세요.
+함수 도구는 `RealtimeSession`과 동일한 환경에서 실행됩니다. 즉, 세션을 브라우저에서 실행하면 도구도 브라우저에서 실행됩니다. 민감한 작업을 수행해야 한다면 도구 내부에서 백엔드를 호출하고 서버가 권한이 필요한 작업을 처리하도록 하세요.
 
-이를 통해 브라우저 측 도구가 서버 측 로직에 대한 간단한 백채널 역할을 할 수 있습니다. 예를 들어 [`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next)는 요청과 현재 대화 기록을 서버의 `handleRefundRequest(...)`로 전달하는 `refundBackchannel` 도구를 브라우저에 정의합니다. 서버에서는 별도의 `Runner`가 다른 에이전트나 모델을 사용해 환불을 평가한 후 결과를 음성 세션에 반환할 수 있습니다.
+이를 통해 브라우저 측 도구가 서버 측 로직으로 연결되는 간단한 백채널 역할을 할 수 있습니다. 예를 들어 [`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next)는 요청과 현재 대화 기록을 서버의 `handleRefundRequest(...)`로 전달하는 `refundBackchannel` 도구를 브라우저에 정의합니다. 서버에서는 별도의 `Runner`가 다른 에이전트나 모델을 사용하여 환불을 평가한 후 결과를 음성 세션에 반환할 수 있습니다.
 
 #### 호스티드 MCP 도구
 
-호스티드 MCP 도구는 `hostedMcpTool`로 구성할 수 있으며 원격으로 실행됩니다. MCP 도구의 가용성이 변경되면 세션에서 `mcp_tools_changed`가 발생합니다. MCP 도구 호출이 완료된 후 세션에서 모델 응답을 자동으로 트리거하지 않게 하려면 `automaticallyTriggerResponseForMcpToolCalls: false`를 설정하세요.
+호스티드 MCP 도구는 `hostedMcpTool`로 구성할 수 있으며 원격으로 실행됩니다. MCP 도구 가용성이 변경되면 세션에서 `mcp_tools_changed`를 발생시킵니다. MCP 도구 호출이 완료된 후 세션이 모델 응답을 자동으로 트리거하지 않게 하려면 `automaticallyTriggerResponseForMcpToolCalls: false`를 설정하세요.
 
 현재 필터링된 MCP 도구 목록은 `session.availableMcpTools`에서도 확인할 수 있습니다. 이 속성과 `mcp_tools_changed` 이벤트는 모두 에이전트 구성의 `allowed_tools` 필터를 적용한 후 활성 에이전트에서 활성화된 호스티드 MCP 서버만 반영합니다.
 
-안전한 서버 선택, 헤더, 승인을 연결 전 구성으로 간주하면 호스티드 MCP 설정을 가장 쉽게 이해할 수 있습니다. `RealtimeSession.connect()`가 전송 방식을 열기 전에 SDK는 활성 에이전트의 호스티드 MCP 도구 정의를 확인하고, 지원되는 MCP 필드를 Realtime API로 보내는 초기 세션 구성에 포함합니다.
+호스티드 MCP 설정은 보안 서버 선택, 헤더, 승인을 연결 전 구성으로 취급하면 가장 쉽게 이해할 수 있습니다. `RealtimeSession.connect()`가 전송 방식을 열기 전에 SDK는 활성 에이전트의 호스티드 MCP 도구 정의를 확인하고 지원되는 MCP 필드를 Realtime API로 전송하는 초기 세션 구성에 포함합니다.
 
-`connect()` 전에 안전한 호스티드 MCP 구성을 제공하는 것은 브라우저 WebRTC 앱에서 특히 중요합니다. 임시 클라이언트 보안 비밀은 항상 서버에서 발급되므로, 비밀로 유지해야 하는 호스티드 MCP 자격 증명 또는 사용자 지정 `headers`는 초기 `session` 페이로드의 일부로 서버 측 `POST /v1/realtime/client_secrets` 요청에 첨부해야 합니다. 장기 자격 증명을 브라우저 코드에 넣고 `connect()`가 시작된 후 나중에 추가하지 마세요.
+`connect()` 전에 안전한 호스티드 MCP 구성을 제공하는 것은 브라우저 WebRTC 앱에서 특히 중요합니다. 임시 클라이언트 시크릿은 항상 서버에서 발급되므로, 비밀로 유지해야 하는 호스티드 MCP 자격 증명이나 사용자 지정 `headers`는 초기 `session` 페이로드의 일부로 서버 측 `POST /v1/realtime/client_secrets` 요청에 첨부해야 합니다. 수명이 긴 자격 증명을 브라우저 코드에 넣고 `connect()`가 시작된 후 나중에 추가하도록 설계하지 마세요.
 
-Realtime API 수준에서는 이후 `session.update` 호출로 도구와 기타 변경 가능한 세션 필드를 계속 변경할 수 있으며, 활성 에이전트가 변경되면 SDK 자체에서도 `session.update`를 전송합니다. 하지만 브라우저 앱에서는 안전한 호스티드 MCP 초기화를 서버 측 연결 전 고려 사항으로 취급하고, 브라우저 측 `RealtimeSession` 구성을 서버에서 발급한 구성과 일치하도록 유지해야 합니다.
+Realtime API 수준에서는 이후 `session.update` 호출로 도구와 기타 변경 가능한 세션 필드를 계속 변경할 수 있으며, 활성 에이전트가 변경되면 SDK 자체에서도 `session.update`를 전송합니다. 하지만 브라우저 앱에서는 안전한 호스티드 MCP 초기화를 서버 측의 연결 전 작업으로 취급하고 브라우저 측 `RealtimeSession` 구성을 서버가 발급한 구성과 일치하게 유지해야 합니다.
 
 #### 백그라운드 결과
 
-도구가 실행되는 동안 에이전트는 사용자의 새 요청을 처리할 수 없습니다. 경험을 개선하는 한 가지 방법은 에이전트가 도구를 실행하기 전에 이를 알리거나 도구 실행 시간을 확보할 수 있도록 특정 문구를 말하게 하는 것입니다.
+도구가 실행되는 동안 에이전트는 사용자의 새 요청을 처리할 수 없습니다. 경험을 개선하는 한 가지 방법은 도구 실행 직전에 이를 알리거나 도구 실행 시간을 확보할 수 있는 특정 문구를 말하도록 에이전트에 지시하는 것입니다.
 
-함수 도구가 즉시 다른 모델 응답을 트리거하지 않고 완료되어야 한다면 `@openai/agents/realtime`에서 `backgroundResult(output)`을 반환하세요. 그러면 응답 트리거를 직접 제어하는 상태로 유지하면서 도구 출력을 세션에 다시 전송합니다.
+함수 도구가 즉시 다른 모델 응답을 트리거하지 않고 완료되어야 한다면 `@openai/agents/realtime`에서 `backgroundResult(output)`을 반환하세요. 그러면 응답 트리거를 직접 제어할 수 있는 상태로 유지하면서 도구 출력을 세션에 다시 전송합니다.
 
 #### 제한 시간
 
-함수 도구 제한 시간 옵션(`timeoutMs`, `timeoutBehavior`, `timeoutErrorFunction`)은 Realtime 세션에서도 동일하게 동작합니다. 기본값인 `error_as_result`에서는 제한 시간 메시지가 도구 출력으로 전송됩니다. `raise_exception`에서는 세션이 [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror)와 함께 `error` 이벤트를 발생시키고 해당 호출의 도구 출력을 전송하지 않습니다.
+함수 도구 제한 시간 옵션(`timeoutMs`, `timeoutBehavior`, `timeoutErrorFunction`)은 Realtime 세션에서도 동일하게 동작합니다. 기본값인 `error_as_result`에서는 제한 시간 메시지가 도구 출력으로 전송됩니다. `raise_exception`에서는 세션이 [`ToolTimeoutError`](/openai-agents-js/openai/agents-core/classes/tooltimeouterror)와 함께 `error` 이벤트를 발생시키며 해당 호출의 도구 출력은 전송하지 않습니다.
 
 #### 대화 기록 접근
 
-에이전트가 특정 도구를 호출할 때 사용한 인수 외에도 Realtime 세션에서 추적하는 현재 대화 기록의 스냅샷에 접근할 수 있습니다. 현재 대화 상태를 기반으로 더 복잡한 작업을 수행하거나 [위임용 도구](#delegation-through-tools)를 사용할 계획인 경우 유용합니다.
+에이전트가 특정 도구를 호출할 때 사용한 인수뿐 아니라 Realtime 세션이 추적하는 현재 대화 기록의 스냅샷에도 접근할 수 있습니다. 현재 대화 상태를 기반으로 더 복잡한 작업을 수행해야 하거나 [위임을 위한 도구](#delegation-through-tools)를 사용하려는 경우 유용할 수 있습니다.
 
 <Code lang="typescript" code={toolHistoryExample} />
 
 <Aside type="note">
   전달되는 기록은 도구 호출 시점의 기록 스냅샷입니다. 사용자가 마지막으로 말한
-  내용의 전사는 아직 제공되지 않을 수 있습니다.
+  내용의 트랜스크립션은 아직 제공되지 않을 수 있습니다.
 </Aside>
 
 #### 도구 실행 전 승인
 
-도구를 `needsApproval: true`로 정의하면 에이전트는 도구를 실행하기 전에 `tool_approval_requested` 이벤트를 발생시킵니다.
+도구를 `needsApproval: true`로 정의하면 에이전트가 도구를 실행하기 전에 `tool_approval_requested` 이벤트를 발생시킵니다.
 
-이 이벤트를 수신하면 사용자에게 도구 호출을 승인하거나 거부할 수 있는 UI를 표시할 수 있습니다.
+이 이벤트를 수신하여 사용자가 도구 호출을 승인하거나 거부할 수 있는 UI를 표시할 수 있습니다.
 
-`await session.approve(request.approvalItem)` 또는 `await session.reject(request.approvalItem)`을 사용하여 요청을 처리하세요. 함수 도구에서는 `{ alwaysApprove: true }` 또는 `{ alwaysReject: true }`를 전달하여 남은 세션 동안 반복 호출에 동일한 결정을 재사용할 수 있으며, `session.reject(request.approvalItem, { message: '...' })`를 사용하여 해당 호출에 대한 사용자 지정 거부 메시지를 모델에 다시 보낼 수 있습니다. 호스티드 MCP 승인은 지속적 승인/거부를 지원하지 않습니다. 대신 호스티드 MCP `allowedTools` 구성으로 해당 도구를 제한하세요.
+`await session.approve(request.approvalItem)` 또는 `await session.reject(request.approvalItem)`로 요청을 처리하세요. 함수 도구에서는 `{ alwaysApprove: true }` 또는 `{ alwaysReject: true }`를 전달하여 남은 세션 동안 반복되는 호출에 동일한 결정을 재사용할 수 있으며, `session.reject(request.approvalItem, { message: '...' })`를 사용하여 특정 호출에 대한 사용자 지정 거부 메시지를 모델에 다시 전송할 수 있습니다. 호스티드 MCP 승인은 지속적인 승인/거부를 지원하지 않습니다. 대신 호스티드 MCP `allowedTools` 구성으로 해당 도구를 제한하세요.
 
-호출별 거부 `message`를 전달하지 않으면 세션은 `toolErrorFormatter`가 구성된 경우 이를 사용하고, 그다음 SDK 기본 거부 텍스트를 사용합니다.
+호출별 거부 `message`를 전달하지 않으면 세션은 `toolErrorFormatter`가 구성된 경우 이를 사용하고, 그렇지 않으면 SDK 기본 거부 텍스트를 사용합니다.
 
-기본적으로 함수 도구 입력 가드레일은 승인 후 도구 실행 직전에 실행됩니다. `new RealtimeSession(...)`에 `toolExecution: { preApprovalInputGuardrails: true }`를 전달하면 세션이 `tool_approval_requested`를 발생시키기 전에도 로컬 함수 도구 입력 가드레일이 실행됩니다. 가드레일에서 거부되면 거부 메시지가 도구 출력으로 전송되고 승인 이벤트는 건너뜁니다. 가드레일이 호출을 허용하면 승인 이벤트가 계속 발생하며, 실행 전 `session.approve(...)` 이후에 가드레일이 다시 실행됩니다.
+기본적으로 함수 도구 입력 가드레일은 승인 후 도구가 실행되기 직전에 실행됩니다. `new RealtimeSession(...)`에 `toolExecution: { preApprovalInputGuardrails: true }`를 전달하면 세션이 `tool_approval_requested`를 발생시키기 전에 로컬 함수 도구 입력 가드레일도 실행됩니다. 가드레일에서 거부하면 거부 메시지를 도구 출력으로 다시 전송하고 승인 이벤트를 건너뜁니다. 가드레일에서 호출을 허용하면 승인 이벤트가 계속 발생하며, 실행 전에 `session.approve(...)` 이후 가드레일이 다시 실행됩니다.
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 
 <Aside type="note">
-  Realtime 에이전트가 도구 호출 승인을 기다리는 동안에는 에이전트가 사용자의 새
-  요청을 처리할 수 없습니다.
+  실시간 에이전트가 도구 호출 승인을 기다리는 동안 에이전트는 사용자의 새 요청을
+  처리할 수 없습니다.
 </Aside>
 
 ### 가드레일
 
-가드레일은 에이전트가 말한 내용이 일련의 규칙을 위반했는지 모니터링하고 응답을 즉시 중단하는 방법을 제공합니다. 이러한 검사는 에이전트 응답의 출력 스트림을 대상으로 실행됩니다. 텍스트 전용 세션에서 SDK는 출력 텍스트 델타를 평가합니다. 오디오 세션에서는 출력 오디오 전사와 전사 델타를 사용하므로, 중요한 전제 조건은 별도의 텍스트 출력 모달리티가 아니라 전사의 가용성입니다.
+가드레일은 에이전트가 말한 내용이 규칙 집합을 위반했는지 모니터링하고 응답을 즉시 중단하는 방법을 제공합니다. 이러한 검사는 에이전트 응답의 출력 스트림에 대해 실행됩니다. 텍스트 전용 세션에서 SDK는 출력 텍스트 델타를 평가합니다. 오디오 세션에서는 출력 오디오 트랜스크립트와 트랜스크립트 델타를 사용하므로, 별도의 텍스트 출력 모달리티가 아니라 트랜스크립트 가용성이 중요한 전제 조건입니다.
 
-제공한 가드레일은 모델 응답이 반환될 때 비동기식으로 실행되므로, 예를 들어 "특정 금지 단어 언급"과 같이 미리 정의된 분류 트리거를 기반으로 응답을 중단할 수 있습니다.
+제공한 가드레일은 모델 응답이 반환되는 동안 비동기적으로 실행되므로, 예를 들어 "특정 금지 단어 언급"과 같이 미리 정의된 분류 트리거를 기반으로 응답을 중단할 수 있습니다.
 
-가드레일이 트리거되면 세션에서 `guardrail_tripped` 이벤트가 발생합니다. 이 이벤트는 가드레일을 트리거한 `itemId`를 포함하는 `details` 객체도 제공합니다.
+가드레일이 작동하면 세션에서 `guardrail_tripped` 이벤트가 발생합니다. 이 이벤트는 가드레일을 트리거한 `itemId`를 포함하는 `details` 객체도 제공합니다.
 
 <Code lang="typescript" code={guardrailsExample} />
 
-기본적으로 가드레일은 100자마다 실행되고 최종 전사를 사용할 수 있을 때 다시 실행됩니다. 일반적으로 텍스트를 말하는 데는 전사를 생성하는 것보다 시간이 더 오래 걸리므로, 사용자가 안전하지 않은 출력을 듣기 전에 가드레일이 해당 출력을 중단할 수 있습니다.
+기본적으로 가드레일은 100자마다 실행되고 최종 트랜스크립트를 사용할 수 있을 때 다시 실행됩니다. 일반적으로 텍스트를 말하는 데 트랜스크립트를 생성하는 것보다 시간이 더 오래 걸리므로, 사용자가 안전하지 않은 출력을 듣기 전에 가드레일이 이를 중단할 수 있습니다.
 
-이 동작을 수정하려면 `outputGuardrailSettings` 객체를 세션에 전달할 수 있습니다.
+이 동작을 변경하려면 세션에 `outputGuardrailSettings` 객체를 전달할 수 있습니다.
 
-응답이 끝날 때 완전히 생성된 전사를 한 번만 평가하려면 `debounceTextLength: -1`을 설정하세요.
+응답 마지막에 완전히 생성된 트랜스크립트를 한 번만 평가하려면 `debounceTextLength: -1`을 설정하세요.
 
 <Code lang="typescript" code={guardrailSettingsExample} />
 
-## 대화 상태와 위임
+## 대화 상태 및 위임
 
 ### 대화 기록 관리
 
-`RealtimeSession`은 사용자 메시지, 어시스턴트 출력, 도구 호출, 잘라내기 상태를 추적하는 로컬 `history` 스냅샷을 자동으로 유지합니다. 이를 UI에 렌더링하거나 도구 내부에서 검사할 수 있으며, 항목을 수정하거나 제거해야 할 때 업데이트할 수도 있습니다.
+`RealtimeSession`은 사용자 메시지, 어시스턴트 출력, 도구 호출, 잘라내기 상태를 추적하는 로컬 `history` 스냅샷을 자동으로 유지합니다. 이를 UI에 렌더링하거나 도구 내에서 검사할 수 있으며, 항목을 수정하거나 제거해야 할 때 업데이트할 수도 있습니다.
 
-대화가 변경되면 세션에서 `history_updated`가 발생합니다. 기록 변경을 요청해야 하는 경우 `updateHistory()`를 사용하세요. 이 메서드는 전송 방식에 현재 기록의 차이를 계산하고 필요한 삭제/생성 이벤트를 전송하도록 요청합니다. 이에 대응하는 대화 이벤트가 돌아오면 로컬 `session.history` 뷰가 업데이트됩니다.
+대화가 변경되면 세션에서 `history_updated`가 발생합니다. 기록 변경을 요청해야 한다면 `updateHistory()`를 사용하세요. 이 메서드는 전송 방식에 현재 기록의 차이를 계산하고 필요한 삭제/생성 이벤트를 전송하도록 요청합니다. 대응하는 대화 이벤트가 전송 방식에서 돌아오면 로컬 `session.history` 뷰가 업데이트됩니다.
 
 <Code lang="typescript" code={updateHistoryExample} />
 
 #### 제한 사항
 
-1. 현재는 이미 생성된 함수 도구 호출을 나중에 편집할 수 없습니다.
-2. 기록의 어시스턴트 텍스트는 `output_audio.transcript`를 포함하여 사용 가능한 전사에 따라 달라집니다.
-3. 인터럽션(중단 처리)으로 잘린 응답에는 최종 전사가 유지되지 않습니다.
-4. 입력 오디오 전사는 모델이 오디오를 해석한 방식의 정확한 사본이 아니라 사용자가 말한 내용을 파악하기 위한 대략적인 참고 자료로 취급하는 것이 좋습니다.
+1. 현재 함수 도구 호출은 사후에 수정할 수 없습니다.
+2. 기록의 어시스턴트 텍스트는 `output_audio.transcript`를 포함하여 사용 가능한 트랜스크립트에 따라 달라집니다.
+3. 인터럽션(중단 처리)으로 잘린 응답에는 최종 트랜스크립트가 유지되지 않습니다.
+4. 입력 오디오 트랜스크립션은 모델이 오디오를 해석한 방식의 정확한 복사본이 아니라 사용자가 말한 내용을 파악하기 위한 대략적인 참고 자료로 취급하는 것이 좋습니다.
 
 ### 도구를 통한 위임
 
 ![도구를 통한 위임](https://cdn.openai.com/API/docs/diagram-speech-to-speech-agent-tools.png)
 
-대화 기록과 도구 호출을 결합하면 대화를 다른 백엔드 에이전트에 위임하여 더 복잡한 작업을 수행한 후 그 결과를 사용자에게 다시 전달할 수 있습니다.
+대화 기록과 도구 호출을 결합하면 대화를 다른 백엔드 에이전트에 위임하여 더 복잡한 작업을 수행한 다음 그 결과를 사용자에게 다시 전달할 수 있습니다.
 
 <Code lang="typescript" code={delegationAgentExample} />
 
-그런 다음 아래 코드는 서버에서 실행되며, 이 예제에서는 Next.js Server Action을 통해 실행됩니다.
+다음 코드는 서버에서 실행되며, 이 예제에서는 Next.js Server Action을 통해 실행됩니다.
 
 <Code lang="typescript" code={serverAgentExample} />

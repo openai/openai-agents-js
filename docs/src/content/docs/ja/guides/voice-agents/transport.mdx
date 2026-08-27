@@ -10,14 +10,21 @@ canonicalHeadingIds:
     id: 'webrtc-is-the-default-browser-choice'
     aliases:
       - 'ブラウザーでのデフォルトの選択肢webrtc'
+      - 'ブラウザーのデフォルト選択肢としての-webrtc'
+  - depth: 3
+    id: 'browser-audio-with-server-side-controls'
+    aliases:
+      - 'サーバー側で制御するブラウザー音声'
   - depth: 3
     id: 'react-native-uses-an-app-owned-transport'
     aliases:
       - 'react-native-でアプリが所有するトランスポート'
+      - 'アプリ所有のトランスポートを使用する-react-native'
   - depth: 3
     id: 'websocket-is-the-default-server-choice'
     aliases:
       - 'サーバーでのデフォルトの選択肢websocket'
+      - 'サーバーのデフォルト選択肢としての-websocket'
   - depth: 3
     id: 'sip-is-for-call-providers-and-telephony-bridges'
     aliases:
@@ -56,109 +63,137 @@ import transportEventsExample from '../../../../../../../examples/docs/voice-age
 import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
 import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-セッションを実行する場所と、元のメディアやイベントをどの程度制御する必要があるかに応じて、トランスポートを選択します。
+セッションを実行する場所と、元のメディアやイベントをどの程度制御する必要があるかに基づいて、トランスポートを選択します。
 
 | シナリオ | 推奨トランスポート | 理由 |
 | --- | --- | --- |
-| ブラウザーの音声対音声アプリ | `OpenAIRealtimeWebRTC` | 最も手軽な方法です。SDK がマイク入力、再生、WebRTC 接続を管理します。 |
-| React Native モバイルアプリ | ネイティブ WebRTC を基盤とする、アプリ所有の `RealtimeTransportLayer` | SDK は React Native のパッケージ条件を提供し、アプリがネイティブ WebRTC、権限、オーディオルーティング、ライフサイクルを管理します。 |
-| サーバー側の音声ループまたはカスタムオーディオパイプライン | `OpenAIRealtimeWebSocket` | オーディオのキャプチャと再生をすでに制御しており、イベントへ直接アクセスしたい場合に適しています。 |
-| SIP またはテレフォニーブリッジ | `OpenAIRealtimeSIP` | `callId` を使って、`RealtimeSession` を既存の SIP 経由で開始された Realtime 通話に接続します。 |
+| ブラウザーの音声対音声アプリ | `OpenAIRealtimeWebRTC` | 最も簡単な方法です。SDK がマイク入力、再生、WebRTC 接続を管理します。 |
+| サーバー側で Realtime を制御するブラウザー音声 | アプリ所有の WebRTC 音声とサーバー側の `RealtimeSession` | ブラウザーで音声を伝送しながら、Realtime イベント、ツール、ビジネスロジックをアプリケーションサーバー上に維持します。 |
+| React Native モバイルアプリ | ネイティブ WebRTC を基盤とするアプリ所有の `RealtimeTransportLayer` | SDK が React Native のパッケージ条件を提供し、アプリがネイティブ WebRTC、権限、音声ルーティング、ライフサイクルを管理します。 |
+| サーバー側の音声ループまたはカスタム音声パイプライン | `OpenAIRealtimeWebSocket` | 音声のキャプチャと再生をすでに制御しており、イベントへ直接アクセスしたい場合に適しています。 |
+| SIP またはテレフォニーブリッジ | `OpenAIRealtimeSIP` | `callId` を使用して、`RealtimeSession` を既存の SIP 起点の Realtime 通話に接続します。 |
 | Cloudflare Workers / workerd | Cloudflare 拡張トランスポート | workerd では、グローバルな `WebSocket` コンストラクターを使用して外向きの WebSocket 接続を開けません。 |
-| Twilio でのプロバイダー固有の電話フロー | Twilio 拡張トランスポート | Twilio のオーディオ転送と割り込み動作を処理します。 |
+| Twilio 上のプロバイダー固有の電話フロー | Twilio 拡張トランスポート | Twilio の音声転送と割り込み処理を管理します。 |
 
 <Aside type="note">
-  ブラウザー製品を構築していて、元のオーディオを自分で管理する理由がない場合は、
+  ブラウザー製品を構築していて、元の音声を自分で管理する理由がない場合は、
   WebRTC から始めてください。サーバー上で実行する場合や、別のメディアシステムを
   ブリッジする場合は、WebSocket または SIP から始めてください。
 </Aside>
 
 ## デフォルトのトランスポートレイヤー
 
-### ブラウザーでのデフォルトの選択肢：WebRTC
+### ブラウザーのデフォルト選択肢としての WebRTC
 
-デフォルトのブラウザートランスポートは WebRTC を使用します。マイクからオーディオがキャプチャされ、自動的に再生されるため、[クイックスタート](/openai-agents-js/ja/guides/voice-agents/quickstart)では、一時トークンと `session.connect(...)` だけで接続できます。
+デフォルトのブラウザートランスポートは WebRTC を使用します。音声はマイクからキャプチャされて自動的に再生されるため、[クイックスタート](/openai-agents-js/ja/guides/voice-agents/quickstart)では一時トークンと `session.connect(...)` だけで接続できます。
 
-この方法では、`session.connect()` は初期セッション設定が `session.updated` によって確認応答されるまで待ってから完了するよう試みます。そのため、オーディオのストリーミングが始まる前に instructions と tools が適用されます。確認応答が届かない場合に備えて、タイムアウトによるフォールバックも用意されています。
+この方法では、`session.connect()` は解決する前に、初期セッション設定が `session.updated` によって確認応答されるまで待機しようとします。そのため、音声の伝送が始まる前に指示とツールが適用されます。確認応答が届かなかった場合に備えて、タイムアウトによるフォールバックも用意されています。
 
-独自のメディアストリームまたはオーディオ要素を使用するには、セッションの作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
+独自のメディアストリームまたは音声要素を使用するには、セッションの作成時に `OpenAIRealtimeWebRTC` インスタンスを指定します。
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-`OpenAIRealtimeWebRTC` に渡した `mediaStream` の所有権は、引き続きアプリケーションにあります。トランスポートを閉じても、そのストリームのトラックは停止しないため、レベルメーター、レコーダー、再接続に引き続き使用できます。アプリケーションでそのストリームの使用が実際に完了した時点で、トラックに対して `stop()` を呼び出してください。トランスポートがデフォルトのマイクを自ら開いた場合は、`close()` によって SDK が所有するトラックも停止します。
+`OpenAIRealtimeWebRTC` に渡した `mediaStream` の所有権はアプリケーションに残ります。トランスポートを閉じても、そのストリームのトラックは停止しないため、レベルメーター、レコーダー、再接続に引き続き使用できます。アプリケーションでストリームの使用を完全に終えた時点で、そのトラックの `stop()` を呼び出してください。トランスポート自体がデフォルトのマイクを開いた場合は、`close()` によって SDK 所有のトラックが停止します。
 
-より低レベルのカスタマイズ向けに、`OpenAIRealtimeWebRTC` は `changePeerConnection` も受け付けます。これにより、オファーが生成される前に、新しく作成された `RTCPeerConnection` を確認または置き換えられます。
+より低レベルのカスタマイズのために、`OpenAIRealtimeWebRTC` は `changePeerConnection` も受け付けます。これにより、オファーが生成される前に、新しく作成された `RTCPeerConnection` を検査または置換できます。
 
-### React Native でアプリが所有するトランスポート
+組み込みのブラウザートランスポートは、ブラウザー側の `RealtimeSession` が Realtime イベントを使用してセッションを設定および制御するため、データチャネルを作成します。アプリケーションでこれらのイベントと制御をアプリケーションサーバー上に維持する必要がある場合は、ブラウザー側のピア接続のカスタマイズをアクセス制御境界として扱うのではなく、以下のサーバー側制御パターンを使用してください。
 
-`@openai/agents-core` と `@openai/agents-realtime` は React Native のパッケージ条件を公開しているため、Metro は Node.js の組み込み機能を使わずに、移植可能な SDK シムを解決できます。組み込みの `OpenAIRealtimeWebRTC` は、ブラウザーの WebRTC グローバルと DOM オーディオ要素に依存するため、引き続きブラウザー向けトランスポートです。React Native では、ネイティブ WebRTC 実装をインストールしてアプリで管理し、カスタム `RealtimeTransportLayer` を介して `RealtimeSession` に接続します。
+### サーバー側で制御するブラウザー音声
 
-[`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) の Expo 開発ビルドのコード例では、アプリが所有する `react-native-webrtc` トランスポート、マイク権限、オーディオルーティング、サーバー側の一時トークンエンドポイントを紹介しています。`react-native-webrtc` にはネイティブコードが含まれるため、Expo Go はサポートされていません。通常の OpenAI API キーはサーバーに保持し、有効期間の短い一時クライアントトークンだけをモバイルアプリに渡してください。
+一部のアプリケーションでは、Realtime イベント、ツール、ビジネスロジックをアプリケーションサーバー上に維持しながら、ブラウザーのマイク入力と音声再生を使用する必要があります。このアーキテクチャでは、Realtime API の[統合 WebRTC インターフェース](https://developers.openai.com/api/docs/guides/realtime-webrtc#creating-a-session-via-the-unified-interface)と[サーバー側制御](https://developers.openai.com/api/docs/guides/realtime-server-controls#with-webrtc)を組み合わせます。
 
-### サーバーでのデフォルトの選択肢：WebSocket
+1. ブラウザーは標準の WebRTC API を使用して音声専用のピア接続を作成し、その SDP オファーをアプリケーションサーバーへ送信します。ブラウザーは SDK の組み込み WebRTC トランスポートを使用せず、Realtime データチャネルも作成しません。
+2. アプリケーションサーバーはユーザーを認証し、SDP ポリシーを適用して、オファーとサーバー所有のセッション設定を標準の API キーを使用して `/v1/realtime/calls` へ送信します。
+3. アプリケーションサーバーは SDP アンサーを検証し、レスポンスの `Location` ヘッダーから通話 ID を読み取ります。
+4. アプリケーションサーバーは WebSocket トランスポートを使用するサーバー側の `RealtimeSession` を作成し、そのイベントリスナーを登録して、通話 ID を `session.connect(...)` に渡し、最初の `session.updated` イベントを待機します。
+5. アプリケーションサーバーは SDP アンサーをブラウザーへ返します。ブラウザーはアンサーをリモート記述として設定し、音声はブラウザーと Realtime API の間で直接伝送されます。
+6. アプリケーションサーバーは Realtime イベントとツールを処理します。ブラウザーでステータス更新が必要な場合、アプリケーションサーバーは元の Realtime イベントストリームを転送するのではなく、許可リストに登録されたアプリケーションイベントをブラウザー向けに投影します。
 
-WebRTC の代わりに WebSocket 接続を使用するには、セッションの作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡します。これは、サーバー側のユースケース、テレフォニーブリッジ、カスタムオーディオパイプラインに適しています。
+<Aside type="caution">
+  ブラウザーコードで `createDataChannel()`
+  を省略しても、アクセス制御境界にはなりません。
+  改変されたクライアントはコードや SDP オファーを変更できるためです。Realtime
+  通話を
+  作成する前に、アプリケーションサーバー上でメディアポリシーを適用してください。
+  権限が必要なすべてのツール操作は、モデルが提供したツール引数ではなく、
+  `runContext.context` などの信頼できる認証済みアプリケーションまたは
+  セッションコンテキストに照らして認可してください。
+</Aside>
 
-WebSocket では、ソケットが開き、初期設定が送信されると `session.connect()` が完了します。対応する `session.updated` イベントは少し遅れて届く場合があるため、`connect()` の完了時点ですでに更新が送り返されているとは想定しないでください。
+音声専用のブラウザーピア接続、サーバーで適用される SDP ポリシー、サイドバンドの `RealtimeSession`、ブラウザー向けに投影されるイベント、クリーンアップ動作を備えた完全なアプリケーションについては、[`realtime-server-controlled` のコード例](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-server-controlled)を参照してください。
+
+### アプリ所有のトランスポートを使用する React Native
+
+`@openai/agents-core` と `@openai/agents-realtime` は React Native のパッケージ条件を公開しているため、Metro は Node.js の組み込み機能を使用せずに、ポータブルな SDK シムを解決できます。組み込みの `OpenAIRealtimeWebRTC` はブラウザーの WebRTC グローバルと DOM 音声要素に依存するため、引き続きブラウザー向けトランスポートです。React Native では、ネイティブ WebRTC 実装をインストールしてアプリで管理し、カスタム `RealtimeTransportLayer` を介して `RealtimeSession` に接続します。
+
+[`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) の Expo 開発ビルドのコード例では、アプリ所有の `react-native-webrtc` トランスポート、マイク権限、音声ルーティング、サーバー側の一時トークンエンドポイントを示しています。`react-native-webrtc` にはネイティブコードが含まれるため、Expo Go はサポートされていません。標準の OpenAI API キーはサーバー上に保持し、有効期間の短い一時クライアントトークンのみをモバイルアプリに渡してください。
+
+### サーバーのデフォルト選択肢としての WebSocket
+
+WebRTC の代わりに WebSocket 接続を使用するには、セッションの作成時に `transport: 'websocket'` または `OpenAIRealtimeWebSocket` のインスタンスを渡します。これは、サーバー側のユースケース、テレフォニーブリッジ、カスタム音声パイプラインに適しています。
+
+WebSocket を使用する場合、ソケットが開いて初期設定が送信されると `session.connect()` が解決します。対応する `session.updated` イベントは少し遅れて届く場合があるため、`connect()` の解決時点でその更新がすでに返されたとは想定しないでください。
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-任意の録音・再生ライブラリを使用して、元の PCM16 オーディオバイトを処理します。
+任意の録音および再生ライブラリを使用して、元の PCM16 音声バイトを処理します。
 
-高度な連携向けに、`OpenAIRealtimeWebSocket` は `createWebSocket()` を受け付けるため、独自のソケット実装を指定できます。また、カスタムコネクターがソケットを接続済み状態へ遷移させる場合は、`skipOpenEventListeners` を使用できます。`@openai/agents-extensions` の Cloudflare トランスポートは、これらのフックを基盤に構築されています。
+高度な連携では、`OpenAIRealtimeWebSocket` の `createWebSocket()` に独自のソケット実装を指定できます。また、カスタムコネクターがソケットを接続済み状態へ遷移させる役割を担う場合は、`skipOpenEventListeners` を使用できます。`@openai/agents-extensions` の Cloudflare トランスポートは、これらのフックを基盤としています。
 
 ### 通話プロバイダーとテレフォニーブリッジ向けの SIP
 
-既存の SIP 経由で開始された Realtime 通話に `RealtimeSession` を接続する場合は、`OpenAIRealtimeSIP` を使用します。これは SIP 対応の軽量なトランスポートです。オーディオは SIP 通話自体によって処理され、`callId` を使って SDK セッションを接続します。
+`RealtimeSession` を既存の SIP 起点の Realtime 通話に接続する場合は、`OpenAIRealtimeSIP` を使用します。これは SIP に対応した軽量なトランスポートです。音声は SIP 通話自体によって処理され、`callId` を使用して SDK セッションを接続します。
 
-1. `OpenAIRealtimeSIP.buildInitialConfig()` で初期セッション設定を生成し、着信通話を受け入れます。これにより、SIP 招待と、その後の SDK セッションが同じデフォルト設定から開始されます。
-2. `OpenAIRealtimeSIP` トランスポートを使用する `RealtimeSession` を接続し、プロバイダーの Webhook から発行された `callId` で接続します。
-3. プロバイダー固有のメディア転送やイベントブリッジが必要な場合は、Twilio 拡張機能などの連携トランスポートを使用します。
+1. `OpenAIRealtimeSIP.buildInitialConfig()` で初期セッション設定を生成し、着信通話を受け入れます。これにより、SIP の招待と後続の SDK セッションが同じデフォルト設定から開始されます。
+2. `OpenAIRealtimeSIP` トランスポートを使用する `RealtimeSession` を接続し、プロバイダーの Webhook で発行された `callId` を使用して接続します。
+3. プロバイダー固有のメディア転送またはイベントブリッジが必要な場合は、Twilio 拡張などの連携トランスポートを使用します。
 
 <Aside type="caution">
-  SIP 通話の受け入れでは、Realtime
-  のターン検出フィールドの一部のみがサポートされます。 設定に
-  `threshold`、`prefixPaddingMs`、`silenceDurationMs`、またはそれらに 相当する
-  snake_case 名が含まれている場合、`OpenAIRealtimeSIP.buildInitialConfig()`
-  はローカルで 例外をスローします。これは、Realtime Calls API が SIP
-  セッションの `session.audio.input.turn_detection`
-  プロパティとしてそれらを拒否するためです。
+  SIP 通話の受け入れでサポートされるのは、Realtime
+  のターン検出フィールドの一部のみです。 設定に
+  `threshold`、`prefixPaddingMs`、`silenceDurationMs`、またはそれらに対応する
+  snake_case
+  のフィールドが含まれている場合、`OpenAIRealtimeSIP.buildInitialConfig()` は
+  ローカルで例外をスローします。これは、Realtime Calls API が SIP セッションの
+  `session.audio.input.turn_detection`
+  にあるこれらのプロパティを拒否するためです。
 </Aside>
 
 <Code lang="typescript" code={sipTransportExample} />
 
 ### Cloudflare Workers と workerd
 
-Cloudflare Workers やその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使用して外向きの WebSocket 接続を開けません。拡張機能パッケージの Cloudflare トランスポートを使用してください。このトランスポートは、内部で `fetch()` ベースのアップグレードを実行します。
+Cloudflare Workers およびその他の workerd ランタイムでは、グローバルな `WebSocket` コンストラクターを使用して外向きの WebSocket 接続を開けません。拡張パッケージの Cloudflare トランスポートを使用してください。このトランスポートは、内部で `fetch()` ベースのアップグレードを実行します。
 
 <Code lang="typescript" code={cloudflareTransportExample} />
 
-完全なセットアップについては、[Cloudflare 上の Realtime Agent](/openai-agents-js/ja/extensions/cloudflare)を参照してください。
+完全な設定については、[Cloudflare 上の Realtime Agent](/openai-agents-js/ja/extensions/cloudflare)を参照してください。
 
 ### Twilio の電話通話
 
-元の WebSocket または `@openai/agents-extensions` の専用 Twilio トランスポートを使用して、`RealtimeSession` を Twilio に接続できます。SDK に Twilio Media Streams の割り込みタイミングとオーディオ転送を処理させる場合は、専用トランスポートがより適切なデフォルトです。
+元の WebSocket または `@openai/agents-extensions` の専用 Twilio トランスポートを使用して、`RealtimeSession` を Twilio に接続できます。Twilio Media Streams の割り込みタイミングと音声転送を SDK で処理する場合は、専用トランスポートがより適切なデフォルトです。
 
-完全なセットアップについては、[Twilio 上の Realtime Agent](/openai-agents-js/ja/extensions/twilio)を参照してください。
+完全な設定については、[Twilio 上の Realtime Agent](/openai-agents-js/ja/extensions/twilio)を参照してください。
 
 ### 独自トランスポートの導入
 
-別の音声対音声 API を使用する場合や、独自のカスタムトランスポートメカニズムがある場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを自分で発行できます。
+別の音声対音声 API または独自のカスタムトランスポート機構を使用する場合は、`RealtimeTransportLayer` インターフェースを実装し、`RealtimeTransportEventTypes` イベントを自分で送出できます。
 
 ## 必要に応じた元の Realtime イベントへのアクセス
 
-基盤となる Realtime API により直接的にアクセスするには、2 つの選択肢があります。
+基盤となる Realtime API により直接的にアクセスするには、2 つの方法があります。
 
 ### オプション 1 - トランスポートレイヤーへのアクセス
 
-`RealtimeSession` のすべての機能を引き続き利用しながら、`session.transport` を介してトランスポートレイヤーにアクセスできます。
+`RealtimeSession` のすべての機能を引き続き利用する場合は、`session.transport` を介してトランスポートレイヤーにアクセスできます。
 
-トランスポートレイヤーは、受信したすべてのイベントを `*` イベントとして発行し、`sendEvent()` を使用して元のイベントを送信できます。`*` リスナーは、現在の SDK スキーマが認識していないフィールドも含め、解析された元の JSON ペイロードの構造化クローンを受け取ります。名前付きイベントリスナーと派生イベントリスナーは、引き続き検証・正規化されたイベントオブジェクトを受け取ります。これは、`session.update`、`response.create`、`response.cancel` などの低レベル操作を行うためのエスケープハッチです。
+トランスポートレイヤーは受信したすべてのイベントを `*` イベントとして送出し、`sendEvent()` を使用して元のイベントを送信できます。`*` リスナーは、現在の SDK スキーマが認識していないフィールドを含む、解析済みの元の JSON ペイロードの構造化クローンを受け取ります。名前付きイベントリスナーと派生イベントリスナーは、引き続き検証および正規化されたイベントオブジェクトを受け取ります。これは、`session.update`、`response.create`、`response.cancel` などの低レベル操作に使用するエスケープハッチです。
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### オプション 2 - トランスポートレイヤーのみの使用
 
-ツールの自動実行、ガードレール、ローカル履歴管理が不要な場合は、接続と割り込みだけを管理する「軽量な」クライアントとしてトランスポートレイヤーを使用することもできます。
+ツールの自動実行、ガードレール、ローカル履歴管理が不要な場合は、接続と割り込みのみを管理する「軽量な」クライアントとしてトランスポートレイヤーを使用することもできます。
 
 <Code lang="typescript" code={thinClientExample} />
