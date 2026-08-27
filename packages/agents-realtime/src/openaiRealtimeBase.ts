@@ -993,27 +993,48 @@ export abstract class OpenAIRealtimeBase
       }
     }
 
-    const additionsAndUpdates = [...additions, ...updates];
+    // Walk the new history in order so each created item can name the item it
+    // follows. `conversation.item.create` appends to the end of the
+    // conversation when `previous_item_id` is omitted, which would move a
+    // corrected or inserted item behind everything after it.
+    const pendingIds = new Set(
+      [...additions, ...updates].map((item) => item.itemId),
+    );
+    let previousItemId: string | null = null;
 
-    for (const addition of additionsAndUpdates) {
-      if (addition.type === 'message') {
+    for (const item of newHistory) {
+      if (!pendingIds.has(item.itemId)) {
+        // Untouched items keep their place and can anchor the next insert.
+        previousItemId = item.itemId;
+        continue;
+      }
+
+      if (item.type === 'message') {
         const itemEntry: Record<string, any> = {
           type: 'message',
-          role: addition.role,
-          content: addition.content,
-          id: addition.itemId,
+          role: item.role,
+          content: item.content,
+          id: item.itemId,
         };
-        if (addition.role !== 'system' && addition.status) {
-          itemEntry.status = addition.status;
+        if (item.role !== 'system' && item.status) {
+          itemEntry.status = item.status;
         }
         this.sendEvent({
           type: 'conversation.item.create',
+          // Only when the item has a predecessor. `previous_item_id: null` is
+          // accepted by the protocol but its placement is not documented, so
+          // an item with nothing before it keeps the existing behaviour.
+          ...(previousItemId === null
+            ? {}
+            : { previous_item_id: previousItemId }),
           item: itemEntry,
         });
-      } else if (addition.type === 'function_call') {
+        previousItemId = item.itemId;
+      } else if (item.type === 'function_call') {
         logger.warn(
           'Function calls cannot be manually added or updated at the moment. Ignoring.',
         );
+        // Not created, so it cannot anchor the next insert.
       }
     }
   }

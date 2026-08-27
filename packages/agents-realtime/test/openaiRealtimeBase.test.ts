@@ -586,6 +586,105 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(base.events).toHaveLength(0);
   });
 
+  describe('resetHistory item placement', () => {
+    // `conversation.item.create` appends when `previous_item_id` is omitted, so
+    // a corrected or inserted item has to name the item it follows or it lands
+    // behind everything after it.
+    const message = (itemId: string, text: string) =>
+      ({
+        itemId,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text }],
+      }) as any;
+
+    const functionCall = (itemId: string) =>
+      ({
+        itemId,
+        type: 'function_call',
+        name: 'f',
+        callId: itemId,
+        arguments: '{}',
+        status: 'completed',
+      }) as any;
+
+    function creates(oldHistory: any[], newHistory: any[]) {
+      const base = new TestBase();
+      base.resetHistory(oldHistory, newHistory);
+      return base.events
+        .filter((event: any) => event.type === 'conversation.item.create')
+        .map((event: any) =>
+          'previous_item_id' in event
+            ? `${event.item.id} after ${event.previous_item_id}`
+            : `${event.item.id} unanchored`,
+        );
+    }
+
+    it('anchors a corrected item to the one before it', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+          [message('a', '1'), message('b', 'edited'), message('c', '3')],
+        ),
+      ).toEqual(['b after a']);
+    });
+
+    it('anchors an inserted item to the one before it', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('c', '3')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['b after a']);
+    });
+
+    it('chains consecutive corrections in history order', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+          [message('a', '1'), message('b', 'B'), message('c', 'C')],
+        ),
+      ).toEqual(['b after a', 'c after b']);
+    });
+
+    it('leaves an item with nothing before it unanchored', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2')],
+          [message('a', 'edited'), message('b', '2')],
+        ),
+      ).toEqual(['a unanchored']);
+    });
+
+    it('does not anchor to a function call it could not create', () => {
+      expect(
+        creates(
+          [message('a', '1')],
+          [message('a', '1'), functionCall('f'), message('c', '3')],
+        ),
+      ).toEqual(['c after a']);
+    });
+
+    it('anchors to a function call that is already in the conversation', () => {
+      expect(
+        creates(
+          [message('a', '1'), functionCall('f')],
+          [message('a', '1'), functionCall('f'), message('c', '3')],
+        ),
+      ).toEqual(['c after f']);
+    });
+
+    it('does not anchor to a removed item', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2')],
+          [message('a', '1'), message('c', '3')],
+        ),
+      ).toEqual(['c after a']);
+    });
+  });
+
   it('sendMcpResponse emits approval response items', () => {
     const base = new TestBase();
     base.sendMcpResponse(
