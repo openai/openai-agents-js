@@ -30,7 +30,8 @@ const statusCopy: Record<
   speaking: { title: 'Speaking', detail: 'You can interrupt at any time.' },
   error: {
     title: 'Session error',
-    detail: 'Retry Stop if it is available, then start a new session.',
+    detail:
+      'Check your connection and audio permissions. Retry Stop if available, then start a new session.',
   },
 };
 

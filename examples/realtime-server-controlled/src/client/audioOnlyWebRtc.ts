@@ -11,12 +11,13 @@ export type AudioOnlyWebRtcOptions = {
 };
 
 export class AudioOnlyWebRtc {
+  readonly #abortController = new AbortController();
   readonly #onError: () => void;
   readonly #remoteAudio: Pick<HTMLAudioElement, 'play' | 'srcObject'>;
   readonly #getUserMedia: typeof navigator.mediaDevices.getUserMedia;
   readonly #createPeerConnection: () => RTCPeerConnection;
 
-  #connectAbortController: AbortController | null = null;
+  #started = false;
   #peerConnection: RTCPeerConnection | null = null;
   #localStream: MediaStream | null = null;
   #disconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -31,10 +32,6 @@ export class AudioOnlyWebRtc {
       options.createPeerConnection ?? (() => new RTCPeerConnection());
   }
 
-  get connected(): boolean {
-    return this.#peerConnection?.connectionState === 'connected';
-  }
-
   get muted(): boolean {
     return (
       this.#localStream?.getAudioTracks().every((track) => !track.enabled) ??
@@ -43,12 +40,12 @@ export class AudioOnlyWebRtc {
   }
 
   async connect(exchangeSdp: SdpExchange): Promise<void> {
-    if (this.#connectAbortController || this.#peerConnection) {
-      throw new Error('The audio connection is already active or connecting.');
+    if (this.#started) {
+      throw new Error('Create a new audio connection for each voice session.');
     }
-
-    const abortController = new AbortController();
-    this.#connectAbortController = abortController;
+    const { signal } = this.#abortController;
+    signal.throwIfAborted();
+    this.#started = true;
     try {
       const localStream = await this.#getUserMedia({
         audio: {
@@ -58,11 +55,11 @@ export class AudioOnlyWebRtc {
         },
         video: false,
       });
-      if (!this.#ownsConnectAttempt(abortController)) {
+      if (signal.aborted) {
         for (const track of localStream.getTracks()) {
           track.stop();
         }
-        this.#throwConnectCancelled(abortController.signal);
+        signal.throwIfAborted();
       }
       this.#localStream = localStream;
 
@@ -70,68 +67,71 @@ export class AudioOnlyWebRtc {
       if (audioTracks.length !== 1) {
         throw new Error('Expected exactly one microphone audio track.');
       }
+      const audioTrack = audioTracks[0]!;
+      if (audioTrack.readyState === 'ended') {
+        throw new Error('The microphone is no longer available.');
+      }
+
+      const fail = () => {
+        if (!signal.aborted) {
+          this.close();
+          this.#onError();
+        }
+      };
+      audioTrack.onended = fail;
 
       const peerConnection = this.#createPeerConnection();
       this.#peerConnection = peerConnection;
       peerConnection.onconnectionstatechange = () => {
-        if (this.#peerConnection !== peerConnection) {
+        if (signal.aborted) {
           return;
         }
         if (peerConnection.connectionState === 'disconnected') {
           this.#disconnectTimer ??= setTimeout(() => {
             this.#disconnectTimer = null;
-            if (
-              this.#peerConnection === peerConnection &&
-              peerConnection.connectionState === 'disconnected'
-            ) {
-              this.close();
-              this.#onError();
+            if (peerConnection.connectionState === 'disconnected') {
+              fail();
             }
           }, 10_000);
           return;
         }
         this.#clearDisconnectTimer();
         if (peerConnection.connectionState === 'failed') {
-          this.close();
-          this.#onError();
+          fail();
         }
       };
       peerConnection.ontrack = (event) => {
         const [remoteStream] = event.streams;
-        if (!remoteStream) {
+        if (signal.aborted || !remoteStream) {
           return;
         }
         this.#remoteAudio.srcObject = remoteStream;
-        void this.#remoteAudio.play().catch(() => {});
+        void this.#remoteAudio.play().catch(fail);
       };
 
-      peerConnection.addTrack(audioTracks[0]!, localStream);
+      peerConnection.addTrack(audioTrack, localStream);
 
       const offer = await peerConnection.createOffer();
-      this.#throwIfConnectInactive(abortController);
+      signal.throwIfAborted();
       await peerConnection.setLocalDescription(offer);
-      this.#throwIfConnectInactive(abortController);
+      signal.throwIfAborted();
       const offerSdp = peerConnection.localDescription?.sdp ?? offer.sdp;
       if (!offerSdp) {
         throw new Error('The browser did not create an SDP offer.');
       }
 
-      const answerSdp = await exchangeSdp(offerSdp, abortController.signal);
-      this.#throwIfConnectInactive(abortController);
+      const answerSdp = await exchangeSdp(offerSdp, signal);
+      signal.throwIfAborted();
       await peerConnection.setRemoteDescription({
         type: 'answer',
         sdp: answerSdp,
       });
-      this.#throwIfConnectInactive(abortController);
+      signal.throwIfAborted();
     } catch (error) {
-      if (this.#ownsConnectAttempt(abortController)) {
+      if (!signal.aborted) {
         this.close();
       }
       throw error;
-    } finally {
-      if (this.#ownsConnectAttempt(abortController)) {
-        this.#connectAbortController = null;
-      }
     }
   }
 
@@ -142,10 +142,11 @@ export class AudioOnlyWebRtc {
   }
 
   close(): void {
+    if (this.#abortController.signal.aborted) {
+      return;
+    }
+    this.#abortController.abort(new Error('The audio connection was closed.'));
     this.#clearDisconnectTimer();
-    const abortController = this.#connectAbortController;
-    this.#connectAbortController = null;
-    abortController?.abort(new Error('The audio connection was closed.'));
 
     const peerConnection = this.#peerConnection;
     this.#peerConnection = null;
@@ -156,6 +157,7 @@ export class AudioOnlyWebRtc {
     }
 
     for (const track of this.#localStream?.getTracks() ?? []) {
+      track.onended = null;
       track.stop();
     }
     this.#localStream = null;
@@ -167,24 +169,5 @@ export class AudioOnlyWebRtc {
       clearTimeout(this.#disconnectTimer);
       this.#disconnectTimer = null;
     }
-  }
-
-  #ownsConnectAttempt(abortController: AbortController): boolean {
-    return this.#connectAbortController === abortController;
-  }
-
-  #throwIfConnectInactive(abortController: AbortController): void {
-    if (
-      !this.#ownsConnectAttempt(abortController) ||
-      abortController.signal.aborted
-    ) {
-      this.#throwConnectCancelled(abortController.signal);
-    }
-  }
-
-  #throwConnectCancelled(signal: AbortSignal): never {
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : new Error('The audio connection was closed.');
   }
 }

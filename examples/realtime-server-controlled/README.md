@@ -44,6 +44,8 @@ The browser disables Start until the previous session's cleanup request succeeds
 
 The browser observes the WebRTC peer connection after signaling completes. A `failed` connection starts the same cleanup path as Stop. A `disconnected` connection gets 10 seconds to recover before cleanup starts; recovery or Stop cancels that timer. An SSE error also starts cleanup and closes the event stream instead of reconnecting automatically. Start a new session after cleanup completes. The example does not restart ICE or reconnect an existing call automatically.
 
+Each Start creates a new audio helper; a closed helper cannot be reused. A microphone track ending, including after permission revocation, or a rejected audio playback request also triggers cleanup. Restore microphone or playback permission before starting again. Late media acquisition or playback failure from a closed helper cannot stop the replacement session or clear its audio output.
+
 The public speaking state follows the Realtime API's [WebRTC output-buffer events](https://developers.openai.com/api/reference/resources/realtime/server-events#output_audio_buffer.started). Model generation completion (`response.done`) does not end the speaking state: audio can continue until `output_audio_buffer.stopped`. Only the latest public agent state is retained for SSE subscribers.
 
 The demo retains cancelled application session IDs in memory until the server stops, so a delayed request cannot recreate a cancelled session after the live-session expiry sweep. A production implementation must account for this storage growth and keep cancellation records for at least as long as it accepts delayed or replayed setup requests.
