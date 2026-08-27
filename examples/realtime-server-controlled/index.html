@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Server-controlled OpenAI Realtime voice-agent example"
+    />
+    <title>Server-controlled Realtime voice agent</title>
+    <script type="module" src="/src/client/main.ts"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="copy">
+        <p class="eyebrow">SERVER-CONTROLLED REALTIME</p>
+        <h1>Audio in the browser. Agent control on the server.</h1>
+        <p class="lede">
+          WebRTC carries microphone and speaker audio directly. The browser has
+          no Realtime data channel, API credential, session configuration, or
+          raw Realtime events.
+        </p>
+
+        <div class="controls">
+          <button id="start" class="primary" type="button">
+            Start voice session
+          </button>
+          <button id="mute" type="button" disabled>Mute</button>
+          <button id="stop" type="button" disabled>End session</button>
+        </div>
+        <p class="note">
+          This local example asks for microphone permission when the session
+          starts.
+        </p>
+      </section>
+
+      <section class="status-card" aria-labelledby="status-title">
+        <div id="orb" class="orb" data-state="idle" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <p class="status-label">VOICE STATUS</p>
+        <h2 id="status-title">Ready</h2>
+        <p id="status-detail" aria-live="polite">
+          Start a session and speak naturally.
+        </p>
+        <audio id="remote-audio" autoplay></audio>
+      </section>
+    </main>
+  </body>
+</html>

@@ -16,6 +16,7 @@ Choose the transport based on where the session runs and how much raw media or e
 | Scenario | Recommended transport | Why |
 | --- | --- | --- |
 | Browser speech-to-speech app | `OpenAIRealtimeWebRTC` | Lowest-friction path. The SDK manages microphone capture, playback, and the WebRTC connection for you. |
+| Browser audio with server-side Realtime controls | App-owned WebRTC audio plus a server-side `RealtimeSession` | Keeps Realtime events, tools, and business logic on the application server while the browser carries audio. |
 | React Native mobile app | App-owned `RealtimeTransportLayer` backed by native WebRTC | The SDK provides React Native package conditions, while the app owns native WebRTC, permissions, audio routing, and lifecycle. |
 | Server-side voice loop or custom audio pipeline | `OpenAIRealtimeWebSocket` | Works well when you already control audio capture/playback and want direct event access. |
 | SIP or telephony bridge | `OpenAIRealtimeSIP` | Attaches a `RealtimeSession` to an existing SIP-initiated Realtime call by `callId`. |
@@ -43,6 +44,30 @@ To use your own media stream or audio element, provide an `OpenAIRealtimeWebRTC`
 A `mediaStream` you pass to `OpenAIRealtimeWebRTC` remains owned by your application. Closing the transport does not stop that stream's tracks, so you can keep using it for a level meter, recorder, or reconnect. Call `stop()` on its tracks when your application is actually finished with the stream. When the transport opens the default microphone itself, `close()` still stops those SDK-owned tracks.
 
 For lower-level customization, `OpenAIRealtimeWebRTC` also accepts `changePeerConnection`, which lets you inspect or replace the freshly created `RTCPeerConnection` before the offer is generated.
+
+The built-in browser transport creates a data channel because the browser-side `RealtimeSession` uses Realtime events to configure and control the session. If your application must keep those events and controls on an application server, use the server-side controls pattern below instead of treating browser-side peer connection customization as an access-control boundary.
+
+### Browser audio with server-side controls
+
+Some applications need browser microphone capture and audio playback while keeping Realtime events, tools, and business logic on an application server. This architecture combines the Realtime API's [unified WebRTC interface](https://developers.openai.com/api/docs/guides/realtime-webrtc#creating-a-session-via-the-unified-interface) with its [server-side controls](https://developers.openai.com/api/docs/guides/realtime-server-controls#with-webrtc):
+
+1. The browser creates an audio-only peer connection with standard WebRTC APIs and sends its SDP offer to the application server. The browser does not use the SDK's built-in WebRTC transport or create a Realtime data channel.
+2. The application server authenticates the user, applies its SDP policy, and sends the offer plus server-owned session configuration to `/v1/realtime/calls` using a standard API key.
+3. The application server validates the SDP answer and reads the call ID from the response's `Location` header.
+4. The application server creates a server-side `RealtimeSession` with the WebSocket transport, registers its event listeners, passes the call ID to `session.connect(...)`, and waits for the initial `session.updated` event.
+5. The application server returns the SDP answer to the browser. The browser sets the answer as its remote description, and audio flows directly between the browser and the Realtime API.
+6. The application server handles Realtime events and tools. If the browser needs status updates, the application server projects an allowlisted application event instead of forwarding the raw Realtime event stream.
+
+<Aside type="caution">
+  Omitting `createDataChannel()` in browser code is not an access-control
+  boundary because a modified client can change its code or SDP offer. Enforce
+  the media policy on the application server before it creates the Realtime
+  call. Authorize every privileged tool operation against trusted, authenticated
+  application or session context, such as `runContext.context`, never against
+  model-supplied tool arguments.
+</Aside>
+
+See the [`realtime-server-controlled` example](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-server-controlled) for a complete application with an audio-only browser peer connection, server-enforced SDP policy, a sideband `RealtimeSession`, projected browser events, and cleanup behavior.
 
 ### React Native uses an app-owned transport
 

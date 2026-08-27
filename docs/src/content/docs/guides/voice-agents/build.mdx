@@ -26,7 +26,7 @@ import turnDetectionExample from '../../../../../../examples/docs/voice-agents/t
 
 Choose your architecture early:
 
-- `OpenAIRealtimeWebRTC` is the simplest browser path and handles audio input/output for you.
+- `OpenAIRealtimeWebRTC` is the simplest browser path and handles audio input/output for you. Its built-in connection also uses a data channel for Realtime events. If the browser should carry only audio while an application server owns Realtime events, tools, and business logic, see [Browser audio with server-side controls](/openai-agents-js/guides/voice-agents/transport#browser-audio-with-server-side-controls).
 - `OpenAIRealtimeWebSocket` gives you more control, but you must manage audio capture and playback yourself.
 - Function tools run wherever the `RealtimeSession` runs. If the session runs in the browser, the tool runs in the browser too.
 - Realtime handoffs keep the same live session model. Voice changes only work before the session has produced audio output. If you need a different backend model, delegate through a tool instead of a handoff.
@@ -45,7 +45,7 @@ When the underlying transport supports it, `session.muted` reports the current m
 
 ### Session configuration
 
-Configure the session itself when you create [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/), usually through the `model` option and the `config` object. `connect(...)` is for connection-time concerns such as credentials, endpoint URL, and SIP call attachment rather than arbitrary session fields.
+Configure the session itself when you create [`RealtimeSession`](/openai-agents-js/openai/agents-realtime/classes/realtimesession/), usually through the `model` option and the `config` object. `connect(...)` is for connection-time concerns such as credentials, endpoint URL, and existing Realtime call attachment rather than arbitrary session fields.
 
 <Code lang="typescript" code={configureSessionExample} />
 
@@ -84,7 +84,7 @@ Additional `RealtimeSession` options you can set at construction time:
 | `apiKey` | `string \| (() => string \| Promise<string>)` | API key (or lazy loader) used for this connection. |
 | `model` | `OpenAIRealtimeModels \| string` | Present in the transport-level options type. For `RealtimeSession`, set the model in the constructor; raw transports can also use a model at connect time. |
 | `url` | `string` | Optional custom Realtime endpoint URL. |
-| `callId` | `string` | Attach to an existing SIP-initiated call/session. |
+| `callId` | `string` | Attach the WebSocket transport as a sideband connection to an existing Realtime call, including calls established with WebRTC or SIP. |
 
 ### Conversation lifecycle
 
