@@ -3,6 +3,7 @@ import {
   VoiceSessionCoordinator,
   type VoiceConnection,
 } from '../src/client/voiceSessionCoordinator';
+import { SessionManager } from '../src/server/sessionManager';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -34,9 +35,9 @@ function connection(connect: VoiceConnection['connect']): VoiceConnection & {
 describe('VoiceSessionCoordinator', () => {
   it('refreshes authentication immediately before exchanging the SDP offer', async () => {
     const getCsrfToken = vi.fn(async () => 'fresh-token');
-    const exchangeOffer = vi.fn(async ({ onSessionCreated, token }) => {
+    const exchangeOffer = vi.fn(async ({ sessionId, token }) => {
       expect(token).toBe('fresh-token');
-      await onSessionCreated('session-1');
+      expect(sessionId).toMatch(/^[0-9a-f-]{36}$/);
       return 'answer';
     });
     const activeConnection = connection(async (exchangeSdp) => {
@@ -72,10 +73,7 @@ describe('VoiceSessionCoordinator', () => {
     const coordinator = new VoiceSessionCoordinator({
       closeRemoteSession: vi.fn(async () => {}),
       createConnection: () => connections.shift()!,
-      exchangeOffer: vi.fn(async ({ onSessionCreated }) => {
-        await onSessionCreated('00000000-0000-4000-8000-000000000002');
-        return 'new-answer';
-      }),
+      exchangeOffer: vi.fn(async () => 'new-answer'),
       getCsrfToken: vi.fn(async () => 'csrf-token'),
       onControls: vi.fn(),
       onStatus: (status) => statuses.push(status),
@@ -100,17 +98,19 @@ describe('VoiceSessionCoordinator', () => {
     await coordinator.stop();
   });
 
-  it('closes a server session when the SDP body fails after its headers', async () => {
+  it('closes the requested session when the signaling response is lost', async () => {
+    const signalingResponse = deferred<string>();
     const activeConnection = connection(async (exchangeSdp) => {
       await exchangeSdp('offer', new AbortController().signal);
     });
     const closeRemoteSession = vi.fn(async () => {});
+    let requestedSessionId: string | undefined;
     const coordinator = new VoiceSessionCoordinator({
       closeRemoteSession,
       createConnection: () => activeConnection,
-      exchangeOffer: vi.fn(async ({ onSessionCreated }) => {
-        await onSessionCreated('00000000-0000-4000-8000-000000000003');
-        throw new Error('The SDP response body was interrupted.');
+      exchangeOffer: vi.fn(({ sessionId }) => {
+        requestedSessionId = sessionId;
+        return signalingResponse.promise;
       }),
       getCsrfToken: vi.fn(async () => 'csrf-token'),
       onControls: vi.fn(),
@@ -118,17 +118,26 @@ describe('VoiceSessionCoordinator', () => {
       openEvents: vi.fn(() => ({ close: vi.fn() })),
     });
 
-    await coordinator.start();
+    const starting = coordinator.start();
+    await vi.waitFor(() => expect(requestedSessionId).toBeDefined());
+
+    await coordinator.stop();
 
     expect(closeRemoteSession).toHaveBeenCalledOnce();
     expect(closeRemoteSession).toHaveBeenCalledWith(
-      '00000000-0000-4000-8000-000000000003',
+      requestedSessionId,
       'csrf-token',
     );
+
+    signalingResponse.reject(
+      new Error('The signaling response was not delivered.'),
+    );
+    await starting;
   });
 
-  it('does not let an old stop overwrite a replacement status', async () => {
+  it('does not admit a replacement until the previous owner reservation closes', async () => {
     const oldRemoteClose = deferred<void>();
+    const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
     const connections = [
       connection(async (exchangeSdp) => {
         await exchangeSdp('old-offer', new AbortController().signal);
@@ -137,20 +146,34 @@ describe('VoiceSessionCoordinator', () => {
         await exchangeSdp('new-offer', new AbortController().signal);
       }),
     ];
-    let sessionNumber = 0;
+    let oldSessionId: string | undefined;
+    let newSessionId: string | undefined;
     const statuses: string[] = [];
-    const coordinator = new VoiceSessionCoordinator({
-      closeRemoteSession: vi.fn((sessionId) =>
-        sessionId.endsWith('1') ? oldRemoteClose.promise : Promise.resolve(),
-      ),
-      createConnection: () => connections.shift()!,
-      exchangeOffer: vi.fn(async ({ onSessionCreated }) => {
-        sessionNumber += 1;
-        await onSessionCreated(`session-${sessionNumber}`);
+    const onControls = vi.fn();
+    const exchangeOffer = vi.fn(
+      async ({ sessionId }: { sessionId: string }) => {
+        sessions.reserve('owner-1', sessionId);
+        sessions.activate(sessionId);
+        if (!oldSessionId) {
+          oldSessionId = sessionId;
+        } else {
+          newSessionId = sessionId;
+        }
         return 'answer';
+      },
+    );
+    const getCsrfToken = vi.fn(async () => 'csrf-token');
+    const coordinator = new VoiceSessionCoordinator({
+      closeRemoteSession: vi.fn(async (sessionId) => {
+        if (sessionId === oldSessionId) {
+          await oldRemoteClose.promise;
+        }
+        await sessions.cancel(sessionId, 'owner-1');
       }),
-      getCsrfToken: vi.fn(async () => 'csrf-token'),
-      onControls: vi.fn(),
+      createConnection: () => connections.shift()!,
+      exchangeOffer,
+      getCsrfToken,
+      onControls,
       onStatus: (status) => statuses.push(status),
       openEvents: vi.fn(() => ({ close: vi.fn() })),
     });
@@ -158,12 +181,61 @@ describe('VoiceSessionCoordinator', () => {
     await coordinator.start();
     const oldStop = coordinator.stop();
     await coordinator.start();
-    expect(statuses.at(-1)).toBe('connecting');
+
+    expect(onControls).toHaveBeenLastCalledWith({
+      canMute: false,
+      canStart: false,
+      canStop: false,
+      muted: false,
+    });
+    expect(exchangeOffer).toHaveBeenCalledOnce();
+    expect(getCsrfToken).toHaveBeenCalledOnce();
+    expect(sessions.ownsActive(oldSessionId!, 'owner-1')).toBe(true);
 
     oldRemoteClose.resolve();
     await oldStop;
+    await coordinator.start();
 
+    expect(exchangeOffer).toHaveBeenCalledTimes(2);
+    expect(sessions.ownsActive(newSessionId!, 'owner-1')).toBe(true);
     expect(statuses.at(-1)).toBe('connecting');
     await coordinator.stop();
+  });
+
+  it('keeps Start disabled while failed setup cleanup is pending', async () => {
+    const remoteClose = deferred<void>();
+    const closeRemoteSession = vi.fn(() => remoteClose.promise);
+    const exchangeOffer = vi.fn(async () => {
+      throw new Error('The signaling response was lost.');
+    });
+    const createConnection = vi.fn(() =>
+      connection(async (exchangeSdp) => {
+        await exchangeSdp('offer', new AbortController().signal);
+      }),
+    );
+    const onControls = vi.fn();
+    const coordinator = new VoiceSessionCoordinator({
+      closeRemoteSession,
+      createConnection,
+      exchangeOffer,
+      getCsrfToken: vi.fn(async () => 'csrf-token'),
+      onControls,
+      onStatus: vi.fn(),
+      openEvents: vi.fn(() => ({ close: vi.fn() })),
+    });
+
+    const starting = coordinator.start();
+    await vi.waitFor(() => expect(closeRemoteSession).toHaveBeenCalledOnce());
+    const stopping = coordinator.stop();
+    await coordinator.start();
+
+    expect(createConnection).toHaveBeenCalledOnce();
+    expect(onControls.mock.lastCall?.[0].canStart).toBe(false);
+
+    remoteClose.resolve();
+    await Promise.all([starting, stopping]);
+
+    expect(closeRemoteSession).toHaveBeenCalledOnce();
+    expect(onControls.mock.lastCall?.[0].canStart).toBe(true);
   });
 });

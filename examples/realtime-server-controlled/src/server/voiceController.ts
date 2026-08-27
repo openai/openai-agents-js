@@ -45,9 +45,13 @@ export class VoiceController {
     offerSdp: string;
     ownerId: string;
     safetyIdentifier: string;
+    sessionId: string;
     signal?: AbortSignal;
   }): Promise<{ answerSdp: string; sessionId: string }> {
-    const sessionId = this.#options.sessions.reserve(options.ownerId);
+    const sessionId = this.#options.sessions.reserve(
+      options.ownerId,
+      options.sessionId,
+    );
     let detachedCallId: string | undefined;
 
     try {

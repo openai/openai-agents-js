@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -35,11 +36,13 @@ afterEach(async () => {
 
 async function createHarness() {
   const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
-  const start = vi.fn(async ({ ownerId }: { ownerId: string }) => {
-    const sessionId = sessions.reserve(ownerId);
-    sessions.activate(sessionId);
-    return { answerSdp: audioSdp, sessionId };
-  });
+  const start = vi.fn(
+    async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
+      sessions.reserve(ownerId, sessionId);
+      sessions.activate(sessionId);
+      return { answerSdp: audioSdp, sessionId };
+    },
+  );
   const controller = { start } as unknown as VoiceController;
   const server = createApiServer({
     appOrigin,
@@ -78,6 +81,7 @@ describe('createApiServer', () => {
         Cookie: harness.cookie,
         'Content-Type': 'application/sdp',
         Origin: appOrigin,
+        'X-App-Session-Id': randomUUID(),
       };
       if (csrfToken) {
         headers['X-CSRF-Token'] = csrfToken;
@@ -94,6 +98,31 @@ describe('createApiServer', () => {
     },
   );
 
+  it.each([undefined, 'not-a-uuid'])(
+    'rejects an invalid application session ID %s',
+    async (sessionId) => {
+      const harness = await createHarness();
+      const headers: Record<string, string> = {
+        Cookie: harness.cookie,
+        'Content-Type': 'application/sdp',
+        Origin: appOrigin,
+        'X-CSRF-Token': harness.csrfToken,
+      };
+      if (sessionId) {
+        headers['X-App-Session-Id'] = sessionId;
+      }
+
+      const response = await fetch(`${harness.baseUrl}/api/realtime/session`, {
+        method: 'POST',
+        headers,
+        body: audioSdp,
+      });
+
+      expect(response.status).toBe(400);
+      expect(harness.start).not.toHaveBeenCalled();
+    },
+  );
+
   it('rejects a data-channel SDP before invoking the controller', async () => {
     const harness = await createHarness();
     const response = await fetch(`${harness.baseUrl}/api/realtime/session`, {
@@ -102,6 +131,7 @@ describe('createApiServer', () => {
         Cookie: harness.cookie,
         'Content-Type': 'application/sdp',
         Origin: appOrigin,
+        'X-App-Session-Id': randomUUID(),
         'X-CSRF-Token': harness.csrfToken,
       },
       body: `${audioSdp}\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel`,
@@ -113,12 +143,14 @@ describe('createApiServer', () => {
 
   it('exchanges valid audio SDP through the authenticated controller', async () => {
     const harness = await createHarness();
+    const sessionId = randomUUID();
     const response = await fetch(`${harness.baseUrl}/api/realtime/session`, {
       method: 'POST',
       headers: {
         Cookie: harness.cookie,
         'Content-Type': 'application/sdp',
         Origin: appOrigin,
+        'X-App-Session-Id': sessionId,
         'X-CSRF-Token': harness.csrfToken,
       },
       body: audioSdp,
@@ -126,14 +158,70 @@ describe('createApiServer', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/sdp');
-    expect(response.headers.get('x-app-session-id')).toMatch(/^[0-9a-f-]{36}$/);
+    expect(response.headers.get('x-app-session-id')).toBe(sessionId);
     await expect(response.text()).resolves.toBe(audioSdp);
     expect(harness.start).toHaveBeenCalledWith({
       offerSdp: audioSdp,
       ownerId: expect.any(String),
       safetyIdentifier: expect.stringMatching(/^[0-9a-f]{64}$/),
+      sessionId,
       signal: expect.any(AbortSignal),
     });
+  });
+
+  it('rejects setup when its authenticated close arrived first', async () => {
+    const harness = await createHarness();
+    const sessionId = randomUUID();
+    const closeResponse = await fetch(
+      `${harness.baseUrl}/api/realtime/sessions/${sessionId}/close`,
+      {
+        method: 'POST',
+        headers: {
+          Cookie: harness.cookie,
+          Origin: appOrigin,
+          'X-CSRF-Token': harness.csrfToken,
+        },
+      },
+    );
+
+    expect(closeResponse.status).toBe(204);
+
+    const createResponse = await fetch(
+      `${harness.baseUrl}/api/realtime/session`,
+      {
+        method: 'POST',
+        headers: {
+          Cookie: harness.cookie,
+          'Content-Type': 'application/sdp',
+          Origin: appOrigin,
+          'X-App-Session-Id': sessionId,
+          'X-CSRF-Token': harness.csrfToken,
+        },
+        body: audioSdp,
+      },
+    );
+
+    expect(createResponse.status).toBe(409);
+    await expect(createResponse.json()).resolves.toEqual({
+      error: 'This voice session setup was cancelled.',
+    });
+  });
+
+  it('rejects malformed cancellation identifiers', async () => {
+    const harness = await createHarness();
+    const response = await fetch(
+      `${harness.baseUrl}/api/realtime/sessions/not-a-uuid/close`,
+      {
+        method: 'POST',
+        headers: {
+          Cookie: harness.cookie,
+          Origin: appOrigin,
+          'X-CSRF-Token': harness.csrfToken,
+        },
+      },
+    );
+
+    expect(response.status).toBe(404);
   });
 
   it('does not start a call after the signaling request is aborted', async () => {
@@ -147,6 +235,7 @@ describe('createApiServer', () => {
           'Content-Length': Buffer.byteLength(audioSdp) + 10,
           'Content-Type': 'application/sdp',
           Origin: appOrigin,
+          'X-App-Session-Id': randomUUID(),
           'X-CSRF-Token': harness.csrfToken,
         },
       });
@@ -169,6 +258,7 @@ describe('createApiServer', () => {
           'Content-Length': Buffer.byteLength(audioSdp) + 10,
           'Content-Type': 'application/sdp',
           Origin: appOrigin,
+          'X-App-Session-Id': randomUUID(),
           'X-CSRF-Token': harness.csrfToken,
         },
       });
@@ -197,6 +287,7 @@ describe('createApiServer', () => {
           Cookie: harness.cookie,
           'Content-Type': 'application/sdp',
           Origin: appOrigin,
+          'X-App-Session-Id': randomUUID(),
           'X-CSRF-Token': harness.csrfToken,
         },
         body: audioSdp,

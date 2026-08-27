@@ -43,12 +43,13 @@ function setStatus(state: keyof typeof statusCopy) {
 const coordinator = new VoiceSessionCoordinator({
   getCsrfToken: requestCsrfToken,
   createConnection: () => new AudioOnlyWebRtc({ remoteAudio }),
-  async exchangeOffer({ offerSdp, onSessionCreated, signal, token }) {
+  async exchangeOffer({ offerSdp, sessionId, signal, token }) {
     const response = await fetch('/api/realtime/session', {
       method: 'POST',
       credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/sdp',
+        'X-App-Session-Id': sessionId,
         'X-CSRF-Token': token,
       },
       body: offerSdp,
@@ -58,10 +59,9 @@ const coordinator = new VoiceSessionCoordinator({
       throw new Error('Could not start the voice session.');
     }
     const createdSessionId = response.headers.get('x-app-session-id');
-    if (!createdSessionId) {
-      throw new Error('The BFF did not return an application session ID.');
+    if (createdSessionId !== sessionId) {
+      throw new Error('The BFF returned an unexpected application session ID.');
     }
-    await onSessionCreated(createdSessionId);
     return response.text();
   },
   async closeRemoteSession(activeSessionId, token) {

@@ -53,6 +53,7 @@ const startOptions = {
   offerSdp: 'offer-sdp',
   ownerId: 'owner-1',
   safetyIdentifier: 'safe-user-id',
+  sessionId: '00000000-0000-4000-8000-000000000001',
 };
 
 describe('VoiceController', () => {
@@ -74,7 +75,7 @@ describe('VoiceController', () => {
     ready.resolve();
     await expect(starting).resolves.toEqual({
       answerSdp: 'answer-sdp',
-      sessionId: expect.any(String),
+      sessionId: startOptions.sessionId,
     });
     expect(resolved).toBe(true);
     await harness.sessions.closeAll();
@@ -133,6 +134,29 @@ describe('VoiceController', () => {
       'rtc_after-abort',
     );
     expect(harness.options.connectSideband).not.toHaveBeenCalled();
+  });
+
+  it('does not create a call after cancellation arrives before setup', async () => {
+    const harness = createController();
+    await harness.sessions.cancel(startOptions.sessionId, startOptions.ownerId);
+
+    await expect(harness.controller.start(startOptions)).rejects.toThrow(
+      'voice session setup was cancelled',
+    );
+
+    expect(harness.options.createCall).not.toHaveBeenCalled();
+
+    const replacementSessionId = '00000000-0000-4000-8000-000000000002';
+    await expect(
+      harness.controller.start({
+        ...startOptions,
+        sessionId: replacementSessionId,
+      }),
+    ).resolves.toEqual({
+      answerSdp: 'answer-sdp',
+      sessionId: replacementSessionId,
+    });
+    await harness.sessions.closeAll();
   });
 
   it('projects transport events instead of exposing the raw payload', () => {

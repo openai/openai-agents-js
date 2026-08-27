@@ -36,9 +36,11 @@ This is not the Agents SDK's standard browser WebRTC transport with a data-chann
 - The application server's SDP policy accepts only offers and answers with exactly one non-rejected `m=audio` media description (a nonzero port). It rejects any additional media description, including `m=application` (data channel) or `m=video`. Offers that violate this policy are rejected before calling OpenAI, and answers that violate this policy are rejected before returning them to the browser.
 - The server binds every voice session to the current application principal, enforces one concurrent call per principal, and uses CSRF and exact-origin checks for mutating endpoints.
 - Raw Realtime events pass through a deny-by-default projection that constructs a new public application event.
-- Session close, initialization failure, sideband disconnect, expiry, and server shutdown all converge on idempotent cleanup that closes the SDK session and calls the Realtime hangup endpoint.
+- The browser assigns a random application session ID before it sends the SDP offer, so cleanup does not depend on receiving the signaling response. An authenticated close records cancellation even when the signaling request has not created its local session record yet, and a delayed request with the same ID is rejected before OpenAI call creation. Session close, initialization failure, sideband disconnect, expiry, and server shutdown all converge on idempotent cleanup that closes the SDK session and calls the Realtime hangup endpoint.
 
 The included cookie session is only a runnable localhost authentication seam. It does not identify a real user and does not prevent an arbitrary local caller from creating its own demo principal. Before deploying this pattern, replace `DemoAuthStore` with your application's authentication and authorization, apply production rate limits, and derive `OpenAI-Safety-Identifier` from a stable privacy-preserving user identifier.
+
+The browser disables Start while the previous session's cleanup request is pending. The demo retains cancelled application session IDs in memory until the server stops, so a delayed request cannot recreate a cancelled session after the live-session expiry sweep. A production implementation must account for this storage growth and keep cancellation records for at least as long as it accepts delayed or replayed setup requests.
 
 Audio-only transport does not prevent spoken prompt injection and does not make system instructions secret from model behavior. Server-side tools must authorize every privileged operation against `runContext.context`, not against tool arguments supplied by the model.
 
@@ -59,7 +61,7 @@ pnpm -F realtime-server-controlled dev
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173). Use this exact origin unless you also change `APP_ORIGIN`.
 
-The Vite development server serves the browser and proxies `/api` to the application server on `127.0.0.1:3001`. WebRTC media flows directly between the browser and the OpenAI Realtime API; the application server is not an audio proxy.
+The Vite development server serves the browser and proxies `/api` to the application server port configured by `PORT` (`3001` by default). WebRTC media flows directly between the browser and the OpenAI Realtime API; the application server is not an audio proxy.
 
 ## Verify without an API call
 

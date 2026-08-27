@@ -36,7 +36,7 @@ export type VoiceSessionCoordinatorOptions = {
   createConnection(): VoiceConnection;
   exchangeOffer(input: {
     offerSdp: string;
-    onSessionCreated(sessionId: string): Promise<void>;
+    sessionId: string;
     signal: AbortSignal;
     token: string;
   }): Promise<string>;
@@ -56,7 +56,6 @@ function isAgentState(value: unknown): value is AgentState {
 
 export class VoiceSessionCoordinator {
   #activeAttempt: SessionAttempt | null = null;
-  #latestAttempt: SessionAttempt | null = null;
   readonly #options: VoiceSessionCoordinatorOptions;
 
   constructor(options: VoiceSessionCoordinatorOptions) {
@@ -74,11 +73,10 @@ export class VoiceSessionCoordinator {
       connection: null,
       eventStream: null,
       remoteClosePromise: null,
-      sessionId: null,
+      sessionId: crypto.randomUUID(),
       token: null,
     };
     this.#activeAttempt = attempt;
-    this.#latestAttempt = attempt;
     this.#options.onStatus('connecting');
     this.#publishControls();
 
@@ -93,18 +91,12 @@ export class VoiceSessionCoordinator {
         attempt.token = token;
         return this.#options.exchangeOffer({
           offerSdp,
-          onSessionCreated: async (sessionId) => {
-            attempt.sessionId = sessionId;
-            if (attempt.closed) {
-              await this.#closeRemote(attempt);
-              throw new Error('The voice-session attempt is no longer active.');
-            }
-          },
+          sessionId: attempt.sessionId!,
           signal,
           token,
         });
       });
-      if (this.#activeAttempt !== attempt) {
+      if (attempt.closed || this.#activeAttempt !== attempt) {
         await this.#cleanup(attempt);
         return;
       }
@@ -113,40 +105,49 @@ export class VoiceSessionCoordinator {
         sessionId: attempt.sessionId!,
         onMessage: (value) => this.#handlePublicEvent(attempt, value),
         onError: () => {
-          if (this.#activeAttempt === attempt) {
+          if (!attempt.closed && this.#activeAttempt === attempt) {
             this.#options.onStatus('error');
           }
         },
       });
       this.#publishControls();
     } catch {
-      const isCurrent = this.#activeAttempt === attempt;
-      if (isCurrent) {
-        this.#activeAttempt = null;
-        this.#options.onStatus('error');
+      if (attempt.closed || this.#activeAttempt !== attempt) {
+        await this.#cleanup(attempt);
+        return;
       }
-      await this.#cleanup(attempt);
-      if (isCurrent) {
+      const cleanup = this.#cleanup(attempt);
+      this.#options.onStatus('error');
+      this.#publishControls();
+      await cleanup;
+      if (this.#activeAttempt === attempt) {
+        this.#activeAttempt = null;
         this.#publishControls();
       }
     }
   }
 
-  async stop(options: { keepError?: boolean } = {}): Promise<void> {
+  async stop(): Promise<void> {
     const attempt = this.#activeAttempt;
     if (!attempt) {
-      if (!options.keepError) {
-        this.#options.onStatus('ready');
-      }
+      this.#options.onStatus('ready');
       this.#publishControls();
       return;
     }
 
-    this.#activeAttempt = null;
+    if (attempt.closed) {
+      await this.#cleanup(attempt);
+      return;
+    }
+
+    // Keep admission closed until this attempt's cleanup has settled.
+    const cleanup = this.#cleanup(attempt);
     this.#publishControls();
-    await this.#cleanup(attempt);
-    if (!options.keepError && this.#latestAttempt === attempt) {
+    await cleanup;
+    if (this.#activeAttempt === attempt) {
+      this.#activeAttempt = null;
       this.#options.onStatus('ready');
+      this.#publishControls();
     }
   }
 
@@ -181,6 +182,7 @@ export class VoiceSessionCoordinator {
   #handlePublicEvent(attempt: SessionAttempt, value: unknown): void {
     if (
       this.#activeAttempt !== attempt ||
+      attempt.closed ||
       typeof value !== 'object' ||
       value === null ||
       !('type' in value)
@@ -206,7 +208,7 @@ export class VoiceSessionCoordinator {
     this.#options.onControls({
       canMute: Boolean(connection),
       canStart: !active,
-      canStop: active,
+      canStop: active && !this.#activeAttempt?.closed,
       muted: connection?.muted ?? false,
     });
   }

@@ -13,8 +13,8 @@ export type PublicEventClient = {
 type SessionState = 'active' | 'closing' | 'creating';
 
 export class SessionConflictError extends Error {
-  constructor() {
-    super('This user already has an active voice session.');
+  constructor(message = 'This user already has an active voice session.') {
+    super(message);
     this.name = 'SessionConflictError';
   }
 }
@@ -42,6 +42,7 @@ type SessionRecord = {
 
 export class SessionManager {
   #acceptingSessions = true;
+  readonly #cancelledSetups = new Map<string, string>();
   readonly #hangup: (callId: string) => Promise<void>;
   readonly #maxSessions: number;
   readonly #now: () => number;
@@ -58,18 +59,30 @@ export class SessionManager {
     this.#now = options.now ?? Date.now;
   }
 
-  reserve(ownerId: string): string {
+  reserve(ownerId: string, id: string = randomUUID()): string {
     if (!this.#acceptingSessions) {
       throw new SessionCapacityError('The voice service is shutting down.');
     }
+    const cancelledOwner = this.#cancelledSetups.get(id);
+    if (cancelledOwner) {
+      throw new SessionConflictError(
+        cancelledOwner === ownerId
+          ? 'This voice session setup was cancelled.'
+          : 'This voice session identifier is already in use.',
+      );
+    }
     if (this.#ownerSessions.has(ownerId)) {
       throw new SessionConflictError();
+    }
+    if (this.#sessions.has(id)) {
+      throw new SessionConflictError(
+        'This voice session identifier is already in use.',
+      );
     }
     if (this.#sessions.size >= this.#maxSessions) {
       throw new SessionCapacityError();
     }
 
-    const id = randomUUID();
     this.#sessions.set(id, {
       agentState: 'idle',
       clients: new Set(),
@@ -81,6 +94,24 @@ export class SessionManager {
     });
     this.#ownerSessions.set(ownerId, id);
     return id;
+  }
+
+  async cancel(id: string, ownerId: string): Promise<boolean> {
+    const session = this.#sessions.get(id);
+    if (session && session.ownerId !== ownerId) {
+      return false;
+    }
+
+    const cancelledOwner = this.#cancelledSetups.get(id);
+    if (cancelledOwner && cancelledOwner !== ownerId) {
+      return false;
+    }
+
+    this.#cancelledSetups.set(id, ownerId);
+    if (session) {
+      await this.close(id, ownerId);
+    }
+    return true;
   }
 
   attachCall(id: string, callId: string): boolean {
@@ -206,6 +237,7 @@ export class SessionManager {
 
   async closeAll(): Promise<void> {
     this.#acceptingSessions = false;
+    this.#cancelledSetups.clear();
     await Promise.all([...this.#sessions.keys()].map((id) => this.close(id)));
   }
 }

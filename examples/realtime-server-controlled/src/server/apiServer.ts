@@ -19,6 +19,8 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
 };
+const APP_SESSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 class HttpError extends Error {
   constructor(
@@ -62,6 +64,17 @@ function requireMutationSecurity(
     throw new HttpError(403, 'The CSRF token is invalid.');
   }
   return principal;
+}
+
+function requireAppSessionId(request: IncomingMessage): string {
+  const sessionId = request.headers['x-app-session-id'];
+  if (
+    typeof sessionId !== 'string' ||
+    !APP_SESSION_ID_PATTERN.test(sessionId)
+  ) {
+    throw new HttpError(400, 'A valid X-App-Session-Id header is required.');
+  }
+  return sessionId;
 }
 
 async function readSdp(request: IncomingMessage): Promise<string> {
@@ -121,6 +134,7 @@ export function createApiServer(options: {
           options.auth,
           options.appOrigin,
         );
+        const sessionId = requireAppSessionId(request);
         const abortController = new AbortController();
         const handleAborted = () => {
           if (
@@ -146,6 +160,7 @@ export function createApiServer(options: {
             offerSdp,
             ownerId: principal.ownerId,
             safetyIdentifier: principal.safetyIdentifier,
+            sessionId,
             signal: abortController.signal,
           });
           if (request.aborted || response.destroyed) {
@@ -208,13 +223,17 @@ export function createApiServer(options: {
 
       const closeMatch =
         /^\/api\/realtime\/sessions\/([0-9a-f-]+)\/close$/.exec(url.pathname);
-      if (request.method === 'POST' && closeMatch?.[1]) {
+      if (
+        request.method === 'POST' &&
+        closeMatch?.[1] &&
+        APP_SESSION_ID_PATTERN.test(closeMatch[1])
+      ) {
         const principal = requireMutationSecurity(
           request,
           options.auth,
           options.appOrigin,
         );
-        const closed = await options.sessions.close(
+        const closed = await options.sessions.cancel(
           closeMatch[1],
           principal.ownerId,
         );

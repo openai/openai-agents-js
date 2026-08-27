@@ -16,6 +16,7 @@ import {
   VoiceController,
   type ControllerSession,
 } from './src/server/voiceController';
+import { parseApiPort } from './src/shared/config';
 
 dotenv.config({ path: '.env.local' });
 
@@ -23,15 +24,17 @@ const apiKey = process.env.OPENAI_API_KEY;
 const appOrigin = process.env.APP_ORIGIN ?? 'http://127.0.0.1:5173';
 const model =
   process.env.OPENAI_REALTIME_MODEL ?? DEFAULT_OPENAI_REALTIME_MODEL;
-const port = Number(process.env.PORT ?? 3001);
+let port: number;
 const voice = process.env.OPENAI_REALTIME_VOICE ?? 'marin';
 
 if (!apiKey) {
   console.error('OPENAI_API_KEY is required in .env.local.');
   process.exit(1);
 }
-if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-  console.error('PORT must be a valid TCP port.');
+try {
+  port = parseApiPort(process.env.PORT);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : 'PORT is invalid.');
   process.exit(1);
 }
 

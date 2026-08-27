@@ -11,6 +11,51 @@ describe('SessionManager', () => {
     expect(() => sessions.reserve('owner-1')).toThrow(SessionConflictError);
   });
 
+  it('does not let another owner replace a client-selected session ID', () => {
+    const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
+    const sessionId = '00000000-0000-4000-8000-000000000001';
+    sessions.reserve('owner-1', sessionId);
+    sessions.activate(sessionId);
+
+    expect(() => sessions.reserve('owner-2', sessionId)).toThrow(
+      'session identifier is already in use',
+    );
+    expect(sessions.ownsActive(sessionId, 'owner-1')).toBe(true);
+  });
+
+  it('makes cancellation win when it arrives before reservation', async () => {
+    const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
+    const sessionId = '00000000-0000-4000-8000-000000000001';
+    const replacementId = '00000000-0000-4000-8000-000000000002';
+
+    await expect(sessions.cancel(sessionId, 'owner-1')).resolves.toBe(true);
+
+    expect(() => sessions.reserve('owner-1', sessionId)).toThrow(
+      'voice session setup was cancelled',
+    );
+    expect(() => sessions.reserve('owner-2', sessionId)).toThrow(
+      'session identifier is already in use',
+    );
+    expect(sessions.reserve('owner-1', replacementId)).toBe(replacementId);
+  });
+
+  it('retains cancellation evidence after the live-session expiry sweep', async () => {
+    let now = 1_000;
+    const sessions = new SessionManager({
+      hangup: vi.fn(async () => {}),
+      now: () => now,
+    });
+    const sessionId = '00000000-0000-4000-8000-000000000001';
+    await sessions.cancel(sessionId, 'owner-1');
+
+    now = 2_001;
+    await sessions.closeExpired(1_000);
+
+    expect(() => sessions.reserve('owner-1', sessionId)).toThrow(
+      'voice session setup was cancelled',
+    );
+  });
+
   it('requires ownership for subscription and close', async () => {
     const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
     const id = sessions.reserve('owner-1');
@@ -19,6 +64,16 @@ describe('SessionManager', () => {
 
     expect(sessions.subscribe(id, 'owner-2', client)).toBeNull();
     await expect(sessions.close(id, 'owner-2')).resolves.toBe(false);
+    expect(sessions.ownsActive(id, 'owner-1')).toBe(true);
+  });
+
+  it('does not let another owner cancel an active session', async () => {
+    const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
+    const id = sessions.reserve('owner-1');
+    sessions.activate(id);
+
+    await expect(sessions.cancel(id, 'owner-2')).resolves.toBe(false);
+
     expect(sessions.ownsActive(id, 'owner-1')).toBe(true);
   });
 
