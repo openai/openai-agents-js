@@ -6297,6 +6297,62 @@ describe('OpenAIResponsesModel', () => {
     },
   );
 
+  it('records full tracing data before a response_done consumer closes the stream', async () => {
+    const responseSpans = captureResponseSpans();
+    const input = 'full tracing stream input';
+    const terminalResponse = {
+      id: 'resp_full_data_stream',
+      status: 'completed',
+      output: [],
+      usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+    };
+    async function* fakeStream() {
+      yield {
+        type: 'response.completed',
+        response: terminalResponse,
+        sequence_number: 0,
+      } as unknown as OpenAIResponseStreamEvent;
+    }
+    const model = new OpenAIResponsesModel(
+      {
+        responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+
+    await withTrace('test', async () => {
+      const iterator = model
+        .getStreamedResponse({
+          systemInstructions: undefined,
+          input,
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: true,
+          signal: undefined,
+        } as any)
+        [Symbol.asyncIterator]();
+
+      expect(await iterator.next()).toMatchObject({
+        done: false,
+        value: {
+          type: 'response_done',
+          response: { id: 'resp_full_data_stream' },
+        },
+      });
+      await iterator.return?.();
+    });
+
+    expect(responseSpans).toHaveLength(1);
+    expect(responseSpans[0]?.endedAt).not.toBeNull();
+    expect(responseSpans[0]?.spanData._input).toBe(input);
+    expect(responseSpans[0]?.spanData._response).toBe(terminalResponse);
+    expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+      'resp_full_data_stream',
+    );
+  });
+
   it('prevents extra_body from overriding streamed request mode', async () => {
     await withTrace('test', async () => {
       const createdEvent: OpenAIResponseStreamEvent = {

@@ -3958,6 +3958,10 @@ export class OpenAIResponsesModel implements Model {
             }
           } else if (terminalResponse) {
             finalResponse = terminalResponse;
+            if (span && request.tracing === true) {
+              span.spanData.response_id = terminalResponse.id;
+              span.spanData._response = terminalResponse;
+            }
             const { response: _response, ...remainingEvent } = terminalEvent;
             const {
               output: _output,
