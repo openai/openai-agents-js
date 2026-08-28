@@ -387,11 +387,15 @@ export abstract class OpenAIRealtimeBase
         return;
       }
       if (parsed.item.type === 'message') {
+        // `null` here is the server saying the item has nothing before it, which
+        // is what decides where local history puts it. An event that does not
+        // carry the field says nothing about placement, so it stays undefined
+        // rather than claiming the front.
         const previousItemId =
           parsed.type === 'conversation.item.added' ||
           parsed.type === 'conversation.item.done'
             ? parsed.previous_item_id
-            : null;
+            : undefined;
         const item = realtimeMessageItemSchema.parse({
           itemId: parsed.item.id,
           previousItemId,

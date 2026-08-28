@@ -349,6 +349,43 @@ describe('RealtimeSession', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('places a server-confirmed first item at the front of local history', async () => {
+    // A corrected first item is re-created with `previous_item_id: 'root'`, and
+    // the server answers with no predecessor. Local history has to agree with
+    // the conversation the server now holds.
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(new RealtimeAgent({ name: 'A' }), {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const message = (
+      itemId: string,
+      text: string,
+      previousItemId?: string | null,
+    ) =>
+      ({
+        itemId,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text }],
+        ...(previousItemId === undefined ? {} : { previousItemId }),
+      }) as any;
+
+    localTransport.emit('item_update', message('a', 'one'));
+    localTransport.emit('item_update', message('b', 'two', 'a'));
+    localTransport.emit('item_deleted', { itemId: 'a' } as any);
+    localTransport.emit('item_update', message('a', 'one corrected', null));
+
+    await vi.waitFor(() => {
+      expect(localSession.history.map((item) => item.itemId)).toEqual([
+        'a',
+        'b',
+      ]);
+    });
+  });
+
   it('calls transport.resetHistory with correct arguments', () => {
     const item = createMessage('1', 'hi');
     session.updateHistory([item]);
