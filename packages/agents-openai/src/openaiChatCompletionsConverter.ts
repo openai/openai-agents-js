@@ -283,6 +283,7 @@ export function itemsToMessages(
   const result: ChatCompletionMessageParam[] = [];
   let currentAssistantMsg: ChatCompletionAssistantMessageWithReasoning | null =
     null;
+  let pendingAssistantFunctionCallProviderData: Record<string, unknown> = {};
   const flushAssistantMessage = () => {
     if (currentAssistantMsg) {
       if (
@@ -294,6 +295,7 @@ export function itemsToMessages(
       result.push(currentAssistantMsg);
       currentAssistantMsg = null;
     }
+    pendingAssistantFunctionCallProviderData = {};
   };
   const ensureAssistantMessage = () => {
     if (!currentAssistantMsg) {
@@ -325,9 +327,20 @@ export function itemsToMessages(
   for (const item of items) {
     if (isMessageItem(item)) {
       const { content, role, providerData } = item;
+      const pendingAssistantToolCallMessage =
+        role === 'assistant' &&
+        currentAssistantMsg?.content === null &&
+        currentAssistantMsg.tool_calls &&
+        currentAssistantMsg.tool_calls.length > 0
+          ? currentAssistantMsg
+          : undefined;
       const pendingReasoningMsg =
-        role === 'assistant' ? takeReasoningOnlyAssistantMessage() : undefined;
-      flushAssistantMessage();
+        role === 'assistant' && !pendingAssistantToolCallMessage
+          ? takeReasoningOnlyAssistantMessage()
+          : undefined;
+      if (!pendingAssistantToolCallMessage) {
+        flushAssistantMessage();
+      }
       if (role === 'assistant') {
         const phase = item.phase ?? providerData?.phase;
         if (typeof phase !== 'undefined' && phase !== null) {
@@ -347,8 +360,15 @@ export function itemsToMessages(
         const assistant: ChatCompletionAssistantMessageWithReasoning = {
           role: 'assistant',
           content: extractAllAssistantContent(content),
-          ...(typeof pendingReasoningMsg?.reasoning === 'string'
-            ? { reasoning: pendingReasoningMsg.reasoning }
+          ...(typeof (
+            pendingReasoningMsg?.reasoning ??
+            pendingAssistantToolCallMessage?.reasoning
+          ) === 'string'
+            ? {
+                reasoning:
+                  pendingReasoningMsg?.reasoning ??
+                  pendingAssistantToolCallMessage?.reasoning,
+              }
             : {}),
           ...getProviderDataWithoutReservedKeys(providerData, [
             'role',
@@ -369,7 +389,23 @@ export function itemsToMessages(
           }
         }
 
-        result.push(assistant);
+        if (pendingAssistantToolCallMessage) {
+          // A streamed turn may place its function calls before its assistant
+          // message. Keep the pending tool calls on the same Chat Completions
+          // assistant message instead of emitting two consecutive assistants.
+          // Reapply function-call provider data last so streamed and
+          // non-streamed orderings preserve the released message-first
+          // precedence for overlapping provider extension fields.
+          Object.assign(
+            pendingAssistantToolCallMessage,
+            assistant,
+            pendingAssistantFunctionCallProviderData,
+          );
+        } else {
+          // Keep the assistant message pending so following tool calls from the
+          // same turn can attach before the next turn boundary flushes it.
+          currentAssistantMsg = assistant;
+        }
       } else if (role === 'user') {
         result.push({
           role,
@@ -392,6 +428,12 @@ export function itemsToMessages(
         });
       }
     } else if (item.type === 'reasoning') {
+      if (currentAssistantMsg?.content !== null) {
+        // A reasoning item starts the next assistant turn. Do not let a
+        // completed content-bearing assistant message absorb its reasoning or
+        // following tool calls while waiting for a later flush boundary.
+        flushAssistantMessage();
+      }
       const asst = ensureAssistantMessage();
       // Some third-party providers support reasoning on assistant messages even
       // though it is not part of the official Chat Completions API type.
@@ -486,6 +528,10 @@ export function itemsToMessages(
         funcCall.providerData?.function,
         ['name', 'arguments'],
       );
+      const assistantProviderData = getProviderDataWithoutReservedKeys(
+        funcCall.providerData,
+        ['role', 'content', 'tool_calls', 'audio', 'id', 'type', 'function'],
+      );
       toolCalls.push({
         id: funcCall.callId,
         type: 'function',
@@ -498,17 +544,10 @@ export function itemsToMessages(
       });
       asst.tool_calls = toolCalls;
       Object.assign(
-        asst,
-        getProviderDataWithoutReservedKeys(funcCall.providerData, [
-          'role',
-          'content',
-          'tool_calls',
-          'audio',
-          'id',
-          'type',
-          'function',
-        ]),
+        pendingAssistantFunctionCallProviderData,
+        assistantProviderData,
       );
+      Object.assign(asst, assistantProviderData);
     } else if (item.type === 'function_call_result') {
       if (item.caller?.type === 'program') {
         throw new UserError(
