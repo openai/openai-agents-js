@@ -1,10 +1,12 @@
 import type { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
+import { resetCurrentSpan } from '../tracing/context';
 import type { RunState } from '../runState';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { getFunctionToolStateKeyForCall } from '../toolIdentity';
 import type { SingleStepResult } from './steps';
 import type { ProcessedResponse } from './types';
+import type { ResumedSessionWritePreparation } from './sessionPersistence';
 import { getServerConversationOwner } from './conversation';
 import {
   preflightToolInvocations,
@@ -184,7 +186,7 @@ export async function resumeAcceptedModelResponse<
 export type InterruptedTurnOutcome = {
   nextStep: SingleStepResult['nextStep'];
   action: 'return_interruption' | 'rerun_turn' | 'advance_step';
-  approvedToolResumed: boolean;
+  resumedSideEffects: boolean;
 };
 
 export type InterruptedTurnControl = {
@@ -249,7 +251,10 @@ export async function resumeInterruptedTurn<
   signal?: AbortSignal;
   onStepItems?: (turnResult: SingleStepResult) => void;
   validateHandoffAgent?: (agent: Agent<any, any>) => void;
-  beforeApprovedToolResume?: () => Promise<void>;
+  beforeResumedSideEffects?: () => Promise<
+    ResumedSessionWritePreparation | undefined
+  >;
+  onHandoff?: (agent: TAgent) => void;
 }): Promise<InterruptedTurnOutcome> {
   const {
     state,
@@ -259,7 +264,8 @@ export async function resumeInterruptedTurn<
     signal,
     onStepItems,
     validateHandoffAgent,
-    beforeApprovedToolResume,
+    beforeResumedSideEffects,
+    onHandoff,
   } = options;
   const approvedToolWillResume = state.getInterruptions().some((item) => {
     const rawItem = item.rawItem;
@@ -287,9 +293,12 @@ export async function resumeInterruptedTurn<
       ) === true
     );
   });
-  if (approvedToolWillResume) {
-    await beforeApprovedToolResume?.();
-  }
+  const preparation =
+    approvedToolWillResume ||
+    (state._lastProcessedResponse?.handoffs.length ?? 0) > 0
+      ? await beforeResumedSideEffects?.()
+      : undefined;
+  let unfilteredHandoffInput: ResumedSessionWritePreparation['handoffInput'];
   const turnResult = await resolveInterruptedTurn<TContext>(
     state._currentAgent,
     state._originalInput,
@@ -302,10 +311,35 @@ export async function resumeInterruptedTurn<
     agentToolParentRunConfig,
     signal,
     validateHandoffAgent,
+    preparation
+      ? (input) => {
+          unfilteredHandoffInput = state._captureHandoffInput(
+            input.inputHistory,
+            [...input.preHandoffItems, ...input.newItems],
+          );
+        }
+      : undefined,
   );
-  const approvedToolResumed =
-    approvedToolWillResume &&
-    turnResult.generatedItems.length > state._currentTurnPersistedItemCount;
+  const resumedSideEffects =
+    turnResult.nextStep.type === 'next_step_handoff' ||
+    (approvedToolWillResume &&
+      turnResult.generatedItems.length > state._currentTurnPersistedItemCount);
+
+  if (preparation && unfilteredHandoffInput) {
+    preparation.handoffInput = state._captureHandoffInput(
+      turnResult.originalInput,
+      turnResult.generatedItems,
+    );
+    const canonicalInput = state._deserializeHandoffInput(
+      unfilteredHandoffInput,
+    );
+    // Streaming observes the accepted filtered step, while persistence keeps the source pairs.
+    onStepItems?.(turnResult);
+    turnResult.originalInput = canonicalInput.originalInput;
+    turnResult.preStepItems = [];
+    turnResult.newStepItems = canonicalInput.generatedItems;
+    turnResult.toolInvocationCommitItems = canonicalInput.generatedItems;
+  }
 
   applyTurnResult({
     state,
@@ -313,8 +347,34 @@ export async function resumeInterruptedTurn<
     agent: state._currentAgent,
     toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
     resetTurnPersistence: false,
-    onStepItems,
+    onStepItems: unfilteredHandoffInput ? undefined : onStepItems,
   });
+
+  if (turnResult.nextStep.type === 'next_step_handoff') {
+    // The transfer and tool effects have completed. Persist their continuation before
+    // the caller attempts the fallible resumed Session append.
+    state.setCurrentAgent(turnResult.nextStep.newAgent as TAgent);
+    state._currentStep = { type: 'next_step_run_again' };
+    state._noActiveAgentRun = true;
+    state._currentTurnInProgress = false;
+    if (state._currentAgentSpan) {
+      state._currentAgentSpan.end();
+      resetCurrentSpan();
+      state.setCurrentAgentSpan(undefined);
+    }
+    if (
+      !getServerConversationOwner(
+        state._conversationId,
+        state._previousResponseId,
+      )
+    ) {
+      // Local history owns the completed source-agent results. Retaining its execution
+      // plan would try to rehydrate source tools against the target agent on restore.
+      // Server-managed continuation still needs the plan for ignored handoff outputs.
+      state._lastProcessedResponse = undefined;
+    }
+    onHandoff?.(state._currentAgent);
+  }
 
   // Map next-step outcomes to interruption flow control for the outer run loop.
   // return_interruption: still waiting on approvals. rerun_turn: same turn rerun without increment.
@@ -323,20 +383,20 @@ export async function resumeInterruptedTurn<
     return {
       nextStep: turnResult.nextStep,
       action: 'return_interruption',
-      approvedToolResumed,
+      resumedSideEffects,
     };
   }
   if (turnResult.nextStep.type === 'next_step_run_again') {
     return {
       nextStep: turnResult.nextStep,
       action: 'rerun_turn',
-      approvedToolResumed,
+      resumedSideEffects,
     };
   }
   return {
     nextStep: turnResult.nextStep,
     action: 'advance_step',
-    approvedToolResumed,
+    resumedSideEffects,
   };
 }
 
@@ -361,6 +421,10 @@ export function handleInterruptedOutcome<
       return { shouldReturn: false, shouldContinue: true };
     case 'advance_step':
       setContinuingInterruptedTurn(false);
+      if (outcome.nextStep.type === 'next_step_handoff') {
+        // The transfer, lifecycle notification and durable continuation are already published.
+        return { shouldReturn: false, shouldContinue: true };
+      }
       state._currentStep = outcome.nextStep;
       return { shouldReturn: false, shouldContinue: false };
     default: {

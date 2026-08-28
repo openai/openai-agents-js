@@ -173,7 +173,8 @@ import {
  * - 1.20: Adds sandbox session-state envelope version 5 so Docker labels cannot be
  *   consumed by older SDKs that would drop them during container replacement, preserves
  *   exact current-response ownership for serialized approval resumes, and checkpoints
- *   unacknowledged ordinary Session appends completed during approval resume.
+ *   unacknowledged ordinary Session appends completed during approval resume, including
+ *   filtered handoff input held until its source append settles.
  */
 export const CURRENT_SCHEMA_VERSION = '1.20' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
@@ -265,6 +266,8 @@ const pendingSessionWriteBaseSchema = {
   alreadyPersistedCount: z.number().int().min(0),
   persistedItemCount: z.number().int().min(1),
   reasoningItemIdPolicy: z.enum(['preserve', 'omit']),
+  // Kept separately from canonical append items until the source turn is durable.
+  handoffInput: z.lazy(() => handoffInputSnapshotSchema).optional(),
   terminalToolFinalization: z
     .object({
       behavior: z.enum([
@@ -1628,6 +1631,11 @@ const sandboxStateSchema = z.object({
   sessionsByAgent: z.record(z.string(), sandboxSessionEntrySchema),
 });
 
+const handoffInputSnapshotSchema = z.object({
+  originalInput: z.string().or(z.array(protocol.ModelItem)),
+  generatedItems: z.array(itemSchema),
+});
+
 const serializedProcessedResponseSchema = z.object({
   newItems: z.array(itemSchema),
   toolsUsed: z.array(z.string()),
@@ -1864,7 +1872,7 @@ export const SerializedRunState = z.object({
     .default({}),
   lastProcessedResponse: serializedProcessedResponseSchema.optional(),
   currentTurnPersistedItemCount: z.number().int().min(0).optional(),
-  currentTurnSessionWriteCompactedItemCount: z.number().int().min(1).optional(),
+  currentTurnSessionWriteCompactedItemCount: z.number().int().min(0).optional(),
   currentTurnDeferredSessionItemIndexes: z
     .array(z.number().int().min(0))
     .optional(),
@@ -2716,6 +2724,35 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   _replaceGeneratedItems(generatedItems: RunItem[]): void {
     this._generatedItems = generatedItems;
+  }
+
+  /** @internal Captures an input view without retaining mutable filter-owned items. */
+  _captureHandoffInput(
+    originalInput: string | AgentInputItem[],
+    generatedItems: RunItem[],
+  ): NonNullable<PendingSessionWrite['handoffInput']> {
+    const identities = buildAgentIdentityMap(this.#startingAgent);
+    return structuredClone(
+      handoffInputSnapshotSchema.parse({
+        originalInput,
+        generatedItems: generatedItems.map((item) =>
+          serializeRunItem(item, identities.byAgent),
+        ),
+      }),
+    );
+  }
+
+  /** @internal Reuses ordinary RunState item reconstruction for the accepted input view. */
+  _deserializeHandoffInput(
+    input: NonNullable<PendingSessionWrite['handoffInput']>,
+  ): { originalInput: string | AgentInputItem[]; generatedItems: RunItem[] } {
+    const identities = buildAgentIdentityMap(this.#startingAgent);
+    return {
+      originalInput: structuredClone(input.originalInput),
+      generatedItems: input.generatedItems.map((item) =>
+        deserializeItem(item, identities.byIdentity),
+      ),
+    };
   }
 
   private getOrCreateToolSearchRuntimeToolState(
@@ -3868,6 +3905,21 @@ export function assertPendingSessionWriteOwnership(
   }
 
   getPendingSessionWriteAppendItems(state, pending);
+  if (pending.handoffInput) {
+    if (
+      state._currentStep?.type !== 'next_step_run_again' ||
+      !state._noActiveAgentRun ||
+      state._currentTurnInProgress ||
+      !state._generatedItems.some(
+        (item) =>
+          item instanceof RunHandoffOutputItem &&
+          item.targetAgent === state._currentAgent,
+      )
+    ) {
+      throw new UserError('RunState pending handoff input is invalid.');
+    }
+    state._deserializeHandoffInput(pending.handoffInput);
+  }
 }
 
 function getPendingSessionWriteBehaviorKind(

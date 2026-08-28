@@ -75,6 +75,7 @@ export type ResumedSessionWritePreparation = {
   readonly state: RunState<any, any>;
   readonly sessionId: string;
   readonly reasoningItemIdPolicy: ReasoningItemIdPolicy;
+  handoffInput?: PendingSessionWrite['handoffInput'];
 };
 
 const SESSION_LIMIT_UNSET = Symbol('sessionLimitUnset');
@@ -382,6 +383,7 @@ function checkpointPreparedResumedSessionWrite(options: {
   const pending: Extract<PendingSessionWrite, { phase: 'prepared' }> = {
     phase: 'prepared',
     ...pendingItems,
+    handoffInput: preparation.handoffInput,
     terminalToolFinalization:
       capturePendingSessionWriteTerminalFinalization(state),
   };
@@ -757,7 +759,16 @@ function commitApprovedToolInputCompaction(
   state: RunState<any, any>,
   persistedItemCount: number,
 ): void {
-  state._currentTurnSessionWriteCompactedItemCount = persistedItemCount;
+  const handoffInput = state._pendingSessionWrite?.handoffInput;
+  if (handoffInput) {
+    const input = state._deserializeHandoffInput(handoffInput);
+    state._originalInput = input.originalInput;
+    state._replaceGeneratedItems(input.generatedItems);
+    state._currentTurnPersistedItemCount = input.generatedItems.length;
+  }
+  state._currentTurnSessionWriteCompactedItemCount = handoffInput
+    ? state._generatedItems.length
+    : persistedItemCount;
   state._pendingSessionWrite = undefined;
   clearPendingSessionWriteTerminalProducer(state);
 }

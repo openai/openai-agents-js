@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Agent } from '../agent';
 import { getAgentToolSourceAgent } from '../agentToolSourceRegistry';
-import type { Handoff } from '../handoff';
+import type { Handoff, HandoffInputData } from '../handoff';
 import { ModelBehaviorError, ModelRefusalError } from '../errors';
 import {
   RunHandoffCallItem,
@@ -991,12 +991,19 @@ export async function resolveInterruptedTurn<TContext>(
   agentToolParentRunConfig?: Partial<RunConfig>,
   signal?: AbortSignal,
   validateHandoffAgent?: (agent: Agent<any, any>) => void,
+  beforeHandoffInputFilter?: (input: HandoffInputData) => void,
 ): Promise<SingleStepResult> {
   const suppressedToolCalls = preflightToolInvocations(
     agent,
     state,
     processedResponse as ProcessedResponse<TContext>,
   );
+  const handoffRuns = processedResponse.handoffs.filter(
+    (run) => !suppressedToolCalls.has(run.toolCall),
+  );
+  if (handoffRuns.length > 0) {
+    validateHandoffAgent?.(handoffRuns[0].handoff.agent);
+  }
   // call_ids for function tools
   const functionCallIds = originalPreStepItems
     .filter(
@@ -1303,6 +1310,25 @@ export async function resolveInterruptedTurn<TContext>(
     state.rewindTurnPersistence(removedApprovalCount);
   }
 
+  const handoffStep = await resolveHandoffAfterTools({
+    agent,
+    originalInput,
+    preStepItems,
+    newItems,
+    newResponse,
+    handoffRuns,
+    functionResults,
+    additionalInterruptions,
+    runner,
+    state,
+    signal,
+    validateHandoffAgent,
+    beforeHandoffInputFilter,
+  });
+  if (handoffStep) {
+    return handoffStep;
+  }
+
   const completedStep = await maybeCompleteTurnFromToolResults({
     agent,
     runner,
@@ -1510,27 +1536,22 @@ export async function resolveTurnAfterModelResponse<
     });
   }
 
-  // process handoffs
-  if (handoffRuns.length > 0) {
-    if (signal?.aborted) {
-      for (const { toolCall } of handoffRuns) {
-        const rawItem = buildFunctionAbortResult(toolCall);
-        appendIfNew(new RunToolCallOutputItem(rawItem, agent, rawItem.output));
-      }
-    } else {
-      return await executeHandoffCalls(
-        agent,
-        originalInput,
-        preStepItems,
-        newItems,
-        newResponse,
-        handoffRuns as ToolRunHandoff[],
-        runner,
-        state._context,
-        getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
-        validateHandoffAgent,
-      );
-    }
+  const handoffStep = await resolveHandoffAfterTools({
+    agent,
+    originalInput,
+    preStepItems,
+    newItems,
+    newResponse,
+    handoffRuns,
+    functionResults,
+    additionalInterruptions,
+    runner,
+    state,
+    signal,
+    validateHandoffAgent,
+  });
+  if (handoffStep) {
+    return handoffStep;
   }
 
   const completedStep = await maybeCompleteTurnFromToolResults({
@@ -1761,6 +1782,76 @@ type TurnFinalizationParams<TContext> = {
   newItems: RunItem[];
   additionalInterruptions?: RunToolApprovalItem[];
 };
+
+// Handoffs retain precedence over terminal tool behavior, but cannot discard pending approvals.
+async function resolveHandoffAfterTools<TContext>(
+  options: TurnFinalizationParams<TContext> & {
+    handoffRuns: ToolRunHandoff[];
+    signal?: AbortSignal;
+    validateHandoffAgent?: (agent: Agent<any, any>) => void;
+    beforeHandoffInputFilter?: (input: HandoffInputData) => void;
+  },
+): Promise<SingleStepResult | undefined> {
+  const {
+    agent,
+    originalInput,
+    preStepItems,
+    newItems,
+    newResponse,
+    handoffRuns,
+    functionResults,
+    additionalInterruptions,
+    runner,
+    state,
+    signal,
+    validateHandoffAgent,
+    beforeHandoffInputFilter,
+  } = options;
+  if (handoffRuns.length === 0) {
+    return undefined;
+  }
+  if (signal?.aborted) {
+    const appendContext = buildAppendContext([...preStepItems, ...newItems]);
+    for (const { toolCall } of handoffRuns) {
+      const rawItem = buildFunctionAbortResult(toolCall);
+      appendRunItemIfNew(
+        new RunToolCallOutputItem(rawItem, agent, rawItem.output),
+        newItems,
+        appendContext,
+      );
+    }
+    return undefined;
+  }
+  const interruptions = collectInterruptions(
+    functionResults,
+    additionalInterruptions,
+  );
+  if (interruptions.length > 0) {
+    return new SingleStepResult(
+      originalInput,
+      newResponse,
+      preStepItems,
+      newItems,
+      {
+        type: 'next_step_interruption',
+        data: { interruptions },
+      },
+    );
+  }
+  return executeHandoffCalls(
+    agent,
+    originalInput,
+    preStepItems,
+    newItems,
+    newResponse,
+    handoffRuns,
+    runner,
+    state._context,
+    getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
+    validateHandoffAgent,
+    beforeHandoffInputFilter,
+  );
+}
 
 // Consolidates the logic that determines whether tool results yielded a final answer,
 // triggered an interruption, or require the agent loop to continue running.

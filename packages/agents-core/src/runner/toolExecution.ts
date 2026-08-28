@@ -2543,6 +2543,7 @@ export async function executeHandoffCalls<
   runContext: RunContext<TContext>,
   parent?: Span<any>,
   validateHandoffAgent?: (agent: Agent<any, any>) => void,
+  beforeInputFilter?: (input: HandoffInputData) => void,
 ): Promise<import('./steps').SingleStepResult> {
   newStepItems = [...newStepItems];
 
@@ -2638,6 +2639,7 @@ export async function executeHandoffCalls<
           runContext,
         };
 
+        beforeInputFilter?.(handoffInputData);
         const filtered = inputFilter(handoffInputData);
         invalidateOutputItemNormalization([
           ...handoffInputData.preHandoffItems,
