@@ -325,10 +325,18 @@ function findContext(
   eof: boolean,
 ): { newIndex: number; fuzz: number } {
   if (eof) {
-    const endStart = Math.max(0, lines.length - context.length);
-    const endMatch = findContextCore(lines, context, endStart);
+    const searchLines =
+      lines.length > 1 && lines[lines.length - 1] === ''
+        ? lines.slice(0, -1)
+        : lines;
+    const endStart = Math.max(0, searchLines.length - context.length);
+    const endMatch = findContextCore(searchLines, context, endStart);
     if (endMatch.newIndex !== -1) return endMatch;
-    const fallback = findContextCore(lines, context, start);
+    const fallback = findContextCore(
+      searchLines,
+      context,
+      Math.min(start, searchLines.length),
+    );
     return { newIndex: fallback.newIndex, fuzz: fallback.fuzz + 10000 };
   }
   return findContextCore(lines, context, start);
