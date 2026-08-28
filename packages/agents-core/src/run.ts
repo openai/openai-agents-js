@@ -3022,7 +3022,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     preparedCall,
                   ),
                   conversationId: preparedCall.conversationId,
-                  modelSettings: preparedCall.modelSettings,
+                  modelSettings: {
+                    ...preparedCall.modelSettings,
+                    toolChoice: 'none',
+                  },
                   _internal: preparedCall.modelRequestInternal,
                   tools: preparedCall.serializedTools,
                   toolsExplicitlyProvided: preparedCall.toolsExplicitlyProvided,
