@@ -29,6 +29,7 @@ export type StreamAbortReconciliationState = {
   pendingShellCalls: Map<string, PendingStreamedToolCall>;
   pendingApplyPatchCalls: Map<string, PendingStreamedToolCall>;
   pendingProgramCalls: Map<string, string>;
+  pendingComputerCalls: Map<string, Pick<ComputerUseCallItem, 'callId'>>;
 };
 
 // 1x1 transparent PNG data URL used when a computer result requires an image
@@ -102,6 +103,7 @@ export function createStreamAbortReconciliationState(): StreamAbortReconciliatio
     pendingShellCalls: new Map(),
     pendingApplyPatchCalls: new Map(),
     pendingProgramCalls: new Map(),
+    pendingComputerCalls: new Map(),
   };
 }
 
@@ -114,6 +116,7 @@ export function recordStreamEventForAbortReconciliation(
     state.pendingShellCalls.clear();
     state.pendingApplyPatchCalls.clear();
     state.pendingProgramCalls.clear();
+    state.pendingComputerCalls.clear();
     state.responseId = event.response.id;
     return;
   }
@@ -176,6 +179,13 @@ export function recordStreamEventForAbortReconciliation(
     return;
   }
 
+  if (item.type === 'computer_call' && typeof item.call_id === 'string') {
+    state.pendingComputerCalls.set(item.call_id, {
+      callId: item.call_id,
+    });
+    return;
+  }
+
   if (
     item.type === 'shell_call' &&
     typeof item.call_id === 'string' &&
@@ -204,6 +214,14 @@ export function recordStreamEventForAbortReconciliation(
     return;
   }
 
+  if (
+    item.type === 'computer_call_output' &&
+    typeof item.call_id === 'string'
+  ) {
+    state.pendingComputerCalls.delete(item.call_id);
+    return;
+  }
+
   if (item.type === 'shell_call_output' && typeof item.call_id === 'string') {
     state.pendingShellCalls.delete(item.call_id);
     return;
@@ -221,6 +239,7 @@ export function buildAbortReconciliationInput(
   state: StreamAbortReconciliationState,
 ): (
   | FunctionCallResultItem
+  | ComputerCallResultItem
   | ShellCallResultItem
   | ApplyPatchCallResultItem
   | ProgramCallResultItem
@@ -228,6 +247,10 @@ export function buildAbortReconciliationInput(
   const functionOutputs = Array.from(
     state.pendingFunctionCalls.values(),
     buildFunctionAbortResult,
+  );
+  const computerOutputs = Array.from(
+    state.pendingComputerCalls.values(),
+    buildComputerAbortResult,
   );
   const shellOutputs = Array.from(
     state.pendingShellCalls.values(),
@@ -250,6 +273,7 @@ export function buildAbortReconciliationInput(
 
   return [
     ...functionOutputs,
+    ...computerOutputs,
     ...shellOutputs,
     ...applyPatchOutputs,
     ...programOutputs,
@@ -271,6 +295,7 @@ export function shouldReconcileStreamAbort(
 ): boolean {
   return (
     state.pendingFunctionCalls.size > 0 ||
+    state.pendingComputerCalls.size > 0 ||
     state.pendingProgramCalls.size > 0 ||
     state.pendingShellCalls.size > 0 ||
     state.pendingApplyPatchCalls.size > 0
@@ -282,6 +307,7 @@ export function markAbortReconciliationComplete(
   response: ModelResponse | undefined,
 ): void {
   state.pendingFunctionCalls.clear();
+  state.pendingComputerCalls.clear();
   state.pendingShellCalls.clear();
   state.pendingApplyPatchCalls.clear();
   state.pendingProgramCalls.clear();
