@@ -1673,7 +1673,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   validateHandoffAgent: (handoffAgent) => {
                     this.#validateModelTimeoutForAgent(handoffAgent);
                   },
-                  beforeApprovedToolResume: async () => {
+                  beforeResumedSideEffects: async () => {
                     if (
                       persistResult &&
                       options.session &&
@@ -1685,13 +1685,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                           state,
                         );
                     }
+                    return resumedSessionWritePreparation;
                   },
                 });
                 const checkpointDeferred =
-                  outcome.approvedToolResumed &&
+                  outcome.resumedSideEffects &&
                   outcome.nextStep.type === 'next_step_final_output' &&
                   this.#agentHasOutputGuardrail(state._currentAgent);
-                if (outcome.approvedToolResumed) {
+                if (outcome.resumedSideEffects) {
                   const approvedToolResult = new RunResult<TContext, TAgent>(
                     state,
                   );
@@ -1754,7 +1755,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 continuingInterruptedTurn = value;
               },
             });
-            if (!shouldContinue) {
+            if (
+              !shouldContinue ||
+              interruptedOutcome.nextStep.type === 'next_step_handoff'
+            ) {
               finishRunnerSpan(currentTurnSpan);
               setRunStateTurnSpanParent(state, undefined);
               currentTurnSpan = undefined;
@@ -2702,7 +2706,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               onStepItems: (turnResult) => {
                 addStepToRunResult(result, turnResult);
               },
-              beforeApprovedToolResume: async () => {
+              onHandoff: (agent) => {
+                result._addItem(new RunAgentUpdatedStreamEvent(agent));
+              },
+              beforeResumedSideEffects: async () => {
                 if (options.session && !serverManagesConversation) {
                   resumedSessionWritePreparation =
                     await prepareResumedSessionWrite(
@@ -2710,9 +2717,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                       result.state,
                     );
                 }
+                return resumedSessionWritePreparation;
               },
             });
-            if (outcome.approvedToolResumed) {
+            if (outcome.resumedSideEffects) {
               const checkpointDeferred =
                 outcome.nextStep.type === 'next_step_final_output' &&
                 this.#agentHasOutputGuardrail(result.state._currentAgent);
@@ -2757,7 +2765,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               continuingInterruptedTurn = value;
             },
           });
-          if (!shouldContinue) {
+          if (
+            !shouldContinue ||
+            interruptedOutcome.nextStep.type === 'next_step_handoff'
+          ) {
             finishRunnerSpan(currentTurnSpan);
             setRunStateTurnSpanParent(result.state, undefined);
             currentTurnSpan = undefined;
