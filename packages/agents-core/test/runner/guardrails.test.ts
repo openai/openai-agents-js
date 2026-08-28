@@ -5,6 +5,7 @@ import { withTrace } from '../../src';
 import { Agent, AgentOutputType } from '../../src/agent';
 import {
   buildInputGuardrailDefinitions,
+  createGuardrailTracker,
   runInputGuardrails,
   runOutputGuardrails,
   splitInputGuardrails,
@@ -88,6 +89,24 @@ describe('splitInputGuardrails', () => {
 
     expect(blockingResult.map((g) => g.name)).toEqual(['block']);
     expect(parallelResult.map((g) => g.name)).toEqual(['parallel']);
+  });
+});
+
+describe('createGuardrailTracker', () => {
+  it('throwIfError awaits in-flight parallel guardrails before surfacing errors', async () => {
+    const tracker = createGuardrailTracker();
+    const guardrailError = new Error('parallel guardrail failed');
+    let rejectGuardrail!: (err: Error) => void;
+    const pendingGuardrail = new Promise<never>((_, reject) => {
+      rejectGuardrail = reject;
+    });
+    tracker.setPromise(pendingGuardrail);
+
+    const throwPromise = tracker.throwIfError();
+
+    rejectGuardrail(guardrailError);
+
+    await expect(throwPromise).rejects.toBe(guardrailError);
   });
 });
 

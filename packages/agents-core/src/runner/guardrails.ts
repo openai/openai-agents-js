@@ -67,10 +67,10 @@ export const createGuardrailTracker = (): GuardrailTracker => {
   };
 
   const throwIfError = async () => {
+    if (promise) {
+      await promise;
+    }
     if (error) {
-      if (promise) {
-        await promise;
-      }
       throw error;
     }
   };
