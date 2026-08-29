@@ -102,6 +102,7 @@ function createProjects(reviewTestProfile: boolean) {
           'helpers/vitest/reviewTestProfile.test.ts',
           'helpers/vitest/testConcurrency.test.ts',
           'helpers/vitest/workspacePackageAliases.test.ts',
+          'scripts/pnpm-spawn.test.mjs',
           'scripts/update-rclone-pin.test.mjs',
           'scripts/released-api-contract.test.mjs',
           'scripts/run-integration-tests-managed.test.mjs',

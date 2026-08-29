@@ -1,7 +1,8 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import console from 'node:console';
 import process from 'node:process';
 import { URL, fileURLToPath } from 'node:url';
+import { spawnPnpmSync } from './pnpm-spawn.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 process.chdir(repoRoot);
@@ -62,8 +63,7 @@ if (filesToFormat.length === 0) {
   process.exit(0);
 }
 
-const prettier = spawnSync(
-  process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
+const prettier = spawnPnpmSync(
   ['exec', 'prettier', checkOnly ? '--check' : '--write', ...filesToFormat],
   {
     cwd: repoRoot,

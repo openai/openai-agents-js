@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnPnpmSync } from '../../../../scripts/pnpm-spawn.mjs';
 
 const { console, process } = globalThis;
 const scriptPath = fileURLToPath(import.meta.url);
@@ -46,13 +47,9 @@ function getRepoRoot() {
   }
 }
 
-function getPnpmCommand() {
-  return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-}
-
 function runPnpm(repoRoot, label, args) {
   console.log(`Running pnpm ${args.join(' ')}...`);
-  const result = spawnSync(getPnpmCommand(), args, {
+  const result = spawnPnpmSync(args, {
     cwd: repoRoot,
     env: process.env,
     stdio: 'inherit',
