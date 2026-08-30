@@ -7,6 +7,7 @@ These examples show how to wrap models from the [AI SDK](https://www.npmjs.com/p
 | Script | Command | Provider | Description |
 | --- | --- | --- | --- |
 | [index.ts](./index.ts) | `pnpm -F ai-sdk start` | OpenRouter (`OPENROUTER_API_KEY`) | Runs a parent agent that hands off a weather question to a child agent equipped with a `get_weather` tool. |
+| [orca-router.ts](./orca-router.ts) | `pnpm -F ai-sdk start:orca-router` | OrcaRouter (`ORCAROUTER_API_KEY`) | Runs the same handoff workflow as `index.ts` against an OrcaRouter-backed model. |
 | [gpt-5.ts](./gpt-5.ts) | `pnpm -F ai-sdk start:gpt-5` | OpenAI (`OPENAI_API_KEY`) | Shows a single agent that must call the `get_weather` tool using `gpt-5.4` with custom provider options. |
 | [retry.ts](./retry.ts) | `pnpm -F ai-sdk start:retry` | OpenAI (`OPENAI_API_KEY`) | Configures opt-in model retries for an AI SDK-backed agent and logs retry decisions when transient failures occur. |
 | [stream.ts](./stream.ts) | `pnpm -F ai-sdk start:stream` | OpenAI (`OPENAI_API_KEY`) | Demonstrates streaming text output from an AI SDK model wrapped with `aisdk()`. |

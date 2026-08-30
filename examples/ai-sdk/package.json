@@ -5,6 +5,7 @@
     "@ai-sdk/anthropic": "^3.0.9",
     "@ai-sdk/google": "^3.0.6",
     "@ai-sdk/openai": "^3.0.7",
+    "@ai-sdk/openai-compatible": "2.0.65",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openrouter/ai-sdk-provider": "^2.9.0",
@@ -13,6 +14,7 @@
   "scripts": {
     "build-check": "tsc --noEmit",
     "start": "tsx index.ts",
+    "start:orca-router": "tsx orca-router.ts",
     "start:gpt-5": "tsx gpt-5.ts",
     "start:retry": "tsx retry.ts",
     "start:stream": "tsx stream.ts",
