@@ -3,7 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnPnpmSync } from '../../../../scripts/pnpm-spawn.mjs';
+import { runBootstrapInstall } from '../../../../scripts/pnpm-bootstrap.mjs';
 
 const { console, process } = globalThis;
 const scriptPath = fileURLToPath(import.meta.url);
@@ -47,50 +47,74 @@ function getRepoRoot() {
   }
 }
 
-function runPnpm(repoRoot, label, args) {
-  console.log(`Running pnpm ${args.join(' ')}...`);
-  const result = spawnPnpmSync(args, {
-    cwd: repoRoot,
-    env: process.env,
-    stdio: 'inherit',
-  });
-
-  if (result.error) {
+function reportExit(label, { exitCode, signal, spawnError }) {
+  if (spawnError) {
     console.error(`code-change-verification: ${label} failed to start.`);
-    console.error(result.error);
+    console.error(spawnError);
     return 1;
   }
-  if (typeof result.status === 'number') {
-    if (result.status !== 0) {
+  if (typeof exitCode === 'number') {
+    if (exitCode !== 0) {
       console.error(
-        `code-change-verification: ${label} failed with exit code ${result.status}.`,
+        `code-change-verification: ${label} failed with exit code ${exitCode}.`,
       );
     }
-    return result.status;
+    return exitCode;
   }
 
   console.error(
-    `code-change-verification: ${label} terminated by ${result.signal ?? 'an unknown signal'}.`,
+    `code-change-verification: ${label} terminated by ${signal ?? 'an unknown signal'}.`,
   );
   return 1;
 }
 
-function runVerification() {
+function installDependencies(repoRoot) {
+  console.log('Running pnpm i --frozen-lockfile...');
+  const result = runBootstrapInstall({
+    cwd: repoRoot,
+    env: process.env,
+    stdio: 'inherit',
+  });
+  return reportExit('install', {
+    exitCode: result.status,
+    signal: result.signal,
+    spawnError: result.error,
+  });
+}
+
+// Execa resolves the Windows pnpm shim and quotes arguments itself, so nothing here
+// has to build a command line. It is imported only after install, once it exists.
+function runPnpm(execaSync, repoRoot, label, args) {
+  console.log(`Running pnpm ${args.join(' ')}...`);
+  const result = execaSync('pnpm', args, {
+    cwd: repoRoot,
+    env: process.env,
+    extendEnv: false,
+    stdio: 'inherit',
+    reject: false,
+  });
+
+  return reportExit(label, {
+    exitCode: result.isTerminated ? undefined : result.exitCode,
+    signal: result.signal,
+  });
+}
+
+async function runVerification() {
   const repoRoot = getRepoRoot();
-  const installExitCode = runPnpm(repoRoot, 'install', [
-    'i',
-    '--frozen-lockfile',
-  ]);
+  const installExitCode = installDependencies(repoRoot);
   if (installExitCode !== 0) {
     return installExitCode;
   }
 
-  const buildExitCode = runPnpm(repoRoot, 'build', ['build']);
+  const { execaSync } = await import('execa');
+
+  const buildExitCode = runPnpm(execaSync, repoRoot, 'build', ['build']);
   if (buildExitCode !== 0) {
     return buildExitCode;
   }
 
-  const validationExitCode = runPnpm(repoRoot, 'validation', [
+  const validationExitCode = runPnpm(execaSync, repoRoot, 'validation', [
     'exec',
     'concurrently',
     '--kill-others-on-fail',
@@ -113,4 +137,4 @@ if (process.argv.includes('--help')) {
   process.exit(0);
 }
 
-process.exit(runVerification());
+process.exit(await runVerification());

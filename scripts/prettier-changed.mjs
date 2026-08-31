@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import console from 'node:console';
 import process from 'node:process';
 import { URL, fileURLToPath } from 'node:url';
-import { spawnPnpmSync } from './pnpm-spawn.mjs';
+import { execaSync } from 'execa';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 process.chdir(repoRoot);
@@ -63,16 +63,20 @@ if (filesToFormat.length === 0) {
   process.exit(0);
 }
 
-const prettier = spawnPnpmSync(
+// Execa resolves the Windows pnpm shim and quotes these file names itself, so names
+// containing spaces, ampersands or percent signs reach Prettier unchanged.
+const prettier = execaSync(
+  'pnpm',
   ['exec', 'prettier', checkOnly ? '--check' : '--write', ...filesToFormat],
   {
     cwd: repoRoot,
     stdio: 'inherit',
+    reject: false,
   },
 );
 
-if (prettier.error) {
-  throw prettier.error;
+if (prettier.isTerminated) {
+  throw new Error(`Prettier terminated by ${prettier.signal ?? 'a signal'}.`);
 }
 
-process.exit(prettier.status ?? 1);
+process.exit(prettier.exitCode ?? 1);
