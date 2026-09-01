@@ -5,6 +5,7 @@ import {
   OutputGuardrailDefinition,
   OutputGuardrailMetadata,
   OutputGuardrailFunctionArgs,
+  UserError,
 } from '@openai/agents-core';
 
 export interface RealtimeOutputGuardrailSettings {
@@ -22,9 +23,17 @@ export interface RealtimeOutputGuardrailSettings {
 export function getRealtimeGuardrailSettings(
   settings: Partial<RealtimeOutputGuardrailSettings>,
 ): RealtimeOutputGuardrailSettings {
-  return {
-    debounceTextLength: settings.debounceTextLength ?? 100,
-  };
+  const debounceTextLength = settings.debounceTextLength ?? 100;
+  if (
+    debounceTextLength !== -1 &&
+    (!Number.isFinite(debounceTextLength) || debounceTextLength <= 0)
+  ) {
+    throw new UserError(
+      'Realtime output guardrail debounceTextLength must be a positive finite number or -1.',
+    );
+  }
+
+  return { debounceTextLength };
 }
 
 export interface RealtimeOutputGuardrail extends OutputGuardrail {
