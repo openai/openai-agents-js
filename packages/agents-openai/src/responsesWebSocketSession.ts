@@ -27,21 +27,25 @@ function attachCleanupErrorToThrownError(
   callbackError: unknown,
   cleanupError: unknown,
 ): void {
-  if (!(callbackError instanceof Error)) {
-    return;
+  try {
+    if (!(callbackError instanceof Error)) {
+      return;
+    }
+
+    const callbackErrorWithMetadata = callbackError as Error & {
+      cause?: unknown;
+      cleanupError?: unknown;
+    };
+
+    if (typeof callbackErrorWithMetadata.cause === 'undefined') {
+      callbackErrorWithMetadata.cause = cleanupError;
+      return;
+    }
+
+    callbackErrorWithMetadata.cleanupError = cleanupError;
+  } catch {
+    // Cleanup metadata is best-effort and must not replace the callback failure.
   }
-
-  const callbackErrorWithMetadata = callbackError as Error & {
-    cause?: unknown;
-    cleanupError?: unknown;
-  };
-
-  if (typeof callbackErrorWithMetadata.cause === 'undefined') {
-    callbackErrorWithMetadata.cause = cleanupError;
-    return;
-  }
-
-  callbackErrorWithMetadata.cleanupError = cleanupError;
 }
 
 /**
