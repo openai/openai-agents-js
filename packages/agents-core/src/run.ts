@@ -2042,7 +2042,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.tools,
               preparedCall.handoffs,
               state,
-              [...preparedCall.turnInput, ...state._generatedItems],
+              // Loading authority retains the agent ownership lost in model input.
+              [
+                ...(Array.isArray(state._originalInput)
+                  ? state._originalInput
+                  : []),
+                ...state._generatedItems,
+              ],
               options.toolNotFoundBehavior,
               {
                 allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
@@ -3225,7 +3231,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedCall.tools,
             preparedCall.handoffs,
             result.state,
-            [...preparedCall.turnInput, ...result.state._generatedItems],
+            // Loading authority retains the agent ownership lost in model input.
+            [
+              ...(Array.isArray(result.state._originalInput)
+                ? result.state._originalInput
+                : []),
+              ...result.state._generatedItems,
+            ],
             options.toolNotFoundBehavior,
             {
               allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,

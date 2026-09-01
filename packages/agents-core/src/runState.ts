@@ -172,7 +172,8 @@ import {
  *   same canonical approval identity, and adds sandbox session-state envelope version 4
  *   so Docker network-isolation state cannot be consumed by older SDKs that would drop it
  *   during container replacement.
- * - 1.20: Adds sandbox session-state envelope version 5 so Docker labels cannot be
+ * - 1.20: Preserves resolved function identities on tool call items and adds sandbox
+ *   session-state envelope version 5 so Docker labels cannot be
  *   consumed by older SDKs that would drop them during container replacement, preserves
  *   exact current-response ownership for serialized approval resumes, and checkpoints
  *   unacknowledged ordinary Session appends completed during approval resume, including
@@ -416,9 +417,27 @@ function getSerializedLocalToolIdentity(
   toolCall: LocalToolCall,
   approvalNames: ReadonlyMap<string, string>,
   agent: Agent<any, any>,
+  functionToolStateKey?: string,
 ): string | undefined {
   if (toolCall.type === 'function_call') {
-    return getFunctionToolStateKeyForCall(toolCall, toolCall.name);
+    const callIdentity = getFunctionToolStateKeyForCall(
+      toolCall,
+      toolCall.name,
+    );
+    if (functionToolStateKey !== undefined) {
+      if (
+        functionToolStateKey !== callIdentity &&
+        (getToolCallNamespace(toolCall) ||
+          functionToolStateKey !==
+            getFunctionToolLookupKey(toolCall.name, toolCall.name))
+      ) {
+        throw new UserError(
+          'RunState function tool identity does not match its call.',
+        );
+      }
+      return functionToolStateKey;
+    }
+    return callIdentity;
   }
   const callId = getToolInvocationCallId(toolCall);
   if (callId) {
@@ -630,6 +649,8 @@ function inferCompletedToolInvocations(generatedItems: readonly RunItem[]): {
   const ambiguous = new Map<Agent<any, any>, Set<string>>();
   const evidence = new Map<Agent<any, any>, Map<string, RunItem[]>>();
 
+  // Completed calls retain their execution-time identity even when a handoff
+  // filter removes discovery history. Completion evidence is checked separately.
   for (const item of generatedItems) {
     if (item instanceof RunToolApprovalItem) {
       const callId = getToolInvocationCallId(item.rawItem);
@@ -787,6 +808,7 @@ function inferCompletedToolInvocations(generatedItems: readonly RunItem[]): {
         rawItem,
         approvalNames.get(item.agent) ?? new Map(),
         item.agent,
+        item.functionToolStateKey,
       );
       const agentPending = getAgentInvocationMap(pendingLocalCalls, item.agent);
       const previousPending = agentPending.get(callId);
@@ -1015,12 +1037,20 @@ function validateToolInvocationCompletionEvidence(
         toolCall.type === 'function_call'
           ? callItem instanceof RunToolApprovalItem
             ? (callItem.functionToolStateKey ?? callItem.name)
-            : getFunctionToolLegacyStateKeyFromStateKey(toolName ?? '') ===
-                getFunctionToolLegacyStateKeyFromStateKey(
-                  getFunctionToolStateKeyForCall(toolCall, toolCall.name) ?? '',
+            : callItem.functionToolStateKey !== undefined
+              ? getSerializedLocalToolIdentity(
+                  toolCall,
+                  new Map(),
+                  agent,
+                  callItem.functionToolStateKey,
                 )
-              ? toolName
-              : undefined
+              : getFunctionToolLegacyStateKeyFromStateKey(toolName ?? '') ===
+                  getFunctionToolLegacyStateKeyFromStateKey(
+                    getFunctionToolStateKeyForCall(toolCall, toolCall.name) ??
+                      '',
+                  )
+                ? toolName
+                : undefined
           : callItem instanceof RunToolApprovalItem
             ? callItem.name
             : toolName;
@@ -1417,6 +1447,7 @@ const itemSchema = z.discriminatedUnion('type', [
     type: z.literal('tool_call_item'),
     rawItem: protocol.ToolCallItem.or(protocol.HostedToolCallItem),
     agent: serializedAgentSchema,
+    functionToolStateKey: z.string().optional(),
   }),
   z.object({
     type: z.literal('tool_call_output_item'),
@@ -2663,6 +2694,29 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       );
       if (!evidence) {
         return;
+      }
+      // Preserve the execution-time owner when resuming older pending calls that
+      // predate call-item identity metadata. Observed invocations are runtime-only.
+      const toolName = getToolInvocationNameFromFingerprint(fingerprint);
+      for (const candidate of evidenceCandidates) {
+        if (
+          toolName !== undefined &&
+          candidate instanceof RunToolCallItem &&
+          candidate.functionToolStateKey === undefined &&
+          candidate.agent === agent &&
+          candidate.rawItem.type === 'function_call' &&
+          candidate.rawItem.callId === callId &&
+          !getToolCallNamespace(candidate.rawItem) &&
+          toolName ===
+            getFunctionToolLookupKey(
+              candidate.rawItem.name,
+              candidate.rawItem.name,
+            ) &&
+          getToolInvocationFingerprint(toolName, candidate.rawItem) ===
+            fingerprint
+        ) {
+          candidate.functionToolStateKey = toolName;
+        }
       }
       getAgentInvocationMap(this._completedToolInvocations, agent).set(
         callId,
@@ -6358,6 +6412,7 @@ export function deserializeItem(
       return new RunToolCallItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
+        serializedItem.functionToolStateKey,
       );
     case 'tool_call_output_item':
       return new RunToolCallOutputItem(
