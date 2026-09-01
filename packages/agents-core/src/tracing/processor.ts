@@ -1,6 +1,7 @@
 import { Span as TSpan } from './spans';
 import { Trace } from './traces';
 import logger, { logModelAndToolActionError } from '../logger';
+import { UserError } from '../errors';
 import {
   timer as _timer,
   isTracingLoopRunningByDefault,
@@ -11,6 +12,8 @@ import { combineAbortSignals } from '../utils/abortSignals';
 import { NOOP_TRACE_OR_SPAN_ID } from './utils';
 
 type Span = TSpan<any>;
+
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 function isNoopSpan(span: Span): boolean {
   return (
@@ -144,6 +147,21 @@ export class BatchTraceProcessor implements TracingProcessor {
       exportTriggerRatio = 0.8,
     }: BatchTraceProcessorOptions = {},
   ) {
+    if (!Number.isInteger(maxBatchSize) || maxBatchSize <= 0) {
+      throw new UserError(
+        'BatchTraceProcessor maxBatchSize must be a positive integer.',
+      );
+    }
+    if (
+      !Number.isFinite(scheduleDelay) ||
+      scheduleDelay <= 0 ||
+      scheduleDelay > MAX_TIMER_DELAY_MS
+    ) {
+      throw new UserError(
+        `BatchTraceProcessor scheduleDelay must be a positive finite number less than or equal to ${MAX_TIMER_DELAY_MS}.`,
+      );
+    }
+
     this.#maxQueueSize = maxQueueSize;
     this.#maxBatchSize = maxBatchSize;
     this.#scheduleDelay = scheduleDelay;
