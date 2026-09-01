@@ -429,7 +429,7 @@ export function handoff<
     handoff.toolName = config.toolNameOverride;
   }
 
-  if (config.toolDescriptionOverride) {
+  if (config.toolDescriptionOverride !== undefined) {
     handoff.toolDescription = config.toolDescriptionOverride;
   }
 
