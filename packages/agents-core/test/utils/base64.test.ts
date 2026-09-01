@@ -82,6 +82,38 @@ describe('decodeBase64ToUint8Array', () => {
     );
   });
 
+  it('accepts ASCII whitespace and omitted padding across decoder paths', () => {
+    const value = 'A Q I\n';
+    const expected = new Uint8Array([1, 2]);
+
+    expect(decodeBase64ToUint8Array(value)).toEqual(expected);
+
+    (globalThis as any).Buffer = undefined;
+    expect(decodeBase64ToUint8Array(value)).toEqual(expected);
+
+    (globalThis as any).atob = undefined;
+    expect(decodeBase64ToUint8Array(value)).toEqual(expected);
+  });
+
+  it.each(['!!!!', 'AA=', 'AAAA=', 'AA-_'])(
+    'rejects malformed base64 %j across decoder paths',
+    (value) => {
+      expect(() => decodeBase64ToUint8Array(value)).toThrow(
+        'Invalid base64 string.',
+      );
+
+      (globalThis as any).Buffer = undefined;
+      expect(() => decodeBase64ToUint8Array(value)).toThrow(
+        'Invalid base64 string.',
+      );
+
+      (globalThis as any).atob = undefined;
+      expect(() => decodeBase64ToUint8Array(value)).toThrow(
+        'Invalid base64 string.',
+      );
+    },
+  );
+
   it('uses atob when Buffer is unavailable', () => {
     (globalThis as any).Buffer = undefined;
     const atobSpy = vi.fn((input: string) =>

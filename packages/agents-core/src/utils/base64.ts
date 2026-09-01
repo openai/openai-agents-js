@@ -49,6 +49,18 @@ export function encodeUint8ArrayToBase64(data: Uint8Array): string {
   return result;
 }
 
+function normalizeBase64ForDecoding(value: string): string {
+  const normalized = value.replace(/[\t\n\f\r ]/g, '');
+  if (
+    normalized.length % 4 === 1 ||
+    !/^[A-Za-z0-9+/]*={0,2}$/u.test(normalized) ||
+    (normalized.includes('=') && normalized.length % 4 !== 0)
+  ) {
+    throw new TypeError('Invalid base64 string.');
+  }
+  return normalized;
+}
+
 /**
  * Decode a base64 string into a Uint8Array in both Node and browser environments.
  */
@@ -57,17 +69,18 @@ export function decodeBase64ToUint8Array(value: string): Uint8Array {
     return new Uint8Array();
   }
 
+  const normalized = normalizeBase64ForDecoding(value);
   const globalBuffer =
     typeof globalThis !== 'undefined' && (globalThis as any).Buffer
       ? (globalThis as any).Buffer
       : undefined;
 
   if (globalBuffer) {
-    return Uint8Array.from(globalBuffer.from(value, 'base64'));
+    return Uint8Array.from(globalBuffer.from(normalized, 'base64'));
   }
 
   if (typeof (globalThis as any).atob === 'function') {
-    const binary = (globalThis as any).atob(value);
+    const binary = (globalThis as any).atob(normalized);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index);
@@ -77,11 +90,6 @@ export function decodeBase64ToUint8Array(value: string): Uint8Array {
 
   const chars =
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const normalized = value.replace(/[\t\n\f\r ]/g, '');
-  if (normalized.length % 4 === 1) {
-    throw new TypeError('Invalid base64 string.');
-  }
-
   const padded = normalized.padEnd(
     normalized.length + ((4 - (normalized.length % 4)) % 4),
     '=',
