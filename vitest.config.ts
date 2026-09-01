@@ -99,6 +99,7 @@ function createProjects(reviewTestProfile: boolean) {
         include: [
           'helpers/tests/consoleGuard.test.ts',
           'helpers/vitest/codeChangeVerificationPolicy.test.ts',
+          'helpers/vitest/imageGenerationFileOpen.test.ts',
           'helpers/vitest/reviewTestProfile.test.ts',
           'helpers/vitest/testConcurrency.test.ts',
           'helpers/vitest/workspacePackageAliases.test.ts',
