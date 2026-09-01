@@ -175,7 +175,7 @@ describe('OpenAIConversationsSession', () => {
 
     const result = await session.getItems(1);
 
-    expect(list).toHaveBeenCalledWith('conv-123', { limit: 1, order: 'desc' });
+    expect(list).toHaveBeenCalledWith('conv-123', { order: 'desc' });
     expect(convertToOutputItemMock).not.toHaveBeenCalled();
     expect(result).toEqual([
       {
@@ -185,6 +185,51 @@ describe('OpenAIConversationsSession', () => {
         content: 'User info (session context): premium account',
       },
     ]);
+  });
+
+  it('keeps large history limits local while preserving newest-item order', async () => {
+    const items = Array.from({ length: 200 }, (_, index) => {
+      const itemNumber = 199 - index;
+      return {
+        id: `user-${itemNumber}`,
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `message ${itemNumber}`,
+          },
+        ],
+      };
+    });
+    const list = vi.fn(() => ({
+      async *[Symbol.asyncIterator]() {
+        for (const item of items) {
+          yield item as any;
+        }
+      },
+    }));
+    const session = createSession({
+      client: {
+        conversations: {
+          items: {
+            list,
+            create: vi.fn(),
+            delete: vi.fn(),
+          },
+          create: vi.fn(),
+          delete: vi.fn(),
+        },
+      } as any,
+      conversationId: 'conv-123',
+    });
+
+    const result = await session.getItems(150);
+
+    expect(list).toHaveBeenCalledWith('conv-123', { order: 'desc' });
+    expect(result).toHaveLength(150);
+    expect(result[0]?.id).toBe('user-50');
+    expect(result[result.length - 1]?.id).toBe('user-199');
   });
 
   it('wraps string function_call_output payloads before converting', async () => {
@@ -372,7 +417,7 @@ describe('OpenAIConversationsSession', () => {
 
     const result = await session.getItems(2);
 
-    expect(list).toHaveBeenCalledWith('conv-123', { limit: 2, order: 'desc' });
+    expect(list).toHaveBeenCalledWith('conv-123', { order: 'desc' });
     expect(convertToOutputItemMock).toHaveBeenCalledTimes(1);
     expect(result).toHaveLength(2);
     expect(result.map((item: any) => item.id)).toEqual([
@@ -439,7 +484,7 @@ describe('OpenAIConversationsSession', () => {
 
     const popped = await session.popItem();
 
-    expect(list).toHaveBeenCalledWith('conv-123', { limit: 1, order: 'desc' });
+    expect(list).toHaveBeenCalledWith('conv-123', { order: 'desc' });
     expect(deleteMock).toHaveBeenCalledWith('resp-1-msg-3', {
       conversation_id: 'conv-123',
     });
@@ -1733,7 +1778,7 @@ describe('OpenAIConversationsSession', () => {
     });
 
     const popped = await session.popItem();
-    expect(list).toHaveBeenCalledWith('conv-new', { limit: 1, order: 'desc' });
+    expect(list).toHaveBeenCalledWith('conv-new', { order: 'desc' });
     expect(deleteItem).toHaveBeenCalledWith('assistant-3', {
       conversation_id: 'conv-new',
     });
