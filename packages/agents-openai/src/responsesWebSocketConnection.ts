@@ -1,6 +1,8 @@
 import { UserError } from '@openai/agents-core';
 import OpenAI from 'openai';
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export type WebSocketMessageValue =
   | string
   | Blob
@@ -10,12 +12,14 @@ export type WebSocketMessageValue =
 export type ResponsesWebSocketKeepAliveOptions = {
   /**
    * Time in milliseconds between keepalive pings sent by the client.
+   * Must be greater than 0 and no greater than 2147483647 when provided.
    *
    * Set to null to disable client keepalive pings.
    */
   pingIntervalMs?: number | null;
   /**
    * Time in milliseconds to wait for a pong response before closing the socket.
+   * Must be greater than 0 and no greater than 2147483647 when provided.
    *
    * Set to null to keep pings enabled but disable heartbeat timeouts.
    */
@@ -202,12 +206,16 @@ function normalizeKeepAliveDurationMs(
   if (value == null) {
     return undefined;
   }
-  if (Number.isFinite(value) && value > 0) {
+  if (
+    Number.isFinite(value) &&
+    value > 0 &&
+    value <= MAX_TIMER_DELAY_MS
+  ) {
     return value;
   }
 
   throw new UserError(
-    `Responses websocket ${fieldName} must be a positive number of milliseconds or null.`,
+    `Responses websocket ${fieldName} must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}, or null.`,
   );
 }
 
