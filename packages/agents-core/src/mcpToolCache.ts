@@ -1,7 +1,8 @@
 import type { MCPTool } from './mcpShared';
 
-export const cachedMcpTools: Record<string, MCPTool[]> = {};
-export const cachedMcpToolKeysByServer: Record<string, Set<string>> = {};
+export const cachedMcpTools: Record<string, MCPTool[]> = Object.create(null);
+export const cachedMcpToolKeysByServer: Record<string, Set<string>> =
+  Object.create(null);
 type ActiveServerToolsCacheListing = {
   invalidated: boolean;
 };
