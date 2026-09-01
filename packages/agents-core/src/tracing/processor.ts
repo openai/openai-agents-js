@@ -358,7 +358,13 @@ export class MultiTracingProcessor implements TracingProcessor {
   setProcessors(processors: TracingProcessor[]): void {
     logger.debug('Shutting down old processors');
     for (const processor of this.#processors) {
-      processor.shutdown();
+      void processor.shutdown().catch((error) => {
+        logModelAndToolActionError(
+          logger,
+          'Error shutting down replaced tracing processor',
+          error,
+        );
+      });
     }
     this.#processors = processors;
   }
