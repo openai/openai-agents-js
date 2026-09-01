@@ -8,6 +8,7 @@ import { afterEach, test } from 'vitest';
 import {
   BOOTSTRAP_INSTALL_ARGS,
   bootstrapInstallTarget,
+  execaRunOutcome,
 } from './pnpm-bootstrap.mjs';
 
 const tempDirs = [];
@@ -85,3 +86,65 @@ test.skipIf(process.platform !== 'win32')(
     assert.deepEqual(JSON.parse(result.stdout.trim()), names);
   },
 );
+
+// With `reject: false` Execa returns its error instead of throwing, and a process that
+// never started carries no exitCode and no signal. Reading exitCode alone would report a
+// missing pnpm as "terminated by an unknown signal" and lose the startup error.
+test('reports a normal exit', () => {
+  assert.deepEqual(execaRunOutcome({ exitCode: 0, failed: false }), {
+    exitCode: 0,
+    signal: undefined,
+  });
+  assert.deepEqual(execaRunOutcome({ exitCode: 2, failed: true }), {
+    exitCode: 2,
+    signal: undefined,
+  });
+});
+
+test('reports a signal separately from an exit code', () => {
+  const outcome = execaRunOutcome({
+    isTerminated: true,
+    signal: 'SIGTERM',
+    failed: true,
+  });
+  assert.equal(outcome.exitCode, undefined);
+  assert.equal(outcome.signal, 'SIGTERM');
+  assert.equal(outcome.spawnError, undefined);
+});
+
+test('surfaces the startup error when the process never ran', () => {
+  const outcome = execaRunOutcome({
+    failed: true,
+    code: 'ENOENT',
+    shortMessage: 'Command failed with ENOENT: pnpm build',
+    originalMessage: 'spawnSync pnpm ENOENT',
+  });
+  assert.equal(outcome.exitCode, undefined);
+  assert.equal(outcome.signal, undefined);
+  assert.equal(outcome.spawnError, 'spawnSync pnpm ENOENT');
+});
+
+test('falls back to shortMessage when Execa gives no original message', () => {
+  const outcome = execaRunOutcome({
+    failed: true,
+    shortMessage: 'Command failed with ENOENT: pnpm build',
+  });
+  assert.equal(outcome.spawnError, 'Command failed with ENOENT: pnpm build');
+});
+
+test('classifies a real Execa spawn failure as a startup error', () => {
+  // A cwd that does not exist makes Execa fail before the child starts, which is the
+  // same shape as a missing pnpm on PATH.
+  const result = execaSync('pnpm', ['--version'], {
+    cwd: join(tmpdir(), 'pnpm-bootstrap-missing-dir-xyz'),
+    reject: false,
+    stdio: 'ignore',
+  });
+  const outcome = execaRunOutcome(result);
+
+  assert.equal(outcome.exitCode, undefined);
+  assert.ok(
+    outcome.spawnError,
+    `expected a startup error, got ${JSON.stringify(outcome)}`,
+  );
+});

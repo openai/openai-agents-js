@@ -36,3 +36,26 @@ export function runBootstrapInstall(options = {}) {
     ...target.options,
   });
 }
+
+/**
+ * Normalise an Execa result into the fields a caller needs to report an exit.
+ *
+ * With `reject: false` Execa returns its error rather than throwing, and a process that
+ * never started has no `exitCode` and no `signal`. Reading `exitCode` alone turns a
+ * missing pnpm into "terminated by an unknown signal" and drops the startup error that
+ * `spawnSync` used to expose through `result.error`.
+ */
+export function execaRunOutcome(result) {
+  if (result.isTerminated) {
+    return { exitCode: undefined, signal: result.signal };
+  }
+  if (typeof result.exitCode === 'number') {
+    return { exitCode: result.exitCode, signal: undefined };
+  }
+
+  return {
+    exitCode: undefined,
+    signal: undefined,
+    spawnError: result.originalMessage ?? result.shortMessage ?? result.message,
+  };
+}

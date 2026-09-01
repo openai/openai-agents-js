@@ -3,7 +3,10 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runBootstrapInstall } from '../../../../scripts/pnpm-bootstrap.mjs';
+import {
+  execaRunOutcome,
+  runBootstrapInstall,
+} from '../../../../scripts/pnpm-bootstrap.mjs';
 
 const { console, process } = globalThis;
 const scriptPath = fileURLToPath(import.meta.url);
@@ -94,10 +97,7 @@ function runPnpm(execaSync, repoRoot, label, args) {
     reject: false,
   });
 
-  return reportExit(label, {
-    exitCode: result.isTerminated ? undefined : result.exitCode,
-    signal: result.signal,
-  });
+  return reportExit(label, execaRunOutcome(result));
 }
 
 async function runVerification() {

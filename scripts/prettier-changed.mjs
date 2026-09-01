@@ -3,6 +3,7 @@ import console from 'node:console';
 import process from 'node:process';
 import { URL, fileURLToPath } from 'node:url';
 import { execaSync } from 'execa';
+import { execaRunOutcome } from './pnpm-bootstrap.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 process.chdir(repoRoot);
@@ -75,8 +76,13 @@ const prettier = execaSync(
   },
 );
 
-if (prettier.isTerminated) {
-  throw new Error(`Prettier terminated by ${prettier.signal ?? 'a signal'}.`);
+const outcome = execaRunOutcome(prettier);
+
+if (outcome.spawnError) {
+  throw new Error(`Prettier failed to start: ${outcome.spawnError}`);
+}
+if (outcome.exitCode === undefined) {
+  throw new Error(`Prettier terminated by ${outcome.signal ?? 'a signal'}.`);
 }
 
-process.exit(prettier.exitCode ?? 1);
+process.exit(outcome.exitCode);
