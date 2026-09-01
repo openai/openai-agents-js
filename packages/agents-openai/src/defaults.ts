@@ -1,3 +1,4 @@
+import { UserError } from '@openai/agents-core';
 import { loadEnv } from '@openai/agents-core/_shims';
 import METADATA from './metadata';
 import type { OpenAIClient } from './openaiClient';
@@ -29,10 +30,20 @@ export function shouldUseResponsesWebSocketByDefault() {
 }
 
 export function setOpenAIAPI(value: 'chat_completions' | 'responses') {
+  if (value !== 'chat_completions' && value !== 'responses') {
+    throw new UserError(
+      "OpenAI API must be 'chat_completions' or 'responses'.",
+    );
+  }
   _defaultOpenAIAPI = value;
 }
 
 export function setOpenAIResponsesTransport(value: 'http' | 'websocket') {
+  if (value !== 'http' && value !== 'websocket') {
+    throw new UserError(
+      "OpenAI Responses transport must be 'http' or 'websocket'.",
+    );
+  }
   _defaultOpenAIResponsesTransport = value;
 }
 
