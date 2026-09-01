@@ -273,6 +273,13 @@ export class Span<TData extends SpanData> {
   }
 
   clone(): Span<TData> {
+    if (
+      this.traceId === NOOP_TRACE_OR_SPAN_ID ||
+      this.spanId === NOOP_TRACE_OR_SPAN_ID
+    ) {
+      return new NoopSpan(this.spanData, this.#processor);
+    }
+
     const span = new Span(
       {
         traceId: this.traceId,

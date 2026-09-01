@@ -50,14 +50,17 @@ export class Trace {
   }
 
   clone(): Trace {
-    return new Trace({
-      traceId: this.traceId,
-      name: this.name,
-      groupId: this.groupId ?? undefined,
-      metadata: this.metadata,
-      started: this.#started,
-      tracingApiKey: this.tracingApiKey,
-    });
+    return new Trace(
+      {
+        traceId: this.traceId,
+        name: this.name,
+        groupId: this.groupId ?? undefined,
+        metadata: this.metadata,
+        started: this.#started,
+        tracingApiKey: this.tracingApiKey,
+      },
+      this.#processor,
+    );
   }
 
   /**
@@ -94,6 +97,10 @@ export class NoopTrace extends Trace {
 
   async end(): Promise<void> {
     return;
+  }
+
+  clone(): NoopTrace {
+    return new NoopTrace();
   }
 
   toJSON(): object | null {
