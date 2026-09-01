@@ -1,7 +1,9 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import console from 'node:console';
 import process from 'node:process';
 import { URL, fileURLToPath } from 'node:url';
+import { execaSync } from 'execa';
+import { execaRunOutcome } from './pnpm-bootstrap.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 process.chdir(repoRoot);
@@ -62,17 +64,25 @@ if (filesToFormat.length === 0) {
   process.exit(0);
 }
 
-const prettier = spawnSync(
-  process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm',
+// Execa resolves the Windows pnpm shim and quotes these file names itself, so names
+// containing spaces, ampersands or percent signs reach Prettier unchanged.
+const prettier = execaSync(
+  'pnpm',
   ['exec', 'prettier', checkOnly ? '--check' : '--write', ...filesToFormat],
   {
     cwd: repoRoot,
     stdio: 'inherit',
+    reject: false,
   },
 );
 
-if (prettier.error) {
-  throw prettier.error;
+const outcome = execaRunOutcome(prettier);
+
+if (outcome.spawnError) {
+  throw new Error(`Prettier failed to start: ${outcome.spawnError}`);
+}
+if (outcome.exitCode === undefined) {
+  throw new Error(`Prettier terminated by ${outcome.signal ?? 'a signal'}.`);
 }
 
-process.exit(prettier.status ?? 1);
+process.exit(outcome.exitCode);
