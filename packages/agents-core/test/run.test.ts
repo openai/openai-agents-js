@@ -2022,6 +2022,75 @@ describe('Runner.run', () => {
       ).toHaveLength(1);
     });
 
+    it('reconciles streamed pending computer calls using toolChoice none under required tool choice', async () => {
+      const controller = new AbortController();
+      const abortReason = new Error('abort stream');
+      const computer = new FakeComputer();
+
+      const model = new ScriptedModel([
+        {
+          type: 'stream_responder',
+          respond: async function* () {
+            yield {
+              type: 'model',
+              event: {
+                type: 'response.created',
+                response: { id: 'resp_initial' },
+              },
+            };
+            yield {
+              type: 'model',
+              event: {
+                type: 'response.output_item.done',
+                item: {
+                  type: 'computer_call',
+                  id: 'comp_1',
+                  call_id: 'call_comp_1',
+                  status: 'completed',
+                  action: { type: 'screenshot' },
+                },
+              },
+            };
+            controller.abort(abortReason);
+            const abortError = new Error('stream aborted');
+            abortError.name = 'AbortError';
+            throw abortError;
+          },
+        },
+        modelResponse({
+          output: [fakeModelMessage('reconciled response')],
+          usage: new Usage(),
+        }),
+      ]);
+
+      const agent = new Agent({
+        name: 'ComputerStreamAbortAgent',
+        model,
+        tools: [computerTool({ computer })],
+        modelSettings: { toolChoice: 'required' },
+      });
+
+      const result = await run(agent, 'start', {
+        stream: true,
+        conversationId: 'conv_123',
+        signal: controller.signal,
+      });
+
+      await result.completed;
+
+      expect(model.calls).toHaveLength(2);
+      expect(model.calls[0]?.request.modelSettings.toolChoice).toBe('required');
+      expect(model.calls[1]?.request.modelSettings.toolChoice).toBe('none');
+      expect(model.calls[1]?.request.input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'computer_call_result',
+            callId: 'call_comp_1',
+          }),
+        ]),
+      );
+    });
+
     it('accepts public tool not found behavior config', () => {
       const toolNotFoundBehavior =
         'return_error_to_model' satisfies ToolNotFoundBehavior;
