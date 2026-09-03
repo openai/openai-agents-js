@@ -5,7 +5,7 @@ export function normalizeInstructions(
   instructions: string | undefined,
 ): string | undefined {
   if (typeof instructions === 'string') {
-    return instructions.trim() === '' ? undefined : instructions;
+    return instructions.trimStart().length === 0 ? undefined : instructions;
   }
   return undefined;
 }
