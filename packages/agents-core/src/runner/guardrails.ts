@@ -200,7 +200,12 @@ async function runGuardrailsWithTripwire<
     const observedResult = await withGuardrailSpan(
       async (span) => {
         const result = await guardrail.run(guardrailArgs);
-        const tripwireTriggered = result.output.tripwireTriggered;
+        const tripwireTriggered: unknown = result.output.tripwireTriggered;
+        if (typeof tripwireTriggered !== 'boolean') {
+          throw new UserError(
+            `Guardrail ${guardrail.name} must return a boolean tripwireTriggered value.`,
+          );
+        }
         span.spanData.triggered = tripwireTriggered;
         return {
           result,
