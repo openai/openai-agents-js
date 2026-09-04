@@ -285,6 +285,8 @@ export class OpenAIResponsesCompactionSession
       if (!popped) {
         return popped;
       }
+      this.responseId = undefined;
+      this.lastStore = undefined;
       if (this.sessionItems) {
         const index = this.sessionItems.lastIndexOf(popped);
         if (index >= 0) {
