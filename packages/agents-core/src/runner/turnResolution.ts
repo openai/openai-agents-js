@@ -849,6 +849,7 @@ async function executeShellAndApplyPatchActionsInOrder<TContext>(args: {
             args.state._context,
             undefined,
             args.toolErrorFormatter,
+            args.signal,
           )
         : await executeApplyPatchOperations(
             args.agent,
@@ -857,6 +858,7 @@ async function executeShellAndApplyPatchActionsInOrder<TContext>(args: {
             args.state._context,
             undefined,
             args.toolErrorFormatter,
+            args.signal,
           );
     results.push(...items);
   }

@@ -66,6 +66,7 @@ import {
   isSiblingCancellationSignal,
 } from '../utils/abortSignals';
 import { isAsyncStandardSchemaValidationError } from '../utils/standardSchema';
+import { requireBooleanApprovalResult } from '../utils/toolApproval';
 import { toSmartString } from '../utils/smartString';
 import { withFunctionSpan, withHandoffSpan } from '../tracing/createSpans';
 import { getCurrentTrace } from '../tracing/context';
@@ -116,8 +117,10 @@ import {
 } from './usageTracking';
 import { getRunStateTurnSpanParent } from './invocationContext';
 import {
+  buildApplyPatchAbortResult,
   buildComputerAbortResult,
   buildFunctionAbortResult,
+  buildShellAbortResult,
   COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
 } from './streamReconciliation';
 import { runWithSiblingCancellation } from './siblingCancellation';
@@ -949,13 +952,17 @@ async function handleFunctionApproval<TContext>(
 
   let needsApproval = forceApproval;
   if (!needsApproval) {
+    let approvalResult: unknown;
     try {
-      needsApproval = await toolRun.tool.needsApproval(
+      approvalResult = await toolRun.tool.needsApproval(
         state._context,
         parsedArgs,
         toolRun.toolCall.callId,
       );
     } catch (error) {
+      if (deps.signal?.aborted) {
+        return buildFunctionCancellationResult(deps, toolRun);
+      }
       if (
         invalidInputFailure &&
         refreshInvalidToolInputFailure(invalidInputFailure)
@@ -964,6 +971,13 @@ async function handleFunctionApproval<TContext>(
       }
       throw error;
     }
+    if (deps.signal?.aborted) {
+      return buildFunctionCancellationResult(deps, toolRun);
+    }
+    needsApproval = requireBooleanApprovalResult(
+      toolRun.tool.name,
+      approvalResult,
+    );
   }
 
   if (deps.signal?.aborted) {
@@ -1685,7 +1699,10 @@ async function resolveToolApproval(options: {
 
   let approvalRequired: boolean;
   try {
-    approvalRequired = await needsApproval();
+    approvalRequired = requireBooleanApprovalResult(
+      toolName,
+      await needsApproval(),
+    );
   } catch (error) {
     if (isCancelled?.()) {
       return 'cancelled';
@@ -1893,6 +1910,7 @@ export async function executeShellActions(
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
   toolErrorFormatter?: ToolErrorFormatter,
+  signal?: AbortSignal,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
@@ -1901,6 +1919,16 @@ export async function executeShellActions(
     const shellTool = action.shell;
     const toolCall = action.toolCall;
     const toolCallKey = getToolCallKey(toolCall) ?? toolCall.callId;
+    if (signal?.aborted) {
+      results.push(
+        new RunToolCallOutputItem(
+          buildShellAbortResult(toolCall),
+          agent,
+          'aborted',
+        ),
+      );
+      continue;
+    }
     if (!shellTool.shell) {
       _logger.warn(
         `Skipping shell action for tool "${shellTool.name}" because no local shell implementation is configured.`,
@@ -1919,6 +1947,13 @@ export async function executeShellActions(
       needsApproval: () =>
         shellTool.needsApproval(runContext, toolCall.action, toolCallKey),
       onApproval: shellTool.onApproval,
+      isCancelled: () => Boolean(signal?.aborted),
+      buildCancellationItem: () =>
+        new RunToolCallOutputItem(
+          buildShellAbortResult(toolCall),
+          agent,
+          'aborted',
+        ),
       buildRejectionItem: async () => {
         const response = await resolveApprovalRejectionMessage({
           runContext,
@@ -1949,6 +1984,16 @@ export async function executeShellActions(
       results.push(approvalDecision.item);
       continue;
     }
+    if (signal?.aborted) {
+      results.push(
+        new RunToolCallOutputItem(
+          buildShellAbortResult(toolCall),
+          agent,
+          'aborted',
+        ),
+      );
+      continue;
+    }
 
     const shellItem = await withToolFunctionSpan(
       runner,
@@ -1959,6 +2004,24 @@ export async function executeShellActions(
         }
 
         emitToolStart(runner, runContext, agent, shellTool, toolCall);
+        if (signal?.aborted) {
+          if (span && runner.config.traceIncludeSensitiveData) {
+            span.spanData.output = 'aborted';
+          }
+          emitToolEnd(
+            runner,
+            runContext,
+            agent,
+            shellTool,
+            'aborted',
+            toolCall,
+          );
+          return new RunToolCallOutputItem(
+            buildShellAbortResult(toolCall),
+            agent,
+            'aborted',
+          );
+        }
 
         let shellOutputs: ShellResult['output'] | undefined;
         const providerMeta: Record<string, unknown> = {};
@@ -2044,6 +2107,7 @@ export async function executeApplyPatchOperations(
   runContext: RunContext,
   customLogger: Logger | undefined = undefined,
   toolErrorFormatter?: ToolErrorFormatter,
+  signal?: AbortSignal,
 ): Promise<RunItem[]> {
   const _logger = customLogger ?? logger;
   const results: RunItem[] = [];
@@ -2053,6 +2117,16 @@ export async function executeApplyPatchOperations(
     const toolCall = action.toolCall;
     const toolCallKey = getToolCallKey(toolCall) ?? toolCall.callId;
     const editorContext = { runContext };
+    if (signal?.aborted) {
+      results.push(
+        new RunToolCallOutputItem(
+          buildApplyPatchAbortResult(toolCall),
+          agent,
+          'aborted',
+        ),
+      );
+      continue;
+    }
     const approvalItem = new RunToolApprovalItem(
       toolCall,
       agent,
@@ -2069,6 +2143,13 @@ export async function executeApplyPatchOperations(
           toolCallKey,
         ),
       onApproval: applyPatchTool.onApproval,
+      isCancelled: () => Boolean(signal?.aborted),
+      buildCancellationItem: () =>
+        new RunToolCallOutputItem(
+          buildApplyPatchAbortResult(toolCall),
+          agent,
+          'aborted',
+        ),
       buildRejectionItem: async () => {
         const response = await resolveApprovalRejectionMessage({
           runContext,
@@ -2095,6 +2176,16 @@ export async function executeApplyPatchOperations(
       results.push(approvalDecision.item);
       continue;
     }
+    if (signal?.aborted) {
+      results.push(
+        new RunToolCallOutputItem(
+          buildApplyPatchAbortResult(toolCall),
+          agent,
+          'aborted',
+        ),
+      );
+      continue;
+    }
 
     const applyPatchItem = await withToolFunctionSpan(
       runner,
@@ -2105,6 +2196,24 @@ export async function executeApplyPatchOperations(
         }
 
         emitToolStart(runner, runContext, agent, applyPatchTool, toolCall);
+        if (signal?.aborted) {
+          if (span && runner.config.traceIncludeSensitiveData) {
+            span.spanData.output = 'aborted';
+          }
+          emitToolEnd(
+            runner,
+            runContext,
+            agent,
+            applyPatchTool,
+            'aborted',
+            toolCall,
+          );
+          return new RunToolCallOutputItem(
+            buildApplyPatchAbortResult(toolCall),
+            agent,
+            'aborted',
+          );
+        }
 
         let status: 'completed' | 'failed' = 'completed';
         let output = '';
@@ -2275,15 +2384,19 @@ export async function executeComputerActions(
         const approvalResults = await Promise.allSettled(
           computerActions.map(async (computerAction) => {
             try {
-              return await (
+              const approvalResult = await (
                 needsApprovalCandidate as (
                   runContext: RunContext,
                   action: protocol.ComputerAction,
                   callId?: string,
-                ) => Promise<boolean>
+                ) => Promise<unknown>
               )(runContext, computerAction, toolCall.callId);
+              return requireBooleanApprovalResult(
+                computerTool.name,
+                approvalResult,
+              );
             } catch (error) {
-              if (!firstError) {
+              if (!signal?.aborted && !firstError) {
                 firstError = { value: error };
                 onFatalFailure?.(error);
               }
@@ -2319,19 +2432,19 @@ export async function executeComputerActions(
           COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
         );
       },
-      isCancelled: () => isSiblingCancellationSignal(signal),
+      isCancelled: () => Boolean(signal?.aborted),
       buildCancellationItem: () =>
         buildComputerCancellationItem(agent, toolCall),
     });
 
-    if (isSiblingCancellationSignal(signal)) {
+    if (signal?.aborted) {
       results.push(buildComputerCancellationItem(agent, toolCall));
       continue;
     }
 
     if (approvalDecision.status === 'rejected') {
       const rejectionMessage = await getRejectionMessage();
-      if (isSiblingCancellationSignal(signal)) {
+      if (signal?.aborted) {
         results.push(buildComputerCancellationItem(agent, toolCall));
         continue;
       }

@@ -1672,6 +1672,152 @@ describe('RealtimeSession', () => {
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
+  it('rejects non-boolean realtime approval results', async () => {
+    const execute = vi.fn(async () => 'unexpected');
+    const guardedTool = tool({
+      name: 'invalid_approval_result',
+      description: 'Dynamic approval tool',
+      parameters: z.object({}),
+      needsApproval: (async () => undefined) as any,
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const errorEvent = waitForEvent<any[]>(localSession, 'error');
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: guardedTool.name,
+      callId: 'invalid-approval-result-call',
+      arguments: '{}',
+      status: 'completed',
+      responseId: 'invalid-approval-result-response',
+    } as any);
+
+    const [error] = await errorEvent;
+    expect(error.error).toBeInstanceOf(UserError);
+    expect(error.error).toMatchObject({
+      message:
+        "Tool 'invalid_approval_result' needsApproval callback must return a boolean.",
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(0);
+    errorSpy.mockRestore();
+  });
+
+  it('ignores invalid approval results after realtime disconnect', async () => {
+    let approvalStartedResolve: (() => void) | undefined;
+    const approvalStarted = new Promise<void>((resolve) => {
+      approvalStartedResolve = resolve;
+    });
+    let approvalRelease: (() => void) | undefined;
+    const approvalCanFinish = new Promise<void>((resolve) => {
+      approvalRelease = resolve;
+    });
+    const execute = vi.fn(async () => 'unexpected');
+    const guardedTool = tool({
+      name: 'cancelled_invalid_approval',
+      description: 'Dynamic approval tool',
+      parameters: z.object({}),
+      needsApproval: (async () => {
+        approvalStartedResolve?.();
+        await approvalCanFinish;
+        return undefined;
+      }) as any,
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    const errors: unknown[] = [];
+    localSession.on('error', (event) => errors.push(event.error));
+    await localSession.connect({ apiKey: 'test' });
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: guardedTool.name,
+      callId: 'cancelled-invalid-approval-call',
+      arguments: '{}',
+      status: 'completed',
+      responseId: 'cancelled-invalid-approval-response',
+    } as any);
+    await approvalStarted;
+    localSession.close();
+    approvalRelease?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(errors).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(0);
+  });
+
+  it('ignores approval callback errors after realtime disconnect', async () => {
+    let approvalStartedResolve: (() => void) | undefined;
+    const approvalStarted = new Promise<void>((resolve) => {
+      approvalStartedResolve = resolve;
+    });
+    let approvalRelease: (() => void) | undefined;
+    const approvalCanFinish = new Promise<void>((resolve) => {
+      approvalRelease = resolve;
+    });
+    const execute = vi.fn(async () => 'unexpected');
+    const guardedTool = tool({
+      name: 'cancelled_rejected_approval',
+      description: 'Dynamic approval tool',
+      parameters: z.object({}),
+      needsApproval: async () => {
+        approvalStartedResolve?.();
+        await approvalCanFinish;
+        throw new Error('stale approval failure');
+      },
+      execute,
+    });
+    const agent = new RealtimeAgent({
+      name: 'ApprovalAgent',
+      handoffs: [],
+      tools: [guardedTool],
+    });
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(agent, {
+      transport: localTransport,
+    });
+    const errors: unknown[] = [];
+    localSession.on('error', (event) => errors.push(event.error));
+    await localSession.connect({ apiKey: 'test' });
+
+    localTransport.emit('function_call', {
+      type: 'function_call',
+      name: guardedTool.name,
+      callId: 'cancelled-rejected-approval-call',
+      arguments: '{}',
+      status: 'completed',
+      responseId: 'cancelled-rejected-approval-response',
+    } as any);
+    await approvalStarted;
+    localSession.close();
+    approvalRelease?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(errors).toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(0);
+  });
+
   it.each([
     ['malformed JSON', '{'],
     ['an array', '[]'],

@@ -28,6 +28,7 @@ import {
   validateHandoffToolInvocation,
   validateToolInvocationApproval,
   validateToolInvocationName,
+  requireBooleanApprovalResult,
 } from '@openai/agents-core/utils/internal';
 import type {
   RealtimeSessionConfig,
@@ -1119,10 +1120,26 @@ export class RealtimeSession<
     const existingApproval = dynamicApprovalPolicy
       ? getToolInvocationApproval(this.context, agent, tool, toolCall)
       : undefined;
-    const needsApproval =
-      forceApproval ||
-      existingApproval !== undefined ||
-      (await tool.needsApproval(this.#context, parsedArgs, toolCall.callId));
+    let needsApproval = forceApproval || existingApproval !== undefined;
+    if (!needsApproval) {
+      let approvalResult: unknown;
+      try {
+        approvalResult = await tool.needsApproval(
+          this.#context,
+          parsedArgs,
+          toolCall.callId,
+        );
+      } catch (error) {
+        if (!this.#isCurrentRealtimeInvocation(invocation)) {
+          return;
+        }
+        throw error;
+      }
+      if (!this.#isCurrentRealtimeInvocation(invocation)) {
+        return;
+      }
+      needsApproval = requireBooleanApprovalResult(tool.name, approvalResult);
+    }
     if (!this.#isCurrentRealtimeInvocation(invocation)) {
       return;
     }

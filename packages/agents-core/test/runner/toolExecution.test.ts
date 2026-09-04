@@ -1999,6 +1999,106 @@ describe('executeComputerActions', () => {
     expect(fakeComputer.screenshot).not.toHaveBeenCalled();
   });
 
+  it.each(['resolves invalid', 'rejects'] as const)(
+    'prefers caller abort when computer approval %s after cancellation',
+    async (settlement) => {
+      const controller = new AbortController();
+      let approvalStartedResolve: (() => void) | undefined;
+      const approvalStarted = new Promise<void>((resolve) => {
+        approvalStartedResolve = resolve;
+      });
+      let approvalRelease: (() => void) | undefined;
+      const approvalCanFinish = new Promise<void>((resolve) => {
+        approvalRelease = resolve;
+      });
+      const fakeComputer = {
+        environment: 'mac',
+        dimensions: [1, 1] as [number, number],
+        screenshot: vi.fn().mockResolvedValue('img'),
+      } as any;
+      const needsApproval = vi.fn(async () => {
+        approvalStartedResolve?.();
+        await approvalCanFinish;
+        if (settlement === 'rejects') {
+          throw new Error('stale computer approval error');
+        }
+        return undefined;
+      });
+      const computer = computerTool({
+        computer: fakeComputer,
+        needsApproval: needsApproval as any,
+      });
+      const call: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        callId: 'caller-cancelled-computer-approval',
+        status: 'completed',
+        action: { type: 'screenshot' } as any,
+      };
+      const onFatalFailure = vi.fn();
+
+      const resultPromise = executeComputerActions(
+        new Agent({ name: 'CancelledComputerApproval' }),
+        [{ toolCall: call, computer }],
+        new Runner(),
+        new RunContext(),
+        undefined,
+        undefined,
+        controller.signal,
+        onFatalFailure,
+      );
+      await approvalStarted;
+      controller.abort(new Error('caller cancelled'));
+      approvalRelease?.();
+
+      const [item] = await resultPromise;
+      expect(item.rawItem).toMatchObject({
+        type: 'computer_call_result',
+        callId: call.callId,
+        providerData: { status: 'incomplete' },
+      });
+      expect(fakeComputer.screenshot).not.toHaveBeenCalled();
+      expect(onFatalFailure).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects non-boolean computer approval results', async () => {
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockResolvedValue('img'),
+      click: vi.fn(),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({
+      computer: fakeComputer,
+      needsApproval: (async () => undefined) as any,
+    });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c-invalid-approval',
+      status: 'completed',
+      action: { type: 'click', x: 1, y: 2, button: 'left' },
+    };
+
+    await expect(
+      executeComputerActions(
+        new Agent({ name: 'Comp' }),
+        [{ toolCall: call, computer: tool }],
+        new Runner(),
+        new RunContext(),
+      ),
+    ).rejects.toThrow(
+      "Tool 'computer_use_preview' needsApproval callback must return a boolean.",
+    );
+    expect(fakeComputer.click).not.toHaveBeenCalled();
+  });
+
   it('defaults missing needsApproval to false for computer tools', async () => {
     const fakeComputer = {
       environment: 'mac',
@@ -3116,6 +3216,134 @@ describe('executeShellActions', () => {
       expect(editor.operations).toHaveLength(0);
     });
 
+    it('does not execute apply_patch after a start hook aborts the run', async () => {
+      const controller = new AbortController();
+      const editor = new FakeEditor();
+      const applyPatch = applyPatchTool({ editor });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const runContext = new RunContext();
+      const runner = new Runner({ tracingDisabled: true });
+      const end = vi.fn();
+      runner.on('agent_tool_start', () =>
+        controller.abort(new Error('stop apply_patch')),
+      );
+      runner.on('agent_tool_end', end);
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'start_hook_cancelled_patch',
+        status: 'completed',
+        operation: { type: 'delete_file', path: 'README.md' },
+      };
+
+      const [result] = await executeApplyPatchOperations(
+        agent,
+        [{ toolCall, applyPatch } as any],
+        runner,
+        runContext,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+
+      expect(editor.operations).toHaveLength(0);
+      expect(result.rawItem).toMatchObject({
+        type: 'apply_patch_call_output',
+        callId: toolCall.callId,
+        status: 'failed',
+        output: 'aborted',
+      });
+      expect(end).toHaveBeenCalledWith(
+        runContext,
+        agent,
+        applyPatch,
+        'aborted',
+        { toolCall },
+      );
+    });
+
+    it.each(['resolves invalid', 'rejects'] as const)(
+      'prefers cancellation when apply_patch approval %s after abort',
+      async (settlement) => {
+        const controller = new AbortController();
+        let approvalStartedResolve: (() => void) | undefined;
+        const approvalStarted = new Promise<void>((resolve) => {
+          approvalStartedResolve = resolve;
+        });
+        let approvalRelease: (() => void) | undefined;
+        const approvalCanFinish = new Promise<void>((resolve) => {
+          approvalRelease = resolve;
+        });
+        const editor = new FakeEditor();
+        const applyPatch = applyPatchTool({
+          editor,
+          needsApproval: (async () => {
+            approvalStartedResolve?.();
+            await approvalCanFinish;
+            if (settlement === 'rejects') {
+              throw new Error('stale apply_patch approval error');
+            }
+            return undefined;
+          }) as any,
+        });
+        const agent = new Agent({ name: 'EditorAgent' });
+        const toolCall: protocol.ApplyPatchCallItem = {
+          type: 'apply_patch_call',
+          callId: 'cancelled_patch_approval',
+          status: 'completed',
+          operation: { type: 'delete_file', path: 'README.md' },
+        };
+
+        const resultPromise = executeApplyPatchOperations(
+          agent,
+          [{ toolCall, applyPatch } as any],
+          new Runner({ tracingDisabled: true }),
+          new RunContext(),
+          undefined,
+          undefined,
+          controller.signal,
+        );
+        await approvalStarted;
+        controller.abort(new Error('cancel apply_patch approval'));
+        approvalRelease?.();
+
+        const [result] = await resultPromise;
+        expect(result.rawItem).toMatchObject({
+          type: 'apply_patch_call_output',
+          callId: toolCall.callId,
+          status: 'failed',
+          output: 'aborted',
+        });
+        expect(editor.operations).toHaveLength(0);
+      },
+    );
+
+    it('rejects non-boolean apply_patch approval results', async () => {
+      const editor = new FakeEditor();
+      const applyPatch = applyPatchTool({
+        editor,
+        needsApproval: (async () => undefined) as any,
+      });
+      const agent = new Agent({ name: 'EditorAgent' });
+      const toolCall: protocol.ApplyPatchCallItem = {
+        type: 'apply_patch_call',
+        callId: 'call_patch_invalid_approval',
+        status: 'completed',
+        operation: { type: 'delete_file', path: 'README.md' },
+      };
+
+      await expect(
+        executeApplyPatchOperations(
+          agent,
+          [{ toolCall, applyPatch } as any],
+          new Runner({ tracingDisabled: true }),
+          new RunContext(),
+        ),
+      ).rejects.toThrow(
+        "Tool 'apply_patch' needsApproval callback must return a boolean.",
+      );
+      expect(editor.operations).toHaveLength(0);
+    });
+
     it('does not recheck apply_patch approval after approval', async () => {
       const editor = new FakeEditor();
       const needsApproval = vi.fn(async () => true);
@@ -3295,6 +3523,74 @@ describe('executeShellActions', () => {
     beforeEach(() => {
       runner = new Runner({ tracingDisabled: true });
       state = new RunState(new RunContext(), '', new Agent({ name: 'T' }), 1);
+    });
+
+    it('rejects non-boolean function tool approval results', async () => {
+      const execute = vi.fn(async () => 'unexpected');
+      const t = tool({
+        name: 'hi',
+        description: 't',
+        parameters: z.object({}),
+        needsApproval: (async () => undefined) as any,
+        execute,
+      }) as unknown as FunctionTool;
+
+      await expect(
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall, tool: t }],
+          runner,
+          state,
+        ),
+      ).rejects.toThrow(
+        "Tool 'hi' needsApproval callback must return a boolean.",
+      );
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('prefers cancellation when invalid function approval resolves after abort', async () => {
+      let approvalStartedResolve: (() => void) | undefined;
+      const approvalStarted = new Promise<void>((resolve) => {
+        approvalStartedResolve = resolve;
+      });
+      let approvalRelease: (() => void) | undefined;
+      const approvalCanFinish = new Promise<void>((resolve) => {
+        approvalRelease = resolve;
+      });
+      const execute = vi.fn(async () => 'unexpected');
+      const t = tool({
+        name: 'hi',
+        description: 't',
+        parameters: z.object({}),
+        needsApproval: (async () => {
+          approvalStartedResolve?.();
+          await approvalCanFinish;
+          return undefined;
+        }) as any,
+        execute,
+      }) as unknown as FunctionTool;
+      const controller = new AbortController();
+
+      const resultPromise = executeFunctionToolCalls(
+        state._currentAgent,
+        [{ toolCall, tool: t }],
+        runner,
+        state,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      await approvalStarted;
+      controller.abort(new Error('cancel approval'));
+      approvalRelease?.();
+
+      const [result] = await resultPromise;
+      expect(result).toMatchObject({
+        type: 'function_output',
+        output: 'aborted',
+        runItem: { rawItem: { status: 'incomplete' } },
+      });
+      expect(execute).not.toHaveBeenCalled();
     });
 
     it('wraps hostile unrelated errors without inspecting their prototype twice', async () => {
@@ -10086,6 +10382,105 @@ describe('executeShellActions', () => {
     expect(results[0].type).toBe('tool_approval_item');
     expect(shell.calls).toHaveLength(0);
   });
+
+  it('does not execute shell after a start hook aborts the run', async () => {
+    const controller = new AbortController();
+    const shell = new FakeShell();
+    const shellToolDef = shellTool({ shell });
+    const agent = new Agent({ name: 'ShellAgent' });
+    const runContext = new RunContext();
+    const runner = new Runner({ tracingDisabled: true });
+    const end = vi.fn();
+    runner.on('agent_tool_start', () =>
+      controller.abort(new Error('stop shell')),
+    );
+    runner.on('agent_tool_end', end);
+    const toolCall: protocol.ShellCallItem = {
+      type: 'shell_call',
+      callId: 'start_hook_cancelled_shell',
+      status: 'completed',
+      action: { commands: ['echo hi'] },
+    };
+
+    const [result] = await executeShellActions(
+      agent,
+      [{ toolCall, shell: shellToolDef } as any],
+      runner,
+      runContext,
+      undefined,
+      undefined,
+      controller.signal,
+    );
+
+    expect(shell.calls).toHaveLength(0);
+    expect(result.rawItem).toMatchObject({
+      type: 'shell_call_output',
+      callId: toolCall.callId,
+      status: 'incomplete',
+    });
+    expect(end).toHaveBeenCalledWith(
+      runContext,
+      agent,
+      shellToolDef,
+      'aborted',
+      { toolCall },
+    );
+  });
+
+  it.each(['resolves invalid', 'rejects'] as const)(
+    'prefers cancellation when shell approval %s after abort',
+    async (settlement) => {
+      const controller = new AbortController();
+      let approvalStartedResolve: (() => void) | undefined;
+      const approvalStarted = new Promise<void>((resolve) => {
+        approvalStartedResolve = resolve;
+      });
+      let approvalRelease: (() => void) | undefined;
+      const approvalCanFinish = new Promise<void>((resolve) => {
+        approvalRelease = resolve;
+      });
+      const shell = new FakeShell();
+      const shellToolDef = shellTool({
+        shell,
+        needsApproval: (async () => {
+          approvalStartedResolve?.();
+          await approvalCanFinish;
+          if (settlement === 'rejects') {
+            throw new Error('stale shell approval error');
+          }
+          return undefined;
+        }) as any,
+      });
+      const agent = new Agent({ name: 'ShellAgent' });
+      const toolCall: protocol.ShellCallItem = {
+        type: 'shell_call',
+        callId: 'cancelled_shell_approval',
+        status: 'completed',
+        action: { commands: ['echo hi'] },
+      };
+
+      const resultPromise = executeShellActions(
+        agent,
+        [{ toolCall, shell: shellToolDef } as any],
+        new Runner({ tracingDisabled: true }),
+        new RunContext(),
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      await approvalStarted;
+      controller.abort(new Error('cancel shell approval'));
+      approvalRelease?.();
+
+      const [result] = await resultPromise;
+      expect(result.rawItem).toMatchObject({
+        type: 'shell_call_output',
+        callId: toolCall.callId,
+        status: 'incomplete',
+      });
+      expect(shell.calls).toHaveLength(0);
+    },
+  );
 
   it('does not recheck shell approval after approval', async () => {
     const shell = new FakeShell();

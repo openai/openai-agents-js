@@ -34,3 +34,5 @@ export {
   validateToolInvocationApproval,
   validateToolInvocationName,
 } from '../toolInvocation';
+
+export { requireBooleanApprovalResult } from './toolApproval';
