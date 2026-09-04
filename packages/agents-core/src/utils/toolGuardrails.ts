@@ -11,12 +11,23 @@ import type * as protocol from '../types/protocol';
 import {
   ToolInputGuardrailTripwireTriggered,
   ToolOutputGuardrailTripwireTriggered,
+  UserError,
 } from '../errors';
 
 function normalizeBehavior(
   output: ToolGuardrailFunctionOutput,
+  guardrailName: string,
 ): ToolGuardrailFunctionOutput['behavior'] {
-  return output.behavior ?? { type: 'allow' };
+  const behavior = output.behavior as unknown;
+  if (behavior == null) {
+    return { type: 'allow' };
+  }
+  if (typeof behavior !== 'object') {
+    throw new UserError(
+      `Tool guardrail ${guardrailName} returned an invalid behavior`,
+    );
+  }
+  return behavior as ToolGuardrailFunctionOutput['behavior'];
 }
 
 export async function runToolInputGuardrails<
@@ -42,19 +53,31 @@ export async function runToolInputGuardrails<
       agent,
       toolCall,
     });
-    const behavior = normalizeBehavior(output);
+    const behavior = normalizeBehavior(output, guardrail.name);
     const result: ToolInputGuardrailResult = {
       guardrail: { type: 'tool_input', name: guardrail.name },
       output: { ...output, behavior },
     };
     onResult?.(result);
-    if (behavior.type === 'rejectContent') {
+    const firstBehaviorType = behavior.type;
+    if (firstBehaviorType === 'rejectContent') {
+      if (typeof behavior.message !== 'string') {
+        throw new UserError(
+          `Tool guardrail ${guardrail.name} returned an invalid behavior`,
+        );
+      }
       return { type: 'reject', message: behavior.message };
     }
-    if (behavior.type === 'throwException') {
+    const secondBehaviorType = behavior.type;
+    if (secondBehaviorType === 'throwException') {
       throw new ToolInputGuardrailTripwireTriggered(
         `Tool input guardrail triggered: ${guardrail.name}`,
         result,
+      );
+    }
+    if (firstBehaviorType !== 'allow' || secondBehaviorType !== 'allow') {
+      throw new UserError(
+        `Tool guardrail ${guardrail.name} returned an invalid behavior`,
       );
     }
   }
@@ -88,20 +111,32 @@ export async function runToolOutputGuardrails<
       toolCall,
       output: toolOutput,
     });
-    const behavior = normalizeBehavior(output);
+    const behavior = normalizeBehavior(output, guardrail.name);
     const result: ToolOutputGuardrailResult = {
       guardrail: { type: 'tool_output', name: guardrail.name },
       output: { ...output, behavior },
     };
     onResult?.(result);
-    if (behavior.type === 'rejectContent') {
+    const firstBehaviorType = behavior.type;
+    if (firstBehaviorType === 'rejectContent') {
+      if (typeof behavior.message !== 'string') {
+        throw new UserError(
+          `Tool guardrail ${guardrail.name} returned an invalid behavior`,
+        );
+      }
       finalOutput = behavior.message;
       break;
     }
-    if (behavior.type === 'throwException') {
+    const secondBehaviorType = behavior.type;
+    if (secondBehaviorType === 'throwException') {
       throw new ToolOutputGuardrailTripwireTriggered(
         `Tool output guardrail triggered: ${guardrail.name}`,
         result,
+      );
+    }
+    if (firstBehaviorType !== 'allow' || secondBehaviorType !== 'allow') {
+      throw new UserError(
+        `Tool guardrail ${guardrail.name} returned an invalid behavior`,
       );
     }
   }
