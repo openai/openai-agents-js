@@ -585,7 +585,7 @@ describe('OpenAIResponsesWSModel', () => {
     );
   });
 
-  it('uses the client authHeaders strategy for websocket handshakes', async () => {
+  it('preserves websocket query parameters for client authHeaders', async () => {
     const fakeClient = createFakeClient() as any;
     fakeClient._options.defaultQuery = { client_default: '1' };
     const authHeadersSpy = vi.fn().mockResolvedValue({
@@ -614,7 +614,8 @@ describe('OpenAIResponsesWSModel', () => {
     };
 
     const model = new OpenAIResponsesWSModel(fakeClient, 'gpt-ws', {
-      websocketBaseURL: 'wss://proxy.example.test/v1?base_param=1',
+      websocketBaseURL:
+        'wss://proxy.example.test/v1?base_param=1&__proto__=tenant&__proto__=partner&constructor=ctor',
     });
     const request = {
       systemInstructions: undefined,
@@ -637,6 +638,21 @@ describe('OpenAIResponsesWSModel', () => {
       // Consume the stream to trigger the websocket handshake.
     }
 
+    expect(authHeadersSpy).toHaveBeenCalledTimes(1);
+    const authHeaderRequest = authHeadersSpy.mock.calls[0]?.[0] as {
+      query: Record<string, string | string[]>;
+    };
+    expect(Object.getPrototypeOf(authHeaderRequest.query)).toBe(
+      Object.prototype,
+    );
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        authHeaderRequest.query,
+        '__proto__',
+      ),
+    ).toBe(true);
+    expect(authHeaderRequest.query['__proto__']).toEqual(['tenant', 'partner']);
+    expect(authHeaderRequest.query.constructor).toBe('ctor');
     expect(authHeadersSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
@@ -648,6 +664,12 @@ describe('OpenAIResponsesWSModel', () => {
         }),
       }),
     );
+    const websocketURL = new URL(TestWebSocket.instances[0]!.url);
+    expect(websocketURL.searchParams.getAll('__proto__')).toEqual([
+      'tenant',
+      'partner',
+    ]);
+    expect(websocketURL.searchParams.get('constructor')).toBe('ctor');
     expect(TestWebSocket.instances[0]?.init).toMatchObject({
       headers: {
         'api-key': 'azure-key',

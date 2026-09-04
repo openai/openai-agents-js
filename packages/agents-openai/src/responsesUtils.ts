@@ -13,22 +13,22 @@ export function normalizeInstructions(
 export function searchParamsToAuthHeaderQuery(
   searchParams: URLSearchParams,
 ): Record<string, string | string[]> | undefined {
-  const query: Record<string, string | string[]> = {};
+  const query = new Map<string, string | string[]>();
   let hasEntries = false;
 
   for (const [key, value] of searchParams.entries()) {
     hasEntries = true;
-    const existingValue = query[key];
+    const existingValue = query.get(key);
     if (typeof existingValue === 'undefined') {
-      query[key] = value;
+      query.set(key, value);
     } else if (Array.isArray(existingValue)) {
       existingValue.push(value);
     } else {
-      query[key] = [existingValue, value];
+      query.set(key, [existingValue, value]);
     }
   }
 
-  return hasEntries ? query : undefined;
+  return hasEntries ? Object.fromEntries(query) : undefined;
 }
 
 export function toRequestUsageEntry(
