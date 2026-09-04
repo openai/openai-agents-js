@@ -950,10 +950,13 @@ async function handleFunctionApproval<TContext>(
   let needsApproval = forceApproval;
   if (!needsApproval) {
     try {
-      needsApproval = await toolRun.tool.needsApproval(
-        state._context,
-        parsedArgs,
-        toolRun.toolCall.callId,
+      needsApproval = requireBooleanApprovalResult(
+        await toolRun.tool.needsApproval(
+          state._context,
+          parsedArgs,
+          toolRun.toolCall.callId,
+        ),
+        toolRun.tool.name,
       );
     } catch (error) {
       if (
@@ -1643,6 +1646,18 @@ async function withRunStateToolFunctionSpan<TContext, T>(
 
 type ApprovalResolution = 'approved' | 'rejected' | 'pending' | 'cancelled';
 
+function requireBooleanApprovalResult(
+  result: unknown,
+  toolName: string,
+): boolean {
+  if (typeof result !== 'boolean') {
+    throw new UserError(
+      `needsApproval for tool ${toolName} must return a boolean.`,
+    );
+  }
+  return result;
+}
+
 type LocalApprovalDecision = {
   approve?: boolean;
   reason?: string;
@@ -1685,7 +1700,10 @@ async function resolveToolApproval(options: {
 
   let approvalRequired: boolean;
   try {
-    approvalRequired = await needsApproval();
+    approvalRequired = requireBooleanApprovalResult(
+      await needsApproval(),
+      toolName,
+    );
   } catch (error) {
     if (isCancelled?.()) {
       return 'cancelled';
@@ -2275,13 +2293,16 @@ export async function executeComputerActions(
         const approvalResults = await Promise.allSettled(
           computerActions.map(async (computerAction) => {
             try {
-              return await (
-                needsApprovalCandidate as (
-                  runContext: RunContext,
-                  action: protocol.ComputerAction,
-                  callId?: string,
-                ) => Promise<boolean>
-              )(runContext, computerAction, toolCall.callId);
+              return requireBooleanApprovalResult(
+                await (
+                  needsApprovalCandidate as (
+                    runContext: RunContext,
+                    action: protocol.ComputerAction,
+                    callId?: string,
+                  ) => Promise<boolean>
+                )(runContext, computerAction, toolCall.callId),
+                computerTool.name,
+              );
             } catch (error) {
               if (!firstError) {
                 firstError = { value: error };
