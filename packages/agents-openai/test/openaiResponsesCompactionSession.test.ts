@@ -136,6 +136,38 @@ class CommitThenRejectAppendSession extends MemorySession {
 }
 
 describe('OpenAIResponsesCompactionSession', () => {
+  it('forgets response-chain state when the session is cleared', async () => {
+    const compact = vi.fn();
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      model: 'gpt-4.1',
+      shouldTriggerCompaction: () => false,
+    });
+
+    await expect(
+      session.runCompaction({ responseId: 'resp_old', store: false }),
+    ).resolves.toBeNull();
+    await session.clearSession();
+
+    await expect(
+      session.runCompaction({
+        force: true,
+        compactionMode: 'previous_response_id',
+      }),
+    ).rejects.toThrow(/requires a responseId/);
+    expect(compact).not.toHaveBeenCalled();
+
+    compact.mockResolvedValueOnce({ output: [], usage: undefined });
+    await session.runCompaction({
+      responseId: 'resp_new',
+      force: true,
+    });
+    expect(compact).toHaveBeenCalledWith({
+      model: 'gpt-4.1',
+      previous_response_id: 'resp_new',
+    });
+  });
+
   it('rejects non-OpenAI model names', () => {
     expect(() => {
       new OpenAIResponsesCompactionSession({
