@@ -136,6 +136,65 @@ class CommitThenRejectAppendSession extends MemorySession {
 }
 
 describe('OpenAIResponsesCompactionSession', () => {
+  it('forgets response-chain state when session history is popped', async () => {
+    const compact = vi.fn();
+    const underlyingSession = new MemorySession({
+      initialItems: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'old' }],
+        },
+      ] as AgentInputItem[],
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession,
+      shouldTriggerCompaction: () => false,
+    });
+
+    await session.runCompaction({ responseId: 'resp_old', store: true });
+    await expect(session.popItem()).resolves.toBeDefined();
+
+    await expect(
+      session.runCompaction({
+        force: true,
+        compactionMode: 'previous_response_id',
+      }),
+    ).rejects.toThrow(/requires a responseId/);
+    expect(compact).not.toHaveBeenCalled();
+
+    compact.mockResolvedValueOnce({ output: [], usage: undefined });
+    await session.runCompaction({ responseId: 'resp_new', force: true });
+    expect(compact).toHaveBeenCalledWith({
+      model: expect.any(String),
+      previous_response_id: 'resp_new',
+    });
+  });
+
+  it('keeps response-chain state when popItem is a no-op', async () => {
+    const compact = vi.fn().mockResolvedValueOnce({
+      output: [],
+      usage: undefined,
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      shouldTriggerCompaction: () => false,
+    });
+
+    await session.runCompaction({ responseId: 'resp_old', store: true });
+    await expect(session.popItem()).resolves.toBeUndefined();
+    await session.runCompaction({
+      force: true,
+      compactionMode: 'previous_response_id',
+    });
+
+    expect(compact).toHaveBeenCalledWith({
+      model: expect.any(String),
+      previous_response_id: 'resp_old',
+    });
+  });
   it('rejects non-OpenAI model names', () => {
     expect(() => {
       new OpenAIResponsesCompactionSession({
