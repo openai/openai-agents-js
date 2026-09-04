@@ -441,6 +441,17 @@ export type RunConfig = {
 /**
  * Common run options shared between streaming and non-streaming execution pathways.
  */
+function validateMaxTurns(maxTurns: number | null | undefined): void {
+  if (maxTurns == null) {
+    return;
+  }
+  if (!Number.isInteger(maxTurns) || maxTurns < 0) {
+    throw new UserError(
+      'maxTurns must be a non-negative integer or null when provided.',
+    );
+  }
+}
+
 type SharedRunOptions<
   TContext = undefined,
   TAgent extends Agent<any, any> = Agent<any, any>,
@@ -712,6 +723,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
+    validateMaxTurns(
+      options.maxTurns !== undefined
+        ? options.maxTurns
+        : input instanceof RunState
+          ? input._maxTurns
+          : undefined,
+    );
     this.#validateModelTimeoutForAgent(
       input instanceof RunState ? input._currentAgent : agent,
     );
