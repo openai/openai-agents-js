@@ -134,6 +134,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   #exportInProgress = false;
   #timeoutAbortController: AbortController | null = null;
   #activeExportAbortControllers = new Set<AbortController>();
+  #exportLoopGeneration = 0;
 
   constructor(
     exporter: TracingExporter,
@@ -160,8 +161,9 @@ export class BatchTraceProcessor implements TracingProcessor {
   }
 
   start(): void {
+    const generation = ++this.#exportLoopGeneration;
     this.#timeoutAbortController = new AbortController();
-    this.#runExportLoop();
+    this.#runExportLoop(generation);
   }
 
   async #safeAddItem(item: Trace | Span): Promise<void> {
@@ -179,11 +181,17 @@ export class BatchTraceProcessor implements TracingProcessor {
     }
   }
 
-  #runExportLoop(): void {
+  #runExportLoop(generation: number): void {
+    if (generation !== this.#exportLoopGeneration) {
+      return;
+    }
     this.#timeout = this.#timer.setTimeout(async () => {
+      if (generation !== this.#exportLoopGeneration) {
+        return;
+      }
       // scheduled export
       await this.#exportBatches();
-      this.#runExportLoop();
+      this.#runExportLoop(generation);
     }, this.#scheduleDelay);
 
     // We set this so that Node no longer considers this part of the event loop and keeps the
@@ -286,6 +294,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   }
 
   async shutdown(timeout?: number): Promise<void> {
+    ++this.#exportLoopGeneration;
     let shutdownTimeout: Timeout | undefined;
     const shutdownAbortController = timeout
       ? (this.#timeoutAbortController ?? new AbortController())
