@@ -1,4 +1,4 @@
-import { RuntimeEventEmitter, Usage } from '@openai/agents-core';
+import { RuntimeEventEmitter, UserError, Usage } from '@openai/agents-core';
 import { normalizeHostedMcpRequireApproval } from '@openai/agents-core/utils';
 import {
   logModelActionError,
@@ -977,6 +977,35 @@ export abstract class OpenAIRealtimeBase
       oldHistory,
       newHistory,
     );
+
+    // MCP items cannot be recreated once their conversation entry is deleted, so
+    // reject additions/updates before sending a single client event. A same-ID
+    // cross-type replacement surfaces in `updates` as the new non-MCP item, so
+    // classify by the old item's type as well. Explicit removals (item present
+    // in oldHistory but absent from newHistory) and unchanged items are
+    // unaffected and continue to work.
+    const isMcpItem = (item: RealtimeItem): boolean =>
+      item.type === 'mcp_call' ||
+      item.type === 'mcp_tool_call' ||
+      item.type === 'mcp_approval_request';
+    const oldMcpItemIds = new Set(
+      oldHistory.filter(isMcpItem).map((item) => item.itemId),
+    );
+    const rejectedMcpItem = [...additions, ...updates].find(
+      (item) => isMcpItem(item) || oldMcpItemIds.has(item.itemId),
+    );
+    if (rejectedMcpItem) {
+      const replaced = oldHistory.find(
+        (item) => item.itemId === rejectedMcpItem.itemId,
+      );
+      const detail =
+        replaced && isMcpItem(replaced)
+          ? `itemId ${rejectedMcpItem.itemId} replaces an existing '${replaced.type}' item with a '${rejectedMcpItem.type}' item`
+          : `a '${rejectedMcpItem.type}' item (itemId: ${rejectedMcpItem.itemId}) would be added or updated`;
+      throw new UserError(
+        `MCP items cannot be added or updated via updateHistory(). Found ${detail}. Leave existing MCP items unchanged, or remove them from history entirely, before calling updateHistory().`,
+      );
+    }
 
     const removalIds = new Set(removals.map((item) => item.itemId));
     // we don't have an update event for items so we will remove and re-add what's there
