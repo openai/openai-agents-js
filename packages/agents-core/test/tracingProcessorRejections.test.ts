@@ -1,27 +1,27 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import coreLogger from '../src/logger';
-import { Span, type CustomSpanData } from '../src/tracing/spans';
 import type { TracingProcessor } from '../src/tracing/processor';
+import type { Span } from '../src/tracing/spans';
 import type { Trace } from '../src/tracing/traces';
-
-function handledRejection(error: Error): Promise<void> {
-  const promise = Promise.reject(error);
-  void promise.catch(() => {});
-  return promise;
-}
+import {
+  setTraceProcessors,
+  setTracingDisabled,
+  withCustomSpan,
+  withTrace,
+} from '../src/tracing';
 
 class RejectingSpanProcessor implements TracingProcessor {
   async onTraceStart(_trace: Trace): Promise<void> {}
 
   async onTraceEnd(_trace: Trace): Promise<void> {}
 
-  onSpanStart(): Promise<void> {
-    return handledRejection(new Error('span start failed'));
+  onSpanStart(_span: Span<any>): Promise<void> {
+    return Promise.reject(new Error('span start failed'));
   }
 
-  onSpanEnd(): Promise<void> {
-    return handledRejection(new Error('span end failed'));
+  onSpanEnd(_span: Span<any>): Promise<void> {
+    return Promise.reject(new Error('span end failed'));
   }
 
   async shutdown(): Promise<void> {}
@@ -30,40 +30,37 @@ class RejectingSpanProcessor implements TracingProcessor {
 }
 
 describe('span tracing processor failures', () => {
-  it('handles rejected async span lifecycle hooks without unhandled rejections', async () => {
+  it('contains rejected registered span hooks while the traced operation completes', async () => {
     const errorSpy = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
-    const data: CustomSpanData = {
-      type: 'custom',
-      name: 'processor-failure',
-      data: {},
-    };
-    const span = new Span(
-      {
-        traceId: 'trace_processor_failure',
-        data,
-      },
-      new RejectingSpanProcessor(),
-    );
+    setTracingDisabled(false);
+    setTraceProcessors([new RejectingSpanProcessor()]);
 
-    expect(() => span.start()).not.toThrow();
-    await Promise.resolve();
-    await Promise.resolve();
+    try {
+      const result = await withTrace('processor-failure-trace', async () =>
+        withCustomSpan(
+          async () => 'completed',
+          { data: { name: 'processor-failure', data: {} } },
+        ),
+      );
 
-    expect(() => span.end()).not.toThrow();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(
-      errorSpy.mock.calls.some(
-        ([message]) => message === 'Tracing processor failed during span start',
-      ),
-    ).toBe(true);
-    expect(
-      errorSpy.mock.calls.some(
-        ([message]) => message === 'Tracing processor failed during span end',
-      ),
-    ).toBe(true);
-
-    errorSpy.mockRestore();
+      expect(result).toBe('completed');
+      await vi.waitFor(() => {
+        expect(
+          errorSpy.mock.calls.some(
+            ([message]) =>
+              message === 'Tracing processor failed during span start',
+          ),
+        ).toBe(true);
+        expect(
+          errorSpy.mock.calls.some(
+            ([message]) => message === 'Tracing processor failed during span end',
+          ),
+        ).toBe(true);
+      });
+    } finally {
+      setTraceProcessors([]);
+      setTracingDisabled(true);
+      errorSpy.mockRestore();
+    }
   });
 });
