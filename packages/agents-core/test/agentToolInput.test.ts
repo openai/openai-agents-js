@@ -8,8 +8,79 @@ import {
 import type { AgentInputItem, JsonObjectSchema } from '../src/types';
 import type { ToolInputParametersStrict } from '../src/tool';
 import { z } from 'zod';
+import { z as zod3 } from 'zod/v3';
+import { Agent, RunContext } from '../src';
+import { ScriptedModel, assistantMessage } from '../src/testing';
 
 describe('agentToolInput', () => {
+  it.each([
+    {
+      version: 'v3',
+      schema: zod3
+        .object({
+          text: zod3
+            .string()
+            .describe('  Text to translate.  ')
+            .refine((value) => value.length > 0),
+          target: zod3
+            .string()
+            .describe('Inner target.')
+            .default('en')
+            .describe('  Target language.  '),
+          note: zod3.string().describe(' \t ').optional(),
+        })
+        .describe('  Translation input.  '),
+    },
+    {
+      version: 'v4',
+      schema: z
+        .object({
+          text: z
+            .string()
+            .describe('  Text to translate.  ')
+            .refine((value) => value.length > 0),
+          target: z
+            .string()
+            .describe('Inner target.')
+            .default('en')
+            .describe('  Target language.  '),
+          note: z.string().describe(' \t ').optional(),
+        })
+        .describe('  Translation input.  '),
+    },
+  ])(
+    'preserves $version descriptions in nested agent tool input',
+    async ({ schema }) => {
+      const model = new ScriptedModel([[assistantMessage('Translated.')]]);
+      const agent = new Agent({ name: 'Translator', model });
+      const agentTool = agent.asTool({
+        toolDescription: 'Translate structured input.',
+        // Exercise the existing v3 runtime path alongside the declared v4 types.
+        parameters: schema as unknown as z.ZodObject<any>,
+      });
+
+      const result = await agentTool.invoke(
+        new RunContext(),
+        JSON.stringify({ text: 'hola', target: 'en' }),
+      );
+
+      expect(result).toBe('Translated.');
+      expect(model.calls).toHaveLength(1);
+      expect(model.calls[0].request.input).toEqual([
+        expect.objectContaining({
+          role: 'user',
+          content: expect.stringContaining(
+            'Description:   Translation input.  \n' +
+              '- text (string, required) -   Text to translate.  \n' +
+              '- target (string, required) -   Target language.  \n' +
+              '- note (string, optional)',
+          ),
+        }),
+      ]);
+      model.assertComplete();
+    },
+  );
+
   it('AgentAsToolInputSchema accepts only string input', () => {
     expect(AgentAsToolInputSchema.safeParse({ input: 'hi' }).success).toBe(
       true,

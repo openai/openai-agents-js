@@ -7,6 +7,67 @@ import {
 } from '../../src/utils/zodJsonSchemaCompat';
 
 describe('utils/zodJsonSchemaCompat', () => {
+  it.each([
+    {
+      version: 'v3',
+      schema: zod3
+        .object({
+          text: zod3
+            .string()
+            .describe('  Text to translate.  ')
+            .refine((value) => value.length > 0),
+          target: zod3
+            .string()
+            .describe('Inner target.')
+            .default('en')
+            .describe('  Target language.  '),
+          blank: zod3.string().describe(' \t '),
+          missing: zod3.string(),
+        })
+        .describe('  Translation input.  '),
+    },
+    {
+      version: 'v4',
+      schema: z
+        .object({
+          text: z
+            .string()
+            .describe('  Text to translate.  ')
+            .refine((value) => value.length > 0),
+          target: z
+            .string()
+            .describe('Inner target.')
+            .default('en')
+            .describe('  Target language.  '),
+          blank: z.string().describe(' \t '),
+          missing: z.string(),
+        })
+        .describe('  Translation input.  '),
+    },
+  ])(
+    'preserves $version description precedence and whitespace through wrappers',
+    ({ schema }) => {
+      // Exercise the existing v3 runtime path alongside the declared v4 types.
+      const jsonSchema = zodJsonSchemaCompat(
+        schema as unknown as z.ZodObject<any>,
+      );
+
+      expect(jsonSchema).toEqual({
+        type: 'object',
+        $schema: 'http://json-schema.org/draft-07/schema#',
+        additionalProperties: false,
+        required: ['text', 'target', 'blank', 'missing'],
+        description: '  Translation input.  ',
+        properties: {
+          text: { type: 'string', description: '  Text to translate.  ' },
+          target: { type: 'string', description: 'Inner target.' },
+          blank: { type: 'string' },
+          missing: { type: 'string' },
+        },
+      });
+    },
+  );
+
   it('builds schema for basic object with optional property', () => {
     const schema = z.object({
       name: z.string(),

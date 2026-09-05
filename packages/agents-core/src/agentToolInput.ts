@@ -7,7 +7,11 @@ import type {
 } from './types';
 import type { ToolInputParametersStrict } from './tool';
 import type { ZodObjectLike } from './utils/zodCompat';
-import { readZodDefinition, readZodType } from './utils/zodCompat';
+import {
+  readZodDefinition,
+  readZodDescription,
+  readZodType,
+} from './utils/zodCompat';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { hasJsonSchemaObjectShape } from './utils/zodJsonSchemaCompat';
 import { isAgentToolInput, isZodObject } from './utils/typeGuards';
@@ -440,37 +444,6 @@ function readZodShape(input: unknown): Record<string, unknown> | undefined {
     } catch (_error) {
       return undefined;
     }
-  }
-  return undefined;
-}
-
-function readZodDescription(value: unknown): string | undefined {
-  if (typeof value === 'object' && value !== null) {
-    const direct = (value as { description?: unknown }).description;
-    if (typeof direct === 'string' && direct.trim()) {
-      return direct;
-    }
-  }
-
-  let current = value;
-  const visited = new Set<unknown>();
-  while (current && typeof current === 'object' && !visited.has(current)) {
-    visited.add(current);
-    const def = readZodDefinition(current);
-    if (typeof def?.description === 'string' && def.description.trim()) {
-      return def.description;
-    }
-    const next =
-      def?.innerType ??
-      def?.schema ??
-      def?.base ??
-      def?.type ??
-      def?.wrapped ??
-      def?.underlying;
-    if (!next || next === current) {
-      break;
-    }
-    current = next;
   }
   return undefined;
 }
