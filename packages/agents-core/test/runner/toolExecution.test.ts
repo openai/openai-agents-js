@@ -1019,6 +1019,7 @@ describe('executeComputerActions', () => {
     );
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('does not start an action after cancellation', async () => {
@@ -1727,6 +1728,50 @@ describe('executeComputerActions', () => {
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
 
+  it('captures once after a screenshot action followed by another action', async () => {
+    const invocations: string[] = [];
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockImplementation(async () => {
+        invocations.push('screenshot');
+        return 'final-img';
+      }),
+      click: vi.fn().mockImplementation(async () => {
+        invocations.push('click');
+      }),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c-screenshot-then-click',
+      status: 'completed',
+      actions: [
+        { type: 'screenshot' },
+        { type: 'click', x: 1, y: 2, button: 'left' },
+      ],
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
+    expect(invocations).toEqual(['click', 'screenshot']);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+    expect(items).toHaveLength(1);
+    expect((items[0] as any).output).toBe('data:image/png;base64,final-img');
+  });
+
   it.each(['fulfills', 'rejects'] as const)(
     'does not start later batched computer actions when the active action %s after cancellation',
     async (settlement) => {
@@ -2034,7 +2079,7 @@ describe('executeComputerActions', () => {
 
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('passes RunContext to computer actions', async () => {
@@ -2248,7 +2293,7 @@ describe('executeComputerActions', () => {
     expect(items).toHaveLength(1);
     expect(items[0]).toBeInstanceOf(ToolCallOutputItem);
     expect(needsApproval).not.toHaveBeenCalled();
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 });
 

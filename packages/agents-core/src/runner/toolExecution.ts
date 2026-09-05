@@ -1547,7 +1547,7 @@ async function _runComputerActionAndScreenshot(
         await computer.move(action.x, action.y, runContext);
         break;
       case 'screenshot':
-        await computer.screenshot(runContext);
+        // A single final screenshot is captured after all actions complete.
         break;
       case 'scroll':
         await computer.scroll(
