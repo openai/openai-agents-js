@@ -2345,3 +2345,48 @@ describe('ResponseSpanData serialization', () => {
     expect(json.span_data).not.toHaveProperty('_response');
   });
 });
+
+// Regression: forceFlush must not resolve while a previously-triggered export is still running.
+describe('BatchTraceProcessor forceFlush in-flight export', () => {
+  it('waits for an in-flight export after the buffer has been drained', async () => {
+    let markExportStarted!: () => void;
+    let releaseExport!: () => void;
+    const exportStarted = new Promise<void>((resolve) => {
+      markExportStarted = resolve;
+    });
+    const exportReleased = new Promise<void>((resolve) => {
+      releaseExport = resolve;
+    });
+    const delayedExporter: TracingExporter = {
+      export: async () => {
+        markExportStarted();
+        await exportReleased;
+      },
+    };
+    const processor = new BatchTraceProcessor(delayedExporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 100,
+      exportTriggerRatio: 0.1,
+      scheduleDelay: 10000,
+    });
+
+    await processor.onTraceStart(new Trace({ name: 'first' }));
+    const pendingExport = processor.onTraceStart(new Trace({ name: 'second' }));
+    await exportStarted;
+
+    let flushSettled = false;
+    const flushPromise = processor.forceFlush().then(() => {
+      flushSettled = true;
+    });
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(flushSettled).toBe(false);
+    } finally {
+      releaseExport();
+      await pendingExport;
+      await flushPromise;
+      await processor.shutdown();
+    }
+  });
+});
