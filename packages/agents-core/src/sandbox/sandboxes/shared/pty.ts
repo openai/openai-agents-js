@@ -16,12 +16,15 @@ import sys
 sys.exit(0 if sys.version_info[0] >= 3 else 1)
 `;
 const PTY_BRIDGE_SCRIPT = String.raw`
+import array
 import errno
+import fcntl
 import os
 import pty
 import select
 import signal
 import sys
+import termios
 
 PTY_CHILD_SIGNAL_DEFAULTS = (signal.SIGINT, signal.SIGQUIT)
 
@@ -58,19 +61,24 @@ signal.signal(signal.SIGINT, forward_signal)
 
 exit_status = 0
 stdin_open = True
+drain_remaining = None
 
-while True:
+# The target PID owns completion; descendants may keep the terminal open.
+while drain_remaining is None or drain_remaining > 0:
     readable = [fd]
-    if stdin_open:
+    if stdin_open and drain_remaining is None:
         readable.append(sys.stdin.fileno())
     try:
-        ready, _, _ = select.select(readable, [], [], 0.1)
+        ready, _, _ = select.select(readable, [], [], 0.1 if drain_remaining is None else 0)
     except OSError:
+        break
+
+    if not ready and drain_remaining is not None:
         break
 
     if fd in ready:
         try:
-            data = os.read(fd, 4096)
+            data = os.read(fd, 4096 if drain_remaining is None else min(4096, drain_remaining))
         except OSError as exc:
             if exc.errno == errno.EIO:
                 data = b''
@@ -78,23 +86,29 @@ while True:
                 raise
         if data:
             os.write(sys.stdout.fileno(), data)
+            if drain_remaining is not None:
+                drain_remaining -= len(data)
         else:
             break
 
-    if stdin_open and sys.stdin.fileno() in ready:
+    if drain_remaining is None:
+        waited_pid, status = os.waitpid(pid, os.WNOHANG)
+        if waited_pid == pid:
+            if os.WIFEXITED(status):
+                exit_status = os.WEXITSTATUS(status)
+            elif os.WIFSIGNALED(status):
+                exit_status = 128 + os.WTERMSIG(status)
+            # Snapshot queued bytes so new descendant output cannot extend the drain.
+            available = array.array('i', [0])
+            fcntl.ioctl(fd, termios.FIONREAD, available)
+            drain_remaining = available[0]
+
+    if stdin_open and drain_remaining is None and sys.stdin.fileno() in ready:
         data = os.read(sys.stdin.fileno(), 4096)
         if data:
             os.write(fd, data)
         else:
             stdin_open = False
-
-    waited_pid, status = os.waitpid(pid, os.WNOHANG)
-    if waited_pid == pid:
-        if os.WIFEXITED(status):
-            exit_status = os.WEXITSTATUS(status)
-        elif os.WIFSIGNALED(status):
-            exit_status = 128 + os.WTERMSIG(status)
-        break
 
 try:
     _, status = os.waitpid(pid, 0)
