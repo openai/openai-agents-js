@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix: capture a single final computer screenshot for explicit screenshot actions (#1735)
+fix: avoid redundant final computer screenshots without reordering explicit screenshot actions (#1735)

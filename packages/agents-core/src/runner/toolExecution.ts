@@ -1523,6 +1523,7 @@ async function _runComputerActionAndScreenshot(
   runContext: RunContext,
   signal?: AbortSignal,
 ): Promise<{ type: 'completed'; output: string } | { type: 'cancelled' }> {
+  let latestScreenshot: string | undefined;
   for (const action of getComputerToolActions(toolCall)) {
     if (signal?.aborted) {
       return { type: 'cancelled' };
@@ -1547,7 +1548,10 @@ async function _runComputerActionAndScreenshot(
         await computer.move(action.x, action.y, runContext);
         break;
       case 'screenshot':
-        // A single final screenshot is captured after all actions complete.
+        if (typeof computer.screenshot !== 'function') {
+          throw new Error('Computer does not implement screenshot()');
+        }
+        latestScreenshot = await computer.screenshot(runContext);
         break;
       case 'scroll':
         await computer.scroll(
@@ -1568,6 +1572,9 @@ async function _runComputerActionAndScreenshot(
         action satisfies never;
         break;
     }
+    if (action.type !== 'screenshot') {
+      latestScreenshot = undefined;
+    }
     if (signal?.aborted) {
       return { type: 'cancelled' };
     }
@@ -1575,6 +1582,9 @@ async function _runComputerActionAndScreenshot(
 
   if (signal?.aborted) {
     return { type: 'cancelled' };
+  }
+  if (typeof latestScreenshot !== 'undefined') {
+    return { type: 'completed', output: latestScreenshot };
   }
   if (typeof computer.screenshot === 'function') {
     const screenshot = await computer.screenshot(runContext);

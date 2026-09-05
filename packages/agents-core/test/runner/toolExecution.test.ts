@@ -1728,14 +1728,16 @@ describe('executeComputerActions', () => {
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
 
-  it('captures once after a screenshot action followed by another action', async () => {
+  it('preserves screenshot ordering before a later action', async () => {
     const invocations: string[] = [];
+    let screenshotCount = 0;
     const fakeComputer = {
       environment: 'mac',
       dimensions: [1, 1] as [number, number],
       screenshot: vi.fn().mockImplementation(async () => {
         invocations.push('screenshot');
-        return 'final-img';
+        screenshotCount += 1;
+        return screenshotCount === 1 ? 'before-click' : 'after-click';
       }),
       click: vi.fn().mockImplementation(async () => {
         invocations.push('click');
@@ -1766,10 +1768,54 @@ describe('executeComputerActions', () => {
       new RunContext(),
     );
 
+    expect(invocations).toEqual(['screenshot', 'click', 'screenshot']);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(items).toHaveLength(1);
+    expect((items[0] as any).output).toBe('data:image/png;base64,after-click');
+  });
+
+  it('reuses an explicit screenshot when it is the final action', async () => {
+    const invocations: string[] = [];
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockImplementation(async () => {
+        invocations.push('screenshot');
+        return 'after-click';
+      }),
+      click: vi.fn().mockImplementation(async () => {
+        invocations.push('click');
+      }),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+    const tool = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c-click-then-screenshot',
+      status: 'completed',
+      actions: [
+        { type: 'click', x: 1, y: 2, button: 'left' },
+        { type: 'screenshot' },
+      ],
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
     expect(invocations).toEqual(['click', 'screenshot']);
     expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
     expect(items).toHaveLength(1);
-    expect((items[0] as any).output).toBe('data:image/png;base64,final-img');
+    expect((items[0] as any).output).toBe('data:image/png;base64,after-click');
   });
 
   it.each(['fulfills', 'rejects'] as const)(
