@@ -6,7 +6,7 @@
     "@openai/agents-core": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
     "dotenv": "^16.5.0",
-    "fastify": "^5.8.5",
+    "fastify": "^5.12.1",
     "fastify-raw-body": "^5.0.0",
     "openai": "^7.2.0",
     "zod": "^4.0.0"
