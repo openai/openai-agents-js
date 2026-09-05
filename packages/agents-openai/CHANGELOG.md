@@ -1,5 +1,29 @@
 # @openai/agents-openai
 
+## 0.17.1
+
+### Patch Changes
+
+- 4351bd1: fix: honor OpenAIProvider client options over the default client
+- 02720cd: fix: preserve empty hosted MCP tool outputs during Responses conversion
+- eb690a4: fix: recover failed resumed Session writes before continuing runs
+- a8422bf: fix: restrict redacted trace response IDs to official OpenAI endpoints
+- c242bfb: fix: reject truncated empty Chat Completions
+- c3bfb2c: fix: reject unsuccessful OpenAI Responses terminal states without losing billed usage
+- 0035d33: fix: strip output-only created_by metadata at replay boundaries
+- Updated dependencies [dd1becb]
+- Updated dependencies [0b94437]
+- Updated dependencies [d7ed6b2]
+- Updated dependencies [b09622f]
+- Updated dependencies [6721ccd]
+- Updated dependencies [05e5851]
+- Updated dependencies [0b949bc]
+- Updated dependencies [cd5a2c8]
+- Updated dependencies [eb690a4]
+- Updated dependencies [c3bfb2c]
+- Updated dependencies [0035d33]
+  - @openai/agents-core@0.17.1
+
 ## 0.17.0
 
 ### Patch Changes

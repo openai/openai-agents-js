@@ -1,5 +1,21 @@
 # @openai/agents-core
 
+## 0.17.1
+
+### Patch Changes
+
+- dd1becb: feat: allow labels on Docker sandbox containers
+- 0b94437: fix: detach source usage records during aggregation
+- d7ed6b2: feat: allow custom messages for output guardrail-blocked tool results
+- b09622f: fix: deduplicate MCP server ownership and refresh active server state after close
+- 6721ccd: fix: isolate cached MCP tool definitions from caller and filter mutations
+- 05e5851: feat: add server-wide MCP tool guardrails
+- 0b949bc: fix: preserve serialized approval resume ownership
+- cd5a2c8: fix(core): preserve handoff callback errors after input validation
+- eb690a4: fix: recover failed resumed Session writes before continuing runs
+- c3bfb2c: fix: reject unsuccessful OpenAI Responses terminal states without losing billed usage
+- 0035d33: fix: strip output-only created_by metadata at replay boundaries
+
 ## 0.17.0
 
 ### Minor Changes
