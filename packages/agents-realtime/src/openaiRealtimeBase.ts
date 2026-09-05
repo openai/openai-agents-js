@@ -155,6 +155,12 @@ function cloneRealtimeEvent<T>(event: T): T {
   return JSON.parse(JSON.stringify(event)) as T;
 }
 
+/**
+ * Sentinel accepted by `conversation.item.create` that places the item at the
+ * beginning of the conversation. Omitting `previous_item_id` appends instead.
+ */
+const CONVERSATION_ROOT = 'root';
+
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
   implements RealtimeTransportLayer
@@ -381,11 +387,15 @@ export abstract class OpenAIRealtimeBase
         return;
       }
       if (parsed.item.type === 'message') {
+        // `null` here is the server saying the item has nothing before it, which
+        // is what decides where local history puts it. An event that does not
+        // carry the field says nothing about placement, so it stays undefined
+        // rather than claiming the front.
         const previousItemId =
           parsed.type === 'conversation.item.added' ||
           parsed.type === 'conversation.item.done'
             ? parsed.previous_item_id
-            : null;
+            : undefined;
         const item = realtimeMessageItemSchema.parse({
           itemId: parsed.item.id,
           previousItemId,
@@ -993,27 +1003,58 @@ export abstract class OpenAIRealtimeBase
       }
     }
 
-    const additionsAndUpdates = [...additions, ...updates];
+    // Walk the new history in order so each created item can name the item it
+    // follows. `conversation.item.create` appends to the end of the
+    // conversation when `previous_item_id` is omitted, which would move a
+    // corrected or inserted item behind everything after it.
+    const pendingIds = new Set(
+      [...additions, ...updates].map((item) => item.itemId),
+    );
+    // Only a create that has to land before something the server keeps needs to
+    // name an anchor. Past the last such item there is nothing to sit in front
+    // of, so those stay plain appends: naming an anchor there would point at an
+    // item a not-yet-acknowledged delete may already have removed, and the
+    // server rejects the create instead of appending it.
+    let lastAnchoredIndex = -1;
+    for (const [index, item] of newHistory.entries()) {
+      if (!pendingIds.has(item.itemId)) {
+        lastAnchoredIndex = index;
+      }
+    }
 
-    for (const addition of additionsAndUpdates) {
-      if (addition.type === 'message') {
+    // `root` places the item at the beginning; omitting the field appends it.
+    let previousItemId = CONVERSATION_ROOT;
+
+    for (const [index, item] of newHistory.entries()) {
+      if (!pendingIds.has(item.itemId)) {
+        // Untouched items keep their place and can anchor the next insert.
+        previousItemId = item.itemId;
+        continue;
+      }
+
+      if (item.type === 'message') {
         const itemEntry: Record<string, any> = {
           type: 'message',
-          role: addition.role,
-          content: addition.content,
-          id: addition.itemId,
+          role: item.role,
+          content: item.content,
+          id: item.itemId,
         };
-        if (addition.role !== 'system' && addition.status) {
-          itemEntry.status = addition.status;
+        if (item.role !== 'system' && item.status) {
+          itemEntry.status = item.status;
         }
         this.sendEvent({
           type: 'conversation.item.create',
+          ...(index < lastAnchoredIndex
+            ? { previous_item_id: previousItemId }
+            : {}),
           item: itemEntry,
         });
-      } else if (addition.type === 'function_call') {
+        previousItemId = item.itemId;
+      } else if (item.type === 'function_call') {
         logger.warn(
           'Function calls cannot be manually added or updated at the moment. Ignoring.',
         );
+        // Not created, so it cannot anchor the next insert.
       }
     }
   }
