@@ -1,22 +1,20 @@
 import { describe, expect, test } from 'vitest';
+import { execFile as execFileCallback } from 'node:child_process';
 import { access } from 'node:fs/promises';
+import process from 'node:process';
+import { URL, fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import ts from 'typescript';
 
 import {
   compareConditionTrees,
-  compareConvenienceBindingIdentity,
-  compareNamespaceBindingIdentity,
   compareOptionalPeers,
-  compareRuntimeBindings,
   compareResolvedConditionSurfaces,
   compareSurfaceRecords,
   collectConditionTargets,
   collectExportLeaves,
   collectRuntimeConditionSets,
   describeOwnedSymbol,
-  installTarballs,
-  isSafeWithoutOptionalPeers,
-  isUnsupportedOptionalPeerFormat,
   isPublicDeclaration,
   isDirectObjectTypeAliasDeclaration,
   isReadonlyDeclarations,
@@ -29,8 +27,91 @@ import {
   validateExportTreeTerminals,
   validateSelectedProperties,
   validateSelectedPublicTypeAliases,
+} from './released-api-contract-surface.mjs';
+import {
+  compareConvenienceBindingIdentity,
+  compareNamespaceBindingIdentity,
+  compareRuntimeBindings,
+  installTarballs,
+  isSafeWithoutOptionalPeers,
+  isUnsupportedOptionalPeerFormat,
   withAcquiredResources,
-} from './released-api-contract.mjs';
+} from './released-api-contract-execution.mjs';
+
+describe('released API contract module boundaries', () => {
+  test('preserves the original entrypoint exports and their identities', async () => {
+    const entrypoint = await import('./released-api-contract.mjs');
+    const surface = await import('./released-api-contract-surface.mjs');
+    const execution = await import('./released-api-contract-execution.mjs');
+    const originalExports = [
+      'PUBLIC_PACKAGES',
+      'collectConditionTargets',
+      'collectExportLeaves',
+      'validateExportLeafConditions',
+      'validateExportTreeTerminals',
+      'collectRuntimeConditionSets',
+      'resolveConditionalTarget',
+      'validatePackageExportTarget',
+      'compareConditionTrees',
+      'isPublicDeclaration',
+      'isReadonlyDeclarations',
+      'isDirectObjectTypeAliasDeclaration',
+      'describeOwnedSymbol',
+      'normalizeSelectedPublicTypeAliases',
+      'preservedSelectionPolicies',
+      'selectDeclarationSurface',
+      'compareResolvedConditionSurfaces',
+      'compareOwnedDescriptors',
+      'compareSurfaceRecords',
+      'validateSelectedProperties',
+      'validateSelectedPublicTypeAliases',
+      'compareOptionalPeers',
+      'compareRuntimeBindings',
+      'compareNamespaceBindingIdentity',
+      'compareConvenienceBindingIdentity',
+      'isUnsupportedOptionalPeerFormat',
+      'isSafeWithoutOptionalPeers',
+      'withAcquiredResources',
+      'installTarballs',
+    ];
+    expect(Object.keys(entrypoint).sort()).toEqual(originalExports.sort());
+    for (const name of originalExports) {
+      expect(entrypoint[name]).toBe(surface[name] ?? execution[name]);
+    }
+  });
+
+  test.each([
+    './released-api-contract-surface.mjs',
+    './released-api-contract-execution.mjs',
+  ])(
+    'imports %s without running the CLI or acquiring resources',
+    async (file) => {
+      const moduleUrl = new URL(file, import.meta.url);
+      const env = { ...process.env };
+      delete env.OPENAI_API_KEY;
+      const { stdout, stderr } = await promisify(execFileCallback)(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          `import childProcess from 'node:child_process';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+const unexpected = () => { throw new Error('Unexpected import side effect'); };
+childProcess.execFile = unexpected;
+for (const name of ['mkdtemp', 'writeFile', 'rename', 'rm']) fs[name] = unexpected;
+syncBuiltinESMExports();
+process.argv = [process.execPath, ${JSON.stringify(fileURLToPath(moduleUrl))}, 'source'];
+await import(${JSON.stringify(moduleUrl.href)});
+console.log('Imported without side effects');`,
+        ],
+        { env },
+      );
+      expect(stdout.trim()).toBe('Imported without side effects');
+      expect(stderr).toBe('');
+    },
+  );
+});
 
 const functionRecord = {
   name: 'run',
