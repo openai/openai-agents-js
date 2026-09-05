@@ -6,8 +6,19 @@ import {
   getInputItems,
   convertToOutputItem,
 } from '../src/openaiResponsesModel';
+import {
+  getInputItems as converterGetInputItems,
+  convertToOutputItem as converterConvertToOutputItem,
+} from '../src/openaiResponsesConverter';
 import { UserError } from '@openai/agents-core';
 import logger from '../src/logger';
+
+describe('Responses item conversion exports', () => {
+  it('preserves helper identity through the model module', () => {
+    expect(getInputItems).toBe(converterGetInputItems);
+    expect(convertToOutputItem).toBe(converterConvertToOutputItem);
+  });
+});
 
 describe('getToolChoice', () => {
   it('returns default choices', () => {

@@ -316,6 +316,8 @@ export class OpenAIResponsesCompactionSession
       await this.underlyingSession.clearSession();
       this.compactionCandidateItems = [];
       this.sessionItems = [];
+      this.responseId = undefined;
+      this.lastStore = undefined;
     });
   }
 

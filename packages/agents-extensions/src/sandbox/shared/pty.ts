@@ -22,6 +22,15 @@ export type PtyProcessEntry = {
   waiters: Set<() => void>;
   sendInput?: (chars: string) => Promise<void>;
   terminate?: () => Promise<void>;
+  /** Carries partial UTF-8 sequences across chunk boundaries. */
+  decoder?: PtyTextDecoder;
+};
+
+type PtyTextDecoder = {
+  decode(
+    input?: Uint8Array | ArrayBuffer,
+    options?: { stream?: boolean },
+  ): string;
 };
 
 export type PtyWebSocket = {
@@ -64,9 +73,16 @@ export function appendPtyOutput(
   chunk: string | Uint8Array | ArrayBuffer,
 ): void {
   if (typeof chunk === 'string') {
+    // Emit any bytes still buffered by the decoder before the string so the
+    // PTY output stays in the order the process produced it.
+    entry.output += flushPtyDecoder(entry);
     entry.output += chunk;
   } else {
-    entry.output += new TextDecoder().decode(chunk);
+    // A PTY chunk is an arbitrary slice of the byte stream, so a multi-byte
+    // UTF-8 sequence can straddle two chunks. Reuse one streaming decoder per
+    // process entry instead of decoding each chunk in isolation.
+    entry.decoder ??= new TextDecoder();
+    entry.output += entry.decoder.decode(chunk, { stream: true });
   }
   notifyPtyWaiters(entry);
 }
@@ -75,6 +91,7 @@ export function markPtyDone(
   entry: PtyProcessEntry,
   exitCode: number | null = null,
 ): void {
+  entry.output += flushPtyDecoder(entry);
   entry.done = true;
   entry.exitCode = exitCode;
   notifyPtyWaiters(entry);
@@ -470,6 +487,15 @@ function allocatePtyProcessId(processes: Map<number, PtyProcessEntry>): number {
       return processId;
     }
   }
+}
+
+function flushPtyDecoder(entry: PtyProcessEntry): string {
+  if (!entry.decoder) {
+    return '';
+  }
+  const rest = entry.decoder.decode();
+  entry.decoder = undefined;
+  return rest;
 }
 
 function consumePtyOutput(entry: PtyProcessEntry): string {

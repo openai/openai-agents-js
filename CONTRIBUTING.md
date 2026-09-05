@@ -54,7 +54,7 @@ Optionally, you can run the example app or docs site:
 
 ### Building
 
-After making code changes, run:
+To build the packages, run:
 
 ```bash
 pnpm build
@@ -74,13 +74,15 @@ Tests use Vitest and are located alongside source files in each package under `p
 
 For provider-neutral agent workflow tests, prefer `ScriptedModel` from the Core testing utilities instead of adding a new mock or fake `Model`. Use `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox session calls. Keep a specialized test double only when the test specifically requires provider-wire conversion, malformed streams, controlled suspension or concurrency, or an exact abort or lifecycle boundary that the scripted utilities cannot preserve; document that boundary in the test.
 
-During an iterative review, `pnpm test:review` skips the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. Choose review coverage by impact:
+`pnpm test:review` omits the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. These remain mandatory in final `pnpm test` verification. This broad subset does not replace focused checks during implementation review or the final suite.
 
-- For changes unrelated to every review-optional owner, run `pnpm test:review`.
-- For a leaf subsystem change, run `pnpm test:review` plus that subsystem's complete test file or directory with `pnpm test <path>`.
-- For cross-cutting core changes, shared test infrastructure changes, or an uncertain boundary, run the complete `pnpm test` suite.
+During iterative implementation review, run focused tests for the changed behavior and relevant subsystem boundaries with `pnpm exec vitest run <path>`, including applicable review-optional cases. Resolve uncertain coverage by tracing affected callers and dependencies and selecting the needed focused checks. Follow [implementation-final-review](.agents/skills/implementation-final-review/SKILL.md) for review sequencing; defer broad tests, builds, and repository-wide type checking until clean review. Then follow [code-change-verification](.agents/skills/code-change-verification/SKILL.md) for the complete final SDK stack. Explicit requests to run a suite outside implementation review remain supported.
 
-The reduced profile is only for preliminary feedback. Final verification must always run `pnpm test`, including every review-optional test.
+### Repository skill tests
+
+Run `pnpm test:repo-skills` to check executable repository skill helpers independently of the SDK test suite. This offline command requires Node.js 22+, Python 3.10+, Git, and installed development dependencies; it does not require a package build. It runs the four Python handoff/review suites, the Node logging inventory suite, runner regression tests, and three changeset result-validator fixtures. A failed suite stops the command with a nonzero exit status.
+
+The runner isolates temporary files and Git configuration, passes only required environment variables to children, and limits Git fixture transports to local files. The changeset shell's prompt-generation check and all four milestone cases are excluded. The runner never invokes `run-fixtures.sh` or milestone assignment. `.github/workflows/repo-skills.yml` runs this command when its owning scripts, skills, or dependency manifests change.
 
 ### Code style
 

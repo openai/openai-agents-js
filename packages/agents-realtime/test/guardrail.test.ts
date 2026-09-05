@@ -43,6 +43,44 @@ describe('realtime guardrail helpers', () => {
     expect(message).toContain(JSON.stringify({ reason: 'blocked' }));
   });
 
+  it('generates feedback when output info contains circular references', () => {
+    const outputInfo: Record<string, unknown> = { reason: 'blocked' };
+    outputInfo.self = outputInfo;
+
+    const message = getRealtimeGuardrailFeedbackMessage({
+      guardrail: {
+        type: 'output',
+        name: 'Blocklist',
+        policyHint: 'Blocklist',
+      },
+      output: {
+        tripwireTriggered: true,
+        outputInfo,
+      },
+    } as any);
+
+    expect(message).toContain('Failed Guardrail Reason: Blocklist.');
+    expect(message).toContain(
+      'Failure Details: [object with circular references].',
+    );
+  });
+
+  it('generates feedback when output info contains bigint values', () => {
+    const message = getRealtimeGuardrailFeedbackMessage({
+      guardrail: {
+        type: 'output',
+        name: 'Blocklist',
+        policyHint: 'Blocklist',
+      },
+      output: {
+        tripwireTriggered: true,
+        outputInfo: 42n,
+      },
+    } as any);
+
+    expect(message).toContain('Failure Details: 42.');
+  });
+
   it('respects explicit policyHint overrides', async () => {
     const guardrail = defineRealtimeOutputGuardrail({
       name: 'Policy',
