@@ -1,6 +1,6 @@
 ---
 name: final-release-review
-description: Perform pre-release planning or a final release-candidate review for openai-agents-js by comparing the target with the previous remote tag, deriving the release type from Changesets, auditing regressions and contract changes, reviewing open documentation PR coverage, drafting minor-release Key Changes, and calling the ship/block gate.
+description: Assess a JS SDK release candidate or release plan against the previous release and recommend ship or block.
 ---
 
 # Final Release Review

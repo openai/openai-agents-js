@@ -1,6 +1,6 @@
 ---
 name: pr-draft-summary
-description: Create the required PR-ready summary block, branch suggestion, title, and draft description for openai-agents-js. Must be used before the final response whenever the actual task diff includes runtime code, tests, examples, build/test configuration, or docs with behavior impact, regardless of perceived change size. Skip only when no eligible files changed, every change is repo-meta or docs-only without behavior impact, the task is conversation-only, or the user explicitly opts out.
+description: Prepare a local PR title, description, and branch suggestion when requested or after eligible implementation work.
 ---
 
 # PR Draft Summary
@@ -11,7 +11,7 @@ Produce the PR-ready summary required in this repository after eligible work is 
 
 ## Close-out Gate
 
-1. Inspect the actual task diff before sending the final response.
+1. Inspect the actual task diff before sending the final response. An explicit request for a PR draft takes precedence over the automatic-trigger exclusions below. Producing a draft never authorizes creating a branch, committing, pushing, or opening a PR.
 2. Run this skill when the diff includes runtime code, tests, examples, build/test configuration, or docs with behavior impact. Do not use perceived change size to skip an eligible change.
 3. Run it after any required verification and changeset work and before sending the "work complete" response.
 4. Skip only when no eligible files changed, every change is repo-meta or docs-only without behavior impact, the task is conversation-only, or the user explicitly opts out.
@@ -29,15 +29,21 @@ Produce the PR-ready summary required in this repository after eligible work is 
 - Commits ahead of the base fork point: `git log --oneline --no-merges ${BASE_COMMIT}..HEAD`.
 - Category signals for this repo: runtime (`packages/`, `examples/`, `helpers/`, `scripts/`), tests (`packages/**/test`, `integration-tests/`), docs (`docs/`, `README.md`, `AGENTS.md`, `.github/`), build/test config (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig*.json`, `tsc-multi.json`, `eslint.config.*`, `vitest*.ts`).
 
+## Task ownership
+
+Use the complete task-owned diff, including committed, staged, unstaged, and untracked changes. Inspect the branch diff as context, then identify ownership from the user's request and the task's initial state and implementation history. Do not include unrelated pre-existing branch or workspace changes in the draft. A request covering the entire branch includes that branch's complete diff. If ownership is unclear and would change the draft materially, resolve that concrete question before presenting it as ready.
+
+For a topic-scoped correction on an unrelated feature branch, describe the correction and suggest an appropriate branch name as text only. Preserve the actual checkout and branch. Do not inherit an unrelated issue-closing reference from the current branch name.
+
 ## Workflow
 
 1. Run the commands above without asking the user; compute `BASE_REF`/`BASE_COMMIT` first so later commands reuse them. Compare against `origin/main` or `main`, not the current branch's upstream.
-2. Combine the committed branch diff with staged, unstaged, and untracked changes. If the combined diff is empty, reply briefly that no code changes were detected and skip emitting the PR block.
+2. Combine the task-owned committed diff with task-owned staged, unstaged, and untracked changes. If that combined diff is empty, reply briefly that no code changes were detected and skip emitting the PR block.
 3. Infer change type from the touched paths listed under "Category signals"; classify as feature, fix, refactor, or docs-with-impact, and flag backward-compatibility risk only when the diff changes released public APIs, external config, persisted data, or wire protocols. Judge that risk against the latest release tag, not unreleased branch-only churn.
-4. Summarize changes in 1–3 short sentences using the top five paths and stats from the committed, staged, and unstaged diffs. Explicitly call out untracked files because `--stat` does not include them. Use commit messages as supporting context, not as a substitute for inspecting the committed diff.
+4. Summarize changes in 1–3 short sentences using the most relevant task-owned paths and stats from the committed, staged, and unstaged diffs. Explicitly call out untracked files because `--stat` does not include them. Use commit messages as supporting context, not as a substitute for inspecting the committed diff.
 5. Choose the lead verb for the description: feature → `adds`, bug fix → `fixes`, refactor/perf → `improves` or `updates`, docs-only → `updates`.
-6. Suggest a branch name. If already off `main`, keep it; otherwise propose `feat/<slug>`, `fix/<slug>`, or `docs/<slug>` based on the primary area (for example `docs/pr-draft-summary-guidance`).
-7. If the current branch matches `issue-<number>` (digits only), keep that branch suggestion. When an issue number is present, use the native same-repository reference `#<number>` and include an auto-closing line such as `This pull request resolves #<number>.`. Do not add the explicit issue URL or wrap the reference in a Markdown link. Do not block if the issue cannot be fetched.
+6. Suggest a branch name. If already on a branch for this task, keep it; otherwise propose `feat/<slug>`, `fix/<slug>`, or `docs/<slug>` based on the primary area (for example `docs/pr-draft-summary-guidance`).
+7. If the current branch belongs to this task and matches `issue-<number>` (digits only), keep that branch suggestion. When an issue number is present, use the native same-repository reference `#<number>` and include an auto-closing line such as `This pull request resolves #<number>.`. Do not add the explicit issue URL or wrap the reference in a Markdown link. Do not block if the issue cannot be fetched.
 8. Draft the PR title and description using the template below. Apply the repository-wide GitHub paste-readiness rule: use exactly `#123` for same-repository issues or PRs and `owner/repo#123` for cross-repository references; never emit `[PR #123](https://github.com/owner/repo/pull/123)`, `[#123](...)`, Codex navigation links, local file links, Codex-only citation markers or footnotes, or app directives in the copy-ready block. Preserve ordinary descriptive links to API docs, design notes, and other targets without native GitHub issue or pull-request syntax.
 9. Normalize references before returning the block: replace every same-repository URL or `openai/openai-agents-js#<number>` reference with `#<number>`, replace every cross-repository issue or pull-request URL with `owner/repo#<number>`, then rescan the full block. Do not return it while a Markdown-linked issue or pull-request label, a same-repository qualified reference, or a bare GitHub issue or pull-request URL remains.
 10. Output only the block in "Output Format". Keep any surrounding status note minimal and in English.
