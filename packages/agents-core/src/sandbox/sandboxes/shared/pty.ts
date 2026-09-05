@@ -59,6 +59,7 @@ signal.signal(signal.SIGINT, forward_signal)
 exit_status = 0
 stdin_open = True
 
+# PTY data can remain buffered after the child exits, so read until EOF.
 while True:
     readable = [fd]
     if stdin_open:
@@ -87,14 +88,6 @@ while True:
             os.write(fd, data)
         else:
             stdin_open = False
-
-    waited_pid, status = os.waitpid(pid, os.WNOHANG)
-    if waited_pid == pid:
-        if os.WIFEXITED(status):
-            exit_status = os.WEXITSTATUS(status)
-        elif os.WIFSIGNALED(status):
-            exit_status = 128 + os.WTERMSIG(status)
-        break
 
 try:
     _, status = os.waitpid(pid, 0)

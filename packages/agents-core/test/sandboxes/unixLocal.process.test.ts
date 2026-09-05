@@ -3,7 +3,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -165,6 +165,75 @@ describe('UnixLocalSandboxClient process sessions', () => {
     expect(started).toContain('Process running with session ID');
     expect(finished).toContain('Process exited with code 0');
     expect(finished).toContain('hello stdin');
+  });
+
+  it('drains PTY output when the child exits while forwarding stdin', async () => {
+    const originalPython = process.env.OPENAI_AGENTS_PYTHON;
+    const pythonPath = await whichPython();
+    const controlledPython = join(rootDir, 'controlled-python');
+    // Control the real child's exit ordering without replacing its PTY output.
+    await writeFile(
+      controlledPython,
+      String.raw`#!${pythonPath}
+import os
+import sys
+
+original_write = os.write
+original_waitpid = os.waitpid
+forwarded_stdin = False
+
+def waitpid_after_stdin(pid, options):
+    return original_waitpid(pid, 0 if forwarded_stdin else options)
+
+def write_with_stdin_marker(fd, data):
+    global forwarded_stdin
+    written = original_write(fd, data)
+    if fd > 2 and data == b'hello stdin\n':
+        forwarded_stdin = True
+    return written
+
+os.write = write_with_stdin_marker
+os.waitpid = waitpid_after_stdin
+script = sys.argv[2]
+sys.argv = [sys.argv[0], *sys.argv[3:]]
+exec(script)
+`,
+      { mode: 0o755 },
+    );
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    });
+    const session = await client.create(new Manifest());
+    process.env.OPENAI_AGENTS_PYTHON = controlledPython;
+
+    try {
+      const started = await session.execCommand({
+        cmd: 'read value; printf "%s\\n" "$value"; exit 7',
+        shell: '/bin/sh',
+        login: false,
+        tty: true,
+        yieldTimeMs: 0,
+      });
+      const sessionId = Number(
+        started.match(/Process running with session ID (\d+)/)?.[1],
+      );
+      const finished = await writeUntilExit(
+        session,
+        sessionId,
+        'hello stdin\n',
+      );
+
+      expect(started).toContain('Process running with session ID');
+      expect(finished).toContain('Process exited with code 7');
+      expect(finished).toContain('hello stdin');
+    } finally {
+      if (originalPython === undefined) {
+        delete process.env.OPENAI_AGENTS_PYTHON;
+      } else {
+        process.env.OPENAI_AGENTS_PYTHON = originalPython;
+      }
+      await session.close();
+    }
   });
 
   it('waits for final output after observing process completion', async () => {
