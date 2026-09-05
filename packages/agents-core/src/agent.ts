@@ -1124,7 +1124,7 @@ export class Agent<
   }
 
   /**
-   * ALl agent tools, including the MCPl and function tools.
+   * All agent tools, including the MCP and function tools.
    *
    * @returns all configured tools
    */
