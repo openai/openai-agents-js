@@ -78,6 +78,12 @@ For provider-neutral agent workflow tests, prefer `ScriptedModel` from the Core 
 
 During iterative implementation review, run focused tests for the changed behavior and relevant subsystem boundaries with `pnpm exec vitest run <path>`, including applicable review-optional cases. Resolve uncertain coverage by tracing affected callers and dependencies and selecting the needed focused checks. Follow [implementation-final-review](.agents/skills/implementation-final-review/SKILL.md) for review sequencing; defer broad tests, builds, and repository-wide type checking until clean review. Then follow [code-change-verification](.agents/skills/code-change-verification/SKILL.md) for the complete final SDK stack. Explicit requests to run a suite outside implementation review remain supported.
 
+### Repository skill tests
+
+Run `pnpm test:repo-skills` to check executable repository skill helpers independently of the SDK test suite. This offline command requires Node.js 22+, Python 3.10+, Git, and installed development dependencies; it does not require a package build. It runs the four Python handoff/review suites, the Node logging inventory suite, runner regression tests, and three changeset result-validator fixtures. A failed suite stops the command with a nonzero exit status.
+
+The runner isolates temporary files and Git configuration, passes only required environment variables to children, and limits Git fixture transports to local files. The changeset shell's prompt-generation check and all four milestone cases are excluded. The runner never invokes `run-fixtures.sh` or milestone assignment. `.github/workflows/repo-skills.yml` runs this command when its owning scripts, skills, or dependency manifests change.
+
 ### Code style
 
 - Maintain existing TypeScript style.

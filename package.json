@@ -15,6 +15,7 @@
     "docs:scripts:check": "pnpm exec tsc --pretty false --project docs/tsconfig.scripts.json",
     "test": "vitest run --mode full",
     "test:review": "vitest run --mode review",
+    "test:repo-skills": "node scripts/run-repo-skill-tests.mjs",
     "test:coverage": "vitest run --mode full --coverage",
     "test:examples": "pnpm -r build-check",
     "test:integration": "vitest run --config=vitest.integration.config.ts",

@@ -1,0 +1,51 @@
+name: Repository skill tests
+
+on:
+  push:
+    branches: [main]
+    paths: &repo-skill-paths
+      - '.github/workflows/repo-skills.yml'
+      - 'scripts/run-repo-skill-tests.mjs'
+      - 'scripts/tests/run-repo-skill-tests.test.mjs'
+      - '.agents/skills/implementation-kickoff/**'
+      - '.agents/skills/implementation-final-review/**'
+      - '.agents/skills/sensitive-logging-audit/**'
+      - '.agents/skills/changeset-validation/**'
+      - 'CONTRIBUTING.md'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.npmrc'
+  pull_request:
+    paths: *repo-skill-paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repo-skills:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+        with:
+          run_install: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: pnpm
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run offline repository skill tests
+        run: pnpm test:repo-skills
