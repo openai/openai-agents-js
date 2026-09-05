@@ -63,11 +63,13 @@ For a recognized function call and result pair, the SDK preserves replay-safe id
 
 This protection does not undo external tool side effects, retract output already emitted to application code, erase data already stored outside the SDK's control, or modify application-owned references to raw provider data.
 
+Set `outputGuardrailBlockedMessage` on `Runner` or in the options for an individual `run()` call when your application needs a different data-free placeholder. The per-run value takes precedence over the `Runner` value. You can provide either a non-empty string or a formatter that receives `defaultMessage`, `guardrailName`, `agent`, and `runContext`. The formatter can be asynchronous, but it does not receive the rejected output. If the formatter throws, rejects, or returns an empty or non-string value, the SDK fails closed with the default placeholder instead of exposing the formatter failure.
+
 ## Tool guardrails
 
-Tool guardrails wrap **function tools** and let you validate or block tool calls before and after execution. They are configured on the tool itself (via `tool()` options) and run for every invocation of that tool.
+Tool guardrails wrap **function tools** and let you validate or block tool calls before and after execution. You can configure guardrails on an individual tool through `tool()` options or on a local MCP server so they run for every tool that the SDK converts from that server.
 
-In practice, this means custom function tools where you set `inputGuardrails`, `outputGuardrails`, or both on `tool({...})`.
+For a custom function tool, set `inputGuardrails`, `outputGuardrails`, or both on `tool({...})`. For `MCPServerStreamableHttp`, `MCPServerStdio`, or `MCPServerSSE`, set `toolInputGuardrails`, `toolOutputGuardrails`, or both in the server constructor options. Server-wide MCP guardrails use the same local function-tool execution pipeline and apply to every converted tool from that server.
 
 - **Input tool guardrails** run before the tool executes and can reject the call with a message or throw a tripwire.
 - **Output tool guardrails** run after the tool executes and can replace the output with a rejection message or throw a tripwire.
@@ -80,7 +82,7 @@ Tool guardrails return a `behavior`:
 - `rejectContent` — short‑circuit with a message (tool call is skipped or output is replaced).
 - `throwException` — throw a tripwire error immediately.
 
-Tool guardrails apply to function tools you define with `tool()`. Handoffs are presented to the model as function-like tools, but they run through the SDK's handoff path rather than the normal function-tool pipeline, so tool guardrails do not apply to the handoff call itself. Hosted tools and built-in execution tools (`computerTool`, `shellTool`, `applyPatchTool`) also do not use this guardrail pipeline, and `agent.asTool()` does not currently expose tool-guardrail options directly.
+Tool guardrails apply to function tools you define with `tool()` and to tools converted from local MCP servers when the server configures them. Handoffs are presented to the model as function-like tools, but they run through the SDK's handoff path rather than the normal function-tool pipeline, so tool guardrails do not apply to the handoff call itself. Hosted MCP tools, other hosted tools, and built-in execution tools (`computerTool`, `shellTool`, `applyPatchTool`) also do not use this guardrail pipeline, and `agent.asTool()` does not currently expose tool-guardrail options directly.
 
 ## Tripwires
 

@@ -171,7 +171,7 @@ Human-in-the-loop flows often pause a run to wait for approval:
 
 When you resume from a previous `RunState`, the new turn is appended to the same memory record to preserve a single conversation history. Most human-in-the-loop (HITL) approval checkpoints round-trip through `RunState` while the session keeps the conversation history complete.
 
-Output guardrails impose a stricter boundary when an approved function-tool result can become the final output. If a serialized checkpoint does not contain enough provenance to identify the current output safely, the SDK fails closed before further model, tool, or session side effects. Some output-bearing approval checkpoints therefore cannot be resumed from serialized state with a session attached. Start a new run from safe input when the SDK reports this condition; do not work around it by replaying the rejected raw items.
+Output guardrails impose a stricter boundary when an approved function-tool result can become the final output. The current `RunState` schema records exact current-response generated-item ownership when the SDK can prove it, allowing supported output-bearing approval checkpoints to resume with their session history intact. The SDK validates that ownership before further model, tool, or session side effects. Older snapshots and checkpoints with missing, invalid, or ambiguous ownership still fail closed. Start a new run from safe input when the SDK reports this condition; do not work around it by replaying raw items.
 
 ---
 
