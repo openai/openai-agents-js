@@ -281,7 +281,16 @@ export class OpenAIResponsesCompactionSession
 
   async popItem() {
     return this.runMutationOperation(async () => {
-      const popped = await this.underlyingSession.popItem();
+      let popped: AgentInputItem | undefined;
+      try {
+        popped = await this.underlyingSession.popItem();
+      } catch (error) {
+        this.responseId = undefined;
+        this.lastStore = undefined;
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+        throw error;
+      }
       if (!popped) {
         return popped;
       }

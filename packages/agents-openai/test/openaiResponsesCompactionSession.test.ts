@@ -135,6 +135,19 @@ class CommitThenRejectAppendSession extends MemorySession {
   }
 }
 
+class CommitThenRejectPopSession extends MemorySession {
+  failNextPop = false;
+
+  override async popItem(): Promise<AgentInputItem | undefined> {
+    const popped = await super.popItem();
+    if (this.failNextPop) {
+      this.failNextPop = false;
+      throw new Error('pop acknowledgement lost');
+    }
+    return popped;
+  }
+}
+
 describe('OpenAIResponsesCompactionSession', () => {
   it('forgets response-chain state when the session is cleared', async () => {
     const compact = vi.fn();
@@ -203,6 +216,47 @@ describe('OpenAIResponsesCompactionSession', () => {
       model: expect.any(String),
       previous_response_id: 'resp_new',
     });
+  });
+
+  it('invalidates response and history state when pop commits before rejecting', async () => {
+    const first = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'first' }],
+    } as AgentInputItem;
+    const second = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'second' }],
+    } as AgentInputItem;
+    const underlyingSession = new CommitThenRejectPopSession({
+      initialItems: [first, second],
+    });
+    const snapshots: AgentInputItem[][] = [];
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact: vi.fn() } } as any,
+      underlyingSession,
+      compactionMode: 'input',
+      shouldTriggerCompaction: ({ sessionItems }) => {
+        snapshots.push(sessionItems);
+        return false;
+      },
+    });
+
+    await session.runCompaction({ responseId: 'resp_old', store: true });
+    underlyingSession.failNextPop = true;
+    await expect(session.popItem()).rejects.toThrow('pop acknowledgement lost');
+    await expect(underlyingSession.getItems()).resolves.toEqual([first]);
+
+    await expect(
+      session.runCompaction({ compactionMode: 'previous_response_id' }),
+    ).rejects.toThrow(/requires a responseId/);
+    await expect(
+      session.runCompaction({ compactionMode: 'input' }),
+    ).resolves.toBeNull();
+    expect(snapshots).toEqual([[first, second], [first]]);
   });
 
   it('keeps response-chain state when popItem is a no-op', async () => {
