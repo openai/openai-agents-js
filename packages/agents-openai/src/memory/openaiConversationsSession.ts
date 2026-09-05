@@ -160,6 +160,7 @@ export class OpenAIConversationsSession
     const itemGroups: AgentInputItem[][] = [];
     let total = 0;
     const iterator = this.#client.conversations.items.list(conversationId, {
+      limit: Math.min(limit, 100),
       order: 'desc' as const,
     });
 
