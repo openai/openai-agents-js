@@ -1010,10 +1010,22 @@ export abstract class OpenAIRealtimeBase
     const pendingIds = new Set(
       [...additions, ...updates].map((item) => item.itemId),
     );
+    // Only a create that has to land before something the server keeps needs to
+    // name an anchor. Past the last such item there is nothing to sit in front
+    // of, so those stay plain appends: naming an anchor there would point at an
+    // item a not-yet-acknowledged delete may already have removed, and the
+    // server rejects the create instead of appending it.
+    let lastAnchoredIndex = -1;
+    for (const [index, item] of newHistory.entries()) {
+      if (!pendingIds.has(item.itemId)) {
+        lastAnchoredIndex = index;
+      }
+    }
+
     // `root` places the item at the beginning; omitting the field appends it.
     let previousItemId = CONVERSATION_ROOT;
 
-    for (const item of newHistory) {
+    for (const [index, item] of newHistory.entries()) {
       if (!pendingIds.has(item.itemId)) {
         // Untouched items keep their place and can anchor the next insert.
         previousItemId = item.itemId;
@@ -1032,7 +1044,9 @@ export abstract class OpenAIRealtimeBase
         }
         this.sendEvent({
           type: 'conversation.item.create',
-          previous_item_id: previousItemId,
+          ...(index < lastAnchoredIndex
+            ? { previous_item_id: previousItemId }
+            : {}),
           item: itemEntry,
         });
         previousItemId = item.itemId;

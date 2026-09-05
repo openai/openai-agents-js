@@ -555,7 +555,6 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
     expect(base.events[1]).toEqual({
       type: 'conversation.item.create',
-      previous_item_id: 'root',
       item: {
         id: '2',
         role: 'user',
@@ -615,8 +614,10 @@ describe('OpenAIRealtimeBase helpers', () => {
       base.resetHistory(oldHistory, newHistory);
       return base.events
         .filter((event: any) => event.type === 'conversation.item.create')
-        .map(
-          (event: any) => `${event.item.id} after ${event.previous_item_id}`,
+        .map((event: any) =>
+          'previous_item_id' in event
+            ? `${event.item.id} after ${event.previous_item_id}`
+            : `${event.item.id} appended`,
         );
     }
 
@@ -641,8 +642,18 @@ describe('OpenAIRealtimeBase helpers', () => {
     it('chains consecutive corrections in history order', () => {
       expect(
         creates(
-          [message('a', '1'), message('b', '2'), message('c', '3')],
-          [message('a', '1'), message('b', 'B'), message('c', 'C')],
+          [
+            message('a', '1'),
+            message('b', '2'),
+            message('c', '3'),
+            message('d', '4'),
+          ],
+          [
+            message('a', '1'),
+            message('b', 'B'),
+            message('c', 'C'),
+            message('d', '4'),
+          ],
         ),
       ).toEqual(['b after a', 'c after b']);
     });
@@ -659,8 +670,13 @@ describe('OpenAIRealtimeBase helpers', () => {
     it('does not anchor to a function call it could not create', () => {
       expect(
         creates(
-          [message('a', '1')],
-          [message('a', '1'), functionCall('f'), message('c', '3')],
+          [message('a', '1'), message('d', '4')],
+          [
+            message('a', '1'),
+            functionCall('f'),
+            message('c', '3'),
+            message('d', '4'),
+          ],
         ),
       ).toEqual(['c after a']);
     });
@@ -668,8 +684,13 @@ describe('OpenAIRealtimeBase helpers', () => {
     it('anchors to a function call that is already in the conversation', () => {
       expect(
         creates(
-          [message('a', '1'), functionCall('f')],
-          [message('a', '1'), functionCall('f'), message('c', '3')],
+          [message('a', '1'), functionCall('f'), message('d', '4')],
+          [
+            message('a', '1'),
+            functionCall('f'),
+            message('c', '3'),
+            message('d', '4'),
+          ],
         ),
       ).toEqual(['c after f']);
     });
@@ -677,10 +698,52 @@ describe('OpenAIRealtimeBase helpers', () => {
     it('does not anchor to a removed item', () => {
       expect(
         creates(
-          [message('a', '1'), message('b', '2')],
-          [message('a', '1'), message('c', '3')],
+          [message('a', '1'), message('b', '2'), message('d', '4')],
+          [message('a', '1'), message('c', '3'), message('d', '4')],
         ),
       ).toEqual(['c after a']);
+    });
+
+    // An anchor is only needed to sit in front of something the server keeps.
+    // Past the last of those, the plain append these always had is both correct
+    // and the only safe thing: the item a trailing create would name may be one
+    // the server has already dropped for a delete it has not acknowledged yet.
+    it('appends a trailing create without an anchor', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['c appended']);
+    });
+
+    it('appends consecutive trailing creates in order', () => {
+      expect(
+        creates(
+          [message('a', '1')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['b appended', 'c appended']);
+    });
+
+    it('appends a create that follows an unacknowledged deletion', () => {
+      // Local history still lists `b` because the deletion has not come back
+      // yet. Anchoring `c` to it would name an item the server has dropped.
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['c appended']);
+    });
+
+    it('still anchors when a surviving item has to stay behind the create', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('c', '3')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['b after a']);
     });
   });
 
