@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix: preserve buffered PTY output when a process exits after receiving stdin.
+fix: preserve buffered PTY output without waiting for background descendants.

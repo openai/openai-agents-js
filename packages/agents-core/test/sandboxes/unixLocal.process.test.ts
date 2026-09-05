@@ -3,7 +3,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -236,6 +236,86 @@ exec(script)
     }
   });
 
+  it.each(['native', 'retained-slave'] as const)(
+    'completes while a background descendant retains the PTY (%s)',
+    async (terminalMode) => {
+      const originalPython = process.env.OPENAI_AGENTS_PYTHON;
+      const pythonPath = await whichPython();
+      const controlledPython = join(rootDir, 'retained-slave-python');
+      // Keep real slave descriptors open without macOS controlling-terminal revocation.
+      await writeFile(
+        controlledPython,
+        String.raw`#!${pythonPath}
+import os
+import pty
+import sys
+
+def fork_without_controlling_terminal():
+    master, slave = pty.openpty()
+    pid = os.fork()
+    if pid == 0:
+        os.close(master)
+        for target in (0, 1, 2):
+            os.dup2(slave, target)
+        if slave > 2:
+            os.close(slave)
+        return 0, -1
+    os.close(slave)
+    return pid, master
+
+pty.fork = fork_without_controlling_terminal
+script = sys.argv[2]
+sys.argv = [sys.argv[0], *sys.argv[3:]]
+exec(script)
+`,
+        { mode: 0o755 },
+      );
+      const client = new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+      });
+      const session = await client.create(new Manifest());
+      const descendantPidPath = join(
+        session.state.workspaceRootPath,
+        'descendant.pid',
+      );
+      if (terminalMode === 'retained-slave') {
+        process.env.OPENAI_AGENTS_PYTHON = controlledPython;
+      }
+
+      try {
+        const started = await session.execCommand({
+          cmd: `trap '' HUP; sleep 600 & printf '%s' $! > descendant.pid; printf 'target output\n'; exit 7`,
+          shell: '/bin/sh',
+          login: false,
+          tty: true,
+          yieldTimeMs: 0,
+        });
+        const output = await collectActiveCommandOutput(session, started);
+
+        expect(output).toContain('Process exited with code 7');
+        expect(output).toContain('target output');
+        const descendantPid = Number(await readFile(descendantPidPath, 'utf8'));
+        expect(() => process.kill(descendantPid, 0)).not.toThrow();
+      } finally {
+        if (originalPython === undefined) {
+          delete process.env.OPENAI_AGENTS_PYTHON;
+        } else {
+          process.env.OPENAI_AGENTS_PYTHON = originalPython;
+        }
+        const descendantPid = Number(
+          await readFile(descendantPidPath, 'utf8').catch(() => ''),
+        );
+        try {
+          if (descendantPid > 0) {
+            killProcessIfRunning(descendantPid);
+          }
+        } finally {
+          await session.close();
+        }
+      }
+    },
+  );
+
   it('waits for final output after observing process completion', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,
@@ -465,6 +545,16 @@ exec(script)
     expect(finalOutput).toContain('Process exited with code 0');
   }, 10_000);
 });
+
+function killProcessIfRunning(pid: number): void {
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+      throw error;
+    }
+  }
+}
 
 async function writeUntilExit(
   session: {
