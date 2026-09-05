@@ -28,14 +28,18 @@ jobs:
               '.github/PULL_REQUEST_TEMPLATE/',
               '.github/codex/',
               '.husky/',
-              'integration-tests/',
             ];
             const CI_RELEVANT_PREFIXES = [
               '.agents/skills/code-change-verification/',
+              'docs/src/scripts/',
             ];
 
             const isIgnoredPath = (path) => {
               if (CI_RELEVANT_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+                return false;
+              }
+              // Docs source and configuration also own executable checks.
+              if (path.startsWith('docs/') && /\.(?:[cm]?[jt]sx?|json)$/.test(path)) {
                 return false;
               }
               if (IGNORED_PREFIXES.some((prefix) => path.startsWith(prefix))) {
@@ -52,44 +56,47 @@ jobs:
                 (path) => typeof path === 'string',
               );
 
-            let changedFiles = [];
+            let files;
+            let complete = false;
 
-            if (context.eventName === 'pull_request') {
-              const files = await github.paginate(github.rest.pulls.listFiles, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                per_page: 100,
-              });
-              changedFiles = files.flatMap(changedPathsForFile);
-            } else if (context.eventName === 'push') {
-              const before = context.payload.before;
-              const after = context.payload.after;
+            try {
+              if (context.eventName === 'pull_request') {
+                files = await github.paginate(github.rest.pulls.listFiles, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: context.payload.pull_request.number,
+                  per_page: 100,
+                });
+                // The pull request files API returns at most 3,000 files.
+                complete = files.length < 3000 &&
+                  files.length === context.payload.pull_request.changed_files;
+              } else if (context.eventName === 'push') {
+                const before = context.payload.before;
+                const after = context.payload.after;
 
-              if (!before || /^0+$/.test(before)) {
-                core.info('No comparable base commit found. Running CI by default.');
-                core.setOutput('run_ci', 'true');
-                return;
+                if (before && !/^0+$/.test(before) && after) {
+                  const comparison = await github.rest.repos.compareCommitsWithBasehead({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    basehead: `${before}...${after}`,
+                  });
+                  files = comparison.data.files;
+                  // Comparisons cap files at 300; divergent history is not an exact push diff.
+                  complete = comparison.data.status === 'ahead' &&
+                    Array.isArray(files) && files.length < 300;
+                }
               }
+            } catch (error) {
+              core.warning(`Could not determine changed files: ${error.message}`);
+            }
 
-              const comparison = await github.rest.repos.compareCommitsWithBasehead({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                basehead: `${before}...${after}`,
-              });
-              changedFiles = (comparison.data.files ?? []).flatMap(changedPathsForFile);
-            } else {
-              core.info(`Unsupported event "${context.eventName}". Running CI by default.`);
+            if (!complete || !files?.length) {
+              core.info('No complete, comparable changed-file list found. Running CI by default.');
               core.setOutput('run_ci', 'true');
               return;
             }
 
-            if (changedFiles.length === 0) {
-              core.info('No changed files detected. Running CI by default.');
-              core.setOutput('run_ci', 'true');
-              return;
-            }
-
+            const changedFiles = files.flatMap(changedPathsForFile);
             const relevantFiles = changedFiles.filter((path) => !isIgnoredPath(path));
             const runCi = relevantFiles.length > 0;
 
