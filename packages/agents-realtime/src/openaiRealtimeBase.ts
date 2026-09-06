@@ -170,12 +170,17 @@ export abstract class OpenAIRealtimeBase
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
   /**
-   * Items a `conversation.item.delete` has been sent for and the server has not
-   * acknowledged yet. Local history still lists them, so without this set a
-   * later insert would name one as its anchor and the server would refuse the
-   * create against a conversation that no longer holds it.
+   * How many `conversation.item.delete` requests are outstanding per item id.
+   * Local history still lists an item until its acknowledgement arrives, so
+   * without this a later insert would name one as its anchor and the server
+   * would refuse the create against a conversation that no longer holds it.
+   *
+   * It counts rather than flags because the same id can be deleted twice before
+   * either acknowledgement lands -- correcting an item removes and re-adds it,
+   * and removing it afterwards queues a second delete. One acknowledgement must
+   * not clear an id another delete is still on its way to remove.
    */
-  #pendingDeletions = new Set<string>();
+  #pendingDeletions = new Map<string, number>();
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -321,7 +326,12 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'conversation.item.deleted') {
-      this.#pendingDeletions.delete(parsed.item_id);
+      const outstanding = this.#pendingDeletions.get(parsed.item_id) ?? 0;
+      if (outstanding > 1) {
+        this.#pendingDeletions.set(parsed.item_id, outstanding - 1);
+      } else {
+        this.#pendingDeletions.delete(parsed.item_id);
+      }
       this.emit('item_deleted', {
         itemId: parsed.item_id,
       });
@@ -559,6 +569,10 @@ export abstract class OpenAIRealtimeBase
   }
 
   protected _onClose() {
+    // Outstanding deletes belong to the connection that sent them. A new one
+    // starts from whatever history the caller restores, and an id held over
+    // from the old connection would suppress a legitimate anchor in it.
+    this.#pendingDeletions.clear();
     this.emit('disconnected');
   }
 
@@ -1004,7 +1018,10 @@ export abstract class OpenAIRealtimeBase
 
     if (removalIds.size > 0) {
       for (const itemId of removalIds) {
-        this.#pendingDeletions.add(itemId);
+        this.#pendingDeletions.set(
+          itemId,
+          (this.#pendingDeletions.get(itemId) ?? 0) + 1,
+        );
         this.sendEvent({
           type: 'conversation.item.delete',
           item_id: itemId,

@@ -780,6 +780,7 @@ describe('OpenAIRealtimeBase helpers', () => {
       (base as any)._onMessage({
         data: JSON.stringify({
           type: 'conversation.item.deleted',
+          event_id: 'evt_deleted_b',
           item_id: 'b',
         }),
       });
@@ -795,6 +796,82 @@ describe('OpenAIRealtimeBase helpers', () => {
             (event: any) => `${event.item.id} after ${event.previous_item_id}`,
           ),
       ).toEqual(['x after a']);
+    });
+
+    it('keeps an item excluded until every outstanding delete is acknowledged', () => {
+      // Correcting `b` removes and re-adds it; removing it afterwards queues a
+      // second delete. One acknowledgement must not make the id an anchor again
+      // while the other delete is still on its way.
+      const base = new TestBase();
+      let acks = 0;
+      const ack = (itemId: string) =>
+        (base as any)._onMessage({
+          data: JSON.stringify({
+            type: 'conversation.item.deleted',
+            event_id: `evt_deleted_${(acks += 1)}`,
+            item_id: itemId,
+          }),
+        });
+
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+      );
+      base.resetHistory(
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      ack('b');
+      base.events.length = 0;
+
+      base.resetHistory(
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', 'corrected'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map((event: any) =>
+            'previous_item_id' in event
+              ? `${event.item.id} after ${event.previous_item_id}`
+              : `${event.item.id} appended`,
+          ),
+      ).toEqual(['x after a']);
+    });
+
+    it('forgets outstanding deletes when the connection ends', () => {
+      // The acknowledgement never arrives because the connection drops. The id
+      // belongs to that connection: carrying it into the next one would
+      // suppress an anchor the restored history legitimately has.
+      const base = new TestBase();
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      (base as any)._onClose();
+      base.events.length = 0;
+
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', '2'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map(
+            (event: any) => `${event.item.id} after ${event.previous_item_id}`,
+          ),
+      ).toEqual(['x after b']);
     });
 
     it('still anchors when a surviving item has to stay behind the create', () => {
