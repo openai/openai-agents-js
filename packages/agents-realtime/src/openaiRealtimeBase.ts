@@ -169,6 +169,13 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  /**
+   * Items a `conversation.item.delete` has been sent for and the server has not
+   * acknowledged yet. Local history still lists them, so without this set a
+   * later insert would name one as its anchor and the server would refuse the
+   * create against a conversation that no longer holds it.
+   */
+  #pendingDeletions = new Set<string>();
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -314,6 +321,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'conversation.item.deleted') {
+      this.#pendingDeletions.delete(parsed.item_id);
       this.emit('item_deleted', {
         itemId: parsed.item_id,
       });
@@ -996,6 +1004,7 @@ export abstract class OpenAIRealtimeBase
 
     if (removalIds.size > 0) {
       for (const itemId of removalIds) {
+        this.#pendingDeletions.add(itemId);
         this.sendEvent({
           type: 'conversation.item.delete',
           item_id: itemId,
@@ -1010,14 +1019,18 @@ export abstract class OpenAIRealtimeBase
     const pendingIds = new Set(
       [...additions, ...updates].map((item) => item.itemId),
     );
+    // An item the server still holds: not being created or re-created in this
+    // pass, and not waiting on a delete this or an earlier pass already sent.
+    // A deletion stays in flight across calls, so local history can still list
+    // an item the conversation has already dropped.
+    const survives = (item: RealtimeItem) =>
+      !pendingIds.has(item.itemId) && !this.#pendingDeletions.has(item.itemId);
     // Only a create that has to land before something the server keeps needs to
     // name an anchor. Past the last such item there is nothing to sit in front
-    // of, so those stay plain appends: naming an anchor there would point at an
-    // item a not-yet-acknowledged delete may already have removed, and the
-    // server rejects the create instead of appending it.
+    // of, so those stay plain appends.
     let lastAnchoredIndex = -1;
     for (const [index, item] of newHistory.entries()) {
-      if (!pendingIds.has(item.itemId)) {
+      if (survives(item)) {
         lastAnchoredIndex = index;
       }
     }
@@ -1027,8 +1040,11 @@ export abstract class OpenAIRealtimeBase
 
     for (const [index, item] of newHistory.entries()) {
       if (!pendingIds.has(item.itemId)) {
-        // Untouched items keep their place and can anchor the next insert.
-        previousItemId = item.itemId;
+        // An item on its way out cannot anchor anything: the anchor stays on
+        // the last one that will still be there when the create arrives.
+        if (survives(item)) {
+          previousItemId = item.itemId;
+        }
         continue;
       }
 

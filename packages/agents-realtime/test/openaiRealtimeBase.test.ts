@@ -737,6 +737,66 @@ describe('OpenAIRealtimeBase helpers', () => {
       ).toEqual(['c appended']);
     });
 
+    it('does not anchor a middle insert to an item awaiting deletion', () => {
+      // The delete for `b` went out on an earlier call and has not come back,
+      // so local history still lists it. Anchoring `x` to `b` names an item the
+      // conversation has already dropped and the create is refused.
+      const base = new TestBase();
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      base.events.length = 0;
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', '2'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map((event: any) =>
+            'previous_item_id' in event
+              ? `${event.item.id} after ${event.previous_item_id}`
+              : `${event.item.id} appended`,
+          ),
+      ).toEqual(['x after a']);
+    });
+
+    it('anchors on an item awaiting deletion again once the server confirms it', () => {
+      const base = new TestBase();
+      base.resetHistory([message('a', '1')], [message('a', '1')]);
+      base.events.length = 0;
+      // A delete that was acknowledged leaves nothing in flight, so the item is
+      // gone from history and cannot be an anchor for the opposite reason.
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'conversation.item.deleted',
+          item_id: 'b',
+        }),
+      });
+      base.events.length = 0;
+      base.resetHistory(
+        [message('a', '1'), message('c', '3')],
+        [message('a', '1'), message('x', 'X'), message('c', '3')],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map(
+            (event: any) => `${event.item.id} after ${event.previous_item_id}`,
+          ),
+      ).toEqual(['x after a']);
+    });
+
     it('still anchors when a surviving item has to stay behind the create', () => {
       expect(
         creates(
