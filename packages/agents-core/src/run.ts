@@ -2057,6 +2057,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               },
             );
 
+            serverConversationTracker?.trackServerItems(
+              state._lastTurnResponse,
+              processedResponse.newItems,
+            );
             state._lastProcessedResponse = processedResponse;
             const suppressedToolCalls = preflightToolInvocations(
               state._currentAgent,
@@ -3236,6 +3240,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             },
           );
 
+          serverConversationTracker?.trackServerItems(
+            result.state._lastTurnResponse,
+            processedResponse.newItems,
+          );
           result.state._lastProcessedResponse = processedResponse;
           const suppressedToolCalls = preflightToolInvocations(
             currentAgent,
