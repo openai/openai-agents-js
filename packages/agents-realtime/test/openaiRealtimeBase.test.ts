@@ -551,6 +551,8 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(base.events[0]).toEqual({
       type: 'conversation.item.delete',
+      // Carried so a delete that ends in an error can be matched back to it.
+      event_id: expect.stringMatching(/^agents_delete_\d+$/),
       item_id: '1',
     });
     expect(base.events[1]).toEqual({
@@ -842,6 +844,71 @@ describe('OpenAIRealtimeBase helpers', () => {
               : `${event.item.id} appended`,
           ),
       ).toEqual(['x after a']);
+    });
+
+    it('releases a delete that failed instead of being acknowledged', () => {
+      // Deleting an item the conversation has already dropped comes back as an
+      // error naming the request, not as conversation.item.deleted. Without
+      // that reply releasing the count, the id stays excluded as an anchor for
+      // the rest of the connection.
+      const base = new TestBase();
+      const errors: unknown[] = [];
+      base.on('error', (event) => errors.push(event));
+      const deleteIds = () =>
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.delete')
+          .map((event: any) => event.event_id);
+
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+      );
+      base.resetHistory(
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      const [firstDelete, secondDelete] = deleteIds();
+      expect(firstDelete).toBeDefined();
+      expect(secondDelete).toBeDefined();
+
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'conversation.item.deleted',
+          event_id: 'evt_deleted_b',
+          item_id: 'b',
+        }),
+      });
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'error',
+          event_id: 'evt_error',
+          error: {
+            type: 'invalid_request_error',
+            code: 'item_not_found',
+            event_id: secondDelete,
+          },
+        }),
+      });
+      expect(errors).toHaveLength(1);
+      base.events.length = 0;
+
+      // `b` is restored, so it is a legitimate anchor again.
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', '2'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map(
+            (event: any) => `${event.item.id} after ${event.previous_item_id}`,
+          ),
+      ).toEqual(['x after b']);
     });
 
     it('forgets outstanding deletes when the connection ends', () => {

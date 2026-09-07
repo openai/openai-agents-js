@@ -181,6 +181,15 @@ export abstract class OpenAIRealtimeBase
    * not clear an id another delete is still on its way to remove.
    */
   #pendingDeletions = new Map<string, number>();
+  /**
+   * The item each outstanding `conversation.item.delete` was sent for, keyed by
+   * the `event_id` it carried. A delete can also end in an `error` — deleting an
+   * item the conversation has already dropped is the ordinary way that happens —
+   * and that terminal reply names the request rather than the item, so the count
+   * above can only be released through this.
+   */
+  #deleteRequests = new Map<string, string>();
+  #deleteRequestSeq = 0;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -258,6 +267,12 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'error') {
+      // The Realtime API reports the offending client event under `error.event_id`.
+      const causedBy = (parsed.error as { event_id?: unknown } | undefined)
+        ?.event_id;
+      if (typeof causedBy === 'string') {
+        this.#releaseDeleteRequest(causedBy);
+      }
       this.emit('error', { type: 'error', error: parsed });
     } else {
       this.emit(parsed.type, parsed);
@@ -326,12 +341,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'conversation.item.deleted') {
-      const outstanding = this.#pendingDeletions.get(parsed.item_id) ?? 0;
-      if (outstanding > 1) {
-        this.#pendingDeletions.set(parsed.item_id, outstanding - 1);
-      } else {
-        this.#pendingDeletions.delete(parsed.item_id);
-      }
+      this.#settleDeletion(parsed.item_id);
       this.emit('item_deleted', {
         itemId: parsed.item_id,
       });
@@ -568,11 +578,32 @@ export abstract class OpenAIRealtimeBase
     this.emit('connected');
   }
 
+  /** One outstanding delete for `itemId` has reached a terminal reply. */
+  #settleDeletion(itemId: string): void {
+    const outstanding = this.#pendingDeletions.get(itemId) ?? 0;
+    if (outstanding > 1) {
+      this.#pendingDeletions.set(itemId, outstanding - 1);
+    } else {
+      this.#pendingDeletions.delete(itemId);
+    }
+  }
+
+  /** The delete sent under `eventId` failed, so it will never be acknowledged. */
+  #releaseDeleteRequest(eventId: string): void {
+    const itemId = this.#deleteRequests.get(eventId);
+    if (itemId === undefined) {
+      return;
+    }
+    this.#deleteRequests.delete(eventId);
+    this.#settleDeletion(itemId);
+  }
+
   protected _onClose() {
     // Outstanding deletes belong to the connection that sent them. A new one
     // starts from whatever history the caller restores, and an id held over
     // from the old connection would suppress a legitimate anchor in it.
     this.#pendingDeletions.clear();
+    this.#deleteRequests.clear();
     this.emit('disconnected');
   }
 
@@ -1022,8 +1053,11 @@ export abstract class OpenAIRealtimeBase
           itemId,
           (this.#pendingDeletions.get(itemId) ?? 0) + 1,
         );
+        const eventId = `agents_delete_${(this.#deleteRequestSeq += 1)}`;
+        this.#deleteRequests.set(eventId, itemId);
         this.sendEvent({
           type: 'conversation.item.delete',
+          event_id: eventId,
           item_id: itemId,
         });
       }
