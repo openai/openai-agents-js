@@ -6,6 +6,7 @@ import { shellQuote } from './paths';
 const PTY_YIELD_TIME_MS_MIN = 250;
 const PTY_EMPTY_YIELD_TIME_MS_MIN = 5_000;
 const PTY_YIELD_TIME_MS_MAX = 30_000;
+const PTY_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000;
 
 const PTY_PROCESSES_MAX = 64;
 const PTY_PROCESSES_PROTECTED_RECENT = 8;
@@ -126,14 +127,42 @@ export async function openPtyWebSocket(args: {
   configure?: (socket: PtyWebSocket) => void | Promise<void>;
 }): Promise<PtyWebSocket> {
   const socket = await createWebSocket(args);
-  socket.binaryType = 'arraybuffer';
-  await args.configure?.(socket);
-  await waitForPtyWebSocketOpen(
-    socket,
-    args.timeoutMs ?? 30_000,
-    args.providerName,
-  );
-  return socket;
+  try {
+    socket.binaryType = 'arraybuffer';
+    await args.configure?.(socket);
+    await waitForPtyWebSocketOpen(
+      socket,
+      args.timeoutMs ?? 30_000,
+      args.providerName,
+    );
+    return socket;
+  } catch (error) {
+    await closePtyWebSocket(socket).catch(() => {});
+    throw error;
+  }
+}
+
+export async function closePtyWebSocket(socket: PtyWebSocket): Promise<void> {
+  if (socket.readyState === 3) {
+    return;
+  }
+  let removeClose = () => {};
+  let removeError = () => {};
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await new Promise<void>((resolve) => {
+      // Native WebSocket may never emit close after a failed connection.
+      timeout = setTimeout(resolve, PTY_WEBSOCKET_CLOSE_TIMEOUT_MS);
+      removeClose = addPtyWebSocketListener(socket, 'close', () => resolve());
+      // Node ws emits an error when closing a socket that is still connecting.
+      removeError = addPtyWebSocketListener(socket, 'error', () => {});
+      socket.close();
+    });
+  } finally {
+    clearTimeout(timeout);
+    removeClose();
+    removeError();
+  }
 }
 
 export function addPtyWebSocketListener(

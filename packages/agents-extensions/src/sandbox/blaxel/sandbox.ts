@@ -65,6 +65,7 @@ import {
   type PtyProcessEntry,
   type ManifestMountMaterializationContext,
 } from '../shared';
+import { closePtyWebSocket } from '../shared/pty';
 import {
   configuredMountCredentialFields,
   validateMountCredentialBoundaries,
@@ -318,7 +319,10 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       });
     } finally {
       if (!registered) {
-        await entry.terminate?.().catch(() => {});
+        removeMessageListener();
+        removeCloseListener();
+        removeErrorListener();
+        await closePtyWebSocket(socket).catch(() => {});
       }
     }
   }

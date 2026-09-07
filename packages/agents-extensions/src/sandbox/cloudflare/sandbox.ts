@@ -71,6 +71,7 @@ import {
 import {
   addPtyWebSocketListener,
   appendPtyOutput,
+  closePtyWebSocket,
   createPtyProcessEntry,
   formatPtyExecUpdate,
   closePtyOutput,
@@ -272,55 +273,56 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
     const start = Date.now();
     const entry = createPtyProcessEntry({ tty: true });
     let readyPromise: Promise<void> = Promise.resolve();
+    let disposeReadyWait = () => {};
     let removeMessageListener = () => {};
-    const socket = await openPtyWebSocket({
-      url: buildCloudflarePtyWebSocketUrl(this.state),
-      providerName: 'CloudflareSandboxClient',
-      headers: buildCloudflarePtyWebSocketHeaders(this.apiKey),
-      headersUnsupportedUrl: buildCloudflarePtyWebSocketUrl(
-        this.state,
-        this.apiKey,
-      ),
-      configure: (pendingSocket) => {
-        removeMessageListener = addPtyWebSocketListener(
-          pendingSocket,
-          'message',
-          (event) => handleCloudflarePtyMessage(entry, event),
-        );
-        readyPromise = waitForCloudflarePtyReady(pendingSocket);
-        readyPromise.catch(() => {});
-      },
-    });
-    const removeCloseListener = addPtyWebSocketListener(socket, 'close', () => {
-      if (!entry.outputClosed) {
-        closePtyOutput(entry, entry.exitCode);
-      }
-    });
-    const removeErrorListener = addPtyWebSocketListener(socket, 'error', () => {
-      if (!entry.outputClosed) {
-        closePtyOutput(entry, entry.exitCode ?? 1);
-      }
-    });
-
-    try {
-      await readyPromise;
-    } catch (error) {
-      socket.close();
-      throw error;
-    }
-
-    entry.sendInput = async (chars) => {
-      socket.send(new TextEncoder().encode(chars));
-    };
-    entry.terminate = async () => {
-      removeMessageListener();
-      removeCloseListener();
-      removeErrorListener();
-      socket.close();
-    };
+    let removeCloseListener = () => {};
+    let removeErrorListener = () => {};
+    let socket: PtyWebSocket | undefined;
     let registered = false;
     let sessionId: number;
     try {
+      socket = await openPtyWebSocket({
+        url: buildCloudflarePtyWebSocketUrl(this.state),
+        providerName: 'CloudflareSandboxClient',
+        headers: buildCloudflarePtyWebSocketHeaders(this.apiKey),
+        headersUnsupportedUrl: buildCloudflarePtyWebSocketUrl(
+          this.state,
+          this.apiKey,
+        ),
+        configure: (pendingSocket) => {
+          removeMessageListener = addPtyWebSocketListener(
+            pendingSocket,
+            'message',
+            (event) => handleCloudflarePtyMessage(entry, event),
+          );
+          const readyWait = waitForCloudflarePtyReady(pendingSocket);
+          readyPromise = readyWait.promise;
+          disposeReadyWait = readyWait.dispose;
+          readyPromise.catch(() => {});
+        },
+      });
+      const openedSocket = socket;
+      removeCloseListener = addPtyWebSocketListener(socket, 'close', () => {
+        if (!entry.outputClosed) {
+          closePtyOutput(entry, entry.exitCode);
+        }
+      });
+      removeErrorListener = addPtyWebSocketListener(socket, 'error', () => {
+        if (!entry.outputClosed) {
+          closePtyOutput(entry, entry.exitCode ?? 1);
+        }
+      });
+      await readyPromise;
+
+      entry.sendInput = async (chars) => {
+        openedSocket.send(new TextEncoder().encode(chars));
+      };
+      entry.terminate = async () => {
+        removeMessageListener();
+        removeCloseListener();
+        removeErrorListener();
+        openedSocket.close();
+      };
       const command = shellCommandForPty({
         ...args,
         cmd: sandboxUserShellCommand(
@@ -340,11 +342,16 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       if (registeredProcess.pruned) {
         await registeredProcess.pruned.terminate?.().catch(() => {});
       }
-    } catch (error) {
+    } finally {
+      disposeReadyWait();
       if (!registered) {
-        await entry.terminate?.().catch(() => {});
+        removeMessageListener();
+        removeCloseListener();
+        removeErrorListener();
+        if (socket) {
+          await closePtyWebSocket(socket).catch(() => {});
+        }
       }
-      throw error;
     }
 
     return await formatPtyExecUpdate({
@@ -1612,8 +1619,12 @@ function truncateCloudflareErrorBody(body: string): string {
   return body.length > 500 ? `${body.slice(0, 497)}...` : body;
 }
 
-function waitForCloudflarePtyReady(socket: PtyWebSocket): Promise<void> {
-  return new Promise((resolve, reject) => {
+function waitForCloudflarePtyReady(socket: PtyWebSocket): {
+  promise: Promise<void>;
+  dispose: () => void;
+} {
+  let dispose = () => {};
+  const promise = new Promise<void>((resolve, reject) => {
     let removeMessage = () => {};
     let removeClose = () => {};
     let removeError = () => {};
@@ -1627,6 +1638,7 @@ function waitForCloudflarePtyReady(socket: PtyWebSocket): Promise<void> {
       removeClose();
       removeError();
     };
+    dispose = cleanup;
     removeMessage = addPtyWebSocketListener(socket, 'message', (event) => {
       const payload = parseCloudflarePtyControlPayload(event);
       if (isRecord(payload)) {
@@ -1654,6 +1666,7 @@ function waitForCloudflarePtyReady(socket: PtyWebSocket): Promise<void> {
       reject(new UserError('CloudflareSandboxClient PTY WebSocket failed.'));
     });
   });
+  return { promise, dispose };
 }
 
 function cloudflarePtyReadyErrorMessage(

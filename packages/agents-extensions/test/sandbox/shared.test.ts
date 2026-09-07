@@ -4557,7 +4557,10 @@ describe('remote sandbox path helpers', () => {
 
       send() {}
 
-      close() {}
+      close() {
+        this.readyState = 3;
+        this.emit('close');
+      }
 
       addEventListener(type: string, listener: FakeListener) {
         const listeners = this.listeners.get(type) ?? new Set<FakeListener>();
