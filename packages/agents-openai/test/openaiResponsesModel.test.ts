@@ -6,6 +6,7 @@ import {
 import { HEADERS } from '../src/defaults';
 import { ResponsesWebSocketInternalError } from '../src/responsesWebSocketConnection';
 import OpenAI from 'openai';
+import { fileSearchTool, webSearchTool } from '../src';
 import {
   Agent,
   retryPolicies,
@@ -128,6 +129,155 @@ describe('OpenAIResponsesModel', () => {
     setTracingDisabled(true);
     setTraceProcessors([]);
   });
+
+  describe.each([false, true])(
+    'web search image requests (stream=%s)',
+    (stream) => {
+      const cases: {
+        label: string;
+        options: NonNullable<Parameters<typeof webSearchTool>[0]>;
+        expectedFields: Record<string, unknown>;
+        expectedInclude: string[];
+      }[] = [
+        {
+          label: 'default',
+          options: {},
+          expectedFields: {},
+          expectedInclude: [],
+        },
+        {
+          label: 'text only',
+          options: { searchContentTypes: ['text'] },
+          expectedFields: { search_content_types: ['text'] },
+          expectedInclude: [],
+        },
+        {
+          label: 'image only with default settings',
+          options: { searchContentTypes: ['image'] },
+          expectedFields: { search_content_types: ['image'] },
+          expectedInclude: ['web_search_call.results'],
+        },
+        {
+          label: 'image and text with settings',
+          options: {
+            searchContentTypes: ['image', 'text'],
+            imageSettings: { maxResults: 3, caption: false },
+            externalWebAccess: false,
+          },
+          expectedFields: {
+            search_content_types: ['image', 'text'],
+            image_settings: { max_results: 3, caption: false },
+            external_web_access: false,
+          },
+          expectedInclude: ['web_search_call.results'],
+        },
+        {
+          label: 'settings without image selection',
+          options: { imageSettings: { caption: true } },
+          expectedFields: { image_settings: { caption: true } },
+          expectedInclude: [],
+        },
+      ];
+
+      it.each(cases)(
+        'serializes $label and preserves returned image metadata',
+        async ({ options, expectedFields, expectedInclude }) => {
+          const imageResults = [
+            {
+              type: 'image_result',
+              image_url: 'https://example.com/bridge.jpg',
+              source_website_url: 'https://example.com/bridge',
+              thumbnail_url: 'https://example.com/bridge-thumb.jpg',
+            },
+          ];
+          const response = {
+            id: 'resp_web_search',
+            object: 'response',
+            status: 'completed',
+            output: expectedInclude.length
+              ? [
+                  {
+                    id: 'ws_image',
+                    type: 'web_search_call',
+                    status: 'completed',
+                    action: { type: 'search', query: 'bridge' },
+                    results: imageResults,
+                  },
+                ]
+              : [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          };
+          const bodies: Record<string, unknown>[] = [];
+          // Capture the real client's serialized wire payload without making network requests.
+          const client = new OpenAI({
+            apiKey: 'test-key',
+            fetch: async (_url, init) => {
+              bodies.push(JSON.parse(init!.body as string));
+              const body = stream
+                ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 0, response })}\n\n`
+                : JSON.stringify(response);
+              return new Response(body, {
+                headers: {
+                  'content-type': stream
+                    ? 'text/event-stream'
+                    : 'application/json',
+                },
+              });
+            },
+          });
+          const model = new OpenAIResponsesModel(client, 'gpt-test');
+          const request: ModelRequest = {
+            systemInstructions: undefined,
+            input: 'Find bridge images.',
+            modelSettings: {},
+            tools: [
+              webSearchTool(options),
+              fileSearchTool('vs_test', { includeSearchResults: true }),
+            ],
+            outputType: 'text',
+            handoffs: [],
+            tracing: false,
+          };
+          let output;
+          if (stream) {
+            for await (const event of model.getStreamedResponse(request)) {
+              if (event.type === 'response_done') {
+                output = event.response.output;
+              }
+            }
+          } else {
+            output = (
+              await withTrace('web search image request', () =>
+                model.getResponse(request),
+              )
+            ).output;
+          }
+
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0]).toMatchObject({
+            stream,
+            include: [...expectedInclude, 'file_search_call.results'],
+          });
+          expect((bodies[0].tools as unknown[])[0]).toEqual({
+            type: 'web_search',
+            search_context_size: 'medium',
+            ...expectedFields,
+          });
+          if (expectedInclude.length) {
+            expect(output).toMatchObject([
+              {
+                type: 'hosted_tool_call',
+                name: 'web_search_call',
+                providerData: { results: imageResults },
+              },
+            ]);
+          } else {
+            expect(output).toEqual([]);
+          }
+        },
+      );
+    },
+  );
 
   it.each([
     {

@@ -46,6 +46,24 @@ describe('Tool', () => {
     });
   });
 
+  it('webSearchTool leaves image options absent by default', () => {
+    const tool = webSearchTool();
+    expect(tool.providerData).not.toHaveProperty('search_content_types');
+    expect(tool.providerData).not.toHaveProperty('image_settings');
+  });
+
+  it('webSearchTool maps image settings to provider data', () => {
+    const tool = webSearchTool({
+      searchContentTypes: ['text', 'image'],
+      imageSettings: { maxResults: 3, caption: false },
+    });
+    expect(tool.providerData).toMatchObject({
+      search_content_types: ['text', 'image'],
+      image_settings: { max_results: 3, caption: false },
+    });
+    expect(tool.providerData?.image_settings).not.toHaveProperty('maxResults');
+  });
+
   it('fileSearchTool', () => {
     const t = fileSearchTool(['test'], {});
     expect(t).toBeDefined();

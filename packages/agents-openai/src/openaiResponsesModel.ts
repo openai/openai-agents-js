@@ -22,6 +22,7 @@ import type {
   SerializedOutputType,
 } from '@openai/agents-core';
 import OpenAI from 'openai';
+import type { WebSearchTool as WebSearchToolProviderData } from './types/providerData';
 import logger from './logger';
 import { OPENAI_RESPONSES_RAW_MODEL_EVENT_SOURCE } from './rawModelEvents';
 import { getOpenAIRetryAdvice } from './retryAdvice';
@@ -1168,9 +1169,7 @@ function convertTool<_TContext = unknown>(
     };
   } else if (tool.type === 'hosted_tool') {
     if (tool.providerData?.type === 'web_search') {
-      const webSearchTool: OpenAI.Responses.WebSearchTool & {
-        external_web_access?: boolean;
-      } = {
+      const webSearchTool: Omit<WebSearchToolProviderData, 'name'> = {
         type: 'web_search',
         user_location: tool.providerData.user_location,
         filters: tool.providerData.filters,
@@ -1180,9 +1179,18 @@ function convertTool<_TContext = unknown>(
         webSearchTool.external_web_access =
           tool.providerData.external_web_access;
       }
+      if (tool.providerData.search_content_types !== undefined) {
+        webSearchTool.search_content_types =
+          tool.providerData.search_content_types;
+      }
+      if (tool.providerData.image_settings !== undefined) {
+        webSearchTool.image_settings = tool.providerData.image_settings;
+      }
       return {
         tool: webSearchTool,
-        include: undefined,
+        include: webSearchTool.search_content_types?.includes('image')
+          ? ['web_search_call.results']
+          : undefined,
       };
     } else if (tool.providerData?.type === 'web_search_preview') {
       return {
