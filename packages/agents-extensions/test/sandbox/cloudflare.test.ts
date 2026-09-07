@@ -1300,6 +1300,7 @@ describe('CloudflareSandboxClient', () => {
     await secondSend;
     socket.message(new TextEncoder().encode('next\n'));
     socket.message(JSON.stringify({ type: 'exit', code: 0 }));
+    socket.close();
     const next = await writePromise;
 
     expect(socket.url).toBe(
@@ -1314,6 +1315,53 @@ describe('CloudflareSandboxClient', () => {
     expect(started).toContain('ready');
     expect(next).toContain('next');
     expect(next).toContain('Process exited with code 0');
+  });
+
+  test('collects delayed final PTY bytes after exit status and before socket close', async () => {
+    vi.useFakeTimers();
+    try {
+      globalThis.WebSocket =
+        TestWebSocket as unknown as typeof globalThis.WebSocket;
+      const client = new CloudflareSandboxClient({ apiKey: '' });
+      const session = await client.create(new Manifest(), {
+        workerUrl: 'https://worker.example.com',
+      });
+      const pending = session.execCommand({
+        cmd: 'exit 7',
+        tty: true,
+        yieldTimeMs: 250,
+      });
+      const socket = await TestWebSocket.nextInstance();
+      const firstSend = socket.nextSend();
+      socket.open();
+      socket.message(JSON.stringify({ type: 'ready' }));
+      await firstSend;
+      socket.message(new Uint8Array([0xe5]));
+      socket.message(JSON.stringify({ type: 'exit', code: 7 }));
+      await vi.advanceTimersByTimeAsync(250);
+      const first = await pending;
+      const sessionId = Number(
+        first.match(/Process running with session ID (\d+)/)?.[1],
+      );
+      expect(sessionId).toBeGreaterThan(0);
+      expect(first).not.toContain('\uFFFD');
+      expect(socket.readyState).toBe(1);
+
+      const lastPending = session.writeStdin({ sessionId, yieldTimeMs: 250 });
+      socket.message(new Uint8Array([0xae, 0x8c]));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(socket.readyState).toBe(1);
+      socket.close();
+      const last = await lastPending;
+      expect(last).toContain('完');
+      expect(last).not.toContain('\uFFFD');
+      expect(last).toContain('Process exited with code 7');
+      await expect(session.writeStdin({ sessionId })).resolves.toContain(
+        'session not found',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('preserves plain-text PTY websocket frames as output', async () => {
@@ -1408,6 +1456,7 @@ describe('CloudflareSandboxClient', () => {
     socket.message(JSON.stringify({ type: 'ready' }));
     await firstSend;
     socket.message(Buffer.from(JSON.stringify({ type: 'exit', code: 7 })));
+    socket.close();
     const started = await startedPromise;
 
     expect(started).toContain('Process exited with code 7');
@@ -1435,6 +1484,7 @@ describe('CloudflareSandboxClient', () => {
     socket.message(JSON.stringify({ type: 'ready' }));
     await firstSend;
     socket.message(JSON.stringify({ type: 'exit', code: 0 }));
+    socket.close();
     const started = await startedPromise;
     const socketUrl = new URL(socket.url);
 
@@ -1466,6 +1516,7 @@ describe('CloudflareSandboxClient', () => {
     socket.message(JSON.stringify({ type: 'ready' }));
     await firstSend;
     socket.message(JSON.stringify({ type: 'exit', code: 0 }));
+    socket.close();
     const started = await startedPromise;
     const socketUrl = new URL(socket.url);
 

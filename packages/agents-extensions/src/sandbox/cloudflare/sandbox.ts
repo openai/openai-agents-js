@@ -73,7 +73,7 @@ import {
   appendPtyOutput,
   createPtyProcessEntry,
   formatPtyExecUpdate,
-  markPtyDone,
+  closePtyOutput,
   openPtyWebSocket,
   PtyProcessRegistry,
   shellCommandForPty,
@@ -292,13 +292,13 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
       },
     });
     const removeCloseListener = addPtyWebSocketListener(socket, 'close', () => {
-      if (!entry.done) {
-        markPtyDone(entry);
+      if (!entry.outputClosed) {
+        closePtyOutput(entry, entry.exitCode);
       }
     });
     const removeErrorListener = addPtyWebSocketListener(socket, 'error', () => {
-      if (!entry.done) {
-        markPtyDone(entry, 1);
+      if (!entry.outputClosed) {
+        closePtyOutput(entry, entry.exitCode ?? 1);
       }
     });
 
@@ -1675,10 +1675,8 @@ function handleCloudflarePtyMessage(
       return;
     }
     if (payload.type === 'exit') {
-      markPtyDone(
-        entry,
-        typeof payload.code === 'number' ? payload.code : null,
-      );
+      // The exit frame reports status; later frames may still carry PTY bytes.
+      entry.exitCode = typeof payload.code === 'number' ? payload.code : null;
       return;
     }
     if (payload.type === 'error') {
@@ -1686,8 +1684,8 @@ function handleCloudflarePtyMessage(
       if (typeof message === 'string') {
         appendPtyOutput(entry, message);
       }
-      if (!entry.done) {
-        markPtyDone(entry, 1);
+      if (!entry.outputClosed) {
+        closePtyOutput(entry, entry.exitCode ?? 1);
       }
       return;
     }

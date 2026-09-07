@@ -47,7 +47,7 @@ import {
   shellQuote,
   shellCommandForPty,
   toUint8Array,
-  markPtyDone,
+  closePtyOutput,
   writePtyStdin,
   isRecord,
   readOptionalBoolean,
@@ -278,11 +278,11 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
       socket,
       'close',
       (event) => {
-        markPtyDone(entry, blaxelPtyCloseExitCode(entry, event));
+        closePtyOutput(entry, blaxelPtyCloseExitCode(entry, event));
       },
     );
     const removeErrorListener = addPtyWebSocketListener(socket, 'error', () => {
-      markPtyDone(entry, 1);
+      closePtyOutput(entry, 1);
     });
     entry.sendInput = async (chars) => {
       socket.send(JSON.stringify({ type: 'input', data: chars }));
@@ -1643,7 +1643,7 @@ function handleBlaxelPtyMessage(entry: PtyProcessEntry, event: unknown): void {
     if (typeof data === 'string') {
       appendPtyOutput(entry, data);
     }
-    markPtyDone(entry, 1);
+    closePtyOutput(entry, 1);
   }
 }
 
