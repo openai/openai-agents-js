@@ -639,6 +639,22 @@ describe('convertTool', () => {
 });
 
 describe('getInputItems', () => {
+  it('keeps SDK tool-search ownership out of provider input and output conversion', () => {
+    const raw = {
+      type: 'tool_search_output' as const,
+      id: 'search-output',
+      execution: 'server' as const,
+      status: 'completed',
+      tools: [],
+    };
+    const owned = { ...raw, toolSearchAgentName: 'Owner' };
+    expect(getInputItems([owned])).toEqual(getInputItems([raw]));
+    expect(owned.toolSearchAgentName).toBe('Owner');
+    expect(
+      convertToOutputItem(getInputItems([owned]) as any)[0],
+    ).not.toHaveProperty('toolSearchAgentName');
+  });
+
   it('replays caller linkage on MCP approval requests and responses', () => {
     expect(
       getInputItems([

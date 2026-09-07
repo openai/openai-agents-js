@@ -67,6 +67,7 @@ import {
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
 import { assertValidCompactionItems } from './items';
+import { attributeToolSearchOutput } from './toolSearchAttribution';
 
 function ensureToolAvailable<T>(
   tool: T | undefined,
@@ -108,6 +109,7 @@ function ensureProgrammaticToolCallingAvailable<TContext>(
 }
 
 type ModelResponseProcessingOptions = {
+  toolSearchAgentName?: string;
   allowPromptSuppliedTools?: boolean;
   beforeClientToolSearch?: () => void;
 };
@@ -395,6 +397,7 @@ function recordLoadedToolSearchOutput(
 function collectLoadedDeferredToolStateFromHistory(
   items: Array<RunItem | AgentInputItem>,
   agent: Agent<any, any>,
+  agentName: string | undefined,
 ): LoadedDeferredToolState {
   const state: LoadedDeferredToolState = {
     anonymousToolSearchOutputs: [],
@@ -403,15 +406,21 @@ function collectLoadedDeferredToolStateFromHistory(
   };
 
   for (const item of items) {
-    if (
-      item instanceof RunToolSearchOutputItem &&
-      item.agent.name !== agent.name
-    ) {
+    if (item instanceof RunToolSearchOutputItem && item.agent !== agent) {
       continue;
     }
 
     const rawItem = getRawAgentInputItem(item);
     if (rawItem?.type !== 'tool_search_output') {
+      continue;
+    }
+
+    // Raw history has no live owner; only an unambiguous recorded name can restore discovery.
+    if (
+      !(item instanceof RunToolSearchOutputItem) &&
+      (typeof agentName !== 'string' ||
+        rawItem.toolSearchAgentName !== agentName)
+    ) {
       continue;
     }
 
@@ -731,6 +740,7 @@ export function processModelResponse<TContext>(
   const loadedDeferredToolState = collectLoadedDeferredToolStateFromHistory(
     priorItems,
     agent,
+    processingOptions.toolSearchAgentName,
   );
   seedHostedMcpToolsFromLoadedDeferredToolState(
     loadedDeferredToolState,
@@ -756,7 +766,15 @@ export function processModelResponse<TContext>(
       const generatedOutput =
         generatedClientToolSearchOutputsByCall.get(output);
       if (generatedOutput) {
-        items.push(new RunToolSearchOutputItem(generatedOutput, agent));
+        items.push(
+          new RunToolSearchOutputItem(
+            attributeToolSearchOutput(
+              generatedOutput,
+              processingOptions.toolSearchAgentName,
+            ),
+            agent,
+          ),
+        );
         recordLoadedToolSearchOutput(loadedDeferredToolState, generatedOutput);
         addHostedMcpToolsFromToolSearchOutput(generatedOutput, mcpToolMap, {
           preserveExistingServerLabels: originalMcpServerLabels,
@@ -764,7 +782,15 @@ export function processModelResponse<TContext>(
         hasGeneratedClientToolSearchOutputs = true;
       }
     } else if (output.type === 'tool_search_output') {
-      items.push(new RunToolSearchOutputItem(output, agent));
+      items.push(
+        new RunToolSearchOutputItem(
+          attributeToolSearchOutput(
+            output,
+            processingOptions.toolSearchAgentName,
+          ),
+          agent,
+        ),
+      );
       recordLoadedToolSearchOutput(loadedDeferredToolState, output);
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,
@@ -1018,6 +1044,10 @@ export async function processModelResponseAsync<TContext>(
   processingOptions: ModelResponseProcessingOptions = {},
 ): Promise<ProcessedResponse<TContext>> {
   assertValidCompactionItems(modelResponse.output);
+  processingOptions = {
+    ...processingOptions,
+    toolSearchAgentName: state._getToolSearchAgentName(agent),
+  };
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasCustomClientToolSearchExecutor = Boolean(
     clientToolSearchTool && getClientToolSearchExecutor(clientToolSearchTool),
@@ -1078,6 +1108,7 @@ export async function processModelResponseAsync<TContext>(
   const loadedDeferredToolState = collectLoadedDeferredToolStateFromHistory(
     priorItems,
     agent,
+    processingOptions.toolSearchAgentName,
   );
   seedHostedMcpToolsFromLoadedDeferredToolState(
     loadedDeferredToolState,
@@ -1107,7 +1138,15 @@ export async function processModelResponseAsync<TContext>(
       const generatedOutput =
         generatedClientToolSearchOutputsByCall.get(output);
       if (generatedOutput) {
-        items.push(new RunToolSearchOutputItem(generatedOutput.output, agent));
+        items.push(
+          new RunToolSearchOutputItem(
+            attributeToolSearchOutput(
+              generatedOutput.output,
+              processingOptions.toolSearchAgentName,
+            ),
+            agent,
+          ),
+        );
         recordLoadedToolSearchOutput(
           loadedDeferredToolState,
           generatedOutput.output,
@@ -1140,7 +1179,15 @@ export async function processModelResponseAsync<TContext>(
         hasGeneratedClientToolSearchOutputs = true;
       }
     } else if (output.type === 'tool_search_output') {
-      items.push(new RunToolSearchOutputItem(output, agent));
+      items.push(
+        new RunToolSearchOutputItem(
+          attributeToolSearchOutput(
+            output,
+            processingOptions.toolSearchAgentName,
+          ),
+          agent,
+        ),
+      );
       recordLoadedToolSearchOutput(loadedDeferredToolState, output);
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,

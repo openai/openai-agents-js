@@ -4,6 +4,7 @@ import { Agent, type ToolUseBehavior } from './agent';
 import type { Handoff } from './handoff';
 import { getAgentToolSourceAgent } from './agentToolSourceRegistry';
 import { buildAgentIdentityMap } from './runStateIdentity';
+import { getToolSearchAgentName } from './runner/toolSearchAttribution';
 import { rehydrateLegacyCompactionRunItems } from './runStateLegacyCompaction';
 export { buildAgentIdentityMap } from './runStateIdentity';
 import {
@@ -2754,6 +2755,14 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         deserializeItem(item, identities.byIdentity),
       ),
     };
+  }
+
+  /** @internal Resolves discovery ownership within the complete starting Agent graph. */
+  _getToolSearchAgentName(agent: Agent<any, any>): string | undefined {
+    return getToolSearchAgentName(
+      agent,
+      buildAgentIdentityMap(this.#startingAgent).byAgent.keys(),
+    );
   }
 
   private getOrCreateToolSearchRuntimeToolState(

@@ -577,6 +577,12 @@ export const ToolSearchCallItem = ItemBase.extend({
 export type ToolSearchCallItem = z.infer<typeof ToolSearchCallItem>;
 
 export const ToolSearchOutputItem = ItemBase.extend({
+  /**
+   * SDK-only discovery attribution, excluded from provider requests. Names must identify the
+   * same logical Agent across reused history. Missing or ambiguous ownership requires a new
+   * search; this field does not grant tool execution permissions.
+   */
+  toolSearchAgentName: z.string().optional(),
   type: z.literal('tool_search_output'),
   call_id: z.string().nullable().optional(),
   callId: z.string().nullable().optional(),
