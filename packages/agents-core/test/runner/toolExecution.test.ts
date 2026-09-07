@@ -1728,19 +1728,19 @@ describe('executeComputerActions', () => {
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
 
-  it('preserves screenshot ordering before a later action', async () => {
+  it('captures once after a batch that requests a screenshot before a click', async () => {
     const invocations: string[] = [];
-    let screenshotCount = 0;
+    let clicked = false;
     const fakeComputer = {
       environment: 'mac',
       dimensions: [1, 1] as [number, number],
       screenshot: vi.fn().mockImplementation(async () => {
         invocations.push('screenshot');
-        screenshotCount += 1;
-        return screenshotCount === 1 ? 'before-click' : 'after-click';
+        return clicked ? 'after-click' : 'before-click';
       }),
       click: vi.fn().mockImplementation(async () => {
         invocations.push('click');
+        clicked = true;
       }),
       doubleClick: vi.fn(),
       drag: vi.fn(),
@@ -1768,13 +1768,13 @@ describe('executeComputerActions', () => {
       new RunContext(),
     );
 
-    expect(invocations).toEqual(['screenshot', 'click', 'screenshot']);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(invocations).toEqual(['click', 'screenshot']);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
     expect(items).toHaveLength(1);
     expect((items[0] as any).output).toBe('data:image/png;base64,after-click');
   });
 
-  it('reuses an explicit screenshot when it is the final action', async () => {
+  it('captures once after a batch that ends with a screenshot action', async () => {
     const invocations: string[] = [];
     const fakeComputer = {
       environment: 'mac',
