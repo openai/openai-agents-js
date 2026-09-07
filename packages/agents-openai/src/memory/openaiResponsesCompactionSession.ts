@@ -8,7 +8,8 @@ import {
 import type {
   AgentInputItem,
   OpenAIResponsesCompactionArgs,
-  OpenAIResponsesCompactionAwareSession as OpenAIResponsesCompactionSessionLike,
+  OpenAIResponsesCompactionOwnershipAwareSession as OpenAIResponsesCompactionSessionLike,
+  RunContext,
   Session,
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
@@ -126,6 +127,8 @@ export class OpenAIResponsesCompactionSession
   private compactionCandidateItems: AgentInputItem[] | undefined;
   private sessionItems: AgentInputItem[] | undefined;
   private mutationOperation: Promise<void> = Promise.resolve();
+  private mutationGeneration: object = {};
+  private readonly compactionOwnership = new WeakMap<object, object>();
 
   constructor(options: OpenAIResponsesCompactionSessionOptions) {
     this.client = resolveClient(options);
@@ -150,8 +153,22 @@ export class OpenAIResponsesCompactionSession
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
+    _runContext?: RunContext<any>,
+    ownership?: object | null,
   ): Promise<OpenAIResponsesCompactionResult | null> {
-    return this.runMutationOperation(() => this.runCompactionOperation(args));
+    return this.runMutationOperation(async () => {
+      if (ownership !== undefined && !this.ownsCompaction(ownership)) {
+        logger.debug(
+          'skip: automatic compaction no longer owns session history',
+        );
+        return null;
+      }
+      const result = await this.runCompactionOperation(args);
+      if (result && ownership) {
+        this.compactionOwnership.set(ownership, this.mutationGeneration);
+      }
+      return result;
+    });
   }
 
   private async runCompactionOperation(
@@ -214,10 +231,15 @@ export class OpenAIResponsesCompactionSession
     const outputCompactionCandidateItems =
       selectCompactionCandidateItems(outputItems);
     const previousItems = await this.getAllUnderlyingSessionItems();
-    await this.replaceUnderlyingSessionItems({
-      outputItems,
-      previousItems,
-    });
+    try {
+      await this.replaceUnderlyingSessionItems({ outputItems, previousItems });
+    } catch (error) {
+      this.compactionCandidateItems = undefined;
+      this.sessionItems = undefined;
+      throw error;
+    } finally {
+      this.mutationGeneration = {};
+    }
     this.compactionCandidateItems = outputCompactionCandidateItems;
     this.sessionItems = outputItems;
 
@@ -241,6 +263,20 @@ export class OpenAIResponsesCompactionSession
     return this.underlyingSession.getItems(limit);
   }
 
+  async getItemsWithCompactionOwnership(
+    _runContext?: RunContext<any>,
+  ): Promise<{
+    items: AgentInputItem[];
+    ownership: object;
+  }> {
+    return this.runMutationOperation(async () => {
+      const items = await this.underlyingSession.getItems();
+      const ownership = {};
+      this.compactionOwnership.set(ownership, this.mutationGeneration);
+      return { items, ownership };
+    });
+  }
+
   prepareHistoryItemsForPersistenceComparison(
     items: AgentInputItem[],
   ): AgentInputItem[] {
@@ -250,11 +286,20 @@ export class OpenAIResponsesCompactionSession
   }
 
   async addItems(items: AgentInputItem[]) {
+    await this.addItemsWithCompactionOwnership(items, null);
+  }
+
+  async addItemsWithCompactionOwnership(
+    items: AgentInputItem[],
+    ownership: object | null,
+    _runContext?: RunContext<any>,
+  ): Promise<void> {
     if (items.length === 0) {
       return;
     }
 
     await this.runMutationOperation(async () => {
+      const ownsGeneration = this.ownsCompaction(ownership);
       try {
         await this.underlyingSession.addItems(items);
       } catch (error) {
@@ -263,6 +308,11 @@ export class OpenAIResponsesCompactionSession
         this.compactionCandidateItems = undefined;
         this.sessionItems = undefined;
         throw error;
+      } finally {
+        this.mutationGeneration = {};
+      }
+      if (ownsGeneration && ownership) {
+        this.compactionOwnership.set(ownership, this.mutationGeneration);
       }
       if (this.compactionCandidateItems) {
         const candidates = selectCompactionCandidateItems(items);
@@ -285,6 +335,7 @@ export class OpenAIResponsesCompactionSession
       try {
         popped = await this.underlyingSession.popItem();
       } catch (error) {
+        this.mutationGeneration = {};
         this.responseId = undefined;
         this.lastStore = undefined;
         this.compactionCandidateItems = undefined;
@@ -294,6 +345,7 @@ export class OpenAIResponsesCompactionSession
       if (!popped) {
         return popped;
       }
+      this.mutationGeneration = {};
       this.responseId = undefined;
       this.lastStore = undefined;
       // A successful destructive mutation makes both cached history views stale.
@@ -308,12 +360,27 @@ export class OpenAIResponsesCompactionSession
 
   async clearSession() {
     await this.runMutationOperation(async () => {
-      await this.underlyingSession.clearSession();
+      try {
+        await this.underlyingSession.clearSession();
+      } catch (error) {
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+        throw error;
+      } finally {
+        this.mutationGeneration = {};
+        this.responseId = undefined;
+        this.lastStore = undefined;
+      }
       this.compactionCandidateItems = [];
       this.sessionItems = [];
-      this.responseId = undefined;
-      this.lastStore = undefined;
     });
+  }
+
+  private ownsCompaction(ownership: object | null): boolean {
+    return (
+      ownership !== null &&
+      this.compactionOwnership.get(ownership) === this.mutationGeneration
+    );
   }
 
   private runMutationOperation<T>(operation: () => Promise<T>): Promise<T> {

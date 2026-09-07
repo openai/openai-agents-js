@@ -215,10 +215,43 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
   runCompaction(
     args?: OpenAIResponsesCompactionArgs,
     runContext?: RunContext<any>,
+    ownership?: object | null,
   ):
     | Promise<OpenAIResponsesCompactionResult | null>
     | OpenAIResponsesCompactionResult
     | null;
+}
+
+/**
+ * Optional compaction capability that binds automatic replacement to a live history read.
+ *
+ * Receipts belong to one wrapper and one run. They must not be serialized. An append still
+ * persists its items when its receipt is stale, but must not restore that receipt's ownership.
+ * Ordinary history reads must not grant ownership. The runner supplies a receipt, or null when
+ * none survived, as the third runCompaction argument. Undefined preserves manual compaction.
+ */
+export interface OpenAIResponsesCompactionOwnershipAwareSession extends OpenAIResponsesCompactionAwareSession {
+  getItemsWithCompactionOwnership(
+    runContext?: RunContext<any>,
+  ): Promise<{ items: AgentInputItem[]; ownership: object }>;
+
+  addItemsWithCompactionOwnership(
+    items: AgentInputItem[],
+    ownership: object | null,
+    runContext?: RunContext<any>,
+  ): Promise<void>;
+}
+
+export function isOpenAIResponsesCompactionOwnershipAwareSession(
+  session: Session | undefined,
+): session is OpenAIResponsesCompactionOwnershipAwareSession {
+  return (
+    isOpenAIResponsesCompactionAwareSession(session) &&
+    typeof (session as OpenAIResponsesCompactionOwnershipAwareSession)
+      .getItemsWithCompactionOwnership === 'function' &&
+    typeof (session as OpenAIResponsesCompactionOwnershipAwareSession)
+      .addItemsWithCompactionOwnership === 'function'
+  );
 }
 
 export function isOpenAIResponsesCompactionAwareSession(
