@@ -63,6 +63,27 @@ export type WebSearchTool = {
    * default is used.
    */
   externalWebAccess?: boolean;
+
+  /**
+   * The kinds of search results to return. When omitted, the API default is used.
+   * Including `image` also requests raw results, available on web search call
+   * items in `providerData.results`.
+   */
+  searchContentTypes?: ProviderData.WebSearchTool['search_content_types'];
+
+  /**
+   * Image result settings when `searchContentTypes` includes `image`.
+   */
+  imageSettings?: {
+    /**
+     * The positive number of image results to request.
+     */
+    maxResults?: number;
+    /**
+     * Whether to request a short caption for each image when available.
+     */
+    caption?: boolean;
+  };
 };
 
 /**
@@ -84,6 +105,15 @@ export function webSearchTool(
   };
   if (options.externalWebAccess !== undefined) {
     providerData.external_web_access = options.externalWebAccess;
+  }
+  if (options.searchContentTypes !== undefined) {
+    providerData.search_content_types = options.searchContentTypes;
+  }
+  if (options.imageSettings !== undefined) {
+    providerData.image_settings = {
+      max_results: options.imageSettings.maxResults,
+      caption: options.imageSettings.caption,
+    };
   }
   return {
     type: 'hosted_tool',
