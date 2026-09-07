@@ -281,32 +281,27 @@ export class OpenAIResponsesCompactionSession
 
   async popItem() {
     return this.runMutationOperation(async () => {
-      const popped = await this.underlyingSession.popItem();
+      let popped: AgentInputItem | undefined;
+      try {
+        popped = await this.underlyingSession.popItem();
+      } catch (error) {
+        this.responseId = undefined;
+        this.lastStore = undefined;
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+        throw error;
+      }
       if (!popped) {
         return popped;
       }
-      if (this.sessionItems) {
-        const index = this.sessionItems.lastIndexOf(popped);
-        if (index >= 0) {
-          this.sessionItems.splice(index, 1);
-        } else {
-          this.sessionItems = await this.underlyingSession.getItems();
-        }
-      }
-      if (this.compactionCandidateItems) {
-        const isCandidate = selectCompactionCandidateItems([popped]).length > 0;
-        if (isCandidate) {
-          const index = this.compactionCandidateItems.indexOf(popped);
-          if (index >= 0) {
-            this.compactionCandidateItems.splice(index, 1);
-          } else {
-            // Fallback when the popped item reference differs from stored candidates.
-            this.compactionCandidateItems = selectCompactionCandidateItems(
-              await this.underlyingSession.getItems(),
-            );
-          }
-        }
-      }
+      this.responseId = undefined;
+      this.lastStore = undefined;
+      // A successful destructive mutation makes both cached history views stale.
+      // Do not try to repair them from the returned item: some backends clone
+      // values, and a refresh can fail after the pop has already committed.
+      // The next compaction decision will reload authoritative persisted history.
+      this.compactionCandidateItems = undefined;
+      this.sessionItems = undefined;
       return popped;
     });
   }
