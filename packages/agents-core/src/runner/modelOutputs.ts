@@ -4,6 +4,7 @@ import { Handoff } from '../handoff';
 import {
   RunCompactionItem,
   RunHandoffCallItem,
+  RunInputItem,
   RunItem,
   RunMessageOutputItem,
   RunReasoningItem,
@@ -35,6 +36,8 @@ import {
   type FunctionToolLookupKey,
   getFunctionToolNamespace,
   getFunctionToolQualifiedName,
+  getFunctionToolStateKey,
+  isDeferredTopLevelFunctionTool,
   getToolCallNamespace,
   resolveFunctionToolCall,
 } from '../toolIdentity';
@@ -66,7 +69,7 @@ import {
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
-import { assertValidCompactionItems } from './items';
+import { assertValidCompactionItems, trimToLatestCompaction } from './items';
 import { attributeToolSearchOutput } from './toolSearchAttribution';
 
 function ensureToolAvailable<T>(
@@ -405,8 +408,13 @@ function collectLoadedDeferredToolStateFromHistory(
     loadedToolNames: new Set<string>(),
   };
 
-  for (const item of items) {
-    if (item instanceof RunToolSearchOutputItem && item.agent !== agent) {
+  // Use the active history boundary without discarding the surviving item owners.
+  for (const item of trimToLatestCompaction(items)) {
+    if (
+      (item instanceof RunToolSearchOutputItem ||
+        item instanceof RunInputItem) &&
+      item.agent !== agent
+    ) {
       continue;
     }
 
@@ -996,7 +1004,16 @@ export function processModelResponse<TContext>(
       toolsUsed.push(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
       );
-      items.push(new RunToolCallItem(normalizedToolCall, agent));
+      items.push(
+        new RunToolCallItem(
+          normalizedToolCall,
+          agent,
+          !getToolCallNamespace(normalizedToolCall) &&
+            isDeferredTopLevelFunctionTool(resolved.tool)
+            ? getFunctionToolStateKey(resolved.tool)
+            : undefined,
+        ),
+      );
       runFunctions.push(
         createToolRunFunction({
           toolCall: normalizedToolCall,
@@ -1383,7 +1400,16 @@ export async function processModelResponseAsync<TContext>(
       toolsUsed.push(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
       );
-      items.push(new RunToolCallItem(normalizedToolCall, agent));
+      items.push(
+        new RunToolCallItem(
+          normalizedToolCall,
+          agent,
+          !getToolCallNamespace(normalizedToolCall) &&
+            isDeferredTopLevelFunctionTool(resolved.tool)
+            ? getFunctionToolStateKey(resolved.tool)
+            : undefined,
+        ),
+      );
       runFunctions.push(
         createToolRunFunction({
           toolCall: normalizedToolCall,

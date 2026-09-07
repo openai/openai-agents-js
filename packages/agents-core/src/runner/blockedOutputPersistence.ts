@@ -1580,6 +1580,7 @@ function buildCurrentFunctionPairPlan(
           new RunToolCallItem(
             buildCanonicalFunctionCall(item.rawItem),
             item.agent,
+            item.functionToolStateKey,
           ),
         );
         continue;
@@ -1656,7 +1657,11 @@ function buildCurrentFunctionPairPlan(
         ) {
           replacements.set(
             item,
-            new RunToolCallItem(replacement.rawItem, item.agent),
+            new RunToolCallItem(
+              replacement.rawItem,
+              item.agent,
+              replacement.functionToolStateKey,
+            ),
           );
         } else if (
           replacement instanceof RunToolCallOutputItem &&
