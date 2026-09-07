@@ -2444,7 +2444,7 @@ describe('BatchTraceProcessor forceFlush in-flight export', () => {
       });
 
       await secondAttempted;
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(flushSettled).toBe(false);
 
       releaseFirst();
