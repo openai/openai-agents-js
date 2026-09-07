@@ -242,6 +242,31 @@ describe('DockerSandboxClient unit behavior', () => {
     await rm(rootDir, { recursive: true, force: true });
   });
 
+  it('rejects repository options before Docker update effects', async () => {
+    const manifest = new Manifest();
+    const session = new DockerSandboxSession({
+      state: {
+        manifest,
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        environment: {},
+        containerId: 'existing-container',
+        image: 'test:image',
+      },
+    });
+    const update = new Manifest({
+      entries: { app: { type: 'git_repo', repo: 'owner/repo' } },
+    });
+    update.entries.app.repo = '--upload-pack=unused #://';
+    await expect(session.applyManifest(update)).rejects.toThrow(
+      'git_repo repository URL must not start with "-".',
+    );
+    expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    expect(session.state.manifest).toBe(manifest);
+    expect(await readdir(rootDir)).toEqual([]);
+  });
+
   it('rejects replacing active mounts before Docker or filesystem effects', async () => {
     const manifest = new Manifest({
       entries: {

@@ -71,6 +71,39 @@ function parseTestSecretReference(
 }
 
 describe('Manifest', () => {
+  it.each(['--upload-pack=marker #://', '  --upload-pack=marker #://  '])(
+    'rejects option-like repository URLs in nested entries: %s',
+    (repo) => {
+      expect(
+        () =>
+          new Manifest({
+            entries: {
+              deps: {
+                type: 'dir',
+                children: {
+                  app: { type: 'git_repo', repo },
+                },
+              },
+            },
+          }),
+      ).toThrow('git_repo repository URL must not start with "-".');
+    },
+  );
+
+  it.each([
+    'https://example.test/repo.git',
+    'ssh://git@example.test/repo.git',
+    'git@example.test:owner/repo.git',
+    'file:///tmp/repo',
+    'owner/repo',
+    '-owner/repo',
+  ])('preserves supported repository spelling: %s', (repo) => {
+    const manifest = new Manifest({
+      entries: { app: { type: 'git_repo', repo } },
+    });
+    expect(manifest.entries.app.repo).toBe(repo);
+  });
+
   it('infers inline entry types from entry discriminators', () => {
     const entries = {
       'README.md': {

@@ -1169,7 +1169,7 @@ async function cloneNamedRef(
   if (ref) {
     args.push('--branch', ref);
   }
-  args.push(repository, destination);
+  args.push('--', repository, destination);
   return await runSandboxProcess('git', args, {
     timeoutMs: GIT_CLONE_TIMEOUT_MS,
   });
