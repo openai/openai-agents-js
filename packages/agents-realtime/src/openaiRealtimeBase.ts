@@ -170,25 +170,25 @@ export abstract class OpenAIRealtimeBase
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
   /**
-   * How many `conversation.item.delete` requests are outstanding per item id.
-   * Local history still lists an item until its acknowledgement arrives, so
-   * without this a later insert would name one as its anchor and the server
-   * would refuse the create against a conversation that no longer holds it.
+   * The `event_id` of every `conversation.item.delete` still awaiting a reply,
+   * grouped by the item it targets and held in the order they were sent. Local
+   * history still lists an item until its acknowledgement arrives, so without
+   * this a later insert would name one as its anchor and the server would refuse
+   * the create against a conversation that no longer holds it.
    *
-   * It counts rather than flags because the same id can be deleted twice before
-   * either acknowledgement lands -- correcting an item removes and re-adds it,
-   * and removing it afterwards queues a second delete. One acknowledgement must
-   * not clear an id another delete is still on its way to remove.
+   * It is a queue rather than a flag because the same id can be deleted twice
+   * before either reply lands -- correcting an item removes and re-adds it, and
+   * removing it afterwards queues a second delete. One reply must not clear an
+   * id another delete is still on its way to remove.
    */
-  #pendingDeletions = new Map<string, number>();
+  #pendingDeletes = new Map<string, string[]>();
   /**
-   * The item each outstanding `conversation.item.delete` was sent for, keyed by
-   * the `event_id` it carried. A delete can also end in an `error` — deleting an
-   * item the conversation has already dropped is the ordinary way that happens —
-   * and that terminal reply names the request rather than the item, so the count
-   * above can only be released through this.
+   * Which item each outstanding request targets. A delete can end in an `error`
+   * rather than an acknowledgement — deleting an item the conversation has
+   * already dropped is the ordinary way that happens — and that reply names the
+   * request instead of the item, so it is resolved through here.
    */
-  #deleteRequests = new Map<string, string>();
+  #deleteRequestItem = new Map<string, string>();
   #deleteRequestSeq = 0;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
@@ -578,32 +578,45 @@ export abstract class OpenAIRealtimeBase
     this.emit('connected');
   }
 
-  /** One outstanding delete for `itemId` has reached a terminal reply. */
-  #settleDeletion(itemId: string): void {
-    const outstanding = this.#pendingDeletions.get(itemId) ?? 0;
-    if (outstanding > 1) {
-      this.#pendingDeletions.set(itemId, outstanding - 1);
-    } else {
-      this.#pendingDeletions.delete(itemId);
+  /** Drops `eventId` from the queue it is in, and the queue once it empties. */
+  #forgetDeleteRequest(itemId: string, eventId: string | undefined): void {
+    if (eventId === undefined) {
+      return;
     }
+    this.#deleteRequestItem.delete(eventId);
+    const outstanding = this.#pendingDeletes.get(itemId);
+    if (outstanding === undefined) {
+      return;
+    }
+    const at = outstanding.indexOf(eventId);
+    if (at !== -1) {
+      outstanding.splice(at, 1);
+    }
+    if (outstanding.length === 0) {
+      this.#pendingDeletes.delete(itemId);
+    }
+  }
+
+  /** The server acknowledged a delete of `itemId`, so its oldest request is done. */
+  #settleDeletion(itemId: string): void {
+    this.#forgetDeleteRequest(itemId, this.#pendingDeletes.get(itemId)?.[0]);
   }
 
   /** The delete sent under `eventId` failed, so it will never be acknowledged. */
   #releaseDeleteRequest(eventId: string): void {
-    const itemId = this.#deleteRequests.get(eventId);
+    const itemId = this.#deleteRequestItem.get(eventId);
     if (itemId === undefined) {
       return;
     }
-    this.#deleteRequests.delete(eventId);
-    this.#settleDeletion(itemId);
+    this.#forgetDeleteRequest(itemId, eventId);
   }
 
   protected _onClose() {
     // Outstanding deletes belong to the connection that sent them. A new one
     // starts from whatever history the caller restores, and an id held over
     // from the old connection would suppress a legitimate anchor in it.
-    this.#pendingDeletions.clear();
-    this.#deleteRequests.clear();
+    this.#pendingDeletes.clear();
+    this.#deleteRequestItem.clear();
     this.emit('disconnected');
   }
 
@@ -1049,12 +1062,14 @@ export abstract class OpenAIRealtimeBase
 
     if (removalIds.size > 0) {
       for (const itemId of removalIds) {
-        this.#pendingDeletions.set(
-          itemId,
-          (this.#pendingDeletions.get(itemId) ?? 0) + 1,
-        );
         const eventId = `agents_delete_${(this.#deleteRequestSeq += 1)}`;
-        this.#deleteRequests.set(eventId, itemId);
+        const outstanding = this.#pendingDeletes.get(itemId);
+        if (outstanding === undefined) {
+          this.#pendingDeletes.set(itemId, [eventId]);
+        } else {
+          outstanding.push(eventId);
+        }
+        this.#deleteRequestItem.set(eventId, itemId);
         this.sendEvent({
           type: 'conversation.item.delete',
           event_id: eventId,
@@ -1075,7 +1090,7 @@ export abstract class OpenAIRealtimeBase
     // A deletion stays in flight across calls, so local history can still list
     // an item the conversation has already dropped.
     const survives = (item: RealtimeItem) =>
-      !pendingIds.has(item.itemId) && !this.#pendingDeletions.has(item.itemId);
+      !pendingIds.has(item.itemId) && !this.#pendingDeletes.has(item.itemId);
     // Only a create that has to land before something the server keeps needs to
     // name an anchor. Past the last such item there is nothing to sit in front
     // of, so those stay plain appends.
