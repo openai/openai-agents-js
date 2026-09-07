@@ -148,6 +148,27 @@ class CommitThenRejectPopSession extends MemorySession {
   }
 }
 
+class CloningPopSessionWithRefreshFailure extends MemorySession {
+  failNextHistoryRead = false;
+
+  override async getItems(limit?: number): Promise<AgentInputItem[]> {
+    if (this.failNextHistoryRead) {
+      this.failNextHistoryRead = false;
+      throw new Error('history refresh failed');
+    }
+    return structuredClone(await super.getItems(limit));
+  }
+
+  override async popItem(): Promise<AgentInputItem | undefined> {
+    const popped = await super.popItem();
+    if (popped) {
+      this.failNextHistoryRead = true;
+      return structuredClone(popped);
+    }
+    return popped;
+  }
+}
+
 describe('OpenAIResponsesCompactionSession', () => {
   it('forgets response-chain state when the session is cleared', async () => {
     const compact = vi.fn();
@@ -257,6 +278,54 @@ describe('OpenAIResponsesCompactionSession', () => {
       session.runCompaction({ compactionMode: 'input' }),
     ).resolves.toBeNull();
     expect(snapshots).toEqual([[first, second], [first]]);
+  });
+
+  it('reloads persisted history after a successful pop when the first refresh fails', async () => {
+    const first = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'first' }],
+    } as AgentInputItem;
+    const second = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'second' }],
+    } as AgentInputItem;
+    const underlyingSession = new CloningPopSessionWithRefreshFailure({
+      initialItems: [first, second],
+    });
+    const compact = vi.fn().mockResolvedValue({ output: [], usage: undefined });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      underlyingSession,
+      compactionMode: 'input',
+      shouldTriggerCompaction: () => false,
+    });
+
+    // Seed both wrapper caches with cloned values, then remove the newest item.
+    await session.runCompaction({ compactionMode: 'input' });
+    await expect(session.popItem()).resolves.toEqual(second);
+
+    // The backing store fails the first history read after the committed pop.
+    await expect(
+      session.runCompaction({ force: true, compactionMode: 'input' }),
+    ).rejects.toThrow('history refresh failed');
+    expect(compact).not.toHaveBeenCalled();
+
+    // A retry reloads authoritative persisted history and cannot reintroduce the pop.
+    await session.runCompaction({ force: true, compactionMode: 'input' });
+    expect(compact).toHaveBeenCalledTimes(1);
+    const compactRequest = compact.mock.calls[0][0];
+    expect(compactRequest.model).toEqual(expect.any(String));
+    expect(compactRequest.input).toHaveLength(1);
+    expect(compactRequest.input?.[0]).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'first' }],
+    });
+    expect(JSON.stringify(compactRequest.input)).not.toContain('second');
   });
 
   it('keeps response-chain state when popItem is a no-op', async () => {
