@@ -14,7 +14,7 @@ describe('Node.js (TypeScript + AI SDK v2)', () => {
     await execa`rm -rf node_modules`;
     console.log('[node-ai-sdk-v2-ts] Installing dependencies');
     await execa`npm install`;
-  }, 60000);
+  });
 
   test('should build-check, build, and run', { timeout: 120000 }, async () => {
     await execa`npm run build-check`;

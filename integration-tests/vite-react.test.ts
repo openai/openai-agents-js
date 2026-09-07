@@ -63,7 +63,7 @@ describe('Vite React', () => {
         server.kill();
       }
     });
-  }, 60000);
+  });
 
   test('should be able to run', { timeout: 60000 }, async () => {
     const browser = await chromium.launch();

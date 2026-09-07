@@ -14,7 +14,7 @@ describe('Node.js (TypeScript + AI SDK v4)', () => {
     await execa`rm -rf node_modules`;
     console.log('[node-ai-sdk-v4-ts] Installing dependencies');
     await execa`npm install`;
-  }, 60000);
+  });
 
   test(
     'published packages handle an AI SDK v4 tool loop',

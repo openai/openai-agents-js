@@ -1,4 +1,4 @@
-import { createDeepSeek } from '@ai-sdk/deepseek';
+import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { Agent, getGlobalTraceProvider, run, tool } from '@openai/agents';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 import { z } from 'zod';
@@ -8,14 +8,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const requestBodies: Array<Record<string, unknown>> = [];
-const deepseek = createDeepSeek({
+const openrouter = createOpenRouter({
   apiKey: 'integration-test-key',
   fetch: async (_input, init) => {
     if (typeof init?.body !== 'string') {
-      throw new Error('Expected the DeepSeek request body to be a string.');
+      throw new Error('Expected the OpenRouter request body to be a string.');
     }
 
     const body = JSON.parse(init.body) as Record<string, unknown>;
+    if (
+      body.model !== 'openai/gpt-6-astra' ||
+      !isRecord(body.reasoning) ||
+      body.reasoning.effort !== 'low'
+    ) {
+      throw new Error(
+        'Expected OpenRouter to receive openai/gpt-6-astra with low reasoning effort.',
+      );
+    }
     requestBodies.push(body);
 
     if (requestBodies.length === 2) {
@@ -46,7 +55,7 @@ const deepseek = createDeepSeek({
         ? {
             id: 'response-tool-call',
             created: 1,
-            model: 'deepseek-chat',
+            model: 'openai/gpt-6-astra',
             choices: [
               {
                 message: {
@@ -55,6 +64,7 @@ const deepseek = createDeepSeek({
                   tool_calls: [
                     {
                       id: 'call-weather',
+                      type: 'function',
                       function: {
                         name: 'get_weather',
                         arguments: '{"city":"Berlin"}',
@@ -74,7 +84,7 @@ const deepseek = createDeepSeek({
         : {
             id: 'response-final',
             created: 2,
-            model: 'deepseek-chat',
+            model: 'openai/gpt-6-astra',
             choices: [
               {
                 message: {
@@ -109,7 +119,9 @@ const agent = new Agent({
   name: 'AI SDK v4 Test Agent',
   instructions: 'Use get_weather to answer the question.',
   tools: [getWeatherTool],
-  model: aisdk(deepseek('deepseek-chat')),
+  model: aisdk(
+    openrouter('openai/gpt-6-astra', { reasoning: { effort: 'low' } }),
+  ),
 });
 
 try {

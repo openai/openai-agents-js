@@ -7,10 +7,10 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@ai-sdk/deepseek": "^3.0.0",
     "@ai-sdk/provider": "^4.0.0",
     "@openai/agents": "latest",
     "@openai/agents-extensions": "latest",
+    "@openrouter/ai-sdk-provider": "^3.0.0",
     "ai": "^7.0.0",
     "zod": "^4.0.0"
   },
