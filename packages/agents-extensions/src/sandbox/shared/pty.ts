@@ -16,7 +16,8 @@ const PTY_PROCESS_ID_MAX_EXCLUSIVE = 100_000;
 export type PtyProcessEntry = {
   tty: boolean;
   output: string;
-  done: boolean;
+  /** True only after the provider can no longer append output. */
+  outputClosed: boolean;
   exitCode: number | null;
   lastUsed: number;
   waiters: Set<() => void>;
@@ -59,7 +60,7 @@ export function createPtyProcessEntry(args: {
   return {
     tty: args.tty ?? true,
     output: '',
-    done: false,
+    outputClosed: false,
     exitCode: null,
     lastUsed: Date.now(),
     waiters: new Set(),
@@ -87,27 +88,31 @@ export function appendPtyOutput(
   notifyPtyWaiters(entry);
 }
 
-export function markPtyDone(
+export function closePtyOutput(
   entry: PtyProcessEntry,
   exitCode: number | null = null,
 ): void {
+  if (entry.outputClosed) {
+    return;
+  }
   entry.output += flushPtyDecoder(entry);
-  entry.done = true;
+  entry.outputClosed = true;
   entry.exitCode = exitCode;
   notifyPtyWaiters(entry);
 }
 
-export function watchPtyProcess(
+/** Observe a provider wait that settles after its output callbacks finish. */
+export function watchPtyOutput(
   entry: PtyProcessEntry,
-  wait: () => Promise<unknown>,
+  waitForOutputClosed: () => Promise<unknown>,
   exitCode: (result: unknown, error?: unknown) => number | null | undefined,
 ): void {
   void (async () => {
     try {
-      const result = await wait();
-      markPtyDone(entry, coerceExitCode(exitCode(result)));
+      const result = await waitForOutputClosed();
+      closePtyOutput(entry, coerceExitCode(exitCode(result)));
     } catch (error) {
-      markPtyDone(entry, coerceExitCode(exitCode(undefined, error) ?? 1));
+      closePtyOutput(entry, coerceExitCode(exitCode(undefined, error) ?? 1));
     }
   })();
 }
@@ -181,7 +186,10 @@ export class PtyProcessRegistry {
     await Promise.allSettled(entries.map((entry) => terminatePtyEntry(entry)));
   }
 
-  async finalize(sessionId: number): Promise<{
+  async finalize(
+    sessionId: number,
+    outputClosed: boolean,
+  ): Promise<{
     processId?: number;
     exitCode?: number | null;
   }> {
@@ -190,7 +198,7 @@ export class PtyProcessRegistry {
       return { processId: undefined, exitCode: 1 };
     }
 
-    if (!entry.done) {
+    if (!outputClosed) {
       return { processId: sessionId };
     }
 
@@ -218,7 +226,7 @@ export class PtyProcessRegistry {
     );
 
     for (const [sessionId, entry] of byLeastRecentlyUsed) {
-      if (!protectedIds.has(sessionId) && entry.done) {
+      if (!protectedIds.has(sessionId) && entry.outputClosed) {
         this.processes.delete(sessionId);
         return entry;
       }
@@ -357,11 +365,15 @@ export async function collectPtyOutput(args: {
   entry: PtyProcessEntry;
   yieldTimeMs: number;
   maxOutputTokens?: number;
-}): Promise<{ text: string; originalTokenCount?: number }> {
+}): Promise<{
+  text: string;
+  originalTokenCount?: number;
+  outputClosed: boolean;
+}> {
   const deadline = Date.now() + args.yieldTimeMs;
   let output = consumePtyOutput(args.entry);
 
-  while (!args.entry.done && Date.now() < deadline) {
+  while (!args.entry.outputClosed && Date.now() < deadline) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       break;
@@ -370,11 +382,12 @@ export async function collectPtyOutput(args: {
     output += consumePtyOutput(args.entry);
   }
 
-  if (args.entry.done) {
-    output += consumePtyOutput(args.entry);
-  }
+  // Capture closure with the final drain. A caller may resume after more output
+  // arrives, so finalization must use this snapshot rather than the live entry.
+  const outputClosed = args.entry.outputClosed;
+  output += consumePtyOutput(args.entry);
 
-  return truncateOutput(output, args.maxOutputTokens);
+  return { ...truncateOutput(output, args.maxOutputTokens), outputClosed };
 }
 
 export async function writePtyStdin(args: {
@@ -414,7 +427,10 @@ export async function writePtyStdin(args: {
     maxOutputTokens: args.maxOutputTokens,
   });
   entry.lastUsed = Date.now();
-  const finalized = await args.registry.finalize(args.sessionId);
+  const finalized = await args.registry.finalize(
+    args.sessionId,
+    output.outputClosed,
+  );
 
   return formatExecResponse({
     output: output.text,
@@ -438,7 +454,10 @@ export async function formatPtyExecUpdate(args: {
     yieldTimeMs: clampPtyYieldTimeMs(args.yieldTimeMs ?? 10_000),
     maxOutputTokens: args.maxOutputTokens,
   });
-  const finalized = await args.registry.finalize(args.sessionId);
+  const finalized = await args.registry.finalize(
+    args.sessionId,
+    output.outputClosed,
+  );
 
   return formatExecResponse({
     output: output.text,

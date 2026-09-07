@@ -689,12 +689,21 @@ describe('E2BSandboxClient', () => {
       chars: 'echo next\n',
       yieldTimeMs: 250,
     });
+    // Deliver the final character in separate callbacks before the SDK reader closes.
+    onData(new Uint8Array([0xe5]));
+    const pendingDone = session.writeStdin({ sessionId, yieldTimeMs: 250 });
+    await Promise.resolve();
+    onData(new Uint8Array([0xae, 0x8c]));
     finishWait({ exitCode: 0 });
-    const done = await session.writeStdin({
+    const done = await pendingDone;
+    expect(done).toContain('完');
+    expect(done).not.toContain('\uFFFD');
+    const missing = await session.writeStdin({
       sessionId,
       yieldTimeMs: 250,
     });
 
+    expect(missing).toContain('session not found');
     expect(next).toContain('echo next');
     expect(done).toContain('Process exited with code 0');
     expect(ptyCreateMock).toHaveBeenCalledWith(

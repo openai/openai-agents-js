@@ -29,7 +29,7 @@ import {
   formatPtyExecUpdate,
   hydrateRemoteWorkspaceTar,
   manifestContainsLocalSource,
-  markPtyDone,
+  closePtyOutput,
   materializeEnvironment,
   materializeInlineManifest,
   materializeInlineManifestEntry,
@@ -69,7 +69,7 @@ import {
   validateRemoteSandboxPath,
   validateRemoteSandboxPathForManifest,
   validateWorkspaceTarArchive,
-  watchPtyProcess,
+  watchPtyOutput,
   withSandboxSpan,
   writePtyStdin,
   writeRunAsRemoteText,
@@ -4528,7 +4528,7 @@ describe('remote sandbox path helpers', () => {
     const registry = new PtyProcessRegistry();
     const entry = createPtyProcessEntry({});
     const { sessionId } = registry.register(entry);
-    markPtyDone(entry);
+    closePtyOutput(entry);
 
     const output = await formatPtyExecUpdate({
       registry,
@@ -4690,10 +4690,11 @@ describe('remote sandbox path helpers', () => {
 
     appendPtyOutput(entry, 'hello ');
     appendPtyOutput(entry, new TextEncoder().encode('from bytes'));
-    markPtyDone(entry, 0);
+    closePtyOutput(entry, 0);
 
     await expect(pendingOutput).resolves.toEqual({
       text: 'hello from bytes',
+      outputClosed: true,
     });
   });
 
@@ -4709,9 +4710,12 @@ describe('remote sandbox path helpers', () => {
 
       appendPtyOutput(entry, bytes.slice(0, splitAt));
       appendPtyOutput(entry, bytes.slice(splitAt));
-      markPtyDone(entry, 0);
+      closePtyOutput(entry, 0);
 
-      await expect(pendingOutput).resolves.toEqual({ text });
+      await expect(pendingOutput).resolves.toEqual({
+        text,
+        outputClosed: true,
+      });
     }
   });
 
@@ -4722,10 +4726,11 @@ describe('remote sandbox path helpers', () => {
     const bytes = new TextEncoder().encode('\u5b8c\u4e86');
     appendPtyOutput(entry, bytes.slice(0, 4));
     appendPtyOutput(entry, ' done');
-    markPtyDone(entry, 0);
+    closePtyOutput(entry, 0);
 
     await expect(pendingOutput).resolves.toEqual({
       text: '\u5b8c\uFFFD done',
+      outputClosed: true,
     });
   });
 
@@ -4734,9 +4739,89 @@ describe('remote sandbox path helpers', () => {
     const pendingOutput = collectPtyOutput({ entry, yieldTimeMs: 1_000 });
 
     appendPtyOutput(entry, new Uint8Array([0x68, 0x69, 0xf0, 0x9f]));
-    markPtyDone(entry, 0);
+    closePtyOutput(entry, 0);
 
-    await expect(pendingOutput).resolves.toEqual({ text: 'hi\uFFFD' });
+    await expect(pendingOutput).resolves.toEqual({
+      text: 'hi\uFFFD',
+      outputClosed: true,
+    });
+  });
+
+  test.each(['exec', 'stdin'] as const)(
+    'retains final PTY bytes arriving after the %s collector returns',
+    async (operation) => {
+      const terminate = vi.fn(async () => {});
+      const entry = createPtyProcessEntry({ terminate });
+      const registry = new PtyProcessRegistry();
+      const { sessionId } = registry.register(entry);
+      appendPtyOutput(entry, 'first\n');
+      appendPtyOutput(entry, new Uint8Array([0xe5]));
+
+      // Expire the collection deadline synchronously, then deliver the tail before
+      // the response continuation resumes and decides whether to delete the entry.
+      let clock = 0;
+      const now = vi
+        .spyOn(Date, 'now')
+        .mockImplementation(() => clock++ * 30_000);
+      const pending =
+        operation === 'exec'
+          ? formatPtyExecUpdate({
+              registry,
+              sessionId,
+              entry,
+              startTime: 0,
+              yieldTimeMs: 250,
+            })
+          : writePtyStdin({
+              providerName: 'TestSandbox',
+              registry,
+              sessionId,
+              yieldTimeMs: 250,
+            });
+      now.mockRestore();
+      appendPtyOutput(entry, new Uint8Array([0xae, 0x8c]));
+      closePtyOutput(entry, 7);
+
+      const first = await pending;
+      expect(first).toContain(`Process running with session ID ${sessionId}`);
+      expect(first).toContain('first');
+      expect(first).not.toContain('完');
+      expect(terminate).not.toHaveBeenCalled();
+
+      const last = await writePtyStdin({
+        providerName: 'TestSandbox',
+        registry,
+        sessionId,
+      });
+      expect(last).toContain('完');
+      expect(last).not.toContain('first');
+      expect(last).not.toContain('\uFFFD');
+      expect(last).toContain('Process exited with code 7');
+      expect(terminate).toHaveBeenCalledOnce();
+      expect(registry.get(sessionId)).toBeUndefined();
+    },
+  );
+
+  test('retains PTY UTF-8 carry across a truncated yield and flushes once on closure', async () => {
+    const entry = createPtyProcessEntry({});
+    appendPtyOutput(entry, '0123456789abcdef');
+    appendPtyOutput(entry, new Uint8Array([0xf0, 0x9f]));
+    await expect(
+      collectPtyOutput({ entry, yieldTimeMs: 0, maxOutputTokens: 1 }),
+    ).resolves.toEqual({
+      text: '...4',
+      originalTokenCount: 4,
+      outputClosed: false,
+    });
+    appendPtyOutput(entry, new Uint8Array([0x8e, 0x89]));
+    appendPtyOutput(entry, new Uint8Array([0xe5]));
+    closePtyOutput(entry, 0);
+    closePtyOutput(entry, 1);
+    await expect(collectPtyOutput({ entry, yieldTimeMs: 0 })).resolves.toEqual({
+      text: '🎉\uFFFD',
+      outputClosed: true,
+    });
+    expect(entry.exitCode).toBe(0);
   });
 
   test('writes PTY stdin, finalizes completed sessions, and reports missing sessions', async () => {
@@ -4748,7 +4833,7 @@ describe('remote sandbox path helpers', () => {
     const { sessionId } = registry.register(entry);
 
     appendPtyOutput(entry, 'ready\n');
-    markPtyDone(entry, 0);
+    closePtyOutput(entry, 0);
 
     const output = await writePtyStdin({
       providerName: 'FakeSandboxClient',
@@ -4798,12 +4883,12 @@ describe('remote sandbox path helpers', () => {
     const success = registry.register(successEntry);
     const failure = registry.register(failureEntry);
 
-    watchPtyProcess(
+    watchPtyOutput(
       successEntry,
       async () => ({ exitCode: 2.9 }),
       (result) => (result as { exitCode: number }).exitCode,
     );
-    watchPtyProcess(
+    watchPtyOutput(
       failureEntry,
       async () => {
         throw new Error('boom');
@@ -4812,8 +4897,8 @@ describe('remote sandbox path helpers', () => {
     );
 
     await vi.waitFor(() => {
-      expect(successEntry.done).toBe(true);
-      expect(failureEntry.done).toBe(true);
+      expect(successEntry.outputClosed).toBe(true);
+      expect(failureEntry.outputClosed).toBe(true);
     });
 
     expect(successEntry.exitCode).toBe(2);

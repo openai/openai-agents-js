@@ -79,7 +79,7 @@ import {
   serializeRemoteSandboxSessionState,
   truncateOutput,
   validateRemoteSandboxPathForManifest,
-  watchPtyProcess,
+  watchPtyOutput,
   readOptionalNumber,
   readOptionalNumberArray,
   readOptionalRecord,
@@ -394,7 +394,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     if (pruned) {
       await pruned.terminate?.().catch(() => {});
     }
-    watchPtyProcess(
+    watchPtyOutput(
       entry,
       async () => await waitForExit(),
       (result, error) =>
