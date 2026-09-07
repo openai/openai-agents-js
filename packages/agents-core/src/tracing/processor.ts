@@ -134,6 +134,7 @@ export class BatchTraceProcessor implements TracingProcessor {
   #exportInProgress = false;
   #timeoutAbortController: AbortController | null = null;
   #activeExportAbortControllers = new Set<AbortController>();
+  #activeExportPromises = new Set<Promise<void>>();
 
   constructor(
     exporter: TracingExporter,
@@ -213,18 +214,28 @@ export class BatchTraceProcessor implements TracingProcessor {
         signal,
         activeExportAbortController.signal,
       );
+      const exportPromise = (async () => {
+        try {
+          await this.#exporter.export(batch, combinedSignal.signal);
+        } catch (error) {
+          logModelAndToolActionError(
+            logger,
+            'Tracing exporter failed to export batch',
+            error,
+          );
+        } finally {
+          combinedSignal.cleanup();
+          this.#activeExportAbortControllers.delete(
+            activeExportAbortController,
+          );
+          this.#exportInProgress = this.#activeExportAbortControllers.size > 0;
+        }
+      })();
+      this.#activeExportPromises.add(exportPromise);
       try {
-        await this.#exporter.export(batch, combinedSignal.signal);
-      } catch (error) {
-        logModelAndToolActionError(
-          logger,
-          'Tracing exporter failed to export batch',
-          error,
-        );
+        await exportPromise;
       } finally {
-        combinedSignal.cleanup();
-        this.#activeExportAbortControllers.delete(activeExportAbortController);
-        this.#exportInProgress = this.#activeExportAbortControllers.size > 0;
+        this.#activeExportPromises.delete(exportPromise);
       }
     };
 
@@ -334,8 +345,12 @@ export class BatchTraceProcessor implements TracingProcessor {
   }
 
   async forceFlush(): Promise<void> {
+    const inFlightExports = [...this.#activeExportPromises];
     if (this.#buffer.length > 0) {
       await this.#exportBatches(true);
+    }
+    if (inFlightExports.length > 0) {
+      await Promise.all(inFlightExports);
     }
   }
 }
