@@ -1389,6 +1389,67 @@ describe('CloudflareSandboxClient', () => {
     expect(started).toContain('Process running with session ID');
   });
 
+  test.each(['opening', 'ready'] as const)(
+    'settles PTY socket cleanup after %s failure',
+    async (phase) => {
+      globalThis.WebSocket =
+        TestWebSocket as unknown as typeof globalThis.WebSocket;
+      const session = await new CloudflareSandboxClient({ apiKey: '' }).create(
+        new Manifest(),
+        { workerUrl: 'https://worker.example.com' },
+      );
+      let settled = false;
+      const result = session
+        .execCommand({ cmd: 'echo ready', tty: true })
+        .catch((error) => {
+          settled = true;
+          return error;
+        });
+      const socket = await TestWebSocket.nextInstance();
+      const finishClose = socket.close.bind(socket);
+      const close = vi.spyOn(socket, 'close').mockImplementation(() => {});
+      if (phase === 'ready') {
+        socket.open();
+        socket.message(
+          JSON.stringify({ type: 'error', message: 'pty disabled' }),
+        );
+      } else {
+        await vi.waitFor(() => expect(socket.listenerCount('open')).toBe(1));
+        socket.error();
+      }
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      finishClose();
+      const error = await result;
+      expect(error.message).toContain(
+        phase === 'ready' ? 'pty disabled' : 'failed to connect',
+      );
+      expect(socket.sent).toHaveLength(0);
+      expect(socket.listenerCount()).toBe(0);
+      await session.close();
+      expect(close).toHaveBeenCalledOnce();
+    },
+  );
+
+  test('preserves PTY ready failure when socket close throws', async () => {
+    globalThis.WebSocket =
+      TestWebSocket as unknown as typeof globalThis.WebSocket;
+    const session = await new CloudflareSandboxClient({ apiKey: '' }).create(
+      new Manifest(),
+      { workerUrl: 'https://worker.example.com' },
+    );
+    const result = session.execCommand({ cmd: 'echo ready', tty: true });
+    const socket = await TestWebSocket.nextInstance();
+    vi.spyOn(socket, 'close').mockImplementation(() => {
+      throw new Error('close failed');
+    });
+    socket.open();
+    socket.message(JSON.stringify({ type: 'error', message: 'pty disabled' }));
+    await expect(result).rejects.toThrow('pty disabled');
+    expect(socket.listenerCount()).toBe(0);
+    await session.close();
+  });
+
   test('rejects PTY error control frames before ready', async () => {
     globalThis.WebSocket =
       TestWebSocket as unknown as typeof globalThis.WebSocket;
@@ -2233,6 +2294,14 @@ class TestWebSocket {
 
   removeEventListener(type: string, listener: (event: unknown) => void): void {
     this.listeners.get(type)?.delete(listener);
+  }
+
+  listenerCount(type?: string): number {
+    if (type) return this.listeners.get(type)?.size ?? 0;
+    return [...this.listeners.values()].reduce(
+      (count, listeners) => count + listeners.size,
+      0,
+    );
   }
 
   send(data: string | Uint8Array | ArrayBuffer): void {

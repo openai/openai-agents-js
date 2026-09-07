@@ -722,14 +722,21 @@ describe('E2BSandboxClient', () => {
   });
 
   test('terminates PTY execution when the initial stdin write fails', async () => {
-    const handleKillMock = vi.fn(async () => true);
+    let failCleanup!: (error: Error) => void;
+    const handleKillMock = vi.fn(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          failCleanup = reject;
+        }),
+    );
+    const failure = new Error('stdin unavailable');
     const ptyCreateMock = vi.fn(async () => ({
       pid: 42,
       wait: async () => ({ exitCode: 1 }),
       kill: handleKillMock,
     }));
     const ptySendInputMock = vi.fn(async () => {
-      throw new Error('stdin unavailable');
+      throw failure;
     });
     createMock.mockResolvedValueOnce({
       sandboxId: 'sbx_test',
@@ -754,9 +761,17 @@ describe('E2BSandboxClient', () => {
     const client = new E2BSandboxClient();
     const session = await client.create(new Manifest());
 
-    await expect(
-      session.execCommand({ cmd: 'echo ready', tty: true }),
-    ).rejects.toThrow('stdin unavailable');
+    let settled = false;
+    const result = session
+      .execCommand({ cmd: 'echo ready', tty: true })
+      .catch((error) => {
+        settled = true;
+        return error;
+      });
+    await vi.waitFor(() => expect(handleKillMock).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    failCleanup(new Error('kill failed'));
+    expect(await result).toBe(failure);
 
     expect(ptySendInputMock).toHaveBeenCalledOnce();
     expect(handleKillMock).toHaveBeenCalledOnce();

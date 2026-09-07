@@ -642,33 +642,110 @@ describe('BlaxelSandboxClient', () => {
     expect(command).toContain('printf "$CLIENT_SECRET:$MANIFEST_VALUE"');
   });
 
-  test('terminates PTY sockets when the initial command cannot be built', async () => {
+  test.each([false, true])(
+    'settles PTY cleanup when the initial command cannot be built (close fails: %s)',
+    async (closeFails) => {
+      globalThis.WebSocket =
+        TestWebSocket as unknown as typeof globalThis.WebSocket;
+      const client = new BlaxelSandboxClient({
+        apiKey: 'blaxel-token',
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            'X; touch /tmp/pwned; #': 'bad',
+          },
+        }),
+      );
+
+      let settled = false;
+      const startedPromise = session
+        .execCommand({
+          cmd: 'ls',
+          tty: true,
+          yieldTimeMs: 250,
+        })
+        .catch((error) => {
+          settled = true;
+          return error;
+        });
+      const socket = await TestWebSocket.nextInstance();
+      const finishClose = socket.close.bind(socket);
+      const close = vi.spyOn(socket, 'close').mockImplementation(() => {
+        if (closeFails) throw new Error('close failed');
+      });
+      socket.open();
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      if (!closeFails) {
+        expect(settled).toBe(false);
+        finishClose();
+      }
+
+      expect((await startedPromise).message).toContain(
+        'Invalid environment variable name',
+      );
+      if (!closeFails) expect(socket.readyState).toBe(3);
+      expect(socket.sent).toHaveLength(0);
+      await session.close();
+      expect(close).toHaveBeenCalledOnce();
+    },
+  );
+
+  test('closes the acquired socket when PTY opening fails', async () => {
     globalThis.WebSocket =
       TestWebSocket as unknown as typeof globalThis.WebSocket;
-    const client = new BlaxelSandboxClient({
-      apiKey: 'blaxel-token',
-    });
-    const session = await client.create(
-      new Manifest({
-        environment: {
-          'X; touch /tmp/pwned; #': 'bad',
-        },
-      }),
-    );
-
-    const startedPromise = session.execCommand({
-      cmd: 'ls',
-      tty: true,
-      yieldTimeMs: 250,
-    });
+    const session = await new BlaxelSandboxClient({
+      apiKey: 'test-key',
+    }).create(new Manifest());
+    const result = session.execCommand({ cmd: 'echo ready', tty: true });
     const socket = await TestWebSocket.nextInstance();
-    socket.open();
-
-    await expect(startedPromise).rejects.toThrow(
-      'Invalid environment variable name',
-    );
-    expect(socket.readyState).toBe(3);
+    const close = vi.spyOn(socket, 'close');
+    await vi.waitFor(() => expect(socket.listenerCount('open')).toBe(1));
+    socket.failOpening();
+    await expect(result).rejects.toThrow('failed to connect');
+    expect(close).toHaveBeenCalledOnce();
     expect(socket.sent).toHaveLength(0);
+    await session.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  test('bounds failed PTY startup when the socket never emits close', async () => {
+    globalThis.WebSocket =
+      TestWebSocket as unknown as typeof globalThis.WebSocket;
+    const session = await new BlaxelSandboxClient({
+      apiKey: 'test-key',
+    }).create(new Manifest());
+    let failure: Error | undefined;
+    const result = session
+      .execCommand({ cmd: 'echo ready', tty: true })
+      .catch((error) => {
+        failure = error;
+      });
+    const socket = await TestWebSocket.nextInstance();
+    await vi.waitFor(() => expect(socket.listenerCount('open')).toBe(1));
+    // Native Node 22 WebSocket can remain CLOSING after a failed handshake.
+    const close = vi.spyOn(socket, 'close').mockImplementation(() => {
+      socket.readyState = 2;
+    });
+    vi.useFakeTimers();
+    try {
+      socket.failOpening();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(close).toHaveBeenCalledOnce();
+      expect(failure).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(failure?.message).toContain('failed to connect');
+      await result;
+      for (const event of ['open', 'error', 'close', 'message']) {
+        expect(socket.listenerCount(event)).toBe(0);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      expect(socket.sent).toHaveLength(0);
+      await session.close();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('preserves PTY error exit codes after websocket close', async () => {
@@ -2730,6 +2807,14 @@ class TestWebSocket {
     }
     this.readyState = 3;
     this.dispatch('close', { code });
+  }
+
+  listenerCount(type: string): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+
+  failOpening(): void {
+    this.dispatch('error', { message: 'connection failed' });
   }
 
   open(): void {

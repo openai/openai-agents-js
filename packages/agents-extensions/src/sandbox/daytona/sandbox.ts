@@ -352,29 +352,32 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       rows: 24,
       onData: (data: Uint8Array | string) => appendPtyOutput(entry, data),
     });
-    if (handle.waitForConnection) {
-      await handle.waitForConnection();
-    }
+    try {
+      if (handle.waitForConnection) {
+        await handle.waitForConnection();
+      }
 
-    if (!handle.sendInput) {
+      if (!handle.sendInput) {
+        throw new SandboxUnsupportedFeatureError(
+          'DaytonaSandboxClient tty=true requires Daytona SDK PTY stdin support.',
+          {
+            provider: 'daytona',
+            feature: 'tty.stdin',
+          },
+        );
+      }
+      if (!handle.wait) {
+        throw new SandboxUnsupportedFeatureError(
+          'DaytonaSandboxClient tty=true requires Daytona SDK PTY wait support.',
+          {
+            provider: 'daytona',
+            feature: 'tty.wait',
+          },
+        );
+      }
+    } catch (error) {
       await this.terminatePtyHandle(handle, providerSessionId);
-      throw new SandboxUnsupportedFeatureError(
-        'DaytonaSandboxClient tty=true requires Daytona SDK PTY stdin support.',
-        {
-          provider: 'daytona',
-          feature: 'tty.stdin',
-        },
-      );
-    }
-    if (!handle.wait) {
-      await this.terminatePtyHandle(handle, providerSessionId);
-      throw new SandboxUnsupportedFeatureError(
-        'DaytonaSandboxClient tty=true requires Daytona SDK PTY wait support.',
-        {
-          provider: 'daytona',
-          feature: 'tty.wait',
-        },
-      );
+      throw error;
     }
     const waitForExit = handle.wait.bind(handle);
     entry.sendInput = async (chars) => {

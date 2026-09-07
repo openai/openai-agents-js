@@ -19,6 +19,24 @@ const execFileAsync = promisify(execFile);
 const ACTIVE_PROCESS_POLL_MS = 50;
 const ACTIVE_PROCESS_MAX_POLLS = 80;
 
+// Keep real PTY output without macOS controlling-terminal exit teardown.
+const forkPtyWithoutControllingTerminal = String.raw`
+def fork_without_controlling_terminal():
+    master, slave = pty.openpty()
+    pid = os.fork()
+    if pid == 0:
+        os.close(master)
+        for target in (0, 1, 2):
+            os.dup2(slave, target)
+        if slave > 2:
+            os.close(slave)
+        return 0, -1
+    os.close(slave)
+    return pid, master
+
+pty.fork = fork_without_controlling_terminal
+`;
+
 describe('UnixLocalSandboxClient process sessions', () => {
   let rootDir: string;
 
@@ -171,12 +189,15 @@ describe('UnixLocalSandboxClient process sessions', () => {
     const originalPython = process.env.OPENAI_AGENTS_PYTHON;
     const pythonPath = await whichPython();
     const controlledPython = join(rootDir, 'controlled-python');
-    // Control the real child's exit ordering without replacing its PTY output.
+    // A blocking wait must not wait for macOS to drain a controlling terminal.
     await writeFile(
       controlledPython,
       String.raw`#!${pythonPath}
 import os
+import pty
 import sys
+
+${forkPtyWithoutControllingTerminal}
 
 original_write = os.write
 original_waitpid = os.waitpid
@@ -250,20 +271,8 @@ import os
 import pty
 import sys
 
-def fork_without_controlling_terminal():
-    master, slave = pty.openpty()
-    pid = os.fork()
-    if pid == 0:
-        os.close(master)
-        for target in (0, 1, 2):
-            os.dup2(slave, target)
-        if slave > 2:
-            os.close(slave)
-        return 0, -1
-    os.close(slave)
-    return pid, master
+${forkPtyWithoutControllingTerminal}
 
-pty.fork = fork_without_controlling_terminal
 script = sys.argv[2]
 sys.argv = [sys.argv[0], *sys.argv[3:]]
 exec(script)
