@@ -2389,4 +2389,122 @@ describe('BatchTraceProcessor forceFlush in-flight export', () => {
       await processor.shutdown();
     }
   });
+
+  it('waits for a surviving export when a concurrent forced batch fails', async () => {
+    const errorSpy = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    let markSecondAttempted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const secondAttempted = new Promise<void>((resolve) => {
+      markSecondAttempted = resolve;
+    });
+    let exportCalls = 0;
+    const exported: Array<(Trace | Span<any>)[]> = [];
+    const exporter: TracingExporter = {
+      export: async (items) => {
+        exportCalls += 1;
+        if (exportCalls === 1) {
+          markFirstStarted();
+          await firstReleased;
+          return;
+        }
+        if (exportCalls === 2) {
+          markSecondAttempted();
+          throw new Error('forced batch failed');
+        }
+        exported.push([...items]);
+      },
+    };
+    const processor = new BatchTraceProcessor(exporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 100,
+      exportTriggerRatio: 0.5,
+      scheduleDelay: 10000,
+    });
+
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        await processor.onTraceStart(new Trace({ name: `queued-${index}` }));
+      }
+      const firstExport = processor.onTraceStart(
+        new Trace({ name: 'trigger-first-export' }),
+      );
+      await firstStarted;
+
+      await processor.onTraceStart(new Trace({ name: 'buffered-for-flush' }));
+      let flushSettled = false;
+      const flushPromise = processor.forceFlush().then(() => {
+        flushSettled = true;
+      });
+
+      await secondAttempted;
+      await Promise.resolve();
+      expect(flushSettled).toBe(false);
+
+      releaseFirst();
+      await firstExport;
+      await flushPromise;
+
+      await processor.onTraceStart(new Trace({ name: 'after-failure' }));
+      await processor.forceFlush();
+      expect(exportCalls).toBe(3);
+      expect(exported).toHaveLength(1);
+      expect((exported[0][0] as Trace).name).toBe('after-failure');
+    } finally {
+      releaseFirst?.();
+      await processor.shutdown();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('finishes forceFlush when timed shutdown cancels the export it is waiting for', async () => {
+    vi.useFakeTimers();
+    let markExportStarted!: () => void;
+    const exportStarted = new Promise<void>((resolve) => {
+      markExportStarted = resolve;
+    });
+    let exportSignal: AbortSignal | undefined;
+    const exporter: TracingExporter = {
+      export: async (_items, signal) => {
+        exportSignal = signal;
+        markExportStarted();
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      },
+    };
+    const processor = new BatchTraceProcessor(exporter, {
+      maxQueueSize: 10,
+      maxBatchSize: 100,
+      exportTriggerRatio: 0.1,
+      scheduleDelay: 10000,
+    });
+
+    try {
+      await processor.onTraceStart(new Trace({ name: 'queued' }));
+      const activeExport = processor.onTraceStart(
+        new Trace({ name: 'trigger-export' }),
+      );
+      await exportStarted;
+
+      const flushPromise = processor.forceFlush();
+      const shutdownPromise = processor.shutdown(1);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(exportSignal?.aborted).toBe(true);
+      await Promise.all([activeExport, flushPromise, shutdownPromise]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
