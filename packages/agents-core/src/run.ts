@@ -85,6 +85,9 @@ import {
 import {
   acquireResumedSessionWriteOperation,
   createSessionPersistenceTracker,
+  getSessionCompactionState,
+  bindSessionCompactionState,
+  type SessionCompactionState,
   captureSessionHistoryTransactionInputItems,
   markSessionHistoryTransactionInputPersisted,
   prepareSessionHistoryTransactionsForRun,
@@ -817,6 +820,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
+    const sessionCompaction = getSessionCompactionState(
+      session,
+      input instanceof RunState ? input : undefined,
+    );
     const resumedState = resumingFromState
       ? (input as RunState<TContext, TAgent>)
       : undefined;
@@ -885,6 +892,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const sessionPersistence = createSessionPersistenceTracker({
         session,
         runContext,
+        compactionState: sessionCompaction,
         hasCallModelInputFilter,
         persistInput: saveStreamInputToSession,
         resumingFromState,
@@ -908,6 +916,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             reasoningItemIdPolicy,
           },
           runContext,
+          sessionCompaction,
         );
         if (serverManagesConversation && session) {
           // When the server manages memory we only persist the new turn inputs locally so the
@@ -956,6 +965,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             },
             effectiveInvocationSpanParent,
             pendingSessionWriteReconciled,
+            sessionCompaction,
           );
           if (releaseResumedSessionWriteOperation) {
             releaseResumedSessionWriteOperationOnReturn = false;
@@ -996,6 +1006,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               }
             : undefined,
           pendingSessionWriteReconciled,
+          sessionCompaction,
         );
         return runResult;
       };
@@ -1230,6 +1241,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       options?: SessionPersistenceOptions,
     ) => Promise<void>,
     pendingSessionWriteReconciled = false,
+    sessionCompaction?: SessionCompactionState,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -1246,6 +1258,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ? DEFAULT_MAX_TURNS
               : options.maxTurns,
           );
+      bindSessionCompactionState(state, sessionCompaction);
       this.#validateModelTimeoutForAgent(state._currentAgent);
       if (isResumedState) {
         state._agentToolInvocation = undefined;
@@ -3479,6 +3492,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
     invocationSpanParent?: Span<any> | Trace,
     pendingSessionWriteReconciled = false,
+    sessionCompaction?: SessionCompactionState,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -3496,6 +3510,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ? DEFAULT_MAX_TURNS
               : options.maxTurns,
           );
+      bindSessionCompactionState(state, sessionCompaction);
       this.#validateModelTimeoutForAgent(state._currentAgent);
       if (isResumedState) {
         state._agentToolInvocation = undefined;
