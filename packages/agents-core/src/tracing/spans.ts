@@ -1,4 +1,4 @@
-import logger from '../logger';
+import logger, { logModelAndToolActionError } from '../logger';
 import { TracingProcessor } from './processor';
 import {
   generateSpanId,
@@ -235,7 +235,13 @@ export class Span<TData extends SpanData> {
     }
 
     this.#startedAt = timeIso();
-    this.#processor.onSpanStart(this);
+    void this.#processor.onSpanStart(this).catch((error) => {
+      logModelAndToolActionError(
+        logger,
+        'Tracing processor failed during span start',
+        error,
+      );
+    });
   }
 
   end() {
@@ -249,7 +255,13 @@ export class Span<TData extends SpanData> {
     }
 
     this.#endedAt = timeIso();
-    this.#processor.onSpanEnd(this);
+    void this.#processor.onSpanEnd(this).catch((error) => {
+      logModelAndToolActionError(
+        logger,
+        'Tracing processor failed during span end',
+        error,
+      );
+    });
   }
 
   setError(error: SpanError) {
