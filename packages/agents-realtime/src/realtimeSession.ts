@@ -1675,8 +1675,8 @@ export class RealtimeSession<
         };
         itemId = typeof lastItem?.id === 'string' ? lastItem.id : '';
       }
-      this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
-      this.#currentAgent.emit('agent_end', this.#context, textOutput);
+      this.emit('agent_end', this.#context, sourceAgent, textOutput);
+      sourceAgent.emit('agent_end', this.#context, textOutput);
 
       this.#scheduleOutputGuardrails(
         textOutput,
