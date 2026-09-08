@@ -802,6 +802,14 @@ function describeSelectedObjectProperties(checker, symbol, policies) {
 
 function compareObjectProperties(baseline, candidate, location) {
   const errors = [];
+  const baselineKeys = new Set(baseline.map(objectPropertyKey));
+  for (const current of candidate) {
+    if (!current.optional && !baselineKeys.has(objectPropertyKey(current))) {
+      errors.push(
+        `${location}.${objectPropertyKey(current)} added required selected object property`,
+      );
+    }
+  }
   for (const previous of baseline) {
     const current = candidate.find(
       (entry) => objectPropertyKey(entry) === objectPropertyKey(previous),

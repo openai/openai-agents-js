@@ -1779,6 +1779,73 @@ webSearchTool({ imageSettings: settings });`,
       );
     });
 
+    test('rejects required outer additions against an absent baseline despite an edited policy', async () => {
+      const checkCalls = async (root, accepted) => {
+        const consumer = path.join(root, 'consumer.ts');
+        await writeFile(
+          consumer,
+          `import { webSearchTool as direct } from './agents-openai/dist/index';
+import { webSearchTool as bundled } from './agents/dist/index';
+direct({});
+bundled({});`,
+        );
+        const program = ts.createProgram([consumer], {
+          strict: true,
+          noEmit: true,
+          skipLibCheck: true,
+          types: [],
+        });
+        expect(
+          ts
+            .getPreEmitDiagnostics(program)
+            .map((diagnostic) => diagnostic.code),
+        ).toEqual(accepted ? [] : [2345, 2345]);
+      };
+      let baseline;
+      await withObjectFixture(
+        'export declare function webSearchTool(options?: { filters?: unknown }): unknown;',
+        async ({ inspect, root }) => {
+          await checkCalls(root, true);
+          baseline = await inspect();
+        },
+      );
+      for (const optional of [true, false]) {
+        const policies = imagePolicies.map((policy) => ({
+          ...policy,
+          optional,
+        }));
+        await withObjectFixture(
+          `export declare function webSearchTool(options?: { imageSettings${optional ? '?' : ''}: { ${imageFields} } }): unknown;`,
+          async ({ inspect, root, packages, contract }) => {
+            await checkCalls(root, optional);
+            for (const mode of ['source', 'dist']) {
+              const candidate = await inspect(policies, mode);
+              expect(
+                validateSelectedPublicObjectProperties(candidate, policies),
+              ).toEqual([]);
+              const errors = comparePackageSets(
+                { ...contract, selectedPublicObjectProperties: policies },
+                baseline,
+                packages,
+                candidate,
+                mode === 'dist',
+              );
+              if (optional) {
+                expect(errors).toEqual([]);
+              } else {
+                for (const policy of policies) {
+                  expect(errors.join('\n')).toContain(policy.package);
+                }
+                expect(errors.join('\n')).toContain(
+                  'parameter[0].imageSettings added required selected object property',
+                );
+              }
+            }
+          },
+        );
+      }
+    });
+
     test('accepts an absent old baseline and rejects newly required released fields', async () => {
       const old = await inspectObjects(
         'export declare function webSearchTool(options?: { filters?: unknown }): unknown;',
