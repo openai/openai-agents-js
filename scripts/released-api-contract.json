@@ -295,5 +295,53 @@
       "export": "OutputGuardrailBlockedMessageFormatter",
       "kind": "callable"
     }
+  ],
+  "selectedPublicObjectProperties": [
+    {
+      "package": "@openai/agents-openai",
+      "subpath": ".",
+      "export": "webSearchTool",
+      "parameter": 0,
+      "property": "imageSettings",
+      "optional": true,
+      "readonly": false,
+      "fields": [
+        {
+          "name": "maxResults",
+          "type": "number",
+          "optional": true,
+          "readonly": false
+        },
+        {
+          "name": "caption",
+          "type": "boolean",
+          "optional": true,
+          "readonly": false
+        }
+      ]
+    },
+    {
+      "package": "@openai/agents",
+      "subpath": ".",
+      "export": "webSearchTool",
+      "parameter": 0,
+      "property": "imageSettings",
+      "optional": true,
+      "readonly": false,
+      "fields": [
+        {
+          "name": "maxResults",
+          "type": "number",
+          "optional": true,
+          "readonly": false
+        },
+        {
+          "name": "caption",
+          "type": "boolean",
+          "optional": true,
+          "readonly": false
+        }
+      ]
+    }
   ]
 }

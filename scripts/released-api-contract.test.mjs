@@ -1,12 +1,29 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+import * as contractSurface from './released-api-contract-surface.mjs';
+import * as contractExecution from './released-api-contract-execution.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  writeFile,
+  rm,
+  readFile,
+} from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 import process from 'node:process';
+import console from 'node:console';
 import { URL, fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 
 import {
+  PUBLIC_PACKAGES,
+  inspectPackageSet,
+  comparePackageSets,
+  normalizeSelectedPublicObjectProperties,
+  validateSelectedPublicObjectProperties,
   compareConditionTrees,
   compareOptionalPeers,
   compareResolvedConditionSurfaces,
@@ -1248,12 +1265,18 @@ type Combined = Imported & { value: string };`,
   test('preserves selection policies during promotion', () => {
     const selectedPublicProperties = [{ export: 'Client' }];
     const selectedPublicTypeAliases = [{ export: 'Formatter' }];
+    const selectedPublicObjectProperties = [{ export: 'webSearchTool' }];
     expect(
       preservedSelectionPolicies({
         selectedPublicProperties,
         selectedPublicTypeAliases,
+        selectedPublicObjectProperties,
       }),
-    ).toEqual({ selectedPublicProperties, selectedPublicTypeAliases });
+    ).toEqual({
+      selectedPublicProperties,
+      selectedPublicTypeAliases,
+      selectedPublicObjectProperties,
+    });
   });
 
   test('rejects missing runtime and convenience bindings', () => {
@@ -1339,4 +1362,594 @@ type Combined = Imported & { value: string };`,
     ).rejects.toThrow('promotion validation failed');
     expect(operationCleaned).toEqual(['baseline', 'released']);
   });
+});
+
+const imageObjectPolicy = {
+  package: '@openai/agents-openai',
+  subpath: '.',
+  export: 'webSearchTool',
+  parameter: 0,
+  property: 'imageSettings',
+  optional: true,
+  readonly: false,
+  fields: [
+    { name: 'maxResults', type: 'number', optional: true, readonly: false },
+    { name: 'caption', type: 'boolean', optional: true, readonly: false },
+  ],
+};
+const imagePolicies = [
+  imageObjectPolicy,
+  { ...imageObjectPolicy, package: '@openai/agents' },
+];
+const imageFields = 'maxResults?: number; caption?: boolean;';
+function webSearchDeclaration(fields = imageFields, outer = 'imageSettings?') {
+  return `type WebSearchTool = { type: 'web_search'; ${outer}: { ${fields} }; filters?: { arbitrary?: Date } };
+  export declare function webSearchTool(options?: Partial<Omit<WebSearchTool, 'type'>>): unknown;`;
+}
+
+// Public entrypoint fixtures exercise compiler utility-type resolution and re-exports without builds.
+async function withObjectFixture(source, callback, browserSource = source) {
+  const root = await mkdtemp(path.join(tmpdir(), 'agents-selected-object-'));
+  const packages = {};
+  try {
+    for (const [name, directory] of PUBLIC_PACKAGES) {
+      const packageRoot = path.join(root, directory);
+      const entries = {};
+      const exportNode = {
+        types: './dist/index.d.ts',
+        import: './dist/index.mjs',
+        require: './dist/index.js',
+      };
+      for (const mode of ['src', 'dist']) {
+        const suffix = mode === 'src' ? '.ts' : '.d.ts';
+        const dir = path.join(packageRoot, mode);
+        await mkdir(dir, { recursive: true });
+        const entryText =
+          name === '@openai/agents-openai'
+            ? "export { webSearchTool } from './tools';"
+            : name === '@openai/agents'
+              ? `export * from '../../agents-openai/${mode}/index';`
+              : 'export {};';
+        // ES5 includes the real utility types used here; unrelated DOM/ESNext libraries slow fixture compilation.
+        await writeFile(
+          path.join(dir, `index${suffix}`),
+          `/// <reference no-default-lib="true"/>\n/// <reference lib="es5"/>\n${entryText}`,
+        );
+        await writeFile(path.join(dir, `tools${suffix}`), source);
+        await writeFile(
+          path.join(dir, `browser${suffix}`),
+          name === '@openai/agents-openai' ? browserSource : entryText,
+        );
+      }
+      entries['.'] = {
+        exportNode,
+        declarations: ['types', 'browser.types'].map((condition) => ({
+          condition,
+          target:
+            condition === 'types' ? './dist/index.d.ts' : './dist/browser.d.ts',
+          entryFile: path.join(
+            packageRoot,
+            'dist',
+            condition === 'types' ? 'index.d.ts' : 'browser.d.ts',
+          ),
+        })),
+      };
+      packages[name] = {
+        packageRoot,
+        manifest: { exports: { '.': exportNode } },
+        entries,
+      };
+    }
+    const inspect = (policies = imagePolicies, mode = 'dist') =>
+      inspectPackageSet(
+        Object.fromEntries(
+          Object.entries(packages).map(([name, info]) => [
+            name,
+            {
+              ...info,
+              entries: {
+                '.': {
+                  ...info.entries['.'],
+                  declarations: info.entries['.'].declarations.map((entry) => ({
+                    ...entry,
+                    entryFile:
+                      mode === 'source'
+                        ? entry.entryFile
+                            .replace('/dist/', '/src/')
+                            .replace(/\.d\.ts$/, '.ts')
+                        : entry.entryFile,
+                  })),
+                },
+              },
+            },
+          ]),
+        ),
+        mode,
+        [],
+        policies,
+      );
+    const contract = {
+      packages: Object.fromEntries(
+        Object.entries(packages).map(([name, info]) => [
+          name,
+          {
+            exports: info.manifest.exports,
+            optionalPeers: [],
+          },
+        ]),
+      ),
+      selectedPublicObjectProperties: imagePolicies,
+    };
+    await callback({ inspect, packages, contract, root });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function inspectObjects(
+  source = webSearchDeclaration(),
+  policies = imagePolicies,
+) {
+  let surfaces;
+  await withObjectFixture(source, async ({ inspect }) => {
+    surfaces = await inspect(policies);
+  });
+  return surfaces;
+}
+
+// Compiler fixtures also run alongside the full repository verification stack.
+describe(
+  'selected public object property contracts',
+  { timeout: 15_000 },
+  () => {
+    test('extracts the complete public argument through utility types and convenience exports', async () => {
+      await withObjectFixture(webSearchDeclaration(), async ({ inspect }) => {
+        for (const mode of ['source', 'dist']) {
+          const surfaces = await inspect(imagePolicies, mode);
+          expect(
+            validateSelectedPublicObjectProperties(surfaces, imagePolicies),
+          ).toEqual([]);
+          for (const policy of imagePolicies) {
+            expect(
+              surfaces[policy.package]['.'].types[0].objectProperties,
+            ).toEqual([
+              {
+                parameter: 0,
+                property: 'imageSettings',
+                optional: true,
+                readonly: false,
+                fields: [
+                  imageObjectPolicy.fields[1],
+                  imageObjectPolicy.fields[0],
+                ],
+              },
+            ]);
+          }
+        }
+      });
+    });
+
+    test('requires complete policy for a fresh selection, including optional additions', async () => {
+      const incomplete = [
+        { ...imageObjectPolicy, fields: [imageObjectPolicy.fields[0]] },
+      ];
+      const surfaces = await inspectObjects(undefined, incomplete);
+      expect(
+        validateSelectedPublicObjectProperties(surfaces, incomplete),
+      ).toContain(
+        '@openai/agents-openai.webSearchTool [types].parameter[0].imageSettings.caption is missing from the complete selected object policy',
+      );
+      const added = await inspectObjects(
+        webSearchDeclaration(`${imageFields} enabled?: boolean;`),
+      );
+      expect(
+        validateSelectedPublicObjectProperties(added, imagePolicies).join('\n'),
+      ).toContain(
+        'enabled is missing from the complete selected object policy',
+      );
+      const enrolled = imagePolicies.map((policy) => ({
+        ...policy,
+        fields: [
+          ...policy.fields,
+          { name: 'enabled', type: 'boolean', optional: true, readonly: false },
+        ],
+      }));
+      expect(validateSelectedPublicObjectProperties(added, enrolled)).toEqual(
+        [],
+      );
+    });
+
+    test.each([
+      ['maxResults?: number;', 'caption was removed'],
+      [
+        'maxResults: number; caption?: boolean;',
+        'maxResults changed optionality',
+      ],
+      ['maxResults?: string; caption?: boolean;', 'maxResults changed type'],
+      [
+        'readonly maxResults?: number; caption?: boolean;',
+        'maxResults changed readonly status',
+      ],
+    ])('rejects candidate drift: %s', async (fields, error) => {
+      const surfaces = await inspectObjects(webSearchDeclaration(fields));
+      expect(
+        validateSelectedPublicObjectProperties(surfaces, imagePolicies).join(
+          '\n',
+        ),
+      ).toContain(error);
+    });
+
+    test('preserves the outer property shape', async () => {
+      const source =
+        'export declare function webSearchTool(options?: { readonly imageSettings: { maxResults?: number; caption?: boolean } }): unknown;';
+      const errors = validateSelectedPublicObjectProperties(
+        await inspectObjects(source),
+        imagePolicies,
+      ).join('\n');
+      expect(errors).toContain('imageSettings changed optionality');
+      expect(errors).toContain('imageSettings changed readonly status');
+    });
+
+    test.each([false, true])(
+      'uses effective mapped readonly (original readonly: %s)',
+      async (originalReadonly) => {
+        const declaration = webSearchDeclaration(
+          imageFields,
+          originalReadonly ? 'readonly imageSettings?' : 'imageSettings?',
+        );
+        const baselinePolicies = imagePolicies.map((policy) => ({
+          ...policy,
+          readonly: originalReadonly,
+        }));
+        const baseline = await inspectObjects(declaration, baselinePolicies);
+        const changed =
+          'type Mutable<T> = { -readonly [K in keyof T]: T[K] };\n' +
+          declaration.replace(
+            "Partial<Omit<WebSearchTool, 'type'>>",
+            `${originalReadonly ? 'Mutable' : 'Readonly'}<Partial<Omit<WebSearchTool, 'type'>>>`,
+          );
+        await withObjectFixture(
+          changed,
+          async ({ inspect, root, packages, contract }) => {
+            const candidate = await inspect(baselinePolicies);
+            expect(
+              validateSelectedPublicObjectProperties(
+                candidate,
+                baselinePolicies,
+              ).join('\n'),
+            ).toContain('imageSettings changed readonly status');
+            expect(
+              comparePackageSets(
+                {
+                  ...contract,
+                  selectedPublicObjectProperties: baselinePolicies,
+                },
+                baseline,
+                packages,
+                candidate,
+                false,
+              ).join('\n'),
+            ).toContain('imageSettings changed readonly status');
+            // A consumer assignment is the independent oracle for the effective public property.
+            const consumer = path.join(root, 'consumer.ts');
+            await writeFile(
+              consumer,
+              `import { webSearchTool } from './agents-openai/dist/index';
+        declare let options: NonNullable<Parameters<typeof webSearchTool>[0]>;
+        options.imageSettings = {};`,
+            );
+            const program = ts.createProgram([consumer], {
+              strict: true,
+              noEmit: true,
+              skipLibCheck: true,
+              types: [],
+            });
+            const diagnostics = ts
+              .getPreEmitDiagnostics(program)
+              .filter((diagnostic) => diagnostic.file?.fileName === consumer);
+            expect(diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+              originalReadonly ? [] : [2540],
+            );
+          },
+        );
+      },
+    );
+
+    test('compares released fields independently of edited policy in shallow and deep modes', async () => {
+      const baseline = await inspectObjects();
+      const edited = imagePolicies.map((policy) => ({
+        ...policy,
+        fields: [policy.fields[0]],
+      }));
+      await withObjectFixture(
+        webSearchDeclaration('maxResults?: number;'),
+        async ({ inspect, contract, packages }) => {
+          const candidate = await inspect(edited);
+          expect(
+            validateSelectedPublicObjectProperties(candidate, edited),
+          ).toEqual([]);
+          for (const deep of [false, true]) {
+            expect(
+              comparePackageSets(
+                { ...contract, selectedPublicObjectProperties: edited },
+                baseline,
+                packages,
+                candidate,
+                deep,
+              ).join('\n'),
+            ).toContain('caption was removed');
+          }
+        },
+      );
+    });
+
+    test('accepts an absent old baseline and rejects newly required released fields', async () => {
+      const old = await inspectObjects(
+        'export declare function webSearchTool(options?: { filters?: unknown }): unknown;',
+      );
+      const released = await inspectObjects();
+      await withObjectFixture(
+        webSearchDeclaration(),
+        async ({ inspect, contract, packages }) => {
+          expect(
+            comparePackageSets(contract, old, packages, await inspect(), false),
+          ).toEqual([]);
+        },
+      );
+      const required = imagePolicies.map((policy) => ({
+        ...policy,
+        fields: [
+          ...policy.fields,
+          {
+            name: 'enabled',
+            type: 'boolean',
+            optional: false,
+            readonly: false,
+          },
+        ],
+      }));
+      await withObjectFixture(
+        webSearchDeclaration(`${imageFields} enabled: boolean;`),
+        async ({ inspect, contract, packages }) => {
+          expect(
+            comparePackageSets(
+              { ...contract, selectedPublicObjectProperties: required },
+              released,
+              packages,
+              await inspect(required),
+              true,
+            ).join('\n'),
+          ).toContain('enabled added required member');
+        },
+      );
+    });
+
+    test('validates every declaration condition and missing selections', async () => {
+      await withObjectFixture(
+        webSearchDeclaration(),
+        async ({ inspect }) => {
+          expect(
+            validateSelectedPublicObjectProperties(
+              await inspect(),
+              imagePolicies,
+            ).join('\n'),
+          ).toContain(
+            '[browser.types].parameter[0].imageSettings.caption was removed',
+          );
+        },
+        webSearchDeclaration('maxResults?: number;'),
+      );
+      for (const source of [
+        'export declare function webSearchTool(): unknown;',
+        'export declare function webSearchTool(options?: {}): unknown;',
+      ]) {
+        expect(
+          validateSelectedPublicObjectProperties(
+            await inspectObjects(source),
+            imagePolicies,
+          ).join('\n'),
+        ).toContain('selected object property is missing');
+      }
+      expect(
+        validateSelectedPublicObjectProperties({}, imagePolicies).join('\n'),
+      ).toContain('selected object property is missing');
+    });
+
+    test.each([
+      [
+        'export declare function webSearchTool<T>(options: T): unknown;',
+        'single non-generic',
+      ],
+      [
+        'export declare function webSearchTool(options: string): unknown; export declare function webSearchTool(options: number): unknown;',
+        'single non-generic',
+      ],
+      [
+        'export declare function webSearchTool(...options: unknown[]): unknown;',
+        'rest parameter',
+      ],
+      [
+        'export declare function webSearchTool(options: { imageSettings?: { caption?: boolean } | { maxResults?: number } }): unknown;',
+        'direct object literal',
+      ],
+      [
+        webSearchDeclaration('[name: string]: number;'),
+        'only property signatures',
+      ],
+      [webSearchDeclaration('caption(): boolean;'), 'only property signatures'],
+      [webSearchDeclaration('maxResults?: { value: number };'), 'primitive'],
+      [webSearchDeclaration('caption?: () => boolean;'), 'primitive'],
+      [webSearchDeclaration('caption?: boolean | null;'), 'primitive'],
+    ])(
+      'rejects unsupported selected declarations without recursive enrollment',
+      async (source, error) => {
+        await expect(inspectObjects(source)).rejects.toThrow(error);
+        const unselected = await inspectObjects(source, []);
+        expect(
+          unselected['@openai/agents-openai']['.'].types[0],
+        ).not.toHaveProperty('objectProperties');
+      },
+    );
+
+    test('validates policy schema and duplicate selections before acquisition', () => {
+      expect(normalizeSelectedPublicObjectProperties(imagePolicies)).toEqual(
+        imagePolicies,
+      );
+      expect(normalizeSelectedPublicObjectProperties()).toEqual([]);
+      for (const value of [
+        null,
+        {},
+        [{ ...imageObjectPolicy, fields: undefined }],
+        [{ ...imageObjectPolicy, parameter: -1 }],
+        [{ ...imageObjectPolicy, unknown: true }],
+      ]) {
+        expect(() => normalizeSelectedPublicObjectProperties(value)).toThrow();
+      }
+      expect(() =>
+        normalizeSelectedPublicObjectProperties([
+          imageObjectPolicy,
+          imageObjectPolicy,
+        ]),
+      ).toThrow('repeats');
+      expect(() =>
+        normalizeSelectedPublicObjectProperties([
+          {
+            ...imageObjectPolicy,
+            fields: [imageObjectPolicy.fields[0], imageObjectPolicy.fields[0]],
+          },
+        ]),
+      ).toThrow('exactly once');
+    });
+  },
+);
+
+// Replace acquisition and inspection; validate real policy against declaration fixtures and write only temporary artifacts.
+test('the CLI validates complete selections in package profiles and promotion before writing', async () => {
+  await withObjectFixture(
+    webSearchDeclaration(),
+    async ({ inspect, packages, contract, root }) => {
+      const surfaces = await inspect();
+      const brokenPolicy = imagePolicies.map((entry) => ({
+        ...entry,
+        fields: [entry.fields[0]],
+      }));
+      for (const [command, hasBaseline, invalid] of [
+        ['source', true, true],
+        ['dist', true, true],
+        ['package', true, true],
+        ['package', true, false],
+        ['promote', false, true],
+        ['promote', true, true],
+        ['promote', false, false],
+        ['promote', true, false],
+      ]) {
+        const input = {
+          ...contract,
+          packages: hasBaseline ? contract.packages : {},
+          selectedPublicObjectProperties: invalid
+            ? brokenPolicy
+            : imagePolicies,
+        };
+        const artifact = path.join(
+          root,
+          `contract-${command}-${hasBaseline}-${invalid}.json`,
+        );
+        const inspections = [];
+        const cleaned = vi.fn();
+        const loaded = {
+          roots: {},
+          packed: Object.fromEntries(
+            PUBLIC_PACKAGES.map(([name]) => [
+              name,
+              { integrity: 'fixture-integrity' },
+            ]),
+          ),
+          installRoot: '/fixture',
+          cleanup: cleaned,
+        };
+        const compare = async (policy) => ({
+          errors: contractSurface.comparePackageSets(
+            policy,
+            surfaces,
+            packages,
+            surfaces,
+            true,
+          ),
+          candidateSurfaces: surfaces,
+        });
+        vi.resetModules();
+        vi.doMock('./released-api-contract-surface.mjs', () => ({
+          ...contractSurface,
+          readJson: async () => input,
+          loadPackageSet: async () => packages,
+          inspectPackageSet: async (...args) => {
+            inspections.push(args);
+            return surfaces;
+          },
+          inspectAndComparePackageSets: compare,
+          assertAllTargetsExist: async () => [],
+        }));
+        vi.doMock('./released-api-contract-execution.mjs', () => ({
+          ...contractExecution,
+          materializePublished: async () => loaded,
+          installFromRegistry: async () => loaded,
+          installOptionalPeers: async () => {},
+          validateRuntime: async () => [],
+          validatePublicSpecifiers: async () => [],
+          execFile: async () => ({ stdout: 'fixture-commit' }),
+        }));
+        const savedArgv = process.argv;
+        const savedExit = process.exitCode;
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          process.argv = [
+            process.execPath,
+            fileURLToPath(
+              new URL('./released-api-contract.mjs', import.meta.url),
+            ),
+            command,
+            '--contract',
+            artifact,
+            '--version',
+            '1.0.0',
+          ];
+          await import('./released-api-contract.mjs');
+          await vi.waitFor(() =>
+            expect(log.mock.calls.length + error.mock.calls.length).toBe(1),
+          );
+          if (invalid) {
+            expect(error.mock.calls[0][0]).toContain(
+              'caption is missing from the complete selected object policy',
+            );
+            await expect(access(artifact)).rejects.toMatchObject({
+              code: 'ENOENT',
+            });
+          } else if (command === 'package') {
+            expect(error).not.toHaveBeenCalled();
+            expect(log.mock.calls[0][0]).toContain(
+              'no-extra and all-optionals',
+            );
+          } else {
+            expect(error).not.toHaveBeenCalled();
+            expect(
+              JSON.parse(await readFile(artifact, 'utf8'))
+                .selectedPublicObjectProperties,
+            ).toEqual(imagePolicies);
+          }
+          for (const args of inspections)
+            expect(args[3]).toEqual(input.selectedPublicObjectProperties);
+          expect(cleaned).toHaveBeenCalled();
+        } finally {
+          process.argv = savedArgv;
+          process.exitCode = savedExit;
+          log.mockRestore();
+          error.mockRestore();
+          vi.doUnmock('./released-api-contract-surface.mjs');
+          vi.doUnmock('./released-api-contract-execution.mjs');
+          vi.resetModules();
+        }
+      }
+    },
+  );
 });

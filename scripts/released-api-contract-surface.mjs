@@ -594,18 +594,257 @@ function isUnitLiteralType(type) {
   );
 }
 
+function objectPropertyKey(entry) {
+  return `parameter[${entry.parameter}].${entry.property}`;
+}
+
+export function normalizeSelectedPublicObjectProperties(value = []) {
+  if (!Array.isArray(value)) {
+    throw new Error('selectedPublicObjectProperties must be an array');
+  }
+  const identities = new Set();
+  const hasKeys = (entry, keys) =>
+    entry &&
+    typeof entry === 'object' &&
+    !Array.isArray(entry) &&
+    Object.keys(entry).sort().join('\0') === keys.sort().join('\0');
+  return value.map((entry) => {
+    if (
+      !hasKeys(entry, [
+        'package',
+        'subpath',
+        'export',
+        'parameter',
+        'property',
+        'optional',
+        'readonly',
+        'fields',
+      ]) ||
+      ['package', 'subpath', 'export', 'property'].some(
+        (key) => typeof entry[key] !== 'string' || !entry[key].trim(),
+      ) ||
+      !Number.isSafeInteger(entry.parameter) ||
+      entry.parameter < 0 ||
+      typeof entry.optional !== 'boolean' ||
+      typeof entry.readonly !== 'boolean' ||
+      !Array.isArray(entry.fields)
+    ) {
+      throw new Error(
+        'Invalid selectedPublicObjectProperties entry: expected package, subpath, export, parameter, property, optional, readonly, and complete fields',
+      );
+    }
+    const location = `${packageKey(entry.package, entry.subpath)}.${entry.export}.${objectPropertyKey(entry)}`;
+    if (identities.has(location)) {
+      throw new Error(`selectedPublicObjectProperties repeats ${location}`);
+    }
+    identities.add(location);
+    const names = new Set();
+    for (const field of entry.fields) {
+      if (
+        !hasKeys(field, ['name', 'type', 'optional', 'readonly']) ||
+        typeof field.name !== 'string' ||
+        !field.name.trim() ||
+        !['number', 'boolean', 'string'].includes(field.type) ||
+        typeof field.optional !== 'boolean' ||
+        typeof field.readonly !== 'boolean' ||
+        names.has(field.name)
+      ) {
+        throw new Error(
+          `${location} must list each primitive field exactly once with name, type, optional, and readonly`,
+        );
+      }
+      names.add(field.name);
+    }
+    return { ...entry, fields: entry.fields.map((field) => ({ ...field })) };
+  });
+}
+
+function describeSelectedObjectProperties(checker, symbol, policies) {
+  const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+  const signatures = checker.getSignaturesOfType(
+    checker.getTypeOfSymbolAtLocation(symbol, declaration),
+    ts.SignatureKind.Call,
+  );
+  if (signatures.length !== 1 || signatures[0].typeParameters?.length) {
+    throw new Error('requires a single non-generic function signature');
+  }
+  const descriptors = [];
+  for (const policy of policies) {
+    const location = objectPropertyKey(policy);
+    const parameter = signatures[0].parameters[policy.parameter];
+    // Missing selections in an older baseline are allowed; candidates are validated separately.
+    if (!parameter) continue;
+    const parameterDeclaration = parameter.valueDeclaration;
+    if (parameterDeclaration?.dotDotDotToken) {
+      throw new Error(`${location} must not select a rest parameter`);
+    }
+    const parameterType = checker.getNonNullableType(
+      checker.getTypeOfSymbolAtLocation(parameter, parameterDeclaration),
+    );
+    if (!(parameterType.flags & ts.TypeFlags.Object)) {
+      throw new Error(`${location} requires an object parameter`);
+    }
+    const property = checker.getPropertyOfType(parameterType, policy.property);
+    if (!property) continue;
+    const propertyDeclaration = property.declarations?.[0];
+    if (
+      !propertyDeclaration ||
+      !ts.isPropertySignature(propertyDeclaration) ||
+      !propertyDeclaration.type ||
+      !ts.isTypeLiteralNode(propertyDeclaration.type) ||
+      propertyDeclaration.type.members.some(
+        (member) => !ts.isPropertySignature(member),
+      )
+    ) {
+      throw new Error(
+        `${location} requires a direct object literal with only property signatures`,
+      );
+    }
+    const type = checker.getNonNullableType(
+      checker.getTypeOfSymbolAtLocation(property, propertyDeclaration),
+    );
+    const fields = describeMembers(checker, type).map((member) => {
+      const field = checker.getPropertyOfType(type, member.name);
+      const fieldDeclaration = field?.declarations?.[0];
+      if (
+        !field ||
+        !fieldDeclaration ||
+        !ts.isIdentifier(fieldDeclaration.name)
+      ) {
+        throw new Error(
+          `${location}.${member.name} requires an identifier property name`,
+        );
+      }
+      const fieldType = checker.getTypeOfSymbolAtLocation(
+        field,
+        fieldDeclaration,
+      );
+      const parts = fieldType.isUnion() ? fieldType.types : [fieldType];
+      const spelling = canonicalType(
+        checker,
+        member.optional ? checker.getNonNullableType(fieldType) : fieldType,
+        fieldDeclaration,
+      );
+      if (
+        parts.some((part) => part.flags & ts.TypeFlags.Null) ||
+        !['number', 'boolean', 'string'].includes(spelling)
+      ) {
+        throw new Error(
+          `${location}.${member.name} requires a primitive number, boolean, or string field`,
+        );
+      }
+      return {
+        name: member.name,
+        type: spelling,
+        optional: member.optional,
+        readonly: member.readonly,
+      };
+    });
+    descriptors.push({
+      parameter: policy.parameter,
+      property: policy.property,
+      optional: Boolean(property.flags & ts.SymbolFlags.Optional),
+      // Mapped parameters can add or remove readonly without changing the original declaration.
+      readonly:
+        ts.getCheckFlags(property) & ts.CheckFlags.Mapped
+          ? Boolean(ts.getCheckFlags(property) & ts.CheckFlags.Readonly)
+          : isReadonlyDeclarations(property.declarations),
+      fields,
+    });
+  }
+  return descriptors;
+}
+
+function compareObjectProperties(baseline, candidate, location) {
+  const errors = [];
+  for (const previous of baseline) {
+    const current = candidate.find(
+      (entry) => objectPropertyKey(entry) === objectPropertyKey(previous),
+    );
+    const propertyLocation = `${location}.${objectPropertyKey(previous)}`;
+    if (!current) {
+      errors.push(`${propertyLocation} selected object property is missing`);
+      continue;
+    }
+    errors.push(
+      ...compareMemberShape(
+        [{ ...previous, name: previous.property }],
+        [{ ...current, name: current.property }],
+        `${location}.parameter[${previous.parameter}]`,
+      ),
+    );
+    errors.push(
+      ...compareMemberShape(previous.fields, current.fields, propertyLocation, {
+        rejectRequiredAdditions: true,
+      }),
+    );
+    for (const field of previous.fields) {
+      const next = current.fields.find((entry) => entry.name === field.name);
+      if (next && next.type !== field.type) {
+        errors.push(`${propertyLocation}.${field.name} changed type`);
+      }
+    }
+  }
+  return errors;
+}
+
+export function validateSelectedPublicObjectProperties(surfaces, policies) {
+  const errors = [];
+  for (const policy of policies) {
+    const location = `${packageKey(policy.package, policy.subpath)}.${policy.export}`;
+    const variants = surfaces[policy.package]?.[policy.subpath];
+    if (!variants || Object.keys(variants).length === 0) {
+      errors.push(
+        `${location}.${objectPropertyKey(policy)} selected object property is missing`,
+      );
+      continue;
+    }
+    for (const [condition, records] of Object.entries(variants)) {
+      const exported = records.find((record) => record.name === policy.export);
+      const properties = exported?.objectProperties ?? [];
+      errors.push(
+        ...compareObjectProperties(
+          [policy],
+          properties,
+          `${location} [${condition}]`,
+        ),
+      );
+      const selected = properties.find(
+        (entry) => objectPropertyKey(entry) === objectPropertyKey(policy),
+      );
+      const names = new Set(policy.fields.map((field) => field.name));
+      for (const field of selected?.fields ?? []) {
+        if (!names.has(field.name)) {
+          errors.push(
+            `${location} [${condition}].${objectPropertyKey(policy)}.${field.name} is missing from the complete selected object policy`,
+          );
+        }
+      }
+    }
+  }
+  return errors;
+}
+
 export function describeOwnedSymbol(
   checker,
   symbol,
   kind,
-  { selectedTypeAliasKind } = {},
+  { selectedTypeAliasKind, selectedObjectProperties = [] } = {},
 ) {
   const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
   if (kind === 'enum') {
     return { enumMembers: enumMembers(checker, symbol) };
   }
   if (kind === 'function') {
-    return {};
+    return selectedObjectProperties.length === 0
+      ? {}
+      : {
+          objectProperties: describeSelectedObjectProperties(
+            checker,
+            symbol,
+            selectedObjectProperties,
+          ),
+        };
   }
   if (kind === 'class') {
     const valueType = checker.getTypeOfSymbolAtLocation(symbol, declaration);
@@ -706,6 +945,8 @@ export function preservedSelectionPolicies(contract) {
   return {
     selectedPublicProperties: contract.selectedPublicProperties ?? [],
     selectedPublicTypeAliases: contract.selectedPublicTypeAliases ?? [],
+    selectedPublicObjectProperties:
+      contract.selectedPublicObjectProperties ?? [],
   };
 }
 
@@ -773,6 +1014,7 @@ function inspectEntry(
   ownedRoots,
   selectedTypeAliases = new Map(),
   location,
+  selectedObjectProperties = [],
 ) {
   const checker = program.getTypeChecker();
   const sourceFile = program.getSourceFile(path.resolve(entryFile));
@@ -792,6 +1034,14 @@ function inspectEntry(
     }
     const sdkOwned = symbolOwnedByRoots(targetSymbol, ownedRoots);
     const kind = symbolKind(targetSymbol);
+    const objectPolicies = selectedObjectProperties.filter(
+      (entry) => entry.export === exportSymbol.getName(),
+    );
+    if (objectPolicies.length > 0 && (!sdkOwned || kind !== 'function')) {
+      throw new Error(
+        `${location}.${exportSymbol.getName()} must resolve to an SDK-owned function`,
+      );
+    }
     const selectedTypeAliasKind = selectedTypeAliases.get(
       exportSymbol.getName(),
     );
@@ -805,10 +1055,11 @@ function inspectEntry(
       try {
         descriptor = describeOwnedSymbol(checker, targetSymbol, kind, {
           selectedTypeAliasKind,
+          selectedObjectProperties: objectPolicies,
         });
       } catch (error) {
         throw new Error(
-          `${location}.${exportSymbol.getName()} selected ${selectedTypeAliasKind} type alias ${error.message}`,
+          `${location}.${exportSymbol.getName()} selected ${selectedTypeAliasKind ? `${selectedTypeAliasKind} type alias` : 'object property'} ${error.message}`,
         );
       }
     }
@@ -871,6 +1122,7 @@ export async function inspectPackageSet(
   packages,
   mode,
   selectedPublicTypeAliases = [],
+  selectedPublicObjectProperties = [],
 ) {
   const roots = Object.values(packages).map((item) => item.packageRoot);
   const entryFiles = Object.values(packages).flatMap((item) =>
@@ -904,6 +1156,9 @@ export async function inspectPackageSet(
             roots,
             selectedTypeAliases,
             packageKey(name, subpath),
+            selectedPublicObjectProperties.filter(
+              (policy) => policy.package === name && policy.subpath === subpath,
+            ),
           ),
         ]),
       );
@@ -1136,6 +1391,15 @@ export function compareOwnedDescriptors(baseline, candidate, location) {
       );
     }
   }
+  if (baseline.objectProperties) {
+    errors.push(
+      ...compareObjectProperties(
+        baseline.objectProperties,
+        candidate.objectProperties ?? [],
+        location,
+      ),
+    );
+  }
   if (baseline.namespaceMembers) {
     const candidateMembers = new Map(
       (candidate.namespaceMembers ?? []).map((member) => [member.name, member]),
@@ -1197,11 +1461,18 @@ export function compareSurfaceRecords(
       errors.push(
         ...compareOwnedDescriptors(baseline, candidate, bindingLocation),
       );
-    } else if (baseline.enumMembers || baseline.callableSignature) {
+    } else if (
+      baseline.enumMembers ||
+      baseline.callableSignature ||
+      baseline.objectProperties
+    ) {
       errors.push(
         ...compareOwnedDescriptors(
           {
             kind: baseline.kind,
+            ...(baseline.objectProperties
+              ? { objectProperties: baseline.objectProperties }
+              : {}),
             ...(baseline.enumMembers
               ? { enumMembers: baseline.enumMembers }
               : {}),
@@ -1343,6 +1614,10 @@ export function comparePackageSets(
       candidateSurfaces,
       contract.selectedPublicProperties ?? [],
     ),
+    ...validateSelectedPublicObjectProperties(
+      candidateSurfaces,
+      contract.selectedPublicObjectProperties ?? [],
+    ),
     ...validateSelectedPublicTypeAliases(
       candidateSurfaces,
       contract.selectedPublicTypeAliases ?? [],
@@ -1361,11 +1636,13 @@ export async function inspectAndComparePackageSets(
     baselinePackages,
     'dist',
     selectedPublicTypeAliases,
+    contract.selectedPublicObjectProperties ?? [],
   );
   const candidateSurfaces = await inspectPackageSet(
     candidatePackages,
     'dist',
     selectedPublicTypeAliases,
+    contract.selectedPublicObjectProperties ?? [],
   );
   return {
     errors: comparePackageSets(

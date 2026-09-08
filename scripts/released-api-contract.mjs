@@ -7,6 +7,8 @@ import process from 'node:process';
 import { pathToFileURL } from 'node:url';
 
 import {
+  normalizeSelectedPublicObjectProperties,
+  validateSelectedPublicObjectProperties,
   PUBLIC_PACKAGES,
   repoRoot,
   readJson,
@@ -94,12 +96,14 @@ async function validateSource(contract) {
       baselinePackages,
       'dist',
       selectedPublicTypeAliases,
+      contract.selectedPublicObjectProperties ?? [],
     );
     const packages = await loadPackageSet(workspaceRoots(), 'source');
     const surfaces = await inspectPackageSet(
       packages,
       'source',
       selectedPublicTypeAliases,
+      contract.selectedPublicObjectProperties ?? [],
     );
     const errors = comparePackageSets(
       contract,
@@ -154,8 +158,13 @@ async function validatePackage(contract, registry) {
         packages,
         'dist',
         contract.selectedPublicTypeAliases ?? [],
+        contract.selectedPublicObjectProperties ?? [],
       );
       const errors = [
+        ...validateSelectedPublicObjectProperties(
+          surfaces,
+          contract.selectedPublicObjectProperties ?? [],
+        ),
         ...(await validateRuntime(
           packages,
           surfaces,
@@ -253,6 +262,7 @@ async function promote(contract, version, contractPath) {
           packages,
           'dist',
           contract.selectedPublicTypeAliases ?? [],
+          contract.selectedPublicObjectProperties ?? [],
         );
       }
       errors.push(
@@ -278,6 +288,10 @@ async function promote(contract, version, contractPath) {
         )),
       );
       errors.push(
+        ...validateSelectedPublicObjectProperties(
+          surfaces,
+          contract.selectedPublicObjectProperties ?? [],
+        ),
         ...validateSelectedProperties(
           surfaces,
           contract.selectedPublicProperties ?? [],
@@ -346,6 +360,10 @@ async function main() {
     argumentValue(args, '--contract') ?? defaultContractPath,
   );
   const contract = await readJson(contractPath);
+  contract.selectedPublicObjectProperties =
+    normalizeSelectedPublicObjectProperties(
+      contract.selectedPublicObjectProperties,
+    );
   contract.selectedPublicTypeAliases = normalizeSelectedPublicTypeAliases(
     contract.selectedPublicTypeAliases,
   );
