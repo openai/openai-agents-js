@@ -1590,23 +1590,39 @@ describe(
       expect(errors).toContain('imageSettings changed readonly status');
     });
 
-    test.each([false, true])(
-      'uses effective mapped readonly (original readonly: %s)',
-      async (originalReadonly) => {
+    test.each([
+      ['outer', false],
+      ['outer', true],
+      ['fields', false],
+      ['fields', true],
+    ])(
+      'uses effective mapped readonly for %s (original readonly: %s)',
+      async (target, originalReadonly) => {
+        const nested = target === 'fields';
         const declaration = webSearchDeclaration(
-          imageFields,
-          originalReadonly ? 'readonly imageSettings?' : 'imageSettings?',
+          nested && originalReadonly
+            ? 'readonly maxResults?: number; readonly caption?: boolean;'
+            : imageFields,
+          !nested && originalReadonly
+            ? 'readonly imageSettings?'
+            : 'imageSettings?',
         );
         const baselinePolicies = imagePolicies.map((policy) => ({
           ...policy,
-          readonly: originalReadonly,
+          readonly: !nested && originalReadonly,
+          fields: policy.fields.map((field) => ({
+            ...field,
+            readonly: nested && originalReadonly,
+          })),
         }));
         const baseline = await inspectObjects(declaration, baselinePolicies);
+        const utility = originalReadonly ? 'Mutable' : 'Readonly';
         const changed =
           'type Mutable<T> = { -readonly [K in keyof T]: T[K] };\n' +
+          `type MapImageFields<T> = { [K in keyof T]: K extends 'imageSettings' ? ${utility}<NonNullable<T[K]>> : T[K] };\n` +
           declaration.replace(
             "Partial<Omit<WebSearchTool, 'type'>>",
-            `${originalReadonly ? 'Mutable' : 'Readonly'}<Partial<Omit<WebSearchTool, 'type'>>>`,
+            `${nested ? 'MapImageFields' : utility}<Partial<Omit<WebSearchTool, 'type'>>>`,
           );
         await withObjectFixture(
           changed,
@@ -1617,7 +1633,9 @@ describe(
                 candidate,
                 baselinePolicies,
               ).join('\n'),
-            ).toContain('imageSettings changed readonly status');
+            ).toContain(
+              `${nested ? 'caption' : 'imageSettings'} changed readonly status`,
+            );
             expect(
               comparePackageSets(
                 {
@@ -1629,14 +1647,16 @@ describe(
                 candidate,
                 false,
               ).join('\n'),
-            ).toContain('imageSettings changed readonly status');
+            ).toContain(
+              `${nested ? 'caption' : 'imageSettings'} changed readonly status`,
+            );
             // A consumer assignment is the independent oracle for the effective public property.
             const consumer = path.join(root, 'consumer.ts');
             await writeFile(
               consumer,
               `import { webSearchTool } from './agents-openai/dist/index';
         declare let options: NonNullable<Parameters<typeof webSearchTool>[0]>;
-        options.imageSettings = {};`,
+        ${nested ? 'options.imageSettings!.caption = true;' : 'options.imageSettings = {};'} `,
             );
             const program = ts.createProgram([consumer], {
               strict: true,
@@ -1795,7 +1815,15 @@ describe(
       expect(normalizeSelectedPublicObjectProperties(imagePolicies)).toEqual(
         imagePolicies,
       );
-      expect(normalizeSelectedPublicObjectProperties()).toEqual([]);
+      expect(() => normalizeSelectedPublicObjectProperties()).toThrow(
+        'missing registered selection',
+      );
+      expect(() =>
+        normalizeSelectedPublicObjectProperties([
+          ...imagePolicies,
+          { ...imageObjectPolicy, property: 'filters' },
+        ]),
+      ).toThrow('unregistered selection');
       for (const value of [
         null,
         {},
@@ -1953,3 +1981,47 @@ test('the CLI validates complete selections in package profiles and promotion be
     },
   );
 });
+
+// Actual CLI invocations must reject deleted selections before any package acquisition.
+test.each(['source', 'dist', 'package', 'promote'])(
+  '%s cannot disable a registered object selection by editing candidate policy',
+  async (command) => {
+    const root = await mkdtemp(
+      path.join(tmpdir(), 'agents-selection-deletion-'),
+    );
+    const contractPath = path.join(root, 'contract.json');
+    const env = { ...process.env };
+    delete env.OPENAI_API_KEY;
+    try {
+      for (const selections of [undefined, [], imagePolicies.slice(0, 1)]) {
+        // No package pins or registry are needed: policy rejection must happen first.
+        const content = JSON.stringify({
+          selectedPublicObjectProperties: selections,
+        });
+        await writeFile(contractPath, content);
+        await expect(
+          promisify(execFileCallback)(
+            process.execPath,
+            [
+              fileURLToPath(
+                new URL('./released-api-contract.mjs', import.meta.url),
+              ),
+              command,
+              '--contract',
+              contractPath,
+              '--version',
+              '1.0.0',
+            ],
+            { env },
+          ),
+        ).rejects.toMatchObject({
+          code: 1,
+          stderr: expect.stringContaining('missing registered selection'),
+        });
+        expect(await readFile(contractPath, 'utf8')).toBe(content);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);

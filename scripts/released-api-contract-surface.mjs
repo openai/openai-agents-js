@@ -598,6 +598,12 @@ function objectPropertyKey(entry) {
   return `parameter[${entry.parameter}].${entry.property}`;
 }
 
+// Keep enrolled identities independent of candidate policy edits, including entry deletion.
+const registeredObjectPropertyKeys = [
+  '@openai/agents-openai.webSearchTool.parameter[0].imageSettings',
+  '@openai/agents.webSearchTool.parameter[0].imageSettings',
+];
+
 export function normalizeSelectedPublicObjectProperties(value = []) {
   if (!Array.isArray(value)) {
     throw new Error('selectedPublicObjectProperties must be an array');
@@ -608,7 +614,7 @@ export function normalizeSelectedPublicObjectProperties(value = []) {
     typeof entry === 'object' &&
     !Array.isArray(entry) &&
     Object.keys(entry).sort().join('\0') === keys.sort().join('\0');
-  return value.map((entry) => {
+  const policies = value.map((entry) => {
     if (
       !hasKeys(entry, [
         'package',
@@ -657,6 +663,28 @@ export function normalizeSelectedPublicObjectProperties(value = []) {
     }
     return { ...entry, fields: entry.fields.map((field) => ({ ...field })) };
   });
+  for (const key of registeredObjectPropertyKeys) {
+    if (!identities.has(key)) {
+      throw new Error(
+        `Selected object policy is missing registered selection ${key}`,
+      );
+    }
+  }
+  for (const key of identities) {
+    if (!registeredObjectPropertyKeys.includes(key)) {
+      throw new Error(
+        `Selected object policy contains unregistered selection ${key}`,
+      );
+    }
+  }
+  return policies;
+}
+
+function isEffectivelyReadonly(symbol) {
+  // Mapped types can add or remove readonly without changing the original declaration.
+  return ts.getCheckFlags(symbol) & ts.CheckFlags.Mapped
+    ? Boolean(ts.getCheckFlags(symbol) & ts.CheckFlags.Readonly)
+    : isReadonlyDeclarations(symbol.declarations);
 }
 
 function describeSelectedObjectProperties(checker, symbol, policies) {
@@ -737,18 +765,14 @@ function describeSelectedObjectProperties(checker, symbol, policies) {
         name: member.name,
         type: spelling,
         optional: member.optional,
-        readonly: member.readonly,
+        readonly: isEffectivelyReadonly(field),
       };
     });
     descriptors.push({
       parameter: policy.parameter,
       property: policy.property,
       optional: Boolean(property.flags & ts.SymbolFlags.Optional),
-      // Mapped parameters can add or remove readonly without changing the original declaration.
-      readonly:
-        ts.getCheckFlags(property) & ts.CheckFlags.Mapped
-          ? Boolean(ts.getCheckFlags(property) & ts.CheckFlags.Readonly)
-          : isReadonlyDeclarations(property.declarations),
+      readonly: isEffectivelyReadonly(property),
       fields,
     });
   }
