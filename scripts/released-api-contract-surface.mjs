@@ -497,10 +497,8 @@ function describeMembers(checker, type, excludedNames = new Set()) {
     if (!isPublicDeclaration(declaration)) {
       continue;
     }
-    const memberType = checker.getTypeOfSymbolAtLocation(
-      member,
-      declaration ?? type.symbol?.valueDeclaration,
-    );
+    // Callability describes reading the property, including optional absence.
+    const memberType = checker.getTypeOfSymbol(member);
     const callable =
       checker.getSignaturesOfType(memberType, ts.SignatureKind.Call).length > 0;
     const memberName =
@@ -729,18 +727,14 @@ function describeSelectedObjectProperties(checker, symbol, policies) {
       );
     }
     const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
-    const propertyType = checker.getTypeOfSymbolAtLocation(
+    const type = checker.getTypeOfSymbolAtLocation(
       property,
       propertyDeclaration,
     );
     // Mapped utilities can change the value type while retaining the inline declaration.
-    const parts = (
-      propertyType.isUnion() ? propertyType.types : [propertyType]
-    ).filter((part) => !(optional && part.flags & ts.TypeFlags.Undefined));
-    if (parts.length !== 1 || !(parts[0].flags & ts.TypeFlags.Object)) {
+    if (!(type.flags & ts.TypeFlags.Object)) {
       throw new Error(`${location} requires a single non-nullable object type`);
     }
-    const type = parts[0];
     if (
       type.getCallSignatures().length ||
       type.getConstructSignatures().length ||
@@ -767,16 +761,8 @@ function describeSelectedObjectProperties(checker, symbol, policies) {
         fieldDeclaration,
       );
       const optional = Boolean(field.flags & ts.SymbolFlags.Optional);
-      const parts = fieldType.isUnion() ? fieldType.types : [fieldType];
-      const spelling = canonicalType(
-        checker,
-        optional ? checker.getNonNullableType(fieldType) : fieldType,
-        fieldDeclaration,
-      );
-      if (
-        parts.some((part) => part.flags & ts.TypeFlags.Null) ||
-        !['number', 'boolean', 'string'].includes(spelling)
-      ) {
+      const spelling = canonicalType(checker, fieldType, fieldDeclaration);
+      if (!['number', 'boolean', 'string'].includes(spelling)) {
         throw new Error(
           `${location}.${name} requires a primitive number, boolean, or string field`,
         );
@@ -1053,6 +1039,8 @@ function createProgram(rootNames, sourceMode = false) {
       module: ts.ModuleKind.ESNext,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
       strict: true,
+      // Keep omission distinct from an explicit undefined value in property types.
+      exactOptionalPropertyTypes: true,
       skipLibCheck: true,
       noEmit: true,
       baseUrl: repoRoot,

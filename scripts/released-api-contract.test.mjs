@@ -148,6 +148,7 @@ function describeDeclaration(sourceText, kind = 'type', symbolOptions) {
   const fileName = '/released-api-contract-literal.ts';
   const options = {
     strict: true,
+    exactOptionalPropertyTypes: true,
     target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.ESNext,
     noLib: true,
@@ -175,6 +176,17 @@ function describeDeclaration(sourceText, kind = 'type', symbolOptions) {
 }
 
 describe('released API contract comparisons', () => {
+  test('keeps optional callback callability based on the property read type', () => {
+    const descriptor = describeDeclaration(
+      'interface Formatter { optional?: () => void; required: () => void; }',
+      'interface',
+    );
+    expect(descriptor.members).toEqual([
+      { ...member('optional'), optional: true },
+      member('required', true),
+    ]);
+  });
+
   test('limits structural type aliases to direct SDK object declarations', () => {
     const source = ts.createSourceFile(
       'types.ts',
@@ -1710,6 +1722,68 @@ webSearchTool({ imageSettings: ${alternative} });`,
             );
           }
         });
+      },
+    );
+
+    test.each(['authored field', 'mapped field', 'mapped object'])(
+      'rejects explicit undefined in an optional %s',
+      async (target) => {
+        const source =
+          target === 'authored field'
+            ? webSearchDeclaration(
+                'maxResults?: number; caption?: boolean | undefined;',
+              )
+            : 'type IncludeUndefined<T> = { [K in keyof T]: T[K] | undefined };\n' +
+              "type MapFields<T> = { [K in keyof T]: K extends 'imageSettings' ? IncludeUndefined<NonNullable<T[K]>> : T[K] };\n" +
+              webSearchDeclaration().replace(
+                "Partial<Omit<WebSearchTool, 'type'>>",
+                `${target === 'mapped field' ? 'MapFields' : 'IncludeUndefined'}<Partial<Omit<WebSearchTool, 'type'>>>`,
+              );
+        const value =
+          target === 'mapped object' ? 'undefined' : '{ caption: undefined }';
+        // Exact-optional consumers accept this value only when undefined was explicitly included.
+        for (const [declaration, accepted] of [
+          [webSearchDeclaration(), false],
+          [source, true],
+        ]) {
+          await withObjectFixture(declaration, async ({ inspect, root }) => {
+            const consumer = path.join(root, 'consumer.ts');
+            await writeFile(
+              consumer,
+              `import { webSearchTool as direct } from './agents-openai/dist/index';
+import { webSearchTool as bundled } from './agents/dist/index';
+direct({ imageSettings: ${value} });
+bundled({ imageSettings: ${value} });`,
+            );
+            const program = ts.createProgram([consumer], {
+              strict: true,
+              exactOptionalPropertyTypes: true,
+              noEmit: true,
+              skipLibCheck: true,
+              types: [],
+            });
+            const diagnostics = ts.getPreEmitDiagnostics(program);
+            expect(diagnostics).toHaveLength(accepted ? 0 : 2);
+            for (const diagnostic of diagnostics)
+              expect(diagnostic.file?.fileName).toBe(consumer);
+            for (const mode of ['source', 'dist']) {
+              if (accepted) {
+                await expect(inspect(imagePolicies, mode)).rejects.toThrow(
+                  target === 'mapped object'
+                    ? 'single non-nullable object type'
+                    : 'primitive number, boolean, or string field',
+                );
+              } else {
+                expect(
+                  validateSelectedPublicObjectProperties(
+                    await inspect(imagePolicies, mode),
+                    imagePolicies,
+                  ),
+                ).toEqual([]);
+              }
+            }
+          });
+        }
       },
     );
 
