@@ -1231,12 +1231,29 @@ function convertTool<_TContext = unknown>(
           : undefined,
       };
     } else if (tool.providerData?.type === 'tool_search') {
+      // Client search requires an explicit schema even for the built-in loader.
+      const isClient = tool.providerData.execution === 'client';
       return {
         tool: {
           type: 'tool_search',
           execution: tool.providerData.execution,
-          description: tool.providerData.description,
-          parameters: tool.providerData.parameters,
+          description:
+            tool.providerData.description ??
+            (isClient
+              ? 'Load tools by namespace or tool name before calling them.'
+              : undefined),
+          parameters:
+            tool.providerData.parameters ??
+            (isClient
+              ? {
+                  type: 'object',
+                  properties: {
+                    paths: { type: 'array', items: { type: 'string' } },
+                  },
+                  required: ['paths'],
+                  additionalProperties: false,
+                }
+              : undefined),
         },
         include: undefined,
       };

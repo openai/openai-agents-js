@@ -4043,6 +4043,49 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('supplies the built-in client search schema required by Responses', async () => {
+    await withTrace('test', async () => {
+      const create = vi.fn().mockResolvedValue({
+        id: 'client-search-defaults',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create } } as unknown as OpenAI,
+        'gpt-5.4',
+      );
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'Load syntax',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search', execution: 'client' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      });
+      expect(create.mock.calls[0][0].tools).toEqual([
+        {
+          type: 'tool_search',
+          execution: 'client',
+          description:
+            'Load tools by namespace or tool name before calling them.',
+          parameters: {
+            type: 'object',
+            properties: { paths: { type: 'array', items: { type: 'string' } } },
+            required: ['paths'],
+            additionalProperties: false,
+          },
+        },
+      ]);
+    });
+  });
+
   it('keeps explicit client toolSearchTool even without deferred local tools', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {

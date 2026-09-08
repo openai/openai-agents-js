@@ -310,12 +310,14 @@ function recordMissingFunctionTool(
   items: RunItem[],
   toolsUsed: string[],
   functionToolsNotFound: ToolRunFunctionNotFound[],
+  reason?: ToolRunFunctionNotFound['reason'],
 ): void {
   toolsUsed.push(toolName);
   items.push(new RunToolCallItem(output, agent));
   functionToolsNotFound.push({
     toolCall: output,
     toolName,
+    ...(reason ? { reason } : {}),
   });
 }
 
@@ -633,14 +635,15 @@ async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
   return generatedOutputs;
 }
 
-function ensureDeferredFunctionToolLoaded(
+function checkDeferredFunctionToolLoaded(
   toolCall: protocol.FunctionCallItem,
   tool: FunctionTool<any>,
   loadedToolNames: Set<string>,
   agent: Agent<any, any>,
-): void {
+  behavior: ToolNotFoundBehavior,
+): boolean {
   if (tool.deferLoading !== true) {
-    return;
+    return true;
   }
 
   const explicitNamespace = getFunctionToolNamespace(tool);
@@ -651,7 +654,11 @@ function ensureDeferredFunctionToolLoaded(
       loadedToolNames.has(tool.name));
 
   if (isLoaded) {
-    return;
+    return true;
+  }
+
+  if (behavior === 'return_error_to_model') {
+    return false;
   }
 
   const toolName = qualifiedName ?? tool.name;
@@ -991,12 +998,26 @@ export function processModelResponse<TContext>(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
         agent,
       );
-      ensureDeferredFunctionToolLoaded(
-        output,
-        resolved.tool,
-        loadedDeferredToolState.loadedToolNames,
-        agent,
-      );
+      if (
+        !checkDeferredFunctionToolLoaded(
+          output,
+          resolved.tool,
+          loadedDeferredToolState.loadedToolNames,
+          agent,
+          toolNotFoundBehavior,
+        )
+      ) {
+        recordMissingFunctionTool(
+          normalizeFunctionToolCallForStorage(output, resolved.tool),
+          getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+          agent,
+          items,
+          toolsUsed,
+          functionToolsNotFound,
+          'not_loaded',
+        );
+        continue;
+      }
       const normalizedToolCall = normalizeFunctionToolCallForStorage(
         output,
         resolved.tool,
@@ -1387,12 +1408,26 @@ export async function processModelResponseAsync<TContext>(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
         agent,
       );
-      ensureDeferredFunctionToolLoaded(
-        output,
-        resolved.tool,
-        loadedDeferredToolState.loadedToolNames,
-        agent,
-      );
+      if (
+        !checkDeferredFunctionToolLoaded(
+          output,
+          resolved.tool,
+          loadedDeferredToolState.loadedToolNames,
+          agent,
+          toolNotFoundBehavior,
+        )
+      ) {
+        recordMissingFunctionTool(
+          normalizeFunctionToolCallForStorage(output, resolved.tool),
+          getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+          agent,
+          items,
+          toolsUsed,
+          functionToolsNotFound,
+          'not_loaded',
+        );
+        continue;
+      }
       const normalizedToolCall = normalizeFunctionToolCallForStorage(
         output,
         resolved.tool,

@@ -132,7 +132,10 @@ import {
   mapPendingInputAfterContextProcessing,
   selectPendingInputForAdmission,
 } from './runner/pendingInput';
-import { prepareAgentArtifacts } from './runner/modelPreparation';
+import {
+  prepareAgentArtifacts,
+  trackDeferredToolRecovery,
+} from './runner/modelPreparation';
 import {
   applyTurnResult,
   assertAcceptedResponseContinuationAuthority,
@@ -300,7 +303,7 @@ export type {
 } from './runner/outputGuardrailBlockedMessage';
 
 /**
- * SDK-side execution settings for local tool calls.
+ * Behavior for missing function tools and deferred function tools that are not loaded.
  */
 export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
 
@@ -393,10 +396,18 @@ export type RunConfig = {
   toolExecution?: ToolExecutionConfig;
 
   /**
-   * Controls unresolved function tool calls emitted by the model.
+   * Controls missing function tools and deferred function tools that are not loaded.
    *
    * - `raise_error` preserves the default behavior and raises a `ModelBehaviorError`.
    * - `return_error_to_model` returns a model-visible tool error and lets the run continue.
+   *   Unloaded deferred tools must be loaded through tool_search before they can execute.
+   *   Hosted search with the default query schema uses the built-in client loader on
+   *   the recovery turn when no deferred hosted MCP tools are configured, to return
+   *   definitions already known to the server. Recovery is model-driven;
+   *   instruct the model to retry errors rather than treat them as
+   *   successful function results. Recovery intent is local to the source Agent and
+   *   live RunState; a restored state needs a fresh unloaded call before switching
+   *   to client search.
    */
   toolNotFoundBehavior?: ToolNotFoundBehavior;
 
@@ -2081,6 +2092,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               processedResponse.newItems,
             );
             state._lastProcessedResponse = processedResponse;
+            trackDeferredToolRecovery(
+              state,
+              state._currentAgent,
+              processedResponse,
+            );
             const suppressedToolCalls = preflightToolInvocations(
               state._currentAgent,
               state,
@@ -3270,6 +3286,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             processedResponse.newItems,
           );
           result.state._lastProcessedResponse = processedResponse;
+          trackDeferredToolRecovery(
+            result.state,
+            currentAgent,
+            processedResponse,
+          );
           const suppressedToolCalls = preflightToolInvocations(
             currentAgent,
             result.state,
