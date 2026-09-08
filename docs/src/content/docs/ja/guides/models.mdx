@@ -35,6 +35,14 @@ canonicalHeadingIds:
     aliases:
       - 'プロバイダーオプションのリファレンス'
   - depth: 4
+    id: 'responses-terminal-states'
+    aliases:
+      - 'responses-の終端状態'
+  - depth: 4
+    id: 'chat-completions-truncation'
+    aliases:
+      - 'chat-completions-の切り詰め'
+  - depth: 4
     id: 'chat-completions-audio'
     aliases:
       - 'chat-completions-の音声'
@@ -58,6 +66,7 @@ canonicalHeadingIds:
     id: 'tool-execution-and-attribution'
     aliases:
       - 'ツールの実行と帰属情報'
+      - 'ツールの実行と帰属'
   - depth: 4
     id: 'output-and-streaming-behavior'
     aliases:
@@ -129,10 +138,10 @@ import retryExample from '../../../../../../examples/docs/models/retry.ts?raw';
 import hostedMultiAgentExample from '../../../../../../examples/docs/models/hostedMultiAgent.ts?raw';
 import gpt56RequestControlsExample from '../../../../../../examples/docs/models/gpt56RequestControls.ts?raw';
 
-すべてのエージェントは、最終的に LLM を呼び出します。SDK は、モデルを次の 2 つの軽量なインターフェースの背後に抽象化します。
+すべてのエージェントは、最終的に LLM を呼び出します。SDK は、次の 2 つの軽量なインターフェースを介してモデルを抽象化します。
 
-- [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 特定の API に対して _1 回_ のリクエストを実行する方法を認識します
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 人が理解しやすいモデルの **名前**（例：`'gpt-5.6-sol'`）を `Model` インスタンスに解決します
+- [`Model`](/openai-agents-js/openai/agents/interfaces/model) – 特定の API に対して _1 回_ のリクエストを行う方法を認識します
+- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – 人間が読めるモデルの **名前**（例：`'gpt-5.6-sol'`）を `Model` インスタンスに解決します
 
 日常的な作業では、通常はモデルの **名前** のみを扱い、必要に応じて `ModelSettings` を使用します。
 
@@ -146,7 +155,7 @@ import gpt56RequestControlsExample from '../../../../../../examples/docs/models/
 
 ### デフォルトモデル
 
-`Agent` の初期化時にモデルを指定しない場合、デフォルトモデルが使用されます。現在のデフォルトは [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna) であり、効率的かつ大量のエージェントワークロード向けに `reasoning.effort: "none"` と `text.verbosity: "low"` が設定されています。
+`Agent` の初期化時にモデルを指定しない場合、デフォルトモデルが使用されます。現在のデフォルトは、効率的で大量のエージェントワークロード向けに `reasoning.effort: "none"` と `text.verbosity: "low"` を設定した [`gpt-5.6-luna`](https://developers.openai.com/api/docs/models/gpt-5.6-luna) です。
 
 `gpt-5.6-sol` などの別のモデルへ切り替える場合、エージェントを設定する方法は 2 つあります。
 
@@ -157,7 +166,7 @@ export OPENAI_DEFAULT_MODEL=gpt-5.6-sol
 node my-awesome-agent.js
 ```
 
-次に、`Runner` インスタンスのデフォルトモデルを設定できます。エージェントにモデルを設定しなかった場合、この `Runner` のデフォルトモデルが使用されます。
+次に、`Runner` インスタンスのデフォルトモデルを設定できます。エージェントにモデルを設定しなかった場合は、この `Runner` のデフォルトモデルが使用されます。
 
 <Code
   lang="typescript"
@@ -167,7 +176,7 @@ node my-awesome-agent.js
 
 #### GPT-5.x モデル
 
-この方法で [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol) などの GPT-5.x モデルを使用すると、SDK はデフォルトの `modelSettings` を適用します。ほとんどのユースケースに最適な設定が選択されます。デフォルトモデルの推論労力を調整するには、独自の `modelSettings` を渡します。
+この方法で [`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol) などの GPT-5.x モデルを使用すると、SDK はデフォルトの `modelSettings` を適用します。ほとんどのユースケースで最適に機能する設定が使用されます。デフォルトモデルの推論負荷を調整するには、独自の `modelSettings` を渡します。
 
 <Code
   lang="typescript"
@@ -175,11 +184,11 @@ node my-awesome-agent.js
   title="GPT-5 のデフォルト設定のカスタマイズ"
 />
 
-レイテンシーとコストが重要な場合は、デフォルトの `gpt-5.6-luna` 設定から始めるか、別の GPT-5.x モデルで `reasoning.effort: "none"` を使用し、タスクでより慎重な推論が必要な場合にのみ推論労力を増やしてください。
+レイテンシーとコストが重要な場合は、デフォルトの `gpt-5.6-luna` 設定から始めるか、別の GPT-5.x モデルで `reasoning.effort: "none"` を使用し、タスクでより慎重な推論が必要な場合にのみ推論負荷を高めます。
 
 #### GPT-5 以外のモデル
 
-カスタム `modelSettings` を指定せずに GPT-5 以外のモデル名を渡すと、SDK はどのモデルとも互換性のある汎用の `modelSettings` に戻します。
+カスタム `modelSettings` を指定せずに GPT-5 以外のモデル名を渡すと、SDK はどのモデルとも互換性のある汎用 `modelSettings` に戻します。
 
 ---
 
@@ -191,8 +200,8 @@ node my-awesome-agent.js
 
 | API | 用途 | `setOpenAIAPI()` の呼び出し |
 | --- | --- | --- |
-| Chat Completions | 標準のチャットおよび関数呼び出し | `setOpenAIAPI('chat_completions')` |
-| Responses | ストリーミングを優先する新しい生成 API（ツール呼び出し、柔軟な出力） | `setOpenAIAPI('responses')`（デフォルト） |
+| Chat Completions | 標準的なチャットと関数呼び出し | `setOpenAIAPI('chat_completions')` |
+| Responses | ストリーミングを優先する新しい生成 API（ツール呼び出し、柔軟な出力） | `setOpenAIAPI('responses')` _（デフォルト）_ |
 
 #### 認証
 
@@ -202,32 +211,48 @@ node my-awesome-agent.js
   title="デフォルトの OpenAI キーの設定"
 />
 
-カスタムネットワーク設定が必要な場合は、`setDefaultOpenAIClient(client)` を使用して独自の `OpenAI` クライアントを組み込むこともできます。直接指定するクライアントでは、`openai` 7.2 以降を使用する必要があります。
+カスタムネットワーク設定が必要な場合は、`setDefaultOpenAIClient(client)` を介して独自の `OpenAI` クライアントを組み込むこともできます。直接指定するクライアントでは、`openai` 7.2 以降を使用する必要があります。
 
 #### プロバイダーオプションのリファレンス
 
-`OpenAIProvider` を直接インスタンス化する場合、次のオプションでクライアントの構築、エンドポイントの選択、機能の検証を制御します。
+`OpenAIProvider` を直接インスタンス化する場合、次のオプションによってクライアントの構築、エンドポイントの選択、機能の検証を制御します。
 
 | オプション | 目的 |
 | --- | --- |
-| `apiKey` | プロバイダーが独自の OpenAI クライアントを作成するときに使用する API キーです。デフォルトでは、SDK 全体の OpenAI キーが使用されます。 |
-| `baseURL` | OpenAI 互換エンドポイントの HTTP ベース URL です。`openAIClient` と組み合わせることはできません。 |
-| `websocketBaseURL` | Responses WebSocket トランスポートの WebSocket ベース URL です。`openAIClient` と組み合わせることはできません。 |
-| `openAIClient` | `openai` 7.2 以降の事前設定済みクライアントです。`apiKey`、`baseURL`、`websocketBaseURL` と組み合わせることはできません。 |
-| `organization` / `project` | プロバイダーが独自の OpenAI クライアントを作成するときに渡される組織とプロジェクトの値です。 |
-| `useResponses` | このプロバイダーによって解決される文字列のモデル名に、Responses API（`true`）または Chat Completions API（`false`）を選択します。デフォルトでは、プロセス全体の `setOpenAIAPI(...)` 設定が使用されます。 |
-| `useResponsesWebSocket` | このプロバイダーによって解決される Responses モデルに WebSocket トランスポートを使用します。デフォルトでは、プロセス全体の `setOpenAIResponsesTransport(...)` 設定が使用されます。 |
-| `cacheResponsesWebSocketModels` | 接続を再利用するため、WebSocket ベースの Responses モデルラッパーを再利用します。デフォルトは `true` です。シャットダウン時に `provider.close()` を呼び出して、キャッシュされたラッパーを閉じてください。 |
-| `responsesWebSocketOptions` | `pingIntervalMs` と `pingTimeoutMs` を使用して、クライアントのキープアライブを設定します。 |
-| `strictFeatureValidation` | Chat Completions モデルで、`previousResponseId`、`conversationId`、`prompt`、アシスタントメッセージのフェーズなど、Responses 専用機能に対して `UserError` を発生させます。デフォルトでは、これらの機能について警告し、無視します。 |
+| `apiKey` | プロバイダーが独自の OpenAI クライアントを作成するときに使用する API キー。デフォルトは SDK 全体の OpenAI キーです。 |
+| `baseURL` | OpenAI 互換エンドポイントの HTTP ベース URL。`openAIClient` と組み合わせることはできません。 |
+| `websocketBaseURL` | Responses WebSocket トランスポートの WebSocket ベース URL。`openAIClient` と組み合わせることはできません。 |
+| `openAIClient` | `openai` 7.2 以降で事前設定されたクライアント。`apiKey`、`baseURL`、`websocketBaseURL`、`organization`、`project` と組み合わせることはできません。 |
+| `organization` / `project` | プロバイダーが独自の OpenAI クライアントを作成するときに渡される組織とプロジェクトの値。`openAIClient` と組み合わせることはできません。 |
+| `useResponses` | このプロバイダーが解決する文字列のモデル名に対して、Responses API（`true`）または Chat Completions API（`false`）を選択します。デフォルトは、プロセス全体の `setOpenAIAPI(...)` 設定です。 |
+| `useResponsesWebSocket` | このプロバイダーが解決する Responses モデルに WebSocket トランスポートを使用します。デフォルトは、プロセス全体の `setOpenAIResponsesTransport(...)` 設定です。 |
+| `cacheResponsesWebSocketModels` | 接続を再利用するため、WebSocket ベースの Responses モデルラッパーを再利用します。デフォルトは `true` です。終了時に `provider.close()` を呼び出して、キャッシュされたラッパーを閉じます。 |
+| `responsesWebSocketOptions` | `pingIntervalMs` と `pingTimeoutMs` を使用してクライアントのキープアライブを設定します。 |
+| `strictFeatureValidation` | Chat Completions モデルの場合、`previousResponseId`、`conversationId`、`prompt`、アシスタントメッセージのフェーズなど、Responses 専用の機能に対して `UserError` を発生させます。デフォルトでは、これらの機能について警告し、無視します。 |
 
-Responses のアシスタントメッセージに `commentary` または `final_answer` の `phase` が含まれる場合、SDK はそれを履歴項目のトップレベルフィールドとして保持します。そのフェーズは、`OpenAIConversationsSession` およびシリアライズされた `RunState` を介したセッションの再生後も保持されます。Chat Completions には同等のフィールドがないため、デフォルトでは警告を表示してフェーズを破棄します。代わりにその変換を拒否するには、`strictFeatureValidation: true` を設定します。
+`apiKey`、`baseURL`、`organization`、`project` のいずれかが存在する場合、その `OpenAIProvider` は `setDefaultOpenAIClient(...)` で設定されたクライアントを再利用せず、プロバイダー固有の値を使用して独自の OpenAI クライアントを構築します。これらのオプションと `openAIClient` のいずれも存在しない場合、プロバイダーは SDK 全体のデフォルトクライアントを再利用できます。`websocketBaseURL` は Responses WebSocket の接続先を変更しますが、それだけでは HTTP クライアントを置き換えません。
+
+Responses のアシスタントメッセージに `commentary` または `final_answer` の `phase` が含まれる場合、SDK は履歴項目のトップレベルフィールドとして保持します。そのフェーズは、`OpenAIConversationsSession` とシリアライズされた `RunState` を介したセッションの再生後も保持されます。Chat Completions には同等のフィールドがないため、デフォルトでは警告を出してフェーズを破棄します。代わりにその変換を拒否するには、`strictFeatureValidation: true` を設定します。
+
+#### Responses の終端状態
+
+[Responses ストリーミングプロトコル](https://developers.openai.com/api/reference/resources/responses/streaming-events)では、型付きの終端イベントを使用します。SDK は、レスポンスペイロードを含む `response.completed` イベントを、成功したモデル実行結果として受け入れます。`failed` または `incomplete` のレスポンス、`response.failed`、`response.incomplete`、`response.error` イベント、`error` イベント、または必須のレスポンスペイロードを含まない `response.completed` イベントが発生すると、ストリーミング実行と非ストリーミング実行の両方で `ModelBehaviorError` が発生します。
+
+SDK は、失敗した終端状態を、すでに開始されている可能性があり、安全に再実行できないレスポンスとして扱います。非ストリーミング実行では、デフォルトの再試行方針によってリクエストが自動的に繰り返されることはありません。Runner が再試行するには、カスタム再試行ポリシーで安全でない再実行を明示的に承認する必要があります。ストリーミング実行では、カスタム再試行ポリシーが安全でない再実行を承認した場合でも、元の終端イベントを発行した後に Runner が再試行することはありません。失敗したレスポンスで使用量が報告された場合でも、Runner はその使用量をトレーシングと実行時の集計に含めます。ストリーミングされた実行結果では、`result.completed` が reject されても、使用量が `result.state.usage` に保持されます。
+
+失敗したレスポンスが成功した `ModelResponse` になることはなく、`rawResponses` やセッション履歴にも追加されず、そのレスポンスの出力項目も実行されません。ストリーミングのコンシューマーは、`result.completed` が reject される前に、元のモデルイベントストリームを介して元の終端イベントを確認できます。部分的な終端出力を、再実行可能な履歴や最終出力として扱わないでください。
+
+#### Chat Completions の切り詰め
+
+Chat Completions では、`finish_reason: 'length'` は、トークンまたはコンテキストの上限に達したため、プロバイダーが生成を停止したことを意味します。選択肢に有用なテキスト、拒否、音声、推論、または関数呼び出しが含まれている場合、SDK はその部分的なアシスタントペイロードを保持します。切り詰められた選択肢にこれらのペイロードが含まれていない場合、空の選択肢を成功したレスポンスとして扱う代わりに、ストリーミング実行と非ストリーミング実行の両方で `ModelBehaviorError` を発生させます。
+
+SDK は、この空の切り詰めを、すでに開始されている可能性があり、安全に再実行できないレスポンスとして扱います。ストリーミングのコンシューマーは、`result.completed` が reject される前に、すでに元のチャンクを受信している可能性があります。失敗した試行で使用量が報告された場合でも、Runner はその使用量をトレーシングと実行時の集計に含めます。
 
 #### Chat Completions の音声
 
-音声対応の Chat Completions モデルは、`modelSettings.providerData` を介して、エンドポイント固有の `modalities` および `audio` リクエストフィールドを受け入れます。音声対応モデルを使用し、サポートされているリクエスト値については、公式の [音声ガイド](https://developers.openai.com/api/docs/guides/audio#add-audio-to-your-existing-application) に従ってください。
+音声対応の Chat Completions モデルは、`modelSettings.providerData` を介してエンドポイント固有の `modalities` および `audio` リクエストフィールドを受け入れます。音声対応モデルを使用し、サポートされているリクエスト値については、公式の[音声とスピーチのガイド](https://developers.openai.com/api/docs/guides/audio#add-audio-to-your-existing-application)に従ってください。
 
-非ストリーミング呼び出しとストリーミング呼び出しのどちらでも、音声のみのアシスタント出力が保持されます。正規化された `ModelResponse.output` には、`audio` コンテンツパートが含まれます。そのメッセージが実行項目になると、`RunMessageOutputItem.rawItem` に同じパートが含まれます。その `audio` フィールドには base64 データが含まれ、`providerData` には `id`、`transcript`、`format`、`expires_at` などのプロバイダーメタデータが保持されます。同じ選択肢にテキストまたは拒否も含まれる場合、正規化されたアシスタントメッセージにはそのテキストまたは拒否が保持されます。非ストリーミング呼び出しでは、音声を含む完全なプロバイダーレスポンスを `result.rawResponses[].providerData` から引き続き利用できます。ストリーミング呼び出しでは、到着時に元のモデルストリームイベントから Chat Completions のソースチャンクを取得してください。再構築された音声はトレーシング用に保持されますが、`result.rawResponses` には保持されません。null の音声フラグメントは無視されます。不正な形式または複製不可能な音声デルタ、あるいは音声データなしで終了するストリームは、`ModelBehaviorError` で失敗します。`toTextStream()` はアシスタントのテキストのみを出力します。アプリケーションで低レイテンシーの双方向音声が必要な場合は、代わりに [音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents) を使用してください。
+非ストリーミング呼び出しとストリーミング呼び出しの両方で、音声のみのアシスタント出力が保持されます。正規化された `ModelResponse.output` には、`audio` コンテンツパートが含まれます。そのメッセージが実行項目になると、`RunMessageOutputItem.rawItem` に同じパートが含まれます。その `audio` フィールドには base64 データが含まれ、`providerData` には `id`、`transcript`、`format`、`expires_at` などのプロバイダーメタデータが保持されます。同じ選択肢にテキストまたは拒否も含まれる場合、正規化されたアシスタントメッセージはそのテキストまたは拒否を保持します。非ストリーミング呼び出しでは、音声を含む完全なプロバイダーレスポンスを `result.rawResponses[].providerData` で引き続き利用できます。ストリーミング呼び出しでは、到着時に元のモデルストリームイベントから Chat Completions のソースチャンクを使用します。再構築された音声はトレーシング用に保持されますが、`result.rawResponses` には含まれません。null の音声フラグメントは無視されます。不正な形式または複製不可能な音声差分、あるいは音声データなしで終了するストリームは、`ModelBehaviorError` で失敗します。`toTextStream()` はアシスタントのテキストのみを発行します。アプリケーションで低レイテンシーの双方向音声が必要な場合は、代わりに [Realtime API](/openai-agents-js/ja/guides/voice-agents) を使用してください。
 
 #### Responses WebSocket トランスポート
 
@@ -235,60 +260,60 @@ Responses API で OpenAI プロバイダーを使用する場合、デフォル�
 
 グローバルに有効化するには `setOpenAIResponsesTransport('websocket')` を使用し、プロバイダーごとに有効化するには `new OpenAIProvider({ useResponses: true, useResponsesWebSocket: true })` を使用します。
 
-WebSocket トランスポートを使用するためだけに、`withResponsesWebSocketSession(...)` やカスタム `OpenAIProvider` は必要ありません。実行またはリクエストごとの再接続が許容できる場合、`setOpenAIResponsesTransport('websocket')` を有効にした後も、既存の `run()` / `Runner.run()` の使用方法で引き続き動作します。
+WebSocket トランスポートを使用するだけであれば、`withResponsesWebSocketSession(...)` やカスタム `OpenAIProvider` は必要ありません。実行またはリクエストのたびに再接続しても問題ない場合は、`setOpenAIResponsesTransport('websocket')` を有効化した後も、既存の `run()` / `Runner.run()` の使用方法をそのまま利用できます。
 
-トランスポートの選択は、モデルの解決方法に従います。
+トランスポートの選択は、モデルの解決に従います。
 
-- `setOpenAIResponsesTransport('websocket')` は、Responses API の使用中に、後から OpenAI プロバイダーを通じて解決される文字列のモデル名にのみ影響します
-- 具象 `Model` インスタンスを `Agent` または `Runner` に渡した場合、そのインスタンスがそのまま使用されます。`OpenAIResponsesWSModel` は WebSocket、`OpenAIResponsesModel` は HTTP、`OpenAIChatCompletionsModel` は Chat Completions を引き続き使用します
-- 独自の `modelProvider` を指定した場合、そのプロバイダーがモデルの解決を制御します。グローバルセッターに依存せず、そのプロバイダーで WebSocket を有効にしてください
-- プロキシ、ゲートウェイ、またはその他の OpenAI 互換エンドポイントを経由する場合、対象は WebSocket の `/responses` エンドポイントをサポートしている必要があります。`websocketBaseURL` の明示的な設定が必要になる場合もあります
+- `setOpenAIResponsesTransport('websocket')` は、Responses API の使用中に OpenAI プロバイダーを介して後から解決される文字列のモデル名にのみ影響します
+- 具体的な `Model` インスタンスを `Agent` または `Runner` に渡した場合、そのインスタンスがそのまま使用されます。`OpenAIResponsesWSModel` は WebSocket、`OpenAIResponsesModel` は HTTP、`OpenAIChatCompletionsModel` は Chat Completions を引き続き使用します
+- 独自の `modelProvider` を指定した場合、そのプロバイダーがモデルの解決を制御します。グローバルセッターに依存するのではなく、そのプロバイダーで WebSocket を有効化してください
+- プロキシ、ゲートウェイ、またはその他の OpenAI 互換エンドポイントを経由する場合、接続先が WebSocket の `/responses` エンドポイントをサポートしている必要があります。また、`websocketBaseURL` の明示的な設定が必要になる場合もあります
 
 接続の再利用を最適化し、WebSocket プロバイダーのライフサイクルをより明示的に管理する場合にのみ、`withResponsesWebSocketSession(...)` またはカスタム `OpenAIProvider` / `Runner` を使用します。
 
-- `withResponsesWebSocketSession(...)`：コールバック後に自動クリーンアップされる、便利なスコープ付きライフサイクル
-- カスタム `OpenAIProvider` / `Runner`：独自のアプリケーションアーキテクチャにおける、シャットダウン時のクリーンアップを含む明示的なライフサイクル制御
+- `withResponsesWebSocketSession(...)`：コールバック後に自動的にクリーンアップされる、便利なスコープ付きライフサイクル
+- カスタム `OpenAIProvider` / `Runner`：独自のアプリケーションアーキテクチャ内での明示的なライフサイクル制御（終了時のクリーンアップを含む）
 
-名前に反して、`withResponsesWebSocketSession(...)` はトランスポートのライフサイクルを管理するヘルパーであり、[セッション](/openai-agents-js/ja/guides/sessions)で説明されているメモリの `Session` インターフェースとは関係ありません。
+名前とは異なり、`withResponsesWebSocketSession(...)` はトランスポートのライフサイクルヘルパーであり、[セッション](/openai-agents-js/ja/guides/sessions)で説明されているメモリの `Session` インターフェースとは関係ありません。
 
 WebSocket プロキシまたはゲートウェイを使用する場合は、`OpenAIProvider` で `websocketBaseURL` を設定するか、`OPENAI_WEBSOCKET_BASE_URL` を設定します。
 
-`responsesWebSocketOptions` では、`pingIntervalMs` によってクライアントの ping 間隔を設定します。ping を無効にするには、省略するか `null` に設定します。`pingTimeoutMs` では、ソケットを終了または閉じる前に pong を待機する時間を設定します。ping を有効にしたままハートビートのタイムアウトを無効にするには、省略するか `null` に設定します。キープアライブには、ping と pong のサポートを公開する WebSocket 実装が必要です。
+`responsesWebSocketOptions` では、`pingIntervalMs` によってクライアントの ping 間隔を設定します。ping を無効にするには、省略するか `null` に設定します。`pingTimeoutMs` では、ソケットを終了または閉じる前に pong を待つ時間を設定します。ping を有効にしたままハートビートのタイムアウトを無効にするには、省略するか `null` に設定します。キープアライブには、ping と pong のサポートを公開する WebSocket 実装が必要です。
 
-`OpenAIProvider` を自身でインスタンス化する場合、接続を再利用するため、WebSocket ベースの Responses モデルラッパーはデフォルトでキャッシュされることに注意してください。シャットダウン時に `await provider.close()` を呼び出し、キャッシュされた接続を解放してください。`withResponsesWebSocketSession(...)` は、主にこのライフサイクルを代わりに管理するために用意されています。WebSocket が有効なプロバイダーと Runner を作成してコールバックに渡し、その後は必ずプロバイダーを閉じます。一時的なプロバイダーには `providerOptions` を使用し、コールバックのスコープ内で使用する Runner のデフォルト設定には `runnerConfig` を使用します。
+`OpenAIProvider` を自分でインスタンス化する場合、接続を再利用するため、WebSocket ベースの Responses モデルラッパーがデフォルトでキャッシュされることに注意してください。終了時に `await provider.close()` を呼び出して、キャッシュされた接続を解放します。`withResponsesWebSocketSession(...)` は主に、このライフサイクルを管理するために用意されています。WebSocket 対応のプロバイダーと Runner を作成してコールバックへ渡し、その後は必ずプロバイダーを閉じます。一時的なプロバイダーには `providerOptions` を、コールバックのスコープ内で使用する Runner のデフォルト設定には `runnerConfig` を使用します。
 
-Responses WebSocket トランスポートを使用した完全なストリーミングと HITL の例については、[`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) を参照してください。
+Responses WebSocket トランスポートを使用したストリーミングと HITL の完全なコード例については、[`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) を参照してください。
 
 #### Responses 専用の遅延ツール読み込み
 
-`toolSearchTool()`、`toolNamespace()`、および `deferLoading: true` を設定した関数ツールまたはホスト型 MCP ツールには、OpenAI Responses API が必要です。Chat Completions プロバイダーは、名前空間付きまたは遅延読み込みの関数ツールを拒否し、AI SDK アダプターは Responses の遅延ツール読み込みフローをサポートしていません。ツール検索が必要な場合は、Responses モデルを直接使用してください。
+`toolSearchTool()`、`toolNamespace()`、および `deferLoading: true` を設定する関数ツールやリモート MCP サーバーツールには、OpenAI Responses API が必要です。Chat Completions プロバイダーは、名前空間化された関数ツールまたは遅延関数ツールを拒否し、AI SDK アダプターは Responses の遅延ツール読み込みフローをサポートしていません。ツール検索が必要な場合は、Responses モデルを直接使用してください。
 
-ツール検索は、Responses API でツール検索をサポートする GPT-5.6 Sol 以降のモデルリリースでのみサポートされます。
+ツール検索は、Responses API でツール検索をサポートする GPT-5.6 Sol 以降のモデルリリースでのみサポートされています。
 
-実行に遅延ツールが含まれる場合は、同じエージェントに `toolSearchTool()` を追加し、`modelSettings.toolChoice` を `'auto'` のままにします。モデルがそれらの定義を読み込むタイミングを判断する必要があるため、SDK では組み込みの `tool_search` ツールや遅延関数ツールを名前で強制指定できません。完全な設定については、[ツール](/openai-agents-js/ja/guides/tools#deferred-tool-loading-with-tool-search)および公式の [OpenAI ツール検索ガイド](https://developers.openai.com/api/docs/guides/tools-tool-search)を参照してください。
+実行に遅延ツールを含める場合は、同じエージェントに `toolSearchTool()` を追加し、`modelSettings.toolChoice` を `'auto'` のままにします。モデルがこれらの定義をいつ読み込むか判断する必要があるため、SDK では組み込みの `tool_search` ツールや遅延関数ツールを名前で強制的に指定できません。完全な設定については、[ツール](/openai-agents-js/ja/guides/tools#deferred-tool-loading-with-tool-search)と公式の [OpenAI ツール検索ガイド](https://developers.openai.com/api/docs/guides/tools-tool-search)を参照してください。
 
 ### ホスト型マルチエージェント（実験的）
 
 <Aside type="caution" title="実験的ベータ版">
-  ホスト型マルチエージェントは、ベータ版の Responses API 項目スキーマを使用し、
+  ホスト型マルチエージェントはベータ版の Responses API 項目スキーマを使用し、
   実験的な `@openai/agents-openai/experimental/hosted-multi-agent`
-  エクスポートからのみ利用できます。API および SDK
+  エクスポートからのみ利用できます。API と SDK
   のインターフェースは変更される可能性があります。
 </Aside>
 
-この例では両方のパッケージを直接インポートするため、プロバイダーパッケージと OpenAI クライアントを直接の依存関係としてインストールします。
+このコード例では両方のパッケージを直接インポートするため、プロバイダーパッケージと OpenAI クライアントを直接依存関係としてインストールします。
 
 ```bash
 npm install @openai/agents-openai openai
 ```
 
-ホスト型マルチエージェントを使用すると、GPT-5.6 モデルは Responses API を通じてサブエージェントのツリーを作成し、連携させることができます。これは、[ハンドオフ](/openai-agents-js/ja/guides/handoffs/)や agents-as-tools とは異なります。アプリケーションは、ホスト型サブエージェント用のローカル `Agent` オブジェクトを作成したり、その作業をスケジュールしたりしません。ホスト型のルートエージェントが作業を委任し、サービスがサブエージェントを連携させ、`/root` が最終回答をまとめます。ベータ API の動作とサポート対象モデルについては、公式の [マルチエージェントガイド](https://developers.openai.com/api/docs/guides/tools-multi-agent)を参照してください。
+ホスト型マルチエージェントを使用すると、GPT-5.6 モデルは Responses API を介してサブエージェントのツリーを作成し、連携させることができます。これは、[ハンドオフ](/openai-agents-js/ja/guides/handoffs/)や agents-as-tools とは異なります。アプリケーションは、ホスト型サブエージェント用のローカル `Agent` オブジェクトを作成したり、その作業をスケジュールしたりしません。ホスト型ルートエージェントが作業を委任し、サービスがサブエージェントを連携させ、`/root` が最終回答をまとめます。ベータ版 API の動作とサポート対象モデルについては、公式の[マルチエージェントガイド](https://developers.openai.com/api/docs/guides/tools-multi-agent)を参照してください。
 
 #### 実験的モデルの設定
 
-`OpenAIHostedMultiAgentModel` を明示的に構築し、SDK の `Agent` に渡します。モデルの構築自体がオプトインとなり、別の有効化フラグはありません。
+`OpenAIHostedMultiAgentModel` を明示的に構築し、SDK の `Agent` に渡します。モデルの構築自体がオプトインとなり、別途有効化フラグはありません。
 
-実験的モデルは、永続的な Responses WebSocket を使用します。ローカル関数の出力は `response.inject` を使用してアクティブなホスト型レスポンスに注入されるため、実行全体で同じモデルインスタンスを保持し、不要になったら閉じてください。
+実験的モデルは、永続的な Responses WebSocket を使用します。ローカル関数の出力は `response.inject` を使用してアクティブなホスト型レスポンスに挿入されるため、実行全体で同じモデルインスタンスを維持し、不要になったら閉じてください。
 
 <Code
   lang="typescript"
@@ -296,35 +321,35 @@ npm install @openai/agents-openai openai
   title="ホスト型マルチエージェントワークフローの実行"
 />
 
-ホスト型のコラボレーションレコードやサブエージェントメッセージなど、ストリーミングの可観測性については、[完全なコード例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/hosted-multi-agent-beta.ts)を参照してください。
+ホスト型コラボレーションレコードやサブエージェントメッセージを含むストリーミングの可観測性については、[完全なコード例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/hosted-multi-agent-beta.ts)を参照してください。
 
-サービスのデフォルト値（現在は 3）を使用するには、`maxConcurrentSubagents` を省略します。値を指定する場合は、正の整数である必要があります。
+サービスのデフォルト値（現在は 3）を維持するには、`maxConcurrentSubagents` を省略します。値を指定する場合は、正の整数である必要があります。
 
-#### ツールの実行と帰属情報
+#### ツールの実行と帰属
 
-すべてのホスト型エージェントは、リクエストのモデルを使用し、同じローカルツール定義を参照します。いずれかのホスト型エージェントが通常の `function_call` を生成すると、既存の Agents SDK Runner がアプリケーションツールを実行します。Responses API の呼び出し ID がルーティングトークンになります。SDK は、一致する `function_call_output` を、それを要求した呼び出し元のアクティブなホスト型レスポンスに注入します。
+すべてのホスト型エージェントはリクエストのモデルを使用し、同じローカルツール定義を参照します。いずれかのホスト型エージェントが通常の `function_call` を発行すると、既存の Agents SDK Runner がアプリケーションツールを実行します。Responses API の呼び出し ID がルーティングトークンとなります。SDK は、一致する `function_call_output` を、それをリクエストした呼び出し元のアクティブなホスト型レスポンスに挿入します。
 
 `getHostedAgentMetadata(details)` は、ツールコールバックの第 3 引数からホスト型エージェント名を読み取ります。このメタデータはログやアプリケーションの認可に役立ちますが、ルーティングは制御しません。関数の実行結果をエージェント名で振り分けず、呼び出し ID を保持して使用してください。
 
-ツール引数はサービスから WebSocket 経由で到着し、ツール出力はアクティブなホスト型レスポンスに注入されます。機密データポリシー、ツールの認可、承認チェックはアプリケーション側で維持してください。ツールに副作用がある場合、中断された継続処理によってその副作用が繰り返されないよう、呼び出し ID に基づいて冪等にしてください。
+ツール引数は WebSocket 経由でサービスから届き、ツール出力はアクティブなホスト型レスポンスに挿入されます。機密データに関するポリシー、ツールの認可、承認チェックはアプリケーション内で維持してください。ツールに副作用がある場合は、中断された継続処理によってその効果が繰り返されないよう、呼び出し ID に基づいて冪等にします。
 
 #### 出力とストリーミングの動作
 
-`phase` が `final_answer` である `/root` メッセージだけが通常のアシスタント出力となり、`finalOutput` に反映されます。Runner が関数呼び出しを実行できるように、関数呼び出しは通常の SDK ツール呼び出しとして維持されます。また、推論やホスト型ツール呼び出しなどの安定版 Responses 項目は、既存の SDK 表現を維持します。サブエージェントメッセージ、ルートのコメント、ホスト型のコラボレーションレコードはアクティブな WebSocket レスポンス上に残り、SDK の履歴には追加されません。
+`phase` が `final_answer` である `/root` メッセージだけが通常のアシスタント出力となり、`finalOutput` に反映されます。Runner が関数呼び出しを実行できるように、関数呼び出しは通常の SDK ツール呼び出しのまま維持されます。推論やホスト型ツール呼び出しなど、安定版の Responses 項目も既存の SDK 表現を維持します。サブエージェントメッセージ、ルートの解説、ホスト型コラボレーションレコードはアクティブな WebSocket レスポンスに残り、SDK の履歴には追加されません。
 
-元のストリーミングイベントは、ホスト型レコードやサブエージェントメッセージを含め、`raw_model_stream_event` を通じて引き続き利用できます。高レベルの項目ストリーミングでは、ベータ版専用のコラボレーションレコードを除外しながら、安定版 Responses 項目を維持します。高レベルのテキストストリーミングには、ルートの最終回答だけが含まれます。これにより、可観測性のために完全なホスト型イベントストリームを保持しながら、`RunState` とセッション履歴をプロバイダーに依存しない状態に保ちます。
+元のストリーミングイベントは、ホスト型レコードやサブエージェントメッセージを含め、`raw_model_stream_event` を介して引き続き利用できます。高レベルの項目ストリーミングは、ベータ版専用のコラボレーションレコードを除外しながら、安定版の Responses 項目を維持します。高レベルのテキストストリーミングには、ルートの最終回答のみが含まれます。これにより、完全なホスト型イベントストリームを可観測性のために保持しつつ、RunState とセッション履歴をプロバイダーに依存しない状態に保ちます。
 
-ストリーミング実行は、終端イベントまで取得してください。ストリームの利用側が途中で停止した場合、SDK は WebSocket を閉じ、アクティブなホスト型レスポンスを破棄します。後続の実行では、破棄されたレスポンスを再開せず、新しいホスト型レスポンスを開始します。
+ストリーミングされた実行は、終端イベントまで処理してください。ストリームのコンシューマーが途中で停止すると、SDK は WebSocket を閉じ、アクティブなホスト型レスポンスを破棄します。後続の実行では、破棄されたレスポンスを再開せず、新しいホスト型レスポンスを開始します。
 
 #### 現在の制限事項
 
-実験的な SDK モデルは、Responses WebSocket トランスポートのみをサポートします。ベータ版の Responses API は HTTP 経由のホスト型マルチエージェントもサポートしていますが、`OpenAIHostedMultiAgentModel` は 1 つの WebSocket を開いたままにすることで、SDK Runner が処理を続行する前に各ローカル関数の出力をアクティブなレスポンスへ注入できるようにします。
+実験的な SDK モデルは、Responses WebSocket トランスポートのみをサポートします。ベータ版 Responses API は HTTP 経由のホスト型マルチエージェントもサポートしますが、`OpenAIHostedMultiAgentModel` は 1 つの WebSocket を開いたままにするため、SDK Runner は処理を続行する前に、各ローカル関数の出力をアクティブなレスポンスへ挿入できます。
 
-進行中のホスト型レスポンスの継続状態は、`OpenAIHostedMultiAgentModel` インスタンスによって保持されます。モデルは、保留中の関数出力を注入する前に閉じた WebSocket へ再接続できますが、承認や中断されたツールは、同じモデルインスタンス、同じ WebSocket トランスポートヘッダー、および同じクエリを使用して再開する必要があります。モデルを再作成すると継続状態が失われます。また、1 つのモデルインスタンスが同時にサポートできるアクティブな実行は 1 つだけです。
+進行中のホスト型レスポンスの継続状態は、`OpenAIHostedMultiAgentModel` インスタンスによって保持されます。保留中の関数出力を挿入する前に、モデルは閉じられた WebSocket に再接続できますが、承認および中断されたツールは、同じモデルインスタンスと、同じ WebSocket トランスポートヘッダーおよびクエリを使用して再開する必要があります。モデルを再作成すると継続状態が失われます。また、1 つのモデルインスタンスが同時にサポートできるアクティブな実行は 1 つだけです。
 
-トランスポート障害を安全に再実行できるのは、リクエストフレームが送信されていないと SDK が認識している場合だけです。サーバーがフレームを受信した可能性がある場合、SDK はエラーを安全に再実行できないものとしてマークし、ホスト型ターンを自動的には繰り返しません。一般的な再試行ポリシーについては、[モデルの再試行](#model-retries)を参照してください。
+SDK がリクエストフレームを送信していないと認識できる場合にのみ、トランスポート障害を安全に再実行できます。サーバーがフレームを受信した可能性がある場合、SDK はエラーを安全に再実行できないものとしてマークし、ホスト型ターンを自動的には繰り返しません。一般的な再試行ポリシーについては、[モデルの再試行](#model-retries)を参照してください。
 
-このモデルを SDK のハンドオフ、`reasoning.summary`、または `max_tool_calls` と組み合わせないでください。これらの組み合わせは、リクエストが送信される前に失敗します。`modelSettings.contextManagement` で設定されたサーバー側の圧縮しきい値は引き続きサポートされますが、Responses 圧縮エンドポイントの明示的な呼び出しは、このモデルのライフサイクルの対象外です。安定版の `OpenAIResponsesModel` では、SDK のハンドオフと agents-as-tools を引き続き使用できます。
+このモデルを SDK のハンドオフ、`reasoning.summary`、`max_tool_calls` と組み合わせないでください。これらを組み合わせると、リクエストの送信前に失敗します。`modelSettings.contextManagement` で設定されたサーバー側のコンパクションしきい値は引き続きサポートされますが、Responses のコンパクションエンドポイントを明示的に呼び出す処理は、このモデルのライフサイクルの対象外です。安定版の `OpenAIResponsesModel` では、SDK のハンドオフと agents-as-tools を引き続き使用できます。
 
 ---
 
@@ -336,113 +361,117 @@ npm install @openai/agents-openai openai
 
 | フィールド | 型 | 注記 |
 | --- | --- | --- |
-| `temperature` | `number` | 創造性と決定性のバランスです。 |
-| `topP` | `number` | Nucleus sampling です。 |
-| `frequencyPenalty` | `number` | 繰り返されるトークンにペナルティーを与えます。 |
-| `presencePenalty` | `number` | 新しいトークンの生成を促します。 |
-| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | [ツール使用の強制](/openai-agents-js/ja/guides/agents#forcing-tool-use)を参照してください。OpenAI Responses では、`toolChoice: 'computer'` によって、利用可能な場合に GA 版の組み込みコンピューターツールを強制的に使用します。 |
-| `parallelToolCalls` | `boolean` | サポートされている場合に、関数の並列呼び出しを許可します。 |
-| `truncation` | `'auto' \| 'disabled'` | トークンの切り詰め方法です。 |
-| `maxTokens` | `number` | レスポンス内の最大トークン数です。 |
-| `timeoutMs` | `number` | モデルリクエストの各試行に対する、ミリ秒単位の協調的なタイムアウトです。有限で `0` より大きく、`2147483647` 以下である必要があります。 |
-| `store` | `boolean` | 取得または RAG ワークフローのためにレスポンスを永続化します。 |
-| `promptCacheRetention` | `'in-memory' \| '24h' \| null` | サポートされている場合に、従来の最大プロンプトキャッシュ保持ポリシーを制御します。これは `promptCacheOptions.ttl` とは独立しています。 |
+| `temperature` | `number` | 創造性と決定性のバランス |
+| `topP` | `number` | Nucleus sampling |
+| `frequencyPenalty` | `number` | 繰り返されるトークンへのペナルティ |
+| `presencePenalty` | `number` | 新しいトークンの生成を促進 |
+| `toolChoice` | `'auto' \| 'required' \| 'none' \| string` | [ツール使用の強制](/openai-agents-js/ja/guides/agents#forcing-tool-use)を参照してください。OpenAI Responses では、`toolChoice: 'computer'` により、利用可能な場合は GA 版の組み込みコンピューターツールを強制的に使用します。 |
+| `parallelToolCalls` | `boolean` | サポートされている場合に並列関数呼び出しを許可 |
+| `truncation` | `'auto' \| 'disabled'` | トークンの切り詰め戦略 |
+| `maxTokens` | `number` | レスポンス内の最大トークン数 |
+| `timeoutMs` | `number` | モデルリクエストの各試行に対する、ミリ秒単位の協調的タイムアウト。有限で `0` より大きく、`2147483647` 以下である必要があります。 |
+| `store` | `boolean` | 取得または RAG ワークフロー用にレスポンスを永続化 |
+| `promptCacheRetention` | `'in-memory' \| '24h' \| null` | サポートされている場合に、従来のプロンプトキャッシュの最大保持ポリシーを制御します。これは `promptCacheOptions.ttl` とは独立しています。 |
 | `promptCacheOptions` | `{ mode?: 'implicit' \| 'explicit'; ttl?: '30m' }` | GPT-5.6 以降のモデルで、暗黙的または明示的なプロンプトキャッシュのブレークポイントを制御します。 |
-| `contextManagement` | `ModelSettingsContextManagement` | サーバー側の圧縮など、プロバイダーのコンテキスト管理を制御します。 |
-| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | サポートされている gpt-5.x モデルの推論労力です。`max` は GPT-5.6 でサポートされています。 |
+| `contextManagement` | `ModelSettingsContextManagement` | サーバー側のコンパクションなど、プロバイダーのコンテキスト管理を制御します。 |
+| `reasoning.effort` | `'none' \| 'minimal' \| 'low' \| 'medium' \| 'high' \| 'xhigh' \| 'max'` | サポート対象の gpt-5.x モデルにおける推論負荷。`max` は GPT-5.6 でサポートされています。 |
 | `reasoning.mode` | `'standard' \| 'pro' \| string` | 推論の実行モードを選択します。この設定には Responses API が必要です。 |
-| `reasoning.context` | `'auto' \| 'current_turn' \| 'all_turns' \| null` | 後続のターンでどの推論項目をモデルに再び渡すかを制御します。この設定には Responses API が必要です。 |
+| `reasoning.context` | `'auto' \| 'current_turn' \| 'all_turns' \| null` | 後続のターンで、どの推論項目をモデルへ再提示するかを制御します。この設定には Responses API が必要です。 |
 | `reasoning.summary` | `'auto' \| 'concise' \| 'detailed'` | モデルが返す推論要約の詳細度を制御します。 |
-| `text.verbosity` | `'low' \| 'medium' \| 'high'` | gpt-5.x などのテキスト詳細度です。 |
-| `providerData` | `Record<string, any>` | 基盤モデルに転送される、プロバイダー固有のパススルーオプションです。 |
-| `preserveRawUsage` | `boolean` | 完了した各モデルレスポンスで、SDK による正規化前のプロバイダー使用量を、切り離された JSON 互換スナップショットとして保持します。デフォルトでは無効です。 |
-| `retry` | `ModelRetrySettings` | 実行時専用のオプトイン再試行設定です。[モデルの再試行](#model-retries)を参照してください。 |
+| `text.verbosity` | `'low' \| 'medium' \| 'high'` | gpt-5.x などのテキスト詳細度 |
+| `providerData` | `Record<string, any>` | 基盤モデルへ転送される、プロバイダー固有のパススルーオプション |
+| `preserveRawUsage` | `boolean` | 完了した各モデルレスポンスについて、SDK による正規化前のプロバイダー使用量を、切り離された JSON 互換のスナップショットとして保持します。デフォルトでは無効です。 |
+| `retry` | `ModelRetrySettings` | 実行時のみ使用されるオプトインの再試行設定。[モデルの再試行](#model-retries)を参照してください。 |
 
-設定は、どちらのレベルにも指定できます。
+いずれかのレベルで設定を追加します。
 
 <Code lang="typescript" code={modelSettingsExample} title="モデル設定" />
 
-`Runner` レベルの設定は、競合するエージェントごとの設定を上書きします。`reasoning`、`text`、`promptCacheOptions`、`retry` のネストされたフィールドは、継承された値を `undefined` で明示的に消去しない限り、Runner とエージェントの設定間でマージされます。
+`Runner` レベルの設定は、競合するエージェントごとの設定を上書きします。`reasoning`、`text`、`promptCacheOptions`、`retry` のネストされたフィールドは、継承した値を `undefined` で明示的に消去しない限り、Runner とエージェントの設定間でマージされます。
 
-`timeoutMs` が期限切れになると、SDK は現在のモデルリクエスト試行を中止します。再試行処理によって別の試行が開始されず、別のエラーも発生しない場合、SDK は [`ModelTimeoutError`](/openai-agents-js/openai/agents-core/classes/modeltimeouterror) を発生させます。実行レベルの中止シグナルは、引き続き実行全体をキャンセルします。モデルの再試行が有効な場合、再試行ポリシーはタイムアウトを別の失敗した試行と同様に評価します。そのポリシーが再試行を選択し、リクエストを安全に再実行できる場合、またはアプリケーションが安全でない再実行を明示的に承認した場合にのみ、SDK は再試行します。
+`timeoutMs` が期限切れになると、SDK は現在のモデルリクエストの試行を中止します。再試行処理で別の試行が開始されず、別のエラーも表面化しない場合、SDK は [`ModelTimeoutError`](/openai-agents-js/openai/agents-core/classes/modeltimeouterror) を発生させます。実行レベルの中止シグナルは、引き続き実行全体をキャンセルします。モデルの再試行が有効な場合、再試行ポリシーはタイムアウトを別の失敗した試行と同様に評価します。SDK が再試行するのは、そのポリシーが再試行を選択し、リクエストを安全に再実行できる場合、またはアプリケーションが安全でない再実行を明示的に承認した場合だけです。
 
-プロバイダー固有の使用量フィールドが必要な場合、または省略されたフィールドと正規化されたゼロを区別する必要がある場合は、`preserveRawUsage: true` を設定します。OpenAI Responses、OpenAI Chat Completions、および AI SDK ベースのモデルは、ストリーミング実行と非ストリーミング実行の両方でこれをサポートします。保持はベストエフォートです。プロバイダーが使用量を返さない場合、またはプレーンな JSON 互換データとして安全にコピーできない値を返した場合、`rawUsage` は `undefined` のままです。保持されたペイロードへのアクセス方法については、[元のレスポンス](/openai-agents-js/ja/guides/results#raw-responses)を参照してください。
+プロバイダー固有の使用量フィールドが必要な場合、または省略されたフィールドと正規化されたゼロを区別する必要がある場合は、`preserveRawUsage: true` を設定します。OpenAI Responses、OpenAI Chat Completions、AI SDK ベースのモデルは、ストリーミング実行と非ストリーミング実行の両方でこれをサポートします。保持はベストエフォートです。プロバイダーが使用量を返さない場合や、通常の JSON 互換データとして安全にコピーできない値を返した場合、`rawUsage` は `undefined` のままです。保持されたペイロードへのアクセス方法については、[元のレスポンス](/openai-agents-js/ja/guides/results#raw-responses)を参照してください。
 
 #### GPT-5.6 の推論とプロンプトキャッシュの制御
 
-GPT-5.6 では、リクエストレベルの推論モードと明示的なプロンプトキャッシュのブレークポイントが追加されました。`reasoning.mode` と `reasoning.context` は Responses 専用の設定です。`OpenAIChatCompletionsModel` は一度だけ警告してそれらを無視します。厳格な機能検証が有効な場合は、リクエストの前に `UserError` を発生させます。`reasoning.effort` は、サポートされている Chat Completions モデルで引き続き利用できます。
+GPT-5.6 では、リクエストレベルの推論モードと明示的なプロンプトキャッシュのブレークポイントが追加されます。`reasoning.mode` と `reasoning.context` は Responses 専用の設定です。`OpenAIChatCompletionsModel` は一度だけ警告してこれらを無視するか、厳格な機能検証が有効な場合はリクエスト前に `UserError` を発生させます。`reasoning.effort` は、サポート対象の Chat Completions モデルで引き続き利用できます。
 
-`promptCacheOptions` は、Responses と Chat Completions の両方のモデルパスから転送されます。デフォルトの `implicit` モードでは、明示的なブレークポイントに加えて、OpenAI が自動ブレークポイントを選択できます。`promptCacheBreakpoint: { mode: 'explicit' }` でマークされたコンテンツパートのみを使用するには、`mode: 'explicit'` を設定します。現在サポートされている最短のキャッシュ有効期間は `30m` です。
+`promptCacheOptions` は、Responses と Chat Completions の両方のモデル経路から転送されます。デフォルトの `implicit` モードでは、明示的なブレークポイントに加えて、OpenAI が自動ブレークポイントを選択できます。`promptCacheBreakpoint: { mode: 'explicit' }` でマークされたコンテンツパートのみを使用するには、`mode: 'explicit'` を設定します。現在サポートされている最小キャッシュ有効期間は `30m` です。
 
 <Code
   lang="typescript"
   code={gpt56RequestControlsExample}
-  title="GPT-5.6 のリクエスト制御の設定"
+  title="GPT-5.6 リクエスト制御の設定"
 />
 
-明示的なブレークポイントは、GPT-5.6 以降のモデルでサポートされています。サポートされるコンテンツパートの種類とブレークポイントの制限は API によって異なります。最新の詳細については、公式の [プロンプトキャッシュのブレークポイントガイド](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-breakpoints)を参照してください。
+明示的なブレークポイントは、GPT-5.6 以降のモデルでサポートされています。サポート対象のコンテンツパート型とブレークポイントの上限は API によって異なります。最新の詳細については、公式の[プロンプトキャッシュのブレークポイントガイド](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-breakpoints)を参照してください。
 
 ### モデルの再試行
 
-再試行は実行時専用で、オプトインです。`modelSettings.retry` を設定し、ポリシーが再試行する判断を返さない限り、SDK はモデルリクエストを再試行しません。
+再試行は実行時のみ使用され、オプトイン方式です。`modelSettings.retry` を設定し、ポリシーが再試行の判断を返さない限り、SDK はモデルリクエストを再試行しません。
 
-<Code lang="typescript" code={retryExample} title="モデル再試行のオプトイン" />
+<Code
+  lang="typescript"
+  code={retryExample}
+  title="モデルの再試行へのオプトイン"
+/>
 
 `ModelRetrySettings` には 3 つのフィールドがあります。
 
 | フィールド | 型 | 注記 |
 | --- | --- | --- |
-| `maxRetries` | `number` | 最初のリクエスト後に許可される再試行回数です。 |
-| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | ポリシーが `delayMs` を返さずに再試行する場合のデフォルトの遅延方法です。`backoff.maxDelayMs` は、この計算されたバックオフ遅延のみを上限として制限します。ポリシーが返す明示的な `delayMs` 値や retry-after ヒントは制限しません。 |
-| `policy` | `RetryPolicy` | 再試行するかどうかを決定するコールバックです。この関数は実行時専用であり、永続化された実行状態にはシリアライズされません。 |
+| `maxRetries` | `number` | 最初のリクエスト後に許可される再試行回数 |
+| `backoff` | `{ initialDelayMs?, maxDelayMs?, multiplier?, jitter? }` | ポリシーが `delayMs` を返さずに再試行する場合のデフォルトの遅延戦略。`backoff.maxDelayMs` が上限を設定するのは、この計算されたバックオフ遅延のみです。ポリシーから返される明示的な `delayMs` の値や retry-after のヒントには上限を設定しません。 |
+| `policy` | `RetryPolicy` | 再試行するかどうかを決定するコールバック。この関数は実行時にのみ使用され、永続化された実行状態にはシリアライズされません。 |
 
 再試行ポリシーは、次の情報を含む `RetryPolicyContext` を受け取ります。
 
-- 試行回数を考慮した判断を行うための `attempt` と `maxRetries`
+- 試行回数を考慮して判断するための `attempt` と `maxRetries`
 - ストリーミング動作と非ストリーミング動作を分岐するための `stream`
-- 元の内容を確認するための `error`
+- 元の情報を確認するための `error`
 - `statusCode`、`retryAfterMs`、`errorCode`、`isNetworkError`、`isAbort` などの正規化された情報
 - 基盤となるモデルまたはプロバイダーが再試行の指針を提供できる場合の `providerAdvice`
 - アプリケーションのポリシーがプロバイダー固有のエラーを再解釈せず、Runner の安定した再実行分類を確認するための `replaySafety`、`responseStarted`、`statefulRequest`
 
 ポリシーは、次のいずれかを返せます。
 
-- 単純な再試行の判断を表す `true` / `false`
-- 遅延を上書きする、ログ用の診断理由を付加する、またはプロバイダーが安全でないとマークした非ストリーミングの再実行を明示的に許可する場合の `{ retry, delayMs?, reason?, approveUnsafeReplay? }`
+- 単純な再試行判断を示す `true` / `false`
+- 遅延の上書き、ログ用の診断理由の追加、またはプロバイダーが安全でないと判断した非ストリーミングの再実行を明示的に許可する場合の `{ retry, delayMs?, reason?, approveUnsafeReplay? }`
 
-SDK は、`retryPolicies` で利用可能なヘルパーをエクスポートしています。
+SDK は、`retryPolicies` にすぐに使用できるヘルパーをエクスポートします。
 
 | ヘルパー | 動作 |
 | --- | --- |
 | `retryPolicies.never()` | 常に再試行しません。 |
-| `retryPolicies.providerSuggested()` | 利用可能な場合、プロバイダーの再試行に関する指針に従います。 |
+| `retryPolicies.providerSuggested()` | 利用可能な場合、プロバイダーの再試行方針に従います。 |
 | `retryPolicies.networkError()` | 一時的なトランスポートまたは接続障害に一致します。 |
 | `retryPolicies.httpStatus([..])` | 選択した HTTP ステータスコードに一致します。 |
-| `retryPolicies.retryAfter()` | retry-after ヒントが利用可能な場合にのみ、そのヒントを `backoff.maxDelayMs` で制限されない明示的な遅延として使用して再試行します。 |
+| `retryPolicies.retryAfter()` | retry-after のヒントが利用できる場合にのみ再試行し、そのヒントを `backoff.maxDelayMs` の上限が適用されない明示的な遅延として使用します。 |
 | `retryPolicies.any(...)` | ネストされたポリシーのいずれかが再試行を選択した場合に再試行します。 |
 | `retryPolicies.all(...)` | ネストされたすべてのポリシーが再試行を選択した場合にのみ再試行します。 |
 
-ポリシーを組み合わせる場合、`providerSuggested()` は最初の構成要素として最も安全です。プロバイダーがそれらを区別できる場合に、プロバイダーによる拒否と再実行の安全性に関する承認を保持するためです。
+ポリシーを組み合わせる場合、`providerSuggested()` は最も安全な最初の基本要素です。プロバイダーが拒否判断と再実行の安全性に関する承認を区別できる場合、それらを保持するためです。
 
 #### 安全性の境界
 
-一部の障害は、自動的には再試行されません。
+一部の失敗は、自動的に再試行されることはありません。
 
 - 中止エラー
-- 可視イベントまたは元のモデルイベントがすでに生成された後のストリーミング実行
-- 再実行を安全でないと判断するプロバイダーの指針
+- 表示可能なイベントまたは元のモデルイベントがすでに発行された後のストリーミング実行
+- 再実行を安全でないとするプロバイダーの方針
 
-`previousResponseId` または `conversationId` を使用するステートフルな後続リクエストも、より慎重に扱われます。このようなリクエストでは、`networkError()` や `httpStatus([500])` など、プロバイダーに依存しない条件だけでは不十分です。再試行ポリシーには、通常 `retryPolicies.providerSuggested()` を通じて、プロバイダーからの再実行可能という承認を含める必要があります。
+`previousResponseId` または `conversationId` を使用するステートフルな後続リクエストも、より保守的に扱われます。このようなリクエストでは、`networkError()` や `httpStatus([500])` などのプロバイダーに依存しない述語だけでは不十分です。通常は `retryPolicies.providerSuggested()` を介して、プロバイダーによる再実行可能という承認を再試行ポリシーに含める必要があります。
 
-アプリケーションは `{ retry: true, approveUnsafeReplay: true }` を返すことで、非ストリーミングリクエストに対するプロバイダーの安全でないという分類を上書きできます。これは、以前のリクエストがすでに受理されており、再試行によってレスポンスやその他のプロバイダー側の処理が重複する可能性を明示的に認めるものです。アプリケーションがその結果を許容できる場合にのみ使用してください。中止処理、イベントを生成したストリーミングリクエスト、または安全でないストリーミングの再実行は上書きされません。`retryPolicies.any(...)` または `retryPolicies.all(...)` でポリシーを組み合わせる場合、返された判断で `approveUnsafeReplay: true` が明示的に設定されている場合にのみ承認が保持されます。
+アプリケーションは、`{ retry: true, approveUnsafeReplay: true }` を返すことで、非ストリーミングリクエストに対するプロバイダーの安全でないという分類を上書きできます。これは、以前のリクエストがすでに受け入れられている可能性があり、再試行によってレスポンスやその他のプロバイダー側の処理が重複し得ることを明示的に認めるものです。アプリケーションがその結果を許容できる場合にのみ使用してください。中止処理、イベントを発行したストリーミングリクエスト、安全でないストリーミングの再実行を上書きすることはできません。`retryPolicies.any(...)` または `retryPolicies.all(...)` でポリシーを組み合わせる場合、返される判断で `approveUnsafeReplay: true` が明示的に設定されている場合にのみ、この承認が保持されます。
 
 #### Runner とエージェントのマージ動作
 
 `retry` は、Runner レベルとエージェントレベルの `modelSettings` 間でディープマージされます。
 
-- エージェントは `retry.maxRetries` のみを上書きしながら、Runner の `policy` を継承できます
-- エージェントは `retry.backoff` の一部だけを上書きしながら、Runner の他のバックオフフィールドを維持できます
-- 継承された `policy` または `backoff` を削除する必要がある場合は、そのフィールドを明示的に `undefined` に設定します
+- エージェントは `retry.maxRetries` のみを上書きし、Runner の `policy` を継承できます
+- エージェントは `retry.backoff` の一部のみを上書きし、Runner の他のバックオフフィールドを維持できます
+- 継承した `policy` または `backoff` を削除する必要がある場合は、そのフィールドを明示的に `undefined` に設定します
 
 ログを含むより詳細なコード例については、[`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts) および [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts) を参照してください。
 
@@ -450,25 +479,25 @@ SDK は、`retryPolicies` で利用可能なヘルパーをエクスポートし
 
 ### プロンプト
 
-エージェントには、エージェントの動作を制御するために使用するサーバー保存済みのプロンプト設定を示す `prompt` パラメーターを設定できます。現在、このオプションは OpenAI の [Responses API](https://platform.openai.com/docs/api-reference/responses) を使用する場合にのみサポートされています。
+エージェントには `prompt` パラメーターを設定できます。これは、エージェントの動作を制御するために使用する、サーバーに保存されたプロンプト設定を示します。現在、このオプションは OpenAI の [Responses API](https://platform.openai.com/docs/api-reference/responses) を使用する場合にのみサポートされています。
 
 `prompt` には、静的オブジェクトまたは実行時にオブジェクトを返す関数を指定できます。コールバックの形式については、[動的プロンプト](/openai-agents-js/ja/guides/agents#dynamic-prompts)を参照してください。
 
 | フィールド | 型 | 注記 |
 | --- | --- | --- |
-| `promptId` | `string` | プロンプトの一意な識別子です。 |
-| `version` | `string` | 使用するプロンプトのバージョンです。 |
-| `variables` | `object` | プロンプト内で置換する変数のキーと値のペアです。値には文字列、またはテキスト、画像、ファイルなどのコンテンツ入力型を指定できます。 |
+| `promptId` | `string` | プロンプトの一意な識別子 |
+| `version` | `string` | 使用するプロンプトのバージョン |
+| `variables` | `object` | プロンプトに代入する変数のキーと値のペア。値には文字列、またはテキスト、画像、ファイルなどのコンテンツ入力型を指定できます。 |
 
 <Code
   lang="typescript"
   code={promptIdExample}
-  title="プロンプトを使用するエージェント"
+  title="prompt を使用するエージェント"
 />
 
-ツールや instructions などの追加のエージェント設定は、保存済みプロンプトで設定した値を上書きします。
+ツールや instructions など、追加のエージェント設定は、保存済みプロンプトで設定した値を上書きします。
 
-保存済みプロンプトですでにモデルが定義されている場合、明示的に上書きしない限り、SDK はエージェントのデフォルトモデルを送信しません。これは `computerTool()` にとって重要です。プロンプトで管理される実行では、互換性のため、デフォルトで従来のプレビュー版ワイヤー形式が維持されます。プロンプトで管理される実行で GA 版 Responses のコンピューターツールを使用するには、`modelSettings.toolChoice: 'computer'` を明示的に設定するか、[`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol) などのモデルを明示的に送信します。関連するコンピュータ操作の詳細については、[ツール](/openai-agents-js/ja/guides/tools#computer-tool-specifics)を参照してください。
+保存済みプロンプトですでにモデルが定義されている場合、明示的に上書きしない限り、SDK はエージェントのデフォルトモデルを送信しません。これは `computerTool()` にとって重要です。プロンプトで管理される実行では、互換性のため、デフォルトで従来のプレビュー版の通信形式が維持されます。プロンプトで管理される実行で GA 版の Responses コンピューターツールを有効にするには、`modelSettings.toolChoice: 'computer'` を明示的に設定するか、[`gpt-5.6-sol`](https://developers.openai.com/api/docs/models/gpt-5.6-sol) などのモデルを明示的に送信します。関連するコンピュータ操作の詳細については、[ツール](/openai-agents-js/ja/guides/tools#computer-tool-specifics)を参照してください。
 
 ---
 
@@ -476,7 +505,7 @@ SDK は、`retryPolicies` で利用可能なヘルパーをエクスポートし
 
 ### カスタムモデルプロバイダー
 
-独自のプロバイダーは簡単に実装できます。`ModelProvider` と `Model` を実装し、そのプロバイダーを `Runner` コンストラクターに渡します。
+独自のプロバイダーは簡単に実装できます。`ModelProvider` と `Model` を実装し、プロバイダーを `Runner` コンストラクターに渡します。
 
 <Code
   lang="typescript"
@@ -484,7 +513,7 @@ SDK は、`retryPolicies` で利用可能なヘルパーをエクスポートし
   title="最小構成のカスタムプロバイダー"
 />
 
-すべての `run()` 呼び出しと新しく構築されるすべての `Runner` で、デフォルトとして同じプロバイダーを使用するには、アプリケーションの起動時に一度だけ設定します。
+すべての `run()` 呼び出しと、新しく構築されるすべての `Runner` で、デフォルトとして同じプロバイダーを使用するには、アプリケーションの起動時に一度設定します。
 
 <Code
   lang="typescript"
@@ -492,30 +521,30 @@ SDK は、`retryPolicies` で利用可能なヘルパーをエクスポートし
   title="デフォルトモデルプロバイダーの設定"
 />
 
-これは、アプリケーションで OpenAI 以外のプロバイダーを標準として使用し、カスタム `Runner` を毎回渡したくない場合に便利です。
+これは、アプリケーションで OpenAI 以外のプロバイダーを標準化し、すべての場所でカスタム `Runner` を渡したくない場合に便利です。
 
 #### AI SDK 連携
 
-`ModelProvider` を自身で実装せずに OpenAI 以外のモデルを使用する場合は、[AI SDK 連携](/openai-agents-js/ja/extensions/ai-sdk)を参照してください。このアダプターを使用すると、AI SDK モデルをエージェントランタイムへ直接組み込めます。アプリケーションですでに AI SDK プロバイダーを標準として使用している場合や、より広範なプロバイダーエコシステムへアクセスしたい場合に役立ちます。また、Agents SDK の `providerData` と AI SDK の `providerMetadata` の対応関係、および AI SDK の UI ルートで使用できるストリームヘルパーについても説明しています。
+`ModelProvider` を自分で実装せずに OpenAI 以外のモデルを使用する場合は、[AI SDK 連携](/openai-agents-js/ja/extensions/ai-sdk)を参照してください。このアダプターを使用すると、AI SDK モデルを Agents ランタイムへ直接組み込めます。アプリケーションですでに AI SDK プロバイダーを標準化している場合や、より幅広いプロバイダーエコシステムへアクセスしたい場合に便利です。また、Agents SDK の `providerData` から AI SDK の `providerMetadata` への対応関係や、AI SDK UI ルートで利用できるストリームヘルパーについても説明しています。
 
 ---
 
 ### トレーシングの認証情報
 
-サポートされているサーバーランタイムでは、トレーシングはデフォルトですでに有効になっています。トレースのエクスポートで、デフォルトの OpenAI API キーとは異なる認証情報を使用する場合にのみ、`setTracingExportApiKey()` を使用してください。
+サポートされているサーバーランタイムでは、トレーシングはデフォルトですでに有効になっています。トレースのエクスポートでデフォルトの OpenAI API キーとは異なる認証情報を使用する場合にのみ、`setTracingExportApiKey()` を使用してください。
 
 <Code
   lang="typescript"
   code={setTracingExportApiKeyExample}
-  title="トレーシングエクスポート用 API キーの設定"
+  title="トレーシングのエクスポート用 API キーの設定"
 />
 
-この認証情報を使用して、トレースが [OpenAI ダッシュボード](https://platform.openai.com/traces)に送信されます。カスタム取り込みエンドポイントや再試行の調整など、エクスポーターのカスタマイズについては、[トレーシング](/openai-agents-js/ja/guides/tracing#openai-tracing-exporter)を参照してください。
+これにより、その認証情報を使用して [OpenAI ダッシュボード](https://platform.openai.com/traces)へトレースが送信されます。カスタム取り込みエンドポイントや再試行の調整など、エクスポーターのカスタマイズについては、[トレーシング](/openai-agents-js/ja/guides/tracing#openai-tracing-exporter)を参照してください。
 
 ---
 
 ## 次のステップ
 
 - [エージェントの実行](/openai-agents-js/ja/guides/running-agents)を確認します
-- [ツール](/openai-agents-js/ja/guides/tools)でモデルの機能を強化します
-- 必要に応じて、[ガードレール](/openai-agents-js/ja/guides/guardrails)または[トレーシング](/openai-agents-js/ja/guides/tracing)を追加します
+- [ツール](/openai-agents-js/ja/guides/tools)でモデルの能力を強化します
+- 必要に応じて[ガードレール](/openai-agents-js/ja/guides/guardrails)または[トレーシング](/openai-agents-js/ja/guides/tracing)を追加します
