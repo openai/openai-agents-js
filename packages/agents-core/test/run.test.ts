@@ -8577,7 +8577,7 @@ describe('Runner.run', () => {
 
     beforeEach(() => {
       originalDefaultModel = process.env.OPENAI_DEFAULT_MODEL;
-      process.env.OPENAI_DEFAULT_MODEL = 'gpt-5o';
+      process.env.OPENAI_DEFAULT_MODEL = 'gpt-5.6-luna';
     });
 
     afterEach(() => {
@@ -8602,14 +8602,14 @@ describe('Runner.run', () => {
       };
     }
 
-    it('strips GPT-5-only settings when the RunConfig model is not a GPT-5 string', async () => {
+    it('preserves explicit settings for a model instance with no public name', async () => {
       const modelResponse: ModelResponse = {
-        output: [fakeModelMessage('Hello non GPT-5')],
+        output: [fakeModelMessage('Hello concrete model')],
         usage: new Usage(),
       };
       const inspectableModel = new InspectableModel(modelResponse);
       const agent = new Agent({
-        name: 'NonGpt5Runner',
+        name: 'ConcreteModelAgent',
         model: inspectableModel,
         modelSettings: createGpt5ModelSettings(),
       });
@@ -8617,20 +8617,36 @@ describe('Runner.run', () => {
       const runner = new Runner();
       const result = await runner.run(agent, 'hello');
 
-      expect(result.finalOutput).toBe('Hello non GPT-5');
+      expect(result.finalOutput).toBe('Hello concrete model');
       expect(inspectableModel.lastRequest).toBeDefined();
 
       const requestSettings = inspectableModel.lastRequest!.modelSettings;
-      expect(requestSettings.temperature).toBe(0.42);
-      expect(requestSettings.providerData?.keep).toBe('value');
-      expect(requestSettings.providerData?.reasoning).toBeUndefined();
-      expect(requestSettings.providerData?.text?.verbosity).toBeUndefined();
-      expect(
-        (requestSettings.providerData as any)?.reasoning_effort,
-      ).toBeUndefined();
-      expect(requestSettings.reasoning?.effort).toBeUndefined();
-      expect(requestSettings.reasoning?.summary).toBeUndefined();
-      expect(requestSettings.text?.verbosity).toBeUndefined();
+      expect(requestSettings).toEqual(createGpt5ModelSettings());
+      expect(agent.modelSettings).toEqual(createGpt5ModelSettings());
+    });
+
+    it('preserves explicit settings when a custom model has a descriptive name', async () => {
+      process.env.OPENAI_DEFAULT_MODEL = 'gpt-6-astra';
+      class EchoModel extends ScriptedModel {
+        name = 'Echo';
+      }
+      const model = new EchoModel([
+        modelResponse({
+          output: [fakeModelMessage('hello')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'Custom model',
+        model,
+        modelSettings: createGpt5ModelSettings(),
+      });
+      const result = await new Runner().run(agent, 'hello');
+      expect(result.finalOutput).toBe('hello');
+      expect(model.lastCall?.request.modelSettings).toEqual(
+        createGpt5ModelSettings(),
+      );
+      expect(agent.modelSettings).toEqual(createGpt5ModelSettings());
     });
 
     it('keeps GPT-5-only settings when the agent relies on the default model', async () => {
@@ -8669,6 +8685,7 @@ describe('Runner.run', () => {
     it.each([
       ['gpt-5', 'low'],
       ['gpt-5.6', 'none'],
+      ['gpt-6-astra', 'low'],
     ] as const)(
       'uses model-specific defaults when the RunConfig model is %s',
       async (modelName, reasoningEffort) => {

@@ -8,8 +8,8 @@ import {
 import type { Model, ModelSettings, Prompt } from './model';
 import {
   getDefaultModelSettings,
-  gpt5ReasoningSettingsRequired,
-  isGpt5Default,
+  isGpt5OrNewerReasoningModel,
+  isGpt5OrNewerDefault,
 } from './defaultModel';
 import { RunContext } from './runContext';
 import {
@@ -599,20 +599,18 @@ export class Agent<
     this.resetToolChoice = config.resetToolChoice ?? true;
 
     if (
-      // The user sets a non-default model
+      // The user sets a non-default model.
       config.model !== undefined &&
       config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER &&
-      // The default model is gpt-5
-      isGpt5Default() &&
-      // However, the specified model is not a gpt-5 model
+      // The default model uses GPT-5-and-newer settings.
+      isGpt5OrNewerDefault() &&
+      // The specified model is outside that settings family.
       (typeof config.model !== 'string' ||
-        !gpt5ReasoningSettingsRequired(config.model)) &&
-      // The model settings are not customized for the specified model
+        !isGpt5OrNewerReasoningModel(config.model)) &&
+      // The model settings are not customized for the specified model.
       config.modelSettings === undefined
     ) {
-      // In this scenario, we should use a generic model settings
-      // because non-gpt-5 models are not compatible with the default gpt-5 model settings.
-      // This is a best-effort attempt to make the agent work with non-gpt-5 models.
+      // Avoid applying reasoning-family defaults to an unrelated model.
       this.modelSettings = {};
     }
 

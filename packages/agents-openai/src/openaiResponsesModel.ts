@@ -1468,6 +1468,11 @@ async function* withAttachedResponseRequestId(
  * Model implementation that uses OpenAI's Responses API to generate responses.
  */
 export class OpenAIResponsesModel implements Model {
+  /**
+   * Responses prompts can select the model when no explicit override is supplied.
+   */
+  readonly supportsPromptModelSelection = true;
+
   protected readonly _client: OpenAI;
   protected readonly _model: string;
 
