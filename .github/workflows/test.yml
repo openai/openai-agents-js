@@ -218,6 +218,9 @@ jobs:
       - name: Build packages
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm build
+      - name: Run Windows pnpm bootstrap tests
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: pnpm exec vitest --run --project workspace-test-config scripts/pnpm-bootstrap.test.mjs
       - name: Run Windows sandbox path tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash
