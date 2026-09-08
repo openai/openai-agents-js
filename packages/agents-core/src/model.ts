@@ -687,6 +687,13 @@ export type ModelResponse = {
  */
 export interface Model {
   /**
+   * Whether this adapter lets a supplied prompt select the model unless
+   * `overridePromptModel` is true. Defaults to false when omitted.
+   * The Runner omits implicit model settings when such a prompt owns selection.
+   */
+  readonly supportsPromptModelSelection?: boolean;
+
+  /**
    * Get a response from the model.
    *
    * @param request - The request to get a response for.

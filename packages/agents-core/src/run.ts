@@ -66,7 +66,7 @@ import {
   finalizeOutputGuardrails,
 } from './runner/guardrails';
 import {
-  adjustModelSettingsForNonGPT5RunnerModel,
+  adjustModelSettingsForLegacyModel,
   mergeModelSettings,
   maybeResetToolChoice,
   selectModel,
@@ -3673,12 +3673,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const agentModelSettings = hasExplicitAgentModelSettings
       ? executionAgent.modelSettings
       : undefined;
-    const implicitModelSettings = hasExplicitAgentModelSettings
-      ? undefined
-      : getImplicitModelSettingsForResolvedModel(
-          explicitlyModelSet,
-          resolvedModelName,
-        );
+    // Only adapters that honor prompt model selection can replace the default model.
+    const promptOwnsModel =
+      model.supportsPromptModelSelection === true &&
+      executionAgent.prompt !== undefined &&
+      !explicitlyModelSet;
+    const implicitModelSettings =
+      hasExplicitAgentModelSettings || promptOwnsModel
+        ? undefined
+        : getImplicitModelSettingsForResolvedModel(
+            explicitlyModelSet,
+            resolvedModelName,
+          );
     const modelRequestInternal = {
       reasoningEffortImplicit:
         implicitModelSettings?.reasoning?.effort !== undefined &&
@@ -3694,10 +3700,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       this.config.modelSettings,
     );
     modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
-    modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+    modelSettings = adjustModelSettingsForLegacyModel(
       explicitlyModelSet,
       agentModelSettings ?? implicitModelSettings ?? {},
-      model,
       modelSettings,
       resolvedModelName,
     );
