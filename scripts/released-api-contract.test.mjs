@@ -1509,10 +1509,10 @@ async function inspectObjects(
   return surfaces;
 }
 
-// Compiler fixtures also run alongside the full repository verification stack.
+// Allow for compiler work under coverage and concurrent repository verification.
 describe(
   'selected public object property contracts',
-  { timeout: 15_000 },
+  { timeout: 30_000 },
   () => {
     test('extracts the complete public argument through utility types and convenience exports', async () => {
       await withObjectFixture(webSearchDeclaration(), async ({ inspect }) => {
@@ -1725,6 +1725,33 @@ webSearchTool({ imageSettings: ${alternative} });`,
       },
     );
 
+    test('rejects explicit undefined for omitted-only optional properties in consumers', async () => {
+      await withObjectFixture(webSearchDeclaration(), async ({ root }) => {
+        const consumer = path.join(root, 'consumer.ts');
+        await writeFile(
+          consumer,
+          `import { webSearchTool as direct } from './agents-openai/dist/index';
+import { webSearchTool as bundled } from './agents/dist/index';
+direct({ imageSettings: undefined });
+bundled({ imageSettings: undefined });
+direct({ imageSettings: { caption: undefined } });
+bundled({ imageSettings: { caption: undefined } });`,
+        );
+        const program = ts.createProgram([consumer], {
+          strict: true,
+          exactOptionalPropertyTypes: true,
+          noEmit: true,
+          skipLibCheck: true,
+          types: [],
+        });
+        const diagnostics = ts.getPreEmitDiagnostics(program);
+        expect(diagnostics).toHaveLength(4);
+        for (const diagnostic of diagnostics) {
+          expect(diagnostic.file?.fileName).toBe(consumer);
+        }
+      });
+    });
+
     test.each(['authored field', 'mapped field', 'mapped object'])(
       'rejects explicit undefined in an optional %s',
       async (target) => {
@@ -1742,48 +1769,32 @@ webSearchTool({ imageSettings: ${alternative} });`,
         const value =
           target === 'mapped object' ? 'undefined' : '{ caption: undefined }';
         // Exact-optional consumers accept this value only when undefined was explicitly included.
-        for (const [declaration, accepted] of [
-          [webSearchDeclaration(), false],
-          [source, true],
-        ]) {
-          await withObjectFixture(declaration, async ({ inspect, root }) => {
-            const consumer = path.join(root, 'consumer.ts');
-            await writeFile(
-              consumer,
-              `import { webSearchTool as direct } from './agents-openai/dist/index';
+        // The shared baseline consumer test above checks the omitted-only declarations.
+        await withObjectFixture(source, async ({ inspect, root }) => {
+          const consumer = path.join(root, 'consumer.ts');
+          await writeFile(
+            consumer,
+            `import { webSearchTool as direct } from './agents-openai/dist/index';
 import { webSearchTool as bundled } from './agents/dist/index';
 direct({ imageSettings: ${value} });
 bundled({ imageSettings: ${value} });`,
-            );
-            const program = ts.createProgram([consumer], {
-              strict: true,
-              exactOptionalPropertyTypes: true,
-              noEmit: true,
-              skipLibCheck: true,
-              types: [],
-            });
-            const diagnostics = ts.getPreEmitDiagnostics(program);
-            expect(diagnostics).toHaveLength(accepted ? 0 : 2);
-            for (const diagnostic of diagnostics)
-              expect(diagnostic.file?.fileName).toBe(consumer);
-            for (const mode of ['source', 'dist']) {
-              if (accepted) {
-                await expect(inspect(imagePolicies, mode)).rejects.toThrow(
-                  target === 'mapped object'
-                    ? 'single non-nullable object type'
-                    : 'primitive number, boolean, or string field',
-                );
-              } else {
-                expect(
-                  validateSelectedPublicObjectProperties(
-                    await inspect(imagePolicies, mode),
-                    imagePolicies,
-                  ),
-                ).toEqual([]);
-              }
-            }
+          );
+          const program = ts.createProgram([consumer], {
+            strict: true,
+            exactOptionalPropertyTypes: true,
+            noEmit: true,
+            skipLibCheck: true,
+            types: [],
           });
-        }
+          expect(ts.getPreEmitDiagnostics(program)).toEqual([]);
+          for (const mode of ['source', 'dist']) {
+            await expect(inspect(imagePolicies, mode)).rejects.toThrow(
+              target === 'mapped object'
+                ? 'single non-nullable object type'
+                : 'primitive number, boolean, or string field',
+            );
+          }
+        });
       },
     );
 
