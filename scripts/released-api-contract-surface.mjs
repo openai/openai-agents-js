@@ -728,29 +728,49 @@ function describeSelectedObjectProperties(checker, symbol, policies) {
         `${location} requires a direct object literal with only property signatures`,
       );
     }
-    const type = checker.getNonNullableType(
-      checker.getTypeOfSymbolAtLocation(property, propertyDeclaration),
+    const optional = Boolean(property.flags & ts.SymbolFlags.Optional);
+    const propertyType = checker.getTypeOfSymbolAtLocation(
+      property,
+      propertyDeclaration,
     );
-    const fields = describeMembers(checker, type).map((member) => {
-      const field = checker.getPropertyOfType(type, member.name);
-      const fieldDeclaration = field?.declarations?.[0];
+    // Mapped utilities can change the value type while retaining the inline declaration.
+    const parts = (
+      propertyType.isUnion() ? propertyType.types : [propertyType]
+    ).filter((part) => !(optional && part.flags & ts.TypeFlags.Undefined));
+    if (parts.length !== 1 || !(parts[0].flags & ts.TypeFlags.Object)) {
+      throw new Error(`${location} requires a single non-nullable object type`);
+    }
+    const type = parts[0];
+    if (
+      type.getCallSignatures().length ||
+      type.getConstructSignatures().length ||
+      checker.getIndexInfosOfType(type).length
+    ) {
+      throw new Error(
+        `${location} requires only identifier-named primitive properties`,
+      );
+    }
+    const fields = checker.getPropertiesOfType(type).map((field) => {
+      const name = field.getName();
+      const fieldDeclaration = field.declarations?.[0];
       if (
-        !field ||
         !fieldDeclaration ||
+        !ts.isPropertySignature(fieldDeclaration) ||
         !ts.isIdentifier(fieldDeclaration.name)
       ) {
         throw new Error(
-          `${location}.${member.name} requires an identifier property name`,
+          `${location}.${name} requires only identifier-named primitive properties`,
         );
       }
       const fieldType = checker.getTypeOfSymbolAtLocation(
         field,
         fieldDeclaration,
       );
+      const optional = Boolean(field.flags & ts.SymbolFlags.Optional);
       const parts = fieldType.isUnion() ? fieldType.types : [fieldType];
       const spelling = canonicalType(
         checker,
-        member.optional ? checker.getNonNullableType(fieldType) : fieldType,
+        optional ? checker.getNonNullableType(fieldType) : fieldType,
         fieldDeclaration,
       );
       if (
@@ -758,20 +778,21 @@ function describeSelectedObjectProperties(checker, symbol, policies) {
         !['number', 'boolean', 'string'].includes(spelling)
       ) {
         throw new Error(
-          `${location}.${member.name} requires a primitive number, boolean, or string field`,
+          `${location}.${name} requires a primitive number, boolean, or string field`,
         );
       }
       return {
-        name: member.name,
+        name,
         type: spelling,
-        optional: member.optional,
+        optional,
         readonly: isEffectivelyReadonly(field),
       };
     });
+    fields.sort((left, right) => left.name.localeCompare(right.name));
     descriptors.push({
       parameter: policy.parameter,
       property: policy.property,
-      optional: Boolean(property.flags & ts.SymbolFlags.Optional),
+      optional,
       readonly: isEffectivelyReadonly(property),
       fields,
     });

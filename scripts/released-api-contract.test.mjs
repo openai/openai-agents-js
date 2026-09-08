@@ -1675,6 +1675,82 @@ describe(
       },
     );
 
+    test.each([
+      ['null', true],
+      ['undefined', false],
+    ])(
+      'rejects effective mapped %s instead of erasing it (optional: %s)',
+      async (alternative, optional) => {
+        const source =
+          `type WithAlternative<T> = { [K in keyof T]: K extends 'imageSettings' ? T[K] | ${alternative} : T[K] };\n` +
+          webSearchDeclaration(imageFields, 'imageSettings').replace(
+            "Partial<Omit<WebSearchTool, 'type'>>",
+            optional
+              ? "WithAlternative<Partial<Omit<WebSearchTool, 'type'>>>"
+              : "WithAlternative<Omit<WebSearchTool, 'type'>>",
+          );
+        await withObjectFixture(source, async ({ inspect, root }) => {
+          // The public call proves that the effective type accepts the value being protected.
+          const consumer = path.join(root, 'consumer.ts');
+          await writeFile(
+            consumer,
+            `import { webSearchTool } from './agents-openai/dist/index';
+webSearchTool({ imageSettings: ${alternative} });`,
+          );
+          const program = ts.createProgram([consumer], {
+            strict: true,
+            noEmit: true,
+            skipLibCheck: true,
+            types: [],
+          });
+          expect(ts.getPreEmitDiagnostics(program)).toEqual([]);
+          for (const mode of ['source', 'dist']) {
+            await expect(inspect(imagePolicies, mode)).rejects.toThrow(
+              'imageSettings requires a single non-nullable object type',
+            );
+          }
+        });
+      },
+    );
+
+    test.each([
+      'prepare(): void;',
+      '(): void;',
+      'new (): object;',
+      '[key: string]: number | boolean | undefined;',
+    ])('rejects effective mapped non-property shapes: %s', async (extra) => {
+      const source =
+        `type Settings = { ${imageFields} ${extra} };\n` +
+        "type Replace<T> = { [K in keyof T]: K extends 'imageSettings' ? Settings : T[K] };\n" +
+        webSearchDeclaration().replace(
+          "Partial<Omit<WebSearchTool, 'type'>>",
+          "Replace<Partial<Omit<WebSearchTool, 'type'>>>",
+        );
+      await withObjectFixture(source, async ({ inspect, root }) => {
+        const consumer = path.join(root, 'consumer.ts');
+        await writeFile(
+          consumer,
+          `import { webSearchTool } from './agents-openai/dist/index';
+const settings = { caption: true, extra: 'allowed without an index signature' };
+webSearchTool({ imageSettings: settings });`,
+        );
+        const program = ts.createProgram([consumer], {
+          strict: true,
+          noEmit: true,
+          skipLibCheck: true,
+          types: [],
+        });
+        const diagnostics = ts.getPreEmitDiagnostics(program);
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0].file?.fileName).toBe(consumer);
+        for (const mode of ['source', 'dist']) {
+          await expect(inspect(imagePolicies, mode)).rejects.toThrow(
+            'requires only identifier-named primitive properties',
+          );
+        }
+      });
+    });
+
     test('compares released fields independently of edited policy in shallow and deep modes', async () => {
       const baseline = await inspectObjects();
       const edited = imagePolicies.map((policy) => ({
