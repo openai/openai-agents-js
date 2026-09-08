@@ -1517,7 +1517,7 @@ describe('resolveInterruptedTurn', () => {
     expect(
       (toolOutputs[0].rawItem as protocol.ComputerCallResultItem).callId,
     ).toBe(computerCall.callId);
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('resumes approved computer actions after restoring legacy approval aliases', async () => {
@@ -1605,7 +1605,7 @@ describe('resolveInterruptedTurn', () => {
     expect(result.newStepItems).not.toContainEqual(
       expect.objectContaining({ type: 'tool_approval_item' }),
     );
-    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('skips rerunning already completed computer actions when resuming an interruption', async () => {
