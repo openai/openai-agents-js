@@ -6,9 +6,7 @@ export type AiSdkTextStreamSource =
   | { toTextStream: () => ReadableStream<string> };
 
 export type AiSdkTextStreamHeaders =
-  | Headers
-  | Record<string, string>
-  | Array<[string, string]>;
+  Headers | Record<string, string> | Array<[string, string]>;
 
 export type AiSdkTextStreamResponseOptions = {
   headers?: AiSdkTextStreamHeaders;
@@ -37,10 +35,24 @@ function encodeTextStream(
   }
 
   const encoder = new TextEncoder();
+  let pendingHighSurrogate = '';
   return textStream.pipeThrough(
     new TransformStream<string, Uint8Array>({
       transform(chunk, controller) {
-        controller.enqueue(encoder.encode(chunk));
+        const text = pendingHighSurrogate + chunk;
+        const lastCodeUnit = text.charCodeAt(text.length - 1);
+        const endsWithHighSurrogate =
+          lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff;
+        pendingHighSurrogate = endsWithHighSurrogate ? text.slice(-1) : '';
+        const completeText = endsWithHighSurrogate ? text.slice(0, -1) : text;
+        if (completeText.length > 0) {
+          controller.enqueue(encoder.encode(completeText));
+        }
+      },
+      flush(controller) {
+        if (pendingHighSurrogate) {
+          controller.enqueue(encoder.encode(pendingHighSurrogate));
+        }
       },
     }),
   );

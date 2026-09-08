@@ -38,6 +38,37 @@ afterEach(() => {
 });
 
 describe('createAiSdkTextStreamResponse', () => {
+  test.each([true, false])(
+    'preserves split Unicode characters (native encoder: %s)',
+    async (nativeEncoder) => {
+      if (!nativeEncoder) {
+        vi.stubGlobal('TextEncoderStream', undefined);
+      }
+
+      const text = 'Hello 🌍!';
+      const response = createAiSdkTextStreamResponse(
+        stringStream(text.split('').flatMap((chunk) => [chunk, ''])),
+      );
+
+      await expect(response.text()).resolves.toBe(text);
+    },
+  );
+
+  test.each([true, false])(
+    'replaces unmatched surrogates including at end of stream (native encoder: %s)',
+    async (nativeEncoder) => {
+      if (!nativeEncoder) {
+        vi.stubGlobal('TextEncoderStream', undefined);
+      }
+
+      const response = createAiSdkTextStreamResponse(
+        stringStream(['\ud83c', 'text', '\udf0d', '\ud83c', '']),
+      );
+
+      await expect(response.text()).resolves.toBe('\ufffdtext\ufffd\ufffd');
+    },
+  );
+
   test('streams text and applies default headers', async () => {
     const response = createAiSdkTextStreamResponse(
       stringStream(['Hello', ' ', 'world']),
