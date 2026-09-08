@@ -1728,6 +1728,104 @@ describe('executeComputerActions', () => {
     expect((items[0] as any).output).toBe('data:image/png;base64,img');
   });
 
+  it('captures a fresh final screenshot when a screenshot is followed by another action', async () => {
+    const invocations: string[] = [];
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          invocations.push('screenshot:first');
+          return 'first';
+        })
+        .mockImplementationOnce(async () => {
+          invocations.push('screenshot:final');
+          return 'final';
+        }),
+      click: vi.fn().mockImplementation(async () => {
+        invocations.push('click');
+      }),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+
+    const tool = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c-screenshot-then-click',
+      status: 'completed',
+      actions: [
+        { type: 'screenshot' },
+        { type: 'click', x: 1, y: 2, button: 'left' },
+      ],
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
+    expect(invocations).toEqual([
+      'screenshot:first',
+      'click',
+      'screenshot:final',
+    ]);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(2);
+    expect((items[0] as any).output).toBe('data:image/png;base64,final');
+  });
+
+  it('reuses an explicit screenshot when it is the final batched action', async () => {
+    const invocations: string[] = [];
+    const fakeComputer = {
+      environment: 'mac',
+      dimensions: [1, 1] as [number, number],
+      screenshot: vi.fn().mockImplementation(async () => {
+        invocations.push('screenshot');
+        return 'final';
+      }),
+      click: vi.fn().mockImplementation(async () => {
+        invocations.push('click');
+      }),
+      doubleClick: vi.fn(),
+      drag: vi.fn(),
+      keypress: vi.fn(),
+      move: vi.fn(),
+      scroll: vi.fn(),
+      type: vi.fn(),
+      wait: vi.fn(),
+    } as any;
+
+    const tool = computerTool({ computer: fakeComputer });
+    const call: protocol.ComputerUseCallItem = {
+      type: 'computer_call',
+      callId: 'c-click-then-screenshot',
+      status: 'completed',
+      actions: [
+        { type: 'click', x: 1, y: 2, button: 'left' },
+        { type: 'screenshot' },
+      ],
+    };
+
+    const items = await executeComputerActions(
+      new Agent({ name: 'Comp' }),
+      [{ toolCall: call, computer: tool }],
+      new Runner(),
+      new RunContext(),
+    );
+
+    expect(invocations).toEqual(['click', 'screenshot']);
+    expect(fakeComputer.screenshot).toHaveBeenCalledTimes(1);
+    expect((items[0] as any).output).toBe('data:image/png;base64,final');
+  });
+
   it.each(['fulfills', 'rejects'] as const)(
     'does not start later batched computer actions when the active action %s after cancellation',
     async (settlement) => {
