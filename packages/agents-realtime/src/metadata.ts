@@ -3,9 +3,9 @@
 
 export const METADATA = {
   "name": "@openai/agents-realtime",
-  "version": "0.17.1",
+  "version": "0.17.2",
   "versions": {
-    "@openai/agents-realtime": "0.17.1",
+    "@openai/agents-realtime": "0.17.2",
     "@openai/agents-core": "workspace:*"
   }
 };
