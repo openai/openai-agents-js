@@ -1,5 +1,35 @@
 # @openai/agents-core
 
+## 0.17.1
+
+### Patch Changes
+
+- dd1becb: feat: allow labels on Docker sandbox containers
+- 0b94437: fix: detach source usage records during aggregation
+- d7ed6b2: feat: allow custom messages for output guardrail-blocked tool results
+- b09622f: fix: deduplicate MCP server ownership and refresh active server state after close
+- 6721ccd: fix: isolate cached MCP tool definitions from caller and filter mutations
+- c15c3ac: fix: correct typo in agent tools JSDoc comment
+- 3261264: fix: preserve buffered PTY output without waiting for background descendants.
+- 9be3e39: fix: prevent sandbox Git repository inputs from being interpreted as host Git options.
+- b4fa898: fix: handle rejected async tracing processor hooks from synchronous span lifecycle methods
+- 8e862b3: fix: honor end-of-file hunks when the file ends in a newline
+- 05e5851: feat: add server-wide MCP tool guardrails
+- 0b949bc: fix: preserve serialized approval resume ownership
+- c0a6718: fix: preserve pending approvals before handoffs and recover resumed handoffs after Session append failures
+- b1a41cf: fix: preserve concurrent wrapper writes by skipping automatic session compaction when the run no longer owns its history snapshot.
+- 5c3c3b4: fix: preserve CRLF line endings when applyDiff inserts or replaces lines in CRLF files. (#1804)
+- cd5a2c8: fix(core): preserve handoff callback errors after input validation
+- e668ea1: refactor: isolate historical RunState compaction restoration without changing snapshot compatibility or session reconciliation.
+- eb690a4: fix: recover failed resumed Session writes before continuing runs
+- c3bfb2c: fix: reject unsuccessful OpenAI Responses terminal states without losing billed usage
+- d364ef2: refactor: share Zod description lookup across structured agent input and JSON Schema conversion.
+- 0035d33: fix: strip output-only created_by metadata at replay boundaries
+- d19101e: fix: preserve deferred tool identity across approval checkpoints
+- a9e3214: fix: bound WebSocket startup cleanup, settle acquired PTY resources, and stabilize local PTY exit regression coverage
+- 92d1d9c: fix: Preserve tool-search Agent attribution across handoffs and history replay; persisted discovery requires a unique logical Agent name, and unattributed or ambiguous history requires a new search.
+- 2dc21b6: fix(core): wait for in-flight trace exports during force flush (#1812)
+
 ## 0.17.0
 
 ### Minor Changes

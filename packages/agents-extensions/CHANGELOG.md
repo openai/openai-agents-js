@@ -1,5 +1,41 @@
 # @openai/agents-extensions
 
+## 0.17.1
+
+### Patch Changes
+
+- 9be3e39: fix: prevent sandbox Git repository inputs from being interpreted as host Git options.
+- e6c3663: Decode sandbox PTY output with a streaming decoder so multi-byte UTF-8 characters split across WebSocket frames are no longer corrupted
+- 49b3b34: fix: retain final PTY output until collection completes
+- 85e6304: refactor: organize AI SDK message conversion and its tests without changing adapter behavior.
+- a9e3214: fix: bound WebSocket startup cleanup, settle acquired PTY resources, and stabilize local PTY exit regression coverage
+- Updated dependencies [dd1becb]
+- Updated dependencies [0b94437]
+- Updated dependencies [d7ed6b2]
+- Updated dependencies [b09622f]
+- Updated dependencies [6721ccd]
+- Updated dependencies [c15c3ac]
+- Updated dependencies [3261264]
+- Updated dependencies [9be3e39]
+- Updated dependencies [b4fa898]
+- Updated dependencies [8e862b3]
+- Updated dependencies [05e5851]
+- Updated dependencies [0b949bc]
+- Updated dependencies [c0a6718]
+- Updated dependencies [b1a41cf]
+- Updated dependencies [5c3c3b4]
+- Updated dependencies [cd5a2c8]
+- Updated dependencies [e668ea1]
+- Updated dependencies [eb690a4]
+- Updated dependencies [c3bfb2c]
+- Updated dependencies [d364ef2]
+- Updated dependencies [0035d33]
+- Updated dependencies [d19101e]
+- Updated dependencies [a9e3214]
+- Updated dependencies [92d1d9c]
+- Updated dependencies [2dc21b6]
+  - @openai/agents-core@0.17.1
+
 ## 0.17.0
 
 ### Patch Changes

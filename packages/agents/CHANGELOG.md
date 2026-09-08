@@ -1,5 +1,52 @@
 # @openai/agents
 
+## 0.17.1
+
+### Patch Changes
+
+- Updated dependencies [dd1becb]
+- Updated dependencies [0b94437]
+- Updated dependencies [d7ed6b2]
+- Updated dependencies [b09622f]
+- Updated dependencies [6721ccd]
+- Updated dependencies [c15c3ac]
+- Updated dependencies [3261264]
+- Updated dependencies [9be3e39]
+- Updated dependencies [b4fa898]
+- Updated dependencies [8e862b3]
+- Updated dependencies [4351bd1]
+- Updated dependencies [c25fede]
+- Updated dependencies [05e5851]
+- Updated dependencies [0b949bc]
+- Updated dependencies [c0a6718]
+- Updated dependencies [b1a41cf]
+- Updated dependencies [5c3c3b4]
+- Updated dependencies [02720cd]
+- Updated dependencies [cd5a2c8]
+- Updated dependencies [e668ea1]
+- Updated dependencies [5e999b5]
+- Updated dependencies [b55e89f]
+- Updated dependencies [eb690a4]
+- Updated dependencies [a8422bf]
+- Updated dependencies [c242bfb]
+- Updated dependencies [a690858]
+- Updated dependencies [c3bfb2c]
+- Updated dependencies [8a98743]
+- Updated dependencies [82d6b59]
+- Updated dependencies [b0bc62d]
+- Updated dependencies [d364ef2]
+- Updated dependencies [6b555c8]
+- Updated dependencies [4b539bb]
+- Updated dependencies [0035d33]
+- Updated dependencies [d19101e]
+- Updated dependencies [a9e3214]
+- Updated dependencies [92d1d9c]
+- Updated dependencies [2dc21b6]
+- Updated dependencies [ffaaba6]
+  - @openai/agents-core@0.17.1
+  - @openai/agents-openai@0.17.1
+  - @openai/agents-realtime@0.17.1
+
 ## 0.17.0
 
 ### Patch Changes

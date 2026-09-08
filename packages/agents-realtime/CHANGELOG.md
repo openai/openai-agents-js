@@ -1,5 +1,42 @@
 # @openai/agents-realtime
 
+## 0.17.1
+
+### Patch Changes
+
+- b55e89f: chore: organize Realtime session tool execution, approval, and timeout tests by responsibility.
+- a690858: fix: reject mcp_call, mcp_tool_call, and mcp_approval_request additions/updates in resetHistory with a UserError
+
+  Previously, adding a new MCP item in `resetHistory()` was silently ignored, while updating an existing MCP item sent `conversation.item.delete` without ever recreating it, permanently dropping the item from the live conversation and, after the server ack, from local history too. Neither case produced a warning. `resetHistory()` now throws before sending any client event when an MCP item would be added or updated, including a same-ID replacement that swaps an MCP item for a different item type; unchanged MCP items still no-op and explicit removals still send their delete as before.
+
+- b0bc62d: fix(realtime): keep guardrail feedback generation safe for non-JSON output info
+- Updated dependencies [dd1becb]
+- Updated dependencies [0b94437]
+- Updated dependencies [d7ed6b2]
+- Updated dependencies [b09622f]
+- Updated dependencies [6721ccd]
+- Updated dependencies [c15c3ac]
+- Updated dependencies [3261264]
+- Updated dependencies [9be3e39]
+- Updated dependencies [b4fa898]
+- Updated dependencies [8e862b3]
+- Updated dependencies [05e5851]
+- Updated dependencies [0b949bc]
+- Updated dependencies [c0a6718]
+- Updated dependencies [b1a41cf]
+- Updated dependencies [5c3c3b4]
+- Updated dependencies [cd5a2c8]
+- Updated dependencies [e668ea1]
+- Updated dependencies [eb690a4]
+- Updated dependencies [c3bfb2c]
+- Updated dependencies [d364ef2]
+- Updated dependencies [0035d33]
+- Updated dependencies [d19101e]
+- Updated dependencies [a9e3214]
+- Updated dependencies [92d1d9c]
+- Updated dependencies [2dc21b6]
+  - @openai/agents-core@0.17.1
+
 ## 0.17.0
 
 ### Patch Changes
