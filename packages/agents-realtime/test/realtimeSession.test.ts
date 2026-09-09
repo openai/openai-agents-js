@@ -869,6 +869,66 @@ describe('RealtimeSession', () => {
     expect(agentAgentEnd.mock.calls[0][1]).toBe(transcript);
   });
 
+  it('attributes agent_end to the response agent after a handoff', async () => {
+    const transport = new FakeTransport();
+    const targetAgent = new RealtimeAgent({ name: 'Billing' });
+    const sourceAgent = new RealtimeAgent({
+      name: 'Triage',
+      handoffs: [targetAgent],
+    });
+    const scenarioSession = new RealtimeSession(sourceAgent, { transport });
+    const sessionAgentEnd = vi.fn();
+    const sourceAgentEnd = vi.fn();
+    const targetAgentEnd = vi.fn();
+    const transcript = 'I will transfer you to billing.';
+
+    scenarioSession.on('agent_end', sessionAgentEnd);
+    sourceAgent.on('agent_end', sourceAgentEnd);
+    targetAgent.on('agent_end', targetAgentEnd);
+    await scenarioSession.connect({ apiKey: 'test-key' });
+
+    transport.emit('turn_started', {
+      type: 'response_started',
+      providerData: { response: { id: 'source-response' } },
+    });
+    transport.emit('function_call', {
+      type: 'function_call',
+      name: 'transfer_to_Billing',
+      callId: 'handoff-call',
+      arguments: '{}',
+      responseId: 'source-response',
+    } as any);
+
+    await vi.waitFor(() => {
+      expect(scenarioSession.currentAgent).toBe(targetAgent);
+    });
+
+    transport.emit('turn_done', {
+      response: {
+        id: 'source-response',
+        output: [
+          {
+            id: 'msg-1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_audio', transcript }],
+          },
+        ],
+        usage: new Usage(),
+      },
+    } as any);
+
+    expect(sessionAgentEnd).toHaveBeenCalledWith(
+      expect.anything(),
+      sourceAgent,
+      transcript,
+    );
+    expect(sourceAgentEnd).toHaveBeenCalledWith(expect.anything(), transcript);
+    expect(targetAgentEnd).not.toHaveBeenCalled();
+    expect(scenarioSession.currentAgent).toBe(targetAgent);
+  });
+
   it('merges completed audio transcripts into history', async () => {
     const transport = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'Listener' });
