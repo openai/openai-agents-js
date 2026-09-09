@@ -206,8 +206,8 @@ export class UnixLocalSandboxSession<
     this.captureFilesystemRoots();
   }
 
-  /** Selected once at creation or resume; never changes after an operation fails. */
-  get fileIOBackend(): 'python' | 'node' {
+  /** Selected once at creation or resume; Docker subclasses use the container backend. */
+  get fileIOBackend(): 'python' | 'node' | 'docker' {
     return this.files.backend;
   }
 

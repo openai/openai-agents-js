@@ -1,5 +1,5 @@
 ---
-'@openai/agents-core': patch
+'@openai/agents-core': minor
 ---
 
-fix: prevent replacement-symlink races in UnixLocal and Docker host file/editor operations when trusted Python support is available; default fileIOProtection to auto, with required and off modes and an inspectable session.fileIOBackend.
+fix: protect UnixLocal file/editor operations with optional auto/required/off Python support, and run Docker file APIs inside the container using its default user or runAs; Docker file APIs now require a running container and mounted path grants.
