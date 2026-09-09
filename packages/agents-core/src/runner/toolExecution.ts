@@ -1547,7 +1547,7 @@ async function _runComputerActionAndScreenshot(
         await computer.move(action.x, action.y, runContext);
         break;
       case 'screenshot':
-        await computer.screenshot(runContext);
+        // Screenshot actions are no-ops; capture the final state after the batch.
         break;
       case 'scroll':
         await computer.scroll(
