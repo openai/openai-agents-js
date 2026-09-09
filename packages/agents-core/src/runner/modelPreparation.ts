@@ -11,14 +11,38 @@ import {
 } from '../toolIdentity';
 import { serializeHandoff, serializeTool } from '../utils/serialize';
 import { ensureAgentSpan } from './tracing';
-import { validateClientToolSearchSupport } from './toolSearch';
-import { AgentArtifacts } from './types';
+import {
+  isDeferredHostedMcpTool,
+  validateClientToolSearchSupport,
+} from './toolSearch';
+import { AgentArtifacts, ProcessedResponse } from './types';
 import type { ToolNameCollisionPolicy } from './runConfig';
 
 const computerInitPromisesByRunState = new WeakMap<
   RunState<any, any>,
   WeakMap<Computer, Promise<void>>
 >();
+
+// Recovery intent is owned by a live run and its public source Agent, never by
+// serialized processing metadata or a prepared capability clone.
+const deferredToolRecoveryAgents = new WeakMap<
+  RunState<any, any>,
+  Agent<any, any>
+>();
+
+export function trackDeferredToolRecovery(
+  state: RunState<any, any>,
+  sourceAgent: Agent<any, any>,
+  response: ProcessedResponse<any>,
+): void {
+  if (
+    response.functionToolsNotFound?.some((call) => call.reason === 'not_loaded')
+  ) {
+    deferredToolRecoveryAgents.set(state, sourceAgent);
+  } else {
+    deferredToolRecoveryAgents.delete(state);
+  }
+}
 
 function getComputerInitMap(
   state: RunState<any, any>,
@@ -77,6 +101,26 @@ export async function prepareAgentArtifacts<
     collectedCapabilities.handoffs,
     toolNameCollisionPolicy,
   );
+  if (
+    deferredToolRecoveryAgents.get(state) === state._currentAgent &&
+    !capabilities.tools.some(isDeferredHostedMcpTool)
+  ) {
+    // A hosted search may omit definitions already loaded in the response chain.
+    // Use the existing local loader for this recovery turn so the active Agent
+    // receives fresh discovery before any deferred function can execute.
+    // Keep deferred MCP on server search: client output serializes its credentials.
+    capabilities.tools = capabilities.tools.map((tool) =>
+      tool.type === 'hosted_tool' &&
+      tool.providerData?.type === 'tool_search' &&
+      tool.providerData.execution !== 'client' &&
+      tool.providerData.parameters == null
+        ? {
+            ...tool,
+            providerData: { ...tool.providerData, execution: 'client' },
+          }
+        : tool,
+    );
+  }
   validateClientToolSearchSupport(capabilities.tools);
   await warmUpComputerTools(capabilities.tools, state._context);
   await initializeComputerTools(capabilities.tools, state);

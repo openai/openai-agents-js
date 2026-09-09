@@ -63,6 +63,7 @@ export function createToolRunFunction<TContext>(args: {
 export type ToolRunFunctionNotFound = {
   toolCall: protocol.FunctionCallItem;
   toolName: string;
+  reason?: 'not_loaded';
 };
 
 export type ToolRunComputer = {

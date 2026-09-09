@@ -338,7 +338,10 @@ async function resolveToolNotFoundMessage<TContext>(
   toolRun: ToolRunFunctionNotFound,
   toolErrorFormatter?: ToolErrorFormatter<TContext>,
 ): Promise<string> {
-  const defaultMessage = DEFAULT_TOOL_NOT_FOUND_MESSAGE(toolRun.toolName);
+  const defaultMessage =
+    toolRun.reason === 'not_loaded'
+      ? `Error: Tool ${toolRun.toolName} is not loaded for the current agent. The requested function was not executed. Call tool_search to load it, then retry the original function call with the same arguments.`
+      : DEFAULT_TOOL_NOT_FOUND_MESSAGE(toolRun.toolName);
   if (!toolErrorFormatter) {
     return defaultMessage;
   }

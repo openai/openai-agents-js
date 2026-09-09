@@ -1690,6 +1690,8 @@ const serializedProcessedResponseSchema = z.object({
       z.object({
         toolCall: z.any(),
         toolName: z.string(),
+        // Describes the error only; persisted input cannot select search execution.
+        reason: z.literal('not_loaded').optional(),
       }),
     )
     .optional(),
