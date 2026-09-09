@@ -6,19 +6,17 @@ import type {
 import { UserError } from '../../errors';
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { lstatSync, realpathSync } from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from 'node:path';
 import { tmpdir, userInfo } from 'node:os';
 import type {
   SandboxClient,
@@ -48,12 +46,12 @@ import {
   type WriteStdinArgs,
   type WorkspaceArchiveOptions,
 } from '../session';
+import { probeSandboxDirectoryExists } from '../shared/pathProbe';
 import { cloneManifest, Manifest, normalizeRelativePath } from '../manifest';
 import {
   SandboxConfigurationError,
   SandboxUnsupportedFeatureError,
 } from '../errors';
-import { probeSandboxDirectoryExists } from '../shared/pathProbe';
 import {
   WorkspacePathPolicy,
   type ResolveSandboxPathOptions,
@@ -90,10 +88,8 @@ import {
   isHostPathWithinRoot,
   relativeHostPathEscapesRoot,
 } from '../shared/hostPath';
-import {
-  assertViewImageByteLength,
-  imageOutputFromBytes,
-} from '../shared/media';
+import { MAX_VIEW_IMAGE_BYTES, imageOutputFromBytes } from '../shared/media';
+import { UnixLocalFiles } from './shared/unixLocalFiles';
 import {
   elapsedSeconds,
   formatExecResponse,
@@ -175,7 +171,12 @@ export class UnixLocalSandboxSession<
   private archiveLimits?: SandboxArchiveLimits | null;
   private readonly activeProcesses = new Map<number, ActiveProcess>();
   private nextSessionId = 1;
-  private closed = false;
+  private closePromise?: Promise<void>;
+  private readonly files = new UnixLocalFiles();
+  private readonly filesystemRoots = new Map<
+    string,
+    { content: string; entry: string } | Error
+  >();
 
   constructor(args: {
     state: TState;
@@ -185,6 +186,7 @@ export class UnixLocalSandboxSession<
     this.state = args.state;
     this.defaultShell = args.defaultShell;
     this.setArchiveLimits(args.archiveLimits);
+    this.captureFilesystemRoots();
   }
 
   setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
@@ -194,7 +196,9 @@ export class UnixLocalSandboxSession<
 
   createEditor(runAs?: string): Editor {
     this.assertSessionUsable();
-    return new UnixLocalSandboxEditor(this, runAs);
+    return new UnixLocalSandboxEditor(this, (operation) =>
+      this.applyFileOperation(operation, runAs),
+    );
   }
 
   supportsPty(): boolean {
@@ -372,43 +376,67 @@ export class UnixLocalSandboxSession<
   async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
     this.assertSessionUsable();
     await this.resolveFilesystemRunAs(args.runAs);
-    const filePath = this.resolveSandboxPath(args.path);
-    const info = await stat(filePath).catch(() => {
-      throw new UserError(`Image file not found: ${args.path}`);
-    });
-    if (!info.isFile()) {
-      throw new UserError(`Image path is not a file: ${args.path}`);
-    }
-    assertViewImageByteLength(args.path, info.size);
-
-    const bytes = await readFile(filePath);
+    const filePath = this.resolveFilesystemPath(args.path);
+    const bytes = await this.files
+      .run({ operation: 'image', path: filePath, limit: MAX_VIEW_IMAGE_BYTES })
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT')
+          throw new UserError(`Image file not found: ${args.path}`);
+        if (error.code === 'EINVAL')
+          throw new UserError(`Image path is not a file: ${args.path}`);
+        if (error.code === 'EFBIG')
+          throw new UserError(
+            `Image file exceeds the 10 MB limit: ${args.path}`,
+          );
+        throw error;
+      });
     return imageOutputFromBytes(args.path, bytes);
   }
 
   async pathExists(path: string, runAs?: string): Promise<boolean> {
     this.assertSessionUsable();
     await this.resolveFilesystemRunAs(runAs);
-    return await pathExists(this.resolveSandboxPath(path));
+    return JSON.parse(
+      (
+        await this.files.run({
+          operation: 'exists',
+          path: this.resolveFilesystemPath(path),
+        })
+      ).toString('utf8'),
+    );
   }
 
   async directoryExists(path: string, runAs?: string): Promise<boolean> {
     this.assertSessionUsable();
     const identity = await this.resolveCommandRunAs(runAs);
-    const resolvedPath = this.resolveSandboxPath(path);
-    return await probeSandboxDirectoryExists({
-      path: resolvedPath,
-      runCommand: async (command) =>
-        await runSandboxProcess('/bin/sh', ['-c', command], {
-          timeoutMs: RUN_AS_LOOKUP_TIMEOUT_MS,
-          ...(identity ? { uid: identity.uid, gid: identity.gid } : {}),
-        }),
-    });
+    const resolvedPath = this.resolveFilesystemPath(path);
+    if (process.platform === 'win32') {
+      return probeSandboxDirectoryExists({
+        path: resolvedPath,
+        runCommand: (command) =>
+          runSandboxProcess('/bin/sh', ['-c', command], {
+            timeoutMs: RUN_AS_LOOKUP_TIMEOUT_MS,
+            ...(identity ? { uid: identity.uid, gid: identity.gid } : {}),
+          }),
+      });
+    }
+    return JSON.parse(
+      (
+        await this.files.run(
+          { operation: 'directoryExists', path: resolvedPath },
+          { identity },
+        )
+      ).toString('utf8'),
+    );
   }
 
   async readFile(args: ReadFileArgs): Promise<Uint8Array> {
     this.assertSessionUsable();
     await this.resolveFilesystemRunAs(args.runAs);
-    const bytes = await readFile(this.resolveSandboxPath(args.path));
+    const bytes = await this.files.run({
+      operation: 'read',
+      path: this.resolveFilesystemPath(args.path),
+    });
     if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
       return bytes.subarray(0, args.maxBytes);
     }
@@ -418,14 +446,23 @@ export class UnixLocalSandboxSession<
   async listDir(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]> {
     this.assertSessionUsable();
     await this.resolveFilesystemRunAs(args.runAs);
-    const logicalPath = this.resolveLogicalPath(args.path);
-    const entries = await readdir(this.resolveSandboxPath(args.path), {
-      withFileTypes: true,
-    });
+    const resolved = this.resolveSandboxPathTarget(args.path);
+    const logicalPath = resolved.workspaceRelativePath ?? resolved.path;
+    const entries: Array<{
+      name: string;
+      type: SandboxDirectoryEntry['type'];
+    }> = JSON.parse(
+      (
+        await this.files.run({
+          operation: 'list',
+          path: this.resolveFilesystemPath(args.path),
+        })
+      ).toString('utf8'),
+    );
     return entries.map((entry) => ({
       name: entry.name,
       path: logicalPath ? `${logicalPath}/${entry.name}` : entry.name,
-      type: entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other',
+      type: entry.type,
     }));
   }
 
@@ -468,6 +505,7 @@ export class UnixLocalSandboxSession<
       logicalPath,
       args.entry,
     );
+    this.captureFilesystemRoots();
     captureLiveMountCredentialAuthority(this.state.manifest);
   }
 
@@ -510,6 +548,7 @@ export class UnixLocalSandboxSession<
       ...environment,
     };
     this.state.manifest = mergeManifestDelta(this.state.manifest, manifest);
+    this.captureFilesystemRoots();
     captureLiveMountCredentialAuthority(this.state.manifest);
   }
 
@@ -536,6 +575,7 @@ export class UnixLocalSandboxSession<
   }
 
   async stop(): Promise<void> {
+    await this.files.stop();
     await this.stopActiveProcesses();
   }
 
@@ -548,10 +588,12 @@ export class UnixLocalSandboxSession<
   }
 
   async close(): Promise<void> {
-    if (this.closed) {
-      return;
-    }
-    this.closed = true;
+    this.closePromise ??= this.closeResources();
+    await this.closePromise;
+  }
+
+  private async closeResources(): Promise<void> {
+    await this.files.close();
     await this.stopActiveProcesses();
 
     if (this.state.workspaceRootOwned) {
@@ -579,42 +621,72 @@ export class UnixLocalSandboxSession<
     path?: string,
     options: ResolveSandboxPathOptions = {},
   ): string {
+    return this.resolveHostPath(path, options, 'lexical');
+  }
+
+  private resolveFilesystemPath(
+    path: string,
+    options: ResolveSandboxPathOptions = {},
+    mode: 'content' | 'entry' = 'content',
+  ): string {
+    // Preserve provider overrides that reject container-only paths before host I/O.
+    const lexical = this.resolveSandboxPath(path, options);
+    // Docker also inherits host file operations on Windows.
+    if (process.platform === 'win32') return lexical;
+    return this.resolveHostPath(path, options, mode);
+  }
+
+  private resolveHostPath(
+    path: string | undefined,
+    options: ResolveSandboxPathOptions,
+    mode: 'lexical' | 'content' | 'entry',
+  ): string {
     this.assertSessionUsable();
     const resolved = this.resolveSandboxPathTarget(path, options);
     const workspaceRelativePath = resolved.workspaceRelativePath ?? '';
-    if (!workspaceRelativePath && !resolved.grant) {
-      return this.state.workspaceRootPath;
-    }
     if (resolved.grant) {
-      return validateResolvedHostPath({
+      const authority = this.filesystemRoot(resolved.grant.path);
+      const root = authority.content;
+      const validated = validateResolvedHostPath({
         path,
-        resolvedPath: resolved.path,
-        allowedRoot: resolved.grant.path,
+        resolvedPath: resolve(
+          root,
+          relative(resolved.grant.path, resolved.path),
+        ),
+        allowedRoot: root,
+        entryRoot: authority.entry,
+        preserveLeaf: mode === 'entry',
       });
+      return mode === 'lexical' ? resolved.path : validated;
     }
 
     const mountPath = this.resolveLocalBindMountPath(
       workspaceRelativePath,
       path,
       options,
+      mode,
     );
     if (mountPath) {
       return mountPath;
     }
 
-    const resolvedPath = resolve(
-      this.state.workspaceRootPath,
-      workspaceRelativePath,
-    );
-    const relativeToRoot = relative(this.state.workspaceRootPath, resolvedPath);
+    const authority = this.filesystemRoot(this.state.workspaceRootPath);
+    const root = authority.content;
+    const resolvedPath = resolve(root, workspaceRelativePath);
+    const relativeToRoot = relative(root, resolvedPath);
     if (relativeHostPathEscapesRoot(relativeToRoot)) {
       throw new UserError(`Sandbox path "${path}" escapes the workspace root.`);
     }
-    return validateResolvedHostPath({
+    const validated = validateResolvedHostPath({
       path,
       resolvedPath,
-      allowedRoot: this.state.workspaceRootPath,
+      allowedRoot: root,
+      entryRoot: authority.entry,
+      preserveLeaf: mode === 'entry',
     });
+    return mode === 'lexical'
+      ? resolve(this.state.workspaceRootPath, workspaceRelativePath)
+      : validated;
   }
 
   protected resolveCommandWorkdir(path?: string): string {
@@ -623,6 +695,76 @@ export class UnixLocalSandboxSession<
 
   protected assertSessionUsable(): void {
     assertSandboxSessionStateUsable(this.state);
+  }
+
+  private captureFilesystemRoots(): void {
+    const paths = [
+      this.state.workspaceRootPath,
+      ...this.state.manifest.extraPathGrants.map((grant) => grant.path),
+      ...this.state.manifest.mountTargets().flatMap(({ entry }) => {
+        const source = localBindMountSource(entry);
+        return source ? [source] : [];
+      }),
+    ];
+    for (const path of paths) {
+      if (!this.filesystemRoots.has(path)) {
+        try {
+          this.filesystemRoots.set(path, {
+            content: realpathSync(path),
+            entry: resolve(realpathSync(dirname(path)), basename(path)),
+          });
+        } catch {
+          this.filesystemRoots.set(
+            path,
+            new UserError(`Sandbox filesystem root is unavailable: ${path}`),
+          );
+        }
+      }
+    }
+  }
+
+  private filesystemRoot(path: string): { content: string; entry: string } {
+    this.captureFilesystemRoots();
+    const root = this.filesystemRoots.get(path)!;
+    if (root instanceof Error) throw root;
+    return root;
+  }
+
+  private async applyFileOperation(
+    operation: ApplyPatchOperation,
+    runAs?: string,
+  ): Promise<void> {
+    this.assertSessionUsable();
+    const owner = await this.resolveFilesystemRunAs(runAs);
+    const path = this.resolveFilesystemPath(
+      operation.path,
+      { forWrite: true },
+      operation.type === 'delete_file' ? 'entry' : 'content',
+    );
+    if (operation.type === 'create_file') {
+      const input = applyDiff('', operation.diff, 'create');
+      await this.files.run({ operation: 'create', path, owner }, { input });
+    } else if (operation.type === 'update_file') {
+      const destination = operation.moveTo
+        ? this.resolveFilesystemPath(operation.moveTo, { forWrite: true })
+        : path;
+      const unlinkPath =
+        operation.moveTo &&
+        this.resolveSandboxPath(operation.moveTo, { forWrite: true }) !==
+          this.resolveSandboxPath(operation.path, { forWrite: true })
+          ? this.resolveFilesystemPath(
+              operation.path,
+              { forWrite: true },
+              'entry',
+            )
+          : undefined;
+      await this.files.run(
+        { operation: 'update', path, destination, unlinkPath, owner },
+        { update: (current) => applyDiff(current, operation.diff) },
+      );
+    } else {
+      await this.files.run({ operation: 'delete', path });
+    }
   }
 
   private resolveSandboxPathTarget(
@@ -639,6 +781,7 @@ export class UnixLocalSandboxSession<
     workspaceRelativePath: string,
     path: string | undefined,
     options: ResolveSandboxPathOptions,
+    mode: 'lexical' | 'content' | 'entry',
   ): string | undefined {
     for (const { entry, mountPath } of this.state.manifest.mountTargets()) {
       const source = localBindMountSource(entry);
@@ -663,12 +806,21 @@ export class UnixLocalSandboxSession<
         workspaceRelativePath === mountRelativePath
           ? ''
           : workspaceRelativePath.slice(mountRelativePath.length + 1);
-      const resolvedPath = childPath ? resolve(source, childPath) : source;
-      return validateResolvedHostPath({
+      const authority = this.filesystemRoot(source);
+      const root = authority.content;
+      const resolvedPath = childPath ? resolve(root, childPath) : root;
+      const validated = validateResolvedHostPath({
         path,
         resolvedPath,
-        allowedRoot: source,
+        allowedRoot: root,
+        entryRoot: authority.entry,
+        preserveLeaf: mode === 'entry',
       });
+      return mode === 'lexical'
+        ? childPath
+          ? resolve(source, childPath)
+          : source
+        : validated;
     }
     return undefined;
   }
@@ -949,6 +1101,11 @@ export class UnixLocalSandboxSession<
   }
 }
 
+/**
+ * Local sandbox client for Unix hosts.
+ * On Unix hosts, file operations require Python 3 and its standard library. Set the host
+ * OPENAI_AGENTS_PYTHON to an absolute trusted executable to override discovery.
+ */
 export class UnixLocalSandboxClient implements SandboxClient<
   UnixLocalSandboxClientOptions,
   UnixLocalSandboxSessionState
@@ -1176,11 +1333,10 @@ function validateResolvedHostPath(args: {
   path?: string;
   resolvedPath: string;
   allowedRoot: string;
+  entryRoot?: string;
+  preserveLeaf?: boolean;
 }): string {
-  const allowedRootRealPath = realpathForValidation(
-    args.allowedRoot,
-    args.path,
-  );
+  const allowedRootRealPath = args.allowedRoot;
   const existingPath = nearestExistingPath(args.resolvedPath);
   if (!existingPath) {
     throw new UserError(
@@ -1193,7 +1349,18 @@ function validateResolvedHostPath(args: {
       `Sandbox path "${args.path}" escapes the workspace root.`,
     );
   }
-  return args.resolvedPath;
+  if (args.preserveLeaf) {
+    // Unlink owns the original leaf entry, while content I/O owns its target.
+    if (args.resolvedPath === args.allowedRoot) return args.entryRoot!;
+    const parent = realpathForValidation(dirname(args.resolvedPath), args.path);
+    if (!isHostPathWithinRoot(allowedRootRealPath, parent)) {
+      throw new UserError(
+        `Sandbox path "${args.path}" escapes the workspace root.`,
+      );
+    }
+    return resolve(parent, basename(args.resolvedPath));
+  }
+  return resolve(realPath, relative(existingPath, args.resolvedPath));
 }
 
 function nearestExistingPath(path: string): string | undefined {
@@ -1228,11 +1395,14 @@ function realpathForValidation(path: string, originalPath?: string): string {
 
 class UnixLocalSandboxEditor implements Editor {
   private readonly session: UnixLocalSandboxSession;
-  private readonly runAs?: string;
+  private readonly apply: (operation: ApplyPatchOperation) => Promise<void>;
 
-  constructor(session: UnixLocalSandboxSession, runAs?: string) {
+  constructor(
+    session: UnixLocalSandboxSession,
+    apply: (operation: ApplyPatchOperation) => Promise<void>,
+  ) {
     this.session = session;
-    this.runAs = runAs;
+    this.apply = apply;
   }
 
   canAccessPathForEdit(path: string): boolean {
@@ -1247,55 +1417,21 @@ class UnixLocalSandboxEditor implements Editor {
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
   ): Promise<ApplyPatchResult> {
-    const identity = await this.session.resolveFilesystemRunAs(this.runAs);
-    const filePath = this.session.resolveSandboxPath(operation.path, {
-      forWrite: true,
-    });
-    await mkdir(dirname(filePath), { recursive: true });
-    const content = applyDiff('', operation.diff, 'create');
-    await writeFile(filePath, content, { encoding: 'utf8', flag: 'wx' });
-    if (identity) {
-      await applyOwnershipRecursive(filePath, identity.uid, identity.gid);
-    }
+    await this.apply(operation);
     return {};
   }
 
   async updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
   ): Promise<ApplyPatchResult> {
-    const identity = await this.session.resolveFilesystemRunAs(this.runAs);
-    const moveTo = operation.moveTo;
-    const filePath = this.session.resolveSandboxPath(operation.path, {
-      forWrite: true,
-    });
-    const destinationPath = moveTo
-      ? this.session.resolveSandboxPath(moveTo, { forWrite: true })
-      : filePath;
-    const current = await readFile(filePath, 'utf8');
-    const next = applyDiff(current, operation.diff);
-    await mkdir(dirname(destinationPath), { recursive: true });
-    await writeFile(destinationPath, next, 'utf8');
-    if (moveTo && destinationPath !== filePath) {
-      await unlink(filePath);
-    }
-    if (identity) {
-      await applyOwnershipRecursive(
-        destinationPath,
-        identity.uid,
-        identity.gid,
-      );
-    }
+    await this.apply(operation);
     return {};
   }
 
   async deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
   ): Promise<ApplyPatchResult> {
-    await this.session.resolveFilesystemRunAs(this.runAs);
-    const filePath = this.session.resolveSandboxPath(operation.path, {
-      forWrite: true,
-    });
-    await unlink(filePath);
+    await this.apply(operation);
     return {};
   }
 }

@@ -49,7 +49,15 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
-    spawn: childProcessMocks.spawn,
+    // Container commands use the double; inherited host file workers use real pipes.
+    spawn: ((command, args, options) =>
+      args?.includes('-I') && args?.includes('-S')
+        ? actual.spawn(command, args, options ?? {})
+        : childProcessMocks.spawn(
+            command,
+            args,
+            options,
+          )) as typeof actual.spawn,
   };
 });
 
@@ -240,6 +248,54 @@ describe('DockerSandboxClient unit behavior', () => {
 
   afterEach(async () => {
     await rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('keeps Windows host file operations independent of Python', async () => {
+    const session = new DockerSandboxSession({
+      state: {
+        workspaceRootPath: rootDir,
+        workspaceRootOwned: false,
+        manifest: new Manifest(),
+        environment: {},
+        containerId: 'container',
+        image: 'test:image',
+      },
+    });
+    // Exercise the platform routing boundary on the host filesystem; no container
+    // command or POSIX worker is needed for Docker's host fallback.
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.stubEnv('OPENAI_AGENTS_PYTHON', '/missing-python');
+    try {
+      const editor = session.createEditor();
+      await editor.createFile({
+        type: 'create_file',
+        path: 'note.txt',
+        diff: '+before\n+',
+      });
+      expect(
+        Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
+      ).toBe('before\n');
+      expect(await session.pathExists('note.txt')).toBe(true);
+      expect(await session.listDir({ path: '.' })).toEqual([
+        { name: 'note.txt', path: 'note.txt', type: 'file' },
+      ]);
+      await editor.updateFile({
+        type: 'update_file',
+        path: 'note.txt',
+        moveTo: 'moved.txt',
+        diff: '@@\n-before\n+after\n',
+      });
+      expect(await readFile(join(rootDir, 'moved.txt'), 'utf8')).toBe(
+        'after\n',
+      );
+      await editor.deleteFile({ type: 'delete_file', path: 'moved.txt' });
+      expect(await session.pathExists('moved.txt')).toBe(false);
+      expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      vi.unstubAllEnvs();
+    }
   });
 
   it('rejects repository options before Docker update effects', async () => {
