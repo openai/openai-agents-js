@@ -301,6 +301,7 @@ export function toolSearchTool<Context = unknown>(
 export type ImageGenerationTool = {
   type: 'image_generation';
   name?: 'image_generation' | (string & {});
+  action?: OpenAI.Responses.Tool.ImageGeneration['action'];
   background?: 'transparent' | 'opaque' | 'auto' | (string & {});
   inputFidelity?: 'high' | 'low' | null;
   inputImageMask?: OpenAI.Responses.Tool.ImageGeneration.InputImageMask;
@@ -324,6 +325,7 @@ export function imageGenerationTool(
   const providerData: ProviderData.ImageGenerationTool = {
     type: 'image_generation',
     name: options.name ?? 'image_generation',
+    action: options.action,
     background: options.background,
     input_fidelity: options.inputFidelity,
     input_image_mask: options.inputImageMask,

@@ -145,6 +145,20 @@ describe('Tool', () => {
     expect(t.providerData!.model).toBeUndefined();
   });
 
+  it.each(['generate', 'edit', 'auto'] as const)(
+    'imageGenerationTool preserves action %s',
+    (action) => {
+      expect(imageGenerationTool({ action }).providerData?.action).toBe(action);
+    },
+  );
+
+  it('imageGenerationTool leaves action undefined by default', () => {
+    expect(imageGenerationTool().providerData?.action).toBeUndefined();
+    expectTypeOf<
+      NonNullable<Parameters<typeof imageGenerationTool>[0]>['action']
+    >().toEqualTypeOf<'generate' | 'edit' | 'auto' | undefined>();
+  });
+
   it('toolSearchTool', () => {
     const t = toolSearchTool();
     expect(t).toBeDefined();
