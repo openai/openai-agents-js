@@ -3,7 +3,6 @@ import type {
   ApplyPatchOperation,
   ApplyPatchResult,
   Editor,
-  EditorInvocationContext,
 } from '../../editor';
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
@@ -119,7 +118,7 @@ import {
   validateMountEnvironmentCredentialBoundaries,
   withExclusiveSandboxManifestMutation,
 } from '../mountSecurity';
-import { imageOutputFromBytes } from '../shared/media';
+import { imageOutputFromBytes, MAX_VIEW_IMAGE_BYTES } from '../shared/media';
 import {
   canReuseLocalSnapshotWorkspace,
   localSnapshotIsRestorable,
@@ -214,6 +213,7 @@ export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState 
 
 export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxSessionState> {
   private containerClosed = false;
+  private closeStarted = false;
   private stagedMountEnvironment?: Record<string, string>;
   private readonly mountedPathGrants: Manifest['extraPathGrants'];
 
@@ -222,16 +222,21 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     defaultShell?: string;
     archiveLimits?: SandboxArchiveLimits | null;
   }) {
-    super(args);
+    super({ ...args, fileIOProtection: 'off' });
     this.mountedPathGrants = args.state.manifest.extraPathGrants.map(
       (grant) => ({ ...grant }),
     );
   }
 
+  /** File APIs execute inside the container and never use the host Python backend. */
+  override get fileIOBackend(): 'docker' {
+    return 'docker';
+  }
+
   override async resolveFilesystemRunAs(runAs?: string): Promise<undefined> {
     if (runAs && runAs.trim().length > 0) {
       throw new UserError(
-        'DockerSandboxClient does not support runAs for filesystem operations.',
+        'DockerSandboxClient does not support runAs for host-side materialization. Use container file APIs or execCommand instead.',
       );
     }
     return undefined;
@@ -239,29 +244,26 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   override createEditor(runAs?: string): Editor {
     this.assertSessionUsable();
-    return new DockerSandboxEditor(
-      this,
-      runAs,
-      runAs ? undefined : super.createEditor(),
-    );
+    return new DockerSandboxEditor(this, runAs);
+  }
+
+  protected override assertSessionUsable(): void {
+    super.assertSessionUsable();
+    if (this.containerClosed || this.closeStarted) {
+      throw new UserError('Docker sandbox session is closed.');
+    }
   }
 
   override async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    if (!args.runAs && !this.pathRequiresDockerFilesystem(args.path)) {
-      return await super.viewImage(args);
-    }
-    const bytes = await this.readDockerFileAs(
-      this.resolveContainerFilesystemPath(args.path),
-      args.runAs,
-    );
+    const bytes = await this.readDockerFileAs(args.path, args.runAs, {
+      maxBytes: MAX_VIEW_IMAGE_BYTES,
+      image: true,
+    });
     return imageOutputFromBytes(args.path, bytes);
   }
 
   override async pathExists(path: string, runAs?: string): Promise<boolean> {
-    if (!runAs && !this.pathRequiresDockerFilesystem(path)) {
-      return await super.pathExists(path);
-    }
-    const absolutePath = this.resolveContainerFilesystemPath(path);
+    const absolutePath = await this.validateContainerFilesystemPath(path);
     return await probeSandboxPathExists({
       path: absolutePath,
       runCommand: async (command) =>
@@ -273,14 +275,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     path: string,
     runAs?: string,
   ): Promise<boolean> {
-    const requiresContainerProbe = Boolean(
-      dockerVolumeMountContainingPath(this.state.manifest, path) ||
-      this.pathRequiresDockerFilesystem(path),
-    );
-    if (!runAs && !requiresContainerProbe) {
-      return await super.directoryExists(path);
-    }
-    const absolutePath = this.resolveContainerFilesystemPath(path);
+    const absolutePath = await this.validateContainerFilesystemPath(path);
     return await probeSandboxDirectoryExists({
       path: absolutePath,
       runCommand: async (command) =>
@@ -289,13 +284,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   override async readFile(args: ReadFileArgs): Promise<Uint8Array> {
-    if (!args.runAs && !this.pathRequiresDockerFilesystem(args.path)) {
-      return await super.readFile(args);
-    }
-    const bytes = await this.readDockerFileAs(
-      this.resolveContainerFilesystemPath(args.path),
-      args.runAs,
-    );
+    const bytes = await this.readDockerFileAs(args.path, args.runAs);
     if (typeof args.maxBytes === 'number' && bytes.byteLength > args.maxBytes) {
       return bytes.subarray(0, args.maxBytes);
     }
@@ -305,13 +294,10 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   override async listDir(
     args: ListDirectoryArgs,
   ): Promise<SandboxDirectoryEntry[]> {
-    if (!args.runAs && !this.pathRequiresDockerFilesystem(args.path)) {
-      return await super.listDir(args);
-    }
-    const absolutePath = this.resolveContainerFilesystemPath(args.path);
+    const absolutePath = await this.validateContainerFilesystemPath(args.path);
     const output = await this.runReadableDockerFilesystemCommand(
       [
-        `find ${shellQuote(absolutePath)} -mindepth 1 -maxdepth 1 -printf '%y\\t%f\\n'`,
+        `test -d ${shellQuote(absolutePath)} && find -H ${shellQuote(absolutePath)} -mindepth 1 -maxdepth 1 -printf '%y\\0%f\\0'`,
       ].join(' && '),
       { runAs: args.runAs },
       `list directory ${absolutePath}`,
@@ -322,32 +308,18 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       extraPathGrants: this.state.manifest.extraPathGrants,
     }).resolve(args.path);
     const logicalPath = resolvedPath.workspaceRelativePath ?? resolvedPath.path;
-    return output
-      .split(/\r?\n/u)
-      .filter((line) => line.trim().length > 0)
-      .map((line) => {
-        const separator = line.indexOf('\t');
-        const kind = separator >= 0 ? line.slice(0, separator) : '';
-        const name = separator >= 0 ? line.slice(separator + 1) : line;
-        return {
-          name,
-          path: logicalPath ? `${logicalPath}/${name}` : name,
-          type: kind === 'd' ? 'dir' : kind === 'f' ? 'file' : 'other',
-        };
+    const fields = output.split('\0');
+    const entries: SandboxDirectoryEntry[] = [];
+    for (let index = 0; index + 1 < fields.length; index += 2) {
+      const kind = fields[index];
+      const name = fields[index + 1]!;
+      entries.push({
+        name,
+        path: logicalPath ? `${logicalPath}/${name}` : name,
+        type: kind === 'd' ? 'dir' : kind === 'f' ? 'file' : 'other',
       });
-  }
-
-  private pathRequiresDockerFilesystem(path?: string): boolean {
-    return Boolean(
-      dockerInContainerMountContainingPath(this.state.manifest, path) ||
-      dockerSplitPathGrantContainingPath(this.state.manifest, path),
-    );
-  }
-
-  pathUsesSplitGrant(path?: string): boolean {
-    return Boolean(
-      dockerSplitPathGrantContainingPath(this.state.manifest, path),
-    );
+    }
+    return entries;
   }
 
   override async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
@@ -685,7 +657,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     );
     if (mountPath) {
       throw new UserError(
-        `DockerSandboxClient filesystem operations cannot access Docker volume mount path "${path ?? mountPath}". Use execCommand for container-visible paths under "${mountPath}".`,
+        `DockerSandboxClient cannot map Docker volume mount path "${path ?? mountPath}" to a host path. Use the session file APIs or execCommand for container-visible paths under "${mountPath}".`,
       );
     }
     const inContainerMountPath = dockerInContainerMountContainingPath(
@@ -694,7 +666,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     );
     if (inContainerMountPath) {
       throw new UserError(
-        `DockerSandboxClient host filesystem operations cannot access in-container mount path "${path ?? inContainerMountPath}". Use execCommand for container-visible paths under "${inContainerMountPath}".`,
+        `DockerSandboxClient cannot map in-container mount path "${path ?? inContainerMountPath}" to a host path. Use the session file APIs or execCommand for container-visible paths under "${inContainerMountPath}".`,
       );
     }
     return super.resolveSandboxPath(path, options);
@@ -709,26 +681,122 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       root: this.state.manifest.root,
       extraPathGrants: this.state.manifest.extraPathGrants,
     }).resolve(path, options);
+    const selectedGrant = resolved.grant;
+    if (
+      selectedGrant &&
+      !this.mountedPathGrants.some(
+        (grant) =>
+          grant.path === selectedGrant.path &&
+          grant.readOnly === selectedGrant.readOnly &&
+          sandboxPathGrantHostPath(grant) ===
+            sandboxPathGrantHostPath(selectedGrant),
+      )
+    ) {
+      throw new UserError(
+        `Docker path grant "${selectedGrant.path}" is not mounted. Resume or recreate the session before using it.`,
+      );
+    }
+    if (options.forWrite) {
+      const mount = this.state.manifest
+        .mountTargets()
+        .map(({ logicalPath, entry }) => ({
+          path: resolveDockerMountPath(
+            this.state.manifest.root,
+            logicalPath,
+            entry,
+          ),
+          entry,
+        }))
+        .sort((left, right) => right.path.length - left.path.length)
+        .find((mount) => pathWithinDockerMount(resolved.path, mount.path));
+      if (mount && (mount.entry.readOnly ?? true)) {
+        throw new UserError(
+          `Docker path "${resolved.path}" is inside a read-only mount.`,
+        );
+      }
+    }
     return resolved.path;
   }
 
-  async readDockerFileAs(path: string, runAs?: string): Promise<Uint8Array> {
+  async validateContainerFilesystemPath(
+    path?: string,
+    options: ResolveSandboxPathOptions = {},
+  ): Promise<string> {
+    const absolutePath = this.resolveContainerFilesystemPath(path, options);
+    const output = await resolveTrustedDockerPath(
+      this,
+      absolutePath,
+      'resolve a filesystem path',
+    );
+    const resolved = output.endsWith('\n') ? output.slice(0, -1) : output;
+    if (!resolved.startsWith('/')) {
+      throw new UserError(
+        'Docker filesystem path resolution returned an invalid path.',
+      );
+    }
+    if (this.resolveContainerFilesystemPath(resolved, options) !== resolved) {
+      throw new UserError(
+        'Docker filesystem path normalization changed the resolved target.',
+      );
+    }
+    // Keep leaf symlink identity for unlink and moves after checking its target.
+    return this.resolveContainerFilesystemPath(path, options);
+  }
+
+  async readDockerFileAs(
+    path: string,
+    runAs?: string,
+    limits?: { maxBytes: number; image?: boolean },
+  ): Promise<Uint8Array> {
+    path = await this.validateContainerFilesystemPath(path);
+    const imageLimit = limits?.image ? limits.maxBytes : undefined;
+    const fileGuard = `if [ -e ${shellQuote(path)} ] && [ ! -f ${shellQuote(path)} ]; then exit 67; fi; `;
+    const imageGuard =
+      imageLimit === undefined
+        ? ''
+        : `size=$(wc -c < ${shellQuote(path)}) || exit 1; if [ "$size" -gt ${imageLimit} ]; then exit 68; fi; `;
+    const limit = limits?.maxBytes;
+    // GNU base64 adds one newline per 76 encoded bytes, including the last line.
+    const encodedBytes =
+      limit === undefined ? undefined : Math.ceil(limit / 3) * 4;
     const output = await this.runReadableDockerFilesystemCommand(
-      `base64 -- ${shellQuote(path)}`,
-      { runAs },
+      `${fileGuard}${imageGuard}base64 -- ${shellQuote(path)}`,
+      {
+        runAs,
+        maxOutputBytes:
+          encodedBytes === undefined
+            ? undefined
+            : encodedBytes + Math.ceil(encodedBytes / 76),
+      },
       `read file ${path}`,
       path,
+      imageLimit !== undefined,
     );
-    return Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    const bytes = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    if (limit !== undefined && bytes.byteLength > limit) {
+      throw new UserError(
+        `Docker file exceeds the ${limit} byte read limit: ${path}`,
+      );
+    }
+    return bytes;
   }
 
   private async runReadableDockerFilesystemCommand(
     command: string,
-    options: { runAs?: string },
+    options: { runAs?: string; maxOutputBytes?: number },
     action: string,
     path: string,
+    image = false,
   ): Promise<string> {
     const result = await this.runDockerFilesystemCommand(command, options);
+    if (result.status === 67)
+      throw new UserError(
+        `${image ? 'Image' : 'File'} path is not a file: ${path}`,
+      );
+    if (image) {
+      if (result.status === 68)
+        throw new UserError(`Image file exceeds the 10 MB limit: ${path}`);
+    }
     if (result.status !== 0) {
       if (
         result.status === 1 &&
@@ -740,8 +808,13 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
           path,
           runCommand: async (command) =>
             await this.runDockerFilesystemCommand(command, options),
+          createError: () =>
+            new UserError(
+              `DockerSandboxClient failed to ${action}: ${formatSandboxProcessError(result)}`,
+            ),
         });
         if (!exists) {
+          if (image) throw new UserError(`Image file not found: ${path}`);
           throw new SandboxWorkspaceReadNotFoundError(
             `DockerSandboxClient path does not exist: ${path}`,
             { path },
@@ -759,20 +832,31 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     path: string,
     content: string,
     runAs?: string,
+    exclusive = false,
+    moveSource?: string,
   ): Promise<void> {
+    path = await this.validateContainerFilesystemPath(path, { forWrite: true });
     const parent = dockerPosixDirname(path);
+    const guard = exclusive
+      ? `if [ -e ${shellQuote(path)} ] || [ -L ${shellQuote(path)} ]; then echo 'File already exists.' >&2; exit 1; fi; set -C; `
+      : `if [ -e ${shellQuote(path)} ] && [ ! -f ${shellQuote(path)} ]; then echo 'Destination is not a regular file.' >&2; exit 1; fi; `;
+    const moveGuard = moveSource
+      ? `if [ ${shellQuote(moveSource)} -ef ${shellQuote(path)} ]; then echo 'Cannot move a file onto itself.' >&2; exit 1; fi; `
+      : '';
+    const write = `${moveGuard}${guard}cat > ${shellQuote(path)}`;
     await this.runCheckedDockerFilesystemCommand(
       parent === '/' || parent === '.'
-        ? `cat > ${shellQuote(path)}`
-        : `mkdir -p -- ${shellQuote(parent)} && cat > ${shellQuote(path)}`,
+        ? write
+        : `mkdir -p -- ${shellQuote(parent)} && (${write})`,
       { runAs, input: content },
       `write file ${path}`,
     );
   }
 
   async deleteDockerPathAs(path: string, runAs?: string): Promise<void> {
+    path = await this.validateContainerFilesystemPath(path, { forWrite: true });
     await this.runCheckedDockerFilesystemCommand(
-      `rm -f -- ${shellQuote(path)}`,
+      `rm -- ${shellQuote(path)}`,
       { runAs },
       `delete path ${path}`,
     );
@@ -799,7 +883,10 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       result = await this.runDockerFilesystemCommand(command, {
         runAs: 'root',
         input: options.input,
-        environment: options.environment ?? this.stagedMountEnvironment,
+        mountEnvironment:
+          options.environment ??
+          this.stagedMountEnvironment ??
+          this.state.environment,
       });
     } catch {
       throw new UserError(`DockerSandboxClient failed to ${action}.`);
@@ -825,7 +912,6 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     options: {
       runAs?: string;
       input?: string | Uint8Array;
-      environment?: Record<string, string>;
       redactProcessOutput?: boolean;
     } = {},
     action: string,
@@ -849,26 +935,51 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     options: {
       runAs?: string;
       input?: string | Uint8Array;
-      environment?: Record<string, string>;
+      mountEnvironment?: Record<string, string>;
+      maxOutputBytes?: number;
     } = {},
   ): Promise<SandboxProcessResult> {
     this.assertSessionUsable();
     const dockerArgs = ['exec', '-i', '-w', '/'];
-    for (const [key, value] of Object.entries(
-      options.environment ?? this.state.environment,
-    )) {
-      dockerArgs.push('-e', `${key}=${value}`);
+    if (options.mountEnvironment) {
+      for (const [key, value] of Object.entries(options.mountEnvironment)) {
+        dockerArgs.push('-e', `${key}=${value}`);
+      }
+    } else {
+      dockerArgs.push(...dockerFileEnvironmentArgs(this.state.environment));
     }
     const runAs = options.runAs ?? this.state.defaultUser;
     if (runAs) {
       dockerArgs.push('-u', runAs);
     }
-    dockerArgs.push(this.state.containerId, '/bin/sh', '-lc', command);
+    dockerArgs.push(this.state.containerId);
+    if (options.mountEnvironment) {
+      dockerArgs.push('/bin/sh', '-lc', command);
+    } else {
+      dockerArgs.push(
+        '/usr/bin/env',
+        '-i',
+        'PATH=/usr/bin:/bin',
+        'LC_ALL=C',
+        '/bin/sh',
+        '-c',
+        command,
+      );
+    }
 
-    return await runDockerProcess(dockerArgs, options.input);
+    return await runDockerProcess(
+      dockerArgs,
+      options.input,
+      options.maxOutputBytes,
+    );
   }
 
   override async close(): Promise<void> {
+    this.closeStarted = true;
+    await this.closeContainerResources();
+  }
+
+  private async closeContainerResources(): Promise<void> {
     let cleanupError: unknown;
     if (!this.containerClosed) {
       try {
@@ -912,20 +1023,9 @@ class DockerSandboxEditor implements Editor {
   constructor(
     private readonly session: DockerSandboxSession,
     private readonly runAs?: string,
-    private readonly hostEditor?: Editor,
   ) {}
 
   canAccessPathForEdit(path: string): boolean {
-    if (!this.shouldUseDockerFilesystem(path)) {
-      const canAccessPathForEdit = (
-        this.hostEditor as
-          | (Editor & {
-              canAccessPathForEdit?: (path: string) => boolean;
-            })
-          | undefined
-      )?.canAccessPathForEdit;
-      return canAccessPathForEdit?.call(this.hostEditor, path) ?? false;
-    }
     try {
       this.session.resolveContainerFilesystemPath(path, { forWrite: true });
       return true;
@@ -936,52 +1036,47 @@ class DockerSandboxEditor implements Editor {
 
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
-    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
-    if (!this.shouldUseDockerFilesystem(operation.path)) {
-      return (await this.hostEditor!.createFile(operation, context)) ?? {};
-    }
-    const path = this.session.resolveContainerFilesystemPath(operation.path, {
+    this.session.resolveContainerFilesystemPath(operation.path, {
       forWrite: true,
     });
-    if (await this.session.pathExists(operation.path, this.runAs)) {
-      throw new UserError(
-        `Cannot create file because it already exists: ${path}`,
-      );
-    }
     const content = applyDiff('', operation.diff, 'create');
-    const parent = dockerPosixDirname(path);
-    if (parent !== '.' && parent !== '/') {
-      await this.session.mkdirDockerPathAs(parent, this.runAs);
-    }
-    await this.session.writeDockerTextFileAs(path, content, this.runAs);
+    await this.session.writeDockerTextFileAs(
+      operation.path,
+      content,
+      this.runAs,
+      true,
+    );
     return {};
   }
 
   async updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
-    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
-    if (!this.shouldUseDockerFilesystem(operation.path, operation.moveTo)) {
-      return (await this.hostEditor!.updateFile(operation, context)) ?? {};
-    }
-    const path = this.session.resolveContainerFilesystemPath(operation.path, {
-      forWrite: true,
-    });
+    const path = await this.session.validateContainerFilesystemPath(
+      operation.path,
+      {
+        forWrite: true,
+      },
+    );
     const destination = operation.moveTo
       ? this.session.resolveContainerFilesystemPath(operation.moveTo, {
           forWrite: true,
         })
       : path;
     const current = new TextDecoder().decode(
-      await this.session.readDockerFileAs(path, this.runAs),
+      await this.session.readDockerFileAs(path, this.runAs, {
+        maxBytes: 10 * 1024 * 1024,
+      }),
     );
     const next = applyDiff(current, operation.diff);
-    const parent = dockerPosixDirname(destination);
-    if (parent !== '.' && parent !== '/') {
-      await this.session.mkdirDockerPathAs(parent, this.runAs);
-    }
-    await this.session.writeDockerTextFileAs(destination, next, this.runAs);
+    await this.session.writeDockerTextFileAs(
+      destination,
+      next,
+      this.runAs,
+      false,
+      destination !== path ? path : undefined,
+    );
     if (operation.moveTo && destination !== path) {
       await this.session.deleteDockerPathAs(path, this.runAs);
     }
@@ -990,28 +1085,21 @@ class DockerSandboxEditor implements Editor {
 
   async deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
-    context?: EditorInvocationContext,
   ): Promise<ApplyPatchResult> {
-    if (!this.shouldUseDockerFilesystem(operation.path)) {
-      return (await this.hostEditor!.deleteFile(operation, context)) ?? {};
-    }
-    await this.session.deleteDockerPathAs(
-      this.session.resolveContainerFilesystemPath(operation.path, {
-        forWrite: true,
-      }),
-      this.runAs,
-    );
+    await this.session.deleteDockerPathAs(operation.path, this.runAs);
     return {};
-  }
-
-  private shouldUseDockerFilesystem(...paths: Array<string | undefined>) {
-    return (
-      !this.hostEditor ||
-      paths.some((path) => this.session.pathUsesSplitGrant(path))
-    );
   }
 }
 
+/**
+ * Docker file APIs run inside a running container using its default user or runAs.
+ * They require /bin/sh and standard GNU filesystem utilities, including realpath.
+ * Editor updates reject source files larger than 10 MB before applying changes.
+ * File helpers use an isolated environment; application and mount commands retain
+ * their configured environment.
+ * File operations do not use host Python or fall back to host paths. Path grants
+ * added after creation become container-visible only after resume or recreation.
+ */
 export class DockerSandboxClient implements SandboxClient<
   DockerSandboxClientOptions,
   DockerSandboxSessionState
@@ -2604,17 +2692,39 @@ async function inspectContainerRunning(containerId: string): Promise<boolean> {
 async function runDockerProcess(
   args: string[],
   input?: string | Uint8Array,
+  maxOutputBytes?: number,
 ): Promise<SandboxProcessResult> {
   const child = spawn('docker', args, {
     stdio: 'pipe',
   });
   const stdoutChunks: Buffer[] = [];
   const stderrChunks: Buffer[] = [];
+  let stdinError: Error | undefined;
+  let outputBytes = 0;
+  let outputLimitError: Error | undefined;
+  const captureOutput = (chunks: Buffer[], chunk: Buffer) => {
+    if (outputLimitError) return;
+    outputBytes += chunk.length;
+    if (maxOutputBytes !== undefined && outputBytes > maxOutputBytes) {
+      outputLimitError = new Error(
+        'Docker filesystem command exceeded its output limit.',
+      );
+      stdoutChunks.length = 0;
+      stderrChunks.length = 0;
+      child.kill('SIGKILL');
+      return;
+    }
+    chunks.push(chunk);
+  };
+  // A rejected command can close its input before buffered editor content drains.
+  child.stdin.on('error', (error: Error) => {
+    stdinError = error;
+  });
   child.stdout.on('data', (chunk: Buffer) => {
-    stdoutChunks.push(chunk);
+    captureOutput(stdoutChunks, chunk);
   });
   child.stderr.on('data', (chunk: Buffer) => {
-    stderrChunks.push(chunk);
+    captureOutput(stderrChunks, chunk);
   });
 
   const closed = new Promise<number>((resolve) => {
@@ -2623,7 +2733,6 @@ async function runDockerProcess(
     });
     child.on('error', (error) => {
       stderrChunks.push(Buffer.from(error.message));
-      resolve(1);
     });
   });
   if (input !== undefined) {
@@ -2631,8 +2740,24 @@ async function runDockerProcess(
   }
   child.stdin.end();
 
+  let status = await closed;
+  if (outputLimitError) {
+    return {
+      status: 1,
+      signal: null,
+      timedOut: false,
+      stdout: '',
+      stderr: outputLimitError.message,
+      error: outputLimitError,
+    };
+  }
+  // Preserve command diagnostics, but never report success for failed input.
+  if (status === 0 && stdinError) {
+    status = 1;
+    stderrChunks.push(Buffer.from(stdinError.message));
+  }
   return {
-    status: await closed,
+    status,
     signal: null,
     timedOut: false,
     stdout: Buffer.concat(stdoutChunks).toString('utf8'),
@@ -2873,25 +2998,6 @@ function dockerInContainerMountContainingPath(
   path?: string,
 ): string | undefined {
   return dockerMountContainingPath(manifest, path, isDockerInContainerMount);
-}
-
-function dockerSplitPathGrantContainingPath(
-  manifest: Manifest,
-  path?: string,
-): string | undefined {
-  const { grant } = new WorkspacePathPolicy({
-    root: manifest.root,
-    extraPathGrants: manifest.extraPathGrants,
-  }).resolve(path);
-  return grant && sandboxPathGrantUsesDistinctHostPath(grant)
-    ? grant.path
-    : undefined;
-}
-
-function sandboxPathGrantUsesDistinctHostPath(
-  grant: Manifest['extraPathGrants'][number],
-): boolean {
-  return grant.hostPath !== undefined && grant.hostPath !== grant.path;
 }
 
 function dockerMountContainingPath(
@@ -3153,21 +3259,32 @@ async function prepareDockerMountCredentialFiles(
   };
 }
 
+function dockerFileEnvironmentArgs(
+  environment: Record<string, string>,
+): string[] {
+  // Clear manifest values before starting even the trusted environment launcher.
+  const clearedEnvironment = new Set([
+    ...Object.keys(environment),
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'LD_AUDIT',
+  ]);
+  return [...clearedEnvironment].flatMap((key) => ['-e', `${key}=`]);
+}
+
 async function resolveTrustedDockerPath(
   session: DockerSandboxSession,
   path: string,
   action: string,
 ): Promise<string> {
-  const dockerArgs = ['exec', '-i', '-w', '/'];
-  const clearedEnvironment = new Set([
-    ...Object.keys(session.state.environment),
-    'LD_PRELOAD',
-    'LD_LIBRARY_PATH',
-    'LD_AUDIT',
-  ]);
-  for (const key of clearedEnvironment) {
-    dockerArgs.push('-e', `${key}=`);
-  }
+  session.resolveContainerFilesystemPath();
+  const dockerArgs = [
+    'exec',
+    '-i',
+    '-w',
+    '/',
+    ...dockerFileEnvironmentArgs(session.state.environment),
+  ];
   dockerArgs.push(
     '-e',
     'PATH=/usr/bin:/bin',

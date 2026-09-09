@@ -49,7 +49,15 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
     ...actual,
-    spawn: childProcessMocks.spawn,
+    // Container commands use the double; inherited host file workers use real pipes.
+    spawn: ((command, args, options) =>
+      args?.includes('-I') && args?.includes('-S')
+        ? actual.spawn(command, args, options ?? {})
+        : childProcessMocks.spawn(
+            command,
+            args,
+            options,
+          )) as typeof actual.spawn,
   };
 });
 
@@ -192,17 +200,20 @@ function dockerSpawnResult(args: {
   const child = new EventEmitter() as EventEmitter & {
     stdout: PassThrough;
     stderr: PassThrough;
-    stdin: { write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn> };
+    stdin: EventEmitter & {
+      write: ReturnType<typeof vi.fn>;
+      end: ReturnType<typeof vi.fn>;
+    };
     kill: ReturnType<typeof vi.fn>;
   };
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
-  child.stdin = {
+  child.stdin = Object.assign(new EventEmitter(), {
     write: vi.fn((chunk: string | Uint8Array) => {
       dockerStdinWrites.push(chunk);
     }),
     end: vi.fn(),
-  };
+  });
   const close = (status: number | null, signal: NodeJS.Signals | null) => {
     child.stdout.end();
     child.stderr.end();
@@ -236,10 +247,57 @@ describe('DockerSandboxClient unit behavior', () => {
     dockerStdinWrites.length = 0;
     processMocks.runSandboxProcess.mockReset();
     childProcessMocks.spawn.mockReset();
+    // These tests isolate Docker command routing. The dedicated container file-I/O
+    // suite exercises real symlink resolution and filesystem effects separately.
+    vi.spyOn(
+      DockerSandboxSession.prototype,
+      'validateContainerFilesystemPath',
+    ).mockImplementation(async function (
+      this: DockerSandboxSession,
+      path,
+      options,
+    ) {
+      return this.resolveContainerFilesystemPath(path, options);
+    });
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(rootDir, { recursive: true, force: true });
+  });
+
+  it('uses container file I/O without discovering host Python', async () => {
+    vi.stubEnv('OPENAI_AGENTS_PYTHON', '/missing-host-python');
+    try {
+      childProcessMocks.spawn.mockImplementation(() =>
+        dockerSpawnResult({
+          stdout: Buffer.from('container').toString('base64'),
+        }),
+      );
+      const session = new DockerSandboxSession({
+        state: {
+          workspaceRootPath: rootDir,
+          workspaceRootOwned: false,
+          manifest: new Manifest(),
+          environment: {},
+          containerId: 'container',
+          image: 'test:image',
+          defaultUser: '1000:1000',
+        },
+      });
+      expect(session.fileIOBackend).toBe('docker');
+      expect(
+        Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
+      ).toBe('container');
+      expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+        'docker',
+        expect.arrayContaining(['-u', '1000:1000', 'container']),
+        expect.any(Object),
+      );
+      expect(await readdir(rootDir)).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('rejects repository options before Docker update effects', async () => {
@@ -720,24 +778,22 @@ describe('DockerSandboxClient unit behavior', () => {
         '/',
         'container-123',
         '/bin/sh',
-        '-lc',
+        '-c',
         "test -d '/workspace/r2logs' && test -x '/workspace/r2logs'",
       ]),
       expect.any(Object),
     );
-    await expect(session.pathExists('r2logs/app.log')).rejects.toThrow(
-      /Docker volume mount path/,
-    );
-    await expect(session.readFile({ path: 'r2logs/app.log' })).rejects.toThrow(
-      /Docker volume mount path/,
-    );
+    await expect(session.pathExists('r2logs/app.log')).resolves.toBe(true);
+    await expect(
+      session.readFile({ path: 'r2logs/app.log' }),
+    ).resolves.toBeInstanceOf(Uint8Array);
     await expect(
       session.createEditor().createFile({
         type: 'create_file',
         path: 'r2logs/app.log',
         diff: '+hidden\n',
       }),
-    ).rejects.toThrow(/Docker volume mount path/);
+    ).rejects.toThrow(/read-only mount/);
 
     await session.close();
 
@@ -1063,7 +1119,7 @@ describe('DockerSandboxClient unit behavior', () => {
       }
       if (command.includes('find ')) {
         return dockerSpawnResult({
-          stdout: 'f\tfile.txt\nd\tnested\nl\tlink\n',
+          stdout: 'f\0file.txt\0d\0nested\0l\0link\0',
           status: 0,
         });
       }
@@ -1101,7 +1157,7 @@ describe('DockerSandboxClient unit behavior', () => {
         path: 'mounted/host-only.txt',
         diff: '+hidden\n',
       }),
-    ).rejects.toThrow(/in-container mount path/);
+    ).rejects.toThrow(/read-only mount/);
 
     const filesystemCommands = childProcessMocks.spawn.mock.calls
       .map(([, args]) => (args as string[]).join(' '))
@@ -2579,7 +2635,7 @@ describe('DockerSandboxClient unit behavior', () => {
         'node',
         'container-123',
         '/bin/sh',
-        '-lc',
+        '-c',
         "test -e '/workspace/notes.txt'",
       ]),
       { stdio: 'pipe' },
@@ -2631,7 +2687,7 @@ describe('DockerSandboxClient unit behavior', () => {
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.at(-1) ?? '';
       const path = '/workspace/.agents/.git/SKILL.md';
-      if (command.startsWith('base64 --')) {
+      if (command.includes('base64 --')) {
         return dockerSpawnResult({
           status: 1,
           stderr: `base64: ${path}: No such file or directory`,
@@ -2671,7 +2727,7 @@ describe('DockerSandboxClient unit behavior', () => {
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.at(-1) ?? '';
       const path = '/workspace/.agents';
-      if (command.startsWith('find ')) {
+      if (command.includes('find -H ')) {
         return dockerSpawnResult({
           status: 1,
           stderr: `find: ${path}: No such file or directory`,
@@ -2711,7 +2767,7 @@ describe('DockerSandboxClient unit behavior', () => {
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.at(-1) ?? '';
       const path = '/workspace/.agents';
-      if (command.startsWith('find ') || command.startsWith('test -e')) {
+      if (command.includes('find -H ') || command.startsWith('test -e')) {
         return dockerSpawnResult({
           status: 1,
           stderr: `find: ${path}: No such file or directory`,
@@ -2743,7 +2799,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.at(-1) ?? '';
-      if (command.startsWith('find ')) {
+      if (command.includes('find -H ')) {
         return dockerSpawnResult({
           status: 1,
           stderr: 'find: /workspace/.agents: Permission denied',
@@ -2779,8 +2835,8 @@ describe('DockerSandboxClient unit behavior', () => {
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.at(-1) ?? '';
       const missingPath = '/workspace/.agents/.git/SKILL.md';
-      if (command.startsWith('find ')) {
-        return dockerSpawnResult({ stdout: 'd\t.git\nd\tdynamic-skill\n' });
+      if (command.includes('find -H ')) {
+        return dockerSpawnResult({ stdout: 'd\0.git\0d\0dynamic-skill\0' });
       }
       if (command.includes(missingPath)) {
         return dockerSpawnResult({
@@ -2788,7 +2844,7 @@ describe('DockerSandboxClient unit behavior', () => {
           stderr: `base64: ${missingPath}: No such file or directory`,
         });
       }
-      if (command.startsWith('base64 --')) {
+      if (command.includes('base64 --')) {
         return dockerSpawnResult({
           stdout: Buffer.from(
             '---\nname: dynamic-skill\ndescription: Dynamic skill\n---\n',
@@ -3063,7 +3119,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
     childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
       const command = args.at(-1) ?? '';
-      if (command.startsWith('base64 --')) {
+      if (command.includes('base64 --')) {
         const bytes =
           command.includes('picture.png') || command.includes('payload.bin')
             ? pngBytes
@@ -3073,8 +3129,8 @@ describe('DockerSandboxClient unit behavior', () => {
           status: 0,
         });
       }
-      if (command.startsWith('find ')) {
-        return dockerSpawnResult({ stdout: 'f\tdata.txt\n', status: 0 });
+      if (command.includes('find -H ')) {
+        return dockerSpawnResult({ stdout: 'f\0data.txt\0', status: 0 });
       }
       return dockerSpawnResult({ status: 0 });
     });
@@ -3099,14 +3155,18 @@ describe('DockerSandboxClient unit behavior', () => {
     );
     const editor = session.createEditor();
 
-    await editor.deleteFile({
-      type: 'delete_file',
-      path: 'workspace.txt',
-    });
-    await expect(
-      stat(join(session.state.workspaceRootPath, 'workspace.txt')),
-    ).rejects.toThrow();
-    expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+    await editor.deleteFile({ type: 'delete_file', path: 'workspace.txt' });
+    expect(
+      await readFile(
+        join(session.state.workspaceRootPath, 'workspace.txt'),
+        'utf8',
+      ),
+    ).toBe('workspace');
+    expect(childProcessMocks.spawn).toHaveBeenCalledWith(
+      'docker',
+      expect.arrayContaining(["rm -- '/workspace/workspace.txt'"]),
+      expect.any(Object),
+    );
 
     await expect(session.pathExists('/mnt/shared-data/data.txt')).resolves.toBe(
       true,
@@ -3159,12 +3219,12 @@ describe('DockerSandboxClient unit behavior', () => {
     expect(dockerCommands).toEqual(
       expect.arrayContaining([
         "test -e '/mnt/shared-data/data.txt'",
-        "base64 -- '/mnt/shared-data/data.txt'",
-        "find '/mnt/shared-data' -mindepth 1 -maxdepth 1 -printf '%y\\t%f\\n'",
-        "base64 -- '/mnt/shared-data/picture.png'",
-        "base64 -- '/mnt/shared-data/fake.png'",
-        "base64 -- '/mnt/shared-data/payload.bin'",
-        "rm -f -- '/mnt/shared-data/data.txt'",
+        expect.stringContaining("base64 -- '/mnt/shared-data/data.txt'"),
+        "test -d '/mnt/shared-data' && find -H '/mnt/shared-data' -mindepth 1 -maxdepth 1 -printf '%y\\0%f\\0'",
+        expect.stringContaining("base64 -- '/mnt/shared-data/picture.png'"),
+        expect.stringContaining("base64 -- '/mnt/shared-data/fake.png'"),
+        expect.stringContaining("base64 -- '/mnt/shared-data/payload.bin'"),
+        "rm -- '/mnt/shared-data/data.txt'",
       ]),
     );
   });
@@ -4849,7 +4909,7 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
-  it('limits dynamically applied path grants to host filesystem helpers', async () => {
+  it('requires resume before using newly added path grants in the container', async () => {
     let runCount = 0;
     const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(
@@ -4887,7 +4947,7 @@ describe('DockerSandboxClient unit behavior', () => {
       }),
     );
 
-    await expect(session.pathExists(rootDir)).resolves.toBe(true);
+    await expect(session.pathExists(rootDir)).rejects.toThrow(/not mounted/);
     await expect(
       session.execCommand({
         cmd: 'pwd',
@@ -5239,6 +5299,7 @@ describe('DockerSandboxClient unit behavior', () => {
       labels: { team: 'platform' },
     });
 
+    expect(session.fileIOBackend).toBe('docker');
     expect(session.state.containerId).toBe('container-restarted');
     expect(session.state.labels).toEqual({ team: 'platform' });
     const runArgs = processMocks.runSandboxProcess.mock.calls.find(
