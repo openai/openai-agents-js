@@ -1,3 +1,4 @@
+import { getRunStateSessionTrustedConfig } from '../internal/sessionStateTrust';
 import type {
   ApplyPatchOperation,
   ApplyPatchResult,
@@ -89,7 +90,12 @@ import {
   relativeHostPathEscapesRoot,
 } from '../shared/hostPath';
 import { MAX_VIEW_IMAGE_BYTES, imageOutputFromBytes } from '../shared/media';
-import { UnixLocalFiles } from './shared/unixLocalFiles';
+import {
+  UnixLocalFiles,
+  preparedFileIO,
+  type LocalFileIOProtection,
+} from './shared/unixLocalFiles';
+export type { LocalFileIOProtection } from './shared/unixLocalFiles';
 import {
   elapsedSeconds,
   formatExecResponse,
@@ -120,6 +126,13 @@ const DEFAULT_SANDBOX_COMMAND_PATH =
   '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
 
 export interface UnixLocalSandboxClientOptions extends SandboxClientOptions {
+  /**
+   * Host file protection. Defaults to auto: use trusted Python 3 when available,
+   * otherwise retain Node filesystem behavior. required fails during preparation
+   * if protection is unavailable; off skips Python discovery. Python operations
+   * never fall back after failure. This does not confine shell commands.
+   */
+  fileIOProtection?: LocalFileIOProtection;
   workspaceBaseDir?: string;
   snapshot?: LocalSandboxSnapshotSpec;
   defaultShell?: string;
@@ -172,7 +185,7 @@ export class UnixLocalSandboxSession<
   private readonly activeProcesses = new Map<number, ActiveProcess>();
   private nextSessionId = 1;
   private closePromise?: Promise<void>;
-  private readonly files = new UnixLocalFiles();
+  private readonly files: UnixLocalFiles;
   private readonly filesystemRoots = new Map<
     string,
     { content: string; entry: string } | Error
@@ -182,11 +195,20 @@ export class UnixLocalSandboxSession<
     state: TState;
     defaultShell?: string;
     archiveLimits?: SandboxArchiveLimits | null;
+    fileIOProtection?: LocalFileIOProtection;
+    [preparedFileIO]?: UnixLocalFiles;
   }) {
+    this.files =
+      args[preparedFileIO] ?? new UnixLocalFiles(args.fileIOProtection);
     this.state = args.state;
     this.defaultShell = args.defaultShell;
     this.setArchiveLimits(args.archiveLimits);
     this.captureFilesystemRoots();
+  }
+
+  /** Selected once at creation or resume; never changes after an operation fails. */
+  get fileIOBackend(): 'python' | 'node' {
+    return this.files.backend;
   }
 
   setArchiveLimits(limits?: SandboxArchiveLimits | null): void {
@@ -410,7 +432,7 @@ export class UnixLocalSandboxSession<
     this.assertSessionUsable();
     const identity = await this.resolveCommandRunAs(runAs);
     const resolvedPath = this.resolveFilesystemPath(path);
-    if (process.platform === 'win32') {
+    if (this.files.backend === 'node') {
       return probeSandboxDirectoryExists({
         path: resolvedPath,
         runCommand: (command) =>
@@ -631,8 +653,8 @@ export class UnixLocalSandboxSession<
   ): string {
     // Preserve provider overrides that reject container-only paths before host I/O.
     const lexical = this.resolveSandboxPath(path, options);
-    // Docker also inherits host file operations on Windows.
-    if (process.platform === 'win32') return lexical;
+    // The Node backend retains released lexical path handling.
+    if (this.files.backend === 'node') return lexical;
     return this.resolveHostPath(path, options, mode);
   }
 
@@ -698,6 +720,7 @@ export class UnixLocalSandboxSession<
   }
 
   private captureFilesystemRoots(): void {
+    if (this.files.backend === 'node') return;
     const paths = [
       this.state.workspaceRootPath,
       ...this.state.manifest.extraPathGrants.map((grant) => grant.path),
@@ -724,6 +747,9 @@ export class UnixLocalSandboxSession<
   }
 
   private filesystemRoot(path: string): { content: string; entry: string } {
+    if (this.files.backend === 'node') {
+      return { content: realpathForValidation(path), entry: path };
+    }
     this.captureFilesystemRoots();
     const root = this.filesystemRoots.get(path)!;
     if (root instanceof Error) throw root;
@@ -1103,8 +1129,11 @@ export class UnixLocalSandboxSession<
 
 /**
  * Local sandbox client for Unix hosts.
- * On Unix hosts, file operations require Python 3 and its standard library. Set the host
- * OPENAI_AGENTS_PYTHON to an absolute trusted executable to override discovery.
+ * Host file protection defaults to auto and uses Python 3 when available.
+ * Set the host OPENAI_AGENTS_PYTHON to an absolute trusted executable to override
+ * discovery. Use fileIOProtection: 'required' to reject unavailable protection,
+ * or 'off' to use Node filesystem operations. Inspect session.fileIOBackend for
+ * the selected backend. Resumed sessions use current client configuration.
  */
 export class UnixLocalSandboxClient implements SandboxClient<
   UnixLocalSandboxClientOptions,
@@ -1143,6 +1172,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
       'UnixLocalSandboxClient',
       manifest,
     );
+    const files = new UnixLocalFiles(resolvedOptions.fileIOProtection);
     const workspaceRootPath = await mkdtemp(
       join(
         resolvedOptions.workspaceBaseDir ?? tmpdir(),
@@ -1159,6 +1189,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
     );
 
     return new UnixLocalSandboxSession({
+      [preparedFileIO]: files,
       state: {
         manifest,
         workspaceRootPath,
@@ -1175,7 +1206,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
 
   async resume(
     state: UnixLocalSandboxSessionState,
-    options: SandboxClientResumeOptions = {},
+    options: SandboxClientResumeOptions<UnixLocalSandboxClientOptions> = {},
   ): Promise<UnixLocalSandboxSession> {
     assertMountCredentialsRebound(state);
     validateMountCredentialBoundaries(state.manifest);
@@ -1185,8 +1216,15 @@ export class UnixLocalSandboxClient implements SandboxClient<
       options.archiveLimits === undefined
         ? this.options.archiveLimits
         : options.archiveLimits;
+    const currentOptions = (getRunStateSessionTrustedConfig(state)
+      ?.clientOptions ?? options.clientOptions) as
+      UnixLocalSandboxClientOptions | undefined;
+    const files = new UnixLocalFiles(
+      currentOptions?.fileIOProtection ?? this.options.fileIOProtection,
+    );
     const restoredState = await this.restoreIfNeeded(state, archiveLimits);
     return new UnixLocalSandboxSession({
+      [preparedFileIO]: files,
       state: restoredState,
       defaultShell: this.options.defaultShell,
       archiveLimits,

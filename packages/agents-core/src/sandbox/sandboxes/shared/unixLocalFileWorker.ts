@@ -90,6 +90,11 @@ def write_new(path, request, exclusive):
 
 def run(request):
     operation = request["operation"]
+    if operation == "probe":
+        if not {os.open, os.stat, os.mkdir, os.unlink}.issubset(os.supports_dir_fd) or os.scandir not in os.supports_fd or os.stat not in os.supports_follow_symlinks or not hasattr(os, "fchdir") or not hasattr(os, "fchown"):
+            raise RuntimeError("Descriptor-relative file operations are unavailable")
+        sys.stdout.write("ready")
+        return
     path = request["path"]
     if operation == "create":
         write_new(path, request, True)

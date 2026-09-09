@@ -1,3 +1,8 @@
+import {
+  UnixLocalFiles,
+  preparedFileIO,
+  type LocalFileIOProtection,
+} from './shared/unixLocalFiles';
 import { UserError } from '../../errors';
 import type {
   ApplyPatchOperation,
@@ -178,6 +183,12 @@ const RESERVED_DOCKER_LABELS = new Set([
 type DockerNetworkMode = 'none';
 
 export interface DockerSandboxClientOptions extends SandboxClientOptions {
+  /**
+   * Host file operations default to 'auto': use descriptor-relative Python I/O
+   * when available, otherwise Node I/O. 'required' rejects unavailable protection
+   * before setup; 'off' skips discovery. Container operations are unaffected.
+   */
+  fileIOProtection?: LocalFileIOProtection;
   image?: string;
   exposedPorts?: number[];
   networkMode?: DockerNetworkMode;
@@ -219,6 +230,8 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   constructor(args: {
     state: DockerSandboxSessionState;
+    fileIOProtection?: LocalFileIOProtection;
+    [preparedFileIO]?: UnixLocalFiles;
     defaultShell?: string;
     archiveLimits?: SandboxArchiveLimits | null;
   }) {
@@ -1061,6 +1074,7 @@ export class DockerSandboxClient implements SandboxClient<
     const { configuredExposedPorts, networkMode } =
       resolveDockerNetworkConfiguration(this.options, createArgs.options);
     const labels = resolveDockerLabels(this.options, createArgs.options);
+    const files = new UnixLocalFiles(resolvedOptions.fileIOProtection);
     const environment = await manifest.resolveEnvironment();
     validateMountEnvironmentCredentialBoundaries(manifest, environment);
     await ensureDockerAvailable();
@@ -1103,6 +1117,7 @@ export class DockerSandboxClient implements SandboxClient<
       labels,
     });
     const session = new DockerSandboxSession({
+      [preparedFileIO]: files,
       state: {
         sessionIdentity,
         materializedEntriesFingerprint:
@@ -1207,6 +1222,11 @@ export class DockerSandboxClient implements SandboxClient<
       resumeState.manifest,
       resumeState.environment,
     );
+    const currentOptions = (trustedConfig?.clientOptions ??
+      options.clientOptions) as DockerSandboxClientOptions | undefined;
+    const files = new UnixLocalFiles(
+      currentOptions?.fileIOProtection ?? this.options.fileIOProtection,
+    );
     await ensureDockerAvailable();
     await this.retryFailedCreateCleanups();
     const archiveLimits =
@@ -1215,10 +1235,12 @@ export class DockerSandboxClient implements SandboxClient<
         : options.archiveLimits;
     const restoredState = await this.restoreIfNeeded(
       resumeState,
+      files,
       archiveLimits,
     );
 
     return new DockerSandboxSession({
+      [preparedFileIO]: files,
       state: restoredState,
       archiveLimits,
     });
@@ -1419,6 +1441,7 @@ export class DockerSandboxClient implements SandboxClient<
 
   private async restoreIfNeeded(
     state: DockerSandboxSessionState,
+    files: UnixLocalFiles,
     archiveLimits?: SandboxArchiveLimits | null,
   ): Promise<DockerSandboxSessionState> {
     attachDockerSnapshotExcludedPaths(state);
@@ -1464,6 +1487,7 @@ export class DockerSandboxClient implements SandboxClient<
       }
       return await this.restoreSnapshotIntoNewWorkspace(
         trustedState,
+        files,
         archiveLimits,
         resolvedOptions.workspaceBaseDir,
       );
@@ -1494,6 +1518,7 @@ export class DockerSandboxClient implements SandboxClient<
         return await this.restartContainer(
           state,
           state.workspaceRootPath,
+          files,
           archiveLimits,
         );
       }
@@ -1502,6 +1527,7 @@ export class DockerSandboxClient implements SandboxClient<
         return await this.restartContainer(
           state,
           state.workspaceRootPath,
+          files,
           archiveLimits,
         );
       }
@@ -1515,6 +1541,7 @@ export class DockerSandboxClient implements SandboxClient<
         return await this.restartContainer(
           restoredState,
           restoredState.workspaceRootPath,
+          files,
           archiveLimits,
         );
       }
@@ -1540,11 +1567,16 @@ export class DockerSandboxClient implements SandboxClient<
     }
     await this.cleanupDockerResources(state);
 
-    return await this.restoreSnapshotIntoNewWorkspace(state, archiveLimits);
+    return await this.restoreSnapshotIntoNewWorkspace(
+      state,
+      files,
+      archiveLimits,
+    );
   }
 
   private async restoreSnapshotIntoNewWorkspace(
     state: DockerSandboxSessionState,
+    files: UnixLocalFiles,
     archiveLimits?: SandboxArchiveLimits | null,
     workspaceBaseDir = this.options.workspaceBaseDir,
   ): Promise<DockerSandboxSessionState> {
@@ -1564,6 +1596,7 @@ export class DockerSandboxClient implements SandboxClient<
       return await this.restartContainer(
         restoredState,
         workspaceRootPath,
+        files,
         archiveLimits,
       );
     } catch (error) {
@@ -1584,6 +1617,7 @@ export class DockerSandboxClient implements SandboxClient<
   private async restartContainer(
     state: DockerSandboxSessionState,
     workspaceRootPath: string,
+    files: UnixLocalFiles,
     archiveLimits?: SandboxArchiveLimits | null,
   ): Promise<DockerSandboxSessionState> {
     await materializeLocalWorkspaceManifestMounts(
@@ -1636,6 +1670,7 @@ export class DockerSandboxClient implements SandboxClient<
       exposedPorts: undefined,
     };
     const session = new DockerSandboxSession({
+      [preparedFileIO]: files,
       state: nextState,
       archiveLimits,
     });

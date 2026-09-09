@@ -1,5 +1,5 @@
 ---
-'@openai/agents-core': minor
+'@openai/agents-core': patch
 ---
 
-fix: prevent replacement-symlink races in UnixLocal file/editor operations and Docker's inherited Unix host operations using descriptor-relative workers; these operations on Unix hosts now require a trusted Python 3 installation.
+fix: prevent replacement-symlink races in UnixLocal and Docker host file/editor operations when trusted Python support is available; default fileIOProtection to auto, with required and off modes and an inspectable session.fileIOBackend.

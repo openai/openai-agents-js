@@ -58,8 +58,12 @@ async function main() {
   const model = getStringArg('--model', DEFAULT_MODEL);
   const question = getStringArg('--question', DEFAULT_QUESTION);
   const manifest = buildManifest();
-  const client = new UnixLocalSandboxClient();
+  // 'auto' uses Python protection when available and otherwise uses Node I/O.
+  // Use 'required' to fail before setup without protection, or 'off' to skip it.
+  // This applies to file APIs; shell commands still run directly on the host.
+  const client = new UnixLocalSandboxClient({ fileIOProtection: 'auto' });
   const session = await client.create(manifest);
+  console.log(`[host file backend] ${session.fileIOBackend}`);
 
   const agent = new SandboxAgent({
     name: 'Unix Local Renewal Analyst',

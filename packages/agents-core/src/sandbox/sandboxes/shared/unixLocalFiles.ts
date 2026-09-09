@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { accessSync, constants, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
@@ -12,6 +12,12 @@ import {
 import { applyOwnershipRecursive, pathExists } from './localWorkspace';
 import { UserError } from '../../../errors';
 import { UNIX_LOCAL_FILE_WORKER } from './unixLocalFileWorker';
+
+/** Controls optional descriptor-relative protection for Unix host file operations. */
+export type LocalFileIOProtection = 'auto' | 'required' | 'off';
+
+// Transfer trusted preparation across setup without selecting a backend twice.
+export const preparedFileIO = Symbol('preparedFileIO');
 
 type FileRequest = {
   operation:
@@ -31,7 +37,15 @@ type FileRequest = {
 };
 
 // Resolve from trusted host configuration, never the manifest's command environment.
-function pythonExecutable(): string {
+function pythonExecutable(mode: LocalFileIOProtection): string | undefined {
+  if (mode === 'off') return undefined;
+  if (process.platform === 'win32') {
+    if (mode === 'required')
+      throw new UserError(
+        'Required file I/O protection is supported only on Unix hosts.',
+      );
+    return undefined;
+  }
   const configured = process.env.OPENAI_AGENTS_PYTHON;
   const candidates = configured
     ? isAbsolute(configured)
@@ -44,18 +58,49 @@ function pythonExecutable(): string {
     try {
       const executable = realpathSync(candidate);
       accessSync(executable, constants.X_OK);
-      return executable;
+      const probe = spawnSync(
+        executable,
+        [
+          '-I',
+          '-S',
+          '-c',
+          UNIX_LOCAL_FILE_WORKER,
+          JSON.stringify({ operation: 'probe' }),
+        ],
+        {
+          cwd: '/',
+          env: { PATH: '/usr/bin:/bin' },
+          timeout: 5000,
+          maxBuffer: 4096,
+          encoding: 'utf8',
+        },
+      );
+      if (!probe.error && probe.status === 0 && probe.stdout === 'ready')
+        return executable;
     } catch {
       // Try the next trusted installation path.
     }
   }
-  throw new UserError(
-    'UnixLocal file operations require Python 3. Set OPENAI_AGENTS_PYTHON to an absolute trusted Python 3 executable path.',
-  );
+  if (mode === 'required') {
+    throw new UserError(
+      'Required file I/O protection needs a trusted Python 3 installation with descriptor-relative filesystem support. Set the host OPENAI_AGENTS_PYTHON to an absolute executable path.',
+    );
+  }
+  return undefined;
 }
 
 /** Owns trusted file workers independently of sandbox shell processes. */
 export class UnixLocalFiles {
+  private readonly executable: string | undefined;
+
+  constructor(mode: LocalFileIOProtection = 'auto') {
+    this.executable = pythonExecutable(mode);
+  }
+
+  get backend(): 'python' | 'node' {
+    return this.executable ? 'python' : 'node';
+  }
+
   private readonly active = new Set<{
     cancel: () => void;
     done: Promise<void>;
@@ -83,12 +128,9 @@ export class UnixLocalFiles {
   ): Promise<Buffer> {
     if (this.closed)
       throw new UserError('UnixLocal file operations are closed.');
-    if (process.platform === 'win32') {
-      return runWindowsHostFileOperation(request, options);
-    }
-    const executable = pythonExecutable();
+    if (!this.executable) return runNodeHostFileOperation(request, options);
     const child = spawn(
-      executable,
+      this.executable,
       ['-I', '-S', '-c', UNIX_LOCAL_FILE_WORKER, JSON.stringify(request)],
       {
         cwd: '/',
@@ -177,9 +219,8 @@ export class UnixLocalFiles {
   }
 }
 
-// Docker's Windows host fallback retains Node filesystem behavior; POSIX workers
-// protect Unix hosts only and are not a Windows runtime prerequisite.
-async function runWindowsHostFileOperation(
+// Preserve the released host filesystem pipeline when protection is not selected.
+async function runNodeHostFileOperation(
   request: FileRequest,
   options: { input?: string; update?: (current: string) => string },
 ): Promise<Buffer> {

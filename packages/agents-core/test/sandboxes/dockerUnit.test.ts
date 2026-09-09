@@ -250,23 +250,78 @@ describe('DockerSandboxClient unit behavior', () => {
     await rm(rootDir, { recursive: true, force: true });
   });
 
+  it('selects host protection from current create options before Docker setup', async () => {
+    vi.stubEnv('OPENAI_AGENTS_PYTHON', join(rootDir, 'missing-python'));
+    try {
+      const manifest = new Manifest();
+      const environment = vi.spyOn(manifest, 'resolveEnvironment');
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        fileIOProtection: 'off',
+      });
+      await expect(
+        client.create(manifest, { fileIOProtection: 'required' }),
+      ).rejects.toThrow(/Required file I\/O protection/);
+      expect(environment).not.toHaveBeenCalled();
+      expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+      processMocks.runSandboxProcess.mockImplementation(
+        async (_command: string, args: string[]) =>
+          args[0] === 'run' ? success('container-mode') : success(),
+      );
+      const session = await client.create(manifest, {
+        fileIOProtection: 'auto',
+      });
+      expect(session.fileIOBackend).toBe('node');
+      await session
+        .createEditor()
+        .createFile({ type: 'create_file', path: 'host.txt', diff: '+host' });
+      expect(
+        Buffer.from(await session.readFile({ path: 'host.txt' })).toString(),
+      ).toBe('host');
+      processMocks.runSandboxProcess.mockClear();
+      await expect(
+        client.resume(session.state, {
+          clientOptions: { fileIOProtection: 'required' },
+        }),
+      ).rejects.toThrow(/Required file I\/O protection/);
+      expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('keeps Windows host file operations independent of Python', async () => {
-    const session = new DockerSandboxSession({
-      state: {
-        workspaceRootPath: rootDir,
-        workspaceRootOwned: false,
-        manifest: new Manifest(),
-        environment: {},
-        containerId: 'container',
-        image: 'test:image',
-      },
-    });
     // Exercise the platform routing boundary on the host filesystem; no container
     // command or POSIX worker is needed for Docker's host fallback.
     const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
     Object.defineProperty(process, 'platform', { value: 'win32' });
     vi.stubEnv('OPENAI_AGENTS_PYTHON', '/missing-python');
     try {
+      expect(
+        () =>
+          new DockerSandboxSession({
+            fileIOProtection: 'required',
+            state: {
+              workspaceRootPath: rootDir,
+              workspaceRootOwned: false,
+              manifest: new Manifest(),
+              environment: {},
+              containerId: 'container',
+              image: 'test:image',
+            },
+          }),
+      ).toThrow(/only on Unix hosts/);
+
+      const session = new DockerSandboxSession({
+        state: {
+          workspaceRootPath: rootDir,
+          workspaceRootOwned: false,
+          manifest: new Manifest(),
+          environment: {},
+          containerId: 'container',
+          image: 'test:image',
+        },
+      });
       const editor = session.createEditor();
       await editor.createFile({
         type: 'create_file',
@@ -5281,19 +5336,33 @@ describe('DockerSandboxClient unit behavior', () => {
     const client = new DockerSandboxClient({
       workspaceBaseDir: rootDir,
       image: 'custom:image',
+      fileIOProtection: 'required',
     });
 
-    const session = await client.resume({
-      manifest: new Manifest(),
-      workspaceRootPath,
-      workspaceRootOwned: false,
-      environment: {},
-      snapshotSpec: null,
-      snapshot: null,
-      image: 'custom:image',
-      containerId: 'container-stopped',
-      labels: { team: 'platform' },
+    const session = await client.resume(
+      {
+        manifest: new Manifest(),
+        workspaceRootPath,
+        workspaceRootOwned: false,
+        environment: {},
+        snapshotSpec: null,
+        snapshot: null,
+        image: 'custom:image',
+        containerId: 'container-stopped',
+        labels: { team: 'platform' },
+      },
+      { clientOptions: { fileIOProtection: 'off' } },
+    );
+
+    expect(session.fileIOBackend).toBe('node');
+    await session.createEditor().createFile({
+      type: 'create_file',
+      path: 'resumed.txt',
+      diff: '+resumed',
     });
+    expect(await readFile(join(workspaceRootPath, 'resumed.txt'), 'utf8')).toBe(
+      'resumed',
+    );
 
     expect(session.state.containerId).toBe('container-restarted');
     expect(session.state.labels).toEqual({ team: 'platform' });

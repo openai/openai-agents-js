@@ -48,6 +48,7 @@ describe.skipIf(process.platform === 'win32')(
       await writeFile(join(outside, 'note.txt'), 'outside\n');
       session = await new UnixLocalSandboxClient({
         workspaceBaseDir: root,
+        fileIOProtection: 'required',
       }).create(
         new Manifest({
           entries: {
@@ -604,18 +605,20 @@ time.sleep(60)
       );
     });
 
-    it('fails before writing when Python is unavailable', async () => {
+    it('keeps the selected interpreter when the host environment changes', async () => {
       vi.stubEnv('OPENAI_AGENTS_PYTHON', join(root, 'missing-python'));
-      await expect(
-        session.createEditor().createFile({
-          type: 'create_file',
-          path: 'new/note.txt',
-          diff: '+blocked',
-        }),
-      ).rejects.toThrow(/require Python 3/);
-      await expect(
-        lstat(join(session.state.workspaceRootPath, 'new')),
-      ).rejects.toMatchObject({ code: 'ENOENT' });
+      await session.createEditor().createFile({
+        type: 'create_file',
+        path: 'new/note.txt',
+        diff: '+created',
+      });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'new/note.txt'),
+          'utf8',
+        ),
+      ).toBe('created');
+      expect(session.fileIOBackend).toBe('python');
     });
 
     it('preserves an open failure when directory cleanup also fails', async () => {
