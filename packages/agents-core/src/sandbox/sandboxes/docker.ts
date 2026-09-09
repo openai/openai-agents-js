@@ -850,7 +850,10 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       result = await this.runDockerFilesystemCommand(command, {
         runAs: 'root',
         input: options.input,
-        environment: options.environment ?? this.stagedMountEnvironment,
+        mountEnvironment:
+          options.environment ??
+          this.stagedMountEnvironment ??
+          this.state.environment,
       });
     } catch {
       throw new UserError(`DockerSandboxClient failed to ${action}.`);
@@ -876,7 +879,6 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     options: {
       runAs?: string;
       input?: string | Uint8Array;
-      environment?: Record<string, string>;
       redactProcessOutput?: boolean;
     } = {},
     action: string,
@@ -900,21 +902,36 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     options: {
       runAs?: string;
       input?: string | Uint8Array;
-      environment?: Record<string, string>;
+      mountEnvironment?: Record<string, string>;
     } = {},
   ): Promise<SandboxProcessResult> {
     this.assertSessionUsable();
     const dockerArgs = ['exec', '-i', '-w', '/'];
-    for (const [key, value] of Object.entries(
-      options.environment ?? this.state.environment,
-    )) {
-      dockerArgs.push('-e', `${key}=${value}`);
+    if (options.mountEnvironment) {
+      for (const [key, value] of Object.entries(options.mountEnvironment)) {
+        dockerArgs.push('-e', `${key}=${value}`);
+      }
+    } else {
+      dockerArgs.push(...dockerFileEnvironmentArgs(this.state.environment));
     }
     const runAs = options.runAs ?? this.state.defaultUser;
     if (runAs) {
       dockerArgs.push('-u', runAs);
     }
-    dockerArgs.push(this.state.containerId, '/bin/sh', '-lc', command);
+    dockerArgs.push(this.state.containerId);
+    if (options.mountEnvironment) {
+      dockerArgs.push('/bin/sh', '-lc', command);
+    } else {
+      dockerArgs.push(
+        '/usr/bin/env',
+        '-i',
+        'PATH=/usr/bin:/bin',
+        'LC_ALL=C',
+        '/bin/sh',
+        '-c',
+        command,
+      );
+    }
 
     return await runDockerProcess(dockerArgs, options.input);
   }
@@ -1037,6 +1054,8 @@ class DockerSandboxEditor implements Editor {
 /**
  * Docker file APIs run inside a running container using its default user or runAs.
  * They require /bin/sh and standard GNU filesystem utilities, including realpath.
+ * File helpers use an isolated environment; application and mount commands retain
+ * their configured environment.
  * File operations do not use host Python or fall back to host paths. Path grants
  * added after creation become container-visible only after resume or recreation.
  */
@@ -3172,22 +3191,32 @@ async function prepareDockerMountCredentialFiles(
   };
 }
 
+function dockerFileEnvironmentArgs(
+  environment: Record<string, string>,
+): string[] {
+  // Clear manifest values before starting even the trusted environment launcher.
+  const clearedEnvironment = new Set([
+    ...Object.keys(environment),
+    'LD_PRELOAD',
+    'LD_LIBRARY_PATH',
+    'LD_AUDIT',
+  ]);
+  return [...clearedEnvironment].flatMap((key) => ['-e', `${key}=`]);
+}
+
 async function resolveTrustedDockerPath(
   session: DockerSandboxSession,
   path: string,
   action: string,
 ): Promise<string> {
   session.resolveContainerFilesystemPath();
-  const dockerArgs = ['exec', '-i', '-w', '/'];
-  const clearedEnvironment = new Set([
-    ...Object.keys(session.state.environment),
-    'LD_PRELOAD',
-    'LD_LIBRARY_PATH',
-    'LD_AUDIT',
-  ]);
-  for (const key of clearedEnvironment) {
-    dockerArgs.push('-e', `${key}=`);
-  }
+  const dockerArgs = [
+    'exec',
+    '-i',
+    '-w',
+    '/',
+    ...dockerFileEnvironmentArgs(session.state.environment),
+  ];
   dockerArgs.push(
     '-e',
     'PATH=/usr/bin:/bin',

@@ -213,6 +213,67 @@ describe('DockerSandboxClient', () => {
   );
 
   itIfDocker(
+    'keeps application environment separate from file helpers',
+    async () => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-environment-test-'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+      });
+      const session = await client.create(
+        new Manifest({
+          environment: {
+            PATH: '/application-only/bin',
+            APP_MODE: 'application',
+          },
+          entries: { 'note.txt': { type: 'file', content: 'before\n' } },
+        }),
+      );
+      cleanupContainerIds.add(session.state.containerId);
+      try {
+        expect(
+          await session.execCommand({
+            cmd: 'printf "%s:%s\\n" "$PATH" "$APP_MODE"',
+            login: false,
+          }),
+        ).toContain('/application-only/bin:application');
+        expect(
+          Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
+        ).toBe('before\n');
+        await session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'note.txt',
+          moveTo: 'moved.txt',
+          diff: '@@\n-before\n+after\n',
+        });
+        expect(await session.pathExists('note.txt')).toBe(false);
+        expect(
+          Buffer.from(await session.readFile({ path: 'moved.txt' })).toString(),
+        ).toBe('after\n');
+        await session.applyManifest(
+          new Manifest({ environment: { APP_MODE: 'updated' } }),
+        );
+        expect(
+          await session.runDockerMountCommand(
+            '/usr/bin/printenv APP_MODE',
+            'inspect mount environment',
+          ),
+        ).toBe('updated\n');
+        await session
+          .createEditor()
+          .deleteFile({ type: 'delete_file', path: 'moved.txt' });
+        expect(await session.listDir({ path: '.' })).toEqual([]);
+      } finally {
+        await session.close();
+        cleanupContainerIds.delete(session.state.containerId);
+      }
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
     'reuses a running container when bind mount authority is unchanged',
     async () => {
       rootDir = await mkdtemp(

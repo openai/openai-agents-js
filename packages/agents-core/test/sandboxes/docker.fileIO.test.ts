@@ -113,11 +113,31 @@ while (true) {
             `-exec /bin/sh -c 'for file do kind=o; if [ -L "$file" ]; then kind=l; elif [ -d "$file" ]; then kind=d; elif [ -f "$file" ]; then kind=f; fi; printf "%s\\0%s\\0" "$kind" "\${file##*/}"; done' sh {} +`,
           );
         }
-        return native.spawn('/bin/sh', ['-c', script], {
-          ...options,
-          cwd: '/',
-          env: { PATH: '/usr/bin:/bin' },
-        });
+        const environment: Record<string, string> = {
+          PATH: '/usr/bin:/bin',
+          ...session.state.environment,
+        };
+        for (let index = 0; index < args.length; index += 1) {
+          if (args[index] !== '-e') continue;
+          const assignment = args[++index]!;
+          const separator = assignment.indexOf('=');
+          environment[assignment.slice(0, separator)] = assignment.slice(
+            separator + 1,
+          );
+        }
+        const launcher = args.indexOf('/usr/bin/env');
+        return native.spawn(
+          launcher >= 0 ? '/usr/bin/env' : '/bin/sh',
+          // Keep container commands away from the host's login profile.
+          launcher >= 0
+            ? [...args.slice(launcher + 1, -1), script]
+            : ['-c', script],
+          {
+            ...options,
+            cwd: '/',
+            env: environment,
+          },
+        );
       }) as typeof childProcess.spawn);
       session = new DockerSandboxSession({
         state: {
@@ -136,6 +156,84 @@ while (true) {
       await session.close();
       vi.restoreAllMocks();
       await rm(root, { recursive: true, force: true });
+    });
+
+    it('isolates file helpers from application environment and retains mount environment', async () => {
+      const manifest = new Manifest({
+        root: workspace,
+        environment: {
+          PATH: '/application-only/bin',
+          APP_MODE: 'application',
+          POSIXLY_CORRECT: '1',
+        },
+      });
+      session.state.manifest = manifest;
+      session.state.environment = await manifest.resolveEnvironment();
+
+      expect(
+        await session.execCommand({
+          cmd: 'printf "%s:%s\\n" "$PATH" "$APP_MODE"',
+          login: false,
+        }),
+      ).toContain('/application-only/bin:application');
+      commands.length = 0;
+      expect(
+        Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
+      ).toBe('before\n');
+      expect(await session.pathExists('missing.txt')).toBe(false);
+      expect(await session.directoryExists('.')).toBe(true);
+      expect(await session.listDir({ path: '.' })).toEqual([
+        { name: 'note.txt', path: 'note.txt', type: 'file' },
+      ]);
+      await writeFile(join(workspace, 'image.png'), png);
+      expect(await session.viewImage({ path: 'image.png' })).toMatchObject({
+        image: { data: Uint8Array.from(png), mediaType: 'image/png' },
+      });
+      const editor = session.createEditor();
+      await editor.createFile({
+        type: 'create_file',
+        path: 'nested/new.txt',
+        diff: '+draft\n+',
+      });
+      await editor.updateFile({
+        type: 'update_file',
+        path: 'nested/new.txt',
+        moveTo: 'moved.txt',
+        diff: '@@\n-draft\n+after\n',
+      });
+      expect(
+        Buffer.from(await session.readFile({ path: 'moved.txt' })).toString(),
+      ).toBe('after\n');
+      await editor.deleteFile({ type: 'delete_file', path: 'moved.txt' });
+      for (const args of commands.filter(
+        (args) => !args.includes('/usr/bin/realpath'),
+      )) {
+        expect(args).toEqual(
+          expect.arrayContaining([
+            '/usr/bin/env',
+            '-i',
+            'PATH=/usr/bin:/bin',
+            'LC_ALL=C',
+            '/bin/sh',
+            '-c',
+          ]),
+        );
+        expect(args).not.toContain('APP_MODE=application');
+        expect(args).not.toContain('-lc');
+      }
+      expect(
+        await session.runDockerMountCommand(
+          '/usr/bin/printenv APP_MODE',
+          'inspect mount environment',
+        ),
+      ).toBe('application\n');
+      expect(
+        await session.runDockerMountCommand(
+          '/usr/bin/printenv APP_MODE',
+          'inspect explicit mount environment',
+          { environment: { APP_MODE: 'mount' } },
+        ),
+      ).toBe('mount\n');
     });
 
     it('reads container bytes with the default or explicit user, including after stop', async () => {
