@@ -213,7 +213,7 @@ export interface DockerSandboxSessionState extends UnixLocalSandboxSessionState 
 
 export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxSessionState> {
   private containerClosed = false;
-  private activeCloseCalls = 0;
+  private closeStarted = false;
   private stagedMountEnvironment?: Record<string, string>;
   private readonly mountedPathGrants: Manifest['extraPathGrants'];
 
@@ -240,7 +240,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   protected override assertSessionUsable(): void {
     super.assertSessionUsable();
-    if (this.containerClosed || this.activeCloseCalls > 0) {
+    if (this.containerClosed || this.closeStarted) {
       throw new UserError('Docker sandbox session is closed.');
     }
   }
@@ -920,12 +920,8 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   override async close(): Promise<void> {
-    this.activeCloseCalls += 1;
-    try {
-      await this.closeContainerResources();
-    } finally {
-      this.activeCloseCalls -= 1;
-    }
+    this.closeStarted = true;
+    await this.closeContainerResources();
   }
 
   private async closeContainerResources(): Promise<void> {

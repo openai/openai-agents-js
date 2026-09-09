@@ -104,13 +104,15 @@ while (true) {
         }
         let script = args.at(-1)!;
         beforeCommand?.(script);
-        // BSD base64 takes an input stream; GNU base64 also supports that stream.
-        script = script.replace(/base64 -- /gu, 'base64 < ');
-        // Preserve GNU find's type/name records using portable host utilities.
-        script = script.replace(
-          "-printf '%y\\0%f\\0'",
-          `-exec /bin/sh -c 'for file do kind=o; if [ -L "$file" ]; then kind=l; elif [ -d "$file" ]; then kind=d; elif [ -f "$file" ]; then kind=f; fi; printf "%s\\0%s\\0" "$kind" "\${file##*/}"; done' sh {} +`,
-        );
+        if (process.platform === 'darwin') {
+          // Preserve base64's exit status instead of using shell redirection.
+          script = script.replace(/base64 -- /gu, 'base64 -i ');
+          // Preserve GNU find's type/name records using portable host utilities.
+          script = script.replace(
+            "-printf '%y\\0%f\\0'",
+            `-exec /bin/sh -c 'for file do kind=o; if [ -L "$file" ]; then kind=l; elif [ -d "$file" ]; then kind=d; elif [ -f "$file" ]; then kind=f; fi; printf "%s\\0%s\\0" "$kind" "\${file##*/}"; done' sh {} +`,
+          );
+        }
         return native.spawn('/bin/sh', ['-c', script], {
           ...options,
           cwd: '/',
@@ -422,6 +424,36 @@ while (true) {
       await expect(session.viewImage({ path: 'missing.png' })).rejects.toThrow(
         /not found/,
       );
+    });
+
+    it('keeps operations closed after failed removal and allows cleanup to retry', async () => {
+      const editor = session.createEditor();
+      dockerProcess.run.mockRejectedValueOnce(new Error('remove failed'));
+
+      await expect(session.close()).rejects.toThrow('remove failed');
+      await expect(session.readFile({ path: 'note.txt' })).rejects.toThrow(
+        /closed/,
+      );
+      expect(() => session.createEditor()).toThrow(/closed/);
+      await expect(
+        editor.createFile({
+          type: 'create_file',
+          path: 'after-close.txt',
+          diff: '+content',
+        }),
+      ).rejects.toThrow(/closed/);
+      expect(commands).toEqual([]);
+      expect(dockerProcess.run).toHaveBeenCalledTimes(1);
+
+      await session.close();
+      expect(dockerProcess.run).toHaveBeenCalledTimes(2);
+      expect(dockerProcess.run.mock.calls[1]?.[1]).toEqual([
+        'rm',
+        '-f',
+        'test-container',
+      ]);
+      await expect(session.pathExists('note.txt')).rejects.toThrow(/closed/);
+      expect(commands).toEqual([]);
     });
 
     it('keeps operations closed while a concurrent container removal is pending', async () => {

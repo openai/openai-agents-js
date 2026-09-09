@@ -17,7 +17,8 @@ const ONE_BY_ONE_PNG = Uint8Array.from(
   ),
 );
 
-const DOCKER_TEST_IMAGE = 'busybox:1.36';
+// Match the client's default image, including its GNU filesystem utilities.
+const DOCKER_TEST_IMAGE = 'python:3.14-slim';
 const DOCKER_CLI_TIMEOUT_MS = 30_000;
 const DOCKER_TEST_TIMEOUT_MS = 180_000;
 const ACTIVE_PROCESS_POLL_MS = 50;

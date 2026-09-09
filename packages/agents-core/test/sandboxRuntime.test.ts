@@ -561,7 +561,7 @@ describe('prepareSandboxAgent', () => {
     );
   });
 
-  it('does not suggest apply_patch for mounts unreachable by the active Docker editor', async () => {
+  it('suggests apply_patch for writable container and volume mounts reachable by the Docker editor', async () => {
     const manifest = new Manifest({
       entries: {
         container: {
@@ -591,8 +591,8 @@ describe('prepareSandboxAgent', () => {
 
     expect(instructions).toContain('- /workspace/container (read-write)');
     expect(instructions).toContain('- /workspace/volume (read-write)');
-    expect(instructions).not.toContain(
-      'Use `apply_patch` directly for text edits',
+    expect(instructions).toContain(
+      'Use `apply_patch` directly for text edits only under these read-write mounted remote paths: `/workspace/container`, `/workspace/volume`.',
     );
     expect(instructions).toContain(
       'For shell-based edits under a read-write mounted remote path',
