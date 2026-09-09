@@ -1,8 +1,10 @@
 import * as childProcess from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { chmodSync, writeFileSync } from 'node:fs';
 import {
+  chmod,
   lstat,
   mkdir,
+  open,
   mkdtemp,
   readFile,
   realpath,
@@ -234,6 +236,121 @@ while (true) {
           { environment: { APP_MODE: 'mount' } },
         ),
       ).toBe('mount\n');
+    });
+
+    it('rejects newly declared nested grants until they are mounted', async () => {
+      const nestedPath = join(outside, 'nested');
+      await mkdir(nestedPath);
+      const granted = new DockerSandboxSession({
+        state: {
+          ...session.state,
+          manifest: new Manifest({
+            root: workspace,
+            extraPathGrants: [
+              { path: outside, hostPath: host, readOnly: false },
+            ],
+          }),
+        },
+      });
+      try {
+        await granted.applyManifest(
+          new Manifest({
+            extraPathGrants: [{ path: nestedPath, readOnly: false }],
+          }),
+        );
+        commands.length = 0;
+        await expect(
+          granted.readFile({ path: join(nestedPath, 'note.txt') }),
+        ).rejects.toThrow(/not mounted.*Resume or recreate/);
+        await expect(
+          granted.createEditor().updateFile({
+            type: 'update_file',
+            path: join(nestedPath, 'note.txt'),
+            diff: '@@\n-before\n+after\n',
+          }),
+        ).rejects.toThrow(/not mounted/);
+        expect(commands).toEqual([]);
+      } finally {
+        await granted.close();
+      }
+    });
+
+    it('rejects host materialization runAs before resolving a host identity', async () => {
+      await expect(
+        session.materializeEntry({
+          path: 'hydrated.txt',
+          entry: { type: 'file', content: 'memory' },
+          runAs: 'container-only-user',
+        }),
+      ).rejects.toThrow(/runAs for host-side materialization/);
+      expect(commands).toEqual([]);
+      await expect(lstat(join(host, 'hydrated.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await session.materializeEntry({
+        path: 'hydrated.txt',
+        entry: { type: 'file', content: 'memory' },
+      });
+      expect(await readFile(join(host, 'hydrated.txt'), 'utf8')).toBe('memory');
+    });
+
+    it.skipIf(process.getuid?.() === 0)(
+      'preserves image permission failures below an unsearchable directory',
+      async () => {
+        const directory = join(workspace, 'private');
+        await mkdir(directory);
+        await writeFile(join(directory, 'image.png'), png);
+        // The real container resolver runs as root; restrict access after that step.
+        beforeCommand = (command) => {
+          if (command.includes('base64')) chmodSync(directory, 0);
+        };
+        try {
+          await expect(
+            session.viewImage({ path: 'private/image.png', runAs: 'reader' }),
+          ).rejects.toThrow(/permission denied/iu);
+        } finally {
+          beforeCommand = undefined;
+          await chmod(directory, 0o700);
+        }
+        expect(
+          await session.viewImage({ path: 'private/image.png' }),
+        ).toMatchObject({
+          image: { mediaType: 'image/png' },
+        });
+      },
+    );
+
+    it('bounds editor source reads and preserves the source on rejection', async () => {
+      const path = join(workspace, 'large.txt');
+      const source = await open(path, 'w+');
+      const prefix = Buffer.from('source preserved\n');
+      const size = 10 * 1024 * 1024 + 256 * 1024;
+      try {
+        await source.write(prefix);
+        await source.truncate(size);
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'large.txt',
+            moveTo: 'destination.txt',
+            diff: '@@\n-source preserved\n+changed\n',
+          }),
+        ).rejects.toThrow(
+          'Docker filesystem command exceeded its output limit.',
+        );
+        expect((await source.stat()).size).toBe(size);
+        const actual = Buffer.alloc(prefix.length);
+        await source.read(actual, 0, actual.length, 0);
+        expect(actual).toEqual(prefix);
+        await expect(
+          lstat(join(workspace, 'destination.txt')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(
+          Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
+        ).toBe('before\n');
+      } finally {
+        await source.close();
+      }
     });
 
     it('reads container bytes with the default or explicit user, including after stop', async () => {

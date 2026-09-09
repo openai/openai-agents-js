@@ -233,6 +233,15 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     return 'docker';
   }
 
+  override async resolveFilesystemRunAs(runAs?: string): Promise<undefined> {
+    if (runAs && runAs.trim().length > 0) {
+      throw new UserError(
+        'DockerSandboxClient does not support runAs for host-side materialization. Use container file APIs or execCommand instead.',
+      );
+    }
+    return undefined;
+  }
+
   override createEditor(runAs?: string): Editor {
     this.assertSessionUsable();
     return new DockerSandboxEditor(this, runAs);
@@ -246,11 +255,10 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   override async viewImage(args: ViewImageArgs): Promise<ToolOutputImage> {
-    const bytes = await this.readDockerFileAs(
-      args.path,
-      args.runAs,
-      MAX_VIEW_IMAGE_BYTES,
-    );
+    const bytes = await this.readDockerFileAs(args.path, args.runAs, {
+      maxBytes: MAX_VIEW_IMAGE_BYTES,
+      image: true,
+    });
     return imageOutputFromBytes(args.path, bytes);
   }
 
@@ -673,14 +681,18 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       root: this.state.manifest.root,
       extraPathGrants: this.state.manifest.extraPathGrants,
     }).resolve(path, options);
+    const selectedGrant = resolved.grant;
     if (
-      resolved.grant &&
-      !this.mountedPathGrants.some((grant) =>
-        pathWithinDockerMount(resolved.path, grant.path),
+      selectedGrant &&
+      !this.mountedPathGrants.some(
+        (grant) =>
+          grant.path === selectedGrant.path &&
+          sandboxPathGrantHostPath(grant) ===
+            sandboxPathGrantHostPath(selectedGrant),
       )
     ) {
       throw new UserError(
-        `Docker path grant "${resolved.grant.path}" is not mounted. Resume or recreate the session before using it.`,
+        `Docker path grant "${selectedGrant.path}" is not mounted. Resume or recreate the session before using it.`,
       );
     }
     if (options.forWrite) {
@@ -733,27 +745,44 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   async readDockerFileAs(
     path: string,
     runAs?: string,
-    imageLimit?: number,
+    limits?: { maxBytes: number; image?: boolean },
   ): Promise<Uint8Array> {
     path = await this.validateContainerFilesystemPath(path);
+    const imageLimit = limits?.image ? limits.maxBytes : undefined;
     const fileGuard = `if [ -e ${shellQuote(path)} ] && [ ! -f ${shellQuote(path)} ]; then exit 67; fi; `;
     const imageGuard =
       imageLimit === undefined
         ? ''
-        : `if [ ! -e ${shellQuote(path)} ]; then exit 66; fi; if [ ! -f ${shellQuote(path)} ]; then exit 67; fi; if [ "$(wc -c < ${shellQuote(path)})" -gt ${imageLimit} ]; then exit 68; fi; `;
+        : `size=$(wc -c < ${shellQuote(path)}) || exit 1; if [ "$size" -gt ${imageLimit} ]; then exit 68; fi; `;
+    const limit = limits?.maxBytes;
+    // GNU base64 adds one newline per 76 encoded bytes, including the last line.
+    const encodedBytes =
+      limit === undefined ? undefined : Math.ceil(limit / 3) * 4;
     const output = await this.runReadableDockerFilesystemCommand(
       `${fileGuard}${imageGuard}base64 -- ${shellQuote(path)}`,
-      { runAs },
+      {
+        runAs,
+        maxOutputBytes:
+          encodedBytes === undefined
+            ? undefined
+            : encodedBytes + Math.ceil(encodedBytes / 76),
+      },
       `read file ${path}`,
       path,
       imageLimit !== undefined,
     );
-    return Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    const bytes = Buffer.from(output.replace(/\s+/gu, ''), 'base64');
+    if (limit !== undefined && bytes.byteLength > limit) {
+      throw new UserError(
+        `Docker file exceeds the ${limit} byte read limit: ${path}`,
+      );
+    }
+    return bytes;
   }
 
   private async runReadableDockerFilesystemCommand(
     command: string,
-    options: { runAs?: string },
+    options: { runAs?: string; maxOutputBytes?: number },
     action: string,
     path: string,
     image = false,
@@ -764,8 +793,6 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         `${image ? 'Image' : 'File'} path is not a file: ${path}`,
       );
     if (image) {
-      if (result.status === 66)
-        throw new UserError(`Image file not found: ${path}`);
       if (result.status === 68)
         throw new UserError(`Image file exceeds the 10 MB limit: ${path}`);
     }
@@ -780,8 +807,13 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
           path,
           runCommand: async (command) =>
             await this.runDockerFilesystemCommand(command, options),
+          createError: () =>
+            new UserError(
+              `DockerSandboxClient failed to ${action}: ${formatSandboxProcessError(result)}`,
+            ),
         });
         if (!exists) {
+          if (image) throw new UserError(`Image file not found: ${path}`);
           throw new SandboxWorkspaceReadNotFoundError(
             `DockerSandboxClient path does not exist: ${path}`,
             { path },
@@ -903,6 +935,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       runAs?: string;
       input?: string | Uint8Array;
       mountEnvironment?: Record<string, string>;
+      maxOutputBytes?: number;
     } = {},
   ): Promise<SandboxProcessResult> {
     this.assertSessionUsable();
@@ -933,7 +966,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       );
     }
 
-    return await runDockerProcess(dockerArgs, options.input);
+    return await runDockerProcess(
+      dockerArgs,
+      options.input,
+      options.maxOutputBytes,
+    );
   }
 
   override async close(): Promise<void> {
@@ -1027,7 +1064,9 @@ class DockerSandboxEditor implements Editor {
         })
       : path;
     const current = new TextDecoder().decode(
-      await this.session.readDockerFileAs(path, this.runAs),
+      await this.session.readDockerFileAs(path, this.runAs, {
+        maxBytes: 10 * 1024 * 1024,
+      }),
     );
     const next = applyDiff(current, operation.diff);
     await this.session.writeDockerTextFileAs(
@@ -1054,6 +1093,7 @@ class DockerSandboxEditor implements Editor {
 /**
  * Docker file APIs run inside a running container using its default user or runAs.
  * They require /bin/sh and standard GNU filesystem utilities, including realpath.
+ * Editor updates reject source files larger than 10 MB before applying changes.
  * File helpers use an isolated environment; application and mount commands retain
  * their configured environment.
  * File operations do not use host Python or fall back to host paths. Path grants
@@ -2651,6 +2691,7 @@ async function inspectContainerRunning(containerId: string): Promise<boolean> {
 async function runDockerProcess(
   args: string[],
   input?: string | Uint8Array,
+  maxOutputBytes?: number,
 ): Promise<SandboxProcessResult> {
   const child = spawn('docker', args, {
     stdio: 'pipe',
@@ -2658,15 +2699,31 @@ async function runDockerProcess(
   const stdoutChunks: Buffer[] = [];
   const stderrChunks: Buffer[] = [];
   let stdinError: Error | undefined;
+  let outputBytes = 0;
+  let outputLimitError: Error | undefined;
+  const captureOutput = (chunks: Buffer[], chunk: Buffer) => {
+    if (outputLimitError) return;
+    outputBytes += chunk.length;
+    if (maxOutputBytes !== undefined && outputBytes > maxOutputBytes) {
+      outputLimitError = new Error(
+        'Docker filesystem command exceeded its output limit.',
+      );
+      stdoutChunks.length = 0;
+      stderrChunks.length = 0;
+      child.kill('SIGKILL');
+      return;
+    }
+    chunks.push(chunk);
+  };
   // A rejected command can close its input before buffered editor content drains.
   child.stdin.on('error', (error: Error) => {
     stdinError = error;
   });
   child.stdout.on('data', (chunk: Buffer) => {
-    stdoutChunks.push(chunk);
+    captureOutput(stdoutChunks, chunk);
   });
   child.stderr.on('data', (chunk: Buffer) => {
-    stderrChunks.push(chunk);
+    captureOutput(stderrChunks, chunk);
   });
 
   const closed = new Promise<number>((resolve) => {
@@ -2683,6 +2740,16 @@ async function runDockerProcess(
   child.stdin.end();
 
   let status = await closed;
+  if (outputLimitError) {
+    return {
+      status: 1,
+      signal: null,
+      timedOut: false,
+      stdout: '',
+      stderr: outputLimitError.message,
+      error: outputLimitError,
+    };
+  }
   // Preserve command diagnostics, but never report success for failed input.
   if (status === 0 && stdinError) {
     status = 1;
