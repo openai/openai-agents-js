@@ -8,10 +8,17 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { ONE_BY_ONE_PNG } from './imageFixture';
-import { CloudflareSandboxClient } from '../../src/sandbox/cloudflare';
+import {
+  CloudflareSandboxClient,
+  CloudflareSandboxSession,
+} from '../../src/sandbox/cloudflare';
 import { CloudflareBucketMountStrategy } from '../../src/sandbox/cloudflare/mounts';
 import { resolvedRemotePathFromValidationCommand } from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
+import {
+  shellWorkdirCases,
+  withShellWorkdirFixture,
+} from './shellWorkdirFixture';
 
 const originalFetch = global.fetch;
 const originalWebSocket = globalThis.WebSocket;
@@ -291,6 +298,95 @@ describe('CloudflareSandboxClient', () => {
       }),
     );
   });
+
+  describe.skipIf(process.platform === 'win32')(
+    'shell command list workdirs',
+    () => {
+      for (const tty of [false, true]) {
+        for (const directory of [
+          'existing',
+          'missing',
+          'inaccessible',
+        ] as const) {
+          test
+            .skipIf(directory === 'inaccessible' && process.getuid?.() === 0)
+            .each(shellWorkdirCases)(
+            `$name list with ${directory} workdir (tty=${tty})`,
+            async ({ command }) => {
+              await withShellWorkdirFixture(
+                command,
+                directory,
+                async (fixture) => {
+                  const created = await new CloudflareSandboxClient({
+                    apiKey: '',
+                  }).create(
+                    new Manifest({ environment: fixture.environment }),
+                    { workerUrl: 'https://worker.example.com' },
+                  );
+                  // Relocate only the execution fixture; the provider's /workspace does not exist on the test host.
+                  const session = new CloudflareSandboxSession({
+                    state: {
+                      ...created.state,
+                      manifest: new Manifest({ root: fixture.workdir }),
+                    },
+                    apiKey: '',
+                  });
+                  if (!tty) {
+                    global.fetch = vi.fn(async (_input, init) => {
+                      const { argv } = JSON.parse(String(init?.body));
+                      const result = fixture.runShell(argv);
+                      return sseExecResponse([
+                        {
+                          event: 'stdout',
+                          data: Buffer.from(result.stdout).toString('base64'),
+                        },
+                        {
+                          event: 'stderr',
+                          data: Buffer.from(result.stderr).toString('base64'),
+                        },
+                        {
+                          event: 'exit',
+                          data: JSON.stringify({ exit_code: result.exitCode }),
+                        },
+                      ]);
+                    });
+                    return await session.execCommand({
+                      cmd: fixture.cmd,
+                      workdir: fixture.workdir,
+                    });
+                  }
+                  globalThis.WebSocket =
+                    TestWebSocket as unknown as typeof globalThis.WebSocket;
+                  const pending = session.execCommand({
+                    cmd: fixture.cmd,
+                    workdir: fixture.workdir,
+                    tty: true,
+                    yieldTimeMs: 250,
+                  });
+                  const socket = await TestWebSocket.nextInstance();
+                  const sent = socket.nextSend();
+                  socket.open();
+                  socket.message(JSON.stringify({ type: 'ready' }));
+                  const payload = new TextDecoder().decode(
+                    (await sent) as Uint8Array,
+                  );
+                  const result = fixture.runShell(['/bin/sh', '-c', payload]);
+                  socket.message(
+                    new TextEncoder().encode(result.stdout + result.stderr),
+                  );
+                  socket.message(
+                    JSON.stringify({ type: 'exit', code: result.exitCode }),
+                  );
+                  socket.close();
+                  return await pending;
+                },
+              );
+            },
+          );
+        }
+      }
+    },
+  );
 
   test('passes filesystem runAs through worker exec operations', async () => {
     const client = new CloudflareSandboxClient();
@@ -1307,7 +1403,7 @@ describe('CloudflareSandboxClient', () => {
       'wss://worker.example.com/v1/sandbox/cf_test/pty?cols=80&rows=24',
     );
     expect(new TextDecoder().decode(socket.sent[0] as Uint8Array)).toBe(
-      "/bin/sh -c 'cd '\\''/workspace'\\'' && echo ready'\n",
+      "/bin/sh -c 'cd '\\''/workspace'\\'' || exit $?\necho ready'\n",
     );
     expect(new TextDecoder().decode(socket.sent[1] as Uint8Array)).toBe(
       'echo next\n',
@@ -1672,7 +1768,7 @@ describe('CloudflareSandboxClient', () => {
     await startedPromise;
 
     expect(new TextDecoder().decode(socket.sent[0] as Uint8Array)).toBe(
-      "/bin/sh -c 'cd '\\''/workspace/app'\\'' && export NODE_ENV='\\''test'\\'' && npm test'\n",
+      "/bin/sh -c 'cd '\\''/workspace/app'\\'' || exit $?\nexport NODE_ENV='\\''test'\\'' && npm test'\n",
     );
   });
 

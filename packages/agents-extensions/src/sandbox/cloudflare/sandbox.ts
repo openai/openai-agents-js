@@ -1364,7 +1364,7 @@ function buildShellCommand(
     assertShellEnvironmentName(key);
     return `export ${key}=${shellQuote(value)}`;
   });
-  return [`cd ${shellQuote(cwd)}`, ...exports, command].join(' && ');
+  return `cd ${shellQuote(cwd)} || exit $?\n${[...exports, command].join(' && ')}`;
 }
 
 function encodeSandboxPath(path: string): string {
