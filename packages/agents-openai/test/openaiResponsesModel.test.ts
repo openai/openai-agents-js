@@ -6,7 +6,7 @@ import {
 import { HEADERS } from '../src/defaults';
 import { ResponsesWebSocketInternalError } from '../src/responsesWebSocketConnection';
 import OpenAI from 'openai';
-import { fileSearchTool, webSearchTool } from '../src';
+import { fileSearchTool, imageGenerationTool, webSearchTool } from '../src';
 import {
   Agent,
   retryPolicies,
@@ -129,6 +129,93 @@ describe('OpenAIResponsesModel', () => {
     setTracingDisabled(true);
     setTraceProcessors([]);
   });
+
+  describe.each([false, true])(
+    'image generation requests (stream=%s)',
+    (stream) => {
+      it.each(['generate', 'edit', 'auto', undefined] as const)(
+        'serializes action %s without changing existing options',
+        async (action) => {
+          const bodies: Record<string, unknown>[] = [];
+          const response = {
+            id: 'resp_image_generation',
+            object: 'response',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          };
+          // Capture the real client's serialized payload without network requests.
+          const client = new OpenAI({
+            apiKey: 'test-key',
+            fetch: async (_url, init) => {
+              bodies.push(JSON.parse(init!.body as string));
+              const body = stream
+                ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 0, response })}\n\n`
+                : JSON.stringify(response);
+              return new Response(body, {
+                headers: {
+                  'content-type': stream
+                    ? 'text/event-stream'
+                    : 'application/json',
+                },
+              });
+            },
+          });
+          const model = new OpenAIResponsesModel(client, 'gpt-test');
+          const request: ModelRequest = {
+            systemInstructions: undefined,
+            input: 'Create an image.',
+            modelSettings: {},
+            tools: [
+              imageGenerationTool(
+                action === undefined
+                  ? {}
+                  : {
+                      action,
+                      inputFidelity: 'high',
+                      inputImageMask: { file_id: 'file_mask' },
+                      outputCompression: 80,
+                      outputFormat: 'webp',
+                      partialImages: 1,
+                    },
+              ),
+            ],
+            outputType: 'text',
+            handoffs: [],
+            tracing: false,
+          };
+          if (stream) {
+            for await (const event of model.getStreamedResponse(request)) {
+              if (event.type === 'response_done') {
+                expect(event.response.output).toEqual([]);
+              }
+            }
+          } else {
+            const result = await withTrace('image generation request', () =>
+              model.getResponse(request),
+            );
+            expect(result.output).toEqual([]);
+          }
+
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0].stream).toBe(stream);
+          expect(bodies[0].tools).toEqual([
+            action === undefined
+              ? { type: 'image_generation' }
+              : {
+                  type: 'image_generation',
+                  action,
+                  input_fidelity: 'high',
+                  input_image_mask: { file_id: 'file_mask' },
+                  output_compression: 80,
+                  output_format: 'webp',
+                  partial_images: 1,
+                },
+          ]);
+        },
+      );
+    },
+  );
 
   describe.each([false, true])(
     'web search image requests (stream=%s)',

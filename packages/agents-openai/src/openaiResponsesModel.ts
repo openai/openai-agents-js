@@ -1268,6 +1268,7 @@ function convertTool<_TContext = unknown>(
       return {
         tool: {
           type: 'image_generation',
+          action: tool.providerData.action,
           background: tool.providerData.background,
           input_fidelity: tool.providerData.input_fidelity,
           input_image_mask: tool.providerData.input_image_mask,
