@@ -1,5 +1,15 @@
 # @openai/agents-realtime
 
+## 0.18.0
+
+### Patch Changes
+
+- f3bfca2: fix: attribute Realtime turn completion to its response agent
+- Updated dependencies [b665b0e]
+- Updated dependencies [19d0b5f]
+- Updated dependencies [064fcb2]
+  - @openai/agents-core@0.18.0
+
 ## 0.17.2
 
 ### Patch Changes

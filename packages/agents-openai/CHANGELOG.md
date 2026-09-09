@@ -1,5 +1,16 @@
 # @openai/agents-openai
 
+## 0.18.0
+
+### Patch Changes
+
+- b665b0e: fix: recover unloaded deferred calls through opt-in model-visible errors and built-in client search, with required Responses wire defaults, live source-Agent ownership, and server-side search preserved for deferred hosted MCP tools (#1855).
+- a3a9215: feat: support the image generation tool action option
+- Updated dependencies [b665b0e]
+- Updated dependencies [19d0b5f]
+- Updated dependencies [064fcb2]
+  - @openai/agents-core@0.18.0
+
 ## 0.17.2
 
 ### Patch Changes

@@ -1,5 +1,19 @@
 # @openai/agents
 
+## 0.18.0
+
+### Patch Changes
+
+- a3a9215: feat: support the image generation tool action option
+- Updated dependencies [f3bfca2]
+- Updated dependencies [b665b0e]
+- Updated dependencies [a3a9215]
+- Updated dependencies [19d0b5f]
+- Updated dependencies [064fcb2]
+  - @openai/agents-realtime@0.18.0
+  - @openai/agents-core@0.18.0
+  - @openai/agents-openai@0.18.0
+
 ## 0.17.2
 
 ### Patch Changes
