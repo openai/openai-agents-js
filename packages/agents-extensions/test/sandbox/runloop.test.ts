@@ -12,6 +12,7 @@ import { liveMountCredentialAuthorityMatches } from '@openai/agents-core/sandbox
 import {
   RunloopCloudBucketMountStrategy,
   RunloopSandboxClient,
+  RunloopSandboxSession,
   type RunloopUserParameters,
 } from '../../src/sandbox/runloop';
 import { decodeNativeSnapshotRef } from '../../src/sandbox/shared';
@@ -20,6 +21,10 @@ import {
   resolvedRemotePathFromValidationCommand,
 } from './remotePathValidation';
 import { makeTarArchive } from './tarFixture';
+import {
+  shellWorkdirCases,
+  withShellWorkdirFixture,
+} from './shellWorkdirFixture';
 
 const runloopSdkConstructorMock = vi.fn();
 const createMock = vi.fn();
@@ -126,7 +131,8 @@ function runloopRealpathResult(command: string) {
   if (!command.includes('OPENAI_AGENTS_REALPATH_HOME=')) {
     return undefined;
   }
-  const home = command.match(/^cd '([^']+)' && /u)?.[1] ?? RUNLOOP_HOME;
+  const home =
+    command.match(/^cd '([^']+)' \|\| exit \$\?\n/u)?.[1] ?? RUNLOOP_HOME;
   const root = command.match(/mkdir -p -- '([^']+)'/u)?.[1] ?? home;
   return execResult({
     exitCode: 0,
@@ -418,7 +424,7 @@ describe('RunloopSandboxClient', () => {
       path: '/root/README.md',
       file: expect.any(File),
     });
-    expect(execMock).toHaveBeenCalledWith("cd '/root' && ls", {
+    expect(execMock).toHaveBeenCalledWith("cd '/root' || exit $?\nls", {
       last_n: '2000',
     });
     expect(output).toContain('README.md');
@@ -451,7 +457,10 @@ describe('RunloopSandboxClient', () => {
         const realpathResult = runloopRealpathResult(command);
         return realpathResult ?? execResult({ exitCode: 0 });
       }
-      if (command.startsWith("cd '/home/user/project' &&") && !rootCreated) {
+      if (
+        command.startsWith("cd '/home/user/project' || exit $?\n") &&
+        !rootCreated
+      ) {
         return execResult({
           exitCode: 1,
           stderr: 'cd: /home/user/project: No such file or directory',
@@ -589,7 +598,7 @@ describe('RunloopSandboxClient', () => {
 
     await session.execCommand({ cmd: 'ls' });
     expect(execMock).toHaveBeenLastCalledWith(
-      "cd '/home/user' && ls",
+      "cd '/home/user' || exit $?\nls",
       {
         last_n: '2000',
       },
@@ -2067,6 +2076,65 @@ describe('RunloopSandboxClient', () => {
     expect(benchmarkUpdateMock).toHaveBeenCalledWith({ name: 'updated' });
     expect(benchmarkStartRunMock).toHaveBeenCalledWith({ input: 'run' });
   });
+
+  describe.skipIf(process.platform === 'win32')(
+    'shell command list workdirs',
+    () => {
+      for (const runAs of [undefined, 'other-user']) {
+        for (const directory of [
+          'existing',
+          'missing',
+          'inaccessible',
+        ] as const) {
+          test
+            .skipIf(directory === 'inaccessible' && process.getuid?.() === 0)
+            .each(shellWorkdirCases)(
+            `$name list with ${directory} workdir (runAs=${runAs})`,
+            async ({ command }) => {
+              await withShellWorkdirFixture(
+                command,
+                directory,
+                async (fixture) => {
+                  const created = await new RunloopSandboxClient().create(
+                    runloopManifest({ environment: fixture.environment }),
+                  );
+                  // The execution boundary uses a local fixture root because Runloop homes do not exist on the test host.
+                  const session = new RunloopSandboxSession({
+                    state: {
+                      ...created.state,
+                      manifest: new Manifest({ root: fixture.workdir }),
+                    },
+                    sdk: {} as ConstructorParameters<
+                      typeof RunloopSandboxSession
+                    >[0]['sdk'],
+                    devbox: mockRunloopDevbox(),
+                  });
+                  execMock.mockImplementation(async (payload: string) => {
+                    // Stand in for sudo without changing host users; execute the nested shell unchanged.
+                    const sudo = runAs
+                      ? 'sudo() { [ "$1" = -n ] && [ "$2" = -u ] && [ "$3" = other-user ] && [ "$4" = -- ] || exit 99; shift 4; "$@"; };\n'
+                      : '';
+                    if (runAs)
+                      expect(payload).toMatch(
+                        /^sudo -n -u 'other-user' -- sh -lc /,
+                      );
+                    return execResult(
+                      fixture.runShell(['/bin/sh', '-c', sudo + payload]),
+                    );
+                  });
+                  return await session.execCommand({
+                    cmd: fixture.cmd,
+                    workdir: fixture.workdir,
+                    runAs,
+                  });
+                },
+              );
+            },
+          );
+        }
+      }
+    },
+  );
 
   test('rejects unsafe environment names before building shell commands', async () => {
     const client = new RunloopSandboxClient();
