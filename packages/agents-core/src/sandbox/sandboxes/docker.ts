@@ -687,6 +687,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       !this.mountedPathGrants.some(
         (grant) =>
           grant.path === selectedGrant.path &&
+          grant.readOnly === selectedGrant.readOnly &&
           sandboxPathGrantHostPath(grant) ===
             sandboxPathGrantHostPath(selectedGrant),
       )

@@ -275,6 +275,58 @@ while (true) {
       }
     });
 
+    it.each([true, false])(
+      'requires remount after changing a grant with readOnly=%s',
+      async (readOnly) => {
+        await writeFile(join(outside, 'note.txt'), 'granted\n');
+        const granted = new DockerSandboxSession({
+          state: {
+            ...session.state,
+            manifest: new Manifest({
+              root: workspace,
+              extraPathGrants: [{ path: outside, readOnly }],
+            }),
+          },
+        });
+        try {
+          await granted.applyManifest(
+            new Manifest({
+              extraPathGrants: [{ path: outside, readOnly: !readOnly }],
+            }),
+          );
+          commands.length = 0;
+          await expect(
+            granted.readFile({ path: join(outside, 'note.txt') }),
+          ).rejects.toThrow(/not mounted.*Resume or recreate/);
+          await expect(
+            granted.createEditor().updateFile({
+              type: 'update_file',
+              path: join(outside, 'note.txt'),
+              diff: '@@\n-granted\n+changed\n',
+            }),
+          ).rejects.toThrow();
+          expect(commands).toEqual([]);
+          expect(await readFile(join(outside, 'note.txt'), 'utf8')).toBe(
+            'granted\n',
+          );
+
+          // Restoring the mounted policy makes the unchanged mount usable again.
+          await granted.applyManifest(
+            new Manifest({
+              extraPathGrants: [{ path: outside, readOnly }],
+            }),
+          );
+          expect(
+            Buffer.from(
+              await granted.readFile({ path: join(outside, 'note.txt') }),
+            ).toString(),
+          ).toBe('granted\n');
+        } finally {
+          await granted.close();
+        }
+      },
+    );
+
     it('rejects host materialization runAs before resolving a host identity', async () => {
       await expect(
         session.materializeEntry({
