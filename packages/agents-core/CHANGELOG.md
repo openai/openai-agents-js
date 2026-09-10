@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.18.0
+
+### Minor Changes
+
+- 064fcb2: fix: protect UnixLocal file/editor operations with optional auto/required/off Python support, and run Docker file APIs inside a running container with GNU utilities and mounted path grants; Docker editor updates enforce a 10 MB source limit.
+
+### Patch Changes
+
+- b665b0e: fix: recover unloaded deferred calls through opt-in model-visible errors and built-in client search, with required Responses wire defaults, live source-Agent ownership, and server-side search preserved for deferred hosted MCP tools (#1855).
+- 19d0b5f: fix: capture the final computer screenshot once per action batch (#1735)
+
 ## 0.17.2
 
 ### Patch Changes
