@@ -325,7 +325,10 @@ function resolveDefaultCodexApiKey(options?: CodexOptions): string | undefined {
   }
 
   const env = loadEnv();
-  return env.CODEX_API_KEY ?? env.OPENAI_API_KEY;
+  if (env.CODEX_API_KEY) {
+    return env.CODEX_API_KEY;
+  }
+  return env.OPENAI_API_KEY;
 }
 
 function resolveCodexOptions(
