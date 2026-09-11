@@ -102,6 +102,8 @@ Follow the interactive prompts. Do not manually bump package versions.
 
 ## Reporting issues
 
+For a suspected security vulnerability, follow [SECURITY.md](SECURITY.md) and report privately. Do not open a public issue or pull request for an undisclosed vulnerability.
+
 Before opening a new issue, search existing issues to avoid duplicates. When opening an issue, include:
 
 - A clear and descriptive title
@@ -109,6 +111,32 @@ Before opening a new issue, search existing issues to avoid duplicates. When ope
 - Steps to reproduce (for bugs)
 - A minimal code snippet or example (if applicable)
 - Expected and actual behavior
+
+Use synthetic examples and sanitize attachments before posting. The security guidance below applies to issue reports as well as code contributions.
+
+## Security
+
+### Credentials, examples, and diagnostics
+
+- Never commit real API keys, tokens, authorization headers, cookies, signed URLs, or customer data. Keep local credentials outside version control and use the repository's documented environment-variable setup for authorized live tests.
+- Use synthetic fixtures and examples. Inspect logs, snapshots, traces, errors, tool arguments and results, audio, and serialized session or run state for sensitive data before committing or sharing them. Redact secrets and personal information even in private reports.
+- Keep standard API keys and other long-lived credentials on the server, outside browser bundles. Browser integrations that connect directly must use the supported short-lived client credential flow.
+- Preserve tracing and logging privacy controls. When a change affects sensitive data, test the relevant success and failure paths with synthetic values, including streaming or resumed execution when applicable.
+- Review the complete diff and run secret scanning before submitting. If a secret is exposed, stop sharing it, arrange prompt revocation or rotation, and notify maintainers through [SECURITY.md](SECURITY.md#reporting-a-vulnerability). Deleting a file or comment does not revoke the credential.
+
+### Dependencies and security-sensitive changes
+
+Explain why each new dependency is needed. Review package provenance, maintenance, transitive dependencies, and install scripts, and inspect lockfile changes alongside manifests. Preserve any configured release-age cooldown for ordinary dependency updates while allowing security updates without that delay. Triage alerts by affected version, reachability, and impact across runtime, development, and example usage; do not dismiss development dependencies automatically.
+
+Request explicit maintainer security review when changing authentication, credentials or headers, endpoints or redirects, uploads, deserialization, tool approvals, MCP execution, sandbox paths or mounts, persistence, logging, tracing, dependencies, CI, or publishing. Describe the affected trust boundary and provide focused tests for the relevant security property. Handle evidence of an undisclosed vulnerability privately rather than including it in a public PR.
+
+Do not bypass security checks or dismiss alerts solely to unblock a merge. Escalate critical or actively exploited findings promptly through the private reporting route. Any accepted exception needs a responsible owner, rationale, mitigation, approval, and expiry; a scan completion or passing build does not resolve an outstanding finding.
+
+### CI and package publication
+
+Treat external pull request code and metadata as untrusted. Keep secrets and write-capable tokens away from untrusted execution, avoid privileged workflows that run untrusted checkout content, and do not interpolate untrusted metadata into shell commands. Use explicit least-privilege workflow permissions and full commit SHA pins for third-party actions. Preserve required review and security checks, secret scanning and push protection, code scanning, and contributor approval controls.
+
+Release workflows and publishing configuration require code-owner coverage and required code-owner review before release PRs merge. The shared release policy does not require a separate environment-reviewer approval gate. Preserve branch and tag deployment restrictions, trusted-publisher bindings, OIDC publishing, and provenance; do not replace trusted publishing with a long-lived registry token. Workflow configuration alone does not verify a registry binding or published artifact provenance. Maintainers must verify those controls and registry access and recovery arrangements separately, and track missing or unverified controls explicitly.
 
 ## Submitting a pull request
 
