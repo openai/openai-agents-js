@@ -1,10 +1,8 @@
 # Release review ownership. Enforce with required code-owner review on main.
 /.github/CODEOWNERS @openai/sdks-team
 
-# Release automation and the CI workflow that gates publishing.
-/.github/workflows/release.yml @openai/sdks-team
-/.github/workflows/release-tag.yml @openai/sdks-team
-/.github/workflows/test.yml @openai/sdks-team
+# Release automation, including new workflows that can match the CI release gate.
+/.github/workflows/ @openai/sdks-team
 
 # Versioning, package publication, and release dependencies.
 /.changeset/config.json @openai/sdks-team
