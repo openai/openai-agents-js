@@ -432,6 +432,43 @@ describe('codexTool', () => {
     expect(options?.apiKey).toBe('openai-key');
   });
 
+  test('defaults Codex api key to OPENAI_API_KEY when CODEX_API_KEY is blank', async () => {
+    process.env.OPENAI_API_KEY = 'openai-key';
+    process.env.CODEX_API_KEY = '';
+
+    codexMockState.events = [
+      { type: 'thread.started', thread_id: 'thread-1' },
+      {
+        type: 'item.completed',
+        item: { id: 'agent-1', type: 'agent_message', text: 'Codex done.' },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 },
+      },
+    ];
+
+    const tool = codexTool();
+    const runContext = new RunContext();
+
+    await tool.invoke(
+      runContext,
+      JSON.stringify({
+        inputs: [
+          {
+            type: 'text',
+            text: 'Check blank api key.',
+          },
+        ],
+      }),
+    );
+
+    const options = codexConstructorState.options as
+      | { apiKey?: string }
+      | undefined;
+    expect(options?.apiKey).toBe('openai-key');
+  });
+
   test('accepts a Zod output schema descriptor', async () => {
     codexMockState.events = [
       { type: 'thread.started', thread_id: 'thread-1' },
