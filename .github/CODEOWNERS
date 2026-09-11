@@ -1,0 +1,23 @@
+# Release review ownership. Enforce with required code-owner review on main.
+/.github/CODEOWNERS @openai/sdks-team
+
+# Release automation and the CI workflow that gates publishing.
+/.github/workflows/release.yml @openai/sdks-team
+/.github/workflows/release-tag.yml @openai/sdks-team
+/.github/workflows/test.yml @openai/sdks-team
+
+# Versioning, package publication, and release dependencies.
+/.changeset/config.json @openai/sdks-team
+/package.json @openai/sdks-team
+/packages/*/package.json @openai/sdks-team
+/pnpm-workspace.yaml @openai/sdks-team
+/pnpm-lock.yaml @openai/sdks-team
+/.npmrc @openai/sdks-team
+
+# Configuration and helpers used by the release build.
+/tsconfig.json @openai/sdks-team
+/tsc-multi.json @openai/sdks-team
+/packages/*/tsconfig.json @openai/sdks-team
+/packages/agents-realtime/vite.config.js @openai/sdks-team
+/scripts/clean-package-dists.mjs @openai/sdks-team
+/scripts/embedMeta.ts @openai/sdks-team
