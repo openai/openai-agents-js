@@ -11,6 +11,15 @@
 /pnpm-workspace.yaml @openai/sdks-team
 /pnpm-lock.yaml @openai/sdks-team
 /.npmrc @openai/sdks-team
+/.pnpmfile.mjs @openai/sdks-team
+/.pnpmfile.cjs @openai/sdks-team
+
+# Git hooks and configuration loaded when Changesets commits release versions.
+/.husky/ @openai/sdks-team
+/eslint.config.js @openai/sdks-team
+/eslint.config.mjs @openai/sdks-team
+/.prettierrc @openai/sdks-team
+/.prettierignore @openai/sdks-team
 
 # Configuration and helpers used by the release build.
 /tsconfig.json @openai/sdks-team
