@@ -23,7 +23,7 @@ Other important directories:
 
 ### Prerequisites
 
-- Node.js 22.13 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later
+- Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later
 - The pnpm version pinned in the root `package.json` `packageManager` field
 
 ### Setup

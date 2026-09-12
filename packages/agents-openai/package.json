@@ -25,7 +25,7 @@
     "openai": "^7.2.0"
   },
   "scripts": {
-    "prebuild": "tsx ../../scripts/embedMeta.ts",
+    "prebuild": "node ../../scripts/embedMeta.mts",
     "build": "tsc",
     "build-check": "tsc --noEmit -p ./tsconfig.test.json",
     "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json"

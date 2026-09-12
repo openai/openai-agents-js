@@ -128,7 +128,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - `packages/agents-extensions`: Extensions for agent workflows.
 - `docs`: Documentation site powered by Astro.
 - `examples`: Sample projects demonstrating usage patterns.
-- `scripts`: Automation scripts (`dev.mts`, `embedMeta.ts`).
+- `scripts`: Automation scripts (`dev.mts`, `embedMeta.mts`).
 - `helpers`: Shared utilities for testing and other internal use.
 
 ### Repo Structure & Important Files
@@ -138,7 +138,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - Every TypeScript or TSX snippet shown in authored docs must come from a compilable source file under `examples/docs/`, be imported into MDX with `?raw`, and pass `pnpm -F docs-code build-check`. Do not add ad hoc TypeScript or TSX fenced blocks directly to MDX. If an example is not useful enough to maintain and build-check as a complete source file, explain the behavior in prose instead. Do not add artificial runtime side effects, such as `console.log`, solely to mark declarations as used; the `examples/docs/` TypeScript project permits unused declarations so documentation examples can stay focused on the behavior they teach.
 - `examples/`: Subdirectories (e.g. `basic`, `agent-patterns`) with their own `package.json` and start scripts.
 - `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
-- `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.
+- `scripts/embedMeta.mts`: Generates `src/metadata.ts` for each package before build.
 - `helpers/tests/`: Shared test utilities.
 - `.agents/references/`: Durable SDK maintainer architecture references. Start with [the reference map](.agents/references/README.md) and open only the files relevant to the affected boundary.
 - `README.md`: High-level overview and installation instructions.
