@@ -23,6 +23,12 @@
 /.pnpmfile.mjs @openai/sdks-team
 /.pnpmfile.cjs @openai/sdks-team
 
+# Lifecycle hook directories consulted even when their parent is ignored.
+/node_modules/.hooks/ @openai/sdks-team
+/packages/*/node_modules/.hooks/ @openai/sdks-team
+/examples/*/node_modules/.hooks/ @openai/sdks-team
+/docs/node_modules/.hooks/ @openai/sdks-team
+
 # Native build definitions automatically executed during workspace installation.
 /binding.gyp @openai/sdks-team
 /packages/*/binding.gyp @openai/sdks-team
