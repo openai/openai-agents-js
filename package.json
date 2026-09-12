@@ -90,7 +90,7 @@
     "changeset:validate-lite": "node scripts/changeset-validation-lite.mjs",
     "changeset:validate-result": "node .agents/skills/changeset-validation/scripts/changeset-validation-result.mjs",
     "changeset:assign-milestone": "node .agents/skills/changeset-validation/scripts/changeset-assign-milestone.mjs",
-    "ci:publish": "pnpm publish -r --no-git-checks --access public",
+    "ci:publish": "changeset publish",
     "bump-version": "changeset version && pnpm -F @openai/* prebuild",
     "prepare": "husky",
     "clear:deps": "rm -rf node_modules && pnpm -r exec rm -rf node_modules",
@@ -99,7 +99,7 @@
     "local-npm:publish": "pnpm -r publish --registry http://localhost:4873 --force --no-git-checks"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.31.0",
+    "@changesets/cli": "^3.0.2",
     "@eslint/js": "^9.39.4",
     "@types/node": "22.19.13",
     "@typescript-eslint/eslint-plugin": "^8.62.1",
