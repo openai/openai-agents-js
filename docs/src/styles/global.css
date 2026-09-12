@@ -334,6 +334,37 @@
     padding-top: 2.5rem !important;
   }
 
+  @media (min-width: 72rem) {
+    /* Keep the article space used before Starlight added a full-width TOC minimum. */
+    [data-has-sidebar][data-has-toc] .right-sidebar-container {
+      flex-shrink: 0;
+      width: max(
+        10rem,
+        calc(
+          var(--sl-sidebar-width) +
+            (100% - var(--sl-content-width) - var(--sl-sidebar-width)) / 2
+        )
+      );
+    }
+
+    [data-has-sidebar][data-has-toc] .main-pane {
+      flex: 1;
+      min-width: 0;
+    }
+
+    /* Let TOC links wrap inside the space remaining beside the article. */
+    [data-has-sidebar][data-has-toc] .right-sidebar {
+      position: sticky;
+      top: var(--sl-nav-height);
+      padding-top: 0;
+      height: calc(100vh - var(--sl-nav-height));
+    }
+
+    [data-has-sidebar][data-has-toc] .right-sidebar-panel .sl-container {
+      width: 100%;
+    }
+  }
+
   starlight-toc {
     h2 {
       font-size: var(--sl-text-2xs);

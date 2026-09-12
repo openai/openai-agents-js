@@ -4,7 +4,7 @@
     "target": "ES2021",
     "lib": ["ES2021"],
     "noEmit": true,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "types": ["node"],
     "resolveJsonModule": true,
     "esModuleInterop": true,
