@@ -55,7 +55,8 @@ export function getDefaultOpenAIKey(): string | undefined {
 }
 
 export function getDefaultOpenAIWebSocketBaseURL(): string | undefined {
-  return loadEnv().OPENAI_WEBSOCKET_BASE_URL;
+  const configured = loadEnv().OPENAI_WEBSOCKET_BASE_URL?.trim();
+  return configured ? configured : undefined;
 }
 
 export const HEADERS = {
