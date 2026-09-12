@@ -1,8 +1,7 @@
 import type { AgentInputItem, Session } from '@openai/agents';
 import { protocol } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
-import type { Prisma } from '@prisma/client';
-import { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import * as process from 'node:process';
 import { resolvePrismaDatabaseUrl } from '../prisma-database';
@@ -140,7 +139,8 @@ export async function createPrismaSession(
     databaseUrl?: string;
   } = {},
 ): Promise<{ session: PrismaSession; prisma: PrismaClient }> {
-  if (!options.client) {
+  let prisma = options.client;
+  if (!prisma) {
     if (!process.env.DATABASE_URL && options.databaseUrl) {
       process.env.DATABASE_URL = options.databaseUrl;
     }
@@ -150,16 +150,18 @@ export async function createPrismaSession(
         'DATABASE_URL was not set. Defaulting to sqlite db at file:./dev.db',
       );
     }
-  }
-  const prisma =
-    options.client ??
-    new PrismaClient({
+    const databaseUrl = resolvePrismaDatabaseUrl(process.env.DATABASE_URL!);
+    // File-backed sessions share this module's exports and do not need a
+    // generated Prisma client. Load it only when creating a Prisma session.
+    const { PrismaClient } = await import('@prisma/client');
+    prisma = new PrismaClient({
       adapter: new PrismaBetterSqlite3(
-        { url: resolvePrismaDatabaseUrl(process.env.DATABASE_URL!) },
+        { url: databaseUrl },
         // Existing Prisma 6 SQLite databases store DateTime as milliseconds.
         { timestampFormat: 'unixepoch-ms' },
       ),
     });
+  }
   const session = new PrismaSession({
     client: prisma,
     sessionId: options.sessionId,
