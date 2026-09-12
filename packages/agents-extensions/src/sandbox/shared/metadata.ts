@@ -135,5 +135,9 @@ function joinSandboxPath(parent: string, child: string): string {
   if (!parent || parent === '.') {
     return normalizedChild;
   }
-  return `${parent.replace(/\/+$/u, '')}/${normalizedChild}`;
+  let parentEnd = parent.length;
+  while (parentEnd > 0 && parent[parentEnd - 1] === '/') {
+    parentEnd--;
+  }
+  return `${parent.slice(0, parentEnd)}/${normalizedChild}`;
 }

@@ -5035,6 +5035,33 @@ describe('remote sandbox path helpers', () => {
     ).toThrowError(SandboxUnsupportedFeatureError);
   });
 
+  test.each([
+    ['', 'run.sh'],
+    ['.', 'run.sh'],
+    ['parent', 'parent/run.sh'],
+    ['parent/', 'parent/run.sh'],
+    ['parent///', 'parent/run.sh'],
+    ['parent//nested///', 'parent//nested/run.sh'],
+  ])(
+    'preserves child diagnostic path under parent %j in linear time',
+    (parent, expectedPath) => {
+      expect(() =>
+        assertSandboxEntryMetadataSupported('Provider', parent, {
+          type: 'dir',
+          children: {
+            'run.sh': {
+              type: 'file',
+              content: '#!/bin/sh\n',
+              group: { name: 'sandbox-group' },
+            },
+          },
+        }),
+      ).toThrowError(
+        `Provider does not support sandbox entry group ownership yet: ${expectedPath}`,
+      );
+    },
+  );
+
   test('guards unsupported mount entries for remote providers', () => {
     expect(() =>
       assertSandboxEntryMetadataSupported(
