@@ -20,6 +20,6 @@
     "start:prisma": "tsx start-prisma.ts"
   },
   "devDependencies": {
-    "prisma": "^6.18.0"
+    "prisma": "^7.10.0"
   }
 }
