@@ -8,9 +8,15 @@
 /.changeset/config.json @openai/sdks-team
 /.changeset/pre.json @openai/sdks-team
 /package.json @openai/sdks-team
+/package.json5 @openai/sdks-team
 /packages/*/package.json @openai/sdks-team
+/packages/*/package.json5 @openai/sdks-team
 /examples/*/package.json @openai/sdks-team
+/examples/*/package.json5 @openai/sdks-team
+/examples/*/package.yaml @openai/sdks-team
 /docs/package.json @openai/sdks-team
+/docs/package.json5 @openai/sdks-team
+/docs/package.yaml @openai/sdks-team
 /pnpm-workspace.yaml @openai/sdks-team
 /pnpm-lock.yaml @openai/sdks-team
 /.npmrc @openai/sdks-team
@@ -53,5 +59,9 @@
 /tsc-multi.json @openai/sdks-team
 /packages/*/tsconfig.json @openai/sdks-team
 /packages/agents-realtime/vite.config.js @openai/sdks-team
+/packages/agents-realtime/.env @openai/sdks-team
+/packages/agents-realtime/.env.local @openai/sdks-team
+/packages/agents-realtime/.env.production @openai/sdks-team
+/packages/agents-realtime/.env.production.local @openai/sdks-team
 /scripts/clean-package-dists.mjs @openai/sdks-team
 /scripts/embedMeta.ts @openai/sdks-team
