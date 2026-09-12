@@ -461,9 +461,18 @@ function buildS3FuseMountScript(config: BlaxelCloudBucketMountConfig): string {
           config.sessionToken ? `:${config.sessionToken}` : ''
         }`
       : undefined;
-  const bucket = config.prefix
-    ? `${config.bucket}:/${config.prefix.replace(/^\/+|\/+$/gu, '')}`
-    : config.bucket;
+  let bucket = config.bucket;
+  if (config.prefix) {
+    let start = 0;
+    let end = config.prefix.length;
+    while (start < end && config.prefix[start] === '/') {
+      start++;
+    }
+    while (end > start && config.prefix[end - 1] === '/') {
+      end--;
+    }
+    bucket = `${config.bucket}:/${config.prefix.slice(start, end)}`;
+  }
   const options = [
     'allow_other',
     'nonempty',
