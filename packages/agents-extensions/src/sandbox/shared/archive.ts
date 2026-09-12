@@ -782,7 +782,24 @@ function readTarString(
 }
 
 function trimTarString(value: string): string {
-  return value.replace(/\0.*$/u, '').replace(/\n$/u, '');
+  // Only trim NUL suffixes after the last line terminator, matching the tar
+  // parser's existing dot-without-dotAll behavior without repeated scans.
+  let end = value.length;
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const char = value[index];
+    if (
+      char === '\n' ||
+      char === '\r' ||
+      char === '\u2028' ||
+      char === '\u2029'
+    ) {
+      break;
+    }
+    if (char === '\0') {
+      end = index;
+    }
+  }
+  return value.slice(0, end).replace(/\n$/u, '');
 }
 
 function decodeBytes(bytes: Uint8Array): string {
