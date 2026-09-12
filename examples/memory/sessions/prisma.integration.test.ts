@@ -87,6 +87,10 @@ describe('Prisma 7 SQLite integration', () => {
     } finally {
       database.close();
     }
+    vi.stubEnv(
+      'DATABASE_URL',
+      `file:${relative(schemaRoot, databasePath)}?socket_timeout=7`,
+    );
     pushSchema(process.env.DATABASE_URL!);
     const { session, prisma } = await openSession({
       sessionId: 'prisma6-session',
@@ -96,6 +100,10 @@ describe('Prisma 7 SQLite integration', () => {
       content: 'Retained Prisma 6 history',
     };
     expect(await session.getItems()).toEqual([original]);
+    const [timeout] = await prisma.$queryRaw<
+      { timeout: number | bigint }[]
+    >`PRAGMA busy_timeout`;
+    expect(Number(timeout.timeout)).toBe(7000);
     const record = await prisma.session.findUniqueOrThrow({
       where: { id: 'prisma6-session' },
     });

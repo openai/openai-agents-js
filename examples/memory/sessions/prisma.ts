@@ -150,13 +150,22 @@ export async function createPrismaSession(
         'DATABASE_URL was not set. Defaulting to sqlite db at file:./dev.db',
       );
     }
-    const databaseUrl = resolvePrismaDatabaseUrl(process.env.DATABASE_URL!);
+    const [databaseUrl, query] = resolvePrismaDatabaseUrl(
+      process.env.DATABASE_URL!,
+    ).split('?');
+    const socketTimeout = new URLSearchParams(query).get('socket_timeout');
     // File-backed sessions share this module's exports and do not need a
     // generated Prisma client. Load it only when creating a Prisma session.
     const { PrismaClient } = await import('@prisma/client');
     prisma = new PrismaClient({
       adapter: new PrismaBetterSqlite3(
-        { url: databaseUrl },
+        {
+          url: databaseUrl,
+          // Prisma URL timeouts use seconds; better-sqlite3 expects milliseconds.
+          ...(socketTimeout === null
+            ? {}
+            : { timeout: Number(socketTimeout) * 1000 }),
+        },
         // Existing Prisma 6 SQLite databases store DateTime as milliseconds.
         { timestampFormat: 'unixepoch-ms' },
       ),
