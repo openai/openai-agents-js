@@ -2,6 +2,8 @@ import type { AgentInputItem, Session } from '@openai/agents';
 import { protocol } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
+// This example requires the workspace's version-pinned adapter patch, which
+// preserves Prisma 6's SQLite write-lock waiting and timeout recovery.
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import * as process from 'node:process';
 import { resolvePrismaDatabaseUrl } from '../prisma-database';

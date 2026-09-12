@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -29,6 +30,36 @@ async function openSession(
   return result;
 }
 
+async function holdWriteLock(milliseconds: number) {
+  // Use a separate process: the two SQLite libraries do not share their
+  // in-process lock bookkeeping, and OS file locks are process-scoped.
+  const child = spawn(
+    process.execPath,
+    [
+      '-e',
+      `
+        const { DatabaseSync } = require('node:sqlite');
+        const { writeSync } = require('node:fs');
+        const database = new DatabaseSync(process.argv[1]);
+        try {
+          database.exec('BEGIN IMMEDIATE');
+          writeSync(1, 'locked\\n');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.argv[2]));
+          database.exec('ROLLBACK');
+        } finally {
+          database.close();
+        }
+      `,
+      databasePath,
+      String(milliseconds),
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] },
+  );
+  const exited = once(child, 'exit');
+  await once(child.stdout, 'data');
+  return { child, exited };
+}
+
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'agents-prisma-'));
   databasePath = join(directory, 'session.db');
@@ -42,6 +73,61 @@ afterEach(async () => {
 });
 
 describe('Prisma 7 SQLite integration', () => {
+  it.each(['append', 'pop'] as const)(
+    'waits for another writer before transactional %s',
+    async (operation) => {
+      vi.stubEnv('DATABASE_URL', `file:${databasePath}?socket_timeout=1`);
+      pushSchema(process.env.DATABASE_URL!);
+      const { session } = await openSession({ sessionId: 'lock-wait' });
+      const original = { role: 'user' as const, content: 'before lock' };
+      const added = { role: 'user' as const, content: 'after lock' };
+      await session.addItems([original]);
+      const { child, exited } = await holdWriteLock(300);
+      try {
+        if (operation === 'append') {
+          await session.addItems([added]);
+          expect(await session.getItems()).toEqual([original, added]);
+        } else {
+          expect(await session.popItem()).toEqual(original);
+          expect(await session.getItems()).toEqual([]);
+        }
+        await exited;
+      } finally {
+        child.kill();
+        await exited;
+      }
+    },
+  );
+
+  it.each(['append', 'pop'] as const)(
+    'recovers the same client after transactional %s times out',
+    async (operation) => {
+      vi.stubEnv('DATABASE_URL', `file:${databasePath}?socket_timeout=1`);
+      pushSchema(process.env.DATABASE_URL!);
+      const { session } = await openSession({ sessionId: 'lock-timeout' });
+      const original = { role: 'user' as const, content: 'retained history' };
+      const added = { role: 'user' as const, content: 'after recovery' };
+      await session.addItems([original]);
+      const { child, exited } = await holdWriteLock(1500);
+      try {
+        await expect(
+          operation === 'append'
+            ? session.addItems([added])
+            : session.popItem(),
+        ).rejects.toThrow();
+        await exited;
+        expect(await session.getItems()).toEqual([original]);
+        await session.addItems([added]);
+        expect(await session.popItem()).toEqual(added);
+        expect(await session.getItems()).toEqual([original]);
+      } finally {
+        child.kill();
+        await exited;
+      }
+    },
+    10_000,
+  );
+
   it.each([true, false])(
     'persists and isolates sessions with transactions=%s',
     async (useTransactions) => {

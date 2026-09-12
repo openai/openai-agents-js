@@ -26,3 +26,7 @@ minimumReleaseAgeExclude:
   - openai@7.2.0
 blockExoticSubdeps: true
 strictDepBuilds: true
+patchedDependencies:
+  # Preserve Prisma 6's BEGIN IMMEDIATE behavior and release on begin failure.
+  # Recheck the contention tests before removing this patch on an adapter update.
+  '@prisma/adapter-better-sqlite3@7.10.0': patches/@prisma__adapter-better-sqlite3@7.10.0.patch
