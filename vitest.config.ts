@@ -98,6 +98,7 @@ function createProjects(reviewTestProfile: boolean) {
         maxConcurrency: 4,
         include: [
           'helpers/tests/consoleGuard.test.ts',
+          'integration-tests/cloudflare-workers/worker.test.ts',
           'helpers/vitest/codeChangeVerificationPolicy.test.ts',
           'helpers/vitest/reviewTestProfile.test.ts',
           'helpers/vitest/testConcurrency.test.ts',
