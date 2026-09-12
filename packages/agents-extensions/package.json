@@ -136,7 +136,7 @@
     "@e2b/code-interpreter": "2.7.2",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.153.4",
-    "@runloop/api-client": "1.31.0",
+    "@runloop/api-client": "1.16.2",
     "@types/debug": "^4.1.13",
     "@vercel/sandbox": "1.9.3",
     "ai": "^6.0.42",
