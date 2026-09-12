@@ -526,10 +526,18 @@ function buildGcsFuseMountScript(config: BlaxelCloudBucketMountConfig): string {
           ? [`--token-url=${tokenUrl}`]
           : ['--anonymous-access']),
     ...(config.readOnly ? ['-o', 'ro'] : []),
-    ...(config.prefix
-      ? [`--only-dir=${config.prefix.replace(/^\/+|\/+$/gu, '')}`]
-      : []),
   ];
+  if (config.prefix) {
+    let start = 0;
+    let end = config.prefix.length;
+    while (start < end && config.prefix[start] === '/') {
+      start++;
+    }
+    while (end > start && config.prefix[end - 1] === '/') {
+      end--;
+    }
+    options.push(`--only-dir=${config.prefix.slice(start, end)}`);
+  }
   const command = [
     ensureBlaxelToolCommand('gcsfuse'),
     `mkdir -p -- ${shellQuote(config.mountPath)}`,
