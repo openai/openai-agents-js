@@ -1701,6 +1701,74 @@ describe('BlaxelSandboxClient', () => {
     );
   });
 
+  test.each([
+    { prefix: undefined, bucket: 'agent-logs' },
+    { prefix: '', bucket: 'agent-logs' },
+    { prefix: 'reports/daily', bucket: 'agent-logs:/reports/daily' },
+    { prefix: '///reports/daily///', bucket: 'agent-logs:/reports/daily' },
+    { prefix: '///', bucket: 'agent-logs:/' },
+    { prefix: '/reports//daily/', bucket: 'agent-logs:/reports//daily' },
+    { prefix: '/résumé/ daily /', bucket: 'agent-logs:/résumé/ daily ' },
+  ])('preserves S3 mount prefix $prefix', async ({ prefix, bucket }) => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            prefix,
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    const mountCommand = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .find((command) => command.includes('s3fs'));
+    expect(mountCommand).toContain(
+      `s3fs '${bucket}' '/workspace/mounted/logs'`,
+    );
+    await session.close();
+  });
+
+  test.each([
+    {
+      type: 'r2_mount' as const,
+      accountId: 'test-account',
+    },
+    {
+      type: 'gcs_mount' as const,
+      accessId: 'test-access-id',
+      secretAccessKey: 'test-secret-key',
+    },
+  ])('trims prefixes for S3-compatible $type mounts', async (entry) => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            ...entry,
+            bucket: 'agent-logs',
+            prefix: '///reports//daily///',
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
+    );
+
+    const mountCommand = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .find((command) => command.includes('s3fs'));
+    expect(mountCommand).toContain(
+      "s3fs 'agent-logs:/reports//daily' '/workspace/mounted/logs'",
+    );
+    await session.close();
+  });
+
   test.each<{
     label: string;
     command: string;
