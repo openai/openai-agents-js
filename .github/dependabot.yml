@@ -1,11 +1,34 @@
 version: 2
 updates:
+  # The root pnpm workspace includes packages/*, examples/*, and docs.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      time: "09:00"
+      timezone: "UTC"
+    # Match the seven-day ordinary-update policy in pnpm-workspace.yaml.
+    # Dependabot cooldowns do not apply to security updates:
+    # https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#cooldown
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "monthly"
       time: "09:00"
       timezone: "UTC"
+    # Apply the same ordinary-update cooldown to Actions releases.
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         patterns:
