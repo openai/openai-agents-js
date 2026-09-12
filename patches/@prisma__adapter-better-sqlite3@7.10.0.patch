@@ -1,0 +1,38 @@
+diff --git a/dist/index.js b/dist/index.js
+index 0d01b5bfb3328b59d75c8236ed1a9569c322fcbc..f87e2fbc4f0304e575e696355c7db02458b567ca 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -642,11 +642,12 @@ var PrismaBetterSqlite3Adapter = class extends BetterSQLite3Queryable {
+     };
+     const tag = "[js::startTransaction]";
+     debug2("%s options: %O", tag, options);
++    const release = await this.#mutex.acquire();
+     try {
+-      const release = await this.#mutex.acquire();
+-      this.client.prepare("BEGIN").run();
++      this.client.prepare("BEGIN IMMEDIATE").run();
+       return new BetterSQLite3Transaction(this.client, options, this.adapterOptions, release);
+     } catch (e) {
++      release();
+       this.onError(e);
+     }
+   }
+diff --git a/dist/index.mjs b/dist/index.mjs
+index e551d4d56ea9e9071d9caa70d21901f6ffa59e9e..70c08e418eb7de6208b538078a4596bc51d98256 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -606,11 +606,12 @@ var PrismaBetterSqlite3Adapter = class extends BetterSQLite3Queryable {
+     };
+     const tag = "[js::startTransaction]";
+     debug2("%s options: %O", tag, options);
++    const release = await this.#mutex.acquire();
+     try {
+-      const release = await this.#mutex.acquire();
+-      this.client.prepare("BEGIN").run();
++      this.client.prepare("BEGIN IMMEDIATE").run();
+       return new BetterSQLite3Transaction(this.client, options, this.adapterOptions, release);
+     } catch (e) {
++      release();
+       this.onError(e);
+     }
+   }
