@@ -1,6 +1,6 @@
 import { randomUUID } from '@openai/agents-core/_shims';
 
-import type { ModelRequest, ModelResponse } from '../model';
+import type { ModelRequest, ModelResponse, ModelSettings } from '../model';
 import type {
   ApplyPatchCallResultItem,
   ComputerCallResultItem,
@@ -26,6 +26,7 @@ type PendingStreamedToolCall = {
 export type StreamAbortReconciliationState = {
   responseId?: string;
   pendingFunctionCalls: Map<string, PendingStreamedFunctionCall>;
+  pendingComputerCalls: Map<string, Pick<ComputerUseCallItem, 'callId'>>;
   pendingShellCalls: Map<string, PendingStreamedToolCall>;
   pendingApplyPatchCalls: Map<string, PendingStreamedToolCall>;
   pendingProgramCalls: Map<string, string>;
@@ -99,6 +100,7 @@ export function buildApplyPatchAbortResult(
 export function createStreamAbortReconciliationState(): StreamAbortReconciliationState {
   return {
     pendingFunctionCalls: new Map(),
+    pendingComputerCalls: new Map(),
     pendingShellCalls: new Map(),
     pendingApplyPatchCalls: new Map(),
     pendingProgramCalls: new Map(),
@@ -176,6 +178,11 @@ export function recordStreamEventForAbortReconciliation(
     return;
   }
 
+  if (item.type === 'computer_call' && typeof item.call_id === 'string') {
+    state.pendingComputerCalls.set(item.call_id, { callId: item.call_id });
+    return;
+  }
+
   if (
     item.type === 'shell_call' &&
     typeof item.call_id === 'string' &&
@@ -204,6 +211,11 @@ export function recordStreamEventForAbortReconciliation(
     return;
   }
 
+  if (item.type === 'computer_call_output' && typeof item.call_id === 'string') {
+    state.pendingComputerCalls.delete(item.call_id);
+    return;
+  }
+
   if (item.type === 'shell_call_output' && typeof item.call_id === 'string') {
     state.pendingShellCalls.delete(item.call_id);
     return;
@@ -221,6 +233,7 @@ export function buildAbortReconciliationInput(
   state: StreamAbortReconciliationState,
 ): (
   | FunctionCallResultItem
+  | ComputerCallResultItem
   | ShellCallResultItem
   | ApplyPatchCallResultItem
   | ProgramCallResultItem
@@ -228,6 +241,10 @@ export function buildAbortReconciliationInput(
   const functionOutputs = Array.from(
     state.pendingFunctionCalls.values(),
     buildFunctionAbortResult,
+  );
+  const computerOutputs = Array.from(
+    state.pendingComputerCalls.values(),
+    buildComputerAbortResult,
   );
   const shellOutputs = Array.from(
     state.pendingShellCalls.values(),
@@ -250,10 +267,40 @@ export function buildAbortReconciliationInput(
 
   return [
     ...functionOutputs,
+    ...computerOutputs,
     ...shellOutputs,
     ...applyPatchOutputs,
     ...programOutputs,
   ];
+}
+
+export function getAbortReconciliationModelSettings(
+  modelSettings: ModelSettings,
+): ModelSettings {
+  const providerData = modelSettings.providerData;
+  if (!isRecord(providerData) || Array.isArray(providerData)) {
+    return { ...modelSettings, toolChoice: 'none' };
+  }
+
+  const sanitizedProviderData = { ...providerData };
+  delete sanitizedProviderData.tool_choice;
+
+  for (const key of ['extra_body', 'extraBody'] as const) {
+    const extraBody = sanitizedProviderData[key];
+    if (!isRecord(extraBody) || Array.isArray(extraBody)) {
+      continue;
+    }
+
+    const sanitizedExtraBody = { ...extraBody };
+    delete sanitizedExtraBody.tool_choice;
+    sanitizedProviderData[key] = sanitizedExtraBody;
+  }
+
+  return {
+    ...modelSettings,
+    toolChoice: 'none',
+    providerData: sanitizedProviderData,
+  };
 }
 
 export function getAbortReconciliationPreviousResponseId(
@@ -271,6 +318,7 @@ export function shouldReconcileStreamAbort(
 ): boolean {
   return (
     state.pendingFunctionCalls.size > 0 ||
+    state.pendingComputerCalls.size > 0 ||
     state.pendingProgramCalls.size > 0 ||
     state.pendingShellCalls.size > 0 ||
     state.pendingApplyPatchCalls.size > 0
@@ -282,6 +330,7 @@ export function markAbortReconciliationComplete(
   response: ModelResponse | undefined,
 ): void {
   state.pendingFunctionCalls.clear();
+  state.pendingComputerCalls.clear();
   state.pendingShellCalls.clear();
   state.pendingApplyPatchCalls.clear();
   state.pendingProgramCalls.clear();
