@@ -1624,9 +1624,9 @@ describe('withTrace & span helpers (integration)', () => {
 describe('MultiTracingProcessor', () => {
   it('should call all processors shutdown when setting new processors', () => {
     const processor1 = new TestProcessor();
-    processor1.shutdown = vi.fn();
+    processor1.shutdown = vi.fn(async () => {});
     const processor2 = new TestProcessor();
-    processor2.shutdown = vi.fn();
+    processor2.shutdown = vi.fn(async () => {});
     const multiProcessor = new MultiTracingProcessor();
     multiProcessor.setProcessors([processor1]);
     expect(processor1.shutdown).not.toHaveBeenCalled();
