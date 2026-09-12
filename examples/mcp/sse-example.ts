@@ -64,11 +64,11 @@ async function startLocalSseServer(): Promise<LocalSseServer> {
 
         res.writeHead(404).end('Not found');
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        console.error('Error handling SSE request:', error);
         if (!res.headersSent) {
           res.writeHead(500);
         }
-        res.end(message);
+        res.end('Internal server error');
       }
     },
   );
