@@ -99,7 +99,7 @@
     "local-npm:publish": "pnpm -r publish --registry http://localhost:4873 --force --no-git-checks"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.31.0",
+    "@changesets/cli": "^3.0.2",
     "@eslint/js": "^9.39.4",
     "@types/node": "22.19.13",
     "@typescript-eslint/eslint-plugin": "^8.62.1",
