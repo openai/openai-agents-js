@@ -1396,7 +1396,9 @@ describe('OpenAITracingExporter', () => {
 
   it('setDefaultOpenAITracingExporter registers processor', async () => {
     const setTraceProcessors = vi.fn();
-    const BatchTraceProcessor = vi.fn().mockImplementation((exp) => ({ exp }));
+    const BatchTraceProcessor = vi.fn().mockImplementation(function (exp) {
+      return { exp };
+    });
     vi.resetModules();
     vi.doMock('@openai/agents-core', async () => {
       const actual = await vi.importActual<any>('@openai/agents-core');
