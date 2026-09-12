@@ -56,7 +56,11 @@ export function posixDirname(path: string): string {
   if (path === '/') {
     return '/';
   }
-  const normalized = path.replace(/\/+$/u, '');
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') {
+    end -= 1;
+  }
+  const normalized = path.slice(0, end);
   if (!normalized || normalized === '/') {
     return '.';
   }
