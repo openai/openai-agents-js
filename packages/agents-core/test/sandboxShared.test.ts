@@ -444,6 +444,21 @@ describe('sandbox shared helpers', () => {
     expect(posixDirname('README.md')).toBe('.');
   });
 
+  it.each([
+    ['', '.'],
+    ['/', '/'],
+    ['///', '.'],
+    ['/README.md', '/'],
+    ['README.md///', '.'],
+    ['/workspace/src///', '/workspace'],
+    ['src//nested/file.txt', 'src//nested'],
+    ['src//nested/file.txt///', 'src//nested'],
+    ['src/../file.txt', 'src/..'],
+    ['src/file.txt\n', 'src'],
+  ])('preserves the POSIX parent directory for %j', (path, expected) => {
+    expect(posixDirname(path)).toBe(expected);
+  });
+
   it('serializes manifests without ephemeral entries or environment values', () => {
     const manifest = new Manifest({
       entries: {
