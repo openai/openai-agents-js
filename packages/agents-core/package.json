@@ -132,8 +132,8 @@
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0",
-    "debug": "^4.4.0",
-    "openai": "^7.2.0"
+    "debug": "^4.4.3",
+    "openai": "^7.10.0"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
@@ -184,7 +184,7 @@
     }
   },
   "devDependencies": {
-    "@types/debug": "^4.1.12",
+    "@types/debug": "^4.1.13",
     "zod": "^4.2.0"
   },
   "files": [

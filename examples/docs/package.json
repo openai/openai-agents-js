@@ -3,14 +3,14 @@
   "name": "docs-code",
   "dependencies": {
     "@ai-sdk/openai": "^2.0.15",
-    "@modelcontextprotocol/server-filesystem": "^2026.1.14",
+    "@modelcontextprotocol/server-filesystem": "^2026.8.31",
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
     "@valibot/to-json-schema": "^1.5.0",
-    "openai": "^7.2.0",
+    "openai": "^7.10.0",
     "server-only": "^0.0.1",
     "valibot": "^1.4.0",
     "zod": "^4.0.0"
@@ -19,6 +19,6 @@
     "build-check": "tsc --noEmit"
   },
   "devDependencies": {
-    "typedoc-plugin-zod": "^1.4.1"
+    "typedoc-plugin-zod": "^1.4.3"
   }
 }

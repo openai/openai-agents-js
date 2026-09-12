@@ -16,7 +16,7 @@
   "dependencies": {
     "@openai/agents-core": "workspace:*",
     "@types/ws": "^8.18.1",
-    "debug": "^4.4.0"
+    "debug": "^4.4.3"
   },
   "exports": {
     ".": {
@@ -87,7 +87,7 @@
     "ai": "^6.0.0 || ^7.0.0",
     "e2b": "^2.14.1",
     "modal": "^0.7.6",
-    "ws": "^8.21.0",
+    "ws": "^8.21.3",
     "zod": "^4.0.0"
   },
   "peerDependenciesMeta": {
@@ -131,19 +131,19 @@
   "license": "MIT",
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.3",
-    "@blaxel/core": "0.2.82",
+    "@blaxel/core": "0.3.19",
     "@daytonaio/sdk": "0.162.0",
-    "@e2b/code-interpreter": "2.6.1",
+    "@e2b/code-interpreter": "2.7.2",
     "@openai/agents": "workspace:>=0.0.0",
-    "@openai/codex-sdk": "^0.86.0",
-    "@runloop/api-client": "1.16.2",
-    "@types/debug": "^4.1.12",
+    "@openai/codex-sdk": "^0.153.4",
+    "@runloop/api-client": "1.31.0",
+    "@types/debug": "^4.1.13",
     "@vercel/sandbox": "1.9.3",
     "ai": "^6.0.42",
-    "e2b": "2.32.0",
-    "modal": "0.7.6",
+    "e2b": "2.46.1",
+    "modal": "0.10.0",
     "undici-types": "6.21.0",
-    "ws": "^8.21.0",
+    "ws": "^8.21.3",
     "zod": "^4.2.0"
   },
   "files": [
