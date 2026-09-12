@@ -6,13 +6,22 @@
 
 # Versioning, package publication, and release dependencies.
 /.changeset/config.json @openai/sdks-team
+/.changeset/pre.json @openai/sdks-team
 /package.json @openai/sdks-team
 /packages/*/package.json @openai/sdks-team
+/examples/*/package.json @openai/sdks-team
+/docs/package.json @openai/sdks-team
 /pnpm-workspace.yaml @openai/sdks-team
 /pnpm-lock.yaml @openai/sdks-team
 /.npmrc @openai/sdks-team
 /.pnpmfile.mjs @openai/sdks-team
 /.pnpmfile.cjs @openai/sdks-team
+
+# Native build definitions automatically executed during workspace installation.
+/binding.gyp @openai/sdks-team
+/packages/*/binding.gyp @openai/sdks-team
+/examples/*/binding.gyp @openai/sdks-team
+/docs/binding.gyp @openai/sdks-team
 
 # Git hooks and configuration loaded when Changesets commits release versions.
 /.husky/ @openai/sdks-team
@@ -20,6 +29,24 @@
 /eslint.config.mjs @openai/sdks-team
 /.prettierrc @openai/sdks-team
 /.prettierignore @openai/sdks-team
+
+# Additional Prettier configuration locations for generated release files.
+/package.yaml @openai/sdks-team
+/packages/package.json @openai/sdks-team
+/packages/package.yaml @openai/sdks-team
+/packages/.prettierrc* @openai/sdks-team
+/packages/prettier.config.* @openai/sdks-team
+/packages/*/package.yaml @openai/sdks-team
+/packages/*/.prettierrc* @openai/sdks-team
+/packages/*/prettier.config.* @openai/sdks-team
+/packages/*/src/package.json @openai/sdks-team
+/packages/*/src/package.yaml @openai/sdks-team
+/packages/*/src/.prettierrc* @openai/sdks-team
+/packages/*/src/prettier.config.* @openai/sdks-team
+/.changeset/package.json @openai/sdks-team
+/.changeset/package.yaml @openai/sdks-team
+/.changeset/.prettierrc* @openai/sdks-team
+/.changeset/prettier.config.* @openai/sdks-team
 
 # Configuration and helpers used by the release build.
 /tsconfig.json @openai/sdks-team
