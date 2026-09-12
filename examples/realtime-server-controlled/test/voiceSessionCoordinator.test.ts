@@ -25,7 +25,7 @@ function connection(connect: VoiceConnection['connect']): VoiceConnection & {
 } {
   let muted = false;
   return {
-    close: vi.fn(),
+    close: vi.fn<VoiceConnection['close']>(),
     connect: vi.fn(connect),
     get muted() {
       return muted;

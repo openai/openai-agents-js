@@ -490,7 +490,7 @@ describe('Trace & Span lifecycle', () => {
       onceSpy.mockRestore();
       onSpy.mockRestore();
       vi.resetModules();
-      vi.unmock('@openai/agents-core/_shims');
+      vi.doUnmock('@openai/agents-core/_shims');
     }
   });
 
@@ -1061,8 +1061,8 @@ describe('BatchTraceProcessor', () => {
     );
 
     vi.resetModules();
-    vi.unmock('@openai/agents-core/_shims');
-    vi.unmock('../src/logger');
+    vi.doUnmock('@openai/agents-core/_shims');
+    vi.doUnmock('../src/logger');
   });
 
   it('logs a timeout flush during shutdown when the timeout elapses', async () => {

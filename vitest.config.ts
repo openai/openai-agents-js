@@ -139,7 +139,6 @@ export default defineConfig(({ mode }) => {
       coverage: {
         provider: 'v8',
         reporter: ['text', 'html', 'json', 'json-summary', 'lcov'],
-        all: true,
         include: ['packages/**/src/**/*.ts'],
         exclude: ['**/*.d.ts', 'packages/**/test/**', 'packages/**/dist/**'],
       },
