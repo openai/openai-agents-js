@@ -2839,6 +2839,26 @@ describe('remote sandbox path helpers', () => {
     ).toThrow(/symlink member not allowed: workspace\/keep\/link/);
   });
 
+  test.each([
+    ['safe/file.txt', 'safe/file.txt'],
+    ['safe/file.txt\0\0', 'safe/file.txt'],
+    ['safe/file.txt\n', 'safe/file.txt'],
+    ['safe/line\nname.txt\0', 'safe/line\nname.txt'],
+    ['safe/line\rname.txt\0', 'safe/line\rname.txt'],
+    ['safe/line\u2028name.txt\0', 'safe/line\u2028name.txt'],
+    ['safe/line\u2029name.txt\0', 'safe/line\u2029name.txt'],
+  ])('preserves GNU long-name trimming for %j', (content, path) => {
+    const archive = makeTarArchive([
+      { name: 'long-name', type: 'L', content },
+      { name: 'fallback.txt', content: 'ok' },
+    ]);
+
+    expect(() => validateWorkspaceTarArchive(archive)).not.toThrow();
+    expect(() =>
+      validateWorkspaceTarArchive(archive, { rejectRelPaths: [path] }),
+    ).toThrow(`archive member overlaps protected path: ${path}`);
+  });
+
   test.each(['path', 'linkpath'])('rejects global PAX %s overrides', (key) => {
     const archive = makeTarArchive([
       {
