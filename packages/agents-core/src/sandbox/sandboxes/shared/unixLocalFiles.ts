@@ -46,7 +46,7 @@ function pythonExecutable(mode: LocalFileIOProtection): string | undefined {
       );
     return undefined;
   }
-  const configured = process.env.OPENAI_AGENTS_PYTHON;
+  const configured = process.env.OPENAI_AGENTS_PYTHON?.trim();
   const candidates = configured
     ? isAbsolute(configured)
       ? [configured]
