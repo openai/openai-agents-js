@@ -12,6 +12,7 @@ allowBuilds:
   protobufjs: true
   sharp: true
   # used only in examples/memory
+  better-sqlite3: true
   '@prisma/client': true
   '@prisma/engines': true
   prisma: true

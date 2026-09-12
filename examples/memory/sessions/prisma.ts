@@ -3,7 +3,9 @@ import { protocol } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { PrismaClient } from '@prisma/client';
+import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import * as process from 'node:process';
+import { resolvePrismaDatabaseUrl } from '../prisma-database';
 
 export type PrismaSessionOptions = {
   client: PrismaClient;
@@ -149,7 +151,15 @@ export async function createPrismaSession(
       );
     }
   }
-  const prisma = options.client ?? new PrismaClient();
+  const prisma =
+    options.client ??
+    new PrismaClient({
+      adapter: new PrismaBetterSqlite3(
+        { url: resolvePrismaDatabaseUrl(process.env.DATABASE_URL!) },
+        // Existing Prisma 6 SQLite databases store DateTime as milliseconds.
+        { timestampFormat: 'unixepoch-ms' },
+      ),
+    });
   const session = new PrismaSession({
     client: prisma,
     sessionId: options.sessionId,
