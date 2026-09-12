@@ -2,7 +2,7 @@
   "private": true,
   "name": "realtime-twilio",
   "dependencies": {
-    "@fastify/formbody": "^8.0.2",
+    "@fastify/formbody": "^9.0.0",
     "@fastify/websocket": "^11.1.0",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
