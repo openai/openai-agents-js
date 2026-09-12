@@ -1,13 +1,16 @@
 import { spawnSync } from 'node:child_process';
+import {
+  getPrismaInvocation,
+  type PrismaCommand,
+} from './prisma-command';
 
-const prismaSchemaPath = './prisma/schema.prisma';
-const pnpmCommand = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
-
-function runPrismaCommand(args: string[]) {
-  const result = spawnSync(pnpmCommand, ['prisma', ...args], {
+function runPrismaCommand(command: PrismaCommand) {
+  const invocation = getPrismaInvocation(command);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: __dirname,
     env: process.env,
     stdio: 'inherit',
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
 
   if (result.error) {
@@ -31,8 +34,8 @@ async function main() {
     );
   }
 
-  runPrismaCommand(['db', 'push', '--schema', prismaSchemaPath]);
-  runPrismaCommand(['generate', '--schema', prismaSchemaPath]);
+  runPrismaCommand('db-push');
+  runPrismaCommand('generate');
 
   await import('./prisma');
 }
