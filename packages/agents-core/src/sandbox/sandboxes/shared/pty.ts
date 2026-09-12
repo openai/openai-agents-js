@@ -137,7 +137,8 @@ export function spawnInPseudoTerminal(
   options: PseudoTerminalSpawnOptions = {},
 ): ChildProcessWithoutNullStreams {
   const env = { ...(options.env ?? process.env) };
-  const pythonExecutable = process.env.OPENAI_AGENTS_PYTHON ?? 'python3';
+  const configuredPython = process.env.OPENAI_AGENTS_PYTHON?.trim();
+  const pythonExecutable = configuredPython ? configuredPython : 'python3';
   assertPtyBridgePythonAvailable(pythonExecutable, {
     cwd: options.cwd,
     env,
