@@ -1,5 +1,17 @@
 # @openai/agents-extensions
 
+## 0.18.1
+
+### Patch Changes
+
+- 742423e: fix: treat a blank CODEX_API_KEY as unconfigured so OPENAI_API_KEY can be used
+- 7f135af: fix: update compatible runtime and development dependencies.
+- 056bef8: fix: trim Blaxel S3-compatible bucket prefixes in linear time while preserving mount targets.
+- 12d1b92: fix: preserve tar name trimming with a linear suffix scan.
+- Updated dependencies [7f135af]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.18.1
+
 ## 0.18.0
 
 ### Patch Changes
