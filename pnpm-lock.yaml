@@ -6,20 +6,6 @@ settings:
 
 overrides:
   '@types/node': 22.19.13
-  metro@0.83.7: 0.83.8
-  metro-babel-transformer@0.83.7: 0.83.8
-  metro-cache@0.83.7: 0.83.8
-  metro-cache-key@0.83.7: 0.83.8
-  metro-config@0.83.7: 0.83.8
-  metro-core@0.83.7: 0.83.8
-  metro-file-map@0.83.7: 0.83.8
-  metro-minify-terser@0.83.7: 0.83.8
-  metro-resolver@0.83.7: 0.83.8
-  metro-runtime@0.83.7: 0.83.8
-  metro-source-map@0.83.7: 0.83.8
-  metro-symbolicate@0.83.7: 0.83.8
-  metro-transform-plugins@0.83.7: 0.83.8
-  metro-transform-worker@0.83.7: 0.83.8
 
 patchedDependencies:
   '@prisma/adapter-better-sqlite3@7.10.0': e4438893c610d8ab98c598a660ff0fe8e8f4a4070ede262622937adb534f4050
@@ -2447,8 +2433,8 @@ packages:
       expo:
         optional: true
 
-  '@expo/metro@55.1.1':
-    resolution: {integrity: sha512-/wfXo5hTuAVpVLG/4hzlmD9NBGJkzkmBEMm/4VICajYRbj7y8OmqqPWbbymzHiBiHB6tI9BnsyXpQM6zVZEECg==}
+  '@expo/metro@55.1.2':
+    resolution: {integrity: sha512-EOBoqqX4jD7JvHBHKDoek8SmWyAFPuJePyDSqIAhIjOCPAM67fVxd4+pCXJ6SDK1P9so55v2iTFBwCoeCmEj4Q==}
 
   '@expo/osascript@2.7.1':
     resolution: {integrity: sha512-Zn03EX6In7ts2lPUW2ESUSkEhEWQN1qqsiXjadtZMJOuZRkMiAg1ZQHuvz9DjByDWNJ2pBwAGyrts9lj9k389g==}
@@ -12150,7 +12136,7 @@ snapshots:
       '@expo/image-utils': 0.8.15(supports-color@8.1.1)(typescript@5.9.3)
       '@expo/json-file': 10.2.0
       '@expo/log-box': 55.0.13(@expo/dom-webview@55.0.6)(expo@55.0.28)(react-native@0.83.10(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.0)(supports-color@8.1.1))(react@19.2.0)
-      '@expo/metro': 55.1.1(supports-color@8.1.1)
+      '@expo/metro': 55.1.2(supports-color@8.1.1)
       '@expo/metro-config': 55.0.25(expo@55.0.28)(supports-color@8.1.1)(typescript@5.9.3)
       '@expo/osascript': 2.7.1
       '@expo/package-manager': 1.13.1
@@ -12360,7 +12346,7 @@ snapshots:
       '@expo/config': 55.0.19(supports-color@8.1.1)(typescript@5.9.3)
       '@expo/env': 2.1.3(supports-color@8.1.1)
       '@expo/json-file': 10.0.16
-      '@expo/metro': 55.1.1(supports-color@8.1.1)
+      '@expo/metro': 55.1.2(supports-color@8.1.1)
       '@expo/spawn-async': 1.8.0
       browserslist: 4.28.7
       chalk: 4.1.2
@@ -12381,7 +12367,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@expo/metro@55.1.1(supports-color@8.1.1)':
+  '@expo/metro@55.1.2(supports-color@8.1.1)':
     dependencies:
       metro: 0.83.8(supports-color@8.1.1)
       metro-babel-transformer: 0.83.8(supports-color@8.1.1)
@@ -16847,7 +16833,7 @@ snapshots:
       '@expo/fingerprint': 0.16.8(supports-color@8.1.1)
       '@expo/local-build-cache-provider': 55.0.15(supports-color@8.1.1)(typescript@5.9.3)
       '@expo/log-box': 55.0.13(@expo/dom-webview@55.0.6)(expo@55.0.28)(react-native@0.83.10(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.0)(supports-color@8.1.1))(react@19.2.0)
-      '@expo/metro': 55.1.1(supports-color@8.1.1)
+      '@expo/metro': 55.1.2(supports-color@8.1.1)
       '@expo/metro-config': 55.0.25(expo@55.0.28)(supports-color@8.1.1)(typescript@5.9.3)
       '@expo/vector-icons': 15.1.1(expo-font@55.0.8(expo@55.0.28)(react-native@0.83.10(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.0)(supports-color@8.1.1))(react@19.2.0))(react-native@0.83.10(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.0)(supports-color@8.1.1))(react@19.2.0)
       '@ungap/structured-clone': 1.3.2
