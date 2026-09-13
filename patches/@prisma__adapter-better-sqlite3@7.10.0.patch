@@ -1,8 +1,27 @@
 diff --git a/dist/index.js b/dist/index.js
-index 0d01b5bfb3328b59d75c8236ed1a9569c322fcbc..f87e2fbc4f0304e575e696355c7db02458b567ca 100644
+index 0d01b5bfb3328b59d75c8236ed1a9569c322fcbc..0aa63f511c15fc7ee22e0467b388630abd8b359e 100644
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -642,11 +642,12 @@ var PrismaBetterSqlite3Adapter = class extends BetterSQLite3Queryable {
+@@ -602,10 +602,15 @@ var BetterSQLite3Transaction = class extends BetterSQLite3Queryable {
+     this.#unlockParent();
+     return Promise.resolve();
+   }
+-  rollback() {
++  async rollback() {
+     debug2(`[js::rollback]`);
+-    this.#unlockParent();
+-    return Promise.resolve();
++    try {
++      if (this.client.inTransaction) {
++        await this.executeRaw({ sql: "ROLLBACK", args: [], argTypes: [] });
++      }
++    } finally {
++      this.#unlockParent();
++    }
+   }
+   async createSavepoint(name2) {
+     await this.executeRaw({ sql: `SAVEPOINT ${name2}`, args: [], argTypes: [] });
+@@ -642,11 +647,12 @@ var PrismaBetterSqlite3Adapter = class extends BetterSQLite3Queryable {
      };
      const tag = "[js::startTransaction]";
      debug2("%s options: %O", tag, options);
@@ -18,10 +37,29 @@ index 0d01b5bfb3328b59d75c8236ed1a9569c322fcbc..f87e2fbc4f0304e575e696355c7db024
      }
    }
 diff --git a/dist/index.mjs b/dist/index.mjs
-index e551d4d56ea9e9071d9caa70d21901f6ffa59e9e..70c08e418eb7de6208b538078a4596bc51d98256 100644
+index e551d4d56ea9e9071d9caa70d21901f6ffa59e9e..4f6ab79ce59e355c465b8d82d492a5033d354e04 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -606,11 +606,12 @@ var PrismaBetterSqlite3Adapter = class extends BetterSQLite3Queryable {
+@@ -566,10 +566,15 @@ var BetterSQLite3Transaction = class extends BetterSQLite3Queryable {
+     this.#unlockParent();
+     return Promise.resolve();
+   }
+-  rollback() {
++  async rollback() {
+     debug2(`[js::rollback]`);
+-    this.#unlockParent();
+-    return Promise.resolve();
++    try {
++      if (this.client.inTransaction) {
++        await this.executeRaw({ sql: "ROLLBACK", args: [], argTypes: [] });
++      }
++    } finally {
++      this.#unlockParent();
++    }
+   }
+   async createSavepoint(name2) {
+     await this.executeRaw({ sql: `SAVEPOINT ${name2}`, args: [], argTypes: [] });
+@@ -606,11 +611,12 @@ var PrismaBetterSqlite3Adapter = class extends BetterSQLite3Queryable {
      };
      const tag = "[js::startTransaction]";
      debug2("%s options: %O", tag, options);

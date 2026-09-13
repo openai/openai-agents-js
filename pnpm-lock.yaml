@@ -8,7 +8,7 @@ overrides:
   '@types/node': 22.19.13
 
 patchedDependencies:
-  '@prisma/adapter-better-sqlite3@7.10.0': 3709091604f039258099a9262c027b43ff1712b9e0c7bb0f20daeb7e3b0fb3bf
+  '@prisma/adapter-better-sqlite3@7.10.0': e4438893c610d8ab98c598a660ff0fe8e8f4a4070ede262622937adb534f4050
 
 importers:
 
@@ -371,7 +371,7 @@ importers:
         version: link:../../packages/agents
       '@prisma/adapter-better-sqlite3':
         specifier: ^7.10.0
-        version: 7.10.0(patch_hash=3709091604f039258099a9262c027b43ff1712b9e0c7bb0f20daeb7e3b0fb3bf)
+        version: 7.10.0(patch_hash=e4438893c610d8ab98c598a660ff0fe8e8f4a4070ede262622937adb534f4050)
       '@prisma/client':
         specifier: ^7.10.0
         version: 7.10.0(prisma@7.10.0(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3))(typescript@5.9.3)
@@ -13455,7 +13455,7 @@ snapshots:
 
   '@pnpm/deps.graph-sequencer@1100.0.1': {}
 
-  '@prisma/adapter-better-sqlite3@7.10.0(patch_hash=3709091604f039258099a9262c027b43ff1712b9e0c7bb0f20daeb7e3b0fb3bf)':
+  '@prisma/adapter-better-sqlite3@7.10.0(patch_hash=e4438893c610d8ab98c598a660ff0fe8e8f4a4070ede262622937adb534f4050)':
     dependencies:
       '@prisma/driver-adapter-utils': 7.10.0
       better-sqlite3: 12.11.1

@@ -30,7 +30,7 @@ async function openSession(
   return result;
 }
 
-async function holdWriteLock(milliseconds: number) {
+async function holdLock(milliseconds: number, mode: 'reader' | 'writer') {
   // Use a separate process: the two SQLite libraries do not share their
   // in-process lock bookkeeping, and OS file locks are process-scoped.
   const child = spawn(
@@ -42,7 +42,8 @@ async function holdWriteLock(milliseconds: number) {
         const { writeSync } = require('node:fs');
         const database = new DatabaseSync(process.argv[1]);
         try {
-          database.exec('BEGIN IMMEDIATE');
+          database.exec(process.argv[3] === 'writer' ? 'BEGIN IMMEDIATE' : 'BEGIN');
+          database.prepare('SELECT * FROM SessionItem').all();
           writeSync(1, 'locked\\n');
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.argv[2]));
           database.exec('ROLLBACK');
@@ -52,6 +53,7 @@ async function holdWriteLock(milliseconds: number) {
       `,
       databasePath,
       String(milliseconds),
+      mode,
     ],
     { stdio: ['ignore', 'pipe', 'inherit'] },
   );
@@ -82,7 +84,7 @@ describe('Prisma 7 SQLite integration', () => {
       const original = { role: 'user' as const, content: 'before lock' };
       const added = { role: 'user' as const, content: 'after lock' };
       await session.addItems([original]);
-      const { child, exited } = await holdWriteLock(300);
+      const { child, exited } = await holdLock(300, 'writer');
       try {
         if (operation === 'append') {
           await session.addItems([added]);
@@ -108,7 +110,7 @@ describe('Prisma 7 SQLite integration', () => {
       const original = { role: 'user' as const, content: 'retained history' };
       const added = { role: 'user' as const, content: 'after recovery' };
       await session.addItems([original]);
-      const { child, exited } = await holdWriteLock(1500);
+      const { child, exited } = await holdLock(1500, 'writer');
       try {
         await expect(
           operation === 'append'
@@ -123,6 +125,55 @@ describe('Prisma 7 SQLite integration', () => {
       } finally {
         child.kill();
         await exited;
+      }
+    },
+    10_000,
+  );
+
+  it.each(['append', 'pop'] as const)(
+    'rolls back and recovers when a reader blocks %s COMMIT',
+    async (operation) => {
+      vi.stubEnv('DATABASE_URL', `file:${databasePath}?socket_timeout=1`);
+      pushSchema(process.env.DATABASE_URL!);
+      const { session } = await openSession({ sessionId: 'commit-timeout' });
+      const original = { role: 'user' as const, content: 'retained history' };
+      const added = { role: 'user' as const, content: 'after recovery' };
+      await session.addItems([original]);
+      // A rollback-journal reader permits BEGIN IMMEDIATE and writes, but
+      // prevents COMMIT from acquiring its exclusive lock.
+      // Start the reader after the real session upsert completes so the
+      // failure occurs after the append/delete, at its transaction's COMMIT.
+      let lock: Awaited<ReturnType<typeof holdLock>> | undefined;
+      const getSessionId = session.getSessionId.bind(session);
+      const lookup = vi
+        .spyOn(session, 'getSessionId')
+        .mockImplementationOnce(async () => {
+          const id = await getSessionId();
+          lock = await holdLock(1500, 'reader');
+          return id;
+        });
+      try {
+        await expect(
+          operation === 'append'
+            ? session.addItems([added])
+            : session.popItem(),
+        ).rejects.toThrow();
+        expect(lock).toBeDefined();
+        await lock?.exited;
+        // A second connection must also be able to write before the failed
+        // client's connection is closed or reused for another transaction.
+        const other = await openSession({ sessionId: 'commit-timeout' });
+        expect(await other.session.getItems()).toEqual([original]);
+        await other.session.addItems([added]);
+        expect(await other.session.popItem()).toEqual(added);
+        expect(await session.getItems()).toEqual([original]);
+        await session.addItems([added]);
+        expect(await session.popItem()).toEqual(added);
+        expect(await session.getItems()).toEqual([original]);
+      } finally {
+        lookup.mockRestore();
+        lock?.child.kill();
+        await lock?.exited;
       }
     },
     10_000,
