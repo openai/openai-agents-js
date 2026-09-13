@@ -145,7 +145,7 @@ export default {
       });
     } catch (error) {
       console.error(error);
-      return new Response(String(error), { status: 500 });
+      return new Response('Internal Server Error', { status: 500 });
     } finally {
       // make sure to flush any remaining traces before exiting
       ctx.waitUntil(getGlobalTraceProvider().forceFlush());
