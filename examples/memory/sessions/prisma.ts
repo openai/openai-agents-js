@@ -1,9 +1,12 @@
 import type { AgentInputItem, Session } from '@openai/agents';
 import { protocol } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
-import type { Prisma } from '@prisma/client';
-import { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
+// This example requires the workspace's version-pinned adapter patch, which
+// preserves Prisma 6's SQLite write-lock waiting and timeout recovery.
+import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import * as process from 'node:process';
+import { resolvePrismaDatabaseUrl } from '../prisma-database';
 
 export type PrismaSessionOptions = {
   client: PrismaClient;
@@ -138,7 +141,8 @@ export async function createPrismaSession(
     databaseUrl?: string;
   } = {},
 ): Promise<{ session: PrismaSession; prisma: PrismaClient }> {
-  if (!options.client) {
+  let prisma = options.client;
+  if (!prisma) {
     if (!process.env.DATABASE_URL && options.databaseUrl) {
       process.env.DATABASE_URL = options.databaseUrl;
     }
@@ -148,8 +152,27 @@ export async function createPrismaSession(
         'DATABASE_URL was not set. Defaulting to sqlite db at file:./dev.db',
       );
     }
+    const [databaseUrl, query] = resolvePrismaDatabaseUrl(
+      process.env.DATABASE_URL!,
+    ).split('?');
+    const socketTimeout = new URLSearchParams(query).get('socket_timeout');
+    // File-backed sessions share this module's exports and do not need a
+    // generated Prisma client. Load it only when creating a Prisma session.
+    const { PrismaClient } = await import('@prisma/client');
+    prisma = new PrismaClient({
+      adapter: new PrismaBetterSqlite3(
+        {
+          url: databaseUrl,
+          // Prisma URL timeouts use seconds; better-sqlite3 expects milliseconds.
+          ...(socketTimeout === null
+            ? {}
+            : { timeout: Number(socketTimeout) * 1000 }),
+        },
+        // Existing Prisma 6 SQLite databases store DateTime as milliseconds.
+        { timestampFormat: 'unixepoch-ms' },
+      ),
+    });
   }
-  const prisma = options.client ?? new PrismaClient();
   const session = new PrismaSession({
     client: prisma,
     sessionId: options.sessionId,
