@@ -5,6 +5,7 @@
     "lib": ["ES2021"],
     "noEmit": true,
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "types": ["node"],
     "resolveJsonModule": true,
     "esModuleInterop": true,
