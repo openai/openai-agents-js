@@ -69,7 +69,7 @@ export type MCPToolFilterCallable<TContext = UnknownContext> = (
 
 /** Static tool filter configuration using allow and block lists. */
 export interface MCPToolFilterStatic {
-  /** Optional list of tool names to allow. */
+  /** Optional list of tool names to allow. An empty array allows no tools. */
   allowedToolNames?: string[];
   /** Optional list of tool names to block. */
   blockedToolNames?: string[];
