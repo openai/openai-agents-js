@@ -1,5 +1,15 @@
 # @openai/agents-openai
 
+## 0.18.1
+
+### Patch Changes
+
+- 7f135af: fix: update compatible runtime and development dependencies.
+- 06bbcc0: chore: migrate tracing test mocks to Vitest 5.
+- Updated dependencies [7f135af]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.18.1
+
 ## 0.18.0
 
 ### Patch Changes
