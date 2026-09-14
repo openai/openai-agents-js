@@ -14,7 +14,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const TARGET_TEST_CMD = 'sh tests/test_credit_note.sh';
 const TARGET_MODULE = 'repo/credit_note.sh';

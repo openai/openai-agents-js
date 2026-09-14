@@ -1,7 +1,6 @@
 # Agent Pattern Examples
 
-This directory contains small scripts that demonstrate different agent patterns.
-Run them with `pnpm` using the commands shown below.
+This directory contains small scripts that demonstrate different agent patterns. Run them with `pnpm` using the commands shown below.
 
 - `agents-as-tools.ts` – Orchestrate translator agents using them as tools.
   ```bash
@@ -59,3 +58,7 @@ Run them with `pnpm` using the commands shown below.
   ```bash
   pnpm -F agent-patterns start:streaming-guardrails
   ```
+
+## Runtime requirements
+
+Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start:agents-as-tools`, `start:agents-as-tools-conditional`, `start:agents-as-tools-structured`, `start:agents-as-tools-streaming`, `start:deterministic`, `start:forcing-tool-use`, `start:human-in-the-loop-stream`, `start:human-in-the-loop`, `start:input-guardrails`, `start:llm-as-a-judge`, `start:output-guardrails`, `start:parallelization`, `start:routing`, `start:streamed`, `start:streaming-guardrails`.

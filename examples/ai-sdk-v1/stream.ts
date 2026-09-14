@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Agent, run, tool } from '@openai/agents';
-import { aisdk, AiSdkModel } from './ai-sdk-v1';
+import { aisdk, AiSdkModel } from './ai-sdk-v1.ts';
 
 export async function runAgents(model: AiSdkModel) {
   const getWeatherTool = tool({

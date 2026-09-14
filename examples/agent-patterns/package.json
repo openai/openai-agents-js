@@ -10,21 +10,24 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start:agents-as-tools": "tsx agents-as-tools.ts",
-    "start:agents-as-tools-conditional": "tsx agents-as-tools-conditional.ts",
-    "start:agents-as-tools-structured": "tsx agents-as-tools-structured.ts",
-    "start:agents-as-tools-streaming": "tsx agents-as-tools-streaming.ts",
-    "start:deterministic": "tsx deterministic.ts",
-    "start:forcing-tool-use": "tsx forcing-tool-use.ts -t default",
-    "start:human-in-the-loop-stream": "tsx human-in-the-loop-stream.ts",
-    "start:human-in-the-loop": "tsx human-in-the-loop.ts",
+    "start:agents-as-tools": "node agents-as-tools.ts",
+    "start:agents-as-tools-conditional": "node agents-as-tools-conditional.ts",
+    "start:agents-as-tools-structured": "node agents-as-tools-structured.ts",
+    "start:agents-as-tools-streaming": "node agents-as-tools-streaming.ts",
+    "start:deterministic": "node deterministic.ts",
+    "start:forcing-tool-use": "node forcing-tool-use.ts -t default",
+    "start:human-in-the-loop-stream": "node human-in-the-loop-stream.ts",
+    "start:human-in-the-loop": "node human-in-the-loop.ts",
     "start:hosted-multi-agent": "tsx hosted-multi-agent-beta.ts",
-    "start:input-guardrails": "tsx input-guardrails.ts",
-    "start:llm-as-a-judge": "tsx llm-as-a-judge.ts",
-    "start:output-guardrails": "tsx output-guardrails.ts",
-    "start:parallelization": "tsx parallelization.ts",
-    "start:routing": "tsx routing.ts",
-    "start:streamed": "tsx streamed.ts",
-    "start:streaming-guardrails": "tsx streaming-guardrails.ts"
+    "start:input-guardrails": "node input-guardrails.ts",
+    "start:llm-as-a-judge": "node llm-as-a-judge.ts",
+    "start:output-guardrails": "node output-guardrails.ts",
+    "start:parallelization": "node parallelization.ts",
+    "start:routing": "node routing.ts",
+    "start:streamed": "node streamed.ts",
+    "start:streaming-guardrails": "node streaming-guardrails.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

@@ -8,9 +8,9 @@ import { describe, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const testFileDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = join(testFileDir, '../../..');
+// This child runs outside Vitest's loader; use the SDK built by `pnpm build`.
 const sandboxLocalModuleUrl = pathToFileURL(
-  join(testFileDir, '../../src/sandbox/local.ts'),
+  join(testFileDir, '../../dist/sandbox/local.mjs'),
 ).href;
 
 const PYTHON_SIGNAL_IGNORE_WRAPPER = String.raw`
@@ -32,7 +32,7 @@ describe('UnixLocalSandboxClient PTY signal handling', () => {
       const rootDir = await mkdtemp(
         join(tmpdir(), 'agents-core-sandbox-signal-test-'),
       );
-      const scriptPath = join(rootDir, `pty-${signalName.toLowerCase()}.ts`);
+      const scriptPath = join(rootDir, `pty-${signalName.toLowerCase()}.mjs`);
 
       try {
         await writeFile(
@@ -123,19 +123,12 @@ void main();
             '-c',
             PYTHON_SIGNAL_IGNORE_WRAPPER,
             signalName,
-            'pnpm',
-            'exec',
-            'tsx',
+            process.execPath,
             scriptPath,
             chars,
             JSON.stringify(expectedExitCodes),
           ],
           {
-            cwd: repoRoot,
-            env: {
-              ...process.env,
-              CI: '1',
-            },
             maxBuffer: 1024 * 1024,
             timeout: 20_000,
           },

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Agent, run } from '@openai/agents';
 
-const bisonImagePath = path.join(__dirname, 'media/image_bison.jpg');
+const bisonImagePath = path.join(import.meta.dirname, 'media/image_bison.jpg');
 
 function imageToBase64(imagePath: string): string {
   const imageBuffer = fs.readFileSync(imagePath);

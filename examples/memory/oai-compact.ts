@@ -4,8 +4,8 @@ import {
   run,
   withTrace,
 } from '@openai/agents';
-import { fetchImageData } from './tools';
-import { FileSession } from './sessions';
+import { fetchImageData } from './tools.ts';
+import { FileSession } from './sessions/index.ts';
 
 async function main() {
   const session = new OpenAIResponsesCompactionSession({

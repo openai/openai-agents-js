@@ -23,7 +23,7 @@ async function runWithOptionalTrace(
 
 async function main() {
   const require = createRequire(import.meta.url);
-  const samplesDir = path.join(__dirname, 'sample_files');
+  const samplesDir = path.join(import.meta.dirname, 'sample_files');
   const mcpServer = new MCPServerStdio({
     name: 'Filesystem Server with filter',
     command: process.execPath,

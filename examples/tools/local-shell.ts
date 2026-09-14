@@ -5,10 +5,10 @@ import {
   Agent,
   run,
   withTrace,
-  Shell,
-  ShellAction,
-  ShellResult,
-  ShellOutputResult,
+  type Shell,
+  type ShellAction,
+  type ShellResult,
+  type ShellOutputResult,
   shellTool,
 } from '@openai/agents';
 import chalk from 'chalk';
@@ -16,7 +16,11 @@ import chalk from 'chalk';
 const execAsync = promisify(exec);
 
 class LocalShell implements Shell {
-  constructor(private readonly cwd: string = process.cwd()) {}
+  private readonly cwd: string;
+
+  constructor(cwd: string = process.cwd()) {
+    this.cwd = cwd;
+  }
 
   async run(action: ShellAction): Promise<ShellResult> {
     const output: ShellResult['output'] = [];

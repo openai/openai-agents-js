@@ -6,7 +6,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION =
   'Start a long-running Node.js process with tty=true, login=false, and shell=/bin/sh that reads newline-delimited expressions from stdin and prints the evaluated result for each line. In that same session, send `5 + 5`, then `10 + 5`, exit cleanly, and briefly report the outputs.';

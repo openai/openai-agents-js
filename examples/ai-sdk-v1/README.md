@@ -10,7 +10,7 @@ This example contains:
 
 The example:
 
-- Wraps the AI SDK `openai` provider with `aisdk` from `./ai-sdk-v1`.
+- Wraps the AI SDK `openai` provider with `aisdk` from `./ai-sdk-v1.ts`.
 - Creates a simple `get_weather` tool that returns a mock weather string.
 - Defines a data agent that uses this model and tool.
 - Runs a parent agent that hands off to the data agent to answer a weather question.
@@ -30,3 +30,7 @@ To run the streaming variant:
 ```bash
 pnpm -F ai-sdk-v1 start:stream
 ```
+
+## Runtime requirements
+
+Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start`, `start:stream`.

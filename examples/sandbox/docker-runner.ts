@@ -8,7 +8,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION = 'Summarize this sandbox project in 2 sentences.';
 const MAX_STREAM_TOOL_OUTPUT_CHARS = 2000;

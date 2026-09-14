@@ -6,7 +6,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION =
   'Review the attached onboarding packet by reading the files in the sandbox, then draft a short internal note for the account executive about what to confirm before kickoff.';

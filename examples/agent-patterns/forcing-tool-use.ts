@@ -2,12 +2,12 @@ import {
   Agent,
   tool,
   run,
-  ToolsToFinalOutputResult,
-  ToolToFinalOutputFunction,
-  ModelSettings,
+  type ToolsToFinalOutputResult,
+  type ToolToFinalOutputFunction,
+  type ModelSettings,
   RunContext,
-  FunctionToolResult,
-  ToolUseBehavior,
+  type FunctionToolResult,
+  type ToolUseBehavior,
 } from '@openai/agents';
 import { z } from 'zod';
 

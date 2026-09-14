@@ -85,7 +85,7 @@
     "examples:workflow:stop": "bash scripts/run-examples-workflow.sh stop",
     "examples:workflow:logs": "bash scripts/run-examples-workflow.sh logs",
     "examples:workflow:tail": "bash scripts/run-examples-workflow.sh tail",
-    "examples:tool-filter": "tsx examples/mcp/tool-filter-example.ts",
+    "examples:tool-filter": "node examples/mcp/tool-filter-example.ts",
     "changeset:validate-prompt": "node .agents/skills/changeset-validation/scripts/changeset-prompt.mjs",
     "changeset:validate-lite": "node scripts/changeset-validation-lite.mjs",
     "changeset:validate-result": "node .agents/skills/changeset-validation/scripts/changeset-validation-result.mjs",

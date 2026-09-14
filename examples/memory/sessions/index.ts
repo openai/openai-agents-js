@@ -1,4 +1,4 @@
-export { FileSession } from './file';
-export type { FileSessionOptions } from './file';
-export { PrismaSession, createPrismaSession } from './prisma';
-export type { PrismaSessionOptions } from './prisma';
+export { FileSession } from './file.ts';
+export type { FileSessionOptions } from './file.ts';
+export { PrismaSession, createPrismaSession } from './prisma.ts';
+export type { PrismaSessionOptions } from './prisma.ts';

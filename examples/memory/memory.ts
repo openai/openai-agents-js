@@ -5,7 +5,7 @@ import {
   run,
   withTrace,
 } from '@openai/agents';
-import { createLookupCustomerProfileTool, fetchImageData } from './tools';
+import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
 
 const directory: Record<string, string> = {
   '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',

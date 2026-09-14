@@ -1,4 +1,5 @@
-import { Agent, run, tool, ToolOutputImage } from '@openai/agents';
+import { pathToFileURL } from 'node:url';
+import { Agent, run, tool, type ToolOutputImage } from '@openai/agents';
 import { z } from 'zod';
 
 const fetchRandomImage = tool({
@@ -32,7 +33,10 @@ async function main() {
   // This image features the clock tower commonly known as Big Ben attached to the Palace of Westminster in London, captured against a clear blue sky. The ornate architecture and the clock face stand out prominently above surrounding buildings, with a hint of passing traffic below.
 }
 
-if (require.main === module) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);

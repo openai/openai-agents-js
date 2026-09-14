@@ -5,7 +5,7 @@ import {
   run,
   withTrace,
 } from '@openai/agents';
-import { fetchImageData } from './tools';
+import { fetchImageData } from './tools.ts';
 
 async function main() {
   const session = new OpenAIResponsesCompactionSession({
