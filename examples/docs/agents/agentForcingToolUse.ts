@@ -2,12 +2,10 @@ import { Agent, tool } from '@openai/agents';
 import { z } from 'zod';
 
 const calculatorTool = tool({
-  name: 'Calculator',
-  description: 'Use this tool to answer questions about math problems.',
-  parameters: z.object({ question: z.string() }),
-  execute: async (input) => {
-    throw new Error('TODO: implement this');
-  },
+  name: 'calculator',
+  description: 'Add two numbers.',
+  parameters: z.object({ left: z.number(), right: z.number() }),
+  execute: async ({ left, right }) => left + right,
 });
 
 const agent = new Agent({
