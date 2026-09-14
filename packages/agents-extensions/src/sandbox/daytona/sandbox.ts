@@ -1619,6 +1619,8 @@ async function createDaytonaClient(
     const { Daytona } = await import('@daytonaio/sdk');
     return adaptDaytonaClient(
       new Daytona({
+        // Preserve polling without acquiring a client-owned event connection.
+        useDeprecatedPolling: true,
         ...(options.apiKey ? { apiKey: options.apiKey } : {}),
         ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
         ...(options.target ? { target: options.target } : {}),
