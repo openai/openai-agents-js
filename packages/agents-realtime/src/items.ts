@@ -53,6 +53,7 @@ export const realtimeToolCallItem = z.object({
   previousItemId: z.string().nullable().optional(),
   type: z.literal('function_call'),
   status: z.enum(['in_progress', 'completed', 'incomplete']),
+  callId: z.string().optional(),
   arguments: z.string(),
   name: z.string(),
   output: z.string().nullable(),
