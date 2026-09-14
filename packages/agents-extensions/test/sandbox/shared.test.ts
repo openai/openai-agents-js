@@ -5047,4 +5047,27 @@ describe('remote sandbox path helpers', () => {
       ),
     ).toThrowError(SandboxUnsupportedFeatureError);
   });
+
+  test.each([
+    ['', 'leaf.txt'],
+    ['.', 'leaf.txt'],
+    ['parent', 'parent/leaf.txt'],
+    ['parent/', 'parent/leaf.txt'],
+    ['parent//nested///', 'parent//nested/leaf.txt'],
+  ])('formats child metadata paths under %j', (parent, expectedPath) => {
+    expect(() =>
+      assertSandboxEntryMetadataSupported('Provider', parent, {
+        type: 'dir',
+        children: {
+          './leaf.txt/': {
+            type: 'file',
+            content: '',
+            permissions: '-rwx------',
+          },
+        },
+      }),
+    ).toThrowError(
+      `Provider does not support sandbox entry permissions yet: ${expectedPath}`,
+    );
+  });
 });

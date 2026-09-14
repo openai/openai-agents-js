@@ -70,6 +70,14 @@ describe('WorkspacePathPolicy', () => {
       path: '/workspace',
       workspaceRelativePath: '',
     });
+
+    const trailingPolicy = new WorkspacePathPolicy({
+      root: '/workspace///',
+    });
+    expect(trailingPolicy.resolve('src/app.ts')).toMatchObject({
+      path: '/workspace/src/app.ts',
+      workspaceRelativePath: 'src/app.ts',
+    });
   });
 
   it('resolves extra path grants and enforces read-only grants', () => {
