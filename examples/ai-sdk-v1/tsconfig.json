@@ -1,9 +1,0 @@
-{
-  "extends": "../../tsconfig.examples.json",
-  "compilerOptions": {
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "verbatimModuleSyntax": true,
-    "erasableSyntaxOnly": true
-  }
-}
