@@ -617,10 +617,16 @@ function parseToolArguments<TContext>(
         preparedInput,
       };
     }
-    if (preparedInput?.validationMode === 'standard') {
-      approvalArgs = preparedInput?.result.success
-        ? preparedInput.result.value
-        : approvalArgs;
+    if (
+      preparedInput?.result.success &&
+      typeof preparedInput.result.value !== 'undefined'
+    ) {
+      approvalArgs = preparedInput.result.value;
+    }
+    if (
+      preparedInput?.validationMode === 'standard' ||
+      (preparedInput && hasDynamicFunctionToolApprovalPolicy(toolRun.tool))
+    ) {
       if (!hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) {
         return { success: true, approvalArgs, preparedInput };
       }
@@ -630,7 +636,7 @@ function parseToolArguments<TContext>(
       );
       if (!executionPreparedInput) {
         throw new Error(
-          'Standard Schema input could not be prepared for execution.',
+          'Function tool input could not be prepared for execution.',
         );
       }
       if (!executionPreparedInput.result.success) {

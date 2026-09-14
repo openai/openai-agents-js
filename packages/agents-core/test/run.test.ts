@@ -320,6 +320,84 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('done');
     });
 
+    it.each([
+      {
+        label: 'Zod',
+        parameters: z.object({
+          to: z.string(),
+          cc: z.array(z.string()).optional(),
+        }),
+      },
+      {
+        label: 'strict JSON schema',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            to: { type: 'string' as const },
+            cc: {
+              type: 'array' as const,
+              items: { type: 'string' as const },
+            },
+          },
+          required: ['to'],
+          additionalProperties: false,
+        },
+      },
+    ])(
+      'passes normalized optional fields to dynamic approval for $label tools',
+      async ({ parameters }) => {
+        const needsApproval = vi.fn(
+          async (_context: RunContext, { cc }: { cc?: string[] }) =>
+            cc !== undefined && cc.length > 0,
+        );
+        const execute = vi.fn(async () => 'sent');
+        const sendEmail = tool<any>({
+          name: 'send_email',
+          description: 'Send an email',
+          parameters,
+          needsApproval,
+          execute,
+        });
+        const model = new ScriptedModel([
+          modelResponse({
+            output: [
+              {
+                ...TEST_MODEL_FUNCTION_CALL,
+                name: sendEmail.name,
+                arguments: JSON.stringify({
+                  to: 'bob@example.com',
+                  cc: null,
+                }),
+              },
+            ],
+            usage: new Usage(),
+          }),
+          modelResponse({
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          }),
+        ]);
+        const agent = new Agent({
+          name: 'NormalizedApprovalAgent',
+          model,
+          tools: [sendEmail],
+        });
+
+        const result = await run(agent, 'send it');
+
+        expect(needsApproval).toHaveBeenCalledTimes(1);
+        expect(needsApproval.mock.calls[0]?.[1]).toEqual({
+          to: 'bob@example.com',
+        });
+        expect(execute).toHaveBeenCalledWith(
+          { to: 'bob@example.com' },
+          expect.any(RunContext),
+          expect.anything(),
+        );
+        expect(result.finalOutput).toBe('done');
+      },
+    );
+
     it('isolates interruption arrays from pending approvals', async () => {
       const approvalTool = tool({
         name: 'snapshot_approval',
