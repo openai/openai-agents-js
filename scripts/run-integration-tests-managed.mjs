@@ -15,7 +15,11 @@ const repositoryRoot = path.resolve(
   '..',
 );
 const require = createRequire(import.meta.url);
-const verdaccioBinPath = require.resolve('verdaccio/bin/verdaccio');
+const verdaccioPackagePath = require.resolve('verdaccio/package.json');
+const verdaccioBinPath = path.resolve(
+  path.dirname(verdaccioPackagePath),
+  require(verdaccioPackagePath).bin,
+);
 
 export const VERDACCIO_PORT = 4873;
 export const VERDACCIO_URL = `http://127.0.0.1:${VERDACCIO_PORT}/`;
