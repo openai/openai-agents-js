@@ -139,7 +139,7 @@
     "@runloop/api-client": "1.16.2",
     "@types/debug": "^4.1.13",
     "@vercel/sandbox": "1.9.3",
-    "ai": "^6.0.42",
+    "ai": "^6.0.277",
     "e2b": "2.46.1",
     "modal": "0.7.6",
     "undici-types": "6.21.0",
