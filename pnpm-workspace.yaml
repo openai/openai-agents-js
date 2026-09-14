@@ -28,6 +28,8 @@ overrides:
   '@hey-api/json-schema-ref-parser@1.4.2>js-yaml': 4.3.2
   # Workspace-only security fix; remove when Blaxel ships a patched TOML dependency.
   '@blaxel/core@0.2.82>toml': 4.2.0
+  # Remove when Prisma resolves mysql2 with the auth and decompression fixes.
+  'prisma@7.10.0>mysql2': 3.23.1
 
 publishBranch: main
 minimumReleaseAge: 10080
