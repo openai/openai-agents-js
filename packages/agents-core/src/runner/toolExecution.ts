@@ -171,6 +171,83 @@ function cloneForCustomDataContext<T>(value: T): T {
   }
 }
 
+function cloneForApprovalInput<T>(
+  value: T,
+): { success: true; value: T } | { success: false } {
+  const unclonable = Symbol('unclonable');
+  const seen = new WeakMap<object, unknown>();
+
+  const clone = (current: unknown): unknown => {
+    if (current === null || typeof current !== 'object') {
+      return current;
+    }
+    const existing = seen.get(current);
+    if (existing) {
+      return existing;
+    }
+    const prototype = Object.getPrototypeOf(current);
+    if (current instanceof Date && prototype === Date.prototype) {
+      return new Date(current.getTime());
+    }
+    if (current instanceof RegExp && prototype === RegExp.prototype) {
+      return new RegExp(current.source, current.flags);
+    }
+    if (current instanceof Map && prototype === Map.prototype) {
+      const result = new Map();
+      seen.set(current, result);
+      for (const [key, mapValue] of current) {
+        const clonedKey = clone(key);
+        const clonedValue = clone(mapValue);
+        if (clonedKey === unclonable || clonedValue === unclonable) {
+          return unclonable;
+        }
+        result.set(clonedKey, clonedValue);
+      }
+      return result;
+    }
+    if (current instanceof Set && prototype === Set.prototype) {
+      const result = new Set();
+      seen.set(current, result);
+      for (const setValue of current) {
+        const clonedValue = clone(setValue);
+        if (clonedValue === unclonable) {
+          return unclonable;
+        }
+        result.add(clonedValue);
+      }
+      return result;
+    }
+
+    const plainArray = Array.isArray(current) && prototype === Array.prototype;
+    if (prototype !== Object.prototype && prototype !== null && !plainArray) {
+      return unclonable;
+    }
+
+    const result = plainArray ? [] : Object.create(prototype);
+    seen.set(current, result);
+    for (const key of Reflect.ownKeys(current)) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key);
+      if (!descriptor) {
+        continue;
+      }
+      if ('value' in descriptor) {
+        const clonedValue = clone(descriptor.value);
+        if (clonedValue === unclonable) {
+          return unclonable;
+        }
+        descriptor.value = clonedValue;
+      }
+      Object.defineProperty(result, key, descriptor);
+    }
+    return result;
+  };
+
+  const cloned = clone(value);
+  return cloned === unclonable
+    ? { success: false }
+    : { success: true, value: cloned as T };
+}
+
 function getFunctionToolCallbackToolCall(
   toolCall: protocol.FunctionCallItem,
   redactArguments: boolean,
@@ -619,9 +696,39 @@ function parseToolArguments<TContext>(
     }
     if (
       preparedInput?.result.success &&
-      typeof preparedInput.result.value !== 'undefined'
+      hasDynamicFunctionToolApprovalPolicy(toolRun.tool)
     ) {
-      approvalArgs = preparedInput.result.value;
+      // Approval callbacks are user code and may mutate their input. Keep the
+      // prepared value used for execution isolated from that callback.
+      const clonedApprovalInput = cloneForApprovalInput(
+        preparedInput.result.value,
+      );
+      if (clonedApprovalInput.success) {
+        approvalArgs = clonedApprovalInput.value;
+      } else {
+        // Some schema outputs are custom instances with internal slots (for
+        // example private fields) that cannot be cloned without changing their
+        // behavior. Parse a separate approval value for those outputs so that
+        // user mutations still cannot affect the execution snapshot.
+        const approvalPreparedInput = prepareFunctionToolInput(
+          toolRun.tool,
+          toolRun.toolCall.arguments,
+        );
+        if (!approvalPreparedInput) {
+          throw new Error(
+            'Function tool input could not be prepared for approval.',
+          );
+        }
+        if (!approvalPreparedInput.result.success) {
+          return {
+            success: false,
+            error: approvalPreparedInput.result.error,
+            approvalArgs,
+            preparedInput,
+          };
+        }
+        approvalArgs = approvalPreparedInput.result.value;
+      }
     }
     if (
       preparedInput?.validationMode === 'standard' ||
@@ -630,27 +737,15 @@ function parseToolArguments<TContext>(
       if (!hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) {
         return { success: true, approvalArgs, preparedInput };
       }
-      const executionPreparedInput = prepareFunctionToolInput(
-        toolRun.tool,
-        toolRun.toolCall.arguments,
-      );
-      if (!executionPreparedInput) {
+      if (!preparedInput) {
         throw new Error(
           'Function tool input could not be prepared for execution.',
         );
       }
-      if (!executionPreparedInput.result.success) {
-        return {
-          success: false,
-          error: executionPreparedInput.result.error,
-          approvalArgs,
-          preparedInput: executionPreparedInput,
-        };
-      }
       return {
         success: true,
         approvalArgs,
-        preparedInput: executionPreparedInput,
+        preparedInput,
       };
     }
     return { success: true, approvalArgs, preparedInput };
