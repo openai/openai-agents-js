@@ -1769,6 +1769,43 @@ describe('BlaxelSandboxClient', () => {
     await session.close();
   });
 
+  test.each([
+    { prefix: undefined, onlyDir: undefined },
+    { prefix: '', onlyDir: undefined },
+    { prefix: 'reports/daily', onlyDir: 'reports/daily' },
+    { prefix: '///reports/daily///', onlyDir: 'reports/daily' },
+    { prefix: '///', onlyDir: '' },
+    { prefix: '/reports//daily/', onlyDir: 'reports//daily' },
+    { prefix: '/résumé/ daily /', onlyDir: 'résumé/ daily ' },
+  ])('preserves GCS mount prefix $prefix', async ({ prefix, onlyDir }) => {
+    const client = new BlaxelSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 'gcs_mount',
+            bucket: 'agent-logs',
+            prefix,
+            mountPath: 'mounted/logs',
+            mountStrategy: new BlaxelCloudBucketMountStrategy(),
+          },
+        },
+      }),
+    );
+
+    const mountCommand = processExecMock.mock.calls
+      .map(([params]) => String(params.command))
+      .find((command) => command.includes("'--anonymous-access'"));
+    expect(mountCommand).toContain('gcsfuse');
+    if (onlyDir === undefined) {
+      expect(mountCommand).not.toContain('--only-dir=');
+    } else {
+      expect(mountCommand).toContain(`'--only-dir=${onlyDir}'`);
+    }
+    expect(mountCommand).toContain("'agent-logs' '/workspace/mounted/logs'");
+    await session.close();
+  });
+
   test.each<{
     label: string;
     command: string;

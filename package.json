@@ -31,7 +31,7 @@
     "api-contract:package": "node scripts/released-api-contract.mjs package",
     "api-contract:promote": "node scripts/released-api-contract.mjs promote",
     "test:watch": "vitest --watch --mode watch",
-    "dev": "tsx scripts/dev.mts",
+    "dev": "node scripts/dev.mts",
     "format": "prettier --write \"packages/**/*.ts\" \"examples/**/*.ts\" \"integration-tests/**/*.ts\"",
     "format:changed": "node scripts/prettier-changed.mjs",
     "format:check:changed": "node scripts/prettier-changed.mjs --check",
