@@ -7,7 +7,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION =
   'Review this enterprise renewal request. Tell me who needs to approve the discount, whether security review is still open, and the most important note for the account team.';

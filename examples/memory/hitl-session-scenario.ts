@@ -12,7 +12,7 @@ import {
 } from '@openai/agents';
 import { z } from 'zod';
 
-import { FileSession } from './sessions';
+import { FileSession } from './sessions/index.ts';
 
 const TOOL_ECHO = 'approved_echo';
 const TOOL_NOTE = 'approved_note';

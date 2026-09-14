@@ -18,7 +18,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const TASK_PROMPT =
   'Inspect the workspace, fix the invoice total bug in src/acme_metrics/report.mjs, run node --test, and summarize the fix.';

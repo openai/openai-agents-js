@@ -1,5 +1,5 @@
 import { withTrace } from '@openai/agents';
-import { FinancialResearchManager } from './manager';
+import { FinancialResearchManager } from './manager.ts';
 
 // Entrypoint for the financial bot example.
 // Run this as `npx tsx examples/financial-research-agent/main.ts` and enter a financial research query, for example:

@@ -5,10 +5,10 @@ import {
   searchAgent,
   writerAgent,
   reportData,
-  WebSearchPlan,
-  WebSearchItem,
-  ReportData,
-} from './agents';
+  type WebSearchPlan,
+  type WebSearchItem,
+  type ReportData,
+} from './agents.ts';
 import { Runner } from '@openai/agents';
 
 export class ResearchManager {

@@ -6,9 +6,9 @@ import {
   run,
   withTrace,
   applyPatchTool,
-  Editor,
-  ApplyPatchOperation,
-  ApplyPatchResult,
+  type Editor,
+  type ApplyPatchOperation,
+  type ApplyPatchResult,
 } from '@openai/agents';
 import { applyDiff } from '@openai/agents';
 import chalk from 'chalk';
@@ -27,7 +27,11 @@ function printDiff(diff: string) {
 }
 
 class WorkspaceEditor implements Editor {
-  constructor(private readonly root: string) {}
+  private readonly root: string;
+
+  constructor(root: string) {
+    this.root = root;
+  }
 
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,

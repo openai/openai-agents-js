@@ -1,4 +1,4 @@
-import { ResearchManager } from './manager';
+import { ResearchManager } from './manager.ts';
 
 async function main() {
   const readline = await import('node:readline');

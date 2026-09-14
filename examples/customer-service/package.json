@@ -8,6 +8,9 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start": "tsx index.ts"
+    "start": "node index.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

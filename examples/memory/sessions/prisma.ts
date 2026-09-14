@@ -6,7 +6,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 // preserves Prisma 6's SQLite write-lock waiting and timeout recovery.
 import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
 import * as process from 'node:process';
-import { resolvePrismaDatabaseUrl } from '../prisma-database';
+import { resolvePrismaDatabaseUrl } from '../prisma-database.ts';
 
 export type PrismaSessionOptions = {
   client: PrismaClient;

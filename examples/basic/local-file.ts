@@ -3,7 +3,7 @@ import path from 'node:path';
 import { Agent, run } from '@openai/agents';
 
 const filePath = path.join(
-  __dirname,
+  import.meta.dirname,
   'media/partial_o3-and-o4-mini-system-card.pdf',
 );
 

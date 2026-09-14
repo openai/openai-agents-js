@@ -13,7 +13,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const GTM_TURN_1 =
   'Analyze data/leads.csv. Find one promising GTM segment, explain why, and write durable notes to memories/gtm/notes.md.';

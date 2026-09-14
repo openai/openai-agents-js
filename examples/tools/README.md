@@ -81,3 +81,7 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
   ```bash
   pnpm examples:tools-apply-patch
   ```
+
+## Runtime requirements
+
+Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start:file-search`, `start:tool-search`, `start:web-search`, `start:web-search-filters`, `start:code-interpreter`, `start:programmatic-tool-calling`, `start:shell`, `start:local-shell`, `start:container-shell`, `start:container-shell-inline`, `start:apply-patch`.

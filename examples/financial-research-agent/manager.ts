@@ -1,14 +1,14 @@
 import { Agent, run, RunResult } from '@openai/agents';
-import { financialsAgent } from './agents';
+import { financialsAgent } from './agents.ts';
 import {
   plannerAgent,
   FinancialSearchItem,
   FinancialSearchPlan,
-} from './agents';
-import { riskAgent } from './agents';
-import { searchAgent } from './agents';
-import { verifierAgent, VerificationResult } from './agents';
-import { writerAgent, FinancialReportData } from './agents';
+} from './agents.ts';
+import { riskAgent } from './agents.ts';
+import { searchAgent } from './agents.ts';
+import { verifierAgent, VerificationResult } from './agents.ts';
+import { writerAgent, FinancialReportData } from './agents.ts';
 
 const MAX_REPORT_REVISIONS = 2;
 
