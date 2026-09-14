@@ -565,23 +565,61 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
-  it('resetHistory warns on function call additions', () => {
+  it('replays completed function call additions with their output', () => {
     const base = new TestBase();
     const newHist = [
       {
         itemId: 'f1',
         type: 'function_call',
         status: 'completed',
+        callId: 'call-1',
+        arguments: '{}',
+        name: 'calc',
+        output: '42',
+      },
+    ];
+
+    base.resetHistory([], newHist as any);
+
+    expect(base.events).toEqual([
+      {
+        type: 'conversation.item.create',
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          call_id: 'call-1',
+          name: 'calc',
+          arguments: '{}',
+          status: 'completed',
+        },
+      },
+      {
+        type: 'conversation.item.create',
+        previous_item_id: 'f1',
+        item: {
+          type: 'function_call_output',
+          call_id: 'call-1',
+          output: '42',
+        },
+      },
+    ]);
+  });
+
+  it('rejects incomplete function call history before sending events', () => {
+    const base = new TestBase();
+    const newHist = [
+      {
+        itemId: 'f1',
+        type: 'function_call',
+        status: 'in_progress',
         arguments: '{}',
         name: 'calc',
         output: null,
       },
     ];
 
-    base.resetHistory([], newHist as any);
-
-    expect(logger.warn).toHaveBeenCalledWith(
-      'Function calls cannot be manually added or updated at the moment. Ignoring.',
+    expect(() => base.resetHistory([], newHist as any)).toThrowError(
+      'must be completed and include output',
     );
     expect(base.events).toHaveLength(0);
   });
@@ -863,6 +901,7 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(funcs[0]?.name).toBe('calc');
     expect(funcs[0]?.responseId).toBe('r3');
+    expect(updates.find((u) => (u as any).itemId === 'f1')?.callId).toBe('c1');
     expect(updates.find((u) => (u as any).itemId === 'mcp1')).toBeTruthy();
   });
 

@@ -477,6 +477,7 @@ export abstract class OpenAIRealtimeBase
           itemId: item.id,
           type: item.type,
           status: 'in_progress', // we set it to in_progress for the UI as it will only be completed with the output
+          ...(item.call_id ? { callId: item.call_id } : {}),
           arguments: item.arguments,
           name: item.name,
           output: null,
@@ -922,6 +923,7 @@ export abstract class OpenAIRealtimeBase
         previousItemId: toolCall.previousItemId,
         type: 'function_call',
         status: 'completed',
+        callId: toolCall.callId,
         arguments: toolCall.arguments,
         name: toolCall.name,
         output,
@@ -1007,6 +1009,19 @@ export abstract class OpenAIRealtimeBase
       );
     }
 
+    const additionsAndUpdates = [...additions, ...updates];
+
+    const invalidFunctionCall = additionsAndUpdates.find(
+      (item) =>
+        item.type === 'function_call' &&
+        (item.status !== 'completed' || item.output === null),
+    );
+    if (invalidFunctionCall) {
+      throw new UserError(
+        `Function call history item ${invalidFunctionCall.itemId} must be completed and include output before it can be replayed.`,
+      );
+    }
+
     const removalIds = new Set(removals.map((item) => item.itemId));
     // we don't have an update event for items so we will remove and re-add what's there
     for (const update of updates) {
@@ -1021,8 +1036,6 @@ export abstract class OpenAIRealtimeBase
         });
       }
     }
-
-    const additionsAndUpdates = [...additions, ...updates];
 
     for (const addition of additionsAndUpdates) {
       if (addition.type === 'message') {
@@ -1040,9 +1053,31 @@ export abstract class OpenAIRealtimeBase
           item: itemEntry,
         });
       } else if (addition.type === 'function_call') {
-        logger.warn(
-          'Function calls cannot be manually added or updated at the moment. Ignoring.',
-        );
+        const callId = addition.callId ?? addition.itemId;
+        const itemEntry: Record<string, any> = {
+          type: 'function_call',
+          id: addition.itemId,
+          call_id: callId,
+          name: addition.name,
+          arguments: addition.arguments,
+          status: addition.status,
+        };
+        this.sendEvent({
+          type: 'conversation.item.create',
+          ...(addition.previousItemId
+            ? { previous_item_id: addition.previousItemId }
+            : {}),
+          item: itemEntry,
+        });
+        this.sendEvent({
+          type: 'conversation.item.create',
+          previous_item_id: addition.itemId,
+          item: {
+            type: 'function_call_output',
+            call_id: callId,
+            output: addition.output,
+          },
+        });
       }
     }
   }
