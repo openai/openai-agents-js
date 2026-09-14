@@ -12,6 +12,7 @@ overrides:
   '@hey-api/json-schema-ref-parser@1.4.2>js-yaml': 4.3.2
   '@blaxel/core@0.2.82>toml': 4.2.0
   prisma@7.10.0>mysql2: 3.23.1
+  '@prisma/config@7.10.0>deepmerge-ts': 8.0.2
 
 patchedDependencies:
   '@prisma/adapter-better-sqlite3@7.10.0': e4438893c610d8ab98c598a660ff0fe8e8f4a4070ede262622937adb534f4050
@@ -5757,9 +5758,9 @@ packages:
   deep-is@0.1.4:
     resolution: {integrity: sha512-oIPzksmTg4/MriiaYGO+okXDT7ztn/w3Eptv/+gSIdMdKsJo0u4CfYNFJPy+4SKMuCqGw2wxnA+URMg3t8a/bQ==}
 
-  deepmerge-ts@7.1.5:
-    resolution: {integrity: sha512-HOJkrhaYsweh+W+e74Yn7YStZOilkoPb6fycpwNLKzSPtruFs48nYis0zy5yJz1+ktUhHxoRDJ27RQAWLIJVJw==}
-    engines: {node: '>=16.0.0'}
+  deepmerge-ts@8.0.2:
+    resolution: {integrity: sha512-uqbvqLUMrc6p0MO+WBRtTxY55hmyh94WRwI5a++PZe54X+bfVh59FSN7uWCBCW1CCVjzjnrwzfI8zidE2obMMw==}
+    engines: {node: '>=16.9.0'}
 
   deepmerge@4.3.1:
     resolution: {integrity: sha512-3sUqbMEc77XqpdNO7FRyRog+eW3ph+GYCbj+rK+uYyRMuwsVy0rMiVtPn+QJlKFvWP/1PYpapqYn0Me2knFn+A==}
@@ -13318,7 +13319,7 @@ snapshots:
   '@prisma/config@7.10.0(magicast@0.5.3)':
     dependencies:
       c12: 3.3.4(magicast@0.5.3)
-      deepmerge-ts: 7.1.5
+      deepmerge-ts: 8.0.2
       effect: 3.20.0
       empathic: 2.0.0
     transitivePeerDependencies:
@@ -16140,7 +16141,7 @@ snapshots:
 
   deep-is@0.1.4: {}
 
-  deepmerge-ts@7.1.5: {}
+  deepmerge-ts@8.0.2: {}
 
   deepmerge@4.3.1: {}
 

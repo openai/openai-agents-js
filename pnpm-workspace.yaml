@@ -30,6 +30,8 @@ overrides:
   '@blaxel/core@0.2.82>toml': 4.2.0
   # Remove when Prisma resolves mysql2 with the auth and decompression fixes.
   'prisma@7.10.0>mysql2': 3.23.1
+  # Remove when Prisma config resolves deepmerge-ts with the recursive-merge fix.
+  '@prisma/config@7.10.0>deepmerge-ts': 8.0.2
 
 publishBranch: main
 minimumReleaseAge: 10080
