@@ -25,6 +25,21 @@ describe('realtime utils', () => {
     expect(new Uint8Array(result)).toEqual(new Uint8Array(buffer));
   });
 
+  it('converts large audio buffers without exceeding the call stack', () => {
+    // A few seconds of 24kHz PCM16 audio exceeds the engine argument limit
+    // that made the previous String.fromCharCode(...bytes) spread throw a
+    // RangeError, so use a buffer well past that threshold.
+    const bytes = new Uint8Array(512 * 1024);
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = i % 256;
+    }
+
+    const base64 = arrayBufferToBase64(bytes.buffer);
+    const roundTrip = new Uint8Array(base64ToArrayBuffer(base64));
+
+    expect(roundTrip).toEqual(bytes);
+  });
+
   it('extracts transcript from audio output message', () => {
     const message: RealtimeMessageItem = {
       itemId: '1',
