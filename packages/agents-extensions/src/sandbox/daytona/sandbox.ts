@@ -393,7 +393,14 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       }
       await handle.disconnect?.();
     };
-    const { sessionId, pruned } = this.ptyProcesses.register(entry);
+    let registered: ReturnType<PtyProcessRegistry['register']>;
+    try {
+      registered = this.ptyProcesses.register(entry);
+    } catch (error) {
+      await this.terminatePtyHandle(handle, providerSessionId);
+      throw error;
+    }
+    const { sessionId, pruned } = registered;
     if (pruned) {
       await pruned.terminate?.().catch(() => {});
     }

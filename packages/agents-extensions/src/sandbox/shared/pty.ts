@@ -199,8 +199,8 @@ export class PtyProcessRegistry {
     sessionId: number;
     pruned?: PtyProcessEntry;
   } {
-    const pruned = this.pruneIfNeeded();
     const sessionId = allocatePtyProcessId(this.processes);
+    const pruned = this.pruneIfNeeded();
     this.processes.set(sessionId, entry);
     return { sessionId, pruned };
   }
@@ -526,11 +526,16 @@ function resolvePtyWriteYieldTimeMs(
 }
 
 function allocatePtyProcessId(processes: Map<number, PtyProcessEntry>): number {
+  const range = PTY_PROCESS_ID_MAX_EXCLUSIVE - PTY_PROCESS_ID_MIN;
+  // Reject the incomplete range at the top of uint32 to avoid modulo bias.
+  const limit = 2 ** 32 - (2 ** 32 % range);
+  const random = new Uint32Array(1);
   while (true) {
-    const processId =
-      Math.floor(
-        Math.random() * (PTY_PROCESS_ID_MAX_EXCLUSIVE - PTY_PROCESS_ID_MIN),
-      ) + PTY_PROCESS_ID_MIN;
+    globalThis.crypto.getRandomValues(random);
+    if (random[0] >= limit) {
+      continue;
+    }
+    const processId = (random[0] % range) + PTY_PROCESS_ID_MIN;
     if (!processes.has(processId)) {
       return processId;
     }

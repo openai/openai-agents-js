@@ -321,14 +321,16 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         exitCodeFromE2BResult(error) ??
         exitCodeFromE2BResult(handle),
     );
+    let registered: ReturnType<PtyProcessRegistry['register']>;
     try {
       await entry.sendInput(`${command}\n`);
+      registered = this.ptyProcesses.register(entry);
     } catch (error) {
       await entry.terminate().catch(() => {});
       throw error;
     }
 
-    const { sessionId, pruned } = this.ptyProcesses.register(entry);
+    const { sessionId, pruned } = registered;
     if (pruned) {
       await pruned.terminate?.().catch(() => {});
     }

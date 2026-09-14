@@ -719,6 +719,52 @@ describe('DaytonaSandboxClient', () => {
     expect(kill).toHaveBeenCalledOnce();
   });
 
+  test('cleans up a PTY before rejecting failed ID allocation', async () => {
+    const failure = new Error('Randomness unavailable');
+    let failKill!: (error: Error) => void;
+    const kill = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          failKill = reject;
+        }),
+    );
+    const disconnect = vi.fn(async () => {});
+    const sendInput = vi.fn(async () => {});
+    createPtyMock.mockResolvedValueOnce({
+      waitForConnection: async () => {},
+      sendInput,
+      wait: async () => ({ exitCode: 0 }),
+      kill,
+      disconnect,
+    });
+    const session = await new DaytonaSandboxClient().create(new Manifest());
+    const random = vi
+      .spyOn(globalThis.crypto, 'getRandomValues')
+      .mockImplementation(() => {
+        throw failure;
+      });
+    try {
+      let settled = false;
+      const result = session
+        .execCommand({ cmd: 'sh', tty: true })
+        .catch((error) => {
+          settled = true;
+          return error;
+        });
+      await vi.waitFor(() => expect(kill).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      failKill(new Error('kill failed'));
+      expect(await result).toBe(failure);
+      expect(disconnect).toHaveBeenCalledOnce();
+      expect(sendInput).not.toHaveBeenCalled();
+      await session.close();
+      expect(kill).toHaveBeenCalledOnce();
+      expect(disconnect).toHaveBeenCalledOnce();
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   test('registers PTY handles before sending the initial command', async () => {
     const killMock = vi.fn();
     const disconnectMock = vi.fn();

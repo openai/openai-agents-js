@@ -64,6 +64,10 @@ test('Cloudflare workerd-facing source avoids static Node-only imports', async (
     new URL('../../src/sandbox/shared/index.ts', import.meta.url),
     'utf8',
   );
+  const ptySource = await readFile(
+    new URL('../../src/sandbox/shared/pty.ts', import.meta.url),
+    'utf8',
+  );
 
   expect(cloudflareSource).not.toMatch(/from ['"]node:/u);
   expect(cloudflareSource).not.toMatch(/\bBuffer\b/u);
@@ -78,6 +82,7 @@ test('Cloudflare workerd-facing source avoids static Node-only imports', async (
   expect(sharedIndexSource).not.toMatch(/\bBuffer\b/u);
   expect(sharedIndexSource).not.toMatch(/\bprocess\.env\b/u);
   expect(sharedIndexSource).not.toContain('localSources');
+  expect(ptySource).not.toMatch(/from ['"]node:/u);
 });
 
 describe('CloudflareSandboxClient', () => {
