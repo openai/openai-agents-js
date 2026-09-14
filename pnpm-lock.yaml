@@ -11,6 +11,7 @@ overrides:
   body-parser@1.20.6>qs: ^6.16.0
   '@hey-api/json-schema-ref-parser@1.4.2>js-yaml': 4.3.2
   '@blaxel/core@0.2.82>toml': 4.2.0
+  prisma@7.10.0>mysql2: 3.23.1
 
 patchedDependencies:
   '@prisma/adapter-better-sqlite3@7.10.0': e4438893c610d8ab98c598a660ff0fe8e8f4a4070ede262622937adb534f4050
@@ -355,14 +356,14 @@ importers:
         version: 7.10.0(patch_hash=e4438893c610d8ab98c598a660ff0fe8e8f4a4070ede262622937adb534f4050)
       '@prisma/client':
         specifier: ^7.10.0
-        version: 7.10.0(prisma@7.10.0(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3))(typescript@5.9.3)
+        version: 7.10.0(prisma@7.10.0(@types/node@22.19.13)(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3))(typescript@5.9.3)
       zod:
         specifier: ^4.0.0
         version: 4.3.5
     devDependencies:
       prisma:
         specifier: ^7.10.0
-        version: 7.10.0(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3)
+        version: 7.10.0(@types/node@22.19.13)(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3)
 
   examples/model-providers:
     dependencies:
@@ -7930,9 +7931,11 @@ packages:
   multitars@1.0.0:
     resolution: {integrity: sha512-H/J4fMLedtudftaYMOg7ajzLYgT3/rwbWVJbqr/iUgB8DQztn38ys5HOqI1CzSxx8QhXXwOOnnBvd4v3jG5+Mg==}
 
-  mysql2@3.15.3:
-    resolution: {integrity: sha512-FBrGau0IXmuqg4haEZRBfHNWB5mUARw6hNwPDXXGg0XzVJ50mr/9hb267lvpVMnhZ1FON3qNd4Xfcez1rbFwSg==}
+  mysql2@3.23.1:
+    resolution: {integrity: sha512-tTuRnC7qCet2IOfSNMYZ5SwXuBnfvBPAcIA28P0gtruXyZlU1LMxA6uha32kYypoFgyYklMqhLWwt4laYwXR/Q==}
     engines: {node: '>= 8.0'}
+    peerDependencies:
+      '@types/node': 22.19.13
 
   named-placeholders@1.1.6:
     resolution: {integrity: sha512-Tz09sEL2EEuv5fFowm419c1+a/jSMiBjI9gHxVLrVdbUkkNUUfjsVYs9pVZu5oCon/kmRh9TfLEObFtkVxmY0w==}
@@ -8935,9 +8938,6 @@ packages:
     resolution: {integrity: sha512-1gnZf7DFcoIcajTjTwjwuDjzuz4PPcY2StKPlsGAQ1+YH20IRVrBaXSWmdjowTJ6u8Rc01PoYOGHXfP1mYcZNQ==}
     engines: {node: '>= 18'}
 
-  seq-queue@0.0.5:
-    resolution: {integrity: sha512-hr3Wtp/GZIc/6DAGPDcV4/9WoZhjrkXsi5B/07QgX8tsdc6ilr7BFM6PM6rbdAX1kFSDYeZGLipIZZKyQP0O5Q==}
-
   serialize-error@2.1.0:
     resolution: {integrity: sha512-ghgmKt5o4Tly5yEG/UJp8qTd0AN7Xalw4XBtDEKP655B699qMEtra1WlXeE6WIvdEG481JvRxULKsInq/iNysw==}
     engines: {node: '>=0.10.0'}
@@ -9086,9 +9086,9 @@ packages:
   sprintf-js@1.0.3:
     resolution: {integrity: sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g==}
 
-  sqlstring@2.3.3:
-    resolution: {integrity: sha512-qC9iz2FlN7DQl3+wjwn3802RTyjCx7sDvfQEXchwa6CWOx07/WVfh91gBmQ9fahw8snwGEWU3xGzOt4tFyHLxg==}
-    engines: {node: '>= 0.6'}
+  sql-escaper@1.5.1:
+    resolution: {integrity: sha512-4toX5E1fQbBrpfXidaHnF0669nkAdETeIPTs2SUjxxD7RRIs9ICG4gtpmfc68JCEKehsdwLFqBu9VlQqZ1P1gg==}
+    engines: {bun: '>=1.0.0', deno: '>=2.0.0', node: '>=12.0.0'}
 
   sshpk@1.18.0:
     resolution: {integrity: sha512-2p2KJZTSqQ/I3+HX42EpYOa2l3f8Erv8MWKsy2I9uf4wA7yFIkXRffYdsx86y6z4vHtV8u7g+pPlr8/4ouAxsQ==}
@@ -13308,11 +13308,11 @@ snapshots:
 
   '@prisma/client-runtime-utils@7.10.0': {}
 
-  '@prisma/client@7.10.0(prisma@7.10.0(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3))(typescript@5.9.3)':
+  '@prisma/client@7.10.0(prisma@7.10.0(@types/node@22.19.13)(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3))(typescript@5.9.3)':
     dependencies:
       '@prisma/client-runtime-utils': 7.10.0
     optionalDependencies:
-      prisma: 7.10.0(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3)
+      prisma: 7.10.0(@types/node@22.19.13)(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3)
       typescript: 5.9.3
 
   '@prisma/config@7.10.0(magicast@0.5.3)':
@@ -18944,8 +18944,9 @@ snapshots:
 
   multitars@1.0.0: {}
 
-  mysql2@3.15.3:
+  mysql2@3.23.1(@types/node@22.19.13):
     dependencies:
+      '@types/node': 22.19.13
       aws-ssl-profiles: 1.1.2
       denque: 2.1.0
       generate-function: 2.3.1
@@ -18953,8 +18954,7 @@ snapshots:
       long: 5.3.2
       lru.min: 1.1.5
       named-placeholders: 1.1.6
-      seq-queue: 0.0.5
-      sqlstring: 2.3.3
+      sql-escaper: 1.5.1
 
   named-placeholders@1.1.6:
     dependencies:
@@ -19430,18 +19430,19 @@ snapshots:
     dependencies:
       parse-ms: 4.0.0
 
-  prisma@7.10.0(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3):
+  prisma@7.10.0(@types/node@22.19.13)(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(better-sqlite3@12.11.1)(magicast@0.5.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3):
     dependencies:
       '@prisma/config': 7.10.0(magicast@0.5.3)
       '@prisma/dev': 0.24.17(typescript@5.9.3)
       '@prisma/engines': 7.10.0
       '@prisma/studio-core': 0.33.0(@types/react-dom@19.1.6(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      mysql2: 3.15.3
+      mysql2: 3.23.1(@types/node@22.19.13)
       postgres: 3.4.7
     optionalDependencies:
       better-sqlite3: 12.11.1
       typescript: 5.9.3
     transitivePeerDependencies:
+      - '@types/node'
       - '@types/react'
       - '@types/react-dom'
       - magicast
@@ -20157,8 +20158,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  seq-queue@0.0.5: {}
-
   serialize-error@2.1.0: {}
 
   serve-static@1.16.3(supports-color@8.1.1):
@@ -20347,7 +20346,7 @@ snapshots:
 
   sprintf-js@1.0.3: {}
 
-  sqlstring@2.3.3: {}
+  sql-escaper@1.5.1: {}
 
   sshpk@1.18.0:
     dependencies:
