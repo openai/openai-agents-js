@@ -11,7 +11,10 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start": "tsx index.ts",
-    "start:stream": "tsx stream.ts"
+    "start": "node index.ts",
+    "start:stream": "node stream.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

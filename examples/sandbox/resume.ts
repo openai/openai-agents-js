@@ -20,7 +20,7 @@ import {
   hasFlag,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION =
   'Finish the seeded warehouse-robot operations API with Node.js built-ins only. Keep it compact. Complete the health check, the GET /robots/:robotId/status endpoint backed by the provided in-memory fixture, make 404 behavior clear, smoke test it locally with `node` and `fetch`, then stop and summarize what you built.';
@@ -173,8 +173,7 @@ if (import.meta.url === \`file://\${process.argv[1]}\`) {
   });
 
   let resumedSession:
-    | Awaited<ReturnType<typeof resumableClient.resume>>
-    | undefined = undefined;
+    Awaited<ReturnType<typeof resumableClient.resume>> | undefined = undefined;
 
   try {
     const firstResult = await run(agent, question, {

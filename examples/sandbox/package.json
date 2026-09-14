@@ -9,20 +9,20 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start:basic": "tsx basic.ts",
-    "start:handoffs": "tsx handoffs.ts",
-    "start:coding-task": "tsx coding-task.ts",
-    "start:resume": "tsx resume.ts",
-    "start:memory": "tsx memory.ts",
-    "start:unix-local-pty": "tsx unix-local-pty.ts",
-    "start:unix-local-runner": "tsx unix-local-runner.ts",
-    "start:docker-runner": "tsx docker-runner.ts",
-    "start:memory-generation": "tsx memory-generation.ts",
-    "start:memory-multi-agent-multiturn": "tsx memory-multi-agent-multiturn.ts",
-    "start:shared-session-workdirs": "tsx shared-session-workdirs.ts",
-    "start:sandbox-agent-capabilities": "tsx sandbox-agent-capabilities.ts",
-    "start:sandbox-agent-with-tools": "tsx sandbox-agent-with-tools.ts",
-    "start:sandbox-agents-as-tools": "tsx sandbox-agents-as-tools.ts",
+    "start:basic": "node basic.ts",
+    "start:handoffs": "node handoffs.ts",
+    "start:coding-task": "node coding-task.ts",
+    "start:resume": "node resume.ts",
+    "start:memory": "node memory.ts",
+    "start:unix-local-pty": "node unix-local-pty.ts",
+    "start:unix-local-runner": "node unix-local-runner.ts",
+    "start:docker-runner": "node docker-runner.ts",
+    "start:memory-generation": "node memory-generation.ts",
+    "start:memory-multi-agent-multiturn": "node memory-multi-agent-multiturn.ts",
+    "start:shared-session-workdirs": "node shared-session-workdirs.ts",
+    "start:sandbox-agent-capabilities": "node sandbox-agent-capabilities.ts",
+    "start:sandbox-agent-with-tools": "node sandbox-agent-with-tools.ts",
+    "start:sandbox-agents-as-tools": "node sandbox-agents-as-tools.ts",
     "start:blaxel": "tsx extensions/blaxel-runner.ts",
     "start:cloudflare": "tsx extensions/cloudflare-runner.ts",
     "start:daytona": "tsx extensions/daytona-runner.ts",
@@ -30,5 +30,8 @@
     "start:modal": "tsx extensions/modal-runner.ts",
     "start:runloop": "tsx extensions/runloop-runner.ts",
     "start:vercel": "tsx extensions/vercel-runner.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

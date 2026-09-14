@@ -1,6 +1,6 @@
 import { Agent, run, tool } from '@openai/agents';
 import { z } from 'zod';
-import { WeatherParameters, WeatherReport } from './schemas';
+import { WeatherParameters, WeatherReport } from './schemas.ts';
 
 const getWeather = tool({
   name: 'get_weather',

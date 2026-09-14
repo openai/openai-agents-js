@@ -6,7 +6,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION =
   'Review this renewal packet. Summarize the customer situation, likely blockers, and the next two account-team actions.';

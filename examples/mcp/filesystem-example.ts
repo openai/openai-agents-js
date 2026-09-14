@@ -4,7 +4,7 @@ import * as path from 'node:path';
 
 async function main() {
   const require = createRequire(import.meta.url);
-  const samplesDir = path.join(__dirname, 'sample_files');
+  const samplesDir = path.join(import.meta.dirname, 'sample_files');
   const mcpServer = new MCPServerStdio({
     name: 'Filesystem Server, via local package',
     command: process.execPath,

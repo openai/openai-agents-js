@@ -2,7 +2,7 @@ import {
   Agent,
   run,
   tool,
-  HandoffInputData,
+  type HandoffInputData,
   handoff,
   withTrace,
   isGpt5Default,

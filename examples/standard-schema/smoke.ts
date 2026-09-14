@@ -1,5 +1,5 @@
 import { Agent, RunContext, tool } from '@openai/agents';
-import { WeatherParameters, WeatherReport } from './schemas';
+import { WeatherParameters, WeatherReport } from './schemas.ts';
 
 let executedInput: unknown;
 const weatherTool = tool({

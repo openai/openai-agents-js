@@ -6,7 +6,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 function buildManifest() {
   return new Manifest({

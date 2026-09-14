@@ -29,3 +29,7 @@ The JavaScript SDK now exposes generic remote snapshot and memory store interfac
 A run-scoped working directory changes relative path resolution only. It does not isolate runs from each other; use separate sandbox sessions when filesystem or compute isolation is required.
 
 The Python examples also include tax prep assets and tutorial/workflow scaffolds. Those assets do not exist in this repository, so they are not mirrored here yet.
+
+## Runtime requirements
+
+Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start:basic`, `start:handoffs`, `start:coding-task`, `start:resume`, `start:memory`, `start:unix-local-pty`, `start:unix-local-runner`, `start:docker-runner`, `start:memory-generation`, `start:memory-multi-agent-multiturn`, `start:shared-session-workdirs`, `start:sandbox-agent-capabilities`, `start:sandbox-agent-with-tools`, `start:sandbox-agents-as-tools`.
