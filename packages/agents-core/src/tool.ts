@@ -392,6 +392,11 @@ export type ComputerSafetyCheck = {
   [key: string]: unknown;
 };
 
+/**
+ * Return true to acknowledge all pending checks, or false to reject the computer
+ * call without executing it. Rejection returns a tool result and lets the run
+ * continue. Returning void leaves the checks unacknowledged and allows execution.
+ */
 export type ComputerSafetyCheckResult =
   | void
   | boolean
