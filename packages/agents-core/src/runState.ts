@@ -6317,6 +6317,20 @@ function serializeProcessedResponse<TContext>(
     newItems: processedResponse.newItems.map((item) =>
       serializeRunItem(item, agentIdentityKeys),
     ),
+    mcpApprovalRequests: processedResponse.mcpApprovalRequests.map(
+      ({ requestItem, mcpTool }) => ({
+        requestItem: { rawItem: requestItem.rawItem },
+        // Resume resolves the live tool from current agent configuration.
+        mcpTool: {
+          type: mcpTool.type,
+          name: mcpTool.name,
+          providerData: {
+            type: 'mcp',
+            server_label: mcpTool.providerData.server_label,
+          },
+        },
+      }),
+    ),
     functions: processedResponse.functions.map(({ toolCall, tool }) => ({
       toolCall,
       tool,
