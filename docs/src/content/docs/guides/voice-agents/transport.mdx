@@ -45,6 +45,12 @@ A `mediaStream` you pass to `OpenAIRealtimeWebRTC` remains owned by your applica
 
 For lower-level customization, `OpenAIRealtimeWebRTC` also accepts `changePeerConnection`, which lets you inspect or replace the freshly created `RTCPeerConnection` before the offer is generated.
 
+### Azure OpenAI Realtime compatibility
+
+The built-in transports target OpenAI's GA Realtime wire format. Azure OpenAI Realtime endpoints can expose a different session schema or lifecycle, especially when the session is created while negotiating WebRTC. Before switching providers, verify that your Azure deployment accepts the fields sent by the SDK, including `session.type` and `output_modalities`.
+
+If the endpoint implements an older or provider-specific protocol, use the SDK release supported by that endpoint or provide a custom `RealtimeTransportLayer` that transforms the outgoing session configuration. Keep the application server responsible for any provider-specific URL, model, and authentication details; do not put a standard OpenAI API key in browser code.
+
 The built-in browser transport creates a data channel because the browser-side `RealtimeSession` uses Realtime events to configure and control the session. If your application must keep those events and controls on an application server, use the server-side controls pattern below instead of treating browser-side peer connection customization as an access-control boundary.
 
 ### Browser audio with server-side controls
