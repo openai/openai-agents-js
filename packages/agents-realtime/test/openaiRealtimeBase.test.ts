@@ -15,13 +15,17 @@ import {
 } from '../src/openaiRealtimeBase';
 import logger from '../src/logger';
 import { responseDoneEventSchema } from '../src/openaiRealtimeEvents';
+import { hostedMcpTool } from '@openai/agents-core';
+import { RealtimeAgent } from '../src/realtimeAgent';
+import { RealtimeSession } from '../src/realtimeSession';
+import type { RealtimeTransportLayer } from '../src/transportLayer';
 
 class TestBase extends OpenAIRealtimeBase {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
     'connected';
   events: RealtimeClientMessage[] = [];
   afterAudioDoneCalled = 0;
-  connect = vi.fn(async () => {});
+  connect = vi.fn<RealtimeTransportLayer['connect']>(async () => {});
   sendEvent(event: RealtimeClientMessage) {
     this.events.push(event);
   }
@@ -292,6 +296,90 @@ describe('OpenAIRealtimeBase helpers', () => {
     const session = (base.events[0] as any)?.session;
     expect(session?.audio?.output?.voice).toBe('echo');
   });
+
+  it('preserves omitted tools and explicit empty tools in session updates', () => {
+    const base = new TestBase();
+    base.updateSessionConfig({ instructions: 'Updated instructions' });
+    expect(base.events[0]).toMatchObject({ type: 'session.update' });
+    expect(base.events[0]).toHaveProperty('session');
+    expect(base.events[0]).not.toHaveProperty('session.tools');
+
+    base.updateSessionConfig({ tools: [] });
+    expect(base.events[1]).toMatchObject({
+      type: 'session.update',
+      session: { tools: [] },
+    });
+  });
+
+  it.each(['updateAgent', 'handoff'] as const)(
+    'clears hosted tools on the wire after %s to a tool-less agent',
+    async (transition) => {
+      const target = new RealtimeAgent({ name: 'Target' });
+      const source = new RealtimeAgent({
+        name: 'Source',
+        tools: [
+          hostedMcpTool({
+            serverLabel: 'example',
+            serverUrl: 'https://example.invalid/mcp',
+            requireApproval: 'always',
+          }),
+        ],
+        handoffs: [target],
+      });
+      // Mock network I/O while retaining the provider's session payload conversion.
+      const transport = new TestBase();
+      transport.connect.mockImplementation(async (options) => {
+        transport.updateSessionConfig(options.initialSessionConfig ?? {});
+      });
+      const session = new RealtimeSession(source, { transport });
+
+      try {
+        await session.connect({ apiKey: 'test-key' });
+        expect(transport.events).toContainEqual(
+          expect.objectContaining({
+            type: 'session.update',
+            session: expect.objectContaining({
+              tools: expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'mcp',
+                  server_label: 'example',
+                }),
+                expect.objectContaining({
+                  type: 'function',
+                  name: 'transfer_to_Target',
+                }),
+              ]),
+            }),
+          }),
+        );
+        transport.events.length = 0;
+
+        if (transition === 'updateAgent') {
+          await session.updateAgent(target);
+        } else {
+          transport.emit('function_call', {
+            type: 'function_call',
+            name: 'transfer_to_Target',
+            callId: 'handoff-call',
+            arguments: '{}',
+            responseId: 'handoff-response',
+          });
+          await vi.waitFor(() =>
+            expect(session.currentAgent === target).toBe(true),
+          );
+        }
+
+        expect(transport.events).toContainEqual(
+          expect.objectContaining({
+            type: 'session.update',
+            session: expect.objectContaining({ tools: [] }),
+          }),
+        );
+      } finally {
+        session.close();
+      }
+    },
+  );
 
   it('whitelists function tools in session payload', () => {
     const base = new TestBase();

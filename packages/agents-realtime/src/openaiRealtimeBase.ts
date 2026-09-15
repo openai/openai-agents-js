@@ -683,7 +683,7 @@ export abstract class OpenAIRealtimeBase
       };
     }
 
-    if (newConfig.tools && newConfig.tools.length > 0) {
+    if (newConfig.tools) {
       sessionData.tools = newConfig.tools.map((tool: any) => {
         const pickDefined = (obj: Record<string, any>) =>
           Object.fromEntries(
