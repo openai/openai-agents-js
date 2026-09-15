@@ -177,7 +177,11 @@ function joinPosixPath(root: string, relativePath: string): string {
   if (!relativePath) {
     return normalizePosixPath(root);
   }
-  return normalizePosixPath(`${root.replace(/\/+$/u, '')}/${relativePath}`);
+  let rootEnd = root.length;
+  while (rootEnd > 0 && root[rootEnd - 1] === '/') {
+    rootEnd--;
+  }
+  return normalizePosixPath(`${root.slice(0, rootEnd)}/${relativePath}`);
 }
 
 function normalizeWorkspaceRoot(root: string): string {
