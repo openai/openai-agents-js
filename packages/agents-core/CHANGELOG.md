@@ -1,5 +1,19 @@
 # @openai/agents-core
 
+## 0.19.0
+
+### Patch Changes
+
+- 186f6ec: fix: Trim local workspace logical path separators in linear time.
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 20e5946: chore: Run PTY signal regression tests with native Node.js instead of the tsx CLI.
+- 7f135af: fix: update compatible runtime and development dependencies.
+- 8ac97df: fix: Reject computer calls without aborting the run when onSafetyCheck explicitly returns false.
+- 8a26e30: fix: Serialize hosted MCP approval tool references without live configuration.
+- d187747: fix: Apply current MCP tool filters on every lookup while reusing cached tool discovery.
+- 0bdea85: fix: Compute sandbox parent paths in linear time while preserving existing path semantics.
+- 06bbcc0: chore: migrate tracing test mocks to Vitest 5.
+
 ## 0.18.0
 
 ### Minor Changes

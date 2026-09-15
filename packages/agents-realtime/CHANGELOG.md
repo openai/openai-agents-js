@@ -1,5 +1,23 @@
 # @openai/agents-realtime
 
+## 0.19.0
+
+### Patch Changes
+
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 7f135af: fix: update compatible runtime and development dependencies.
+- efd907f: fix: Clear stale tools when switching to a tool-less Realtime agent without a prompt while preserving existing empty-tool configuration behavior.
+- Updated dependencies [186f6ec]
+- Updated dependencies [817161d]
+- Updated dependencies [20e5946]
+- Updated dependencies [7f135af]
+- Updated dependencies [8ac97df]
+- Updated dependencies [8a26e30]
+- Updated dependencies [d187747]
+- Updated dependencies [0bdea85]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.19.0
+
 ## 0.18.0
 
 ### Patch Changes
