@@ -187,8 +187,16 @@ function serializeFunctionToolForToolSearchOutput(
 function serializeHostedMcpToolForToolSearchOutput(
   tool: HostedMCPTool<any>,
 ): protocol.ToolSearchOutputTool {
-  const { on_approval: _onApproval, ...providerData } = tool.providerData;
+  const {
+    on_approval: _onApproval,
+    authorization: _authorization,
+    headers: _headers,
+    ...providerData
+  } = tool.providerData;
   void _onApproval;
+  void _authorization;
+  void _headers;
+  // Authentication belongs to the runtime tool, not conversation history.
   return providerData as protocol.ToolSearchOutputTool;
 }
 
