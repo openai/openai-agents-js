@@ -652,21 +652,23 @@ export class RealtimeSession<
       instructions,
       voice: resolvedVoice,
       model: this.options.model,
-      // Omitted initial tools allow server-configured tools to inherit.
-      // Explicit tool configuration must override even when every tool is disabled.
-      // Agent updates must send even an empty list to replace the previous tools.
-      tools:
-        phase === 'initial' &&
-        !configAgent.hasExplicitToolConfig() &&
-        configTools?.length === 0
-          ? undefined
-          : configTools,
+      tools: configTools,
       tracing: tracingConfig,
       prompt:
         typeof configAgent.prompt === 'function'
           ? await configAgent.prompt(this.#context, configAgent)
           : configAgent.prompt,
     };
+
+    // Preserve inherited tools at initialization or when the target prompt owns them.
+    // Explicit empty tool sets and tool-less updates without a prompt must clear tools.
+    if (
+      configTools?.length === 0 &&
+      !configAgent.hasExplicitToolConfig() &&
+      (phase === 'initial' || fullConfig.prompt)
+    ) {
+      fullConfig.tools = undefined;
+    }
 
     // Update our cache so subsequent updates inherit the full set including any
     // dynamic fields we just overwrote.

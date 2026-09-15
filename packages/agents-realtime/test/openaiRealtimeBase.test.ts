@@ -377,73 +377,119 @@ describe('OpenAIRealtimeBase helpers', () => {
     },
   );
 
-  it.each(['updateAgent', 'handoff'] as const)(
-    'clears hosted tools on the wire after %s to a tool-less agent',
-    async (transition) => {
-      const target = new RealtimeAgent({ name: 'Target' });
-      const source = new RealtimeAgent({
-        name: 'Source',
-        tools: [
-          hostedMcpTool({
-            serverLabel: 'example',
-            serverUrl: 'https://example.invalid/mcp',
-            requireApproval: 'always',
-          }),
-        ],
-        handoffs: [target],
-      });
-      // Mock network I/O while retaining the provider's session payload conversion.
-      const transport = new TestBase();
-      transport.connect.mockImplementation(async (options) => {
-        transport.updateSessionConfig(options.initialSessionConfig ?? {});
-      });
-      const session = new RealtimeSession(source, { transport });
-
-      try {
-        await session.connect({ apiKey: 'test-key' });
-        expect(transport.events).toContainEqual(
-          expect.objectContaining({
-            type: 'session.update',
-            session: expect.objectContaining({
-              tools: expect.arrayContaining([
-                expect.objectContaining({
-                  type: 'mcp',
-                  server_label: 'example',
-                }),
-                expect.objectContaining({
-                  type: 'function',
-                  name: 'transfer_to_Target',
-                }),
-              ]),
+  describe.each(['updateAgent', 'handoff'] as const)(
+    '%s tool ownership',
+    (transition) => {
+      it.each([
+        {
+          label: 'tool-less',
+          prompt: undefined,
+          tools: undefined,
+          inherits: false,
+        },
+        {
+          label: 'prompt-owned',
+          prompt: async () => ({ promptId: 'pmpt_target' }),
+          tools: undefined,
+          inherits: true,
+        },
+        {
+          label: 'explicit empty',
+          prompt: { promptId: 'pmpt_target' },
+          tools: [],
+          inherits: false,
+        },
+        {
+          label: 'all disabled',
+          prompt: { promptId: 'pmpt_target' },
+          tools: [
+            tool({
+              name: 'disabled',
+              description: 'A disabled tool.',
+              parameters: z.object({}),
+              isEnabled: false,
+              execute: async () => 'disabled',
             }),
-          }),
-        );
-        transport.events.length = 0;
-
-        if (transition === 'updateAgent') {
-          await session.updateAgent(target);
-        } else {
-          transport.emit('function_call', {
-            type: 'function_call',
-            name: 'transfer_to_Target',
-            callId: 'handoff-call',
-            arguments: '{}',
-            responseId: 'handoff-response',
+          ],
+          inherits: false,
+        },
+      ])(
+        'sends the expected tools for a $label target',
+        async ({ prompt, tools, inherits }) => {
+          const target = new RealtimeAgent({ name: 'Target', prompt, tools });
+          const source = new RealtimeAgent({
+            name: 'Source',
+            tools: [
+              hostedMcpTool({
+                serverLabel: 'example',
+                serverUrl: 'https://example.invalid/mcp',
+                requireApproval: 'always',
+              }),
+            ],
+            handoffs: [target],
           });
-          await vi.waitFor(() =>
-            expect(session.currentAgent === target).toBe(true),
-          );
-        }
+          // Mock network I/O while retaining the provider's session payload conversion.
+          const transport = new TestBase();
+          transport.connect.mockImplementation(async (options) => {
+            transport.updateSessionConfig(options.initialSessionConfig ?? {});
+          });
+          const session = new RealtimeSession(source, { transport });
 
-        expect(transport.events).toContainEqual(
-          expect.objectContaining({
-            type: 'session.update',
-            session: expect.objectContaining({ tools: [] }),
-          }),
-        );
-      } finally {
-        session.close();
-      }
+          try {
+            await session.connect({ apiKey: 'test-key' });
+            expect(transport.events).toContainEqual(
+              expect.objectContaining({
+                type: 'session.update',
+                session: expect.objectContaining({
+                  tools: expect.arrayContaining([
+                    expect.objectContaining({
+                      type: 'mcp',
+                      server_label: 'example',
+                    }),
+                    expect.objectContaining({
+                      type: 'function',
+                      name: 'transfer_to_Target',
+                    }),
+                  ]),
+                }),
+              }),
+            );
+            transport.events.length = 0;
+
+            if (transition === 'updateAgent') {
+              await session.updateAgent(target);
+            } else {
+              transport.emit('function_call', {
+                type: 'function_call',
+                name: 'transfer_to_Target',
+                callId: 'handoff-call',
+                arguments: '{}',
+                responseId: 'handoff-response',
+              });
+              await vi.waitFor(() =>
+                expect(session.currentAgent === target).toBe(true),
+              );
+            }
+
+            const update = transport.events.find(
+              (event) => event.type === 'session.update',
+            );
+            expect(update).toBeDefined();
+            if (prompt) {
+              expect(update).toHaveProperty('session.prompt', {
+                id: 'pmpt_target',
+              });
+            }
+            if (inherits) {
+              expect(update).not.toHaveProperty('session.tools');
+            } else {
+              expect(update).toHaveProperty('session.tools', []);
+            }
+          } finally {
+            session.close();
+          }
+        },
+      );
     },
   );
 
