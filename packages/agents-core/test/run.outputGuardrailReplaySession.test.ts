@@ -81,6 +81,147 @@ const terminalToolBehaviors: Array<{
 ];
 
 describe('output guardrails with Session persistence', () => {
+  it('preserves the guardrail error if safe-history persistence fails', async () => {
+    const session = new MemorySession();
+    const guardrailError = new Error('guardrail unavailable');
+    const persistenceError = new Error('session unavailable');
+    const addItems = vi
+      .spyOn(session, 'addItems')
+      .mockRejectedValue(persistenceError);
+    const agent = new Agent({
+      name: 'Failed persistence agent',
+      model: new ScriptedModel([
+        modelResponse({
+          output: [assistantMessage('unvetted answer')],
+          usage: new Usage(),
+        }),
+      ]),
+      outputGuardrails: [
+        {
+          name: 'fails',
+          execute: async () => {
+            throw guardrailError;
+          },
+        },
+      ],
+    });
+    const failure = await run(agent, 'input', { session }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(GuardrailExecutionError);
+    expect((failure as GuardrailExecutionError).error).toBe(guardrailError);
+    expect(failure).toHaveProperty('cause', persistenceError);
+    expect(addItems).toHaveBeenCalledExactlyOnceWith([
+      expect.objectContaining({ role: 'user', content: 'input' }),
+    ]);
+    expect(await session.getItems()).toEqual([]);
+  });
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((mode) =>
+      [false, true].map((appendOnly) => ({ mode, appendOnly })),
+    ),
+  )(
+    'withholds unvetted assistant output after a guardrail error in $mode mode (appendOnly=$appendOnly)',
+    async ({ mode, appendOnly }) => {
+      const session = appendOnly
+        ? new AppendOnlySession()
+        : new MemorySession();
+      const history: AgentInputItem[] = [
+        { role: 'user', content: 'previous question' },
+        assistantMessage('previous accepted answer'),
+      ];
+      await session.addItems(history);
+      const guardrailError = new Error('guardrail service unavailable');
+      const lookup = tool({
+        name: 'lookup',
+        description: 'Returns a benign lookup result.',
+        parameters: z.object({}),
+        execute: async () => 'safe lookup result',
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [functionCall('lookup', {}, { callId: 'lookup-call' })],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [assistantMessage('unvetted final answer')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'Guardrail error Session agent',
+        model,
+        tools: [lookup],
+        outputGuardrails: [
+          {
+            name: 'unavailable guardrail',
+            execute: async () => {
+              throw guardrailError;
+            },
+          },
+        ],
+      });
+      const completion =
+        mode === 'streamed'
+          ? (await run(agent, 'current question', { session, stream: true }))
+              .completed
+          : run(agent, 'current question', { session });
+      const failure = await completion.catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(GuardrailExecutionError);
+      expect((failure as GuardrailExecutionError).error).toBe(guardrailError);
+      const stored = await session.getItems();
+      expect(stored.slice(0, history.length)).toEqual(history);
+      expect(stored).toContainEqual(
+        expect.objectContaining({ role: 'user', content: 'current question' }),
+      );
+      // Blocked-output history retains tool pairs only on transaction-aware sessions.
+      if (!appendOnly) {
+        expect(JSON.stringify(stored)).toContain('safe lookup result');
+      }
+      expect(
+        stored.filter((item) => item.type === 'function_call'),
+      ).toHaveLength(appendOnly ? 0 : 1);
+      expect(
+        stored.filter((item) => item.type === 'function_call_result'),
+      ).toHaveLength(appendOnly ? 0 : 1);
+      expect(JSON.stringify(stored)).not.toContain('unvetted final answer');
+
+      const replayModel = new ScriptedModel([
+        modelResponse({
+          output: [assistantMessage('accepted answer')],
+          usage: new Usage(),
+        }),
+      ]);
+      const replayAgent = new Agent({
+        name: 'Accepted output Session agent',
+        model: replayModel,
+        outputGuardrails: [
+          {
+            name: 'accept',
+            execute: async () => ({
+              tripwireTriggered: false,
+              outputInfo: undefined,
+            }),
+          },
+        ],
+      });
+      if (mode === 'streamed') {
+        await (
+          await run(replayAgent, 'follow up', { session, stream: true })
+        ).completed;
+      } else {
+        await run(replayAgent, 'follow up', { session });
+      }
+      expect(JSON.stringify(replayModel.calls)).not.toContain(
+        'unvetted final answer',
+      );
+      expect(JSON.stringify(await session.getItems())).toContain(
+        'accepted answer',
+      );
+    },
+  );
+
   it.each(
     terminalToolBehaviors.flatMap(({ name, value }) =>
       (['non_streamed', 'streamed'] as const).flatMap((mode) =>
