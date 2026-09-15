@@ -660,16 +660,6 @@ export class RealtimeSession<
           : configAgent.prompt,
     };
 
-    // Preserve inherited tools at initialization or when the target prompt owns them.
-    // Explicit empty tool sets and tool-less updates without a prompt must clear tools.
-    if (
-      configTools?.length === 0 &&
-      !configAgent.hasExplicitToolConfig() &&
-      (phase === 'initial' || fullConfig.prompt)
-    ) {
-      fullConfig.tools = undefined;
-    }
-
     // Update our cache so subsequent updates inherit the full set including any
     // dynamic fields we just overwrote.
     if (
@@ -677,6 +667,16 @@ export class RealtimeSession<
       connectionGeneration === this.#connectionGeneration
     ) {
       this.#lastSessionConfig = fullConfig;
+    }
+
+    // Empty tool arrays retain their released transport semantics elsewhere.
+    // Only agent transitions without a target prompt explicitly revoke old tools.
+    // Keep this wire override out of the cache so later prompts can inherit tools.
+    if (phase === 'update' && configTools?.length === 0 && !fullConfig.prompt) {
+      return {
+        ...fullConfig,
+        providerData: { ...fullConfig.providerData, tools: [] },
+      };
     }
 
     return fullConfig;

@@ -298,7 +298,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(session?.audio?.output?.voice).toBe('echo');
   });
 
-  it('preserves omitted tools and explicit empty tools in session updates', () => {
+  it('preserves released omission for empty tools and supports raw tool overrides', () => {
     const base = new TestBase();
     base.updateSessionConfig({ instructions: 'Updated instructions' });
     expect(base.events[0]).toMatchObject({ type: 'session.update' });
@@ -306,10 +306,10 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(base.events[0]).not.toHaveProperty('session.tools');
 
     base.updateSessionConfig({ tools: [] });
-    expect(base.events[1]).toMatchObject({
-      type: 'session.update',
-      session: { tools: [] },
-    });
+    expect(base.events[1]).not.toHaveProperty('session.tools');
+
+    base.updateSessionConfig({ tools: [], providerData: { tools: [] } });
+    expect(base.events[2]).toHaveProperty('session.tools', []);
   });
 
   it.each(['omitted', 'empty', 'disabled'] as const)(
@@ -349,22 +349,15 @@ describe('OpenAIRealtimeBase helpers', () => {
         expect(initialPayload).toMatchObject({
           prompt: { id: 'pmpt_example' },
         });
-        if (toolConfig === 'omitted') {
-          expect(initialPayload).not.toHaveProperty('tools');
-        } else {
-          expect(initialPayload).toHaveProperty('tools', []);
-        }
+        expect(initialConfig.tools).toEqual([]);
+        expect(initialPayload).not.toHaveProperty('tools');
 
         await session.connect({ apiKey: 'test-key' });
         expect(transport.events[0]).toMatchObject({
           type: 'session.update',
           session: { prompt: { id: 'pmpt_example' } },
         });
-        if (toolConfig === 'omitted') {
-          expect(transport.events[0]).not.toHaveProperty('session.tools');
-        } else {
-          expect(transport.events[0]).toHaveProperty('session.tools', []);
-        }
+        expect(transport.events[0]).not.toHaveProperty('session.tools');
 
         await session.updateAgent(new RealtimeAgent({ name: 'Target' }));
         expect(transport.events[1]).toMatchObject({
@@ -397,7 +390,7 @@ describe('OpenAIRealtimeBase helpers', () => {
           label: 'explicit empty',
           prompt: { promptId: 'pmpt_target' },
           tools: [],
-          inherits: false,
+          inherits: true,
         },
         {
           label: 'all disabled',
@@ -411,7 +404,7 @@ describe('OpenAIRealtimeBase helpers', () => {
               execute: async () => 'disabled',
             }),
           ],
-          inherits: false,
+          inherits: true,
         },
       ])(
         'sends the expected tools for a $label target',
@@ -433,7 +426,10 @@ describe('OpenAIRealtimeBase helpers', () => {
           transport.connect.mockImplementation(async (options) => {
             transport.updateSessionConfig(options.initialSessionConfig ?? {});
           });
-          const session = new RealtimeSession(source, { transport });
+          const session = new RealtimeSession(source, {
+            transport,
+            config: { providerData: { max_output_tokens: 256 } },
+          });
 
           try {
             await session.connect({ apiKey: 'test-key' });
@@ -475,6 +471,7 @@ describe('OpenAIRealtimeBase helpers', () => {
               (event) => event.type === 'session.update',
             );
             expect(update).toBeDefined();
+            expect(update).toHaveProperty('session.max_output_tokens', 256);
             if (prompt) {
               expect(update).toHaveProperty('session.prompt', {
                 id: 'pmpt_target',
@@ -484,6 +481,40 @@ describe('OpenAIRealtimeBase helpers', () => {
               expect(update).not.toHaveProperty('session.tools');
             } else {
               expect(update).toHaveProperty('session.tools', []);
+
+              await session.updateAgent(
+                new RealtimeAgent({
+                  name: 'Prompt successor',
+                  prompt: { promptId: 'pmpt_successor' },
+                  tools: [],
+                }),
+              );
+              const successorUpdate = transport.events
+                .filter((event) => event.type === 'session.update')
+                .at(-1);
+              expect(successorUpdate).toHaveProperty(
+                'session.prompt.id',
+                'pmpt_successor',
+              );
+              expect(successorUpdate).not.toHaveProperty('session.tools');
+              expect(successorUpdate).toHaveProperty(
+                'session.max_output_tokens',
+                256,
+              );
+
+              await session.updateAgent(source);
+              const restoredUpdate = transport.events
+                .filter((event) => event.type === 'session.update')
+                .at(-1);
+              expect(restoredUpdate).toHaveProperty(
+                'session.tools',
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    type: 'mcp',
+                    server_label: 'example',
+                  }),
+                ]),
+              );
             }
           } finally {
             session.close();
