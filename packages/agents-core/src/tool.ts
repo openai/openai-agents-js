@@ -392,6 +392,11 @@ export type ComputerSafetyCheck = {
   [key: string]: unknown;
 };
 
+/**
+ * Return true to acknowledge all pending checks, or false to stop the run with a
+ * UserError before executing the computer call. Returning void leaves the checks
+ * unacknowledged and allows execution to continue.
+ */
 export type ComputerSafetyCheckResult =
   | void
   | boolean

@@ -2926,7 +2926,7 @@ async function resolveSafetyCheckAcknowledgements(options: {
     return pendingSafetyChecks;
   }
   if (result === false) {
-    return undefined;
+    throw new UserError('Computer safety check was rejected.');
   }
   return normalizeSafetyCheckResult(result);
 }

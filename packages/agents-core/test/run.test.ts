@@ -3564,6 +3564,125 @@ describe('Runner.run', () => {
       expect(runnerEndEvents[0].output).toBe('Hello World');
     });
 
+    it.each([false, true])(
+      'stops a declined computer safety check and disposes the computer (stream=%s)',
+      async (stream) => {
+        const computer = new FakeComputer();
+        const click = vi.spyOn(computer, 'click');
+        const screenshot = vi.spyOn(computer, 'screenshot');
+        const dispose = vi.fn(async () => undefined);
+        const onSafetyCheck = vi.fn(async () => false);
+        const agent = new Agent({
+          name: 'SafetyCheckAgent',
+          model: new ScriptedModel([
+            modelResponse({
+              output: [
+                {
+                  type: 'computer_call',
+                  callId: 'declined-call',
+                  status: 'completed',
+                  actions: [
+                    { type: 'click', x: 1, y: 1, button: 'left' },
+                    { type: 'screenshot' },
+                  ],
+                  providerData: {
+                    pending_safety_checks: [
+                      { id: 'check-1', code: 'sensitive_domain' },
+                    ],
+                  },
+                },
+              ],
+              usage: new Usage(),
+            }),
+          ]),
+          tools: [
+            computerTool({
+              computer: { create: async () => computer, dispose },
+              onSafetyCheck,
+            }),
+          ],
+        });
+
+        const outcome = async () => {
+          if (stream) {
+            const result = await run(agent, 'start', { stream: true });
+            await result.completed;
+          } else {
+            await run(agent, 'start');
+          }
+        };
+        await expect(outcome()).rejects.toThrow(
+          new UserError('Computer safety check was rejected.'),
+        );
+        expect(onSafetyCheck).toHaveBeenCalledTimes(1);
+        expect(click).not.toHaveBeenCalled();
+        expect(screenshot).not.toHaveBeenCalled();
+        expect(dispose).toHaveBeenCalledTimes(1);
+        expect(dispose).toHaveBeenCalledWith({
+          computer,
+          runContext: expect.any(RunContext),
+        });
+      },
+    );
+
+    it('checks safety after resuming an approved computer call', async () => {
+      const computer = new FakeComputer();
+      const screenshot = vi.spyOn(computer, 'screenshot');
+      const dispose = vi.fn(async () => undefined);
+      const onSafetyCheck = vi.fn(async () => false);
+      const agent = new Agent({
+        name: 'ResumedSafetyCheckAgent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              {
+                type: 'computer_call',
+                callId: 'approved-call',
+                status: 'completed',
+                action: { type: 'screenshot' },
+                providerData: {
+                  pendingSafetyChecks: [
+                    { id: 'check-1', code: 'sensitive_domain' },
+                  ],
+                },
+              },
+            ],
+            usage: new Usage(),
+          }),
+          modelResponse({
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [
+          computerTool({
+            computer: { create: async () => computer, dispose },
+            needsApproval: true,
+            onSafetyCheck,
+          }),
+        ],
+      });
+      const interrupted = await run(agent, 'start');
+      expect(interrupted.interruptions).toHaveLength(1);
+      expect(onSafetyCheck).not.toHaveBeenCalled();
+      expect(dispose).not.toHaveBeenCalled();
+      interrupted.state.approve(interrupted.interruptions[0]);
+
+      await expect(run(agent, interrupted.state)).rejects.toThrow(
+        new UserError('Computer safety check was rejected.'),
+      );
+      expect(onSafetyCheck).toHaveBeenCalledTimes(1);
+      expect(screenshot).not.toHaveBeenCalled();
+      // A failed resume retains interrupted resources for an explicit retry.
+      expect(dispose).not.toHaveBeenCalled();
+      onSafetyCheck.mockResolvedValue(true);
+      const completed = await run(agent, interrupted.state);
+      expect(completed.finalOutput).toBe('done');
+      expect(onSafetyCheck).toHaveBeenCalledTimes(2);
+      expect(screenshot).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
     it('disposes computer lifecycle initializers after a completed run', async () => {
       const createdComputer = new FakeComputer();
       const create = vi.fn(async () => createdComputer);

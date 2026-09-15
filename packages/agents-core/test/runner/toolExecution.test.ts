@@ -10119,6 +10119,41 @@ describe('executeShellActions', () => {
       ]);
     });
 
+    it.each(['absent', 'void'] as const)(
+      'preserves execution when the safety callback is %s',
+      async (mode) => {
+        const comp = makeComputer();
+        const tool = computerTool({
+          computer: comp,
+          onSafetyCheck: mode === 'void' ? async () => undefined : undefined,
+        });
+        const toolCall: protocol.ComputerUseCallItem = {
+          type: 'computer_call',
+          callId: 'unacknowledged-call',
+          status: 'completed',
+          action: { type: 'screenshot' },
+          providerData: {
+            pending_safety_checks: [
+              { id: 'check-1', code: 'sensitive_domain' },
+            ],
+          },
+        };
+        const [result] = await executeComputerActions(
+          new Agent({ name: 'C' }),
+          [{ toolCall, computer: tool }],
+          new Runner({ tracingDisabled: true }),
+          new RunContext(),
+        );
+        expect(comp.screenshot).toHaveBeenCalledTimes(1);
+        expect(result.rawItem).toMatchObject({
+          output: { data: 'data:image/png;base64,img' },
+        });
+        expect(
+          result.rawItem.providerData?.acknowledgedSafetyChecks,
+        ).toBeUndefined();
+      },
+    );
+
     it('accepts boolean true from onSafetyCheck', async () => {
       const comp = makeComputer();
       const onSafetyCheck = vi.fn(async (_args) => true);
