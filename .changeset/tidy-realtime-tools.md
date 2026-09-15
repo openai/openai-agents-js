@@ -2,4 +2,4 @@
 '@openai/agents-realtime': patch
 ---
 
-fix: Preserve explicit empty tool lists in Realtime session updates.
+fix: Clear empty tool lists in Realtime session updates while preserving initial tool inheritance.

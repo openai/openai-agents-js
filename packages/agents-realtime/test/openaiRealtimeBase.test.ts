@@ -311,6 +311,43 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
+  it('preserves initial tool inheritance for an agent using a stored prompt', async () => {
+    const agent = new RealtimeAgent({
+      name: 'Prompt agent',
+      prompt: { promptId: 'pmpt_example' },
+    });
+    const transport = new TestBase();
+    transport.connect.mockImplementation(async (options) => {
+      transport.updateSessionConfig(options.initialSessionConfig ?? {});
+    });
+    const session = new RealtimeSession(agent, { transport });
+
+    try {
+      const initialConfig = await RealtimeSession.computeInitialSessionConfig(
+        agent,
+        { transport },
+      );
+      const initialPayload = transport.buildSessionPayload(initialConfig);
+      expect(initialPayload).toMatchObject({ prompt: { id: 'pmpt_example' } });
+      expect(initialPayload).not.toHaveProperty('tools');
+
+      await session.connect({ apiKey: 'test-key' });
+      expect(transport.events[0]).toMatchObject({
+        type: 'session.update',
+        session: { prompt: { id: 'pmpt_example' } },
+      });
+      expect(transport.events[0]).not.toHaveProperty('session.tools');
+
+      await session.updateAgent(new RealtimeAgent({ name: 'Target' }));
+      expect(transport.events[1]).toMatchObject({
+        type: 'session.update',
+        session: { tools: [] },
+      });
+    } finally {
+      session.close();
+    }
+  });
+
   it.each(['updateAgent', 'handoff'] as const)(
     'clears hosted tools on the wire after %s to a tool-less agent',
     async (transition) => {
