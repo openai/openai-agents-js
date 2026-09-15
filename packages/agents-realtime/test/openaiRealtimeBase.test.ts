@@ -15,7 +15,8 @@ import {
 } from '../src/openaiRealtimeBase';
 import logger from '../src/logger';
 import { responseDoneEventSchema } from '../src/openaiRealtimeEvents';
-import { hostedMcpTool } from '@openai/agents-core';
+import { hostedMcpTool, tool } from '@openai/agents-core';
+import { z } from 'zod';
 import { RealtimeAgent } from '../src/realtimeAgent';
 import { RealtimeSession } from '../src/realtimeSession';
 import type { RealtimeTransportLayer } from '../src/transportLayer';
@@ -311,42 +312,70 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
   });
 
-  it('preserves initial tool inheritance for an agent using a stored prompt', async () => {
-    const agent = new RealtimeAgent({
-      name: 'Prompt agent',
-      prompt: { promptId: 'pmpt_example' },
-    });
-    const transport = new TestBase();
-    transport.connect.mockImplementation(async (options) => {
-      transport.updateSessionConfig(options.initialSessionConfig ?? {});
-    });
-    const session = new RealtimeSession(agent, { transport });
-
-    try {
-      const initialConfig = await RealtimeSession.computeInitialSessionConfig(
-        agent,
-        { transport },
-      );
-      const initialPayload = transport.buildSessionPayload(initialConfig);
-      expect(initialPayload).toMatchObject({ prompt: { id: 'pmpt_example' } });
-      expect(initialPayload).not.toHaveProperty('tools');
-
-      await session.connect({ apiKey: 'test-key' });
-      expect(transport.events[0]).toMatchObject({
-        type: 'session.update',
-        session: { prompt: { id: 'pmpt_example' } },
+  it.each(['omitted', 'empty', 'disabled'] as const)(
+    'preserves initial tool configuration when tools are %s',
+    async (toolConfig) => {
+      const tools =
+        toolConfig === 'omitted'
+          ? undefined
+          : toolConfig === 'empty'
+            ? []
+            : [
+                tool({
+                  name: 'disabled',
+                  description: 'A disabled tool.',
+                  parameters: z.object({}),
+                  isEnabled: false,
+                  execute: async () => 'disabled',
+                }),
+              ];
+      const agent = new RealtimeAgent({
+        name: 'Prompt agent',
+        prompt: { promptId: 'pmpt_example' },
+        tools,
       });
-      expect(transport.events[0]).not.toHaveProperty('session.tools');
-
-      await session.updateAgent(new RealtimeAgent({ name: 'Target' }));
-      expect(transport.events[1]).toMatchObject({
-        type: 'session.update',
-        session: { tools: [] },
+      const transport = new TestBase();
+      transport.connect.mockImplementation(async (options) => {
+        transport.updateSessionConfig(options.initialSessionConfig ?? {});
       });
-    } finally {
-      session.close();
-    }
-  });
+      const session = new RealtimeSession(agent, { transport });
+
+      try {
+        const initialConfig = await RealtimeSession.computeInitialSessionConfig(
+          agent,
+          { transport },
+        );
+        const initialPayload = transport.buildSessionPayload(initialConfig);
+        expect(initialPayload).toMatchObject({
+          prompt: { id: 'pmpt_example' },
+        });
+        if (toolConfig === 'omitted') {
+          expect(initialPayload).not.toHaveProperty('tools');
+        } else {
+          expect(initialPayload).toHaveProperty('tools', []);
+        }
+
+        await session.connect({ apiKey: 'test-key' });
+        expect(transport.events[0]).toMatchObject({
+          type: 'session.update',
+          session: { prompt: { id: 'pmpt_example' } },
+        });
+        if (toolConfig === 'omitted') {
+          expect(transport.events[0]).not.toHaveProperty('session.tools');
+        } else {
+          expect(transport.events[0]).toHaveProperty('session.tools', []);
+        }
+
+        await session.updateAgent(new RealtimeAgent({ name: 'Target' }));
+        expect(transport.events[1]).toMatchObject({
+          type: 'session.update',
+          session: { tools: [] },
+        });
+      } finally {
+        session.close();
+      }
+    },
+  );
 
   it.each(['updateAgent', 'handoff'] as const)(
     'clears hosted tools on the wire after %s to a tool-less agent',

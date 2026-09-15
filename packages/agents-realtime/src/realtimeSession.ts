@@ -652,10 +652,13 @@ export class RealtimeSession<
       instructions,
       voice: resolvedVoice,
       model: this.options.model,
-      // An empty initial agent tool set allows server-configured tools to inherit.
+      // Omitted initial tools allow server-configured tools to inherit.
+      // Explicit tool configuration must override even when every tool is disabled.
       // Agent updates must send even an empty list to replace the previous tools.
       tools:
-        phase === 'initial' && configTools?.length === 0
+        phase === 'initial' &&
+        !configAgent.hasExplicitToolConfig() &&
+        configTools?.length === 0
           ? undefined
           : configTools,
       tracing: tracingConfig,
