@@ -10119,6 +10119,54 @@ describe('executeShellActions', () => {
       ]);
     });
 
+    it('preserves cancellation while formatting a declined safety check', async () => {
+      const comp = makeComputer();
+      const create = vi.fn(async () => comp);
+      const controller = new AbortController();
+      const tool = computerTool({
+        computer: create,
+        onSafetyCheck: async () => false,
+      });
+      const toolCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        callId: 'cancelled-safety-check',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pendingSafetyChecks: [{ id: 'check-1', code: 'sensitive_domain' }],
+        },
+      };
+      const runner = new Runner({ tracingDisabled: true });
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+      const formatter = vi.fn(async () => {
+        controller.abort();
+        await Promise.resolve();
+        return 'declined';
+      });
+      const items = await executeComputerActions(
+        new Agent({ name: 'C' }),
+        [{ toolCall, computer: tool }],
+        runner,
+        new RunContext(),
+        undefined,
+        formatter,
+        controller.signal,
+      );
+      expect(formatter).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+      expect(comp.screenshot).not.toHaveBeenCalled();
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        rawItem: {
+          type: 'computer_call_result',
+          providerData: { status: 'incomplete' },
+        },
+      });
+      expect(end).toHaveBeenCalledTimes(1);
+      expect(end.mock.calls[0][3]).toBe('aborted');
+    });
+
     it.each(['absent', 'void'] as const)(
       'preserves execution when the safety callback is %s',
       async (mode) => {

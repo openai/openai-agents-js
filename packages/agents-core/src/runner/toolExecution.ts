@@ -2253,6 +2253,26 @@ export async function executeComputerActions(
       });
       return cachedRejectionMessage;
     };
+    const buildRejectionItem = (rejectionMessage: string) => {
+      const rejectionOutput: protocol.ComputerToolOutput = {
+        type: 'computer_screenshot',
+        data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+        providerData: {
+          approvalStatus: 'rejected',
+          message: rejectionMessage,
+        },
+      };
+      const rawItem: protocol.ComputerCallResultItem = {
+        type: 'computer_call_result',
+        callId: toolCall.callId,
+        output: rejectionOutput,
+      };
+      return new RunToolCallOutputItem(
+        rawItem,
+        agent,
+        COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
+      );
+    };
     const pendingSafetyChecks = getPendingSafetyChecks(toolCall);
     const approvalItem = new RunToolApprovalItem(
       toolCall,
@@ -2298,27 +2318,8 @@ export async function executeComputerActions(
           (result) => result.status === 'fulfilled' && result.value,
         );
       },
-      buildRejectionItem: async () => {
-        const rejectionMessage = await getRejectionMessage();
-        const rejectionOutput: protocol.ComputerToolOutput = {
-          type: 'computer_screenshot',
-          data: COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
-          providerData: {
-            approvalStatus: 'rejected',
-            message: rejectionMessage,
-          },
-        };
-        const rawItem: protocol.ComputerCallResultItem = {
-          type: 'computer_call_result',
-          callId: toolCall.callId,
-          output: rejectionOutput,
-        };
-        return new RunToolCallOutputItem(
-          rawItem,
-          agent,
-          COMPUTER_FALLBACK_SCREENSHOT_DATA_URL,
-        );
-      },
+      buildRejectionItem: async () =>
+        buildRejectionItem(await getRejectionMessage()),
       isCancelled: () => isSiblingCancellationSignal(signal),
       buildCancellationItem: () =>
         buildComputerCancellationItem(agent, toolCall),
@@ -2387,7 +2388,7 @@ export async function executeComputerActions(
           return item;
         };
 
-        let acknowledgedSafetyChecks: ComputerSafetyCheck[] | undefined;
+        let acknowledgedSafetyChecks: ComputerSafetyCheck[] | false | undefined;
         try {
           acknowledgedSafetyChecks =
             pendingSafetyChecks && pendingSafetyChecks.length > 0
@@ -2406,6 +2407,29 @@ export async function executeComputerActions(
         }
         if (signal?.aborted) {
           return buildStartedCancellationItem();
+        }
+
+        if (acknowledgedSafetyChecks === false) {
+          const rejectionMessage = await getRejectionMessage();
+          if (signal?.aborted) {
+            return buildStartedCancellationItem();
+          }
+          const rejectionItem = buildRejectionItem(rejectionMessage);
+          emitToolEnd(
+            runner,
+            runContext,
+            agent,
+            computerTool,
+            rejectionMessage,
+            toolCall,
+          );
+          if (span && runner.config.traceIncludeSensitiveData) {
+            span.spanData.output = rejectionMessage;
+          }
+          return [
+            rejectionItem,
+            new RunMessageOutputItem(assistant(rejectionMessage), agent),
+          ];
         }
 
         // Run the action and get screenshot.
@@ -2511,7 +2535,9 @@ export async function executeComputerActions(
       },
     );
 
-    results.push(computerItem);
+    results.push(
+      ...(Array.isArray(computerItem) ? computerItem : [computerItem]),
+    );
   }
   return results;
 }
@@ -2912,7 +2938,7 @@ async function resolveSafetyCheckAcknowledgements(options: {
     pendingSafetyChecks: ComputerSafetyCheck[];
     toolCall: protocol.ComputerUseCallItem;
   }) => Promise<ComputerSafetyCheckResult>;
-}): Promise<ComputerSafetyCheck[] | undefined> {
+}): Promise<ComputerSafetyCheck[] | false | undefined> {
   const { runContext, toolCall, pendingSafetyChecks, onSafetyCheck } = options;
   if (!onSafetyCheck) {
     return undefined;
@@ -2926,7 +2952,7 @@ async function resolveSafetyCheckAcknowledgements(options: {
     return pendingSafetyChecks;
   }
   if (result === false) {
-    throw new UserError('Computer safety check was rejected.');
+    return false;
   }
   return normalizeSafetyCheckResult(result);
 }
