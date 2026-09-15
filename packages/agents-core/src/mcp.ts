@@ -635,15 +635,17 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
   });
   const serverName = server.name;
   // Use cache key generator injected from the outside, or the default if absent.
-  if (server.cacheToolsList && _cachedTools[cacheKey]) {
-    return snapshotMcpTools(_cachedTools[cacheKey]);
-  }
+  const cachedMcpTools = server.cacheToolsList
+    ? _cachedTools[cacheKey]
+    : undefined;
   const cacheListing = beginServerToolsCacheListing(serverName);
 
   const listToolsForServer = async (
     span?: Span<MCPListToolsSpanData>,
   ): Promise<MCPTool[]> => {
-    const fetchedMcpTools = snapshotMcpTools(await server.listTools());
+    const fetchedMcpTools = snapshotMcpTools(
+      cachedMcpTools ?? (await server.listTools()),
+    );
     let mcpTools: MCPTool[] = fetchedMcpTools;
 
     if (runContext && agent) {
@@ -699,9 +701,9 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
     if (span) {
       span.spanData.result = mcpTools.map((t) => t.name);
     }
-    // Cache store
-    if (server.cacheToolsList && cacheListing.isCurrent()) {
-      _cachedTools[cacheKey] = snapshotMcpTools(mcpTools);
+    // Cache discovery only; filter decisions belong to the current lookup.
+    if (!cachedMcpTools && server.cacheToolsList && cacheListing.isCurrent()) {
+      _cachedTools[cacheKey] = snapshotMcpTools(fetchedMcpTools);
       if (!_cachedToolKeysByServer[serverName]) {
         _cachedToolKeysByServer[serverName] = new Set();
       }
@@ -711,7 +713,7 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
   };
 
   try {
-    if (!tracingParent && !getCurrentTrace()) {
+    if (cachedMcpTools || (!tracingParent && !getCurrentTrace())) {
       return await listToolsForServer();
     }
 
