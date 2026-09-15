@@ -176,10 +176,25 @@ function extractToolSearchOutput(
   item: RunToolSearchOutputItem,
   toolCallId: string,
 ): ToolOutputPayload {
-  const raw = item.rawItem as any;
+  const raw = item.rawItem;
   return {
     toolCallId,
-    output: Array.isArray(raw.tools) ? raw.tools : [],
+    output: Array.isArray(raw.tools)
+      ? raw.tools.map((tool) => {
+          if (tool.type !== 'mcp') {
+            return tool;
+          }
+          // Browser output is a presentation copy; replay retains the original configuration.
+          const {
+            authorization: _authorization,
+            headers: _headers,
+            ...output
+          } = tool;
+          void _authorization;
+          void _headers;
+          return output;
+        })
+      : [],
   };
 }
 
