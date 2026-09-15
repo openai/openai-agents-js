@@ -155,6 +155,12 @@ function cloneRealtimeEvent<T>(event: T): T {
   return JSON.parse(JSON.stringify(event)) as T;
 }
 
+/**
+ * Sentinel accepted by `conversation.item.create` that places the item at the
+ * beginning of the conversation. Omitting `previous_item_id` appends instead.
+ */
+const CONVERSATION_ROOT = 'root';
+
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
   implements RealtimeTransportLayer
@@ -163,6 +169,27 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  /**
+   * The `event_id` of every `conversation.item.delete` still awaiting a reply,
+   * grouped by the item it targets and held in the order they were sent. Local
+   * history still lists an item until its acknowledgement arrives, so without
+   * this a later insert would name one as its anchor and the server would refuse
+   * the create against a conversation that no longer holds it.
+   *
+   * It is a queue rather than a flag because the same id can be deleted twice
+   * before either reply lands -- correcting an item removes and re-adds it, and
+   * removing it afterwards queues a second delete. One reply must not clear an
+   * id another delete is still on its way to remove.
+   */
+  #pendingDeletes = new Map<string, string[]>();
+  /**
+   * Which item each outstanding request targets. A delete can end in an `error`
+   * rather than an acknowledgement — deleting an item the conversation has
+   * already dropped is the ordinary way that happens — and that reply names the
+   * request instead of the item, so it is resolved through here.
+   */
+  #deleteRequestItem = new Map<string, string>();
+  #deleteRequestSeq = 0;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -240,6 +267,12 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'error') {
+      // The Realtime API reports the offending client event under `error.event_id`.
+      const causedBy = (parsed.error as { event_id?: unknown } | undefined)
+        ?.event_id;
+      if (typeof causedBy === 'string') {
+        this.#releaseDeleteRequest(causedBy);
+      }
       this.emit('error', { type: 'error', error: parsed });
     } else {
       this.emit(parsed.type, parsed);
@@ -308,6 +341,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'conversation.item.deleted') {
+      this.#settleDeletion(parsed.item_id);
       this.emit('item_deleted', {
         itemId: parsed.item_id,
       });
@@ -381,11 +415,15 @@ export abstract class OpenAIRealtimeBase
         return;
       }
       if (parsed.item.type === 'message') {
+        // `null` here is the server saying the item has nothing before it, which
+        // is what decides where local history puts it. An event that does not
+        // carry the field says nothing about placement, so it stays undefined
+        // rather than claiming the front.
         const previousItemId =
           parsed.type === 'conversation.item.added' ||
           parsed.type === 'conversation.item.done'
             ? parsed.previous_item_id
-            : null;
+            : undefined;
         const item = realtimeMessageItemSchema.parse({
           itemId: parsed.item.id,
           previousItemId,
@@ -540,7 +578,45 @@ export abstract class OpenAIRealtimeBase
     this.emit('connected');
   }
 
+  /** Drops `eventId` from the queue it is in, and the queue once it empties. */
+  #forgetDeleteRequest(itemId: string, eventId: string | undefined): void {
+    if (eventId === undefined) {
+      return;
+    }
+    this.#deleteRequestItem.delete(eventId);
+    const outstanding = this.#pendingDeletes.get(itemId);
+    if (outstanding === undefined) {
+      return;
+    }
+    const at = outstanding.indexOf(eventId);
+    if (at !== -1) {
+      outstanding.splice(at, 1);
+    }
+    if (outstanding.length === 0) {
+      this.#pendingDeletes.delete(itemId);
+    }
+  }
+
+  /** The server acknowledged a delete of `itemId`, so its oldest request is done. */
+  #settleDeletion(itemId: string): void {
+    this.#forgetDeleteRequest(itemId, this.#pendingDeletes.get(itemId)?.[0]);
+  }
+
+  /** The delete sent under `eventId` failed, so it will never be acknowledged. */
+  #releaseDeleteRequest(eventId: string): void {
+    const itemId = this.#deleteRequestItem.get(eventId);
+    if (itemId === undefined) {
+      return;
+    }
+    this.#forgetDeleteRequest(itemId, eventId);
+  }
+
   protected _onClose() {
+    // Outstanding deletes belong to the connection that sent them. A new one
+    // starts from whatever history the caller restores, and an id held over
+    // from the old connection would suppress a legitimate anchor in it.
+    this.#pendingDeletes.clear();
+    this.#deleteRequestItem.clear();
     this.emit('disconnected');
   }
 
@@ -1015,34 +1091,81 @@ export abstract class OpenAIRealtimeBase
 
     if (removalIds.size > 0) {
       for (const itemId of removalIds) {
+        const eventId = `agents_delete_${(this.#deleteRequestSeq += 1)}`;
+        const outstanding = this.#pendingDeletes.get(itemId);
+        if (outstanding === undefined) {
+          this.#pendingDeletes.set(itemId, [eventId]);
+        } else {
+          outstanding.push(eventId);
+        }
+        this.#deleteRequestItem.set(eventId, itemId);
         this.sendEvent({
           type: 'conversation.item.delete',
+          event_id: eventId,
           item_id: itemId,
         });
       }
     }
 
-    const additionsAndUpdates = [...additions, ...updates];
+    // Walk the new history in order so each created item can name the item it
+    // follows. `conversation.item.create` appends to the end of the
+    // conversation when `previous_item_id` is omitted, which would move a
+    // corrected or inserted item behind everything after it.
+    const pendingIds = new Set(
+      [...additions, ...updates].map((item) => item.itemId),
+    );
+    // An item the server still holds: not being created or re-created in this
+    // pass, and not waiting on a delete this or an earlier pass already sent.
+    // A deletion stays in flight across calls, so local history can still list
+    // an item the conversation has already dropped.
+    const survives = (item: RealtimeItem) =>
+      !pendingIds.has(item.itemId) && !this.#pendingDeletes.has(item.itemId);
+    // Only a create that has to land before something the server keeps needs to
+    // name an anchor. Past the last such item there is nothing to sit in front
+    // of, so those stay plain appends.
+    let lastAnchoredIndex = -1;
+    for (const [index, item] of newHistory.entries()) {
+      if (survives(item)) {
+        lastAnchoredIndex = index;
+      }
+    }
 
-    for (const addition of additionsAndUpdates) {
-      if (addition.type === 'message') {
+    // `root` places the item at the beginning; omitting the field appends it.
+    let previousItemId = CONVERSATION_ROOT;
+
+    for (const [index, item] of newHistory.entries()) {
+      if (!pendingIds.has(item.itemId)) {
+        // An item on its way out cannot anchor anything: the anchor stays on
+        // the last one that will still be there when the create arrives.
+        if (survives(item)) {
+          previousItemId = item.itemId;
+        }
+        continue;
+      }
+
+      if (item.type === 'message') {
         const itemEntry: Record<string, any> = {
           type: 'message',
-          role: addition.role,
-          content: addition.content,
-          id: addition.itemId,
+          role: item.role,
+          content: item.content,
+          id: item.itemId,
         };
-        if (addition.role !== 'system' && addition.status) {
-          itemEntry.status = addition.status;
+        if (item.role !== 'system' && item.status) {
+          itemEntry.status = item.status;
         }
         this.sendEvent({
           type: 'conversation.item.create',
+          ...(index < lastAnchoredIndex
+            ? { previous_item_id: previousItemId }
+            : {}),
           item: itemEntry,
         });
-      } else if (addition.type === 'function_call') {
+        previousItemId = item.itemId;
+      } else if (item.type === 'function_call') {
         logger.warn(
           'Function calls cannot be manually added or updated at the moment. Ignoring.',
         );
+        // Not created, so it cannot anchor the next insert.
       }
     }
   }

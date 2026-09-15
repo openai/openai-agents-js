@@ -306,6 +306,12 @@ export function updateRealtimeHistory(
       }
       return item;
     });
+  } else if ((event as any).previousItemId === null) {
+    // The server reported no predecessor, so the item belongs at the front --
+    // this is how a `previous_item_id: 'root'` create comes back. An event that
+    // simply omits the field falls through to the append below: absent is not
+    // the same claim as first.
+    return [newEvent, ...history];
   } else if ((event as any).previousItemId) {
     // Insert after previousItemId if found, else at end
     const prevIndex = history.findIndex(

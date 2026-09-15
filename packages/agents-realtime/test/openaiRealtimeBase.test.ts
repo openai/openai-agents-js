@@ -551,6 +551,8 @@ describe('OpenAIRealtimeBase helpers', () => {
 
     expect(base.events[0]).toEqual({
       type: 'conversation.item.delete',
+      // Carried so a delete that ends in an error can be matched back to it.
+      event_id: expect.stringMatching(/^agents_delete_\d+$/),
       item_id: '1',
     });
     expect(base.events[1]).toEqual({
@@ -584,6 +586,369 @@ describe('OpenAIRealtimeBase helpers', () => {
       'Function calls cannot be manually added or updated at the moment. Ignoring.',
     );
     expect(base.events).toHaveLength(0);
+  });
+
+  describe('resetHistory item placement', () => {
+    // `conversation.item.create` appends when `previous_item_id` is omitted, so
+    // a corrected or inserted item has to name the item it follows or it lands
+    // behind everything after it.
+    const message = (itemId: string, text: string) =>
+      ({
+        itemId,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text }],
+      }) as any;
+
+    const functionCall = (itemId: string) =>
+      ({
+        itemId,
+        type: 'function_call',
+        name: 'f',
+        callId: itemId,
+        arguments: '{}',
+        status: 'completed',
+      }) as any;
+
+    function creates(oldHistory: any[], newHistory: any[]) {
+      const base = new TestBase();
+      base.resetHistory(oldHistory, newHistory);
+      return base.events
+        .filter((event: any) => event.type === 'conversation.item.create')
+        .map((event: any) =>
+          'previous_item_id' in event
+            ? `${event.item.id} after ${event.previous_item_id}`
+            : `${event.item.id} appended`,
+        );
+    }
+
+    it('anchors a corrected item to the one before it', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+          [message('a', '1'), message('b', 'edited'), message('c', '3')],
+        ),
+      ).toEqual(['b after a']);
+    });
+
+    it('anchors an inserted item to the one before it', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('c', '3')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['b after a']);
+    });
+
+    it('chains consecutive corrections in history order', () => {
+      expect(
+        creates(
+          [
+            message('a', '1'),
+            message('b', '2'),
+            message('c', '3'),
+            message('d', '4'),
+          ],
+          [
+            message('a', '1'),
+            message('b', 'B'),
+            message('c', 'C'),
+            message('d', '4'),
+          ],
+        ),
+      ).toEqual(['b after a', 'c after b']);
+    });
+
+    it('places an item with nothing before it at the beginning', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2')],
+          [message('a', 'edited'), message('b', '2')],
+        ),
+      ).toEqual(['a after root']);
+    });
+
+    it('does not anchor to a function call it could not create', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('d', '4')],
+          [
+            message('a', '1'),
+            functionCall('f'),
+            message('c', '3'),
+            message('d', '4'),
+          ],
+        ),
+      ).toEqual(['c after a']);
+    });
+
+    it('anchors to a function call that is already in the conversation', () => {
+      expect(
+        creates(
+          [message('a', '1'), functionCall('f'), message('d', '4')],
+          [
+            message('a', '1'),
+            functionCall('f'),
+            message('c', '3'),
+            message('d', '4'),
+          ],
+        ),
+      ).toEqual(['c after f']);
+    });
+
+    it('does not anchor to a removed item', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2'), message('d', '4')],
+          [message('a', '1'), message('c', '3'), message('d', '4')],
+        ),
+      ).toEqual(['c after a']);
+    });
+
+    // An anchor is only needed to sit in front of something the server keeps.
+    // Past the last of those, the plain append these always had is both correct
+    // and the only safe thing: the item a trailing create would name may be one
+    // the server has already dropped for a delete it has not acknowledged yet.
+    it('appends a trailing create without an anchor', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['c appended']);
+    });
+
+    it('appends consecutive trailing creates in order', () => {
+      expect(
+        creates(
+          [message('a', '1')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['b appended', 'c appended']);
+    });
+
+    it('appends a create that follows an unacknowledged deletion', () => {
+      // Local history still lists `b` because the deletion has not come back
+      // yet. Anchoring `c` to it would name an item the server has dropped.
+      expect(
+        creates(
+          [message('a', '1'), message('b', '2')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['c appended']);
+    });
+
+    it('does not anchor a middle insert to an item awaiting deletion', () => {
+      // The delete for `b` went out on an earlier call and has not come back,
+      // so local history still lists it. Anchoring `x` to `b` names an item the
+      // conversation has already dropped and the create is refused.
+      const base = new TestBase();
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      base.events.length = 0;
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', '2'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map((event: any) =>
+            'previous_item_id' in event
+              ? `${event.item.id} after ${event.previous_item_id}`
+              : `${event.item.id} appended`,
+          ),
+      ).toEqual(['x after a']);
+    });
+
+    it('anchors on an item awaiting deletion again once the server confirms it', () => {
+      const base = new TestBase();
+      base.resetHistory([message('a', '1')], [message('a', '1')]);
+      base.events.length = 0;
+      // A delete that was acknowledged leaves nothing in flight, so the item is
+      // gone from history and cannot be an anchor for the opposite reason.
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'conversation.item.deleted',
+          event_id: 'evt_deleted_b',
+          item_id: 'b',
+        }),
+      });
+      base.events.length = 0;
+      base.resetHistory(
+        [message('a', '1'), message('c', '3')],
+        [message('a', '1'), message('x', 'X'), message('c', '3')],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map(
+            (event: any) => `${event.item.id} after ${event.previous_item_id}`,
+          ),
+      ).toEqual(['x after a']);
+    });
+
+    it('keeps an item excluded until every outstanding delete is acknowledged', () => {
+      // Correcting `b` removes and re-adds it; removing it afterwards queues a
+      // second delete. One acknowledgement must not make the id an anchor again
+      // while the other delete is still on its way.
+      const base = new TestBase();
+      let acks = 0;
+      const ack = (itemId: string) =>
+        (base as any)._onMessage({
+          data: JSON.stringify({
+            type: 'conversation.item.deleted',
+            event_id: `evt_deleted_${(acks += 1)}`,
+            item_id: itemId,
+          }),
+        });
+
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+      );
+      base.resetHistory(
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      ack('b');
+      base.events.length = 0;
+
+      base.resetHistory(
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', 'corrected'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map((event: any) =>
+            'previous_item_id' in event
+              ? `${event.item.id} after ${event.previous_item_id}`
+              : `${event.item.id} appended`,
+          ),
+      ).toEqual(['x after a']);
+    });
+
+    it('releases a delete that failed instead of being acknowledged', () => {
+      // Deleting an item the conversation has already dropped comes back as an
+      // error naming the request, not as conversation.item.deleted. Without
+      // that reply releasing the count, the id stays excluded as an anchor for
+      // the rest of the connection.
+      const base = new TestBase();
+      const errors: unknown[] = [];
+      base.on('error', (event) => errors.push(event));
+      const deleteIds = () =>
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.delete')
+          .map((event: any) => event.event_id);
+
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+      );
+      base.resetHistory(
+        [message('a', '1'), message('b', 'corrected'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      const [firstDelete, secondDelete] = deleteIds();
+      expect(firstDelete).toBeDefined();
+      expect(secondDelete).toBeDefined();
+
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'conversation.item.deleted',
+          event_id: 'evt_deleted_b',
+          item_id: 'b',
+        }),
+      });
+      (base as any)._onMessage({
+        data: JSON.stringify({
+          type: 'error',
+          event_id: 'evt_error',
+          error: {
+            type: 'invalid_request_error',
+            code: 'item_not_found',
+            event_id: secondDelete,
+          },
+        }),
+      });
+      expect(errors).toHaveLength(1);
+      base.events.length = 0;
+
+      // `b` is restored, so it is a legitimate anchor again.
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', '2'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map(
+            (event: any) => `${event.item.id} after ${event.previous_item_id}`,
+          ),
+      ).toEqual(['x after b']);
+    });
+
+    it('forgets outstanding deletes when the connection ends', () => {
+      // The acknowledgement never arrives because the connection drops. The id
+      // belongs to that connection: carrying it into the next one would
+      // suppress an anchor the restored history legitimately has.
+      const base = new TestBase();
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [message('a', '1'), message('c', '3')],
+      );
+      (base as any)._onClose();
+      base.events.length = 0;
+
+      base.resetHistory(
+        [message('a', '1'), message('b', '2'), message('c', '3')],
+        [
+          message('a', '1'),
+          message('b', '2'),
+          message('x', 'X'),
+          message('c', '3'),
+        ],
+      );
+      expect(
+        base.events
+          .filter((event: any) => event.type === 'conversation.item.create')
+          .map(
+            (event: any) => `${event.item.id} after ${event.previous_item_id}`,
+          ),
+      ).toEqual(['x after b']);
+    });
+
+    it('still anchors when a surviving item has to stay behind the create', () => {
+      expect(
+        creates(
+          [message('a', '1'), message('c', '3')],
+          [message('a', '1'), message('b', '2'), message('c', '3')],
+        ),
+      ).toEqual(['b after a']);
+    });
   });
 
   it('sendMcpResponse emits approval response items', () => {
