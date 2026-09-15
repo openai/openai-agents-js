@@ -665,13 +665,12 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
               continue;
             }
           } else {
-            const allowedToolNames = filter.allowedToolNames ?? [];
+            const allowedToolNames = filter.allowedToolNames;
             const blockedToolNames = filter.blockedToolNames ?? [];
-            if (allowedToolNames.length > 0 || blockedToolNames.length > 0) {
-              const allowed =
-                allowedToolNames.length > 0
-                  ? allowedToolNames.includes(tool.name)
-                  : true;
+            if (allowedToolNames || blockedToolNames.length > 0) {
+              const allowed = allowedToolNames
+                ? allowedToolNames.includes(tool.name)
+                : true;
               const blocked =
                 blockedToolNames.length > 0
                   ? blockedToolNames.includes(tool.name)
