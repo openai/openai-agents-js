@@ -1,6 +1,10 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   Agent,
+  MemorySession,
+  Runner,
+  hostedMcpTool,
+  toolSearchTool,
   RunItemStreamEvent,
   RunRawModelStreamEvent,
   RunMessageOutputItem,
@@ -13,6 +17,7 @@ import {
 } from '@openai/agents';
 import type { RunStreamEvent } from '@openai/agents';
 import type { UIMessageChunk } from 'ai';
+import { ScriptedModel, assistantMessage } from '@openai/agents-core/testing';
 import {
   createAiSdkUiMessageStream,
   createAiSdkUiMessageStreamResponse,
@@ -470,6 +475,110 @@ describe('createAiSdkUiMessageStreamResponse', () => {
       dynamic: true,
     });
   });
+
+  test.each([false, true])(
+    'redacts MCP configuration from browser output without changing replay (custom: %s)',
+    async (custom) => {
+      const authorization = 'synthetic-mcp-token';
+      const headers = {
+        'X-Api-Key': 'synthetic-mcp-header',
+        'X-Api-Version': '2026-01',
+      };
+      const mcp = hostedMcpTool({
+        serverLabel: 'private_server',
+        serverUrl: 'https://mcp.example.test',
+        serverDescription: 'Private records.',
+        authorization,
+        headers,
+        deferLoading: true,
+      });
+      const discover = vi.fn(async () => [mcp]);
+      const search = toolSearchTool({
+        execution: 'client',
+        ...(custom ? { execute: discover } : {}),
+      });
+      const model = new ScriptedModel([
+        [
+          {
+            type: 'tool_search_call',
+            execution: 'client',
+            callId: 'discover-private-server',
+            arguments: { paths: ['private_server'] },
+          },
+        ],
+        [assistantMessage('DONE')],
+        [assistantMessage('DONE')],
+        [assistantMessage('DONE')],
+        [assistantMessage('DONE')],
+      ]);
+      const agent = new Agent({
+        name: 'McpSearchAgent',
+        model,
+        tools: custom ? [search] : [search, mcp],
+      });
+      const runner = new Runner({ tracingDisabled: true });
+      const session = new MemorySession();
+      const result = await runner.run(agent, 'find records', {
+        stream: true,
+        session,
+      });
+      const chunks = await readUiMessageChunks(
+        createAiSdkUiMessageStreamResponse(result),
+      );
+      await result.completed;
+      expect(result.finalOutput).toBe('DONE');
+      const serializedChunks = JSON.stringify(chunks);
+      expect(serializedChunks).not.toContain(authorization);
+      for (const value of Object.values(headers)) {
+        expect(serializedChunks).not.toContain(value);
+      }
+      expect(chunks).toContainEqual({
+        type: 'tool-output-available',
+        toolCallId: 'discover-private-server',
+        output: [
+          {
+            type: 'mcp',
+            server_label: 'private_server',
+            server_url: 'https://mcp.example.test',
+            server_description: 'Private records.',
+            require_approval: 'never',
+            defer_loading: true,
+          },
+        ],
+        dynamic: true,
+      });
+      const history = result.history;
+      const searchOutput = history.find(
+        (item) => item.type === 'tool_search_output',
+      );
+      expect(searchOutput).toMatchObject({
+        tools: [{ authorization, headers }],
+      });
+      expect(await session.getItems()).toContainEqual(searchOutput);
+      expect(mcp.providerData).toMatchObject({ authorization, headers });
+      expect(model.calls[1].request.tools).toContainEqual(
+        expect.objectContaining({
+          providerData: expect.objectContaining({ authorization, headers }),
+        }),
+      );
+
+      // Continue with the original Agent, including callback-only discovery.
+      await runner.run(agent, history);
+      await runner.run(agent, JSON.parse(JSON.stringify(history)));
+      await runner.run(agent, 'continue', { session });
+      expect(discover).toHaveBeenCalledTimes(custom ? 1 : 0);
+      for (const call of model.calls.slice(2)) {
+        expect(call.request.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'tool_search_output',
+              tools: [expect.objectContaining({ authorization, headers })],
+            }),
+          ]),
+        );
+      }
+    },
+  );
 
   test('preserves namespaced tool names and emits tool_search events', async () => {
     const agent = new Agent({ name: 'Test Agent' });

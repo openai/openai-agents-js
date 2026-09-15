@@ -1,5 +1,5 @@
 ---
-'@openai/agents-core': patch
+'@openai/agents-extensions': patch
 ---
 
-fix: Keep hosted MCP authentication out of client tool-search history while preserving runtime credentials.
+fix: Redact MCP authentication and headers from AI SDK UI tool-search output while preserving server-side replay configuration.
