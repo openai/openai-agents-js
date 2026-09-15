@@ -15,13 +15,18 @@ import {
 } from '../src/openaiRealtimeBase';
 import logger from '../src/logger';
 import { responseDoneEventSchema } from '../src/openaiRealtimeEvents';
+import { hostedMcpTool, tool } from '@openai/agents-core';
+import { z } from 'zod';
+import { RealtimeAgent } from '../src/realtimeAgent';
+import { RealtimeSession } from '../src/realtimeSession';
+import type { RealtimeTransportLayer } from '../src/transportLayer';
 
 class TestBase extends OpenAIRealtimeBase {
   status: 'connected' | 'disconnected' | 'connecting' | 'disconnecting' =
     'connected';
   events: RealtimeClientMessage[] = [];
   afterAudioDoneCalled = 0;
-  connect = vi.fn(async () => {});
+  connect = vi.fn<RealtimeTransportLayer['connect']>(async () => {});
   sendEvent(event: RealtimeClientMessage) {
     this.events.push(event);
   }
@@ -292,6 +297,232 @@ describe('OpenAIRealtimeBase helpers', () => {
     const session = (base.events[0] as any)?.session;
     expect(session?.audio?.output?.voice).toBe('echo');
   });
+
+  it('preserves released omission for empty tools and supports raw tool overrides', () => {
+    const base = new TestBase();
+    base.updateSessionConfig({ instructions: 'Updated instructions' });
+    expect(base.events[0]).toMatchObject({ type: 'session.update' });
+    expect(base.events[0]).toHaveProperty('session');
+    expect(base.events[0]).not.toHaveProperty('session.tools');
+
+    base.updateSessionConfig({ tools: [] });
+    expect(base.events[1]).not.toHaveProperty('session.tools');
+
+    base.updateSessionConfig({ tools: [], providerData: { tools: [] } });
+    expect(base.events[2]).toHaveProperty('session.tools', []);
+  });
+
+  it.each(['omitted', 'empty', 'disabled'] as const)(
+    'preserves initial tool configuration when tools are %s',
+    async (toolConfig) => {
+      const tools =
+        toolConfig === 'omitted'
+          ? undefined
+          : toolConfig === 'empty'
+            ? []
+            : [
+                tool({
+                  name: 'disabled',
+                  description: 'A disabled tool.',
+                  parameters: z.object({}),
+                  isEnabled: false,
+                  execute: async () => 'disabled',
+                }),
+              ];
+      const agent = new RealtimeAgent({
+        name: 'Prompt agent',
+        prompt: { promptId: 'pmpt_example' },
+        tools,
+      });
+      const transport = new TestBase();
+      transport.connect.mockImplementation(async (options) => {
+        transport.updateSessionConfig(options.initialSessionConfig ?? {});
+      });
+      const session = new RealtimeSession(agent, { transport });
+
+      try {
+        const initialConfig = await RealtimeSession.computeInitialSessionConfig(
+          agent,
+          { transport },
+        );
+        const initialPayload = transport.buildSessionPayload(initialConfig);
+        expect(initialPayload).toMatchObject({
+          prompt: { id: 'pmpt_example' },
+        });
+        expect(initialConfig.tools).toEqual([]);
+        expect(initialPayload).not.toHaveProperty('tools');
+
+        await session.connect({ apiKey: 'test-key' });
+        expect(transport.events[0]).toMatchObject({
+          type: 'session.update',
+          session: { prompt: { id: 'pmpt_example' } },
+        });
+        expect(transport.events[0]).not.toHaveProperty('session.tools');
+
+        await session.updateAgent(new RealtimeAgent({ name: 'Target' }));
+        expect(transport.events[1]).toMatchObject({
+          type: 'session.update',
+          session: { tools: [] },
+        });
+      } finally {
+        session.close();
+      }
+    },
+  );
+
+  describe.each(['updateAgent', 'handoff'] as const)(
+    '%s tool ownership',
+    (transition) => {
+      it.each([
+        {
+          label: 'tool-less',
+          prompt: undefined,
+          tools: undefined,
+          inherits: false,
+        },
+        {
+          label: 'prompt-owned',
+          prompt: async () => ({ promptId: 'pmpt_target' }),
+          tools: undefined,
+          inherits: true,
+        },
+        {
+          label: 'explicit empty',
+          prompt: { promptId: 'pmpt_target' },
+          tools: [],
+          inherits: true,
+        },
+        {
+          label: 'all disabled',
+          prompt: { promptId: 'pmpt_target' },
+          tools: [
+            tool({
+              name: 'disabled',
+              description: 'A disabled tool.',
+              parameters: z.object({}),
+              isEnabled: false,
+              execute: async () => 'disabled',
+            }),
+          ],
+          inherits: true,
+        },
+      ])(
+        'sends the expected tools for a $label target',
+        async ({ prompt, tools, inherits }) => {
+          const target = new RealtimeAgent({ name: 'Target', prompt, tools });
+          const source = new RealtimeAgent({
+            name: 'Source',
+            tools: [
+              hostedMcpTool({
+                serverLabel: 'example',
+                serverUrl: 'https://example.invalid/mcp',
+                requireApproval: 'always',
+              }),
+            ],
+            handoffs: [target],
+          });
+          // Mock network I/O while retaining the provider's session payload conversion.
+          const transport = new TestBase();
+          transport.connect.mockImplementation(async (options) => {
+            transport.updateSessionConfig(options.initialSessionConfig ?? {});
+          });
+          const session = new RealtimeSession(source, {
+            transport,
+            config: { providerData: { max_output_tokens: 256 } },
+          });
+
+          try {
+            await session.connect({ apiKey: 'test-key' });
+            expect(transport.events).toContainEqual(
+              expect.objectContaining({
+                type: 'session.update',
+                session: expect.objectContaining({
+                  tools: expect.arrayContaining([
+                    expect.objectContaining({
+                      type: 'mcp',
+                      server_label: 'example',
+                    }),
+                    expect.objectContaining({
+                      type: 'function',
+                      name: 'transfer_to_Target',
+                    }),
+                  ]),
+                }),
+              }),
+            );
+            transport.events.length = 0;
+
+            if (transition === 'updateAgent') {
+              await session.updateAgent(target);
+            } else {
+              transport.emit('function_call', {
+                type: 'function_call',
+                name: 'transfer_to_Target',
+                callId: 'handoff-call',
+                arguments: '{}',
+                responseId: 'handoff-response',
+              });
+              await vi.waitFor(() =>
+                expect(session.currentAgent === target).toBe(true),
+              );
+            }
+
+            const update = transport.events.find(
+              (event) => event.type === 'session.update',
+            );
+            expect(update).toBeDefined();
+            expect(update).toHaveProperty('session.max_output_tokens', 256);
+            if (prompt) {
+              expect(update).toHaveProperty('session.prompt', {
+                id: 'pmpt_target',
+              });
+            }
+            if (inherits) {
+              expect(update).not.toHaveProperty('session.tools');
+            } else {
+              expect(update).toHaveProperty('session.tools', []);
+
+              await session.updateAgent(
+                new RealtimeAgent({
+                  name: 'Prompt successor',
+                  prompt: { promptId: 'pmpt_successor' },
+                  tools: [],
+                }),
+              );
+              const successorUpdate = transport.events
+                .filter((event) => event.type === 'session.update')
+                .at(-1);
+              expect(successorUpdate).toHaveProperty(
+                'session.prompt.id',
+                'pmpt_successor',
+              );
+              expect(successorUpdate).not.toHaveProperty('session.tools');
+              expect(successorUpdate).toHaveProperty(
+                'session.max_output_tokens',
+                256,
+              );
+
+              await session.updateAgent(source);
+              const restoredUpdate = transport.events
+                .filter((event) => event.type === 'session.update')
+                .at(-1);
+              expect(restoredUpdate).toHaveProperty(
+                'session.tools',
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    type: 'mcp',
+                    server_label: 'example',
+                  }),
+                ]),
+              );
+            }
+          } finally {
+            session.close();
+          }
+        },
+      );
+    },
+  );
 
   it('whitelists function tools in session payload', () => {
     const base = new TestBase();
