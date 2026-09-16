@@ -1,5 +1,33 @@
 # @openai/agents-extensions
 
+## 0.19.0
+
+### Minor Changes
+
+- 38cee6d: fix: require Daytona SDK ^0.201.0 for patched OpenTelemetry dependencies while preserving polling-based sandbox lifecycle behavior.
+
+### Patch Changes
+
+- 742423e: fix: treat a blank CODEX_API_KEY as unconfigured so OPENAI_API_KEY can be used
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 5edcc76: fix: Redact MCP authentication and headers from AI SDK UI tool-search output while preserving server-side replay configuration.
+- 7f135af: fix: update compatible runtime and development dependencies.
+- 610fd72: fix: update AI SDK development dependencies to use patched provider response handling.
+- 056bef8: fix: trim Blaxel S3-compatible bucket prefixes in linear time while preserving mount targets.
+- 649f3b4: fix: trim Blaxel GCS mount prefixes in linear time while preserving mount behavior.
+- 12d1b92: fix: preserve tar name trimming with a linear suffix scan.
+- Updated dependencies [186f6ec]
+- Updated dependencies [817161d]
+- Updated dependencies [20e5946]
+- Updated dependencies [58844c7]
+- Updated dependencies [7f135af]
+- Updated dependencies [8ac97df]
+- Updated dependencies [8a26e30]
+- Updated dependencies [d187747]
+- Updated dependencies [0bdea85]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.19.0
+
 ## 0.18.0
 
 ### Patch Changes
