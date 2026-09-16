@@ -578,6 +578,7 @@ export class RealtimeSession<
   }
 
   async #getSessionConfig(
+    phase: 'initial' | 'update',
     additionalConfig: Partial<RealtimeSessionConfig> = {},
     preparedAgent?: PreparedRealtimeAgentState<TBaseContext>,
     connectionGeneration?: number,
@@ -668,6 +669,16 @@ export class RealtimeSession<
       this.#lastSessionConfig = fullConfig;
     }
 
+    // Empty tool arrays retain their released transport semantics elsewhere.
+    // Only agent transitions without a target prompt explicitly revoke old tools.
+    // Keep this wire override out of the cache so later prompts can inherit tools.
+    if (phase === 'update' && configTools?.length === 0 && !fullConfig.prompt) {
+      return {
+        ...fullConfig,
+        providerData: { ...fullConfig.providerData, tools: [] },
+      };
+    }
+
     return fullConfig;
   }
 
@@ -685,7 +696,7 @@ export class RealtimeSession<
     overrides: Partial<RealtimeSessionConfig> = {},
   ): Promise<Partial<RealtimeSessionConfig>> {
     await this.#setCurrentAgent(this.initialAgent);
-    return this.#getSessionConfig({
+    return this.#getSessionConfig('initial', {
       ...(this.options.config ?? {}),
       ...(overrides ?? {}),
     });
@@ -724,7 +735,9 @@ export class RealtimeSession<
     this.emit('agent_handoff', this.#context, this.#currentAgent, newAgent);
 
     this.#applyPreparedAgent(prepared);
-    await this.#transport.updateSessionConfig(await this.#getSessionConfig());
+    await this.#transport.updateSessionConfig(
+      await this.#getSessionConfig('update'),
+    );
 
     return newAgent;
   }
@@ -750,6 +763,7 @@ export class RealtimeSession<
       return undefined;
     }
     const sessionConfig = await this.#getSessionConfig(
+      'update',
       {},
       prepared,
       invocation.connectionGeneration,
@@ -1966,6 +1980,7 @@ export class RealtimeSession<
       this.#eventListenersAttached = true;
     }
     const initialSessionConfig = await this.#getSessionConfig(
+      'initial',
       this.options.config,
     );
     if (connectionGeneration !== this.#connectionGeneration) {

@@ -3564,6 +3564,120 @@ describe('Runner.run', () => {
       expect(runnerEndEvents[0].output).toBe('Hello World');
     });
 
+    it.each([
+      { stream: false, needsApproval: false },
+      { stream: true, needsApproval: false },
+      { stream: false, needsApproval: true },
+    ])(
+      'continues after a declined computer safety check (stream=$stream, approval=$needsApproval)',
+      async ({ stream, needsApproval }) => {
+        const computer = new FakeComputer();
+        const click = vi.spyOn(computer, 'click');
+        const screenshot = vi.spyOn(computer, 'screenshot');
+        const dispose = vi.fn(async () => undefined);
+        const onSafetyCheck = vi.fn(async () => false);
+        const rejectionMessage = 'Review declined this action.';
+        const formatter = vi.fn(() => rejectionMessage);
+        const model = new ScriptedModel([
+          modelResponse({
+            output: [
+              {
+                type: 'computer_call',
+                callId: 'declined-call',
+                status: 'completed',
+                actions: [
+                  { type: 'click', x: 1, y: 1, button: 'left' },
+                  { type: 'screenshot' },
+                ],
+                providerData: {
+                  pending_safety_checks: [
+                    { id: 'check-1', code: 'sensitive_domain' },
+                  ],
+                },
+              },
+            ],
+            usage: new Usage(),
+          }),
+          modelResponse({
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          }),
+        ]);
+        const agent = new Agent({
+          name: 'SafetyCheckAgent',
+          model,
+          tools: [
+            computerTool({
+              computer: { create: async () => computer, dispose },
+              onSafetyCheck,
+              needsApproval,
+            }),
+          ],
+        });
+        const runner = new Runner({
+          tracingDisabled: true,
+          toolErrorFormatter: formatter,
+        });
+        const start = vi.fn();
+        const end = vi.fn();
+        runner.on('agent_tool_start', start);
+        runner.on('agent_tool_end', end);
+        const interrupted = needsApproval
+          ? await runner.run(agent, 'start')
+          : undefined;
+        if (interrupted) {
+          expect(interrupted.interruptions).toHaveLength(1);
+          expect(onSafetyCheck).not.toHaveBeenCalled();
+          expect(dispose).not.toHaveBeenCalled();
+          interrupted.state.approve(interrupted.interruptions[0]);
+        }
+        const input = interrupted?.state ?? 'start';
+        const result = stream
+          ? await runner.run(agent, input, { stream: true })
+          : await runner.run(agent, input);
+        if ('completed' in result) {
+          await result.completed;
+        }
+
+        expect(result.finalOutput).toBe('done');
+        expect(onSafetyCheck).toHaveBeenCalledTimes(1);
+        expect(click).not.toHaveBeenCalled();
+        expect(screenshot).not.toHaveBeenCalled();
+        expect(dispose).toHaveBeenCalledTimes(1);
+        expect(dispose).toHaveBeenCalledWith({
+          computer,
+          runContext: result.state._context,
+        });
+        expect(start).toHaveBeenCalledTimes(1);
+        expect(end).toHaveBeenCalledTimes(1);
+        expect(end.mock.calls[0][3]).toBe(rejectionMessage);
+        expect(formatter).toHaveBeenCalledTimes(1);
+        expect(model.calls).toHaveLength(2);
+        expect(model.calls[1].request.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'computer_call_result',
+              callId: 'declined-call',
+              output: expect.objectContaining({
+                type: 'computer_screenshot',
+                providerData: {
+                  approvalStatus: 'rejected',
+                  message: rejectionMessage,
+                },
+              }),
+            }),
+            expect.objectContaining(assistant(rejectionMessage)),
+          ]),
+        );
+        const outputItem = result.newItems.find(
+          (item) => item.rawItem.type === 'computer_call_result',
+        );
+        expect(
+          outputItem?.rawItem.providerData?.acknowledgedSafetyChecks,
+        ).toBeUndefined();
+      },
+    );
+
     it('disposes computer lifecycle initializers after a completed run', async () => {
       const createdComputer = new FakeComputer();
       const create = vi.fn(async () => createdComputer);
