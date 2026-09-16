@@ -4832,6 +4832,46 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('preserves prompt-supplied tools when cloning an agent without a tools override', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      id: 'res-prompt-clone',
+      usage: {},
+      output: [
+        {
+          id: 'msg-prompt-clone',
+          type: 'message',
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'hello' }],
+        },
+      ],
+    });
+    // Capture provider-wire requests because omitted tools and an empty list differ.
+    const model = new OpenAIResponsesModel(
+      { responses: { create: createMock } } as unknown as OpenAI,
+      'gpt-test',
+    );
+    const agent = new Agent({
+      name: 'PromptAgent',
+      prompt: { promptId: 'pmpt_clone' },
+      model,
+    });
+    const runner = new Runner({ tracingDisabled: true });
+    const clonedAgent = agent.clone({ name: 'ClonedPromptAgent' });
+
+    expect(clonedAgent.tools).toBe(agent.tools);
+    await runner.run(agent, 'hello');
+    await runner.run(clonedAgent, 'hello');
+    await runner.run(agent.clone({ tools: [] }), 'hello');
+
+    const requests = createMock.mock.calls.map(([request]) => request);
+    expect(requests).toHaveLength(3);
+    expect(requests[0]).not.toHaveProperty('tools');
+    expect(requests[1]).not.toHaveProperty('tools');
+    expect(requests[2].tools).toEqual([]);
+    expect(requests[1].prompt).toMatchObject({ id: 'pmpt_clone' });
+  });
+
   it('omits tools when agent did not configure any and prompt should supply them', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-no-tools', usage: {}, output: [] };

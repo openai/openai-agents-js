@@ -549,7 +549,7 @@ export class Agent<
   outputType: TOutput = 'text' as TOutput;
   toolUseBehavior: ToolUseBehavior;
   resetToolChoice: boolean;
-  private readonly _toolsExplicitlyConfigured: boolean;
+  private _toolsExplicitlyConfigured: boolean;
   private readonly _modelSettingsExplicitlyConfigured: boolean;
 
   constructor(config: AgentOptions<TContext, TOutput>) {
@@ -715,11 +715,15 @@ export class Agent<
           ? this.modelSettings
           : undefined;
 
-    return new Agent({
+    const clonedAgent = new Agent({
       ...this,
       ...config,
       modelSettings,
     });
+    if (!('tools' in config)) {
+      clonedAgent._toolsExplicitlyConfigured = this._toolsExplicitlyConfigured;
+    }
+    return clonedAgent;
   }
 
   /**
