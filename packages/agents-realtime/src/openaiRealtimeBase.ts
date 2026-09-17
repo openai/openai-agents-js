@@ -163,6 +163,15 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  #functionCallItems = new Map<
+    string,
+    {
+      itemId: string;
+      previousItemId: string | null | undefined;
+      arguments: string;
+      name: string;
+    }
+  >();
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -402,6 +411,60 @@ export abstract class OpenAIRealtimeBase
               : 'completed'),
         });
         this.emit('item_update', item);
+        return;
+      }
+
+      if (
+        parsed.item.type === 'function_call' &&
+        parsed.item.id &&
+        parsed.item.call_id &&
+        parsed.item.arguments !== undefined &&
+        parsed.item.name !== undefined
+      ) {
+        const functionCall = {
+          itemId: parsed.item.id,
+          previousItemId:
+            parsed.type === 'conversation.item.retrieved'
+              ? null
+              : parsed.previous_item_id,
+          arguments: parsed.item.arguments,
+          name: parsed.item.name,
+        };
+        this.#functionCallItems.set(parsed.item.call_id, functionCall);
+        this.emit(
+          'item_update',
+          realtimeToolCallItem.parse({
+            ...functionCall,
+            type: 'function_call',
+            status: 'in_progress',
+            callId: parsed.item.call_id,
+            output: null,
+          }),
+        );
+        return;
+      }
+
+      if (
+        parsed.item.type === 'function_call_output' &&
+        parsed.item.call_id &&
+        typeof parsed.item.output === 'string'
+      ) {
+        const functionCall = this.#functionCallItems.get(parsed.item.call_id);
+        if (functionCall) {
+          this.emit(
+            'item_update',
+            realtimeToolCallItem.parse({
+              ...functionCall,
+              type: 'function_call',
+              status: 'completed',
+              callId: parsed.item.call_id,
+              output: parsed.item.output,
+            }),
+          );
+          if (parsed.type === 'conversation.item.done') {
+            this.#functionCallItems.delete(parsed.item.call_id);
+          }
+        }
         return;
       }
 
@@ -1010,6 +1073,15 @@ export abstract class OpenAIRealtimeBase
     }
 
     const additionsAndUpdates = [...additions, ...updates];
+
+    const updatedFunctionCall = updates.find(
+      (item) => item.type === 'function_call',
+    );
+    if (updatedFunctionCall) {
+      throw new UserError(
+        `Function call history item ${updatedFunctionCall.itemId} cannot be updated because its paired output item cannot be removed safely. Remove the function call before adding a replacement.`,
+      );
+    }
 
     const invalidFunctionCall = additionsAndUpdates.find(
       (item) =>

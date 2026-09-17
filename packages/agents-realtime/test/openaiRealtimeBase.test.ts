@@ -605,6 +605,86 @@ describe('OpenAIRealtimeBase helpers', () => {
     ]);
   });
 
+  it('folds replay acknowledgements back into one function call item', () => {
+    const base = new TestBase();
+    const updates: any[] = [];
+    base.on('item_update', (item) => updates.push(item));
+
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'event-call',
+        previous_item_id: 'previous',
+        item: {
+          id: 'f1',
+          type: 'function_call',
+          call_id: 'call-1',
+          name: 'calc',
+          arguments: '{}',
+          status: 'completed',
+        },
+      }),
+    });
+    (base as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.done',
+        event_id: 'event-output',
+        previous_item_id: 'f1',
+        item: {
+          id: 'output-1',
+          type: 'function_call_output',
+          call_id: 'call-1',
+          output: '42',
+          status: 'completed',
+        },
+      }),
+    });
+
+    expect(updates).toEqual([
+      {
+        itemId: 'f1',
+        previousItemId: 'previous',
+        type: 'function_call',
+        status: 'in_progress',
+        callId: 'call-1',
+        arguments: '{}',
+        name: 'calc',
+        output: null,
+      },
+      {
+        itemId: 'f1',
+        previousItemId: 'previous',
+        type: 'function_call',
+        status: 'completed',
+        callId: 'call-1',
+        arguments: '{}',
+        name: 'calc',
+        output: '42',
+      },
+    ]);
+  });
+
+  it('rejects function call updates before sending events', () => {
+    const base = new TestBase();
+    const oldHist = [
+      {
+        itemId: 'f1',
+        type: 'function_call',
+        status: 'completed',
+        callId: 'call-1',
+        arguments: '{}',
+        name: 'calc',
+        output: '41',
+      },
+    ];
+    const newHist = [{ ...oldHist[0], output: '42' }];
+
+    expect(() =>
+      base.resetHistory(oldHist as any, newHist as any),
+    ).toThrowError('paired output item cannot be removed safely');
+    expect(base.events).toHaveLength(0);
+  });
+
   it('rejects incomplete function call history before sending events', () => {
     const base = new TestBase();
     const newHist = [
