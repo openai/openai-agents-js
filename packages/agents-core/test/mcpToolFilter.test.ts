@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
 import { createMCPToolStaticFilter } from '../src/mcpUtil';
+import { getAllMcpTools } from '../src/mcp';
+import { RunContext } from '../src/runContext';
+import { Agent } from '../src/agent';
 
 class StubServer extends NodeMCPServerStdio {
   public toolList: any[];
@@ -406,6 +409,55 @@ describe('MCP tool filtering', () => {
 
       result = await server.listTools();
       expect(result.map((t) => t.name)).toEqual(['b']);
+    });
+  });
+
+  describe('static filter applied by getAllMcpTools', () => {
+    const tools = ['read_file', 'delete_file'].map((name) => ({
+      name,
+      description: '',
+      inputSchema: { type: 'object', properties: {} },
+    }));
+
+    async function exposedToolNames(
+      serverName: string,
+      options: { allowed?: string[]; blocked?: string[] },
+    ) {
+      const server = new StubServer(
+        serverName,
+        tools,
+        createMCPToolStaticFilter(options),
+      );
+      const result = await withTrace('test', () =>
+        getAllMcpTools({
+          mcpServers: [server],
+          runContext: new RunContext({}),
+          agent: new Agent({ name: 'FilterAgent' }),
+        }),
+      );
+      return result.map((t) => t.name);
+    }
+
+    it('exposes no tools for an empty allowed list', async () => {
+      expect(await exposedToolNames('empty-allowed', { allowed: [] })).toEqual(
+        [],
+      );
+    });
+
+    it('exposes no tools for an empty allowed list with a blocked list', async () => {
+      expect(
+        await exposedToolNames('empty-allowed-with-blocked', {
+          allowed: [],
+          blocked: ['delete_file'],
+        }),
+      ).toEqual([]);
+    });
+
+    it('exposes every tool for an empty blocked list alone', async () => {
+      expect(await exposedToolNames('empty-blocked', { blocked: [] })).toEqual([
+        'read_file',
+        'delete_file',
+      ]);
     });
   });
 });
