@@ -320,6 +320,178 @@ describe('Runner.run', () => {
       expect(result.finalOutput).toBe('done');
     });
 
+    it.each([
+      {
+        label: 'Zod',
+        parameters: z.object({
+          to: z.string(),
+          cc: z.array(z.string()).optional(),
+        }),
+      },
+      {
+        label: 'strict JSON schema',
+        parameters: {
+          type: 'object' as const,
+          properties: {
+            to: { type: 'string' as const },
+            cc: {
+              type: 'array' as const,
+              items: { type: 'string' as const },
+            },
+          },
+          required: ['to'],
+          additionalProperties: false,
+        },
+      },
+    ])(
+      'passes normalized optional fields to dynamic approval for $label tools',
+      async ({ parameters }) => {
+        const needsApproval = vi.fn(
+          async (_context: RunContext, { cc }: { cc?: string[] }) =>
+            cc !== undefined && cc.length > 0,
+        );
+        const execute = vi.fn(async () => 'sent');
+        const sendEmail = tool<any>({
+          name: 'send_email',
+          description: 'Send an email',
+          parameters,
+          needsApproval,
+          execute,
+        });
+        const model = new ScriptedModel([
+          modelResponse({
+            output: [
+              {
+                ...TEST_MODEL_FUNCTION_CALL,
+                name: sendEmail.name,
+                arguments: JSON.stringify({
+                  to: 'bob@example.com',
+                  cc: null,
+                }),
+              },
+            ],
+            usage: new Usage(),
+          }),
+          modelResponse({
+            output: [fakeModelMessage('done')],
+            usage: new Usage(),
+          }),
+        ]);
+        const agent = new Agent({
+          name: 'NormalizedApprovalAgent',
+          model,
+          tools: [sendEmail],
+        });
+
+        const result = await run(agent, 'send it');
+
+        expect(needsApproval).toHaveBeenCalledTimes(1);
+        expect(needsApproval.mock.calls[0]?.[1]).toEqual({
+          to: 'bob@example.com',
+        });
+        expect(execute).toHaveBeenCalledWith(
+          { to: 'bob@example.com' },
+          expect.any(RunContext),
+          expect.anything(),
+        );
+        expect(result.finalOutput).toBe('done');
+      },
+    );
+
+    it('reuses one normalized snapshot for dynamic approval and execution', async () => {
+      let normalizeCount = 0;
+      let approvalInput: { value: number } | undefined;
+      const parameters = z
+        .object({ value: z.number() })
+        .transform(({ value }) => ({ value: value + ++normalizeCount }));
+      const needsApproval = vi.fn(
+        async (_context: RunContext, input: { value: number }) => {
+          expect(input.value).toBe(2);
+          approvalInput = { ...input };
+          input.value = 99;
+          return false;
+        },
+      );
+      const execute = vi.fn(async ({ value }: { value: number }) => value);
+      const snapshotTool = tool({
+        name: 'snapshot_tool',
+        description: 'Uses one normalized input snapshot.',
+        parameters,
+        needsApproval,
+        execute,
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: snapshotTool.name,
+              arguments: JSON.stringify({ value: 1 }),
+            },
+          ],
+          usage: new Usage(),
+        }),
+        modelResponse({
+          output: [fakeModelMessage('done')],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'NormalizedSnapshotAgent',
+        model,
+        tools: [snapshotTool],
+      });
+
+      const result = await run(agent, 'run it');
+
+      expect(normalizeCount).toBe(1);
+      expect(approvalInput).toEqual({ value: 2 });
+      expect(execute).toHaveBeenCalledWith(
+        { value: 2 },
+        expect.any(RunContext),
+        expect.anything(),
+      );
+      expect(result.finalOutput).toBe('done');
+    });
+
+    it('requires approval when normalization produces undefined', async () => {
+      const parameters = z
+        .object({ value: z.string() })
+        .transform(() => undefined);
+      const needsApproval = vi.fn(async () => false);
+      const execute = vi.fn(async () => 'unexpected');
+      const undefinedTool = tool({
+        name: 'undefined_tool',
+        description: 'Normalizes input to undefined.',
+        parameters,
+        needsApproval,
+        execute,
+      });
+      const model = new ScriptedModel([
+        modelResponse({
+          output: [
+            {
+              ...TEST_MODEL_FUNCTION_CALL,
+              name: undefinedTool.name,
+              arguments: JSON.stringify({ value: 'input' }),
+            },
+          ],
+          usage: new Usage(),
+        }),
+      ]);
+      const agent = new Agent({
+        name: 'UndefinedApprovalAgent',
+        model,
+        tools: [undefinedTool],
+      });
+
+      const interrupted = await run(agent, 'run it');
+
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(interrupted.interruptions).toHaveLength(1);
+    });
+
     it('isolates interruption arrays from pending approvals', async () => {
       const approvalTool = tool({
         name: 'snapshot_approval',

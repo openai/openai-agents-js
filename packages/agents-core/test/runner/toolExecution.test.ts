@@ -9514,12 +9514,12 @@ describe('executeShellActions', () => {
     it('validates isolated Standard Schema outputs for approval and invocation', async () => {
       type Input = { value?: string | null };
       class Output {
-        readonly normalized = true;
+        #normalized = true;
 
         constructor(public value: string) {}
 
         read() {
-          return this.value;
+          return this.#normalized ? this.value : 'invalid';
         }
       }
       const validate = vi.fn((input: unknown) => ({
@@ -9588,9 +9588,16 @@ describe('executeShellActions', () => {
 
     it('rejects async Standard Schema validation before runner callbacks', async () => {
       const asyncValidationError = new Error('async validation failed');
+      class Output {
+        #valid = true;
+
+        isValid() {
+          return this.#valid;
+        }
+      }
       const validate = vi
         .fn()
-        .mockReturnValueOnce({ value: {} })
+        .mockReturnValueOnce({ value: new Output() })
         .mockReturnValueOnce(Promise.reject(asyncValidationError));
       const parameters: StandardSchemaWithJSON<object> = {
         '~standard': {
