@@ -163,6 +163,15 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  #functionCallItems = new Map<
+    string,
+    {
+      itemId: string;
+      previousItemId: string | null | undefined;
+      arguments: string;
+      name: string;
+    }
+  >();
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -406,6 +415,60 @@ export abstract class OpenAIRealtimeBase
       }
 
       if (
+        parsed.item.type === 'function_call' &&
+        parsed.item.id &&
+        parsed.item.call_id &&
+        parsed.item.arguments !== undefined &&
+        parsed.item.name !== undefined
+      ) {
+        const functionCall = {
+          itemId: parsed.item.id,
+          previousItemId:
+            parsed.type === 'conversation.item.retrieved'
+              ? null
+              : parsed.previous_item_id,
+          arguments: parsed.item.arguments,
+          name: parsed.item.name,
+        };
+        this.#functionCallItems.set(parsed.item.call_id, functionCall);
+        this.emit(
+          'item_update',
+          realtimeToolCallItem.parse({
+            ...functionCall,
+            type: 'function_call',
+            status: 'in_progress',
+            callId: parsed.item.call_id,
+            output: null,
+          }),
+        );
+        return;
+      }
+
+      if (
+        parsed.item.type === 'function_call_output' &&
+        parsed.item.call_id &&
+        typeof parsed.item.output === 'string'
+      ) {
+        const functionCall = this.#functionCallItems.get(parsed.item.call_id);
+        if (functionCall) {
+          this.emit(
+            'item_update',
+            realtimeToolCallItem.parse({
+              ...functionCall,
+              type: 'function_call',
+              status: 'completed',
+              callId: parsed.item.call_id,
+              output: parsed.item.output,
+            }),
+          );
+          if (parsed.type === 'conversation.item.done') {
+            this.#functionCallItems.delete(parsed.item.call_id);
+          }
+        }
+        return;
+      }
+
+      if (
         parsed.item.type === 'mcp_approval_request' &&
         parsed.type === 'conversation.item.done'
       ) {
@@ -477,6 +540,7 @@ export abstract class OpenAIRealtimeBase
           itemId: item.id,
           type: item.type,
           status: 'in_progress', // we set it to in_progress for the UI as it will only be completed with the output
+          ...(item.call_id ? { callId: item.call_id } : {}),
           arguments: item.arguments,
           name: item.name,
           output: null,
@@ -922,6 +986,7 @@ export abstract class OpenAIRealtimeBase
         previousItemId: toolCall.previousItemId,
         type: 'function_call',
         status: 'completed',
+        callId: toolCall.callId,
         arguments: toolCall.arguments,
         name: toolCall.name,
         output,
@@ -1007,6 +1072,28 @@ export abstract class OpenAIRealtimeBase
       );
     }
 
+    const additionsAndUpdates = [...additions, ...updates];
+
+    const updatedFunctionCall = updates.find(
+      (item) => item.type === 'function_call',
+    );
+    if (updatedFunctionCall) {
+      throw new UserError(
+        `Function call history item ${updatedFunctionCall.itemId} cannot be updated because its paired output item cannot be removed safely. Remove the function call before adding a replacement.`,
+      );
+    }
+
+    const invalidFunctionCall = additionsAndUpdates.find(
+      (item) =>
+        item.type === 'function_call' &&
+        (item.status !== 'completed' || item.output === null),
+    );
+    if (invalidFunctionCall) {
+      throw new UserError(
+        `Function call history item ${invalidFunctionCall.itemId} must be completed and include output before it can be replayed.`,
+      );
+    }
+
     const removalIds = new Set(removals.map((item) => item.itemId));
     // we don't have an update event for items so we will remove and re-add what's there
     for (const update of updates) {
@@ -1021,8 +1108,6 @@ export abstract class OpenAIRealtimeBase
         });
       }
     }
-
-    const additionsAndUpdates = [...additions, ...updates];
 
     for (const addition of additionsAndUpdates) {
       if (addition.type === 'message') {
@@ -1040,9 +1125,31 @@ export abstract class OpenAIRealtimeBase
           item: itemEntry,
         });
       } else if (addition.type === 'function_call') {
-        logger.warn(
-          'Function calls cannot be manually added or updated at the moment. Ignoring.',
-        );
+        const callId = addition.callId ?? addition.itemId;
+        const itemEntry: Record<string, any> = {
+          type: 'function_call',
+          id: addition.itemId,
+          call_id: callId,
+          name: addition.name,
+          arguments: addition.arguments,
+          status: addition.status,
+        };
+        this.sendEvent({
+          type: 'conversation.item.create',
+          ...(addition.previousItemId
+            ? { previous_item_id: addition.previousItemId }
+            : {}),
+          item: itemEntry,
+        });
+        this.sendEvent({
+          type: 'conversation.item.create',
+          previous_item_id: addition.itemId,
+          item: {
+            type: 'function_call_output',
+            call_id: callId,
+            output: addition.output,
+          },
+        });
       }
     }
   }
