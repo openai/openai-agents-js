@@ -334,6 +334,161 @@ describe('RealtimeSession', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('places a server-confirmed first item at the front of local history', async () => {
+    // A corrected first item is re-created with `previous_item_id: 'root'`, and
+    // the server answers with no predecessor. Local history has to agree with
+    // the conversation the server now holds.
+    const localTransport = new FakeTransport();
+    const localSession = new RealtimeSession(new RealtimeAgent({ name: 'A' }), {
+      transport: localTransport,
+    });
+    await localSession.connect({ apiKey: 'test' });
+
+    const message = (
+      itemId: string,
+      text: string,
+      previousItemId?: string | null,
+    ) =>
+      ({
+        itemId,
+        type: 'message',
+        role: 'user',
+        status: 'completed',
+        content: [{ type: 'input_text', text }],
+        ...(previousItemId === undefined ? {} : { previousItemId }),
+      }) as any;
+
+    localTransport.emit('item_update', message('a', 'one'));
+    localTransport.emit('item_update', message('b', 'two', 'a'));
+    localTransport.emit('item_deleted', { itemId: 'a' } as any);
+    localTransport.emit('item_update', message('a', 'one corrected', null));
+
+    await vi.waitFor(() => {
+      expect(localSession.history.map((item) => item.itemId)).toEqual([
+        'a',
+        'b',
+      ]);
+    });
+  });
+
+  it('keeps a trailing append alive while a deletion is unacknowledged', async () => {
+    // The server drops an item the moment the delete reaches it but answers
+    // later, so local history still lists it when the next append goes out.
+    // A trailing create that named it would be rejected against a conversation
+    // that no longer holds it.
+    class ServerBackedTransport extends OpenAIRealtimeBase {
+      status = 'connected' as const;
+      serverHistory: string[] = [];
+      pendingDeletionAcks: string[] = [];
+      connect = vi.fn(async () => {});
+      mute = vi.fn();
+      close = vi.fn();
+      interrupt = vi.fn();
+      get muted() {
+        return false;
+      }
+
+      seed(itemId: string, previousItemId: string | null) {
+        this.serverHistory.push(itemId);
+        this.#announce(itemId, previousItemId);
+      }
+
+      flushDeletionAcks() {
+        for (const itemId of this.pendingDeletionAcks.splice(0)) {
+          this.emit('item_deleted', { itemId } as any);
+        }
+      }
+
+      #announce(itemId: string, previousItemId: string | null) {
+        this.emit('item_update', {
+          itemId,
+          previousItemId,
+          type: 'message',
+          role: 'user',
+          status: 'completed',
+          content: [{ type: 'input_text', text: itemId }],
+        } as any);
+      }
+
+      sendEvent(event: any): void {
+        if (event.type === 'conversation.item.delete') {
+          this.serverHistory = this.serverHistory.filter(
+            (id) => id !== event.item_id,
+          );
+          this.pendingDeletionAcks.push(event.item_id);
+          return;
+        }
+        if (event.type !== 'conversation.item.create') {
+          return;
+        }
+        const anchor = event.previous_item_id;
+        if (anchor === undefined) {
+          this.serverHistory.push(event.item.id);
+          this.#announce(
+            event.item.id,
+            this.serverHistory[this.serverHistory.length - 2] ?? null,
+          );
+          return;
+        }
+        if (anchor === 'root') {
+          this.serverHistory.unshift(event.item.id);
+          this.#announce(event.item.id, null);
+          return;
+        }
+        const at = this.serverHistory.indexOf(anchor);
+        if (at === -1) {
+          // The conversation has no such item, so the server refuses the create.
+          return;
+        }
+        this.serverHistory.splice(at + 1, 0, event.item.id);
+        this.#announce(event.item.id, anchor);
+      }
+    }
+
+    const serverTransport = new ServerBackedTransport();
+    const serverSession = new RealtimeSession(
+      new RealtimeAgent({ name: 'A' }),
+      {
+        transport: serverTransport,
+      },
+    );
+    await serverSession.connect({ apiKey: 'test' });
+
+    serverTransport.seed('a', null);
+    serverTransport.seed('b', 'a');
+    await vi.waitFor(() => {
+      expect(serverSession.history.map((item) => item.itemId)).toEqual([
+        'a',
+        'b',
+      ]);
+    });
+
+    serverSession.updateHistory((history) =>
+      history.filter((item) => item.itemId !== 'b'),
+    );
+    // The delete has reached the server; the acknowledgment has not come back,
+    // so local history is still [a, b].
+    expect(serverTransport.serverHistory).toEqual(['a']);
+    expect(serverSession.history.map((item) => item.itemId)).toEqual([
+      'a',
+      'b',
+    ]);
+
+    serverSession.updateHistory((history) => [
+      ...history,
+      createMessage('c', 'three'),
+    ]);
+    serverTransport.flushDeletionAcks();
+
+    expect(serverTransport.serverHistory).toEqual(['a', 'c']);
+    await vi.waitFor(() => {
+      expect(serverSession.history.map((item) => item.itemId)).toEqual([
+        'a',
+        'c',
+      ]);
+    });
+  });
+
   it('calls transport.resetHistory with correct arguments', () => {
     const item = createMessage('1', 'hi');
     session.updateHistory([item]);
