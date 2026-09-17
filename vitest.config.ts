@@ -100,6 +100,7 @@ function createProjects(reviewTestProfile: boolean) {
           'helpers/tests/consoleGuard.test.ts',
           'integration-tests/cloudflare-workers/worker.test.ts',
           'helpers/vitest/codeChangeVerificationPolicy.test.ts',
+          'helpers/vitest/prismaMemoryExample.test.ts',
           'helpers/vitest/reviewTestProfile.test.ts',
           'helpers/vitest/testConcurrency.test.ts',
           'helpers/vitest/workspacePackageAliases.test.ts',
