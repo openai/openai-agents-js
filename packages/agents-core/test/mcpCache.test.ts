@@ -7,6 +7,8 @@ import {
   MCPServerSSE,
 } from '../src/mcp';
 import { UserError } from '../src/errors';
+import { run } from '../src';
+import { ScriptedModel, assistantMessage, functionCall } from '../src/testing';
 import { tool, type FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
@@ -583,6 +585,72 @@ describe('MCP tools uniqueness', () => {
     });
   });
 
+  it('throws when one server returns tool names that normalize to one function tool name', async () => {
+    await withTrace('test', async () => {
+      const server = new StubServer('docs', [
+        toolNamed('search-a'),
+        toolNamed('search_a'),
+      ]);
+
+      await expect(
+        getAllMcpTools({
+          mcpServers: [server],
+          runContext: new RunContext({}),
+          agent: new Agent({ name: 'AgentOne' }),
+        }),
+      ).rejects.toBeInstanceOf(UserError);
+    });
+  });
+
+  it.each([false, true])(
+    'invokes both tools of one server through run() with stream=%s',
+    async (stream) => {
+      await withTrace('test', async () => {
+        const server = new StubServer('docs', [
+          toolNamed('search-a'),
+          toolNamed('search_a'),
+        ]);
+        const callTool = vi.spyOn(server, 'callTool');
+
+        const agent = new Agent({
+          name: 'SameServerDuplicateToolsAgent',
+          mcpServers: [server],
+          mcpConfig: { includeServerInToolNames: true },
+        });
+
+        // The advertised names are what the model can call; the server still
+        // has to receive the original tool names it published.
+        const advertised = (await agent.getAllTools(new RunContext({}))).map(
+          (candidate) => candidate.name,
+        );
+        expect(new Set(advertised).size).toBe(2);
+
+        agent.model = new ScriptedModel([
+          [
+            functionCall(advertised[0]!, {}, { callId: 'search_dash' }),
+            functionCall(advertised[1]!, {}, { callId: 'search_underscore' }),
+          ],
+          [assistantMessage('both tools ran')],
+        ]);
+
+        let result;
+        if (stream) {
+          const streamed = await run(agent, 'search twice', { stream: true });
+          await streamed.completed;
+          result = streamed;
+        } else {
+          result = await run(agent, 'search twice');
+        }
+
+        expect(result.finalOutput).toBe('both tools ran');
+        expect(callTool.mock.calls.map(([name]) => name).sort()).toEqual([
+          'search-a',
+          'search_a',
+        ]);
+      });
+    },
+  );
+
   it('prefixes local MCP tool names with server names when requested', async () => {
     await withTrace('test', async () => {
       const serverA = new StubServer('docs', [
@@ -911,6 +979,23 @@ describe('MCP tools uniqueness', () => {
       expect(new Set(Object.values(firstOrder)).size).toBe(2);
       expect(
         Object.values(firstOrder).every((name) =>
+          name.startsWith('mcp_docs__search_'),
+        ),
+      ).toBe(true);
+
+      const dashOrder = await publicNamesByOriginalTool([
+        'search-a',
+        'search_a',
+      ]);
+      const reversedDashOrder = await publicNamesByOriginalTool([
+        'search_a',
+        'search-a',
+      ]);
+
+      expect(dashOrder).toEqual(reversedDashOrder);
+      expect(new Set(Object.values(dashOrder)).size).toBe(2);
+      expect(
+        Object.values(dashOrder).every((name) =>
           name.startsWith('mcp_docs__search_'),
         ),
       ).toBe(true);
