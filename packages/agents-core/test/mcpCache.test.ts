@@ -7,6 +7,8 @@ import {
   MCPServerSSE,
 } from '../src/mcp';
 import { UserError } from '../src/errors';
+import { run } from '../src';
+import { ScriptedModel, assistantMessage, functionCall } from '../src/testing';
 import { tool, type FunctionTool } from '../src/tool';
 import { withTrace } from '../src/tracing';
 import { NodeMCPServerStdio } from '../src/shims/mcp-server/node';
@@ -599,6 +601,55 @@ describe('MCP tools uniqueness', () => {
       ).rejects.toBeInstanceOf(UserError);
     });
   });
+
+  it.each([false, true])(
+    'invokes both tools of one server through run() with stream=%s',
+    async (stream) => {
+      await withTrace('test', async () => {
+        const server = new StubServer('docs', [
+          toolNamed('search-a'),
+          toolNamed('search_a'),
+        ]);
+        const callTool = vi.spyOn(server, 'callTool');
+
+        const agent = new Agent({
+          name: 'SameServerDuplicateToolsAgent',
+          mcpServers: [server],
+          mcpConfig: { includeServerInToolNames: true },
+        });
+
+        // The advertised names are what the model can call; the server still
+        // has to receive the original tool names it published.
+        const advertised = (await agent.getAllTools(new RunContext({}))).map(
+          (candidate) => candidate.name,
+        );
+        expect(new Set(advertised).size).toBe(2);
+
+        agent.model = new ScriptedModel([
+          [
+            functionCall(advertised[0]!, {}, { callId: 'search_dash' }),
+            functionCall(advertised[1]!, {}, { callId: 'search_underscore' }),
+          ],
+          [assistantMessage('both tools ran')],
+        ]);
+
+        let result;
+        if (stream) {
+          const streamed = await run(agent, 'search twice', { stream: true });
+          await streamed.completed;
+          result = streamed;
+        } else {
+          result = await run(agent, 'search twice');
+        }
+
+        expect(result.finalOutput).toBe('both tools ran');
+        expect(callTool.mock.calls.map(([name]) => name).sort()).toEqual([
+          'search-a',
+          'search_a',
+        ]);
+      });
+    },
+  );
 
   it('prefixes local MCP tool names with server names when requested', async () => {
     await withTrace('test', async () => {
