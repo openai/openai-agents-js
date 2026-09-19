@@ -562,8 +562,15 @@ function selectCompactionCandidateItems(
     if (item.type === 'compaction') {
       return false;
     }
-    return !(item.type === 'message' && item.role === 'user');
+    return !isUserMessageItem(item);
   });
+}
+
+function isUserMessageItem(item: AgentInputItem): boolean {
+  // Message items may omit `type`; the protocol treats any item without a type as a message.
+  return (
+    (item.type === undefined || item.type === 'message') && item.role === 'user'
+  );
 }
 
 function assertSupportedOpenAIResponsesCompactionModel(model: string): void {

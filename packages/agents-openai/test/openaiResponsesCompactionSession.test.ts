@@ -830,6 +830,60 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(compact).not.toHaveBeenCalled();
   });
 
+  it('excludes user messages without an explicit type from compaction candidates', async () => {
+    const compact = vi.fn();
+    const receivedCandidates: unknown[][] = [];
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      shouldTriggerCompaction: async ({ compactionCandidateItems }) => {
+        receivedCandidates.push(compactionCandidateItems);
+        return false;
+      },
+    });
+
+    const typelessUserItem = { role: 'user', content: 'hello' };
+    const assistantItem = {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'world' }],
+    };
+
+    await session.addItems([
+      typelessUserItem,
+      assistantItem,
+    ] as AgentInputItem[]);
+    await session.runCompaction({ responseId: 'resp_4' });
+
+    expect(receivedCandidates).toEqual([[assistantItem]]);
+    expect(compact).not.toHaveBeenCalled();
+  });
+
+  it('does not count user messages without an explicit type toward the default threshold', async () => {
+    const compact = vi.fn().mockResolvedValue({
+      output: [],
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      client: { responses: { compact } } as any,
+      compactionMode: 'input',
+    });
+
+    const turns = Array.from({ length: 5 }, (_, index) => [
+      { role: 'user', content: `question ${index}` },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: `answer ${index}` }],
+      },
+    ]).flat();
+    await session.addItems(turns as AgentInputItem[]);
+
+    await expect(session.runCompaction()).resolves.toBeNull();
+    expect(compact).not.toHaveBeenCalled();
+  });
+
   it('replaces history after compaction and reuses the stored response id', async () => {
     const compact = vi
       .fn()
