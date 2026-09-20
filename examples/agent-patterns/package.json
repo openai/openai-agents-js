@@ -25,7 +25,8 @@
     "start:parallelization": "node parallelization.ts",
     "start:routing": "node routing.ts",
     "start:streamed": "node streamed.ts",
-    "start:streaming-guardrails": "node streaming-guardrails.ts"
+    "start:streaming-guardrails": "node streaming-guardrails.ts",
+    "start:human-in-the-loop-server": "tsx human-in-the-loop-server.ts"
   },
   "engines": {
     "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
