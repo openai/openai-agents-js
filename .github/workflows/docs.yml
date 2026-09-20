@@ -5,9 +5,17 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "pnpm-lock.yaml"
+      - "package.json"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/docs.yml"
   pull_request:
     paths:
       - "docs/**"
+      - "pnpm-lock.yaml"
+      - "package.json"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 # Allow this job to clone the repo and create a page deployment
