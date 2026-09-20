@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   OpenAITracingExporter,
   _openAITracingExporterTestUtils,
 } from '../src/openaiTracingExporter';
 import { HEADERS } from '../src/defaults';
-import { createCustomSpan } from '@openai/agents-core';
+import { BatchTraceProcessor, createCustomSpan } from '@openai/agents-core';
 import logger from '../src/logger';
 
 describe('OpenAITracingExporter', () => {
@@ -1141,6 +1141,230 @@ describe('OpenAITracingExporter', () => {
     );
 
     expect(truncated).toEqual([]);
+  });
+
+  describe('transient trace export retries', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-20T00:00:00Z'));
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      vi.spyOn(logger, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    const makeExporter = (options = {}) =>
+      new OpenAITracingExporter({
+        apiKey: 'synthetic-key',
+        endpoint: 'https://example.test/ingest',
+        maxRetries: 3,
+        baseDelay: 100,
+        maxDelay: 5000,
+        ...options,
+      });
+
+    it.each([
+      [408, undefined],
+      [409, undefined],
+      [429, undefined],
+      [400, ' TrUe '],
+    ] as const)(
+      'recovers from %s with x-should-retry=%s and the same batch',
+      async (status, advice) => {
+        const response = new Response('synthetic-response', {
+          status,
+          headers: advice ? { 'x-should-retry': advice } : undefined,
+        });
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce(response)
+          .mockResolvedValueOnce(new Response(null, { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+        const exported = makeExporter().export([fakeSpan]);
+        await vi.advanceTimersByTimeAsync(100);
+        await exported;
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(fetchMock.mock.calls[1][1].body).toBe(
+          fetchMock.mock.calls[0][1].body,
+        );
+        expect(JSON.parse(fetchMock.mock.calls[1][1].body).data).toEqual([
+          fakeSpan.toJSON(),
+        ]);
+        expect(response.bodyUsed).toBe(true);
+      },
+    );
+
+    it('retains maxRetries as the total attempt limit', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockImplementation(async () => new Response(null, { status: 429 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const exported = makeExporter().export([fakeSpan]);
+      await vi.runAllTimersAsync();
+      await exported;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(logger.error).toHaveBeenCalledWith(
+        'Tracing: failed to export traces after 3 attempts',
+      );
+    });
+
+    it.each([
+      [400, 'false'],
+      [429, ' FaLsE '],
+      [503, 'false'],
+    ])('stops on %s with x-should-retry=%s', async (status, advice) => {
+      const fetchMock = vi.fn().mockImplementation(
+        async () =>
+          new Response('SYNTHETIC_PRIVATE_BODY', {
+            status,
+            headers: { 'x-should-retry': advice, 'retry-after': '3' },
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(true);
+      await makeExporter().export([fakeSpan]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(
+        'SYNTHETIC_PRIVATE_BODY',
+      );
+    });
+
+    it('preserves a retry veto when reading the error body fails', async () => {
+      vi.spyOn(logger, 'dontLogModelData', 'get').mockReturnValue(false);
+      vi.spyOn(logger, 'dontLogToolData', 'get').mockReturnValue(false);
+      const fetchMock = vi.fn().mockImplementation(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error('SYNTHETIC_PRIVATE_BODY_FAILURE'));
+              },
+            }),
+            { status: 429, headers: { 'x-should-retry': 'false' } },
+          ),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const exported = makeExporter().export([fakeSpan]);
+      await vi.runAllTimersAsync();
+      await exported;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(logger.error).toHaveBeenCalledWith(
+        '[non-fatal] Tracing client error 429. Response data could not be read.',
+      );
+      expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(
+        'SYNTHETIC_PRIVATE_BODY_FAILURE',
+      );
+    });
+
+    it.each([
+      [429, { 'retry-after': '3' }, 3000],
+      [429, { 'retry-after-ms': '1500', 'retry-after': '3' }, 1500],
+      [429, { 'retry-after-ms': 'bad', 'retry-after': '2' }, 2000],
+      [429, { 'retry-after': 'Sun, 20 Sep 2026 00:00:02 GMT' }, 2000],
+      [429, { 'retry-after': '600' }, 5000],
+      [429, { 'retry-after': 'soon' }, 100],
+      [429, { 'retry-after': '-1' }, 100],
+      [429, { 'retry-after': 'Infinity' }, 100],
+      [429, { 'retry-after-ms': 'Infinity' }, 100],
+      [429, { 'retry-after': '1e309' }, 100],
+      [429, { 'retry-after': '0' }, 100],
+      [429, { 'retry-after': 'Sat, 19 Sep 2026 00:00:00 GMT' }, 100],
+      [503, { 'retry-after': '3' }, 3000],
+      [503, { 'retry-after-ms': '1500' }, 1500],
+      [400, { 'x-should-retry': 'true', 'retry-after': '2' }, 2000],
+    ] as const)(
+      'honors bounded guidance for %s: %j',
+      async (status, headers, waitMs) => {
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce(
+            new Response('SYNTHETIC_PRIVATE_BODY', { status, headers }),
+          )
+          .mockResolvedValueOnce(new Response(null, { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+        const exported = makeExporter().export([fakeSpan]);
+        await vi.advanceTimersByTimeAsync(waitMs - 1);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        await exported;
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(
+          'SYNTHETIC_PRIVATE_BODY',
+        );
+      },
+    );
+
+    it('does not retain previous response guidance', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response(null, { status: 429, headers: { 'retry-after': '3' } }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 503 }))
+        .mockResolvedValueOnce(new Response(null, { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const exported = makeExporter().export([fakeSpan]);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(200);
+      await exported;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it('aborts a server-directed delay without another request', async () => {
+      const controller = new AbortController();
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(null, { status: 429, headers: { 'retry-after': '3' } }),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+      const exported = makeExporter().export([fakeSpan], controller.signal);
+      await vi.advanceTimersByTimeAsync(1);
+      controller.abort();
+      await exported;
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each([true, false])(
+      'bounds final processor drain; recovery=%s',
+      async (recovers) => {
+        const fetchMock = vi
+          .fn()
+          .mockResolvedValueOnce(
+            new Response(null, {
+              status: 429,
+              headers: { 'retry-after-ms': recovers ? '100' : '3000' },
+            }),
+          )
+          .mockResolvedValueOnce(new Response(null, { status: 200 }));
+        vi.stubGlobal('fetch', fetchMock);
+        const processor = new BatchTraceProcessor(makeExporter(), {
+          scheduleDelay: 10000,
+        });
+        await processor.onSpanEnd(fakeSpan);
+        const shutdown = processor.shutdown(1000);
+        await vi.advanceTimersByTimeAsync(1000);
+        await shutdown;
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(fetchMock).toHaveBeenCalledTimes(recovers ? 2 : 1);
+        expect(vi.getTimerCount()).toBe(0);
+        if (recovers) {
+          expect(fetchMock.mock.calls[1][1].body).toBe(
+            fetchMock.mock.calls[0][1].body,
+          );
+        }
+      },
+    );
   });
 
   it('retries on server errors', async () => {
