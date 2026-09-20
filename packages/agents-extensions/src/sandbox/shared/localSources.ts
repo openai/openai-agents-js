@@ -219,8 +219,29 @@ async function materializeLocalDirectory(
   absolutePath: string,
   sourceDir: string,
   options: ManifestMaterializationOptions,
-  expectedSourceStat?: Stats,
 ): Promise<void> {
+  await runLimited(
+    walkLocalDirectory(writer, absolutePath, sourceDir),
+    resolveLocalDirFileConcurrency(options.concurrencyLimits),
+    async ({ sourceRoot, sourcePath, destinationPath }) => {
+      await writer.writeFile(
+        destinationPath,
+        await readStableLocalDirectoryFile(sourceRoot, sourcePath),
+      );
+    },
+  );
+}
+
+async function* walkLocalDirectory(
+  writer: RemoteManifestWriter,
+  absolutePath: string,
+  sourceDir: string,
+  expectedSourceStat?: Stats,
+): AsyncGenerator<{
+  sourceRoot: string;
+  sourcePath: string;
+  destinationPath: string;
+}> {
   const source = await resolveStableLocalDirectorySource(
     sourceDir,
     expectedSourceStat,
@@ -228,43 +249,35 @@ async function materializeLocalDirectory(
   await writer.mkdir(absolutePath);
   const entries = await readStableLocalDirectoryEntries(sourceDir, source.stat);
 
-  await runLimited(
-    entries,
-    resolveLocalDirFileConcurrency(options.concurrencyLimits),
-    async (entry) => {
-      const sourcePath = join(sourceDir, entry.name);
-      const destinationPath = `${absolutePath}/${entry.name}`;
+  for (const entry of entries) {
+    const sourcePath = join(sourceDir, entry.name);
+    const destinationPath = `${absolutePath}/${entry.name}`;
 
-      if (entry.isDirectory()) {
-        const childSourceStat = await assertStableLocalDirectoryChild(
-          source.root,
-          sourcePath,
-        );
-        await materializeLocalDirectory(
-          writer,
-          destinationPath,
-          sourcePath,
-          options,
-          childSourceStat,
-        );
-        return;
-      }
+    if (entry.isDirectory()) {
+      const childSourceStat = await assertStableLocalDirectoryChild(
+        source.root,
+        sourcePath,
+      );
+      yield* walkLocalDirectory(
+        writer,
+        destinationPath,
+        sourcePath,
+        childSourceStat,
+      );
+      continue;
+    }
 
-      if (entry.isFile()) {
-        await writer.writeFile(
-          destinationPath,
-          await readStableLocalDirectoryFile(source.root, sourcePath),
-        );
-        return;
-      }
+    if (entry.isFile()) {
+      yield { sourceRoot: source.root, sourcePath, destinationPath };
+      continue;
+    }
 
-      if (entry.isSymbolicLink()) {
-        throw new UserError(
-          `local_dir entries do not support symbolic links: ${sourcePath}`,
-        );
-      }
-    },
-  );
+    if (entry.isSymbolicLink()) {
+      throw new UserError(
+        `local_dir entries do not support symbolic links: ${sourcePath}`,
+      );
+    }
+  }
 }
 
 async function resolveStableLocalDirectorySource(
