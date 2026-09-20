@@ -36,6 +36,28 @@ const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
 const OPENAI_TRACING_MAX_RECURSION_DEPTH = 1_000;
 const OPENAI_TRACING_STRING_TRUNCATION_SUFFIX = '... [truncated]';
 
+function retryAfterMs(headers: Headers): number | undefined {
+  const milliseconds = headers.get('retry-after-ms')?.trim();
+  if (milliseconds) {
+    const value = Number(milliseconds);
+    if (Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+
+  const retryAfter = headers.get('retry-after')?.trim();
+  if (!retryAfter) {
+    return undefined;
+  }
+  const seconds = Number(retryAfter);
+  if (!Number.isNaN(seconds)) {
+    const value = seconds * 1000;
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  const date = Date.parse(retryAfter);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
 async function sleepWithAbort(
   delayMs: number,
   signal?: AbortSignal,
@@ -754,6 +776,7 @@ export class OpenAITracingExporter implements TracingExporter {
       let delay = this.#options.baseDelay;
 
       while (attempts < this.#options.maxRetries) {
+        let serverDelay: number | undefined;
         try {
           const response = await fetch(this.#options.endpoint, {
             method: 'POST',
@@ -772,28 +795,66 @@ export class OpenAITracingExporter implements TracingExporter {
             break;
           }
 
-          if (response.status >= 400 && response.status < 500) {
-            if (logger.dontLogModelData || logger.dontLogToolData) {
+          const retryAdvice = response.headers
+            ?.get('x-should-retry')
+            ?.trim()
+            .toLowerCase();
+          const clientError = response.status >= 400 && response.status < 500;
+          const shouldRetry =
+            retryAdvice === 'true' ||
+            (retryAdvice !== 'false' &&
+              (!clientError ||
+                response.status === 408 ||
+                response.status === 409 ||
+                response.status === 429));
+
+          if (!shouldRetry) {
+            if (clientError) {
+              if (logger.dontLogModelData || logger.dontLogToolData) {
+                try {
+                  await response.body?.cancel();
+                } catch {
+                  // Best-effort cleanup must not replace the tracing response error.
+                }
+                logger.error(
+                  `[non-fatal] Tracing client error ${response.status}. Response data is redacted.`,
+                );
+              } else {
+                try {
+                  logger.error(
+                    `[non-fatal] Tracing client error ${
+                      response.status
+                    }: ${await response.text()}`,
+                  );
+                } catch {
+                  logger.error(
+                    `[non-fatal] Tracing client error ${response.status}. Response data could not be read.`,
+                  );
+                }
+              }
+            } else {
               try {
                 await response.body?.cancel();
               } catch {
-                // Best-effort cleanup must not replace the tracing response error.
+                // Best-effort cleanup must not replace the server retry veto.
               }
               logger.error(
-                `[non-fatal] Tracing client error ${response.status}. Response data is redacted.`,
-              );
-            } else {
-              logger.error(
-                `[non-fatal] Tracing client error ${
-                  response.status
-                }: ${await response.text()}`,
+                `[non-fatal] Tracing: server forbade retry for ${response.status}.`,
               );
             }
             break;
           }
 
+          serverDelay = response.headers
+            ? retryAfterMs(response.headers)
+            : undefined;
+          try {
+            await response.body?.cancel();
+          } catch {
+            // Best-effort cleanup must not prevent retrying the batch.
+          }
           logger.warn(
-            `[non-fatal] Tracing: server error ${response.status}, retrying.`,
+            `[non-fatal] Tracing: ${clientError ? 'client' : 'server'} error ${response.status}, retrying.`,
           );
         } catch (error: any) {
           logModelAndToolActionError(
@@ -813,7 +874,13 @@ export class OpenAITracingExporter implements TracingExporter {
           break;
         }
 
-        const sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
+        let sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
+        if (serverDelay !== undefined) {
+          sleepTime = Math.min(
+            Math.max(sleepTime, serverDelay),
+            this.#options.maxDelay,
+          );
+        }
         const shouldContinue = await sleepWithAbort(sleepTime, signal);
         if (!shouldContinue) {
           logger.error('Tracing: request aborted');
