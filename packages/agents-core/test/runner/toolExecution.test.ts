@@ -9511,15 +9511,15 @@ describe('executeShellActions', () => {
       });
     });
 
-    it('validates isolated Standard Schema outputs for approval and invocation', async () => {
+    it('rejects custom Standard Schema outputs before approval', async () => {
       type Input = { value?: string | null };
       class Output {
-        readonly normalized = true;
+        #normalized = true;
 
         constructor(public value: string) {}
 
         read() {
-          return this.value;
+          return this.#normalized ? this.value : 'invalid';
         }
       }
       const validate = vi.fn((input: unknown) => ({
@@ -9541,12 +9541,7 @@ describe('executeShellActions', () => {
           validate,
         },
       };
-      const needsApproval = vi.fn(async (_context, input: Output) => {
-        expect(input).toBeInstanceOf(Output);
-        expect(input.read()).toBe('default');
-        input.value = 'mutated by approval';
-        return false;
-      });
+      const needsApproval = vi.fn(async () => false);
       const execute = vi.fn(async (input: Output) => input.read());
       const t = tool({
         name: 'standard_schema_single_parse',
@@ -9561,37 +9556,25 @@ describe('executeShellActions', () => {
         arguments: JSON.stringify({ value: null }),
       };
 
-      const result = await executeFunctionToolCalls(
-        state._currentAgent,
-        [{ toolCall: inputToolCall, tool: t }],
-        runner,
-        state,
+      await expect(
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: inputToolCall, tool: t }],
+          runner,
+          state,
+        ),
+      ).rejects.toThrow(
+        'Conditional tool approval requires copyable plain normalized input',
       );
 
-      const parsed = new Output('default');
-      expect(validate).toHaveBeenCalledTimes(2);
-      expect(needsApproval).toHaveBeenCalledWith(
-        state._context,
-        expect.any(Output),
-        toolCall.callId,
-      );
-      expect(execute).toHaveBeenCalledWith(
-        parsed,
-        state._context,
-        expect.objectContaining({ toolCall: inputToolCall }),
-      );
-      expect(result[0]).toMatchObject({
-        type: 'function_output',
-        output: 'default',
-      });
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
     });
 
     it('rejects async Standard Schema validation before runner callbacks', async () => {
       const asyncValidationError = new Error('async validation failed');
-      const validate = vi
-        .fn()
-        .mockReturnValueOnce({ value: {} })
-        .mockReturnValueOnce(Promise.reject(asyncValidationError));
+      const validate = vi.fn(() => Promise.reject(asyncValidationError));
       const parameters: StandardSchemaWithJSON<object> = {
         '~standard': {
           version: 1,
@@ -9639,7 +9622,7 @@ describe('executeShellActions', () => {
       expect((error as ToolCallError).error).toBeInstanceOf(
         InvalidToolInputError,
       );
-      expect(validate).toHaveBeenCalledTimes(2);
+      expect(validate).toHaveBeenCalledTimes(1);
       expect(needsApproval).not.toHaveBeenCalled();
       expect(inputGuardrail.run).not.toHaveBeenCalled();
       expect(state._toolInputGuardrailResults).toHaveLength(0);
