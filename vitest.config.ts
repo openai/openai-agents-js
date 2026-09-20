@@ -108,6 +108,7 @@ function createProjects(reviewTestProfile: boolean) {
           'scripts/run-integration-tests-managed.test.mjs',
           'scripts/workflow-contracts.test.mjs',
           'docs/src/scripts/headingAnchors.test.ts',
+          'examples/agent-patterns/human-in-the-loop-server.test.ts',
         ],
       },
     },

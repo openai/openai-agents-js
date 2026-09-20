@@ -26,6 +26,10 @@ This directory contains small scripts that demonstrate different agent patterns.
   ```bash
   pnpm examples:human-in-the-loop
   ```
+- `human-in-the-loop-server.ts` – Keep approval snapshots on the server and accept only owner-authorized decisions. This CLI simulates a client and server in one process; it is not an HTTP service. The store is confined to one event loop and requires a complete decision batch. Consumed requests cannot be retried, including after failure or cancellation. Production applications need authentication, request protections, bounded storage retention, atomic owner-checked consumption in shared storage, and recovery that reconciles tool side effects.
+  ```bash
+  pnpm -F agent-patterns start:human-in-the-loop-server
+  ```
 - `human-in-the-loop-stream.ts` – Streaming version of human approval.
   ```bash
   pnpm examples:streamed:human-in-the-loop
