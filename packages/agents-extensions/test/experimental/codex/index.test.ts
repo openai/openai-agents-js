@@ -427,8 +427,7 @@ describe('codexTool', () => {
     );
 
     const options = codexConstructorState.options as
-      | { apiKey?: string }
-      | undefined;
+      { apiKey?: string } | undefined;
     expect(options?.apiKey).toBe('openai-key');
   });
 
@@ -464,8 +463,7 @@ describe('codexTool', () => {
     );
 
     const options = codexConstructorState.options as
-      | { apiKey?: string }
-      | undefined;
+      { apiKey?: string } | undefined;
     expect(options?.apiKey).toBe('openai-key');
   });
 
@@ -706,8 +704,7 @@ describe('codexTool', () => {
     );
 
     const options = codexConstructorState.options as
-      | { apiKey?: string }
-      | undefined;
+      { apiKey?: string } | undefined;
     expect(options?.apiKey).toBe('codex-key');
   });
 
@@ -1105,7 +1102,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('useRunContextThreadId=true');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1139,7 +1138,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('useRunContextThreadId=true');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1173,7 +1174,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('must be a string');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1217,7 +1220,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('persistSession=true');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
   });
 
   test('throws when Codex turn fails', async () => {
@@ -1244,7 +1249,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('Codex turn failed: bad turn');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
   });
 
   test('throws when Codex emits an error event', async () => {
@@ -1268,7 +1275,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('Codex stream error: stream error');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
   });
 
   test('returns a default response when no agent message is streamed', async () => {
