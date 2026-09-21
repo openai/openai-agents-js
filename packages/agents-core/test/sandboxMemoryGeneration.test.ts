@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import logger from '../src/logger';
+import { applyDiff } from '../src/utils/applyDiff';
 import type {
   ApplyPatchOperation,
   ApplyPatchResult,
@@ -590,6 +592,30 @@ describe('Sandbox memory generation', () => {
     );
   });
 
+  it('compares normalized phase-two turn budgets when reusing a manager', () => {
+    const session = new MemorySession();
+    const runAgent = async () => ({ finalOutput: undefined });
+    const manager = getOrCreateSandboxMemoryGenerationManager({
+      session,
+      memory: memory(),
+      runAgent,
+    });
+    expect(
+      getOrCreateSandboxMemoryGenerationManager({
+        session,
+        memory: memory({ generate: { phaseTwoMaxTurns: 500 } }),
+        runAgent,
+      }),
+    ).toBe(manager);
+    expect(() =>
+      getOrCreateSandboxMemoryGenerationManager({
+        session,
+        memory: memory({ generate: { phaseTwoMaxTurns: 2 } }),
+        runAgent,
+      }),
+    ).toThrow('different Memory generation config');
+  });
+
   it('propagates updated runAs to reused memory generation storage', async () => {
     const session = new MemorySession();
     const runAgent = async () => ({ finalOutput: undefined });
@@ -732,61 +758,182 @@ describe('Sandbox memory generation', () => {
     );
   });
 
-  it('bounds phase two memory consolidation turns', async () => {
-    const session = new MemorySession();
-    const calls: Array<{ agentName: string; maxTurns?: number }> = [];
-    const runAgent = async (
-      agent: { name: string },
-      _input: unknown,
-      options: { maxTurns?: number },
-    ) => {
-      calls.push({ agentName: agent.name, maxTurns: options.maxTurns });
-      if (agent.name === 'sandbox-memory-phase-one') {
-        return {
-          finalOutput: {
-            rollout_summary: '# Rollout\n\nBounded memory.',
-            rollout_slug: 'bounded-memory',
-            raw_memory: '- Phase two should run with a turn bound.',
+  it.each([undefined, 2])(
+    'forwards phase-two turn budget %s',
+    async (phaseTwoMaxTurns) => {
+      const session = new MemorySession();
+      const calls: Array<{ agentName: string; maxTurns?: number }> = [];
+      const runAgent = async (
+        agent: { name: string },
+        _input: unknown,
+        options: { maxTurns?: number },
+      ) => {
+        calls.push({ agentName: agent.name, maxTurns: options.maxTurns });
+        if (agent.name === 'sandbox-memory-phase-one') {
+          return {
+            finalOutput: {
+              rollout_summary: '# Rollout\n\nBounded memory.',
+              rollout_slug: 'bounded-memory',
+              raw_memory: '- Phase two should run with a turn bound.',
+            },
+          };
+        }
+        return { finalOutput: 'Consolidated memory.' };
+      };
+      const manager = getOrCreateSandboxMemoryGenerationManager({
+        session,
+        memory: memory({
+          read: false,
+          generate: {
+            phaseOneModel: new ScriptedModel([]),
+            phaseTwoModel: new ScriptedModel([]),
+            phaseTwoMaxTurns,
           },
-        };
+        }),
+        runAgent,
+      });
+
+      await manager.enqueueState(
+        {
+          _originalInput: 'Remember bounded consolidation.',
+          _generatedItems: [],
+          _currentStep: {
+            type: 'next_step_final_output',
+            output: 'done',
+          },
+          getInterruptions: () => [],
+        } as any,
+        {
+          rolloutIdentity: {
+            groupId: 'bounded-memory',
+          },
+        },
+      );
+      await manager.flush();
+
+      expect(calls).toEqual([
+        { agentName: 'sandbox-memory-phase-one', maxTurns: 500 },
+        {
+          agentName: 'sandbox-memory-phase-two',
+          maxTurns: phaseTwoMaxTurns ?? 500,
+        },
+      ]);
+    },
+  );
+
+  it.each([
+    { limit: 1, stream: false, owned: false },
+    { limit: 2, stream: false, owned: false },
+    { limit: undefined, stream: false, owned: false },
+    { limit: 1, stream: true, owned: false },
+    { limit: 1, stream: false, owned: true },
+  ])(
+    'enforces the consolidation budget: %j',
+    async ({ limit, stream, owned }) => {
+      const client = new MemorySnapshotClient();
+      const session = client.session;
+      const close = vi.spyOn(session, 'close');
+      const editor = new MemoryEditor();
+      editor.createFile = async (operation) => {
+        session.files.set(
+          operation.path,
+          applyDiff('', operation.diff, 'create'),
+        );
+        return { status: 'completed' };
+      };
+      vi.spyOn(session, 'createEditor').mockReturnValue(editor);
+      const selectionPath = 'memories/phase_two_selection.json';
+      const previousSelection = '{"selected": []}\n';
+      session.files.set(selectionPath, previousSelection);
+      const phaseOneModel = new ScriptedModel([
+        [
+          fakeModelMessage(
+            JSON.stringify({
+              rollout_summary: '# Rollout\n\nRemember the turn budget.',
+              rollout_slug: 'turn-budget',
+              raw_memory: '- Limit consolidation model turns.',
+            }),
+          ),
+        ],
+      ]);
+      const phaseTwoModel = new ScriptedModel([
+        [
+          {
+            type: 'apply_patch_call',
+            callId: 'write-memory',
+            status: 'completed',
+            operation: {
+              type: 'create_file',
+              path: 'memories/turn-budget.md',
+              diff: '+Consolidated entry',
+            },
+          },
+        ],
+        [fakeModelMessage('Consolidated memory.')],
+      ]);
+      const agent = new SandboxAgent({
+        name: 'sandbox',
+        model: new ScriptedModel([[fakeModelMessage('done')]]),
+        capabilities: [
+          memory({
+            read: false,
+            generate: { phaseOneModel, phaseTwoModel, phaseTwoMaxTurns: limit },
+          }),
+        ],
+      });
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+      try {
+        const runner = new Runner({ tracingDisabled: true });
+        const sandbox = owned ? { client } : { session };
+        if (stream) {
+          const result = await runner.run(agent, 'Remember the turn budget.', {
+            sandbox,
+            maxTurns: 1,
+            stream: true,
+          });
+          for await (const _event of result) {
+            // Consume the public stream through finalization.
+          }
+          await result.completed;
+          expect(result.finalOutput).toBe('done');
+        } else {
+          const result = await runner.run(agent, 'Remember the turn budget.', {
+            sandbox,
+            maxTurns: 1,
+          });
+          expect(result.finalOutput).toBe('done');
+        }
+        expect(phaseOneModel.calls).toHaveLength(1);
+        expect(phaseTwoModel.calls).toHaveLength(limit === 1 ? 1 : 2);
+        expect(session.files.get('memories/turn-budget.md')).toBe(
+          'Consolidated entry',
+        );
+        expect(session.files.get('memories/raw_memories.md')).toContain(
+          'Limit consolidation model turns.',
+        );
+        if (limit === 1) {
+          expect(session.files.get(selectionPath)).toBe(previousSelection);
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn.mock.calls[0]?.[0]).toBe(
+            'Sandbox memory phase 2 failed:',
+          );
+        } else {
+          expect(session.files.get(selectionPath)).toContain('turn-budget');
+          expect(warn).not.toHaveBeenCalled();
+        }
+        if (owned) {
+          expect(close).toHaveBeenCalledTimes(1);
+          expect(client.serializedFiles[0]?.get(selectionPath)).toBe(
+            previousSelection,
+          );
+        }
+        await session.close();
+        expect(phaseTwoModel.calls).toHaveLength(limit === 1 ? 1 : 2);
+      } finally {
+        warn.mockRestore();
       }
-      return { finalOutput: 'Consolidated memory.' };
-    };
-    const manager = getOrCreateSandboxMemoryGenerationManager({
-      session,
-      memory: memory({
-        read: false,
-        generate: {
-          phaseOneModel: new ScriptedModel([]),
-          phaseTwoModel: new ScriptedModel([]),
-        },
-      }),
-      runAgent,
-    });
-
-    await manager.enqueueState(
-      {
-        _originalInput: 'Remember bounded consolidation.',
-        _generatedItems: [],
-        _currentStep: {
-          type: 'next_step_final_output',
-          output: 'done',
-        },
-        getInterruptions: () => [],
-      } as any,
-      {
-        rolloutIdentity: {
-          groupId: 'bounded-memory',
-        },
-      },
-    );
-    await manager.flush();
-
-    expect(calls).toEqual([
-      { agentName: 'sandbox-memory-phase-one', maxTurns: 500 },
-      { agentName: 'sandbox-memory-phase-two', maxTurns: 500 },
-    ]);
-  });
+    },
+  );
 
   it('flushes generated memory before serializing owned sessions', async () => {
     const client = new MemorySnapshotClient();
