@@ -2377,6 +2377,79 @@ describe('Agent', () => {
     expect(enabledTools.map((t) => t.name)).toEqual(['conditional']);
   });
 
+  it('keeps tool candidates stable during asynchronous enablement and refreshes the next call', async () => {
+    const evaluated: string[] = [];
+    let signalStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = tool({
+      name: 'first',
+      description: 'first',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+      isEnabled: async () => {
+        evaluated.push('first');
+        signalStarted();
+        await blocked;
+        return true;
+      },
+    });
+    const second = tool({
+      name: 'second',
+      description: 'second',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+      isEnabled: () => {
+        evaluated.push('second');
+        return true;
+      },
+    });
+    const third = tool({
+      name: 'third',
+      description: 'third',
+      parameters: z.object({}),
+      execute: async () => 'ok',
+      isEnabled: () => {
+        evaluated.push('third');
+        return true;
+      },
+    });
+    const configuredTools = [first, second, third];
+    const agent = new Agent({ name: 'Mutable tools', tools: configuredTools });
+    const context = new RunContext();
+    const pending = agent.getAllTools(context);
+    try {
+      await started;
+      expect(evaluated).toEqual(['first']);
+      agent.tools.reverse();
+    } finally {
+      release();
+      await pending;
+    }
+
+    const resolved = await pending;
+    expect(evaluated).toEqual(['first', 'second', 'third']);
+    expect(resolved).toHaveLength(3);
+    expect(resolved[0]).toBe(first);
+    expect(resolved[1]).toBe(second);
+    expect(resolved[2]).toBe(third);
+    expect(agent.tools).toBe(configuredTools);
+    expect(agent.tools).toEqual([third, second, first]);
+
+    evaluated.length = 0;
+    const refreshed = await agent.getAllTools(context);
+    expect(evaluated).toEqual(['third', 'second', 'first']);
+    expect(refreshed).toHaveLength(3);
+    expect(refreshed[0]).toBe(third);
+    expect(refreshed[1]).toBe(second);
+    expect(refreshed[2]).toBe(first);
+  });
+
   it('respects isEnabled option on Agent.asTool', async () => {
     const nestedAgent = new Agent({
       name: 'Nested',
