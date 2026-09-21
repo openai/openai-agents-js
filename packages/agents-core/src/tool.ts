@@ -9,6 +9,7 @@ import {
   UnknownContext,
 } from './types';
 import { toFunctionToolName } from './utils/tools';
+import { getFunctionToolApprovalInput } from './utils/functionToolApproval';
 import { getSchemaAndParserFromInputType } from './utils/tools';
 import { isZodObject } from './utils/typeGuards';
 import {
@@ -88,6 +89,14 @@ export type {
 
 /**
  * A function that determines if a tool call should be approved.
+ * Conditional policies receive an isolated copy of schema-normalized plain data.
+ * Outputs that cannot be copied as plain data are rejected before approval.
+ * Copyable arrays and primitives require manual approval instead of calling the
+ * policy. Validation can run application code before approval.
+ * After state restoration, the policy is evaluated again on the current
+ * normalized input before applying a manual decision for the same tool call.
+ * Return a plain object for conditional approval that must survive restoration;
+ * use `needsApproval: true` for durable manual approvals without a policy.
  *
  * @param runContext The current run context
  * @param input The input to the tool
@@ -150,9 +159,9 @@ function parseFunctionToolInput(
   }
 }
 
-/** @internal */
+/** Prepare input for SDK runners through the internal utilities entry point. */
 export function prepareFunctionToolInput(
-  tool: Pick<FunctionTool<any, any, any>, 'invoke'>,
+  tool: Pick<FunctionTool<any, any, any>, 'invoke' | 'needsApproval'>,
   input: string,
 ): FunctionToolPreparedInput | undefined {
   const registration = functionToolInputParsers.get(tool.invoke);
@@ -160,6 +169,9 @@ export function prepareFunctionToolInput(
     return undefined;
   }
   const result = parseFunctionToolInput(registration.parser, input);
+  if (!result.success && isAsyncStandardSchemaValidationError(result.error)) {
+    throw result.error;
+  }
   const base = {
     consumed: false,
     input,
@@ -167,6 +179,11 @@ export function prepareFunctionToolInput(
     validationMode: registration.validationMode,
   };
   if (result.success) {
+    if (hasDynamicFunctionToolApprovalPolicy(tool)) {
+      // Snapshot application-owned transform output before any policy can await.
+      const value = getFunctionToolApprovalInput(result.value);
+      return { ...base, result: { success: true, value } };
+    }
     return { ...base, result };
   }
   return {
@@ -176,7 +193,7 @@ export function prepareFunctionToolInput(
   };
 }
 
-/** @internal */
+/** Attach prepared input for SDK runners through the internal utilities entry point. */
 export function setFunctionToolPreparedInput(
   details: object,
   preparedInput: FunctionToolPreparedInput,

@@ -67,6 +67,8 @@ import {
   getToolSearchRuntimeRoutingKey,
   HostedMCPTool,
   FunctionTool,
+  type FunctionToolPreparedInput,
+  hasDynamicFunctionToolApprovalPolicy,
   ShellTool,
   ApplyPatchTool,
   Tool,
@@ -178,8 +180,10 @@ import {
  *   exact current-response ownership for serialized approval resumes, and checkpoints
  *   unacknowledged ordinary Session appends completed during approval resume, including
  *   filtered handoff input held until its source append settles.
+ * - 1.21: Re-evaluates conditional policies against refreshed normalized input
+ *   on approval resume. Normalized values and comparison evidence are never serialized.
  */
-export const CURRENT_SCHEMA_VERSION = '1.20' as const;
+export const CURRENT_SCHEMA_VERSION = '1.21' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -201,6 +205,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.17',
   '1.18',
   '1.19',
+  '1.20',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -225,7 +230,7 @@ function schemaVersionSupportsV119State(
 function schemaVersionSupportsV120State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === CURRENT_SCHEMA_VERSION;
+  return schemaVersion === '1.20' || schemaVersion === CURRENT_SCHEMA_VERSION;
 }
 
 function schemaVersionSupportsV116State(
@@ -2373,6 +2378,22 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Serialized pending nested agent runs keyed by tool name and call id.
    */
   public _pendingAgentToolRuns: Map<string, string>;
+  /**
+   * Pending conditional approval input lives only in the owning RunState.
+   * Neither normalized values nor comparison evidence are serialized.
+   * @internal
+   */
+  public _pendingFunctionToolApprovals = new Map<
+    Agent<any, any>,
+    Map<
+      string,
+      {
+        invocation: string;
+        preparedInput?: FunctionToolPreparedInput;
+        invoke?: FunctionTool<any, any, any>['invoke'];
+      }
+    >
+  >();
   /**
    * Legacy pending-run keys mapped to their canonical category-aware keys.
    */
@@ -6104,6 +6125,38 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
     for (const interruption of state.getInterruptions()) {
       context._bindLegacyApprovalInvocation(interruption);
     }
+  }
+  const interruptions = state.getInterruptions();
+  for (const toolRun of state._lastProcessedResponse?.functions ?? []) {
+    const call = toolRun.toolCall;
+    const owner =
+      state._lastProcessedResponse?.newItems.find(
+        (item): item is RunToolCallItem =>
+          item instanceof RunToolCallItem && item.rawItem === call,
+      )?.agent ?? state._currentAgent;
+    const isPending =
+      interruptions.some(
+        (item) =>
+          item.agent === owner &&
+          item.rawItem.type === 'function_call' &&
+          item.rawItem.callId === call.callId,
+      ) ||
+      getFunctionToolStateKeys(
+        toolRun.tool,
+        toolRun.availableFunctionTools ?? [toolRun.tool],
+      ).some((key) => state.hasPendingAgentToolRun(key, call.callId));
+    if (!isPending) continue;
+    const invocation = getToolInvocationFingerprint(
+      getFunctionToolQualifiedName(toolRun.tool) ?? toolRun.tool.name,
+      call,
+    );
+    if (!hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) continue;
+    // Restored calls have no retained normalized input. Re-evaluate the current
+    // policy before honoring a decision for refreshed successful input.
+    let records = state._pendingFunctionToolApprovals.get(owner);
+    if (!records)
+      state._pendingFunctionToolApprovals.set(owner, (records = new Map()));
+    records.set(call.callId, { invocation });
   }
   if (contextOverride) {
     const commitCandidate = contextOverride._cloneForRunStateDeserialization();
