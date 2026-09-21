@@ -1,4 +1,5 @@
 import type { RunConfig } from './run';
+import type { Model } from './model';
 import { mergeModelSettings } from './runner/modelSettingsMerge';
 import { mergeTracingConfig } from './tracing/config';
 import type { Span } from './tracing/spans';
@@ -90,6 +91,7 @@ export function getToolCallParentSpanFromDetails(
 
 function getSafeInheritedAgentToolModelSettings(
   modelSettings: Partial<RunConfig>['modelSettings'],
+  explicitModel: string | Model | undefined,
 ): Partial<RunConfig>['modelSettings'] | undefined {
   if (!modelSettings) {
     return undefined;
@@ -102,6 +104,18 @@ function getSafeInheritedAgentToolModelSettings(
     parallelToolCalls: _parallelToolCalls,
     ...safeModelSettings
   } = modelSettings;
+
+  // An explicit Model owns its client. Parent transport overrides must be
+  // supplied explicitly again when crossing that boundary.
+  if (typeof explicitModel === 'object' && safeModelSettings.providerData) {
+    const providerData = { ...safeModelSettings.providerData };
+    for (const aliases of TRANSPORT_OVERRIDE_PROVIDER_DATA_ALIAS_KEYS) {
+      for (const key of aliases) {
+        delete providerData[key];
+      }
+    }
+    safeModelSettings.providerData = providerData;
+  }
 
   return Object.keys(safeModelSettings).length > 0
     ? safeModelSettings
@@ -278,6 +292,7 @@ function mergeAgentToolModelSettings(
 export function getInheritedAgentToolRunConfig(
   parentRunConfig: Partial<RunConfig> | undefined,
   toolRunConfigOverride: Partial<RunConfig> | undefined,
+  explicitModel?: string | Model,
 ): Partial<RunConfig> | undefined {
   if (!parentRunConfig) {
     return undefined;
@@ -299,6 +314,7 @@ export function getInheritedAgentToolRunConfig(
   ) {
     const inheritedModelSettings = getSafeInheritedAgentToolModelSettings(
       parentRunConfig.modelSettings,
+      explicitModel,
     );
     if (typeof inheritedModelSettings !== 'undefined') {
       inheritedRunConfig.modelSettings = inheritedModelSettings;
