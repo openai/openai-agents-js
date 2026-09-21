@@ -35,6 +35,7 @@ import type { RunResult, StreamedRunResult } from './result';
 import { getHandoff, type Handoff } from './handoff';
 import { StreamRunOptions, RunConfig, Runner } from './run';
 import { RunState } from './runState';
+import { getPublicAgent } from './agentToolConfiguration';
 import { selectModel } from './runner/modelSettings';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
@@ -1142,7 +1143,7 @@ export class Agent<
       return getAllMcpTools({
         mcpServers: this.mcpServers,
         runContext,
-        agent: this,
+        agent: getPublicAgent(this),
         convertSchemasToStrict: this.mcpConfig.convertSchemasToStrict === true,
         errorFunction: this.mcpConfig.errorFunction,
         includeServerInToolNames,
@@ -1195,7 +1196,7 @@ export class Agent<
 
         const enabled =
           typeof maybeIsEnabled === 'function'
-            ? await maybeIsEnabled(runContext, this)
+            ? await maybeIsEnabled(runContext, getPublicAgent(this))
             : typeof maybeIsEnabled === 'boolean'
               ? maybeIsEnabled
               : true;
