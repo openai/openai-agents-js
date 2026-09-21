@@ -2,6 +2,8 @@ import {
   DEFAULT_REQUEST_TIMEOUT_MSEC,
   ProtocolError,
   ProtocolErrorCode,
+  SdkError,
+  SdkErrorCode,
   type CacheableRequestOptions,
   type Client,
   type RequestOptions,
@@ -15,6 +17,7 @@ import {
   MCPTool,
   attachCallToolResultMetadata,
 } from '../../mcpShared';
+import { UserError } from '../../errors';
 import { invalidateServerToolsCache } from '../../mcpToolCache';
 import type {
   CallToolResult,
@@ -89,13 +92,30 @@ function buildCacheableRequestOptions(
   };
 }
 
+function validateMaxListPages(value: number | undefined): number | undefined {
+  if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
+    throw new UserError('maxListPages must be a positive integer.');
+  }
+  return value;
+}
+
+class ToolListPageLimitError extends UserError {
+  constructor() {
+    super(
+      'MCP tool listing exceeded maxListPages. Increase maxListPages or check the server pagination.',
+    );
+  }
+}
+
 async function listAllMcpTools(
   client: Client,
   requestOptions: RequestOptions | undefined,
+  maxListPages: number | undefined,
 ): Promise<{ tools: MCPTool[] }> {
   const tools: MCPTool[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | undefined;
+  let pages = 0;
 
   while (true) {
     let response: { tools: MCPTool[]; nextCursor?: string };
@@ -115,6 +135,7 @@ async function listAllMcpTools(
         'MCP tool listing failed while fetching a continuation page.',
       );
     }
+    pages += 1;
     tools.push(...response.tools);
 
     const nextCursor = response.nextCursor;
@@ -126,6 +147,9 @@ async function listAllMcpTools(
         'MCP server returned a repeated cursor while listing tools.',
       );
     }
+    if (maxListPages !== undefined && pages >= maxListPages) {
+      throw new ToolListPageLimitError();
+    }
     seenCursors.add(nextCursor);
     cursor = nextCursor;
   }
@@ -134,15 +158,26 @@ async function listAllMcpTools(
 async function listMcpTools(
   client: Client,
   requestOptions: RequestOptions | undefined,
+  maxListPages: number | undefined,
 ): Promise<{ tools: MCPTool[] }> {
   if (getNegotiatedModernCapabilities(client) !== undefined) {
-    const response = await client.listTools(undefined, {
-      ...requestOptions,
-      cacheMode: 'bypass',
-    });
-    return { tools: response.tools as MCPTool[] };
+    try {
+      const response = await client.listTools(undefined, {
+        ...requestOptions,
+        cacheMode: 'bypass',
+      });
+      return { tools: response.tools as MCPTool[] };
+    } catch (error) {
+      if (
+        error instanceof SdkError &&
+        error.code === SdkErrorCode.ListPaginationExceeded
+      ) {
+        throw new ToolListPageLimitError();
+      }
+      throw error;
+    }
   }
-  return listAllMcpTools(client, requestOptions);
+  return listAllMcpTools(client, requestOptions, maxListPages);
 }
 
 function getNegotiatedModernCapabilities(client: Client) {
@@ -338,7 +373,10 @@ async function runMcpTransportOperation<T>(
   try {
     return await action();
   } catch (error) {
-    if (isCallerAbortReason(error, sourceSignal)) {
+    if (
+      error instanceof ToolListPageLimitError ||
+      isCallerAbortReason(error, sourceSignal)
+    ) {
       throw error;
     }
     throw sanitizeMcpTransportError(error, endpoint, operation);
@@ -374,6 +412,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
   protected timeout: number;
+  private readonly maxListPages: number | undefined;
 
   params: DefaultMCPServerStdioOptions;
   private _name: string;
@@ -381,6 +420,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
 
   constructor(params: MCPServerStdioOptions) {
     super(params);
+    this.maxListPages = validateMaxListPages(params.maxListPages);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.timeout = params.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
     if ('fullCommand' in params) {
@@ -425,7 +465,10 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
           name: this._name,
           version: '1.0.0', // You may want to make this configurable
         },
-        { versionNegotiation: { mode: 'auto' }, listMaxPages: 0 },
+        {
+          versionNegotiation: { mode: 'auto' },
+          listMaxPages: this.maxListPages ?? 0,
+        },
       );
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
@@ -464,7 +507,11 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     );
     const session = this.session;
     const cacheGeneration = this._toolsCacheGeneration;
-    const response = await listMcpTools(session, requestOptions);
+    const response = await listMcpTools(
+      session,
+      requestOptions,
+      this.maxListPages,
+    );
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
       listedClient: session,
@@ -623,6 +670,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
   protected timeout: number;
+  private readonly maxListPages: number | undefined;
 
   params: MCPServerSSEOptions;
   private _name: string;
@@ -630,6 +678,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
 
   constructor(params: MCPServerSSEOptions) {
     super(params);
+    this.maxListPages = validateMaxListPages(params.maxListPages);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `sse: ${this.params.url}`;
@@ -657,7 +706,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
           name: this._name,
           version: '1.0.0', // You may want to make this configurable
         },
-        { listMaxPages: 0 },
+        { listMaxPages: this.maxListPages ?? 0 },
       );
       const requestOptions = buildRequestOptions(
         this.clientSessionTimeoutSeconds,
@@ -704,7 +753,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     const response = await runMcpTransportOperation(
       this.params.url,
       'SSE list tools',
-      () => listMcpTools(session, requestOptions),
+      () => listMcpTools(session, requestOptions, this.maxListPages),
     );
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
@@ -881,6 +930,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
   protected timeout: number;
+  private readonly maxListPages: number | undefined;
 
   params: MCPServerStreamableHttpOptions;
   private _name: string;
@@ -895,6 +945,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 
   constructor(params: MCPServerStreamableHttpOptions) {
     super(params);
+    this.maxListPages = validateMaxListPages(params.maxListPages);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `streamable-http: ${this.params.url}`;
@@ -968,7 +1019,10 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
         name: this._name,
         version: '1.0.0',
       },
-      { versionNegotiation: { mode: 'auto' }, listMaxPages: 0 },
+      {
+        versionNegotiation: { mode: 'auto' },
+        listMaxPages: this.maxListPages ?? 0,
+      },
     );
     try {
       const requestOptions = buildRequestOptions(
@@ -1584,7 +1638,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     const response = await runMcpTransportOperation(
       this.params.url,
       'streamable HTTP list tools',
-      () => listMcpTools(session, requestOptions),
+      () => listMcpTools(session, requestOptions, this.maxListPages),
     );
     this.debugLog(() => `Listed tools: ${JSON.stringify(response)}`);
     assertMcpToolListingIsCurrent({
