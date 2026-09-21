@@ -1133,7 +1133,7 @@ export class Agent<
     const mcpTools = await this.getMcpTools(runContext, tracingParent);
     const enabledTools: Tool<TContext>[] = [];
 
-    for (const candidate of this.tools) {
+    for (const candidate of [...this.tools]) {
       if (candidate.type === 'function') {
         const maybeIsEnabled = (
           candidate as { isEnabled?: ToolEnabledFunction<TContext> | boolean }
