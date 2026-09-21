@@ -6,6 +6,7 @@ import {
   Runner,
   RunContext,
   RunState,
+  UserError,
   tool,
   type AgentInputItem,
   type NonStreamRunOptions,
@@ -601,4 +602,180 @@ describe('Runner compaction model visibility', () => {
       expect(compact).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('Runner compaction rollback budget', () => {
+  it.each([false, true])(
+    'keeps completed turns below the default trigger even above the budget (stream=%s)',
+    async (stream) => {
+      const initialItems = [
+        user('one'),
+        assistantMessage('one'),
+        user('two'),
+        assistantMessage('two'),
+      ];
+      const underlying = new MemorySession({ initialItems });
+      const compact = vi.fn();
+      const session = new OpenAIResponsesCompactionSession({
+        underlyingSession: underlying,
+        maxRollbackItems: 5,
+        client: { responses: { compact } } as any,
+      });
+      const reply = assistantMessage('done');
+      const result = await startRun(
+        new Runner({ tracingDisabled: true }),
+        new Agent({
+          name: 'default trigger',
+          model: new ScriptedModel([[reply]]),
+        }),
+        stream,
+        { session },
+      );
+      if ('completed' in result) await result.completed;
+      expect(result.finalOutput).toBe('done');
+      expect(compact).not.toHaveBeenCalled();
+      await expect(underlying.getItems()).resolves.toEqual([
+        ...initialItems,
+        user('hello'),
+        reply,
+      ]);
+    },
+  );
+
+  it.each([false, true])(
+    'records paid compaction usage once when the post-request snapshot overflows (stream=%s)',
+    async (stream) => {
+      const started = deferred();
+      const proceed = deferred();
+      const underlying = new MemorySession();
+      const clear = vi.spyOn(underlying, 'clearSession');
+      const compact = vi.fn(async () => {
+        started.resolve();
+        await proceed.promise;
+        return {
+          output: [],
+          usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 },
+        };
+      });
+      const session = new OpenAIResponsesCompactionSession({
+        underlyingSession: underlying,
+        maxRollbackItems: 2,
+        shouldTriggerCompaction: () => true,
+        client: { responses: { compact } } as any,
+      });
+      const reply = assistantMessage('done');
+      const context = new RunContext();
+      const running = startRun(
+        new Runner({ tracingDisabled: true }),
+        new Agent({
+          name: 'paid overflow',
+          model: new ScriptedModel([[reply]]),
+        }),
+        stream,
+        { session, context },
+      );
+      const completion = running.then(async (result) => {
+        if ('completed' in result) await result.completed;
+      });
+      const failed = completion.catch((error: unknown) => error);
+      await started.promise;
+      await underlying.addItems([user('external')]);
+      proceed.resolve();
+      const error = await failed;
+      expect(error).toBeInstanceOf(UserError);
+      expect((error as UserError).message).toContain(
+        'exceeds maxRollbackItems',
+      );
+      const usage = context.usage;
+      expect(usage.requests).toBe(2);
+      expect(usage.inputTokens).toBe(7);
+      expect(usage.outputTokens).toBe(3);
+      expect(usage.totalTokens).toBe(10);
+      expect(
+        usage.requestUsageEntries?.filter(
+          (entry) => entry.endpoint === 'responses.compact',
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          inputTokens: 7,
+          outputTokens: 3,
+          totalTokens: 10,
+        }),
+      ]);
+      expect(compact).toHaveBeenCalledTimes(1);
+      expect(clear).not.toHaveBeenCalled();
+      await expect(underlying.getItems()).resolves.toEqual([
+        user('hello'),
+        reply,
+        user('external'),
+      ]);
+    },
+  );
+
+  it.each([false, true])(
+    'honors the budget after turn persistence (stream=%s)',
+    async (stream) => {
+      for (const maxRollbackItems of [1, 2]) {
+        const underlying = new MemorySession();
+        const compact = vi.fn().mockResolvedValue({ output: [] });
+        const clear = vi.spyOn(underlying, 'clearSession');
+        const session = new OpenAIResponsesCompactionSession({
+          underlyingSession: underlying,
+          maxRollbackItems,
+          shouldTriggerCompaction: () => true,
+          client: { responses: { compact } } as any,
+        });
+        const reply = assistantMessage('done');
+        const running = startRun(
+          new Runner({ tracingDisabled: true }),
+          new Agent({ name: 'budget', model: new ScriptedModel([[reply]]) }),
+          stream,
+          { session },
+        );
+        const completion = stream
+          ? running.then((result) =>
+              'completed' in result ? result.completed : undefined,
+            )
+          : running;
+        if (maxRollbackItems === 1) {
+          await expect(completion).rejects.toThrow('exceeds maxRollbackItems');
+          expect(compact).not.toHaveBeenCalled();
+          expect(clear).not.toHaveBeenCalled();
+          await expect(underlying.getItems()).resolves.toEqual([
+            user('hello'),
+            reply,
+          ]);
+        } else {
+          await completion;
+          expect(compact).toHaveBeenCalledTimes(1);
+          await expect(underlying.getItems()).resolves.toEqual([]);
+        }
+      }
+    },
+  );
+
+  it('keeps the model-visibility skip before budget enforcement', async () => {
+    const hidden = user('retained');
+    const underlying = new MemorySession({ initialItems: [hidden] });
+    const compact = vi.fn();
+    const session = new OpenAIResponsesCompactionSession({
+      underlyingSession: underlying,
+      maxRollbackItems: 1,
+      shouldTriggerCompaction: () => true,
+      client: { responses: { compact } } as any,
+    });
+    const reply = assistantMessage('done');
+    const result = await new Runner({ tracingDisabled: true }).run(
+      new Agent({ name: 'filtered', model: new ScriptedModel([[reply]]) }),
+      'hello',
+      { session, sessionInputCallback: (_history, input) => input },
+    );
+    expect(result.finalOutput).toBe('done');
+    expect(compact).not.toHaveBeenCalled();
+    await expect(underlying.getItems()).resolves.toEqual([
+      hidden,
+      user('hello'),
+      reply,
+    ]);
+  });
 });
