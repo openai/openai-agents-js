@@ -110,6 +110,7 @@ function createProjects(reviewTestProfile: boolean) {
           'docs/src/scripts/headingAnchors.test.ts',
           'examples/agent-patterns/human-in-the-loop-server.test.ts',
           'examples/realtime-twilio-sip/server.test.ts',
+          'examples/tools/local-shell.test.ts',
         ],
       },
     },
