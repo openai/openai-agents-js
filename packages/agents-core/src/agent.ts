@@ -35,6 +35,7 @@ import type { RunResult, StreamedRunResult } from './result';
 import { getHandoff, type Handoff } from './handoff';
 import { StreamRunOptions, RunConfig, Runner } from './run';
 import { RunState } from './runState';
+import { selectModel } from './runner/modelSettings';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
 import { isZodObject } from './utils/typeGuards';
@@ -164,6 +165,8 @@ export type AgentToolOptions<
   includeInputSchema?: boolean;
   /**
    * Run configuration for initializing the internal agent runner.
+   * When the child uses an explicit Model object, parent transport overrides
+   * in providerData are not inherited. Supply child transport overrides here.
    */
   runConfig?: Partial<RunConfig>;
   /**
@@ -884,6 +887,7 @@ export class Agent<
         const inheritedRunConfig = getInheritedAgentToolRunConfig(
           getAgentToolParentRunConfigFromDetails(details),
           runConfig,
+          selectModel(this.model, runConfig?.model),
         );
         const nestedRunConfig = mergeAgentToolRunConfig(
           inheritedRunConfig,
