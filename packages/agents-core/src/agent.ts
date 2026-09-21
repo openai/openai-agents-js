@@ -75,6 +75,11 @@ import {
   setRunnerParentUsageRecorder,
 } from './runner/usageTracking';
 import { setRunnerInvocationSpanParent } from './runner/invocationContext';
+import {
+  createAgentToolStreamBuffer,
+  drainAgentToolStream,
+  setAgentToolStreamBuffer,
+} from './runner/agentToolStream';
 import type { Span } from './tracing';
 import { hasDefinitelyDifferentOutputTypes } from './agentOutputTypeWarning';
 import type { ZodObjectLike } from './utils/zodCompat';
@@ -181,6 +186,15 @@ export type AgentToolOptions<
    * Optional hook to receive streamed events from the nested agent run.
    */
   onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
+  /**
+   * Maximum events waiting for onStream or on(...) handlers, excluding the event
+   * currently being handled. Defaults to 1024; null permits an unlimited backlog.
+   * Must be a positive safe integer when set. Overflow aborts the nested run and
+   * fails the tool through its normal error handling. Already started handler
+   * promises cannot be cancelled. This bounds event count, not event sizes or
+   * total memory, and has no effect without streaming handlers.
+   */
+  onStreamMaxPendingEvents?: number | null;
 };
 export type AgentToolOptionsWithDefault<
   TContext,
@@ -767,7 +781,17 @@ export class Agent<
       resumeState,
       isEnabled,
       onStream,
+      onStreamMaxPendingEvents = 1024,
     } = options;
+    if (
+      onStreamMaxPendingEvents !== null &&
+      (!Number.isSafeInteger(onStreamMaxPendingEvents) ||
+        onStreamMaxPendingEvents <= 0)
+    ) {
+      throw new UserError(
+        'onStreamMaxPendingEvents must be a positive safe integer or null.',
+      );
+    }
     // Event handlers are scoped to this agent tool instance and are not shared; we only support registration (no removal) to keep the API surface small.
     const eventHandlers = new Map<
       AgentToolEventName,
@@ -906,9 +930,25 @@ export class Agent<
           typeof onStream === 'function' || eventHandlers.size > 0;
         const configuredSignal = runOptions?.signal;
         const toolCallSignal = details?.signal;
+        const streamController = shouldStream
+          ? new AbortController()
+          : undefined;
+        if (streamController && onStreamMaxPendingEvents !== null) {
+          setAgentToolStreamBuffer(
+            runner,
+            createAgentToolStreamBuffer(
+              onStreamMaxPendingEvents,
+              streamController,
+            ),
+          );
+        }
         const { signal: combinedSignal, cleanup: cleanupSignalListeners } =
-          configuredSignal && toolCallSignal
-            ? combineAbortSignals(configuredSignal, toolCallSignal)
+          streamController || (configuredSignal && toolCallSignal)
+            ? combineAbortSignals(
+                configuredSignal,
+                toolCallSignal,
+                streamController?.signal,
+              )
             : {
                 signal: toolCallSignal ?? configuredSignal,
                 cleanup: () => {},
@@ -939,13 +979,12 @@ export class Agent<
               Agent<TContext, AgentOutputType>
             >;
             // Drain the stream to deliver every event to registered handlers; ensure completion awaited so the nested run finishes before returning.
-            for await (const event of streamResult) {
-              await emitEvent({
-                event,
-                ...streamPayload,
-              });
-            }
-            await streamResult.completed;
+            await drainAgentToolStream(
+              streamResult,
+              (event) => emitEvent({ event, ...streamPayload }),
+              combinedSignal!,
+              streamController!,
+            );
             if (streamResult.cancelled) {
               const currentStep = streamResult.state._currentStep;
               const hasCommittedOutcome =
