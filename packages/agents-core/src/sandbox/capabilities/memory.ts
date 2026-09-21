@@ -40,6 +40,14 @@ export type MemoryGenerateConfig = {
   phaseOneModelSettings?: ModelSettings;
   phaseTwoModel?: string | Model;
   phaseTwoModelSettings?: ModelSettings;
+  /**
+   * Maximum model turns for the separate phase-two consolidation run. Defaults
+   * to 500; the outer Runner's turn limit does not apply to this run.
+   * This is not a time, token, or spending limit. On exhaustion, the memory
+   * manager logs the failure without recording a successful selection.
+   * Earlier tool writes are not rolled back.
+   */
+  phaseTwoMaxTurns?: number;
   extraPrompt?: string;
   model?: string | Model;
   instructions?: string;
@@ -237,6 +245,7 @@ function normalizeGenerateConfig(
       phaseOneModelSettings: DEFAULT_MEMORY_MODEL_SETTINGS,
       phaseTwoModel: DEFAULT_PHASE_TWO_MODEL,
       phaseTwoModelSettings: DEFAULT_MEMORY_MODEL_SETTINGS,
+      phaseTwoMaxTurns: 500,
     };
   }
   rejectKnownSnakeCaseConfigKeys(
@@ -247,6 +256,7 @@ function normalizeGenerateConfig(
       'phase_one_model_settings',
       'phase_two_model',
       'phase_two_model_settings',
+      'phase_two_max_turns',
       'extra_prompt',
     ],
     'memory generate config',
@@ -283,6 +293,7 @@ function normalizeGenerateConfig(
     phaseTwoModel: phaseTwoModel ?? DEFAULT_PHASE_TWO_MODEL,
     phaseOneModelSettings,
     phaseTwoModelSettings,
+    phaseTwoMaxTurns: config.phaseTwoMaxTurns ?? 500,
     ...(extraPrompt ? { extraPrompt } : {}),
   };
 }
