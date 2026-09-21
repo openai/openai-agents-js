@@ -10,6 +10,7 @@ import {
 import { z } from 'zod';
 import { Agent, type AgentOutputType } from '../src/agent';
 import { handoff } from '../src/handoff';
+import type { MCPServer } from '../src/mcp';
 import { UserError } from '../src/errors';
 import type {
   ApplyPatchOperation,
@@ -4920,6 +4921,342 @@ describe('sandbox runner integration', () => {
 
     expect(result.finalOutput).toBe('sandbox done');
     expect(toolsByName.get('shell')).toBe('function');
+  });
+
+  it.each([false, true])(
+    'refreshes application tools after returning to a sandbox agent (stream=%s)',
+    async (stream) => {
+      const client = new FakeSandboxClient();
+      const oldExecute = vi.fn(() => 'old result');
+      const newExecute = vi.fn(() => 'new result');
+      const oldTool = tool({
+        name: 'old_tool',
+        description: 'Original application tool.',
+        parameters: z.object({}),
+        execute: oldExecute,
+      });
+      const newTool = tool({
+        name: 'new_tool',
+        description: 'Replacement application tool.',
+        parameters: z.object({}),
+        execute: newExecute,
+      });
+      const functionCall = (
+        name: string,
+        callId: string,
+        args = '{}',
+      ): protocol.FunctionCallItem => ({
+        type: 'function_call',
+        name,
+        callId,
+        status: 'completed',
+        arguments: args,
+      });
+      const responses: ModelResponse[] = [
+        { output: [functionCall('transfer_to_B', 'to-b')], usage: new Usage() },
+        {
+          output: [
+            functionCall('new_tool', 'new-call'),
+            functionCall('exec_command', 'shell-call', '{"cmd":"pwd"}'),
+          ],
+          usage: new Usage(),
+        },
+        { output: [fakeModelMessage('done')], usage: new Usage() },
+      ];
+      const model = stream
+        ? new RecordingStreamingModel(responses)
+        : new RecordingModel(
+            responses.map((response) => modelResponse(response)),
+          );
+      const returnResponse = {
+        output: [functionCall('transfer_to_A', 'to-a')],
+        usage: new Usage(),
+      };
+      const other = new Agent({
+        name: 'B',
+        model: stream
+          ? new RecordingStreamingModel([returnResponse])
+          : new RecordingModel([modelResponse(returnResponse)]),
+      });
+      const agent = new SandboxAgent({
+        name: 'A',
+        model,
+        tools: [oldTool],
+        capabilities: [shell()],
+        handoffs: [other],
+      });
+      other.handoffs = [agent];
+      let starts = 0;
+      agent.on('agent_start', () => {
+        if (++starts === 2) {
+          agent.tools = [newTool];
+        }
+      });
+
+      if (stream) {
+        const result = await run(agent, 'Start', {
+          sandbox: { client },
+          stream: true,
+        });
+        await result.completed;
+        expect(result.finalOutput).toBe('done');
+      } else {
+        const result = await run(agent, 'Start', { sandbox: { client } });
+        expect(result.finalOutput).toBe('done');
+      }
+
+      expect(starts).toBe(2);
+      expect(
+        model.requests[0].tools.map((candidate) => candidate.name),
+      ).toContain('old_tool');
+      expect(
+        model.requests[0].tools.map((candidate) => candidate.name),
+      ).not.toContain('new_tool');
+      expect(
+        model.requests[1].tools.map((candidate) => candidate.name),
+      ).toContain('new_tool');
+      expect(
+        model.requests[1].tools.map((candidate) => candidate.name),
+      ).not.toContain('old_tool');
+      expect(
+        model.requests[2].tools.map((candidate) => candidate.name),
+      ).toContain('new_tool');
+      expect(oldExecute).not.toHaveBeenCalled();
+      expect(newExecute).toHaveBeenCalledOnce();
+      expect(
+        model.requests[1].tools.map((candidate) => candidate.name),
+      ).toContain('exec_command');
+      expect(client.createCalls).toHaveLength(1);
+      expect(client.execCommandCalls).toHaveLength(1);
+      expect(client.execCommandCalls[0]).toMatchObject({ cmd: 'pwd' });
+      expect(agent.tools).toEqual([newTool]);
+    },
+  );
+
+  it('keeps bound capability tool identities when refreshing cached application tools', async () => {
+    const client = new FakeSandboxClient();
+    const session = client.makeSession({
+      sessionId: 'tool-refresh',
+      manifest: new Manifest(),
+    });
+    const agent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'Worker',
+      capabilities: [shell()],
+    });
+    const manager = new SandboxRuntimeManager({
+      startingAgent: agent,
+      sandboxConfig: { client, session },
+    });
+    const first = await manager.prepareAgent({
+      currentAgent: agent,
+      turnInput: [],
+    });
+    const boundTools = [...first.executionAgent.tools];
+    const applicationTool = tool({
+      name: 'application_tool',
+      description: 'New tool.',
+      parameters: z.object({}),
+      execute: () => 'ok',
+    });
+    agent.tools = [applicationTool];
+    const second = await manager.prepareAgent({
+      currentAgent: agent,
+      turnInput: [],
+    });
+
+    expect(second.executionAgent).toBe(first.executionAgent);
+    expect(second.executionAgent.tools[0]).toBe(applicationTool);
+    expect(second.executionAgent.tools.slice(1)).toHaveLength(
+      boundTools.length,
+    );
+    for (const [index, candidate] of boundTools.entries()) {
+      expect(second.executionAgent.tools[index + 1]).toBe(candidate);
+    }
+    expect(agent.tools).toEqual([applicationTool]);
+  });
+
+  it.each([false, true])(
+    'preserves empty tool configuration when refreshing a cached agent (explicit=%s)',
+    async (explicit) => {
+      const client = new FakeSandboxClient();
+      const session = client.makeSession({
+        sessionId: 'empty-tools',
+        manifest: new Manifest(),
+      });
+      const agent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'Worker',
+        capabilities: [],
+        ...(explicit ? { tools: [] } : {}),
+      });
+      const manager = new SandboxRuntimeManager({
+        startingAgent: agent,
+        sandboxConfig: { client, session },
+      });
+      const first = await manager.prepareAgent({
+        currentAgent: agent,
+        turnInput: [],
+      });
+      expect(first.executionAgent.hasExplicitToolConfig()).toBe(explicit);
+      agent.tools = [
+        tool({
+          name: 'temporary_tool',
+          description: 'Temporary tool.',
+          parameters: z.object({}),
+          execute: () => 'ok',
+        }),
+      ];
+      const second = await manager.prepareAgent({
+        currentAgent: agent,
+        turnInput: [],
+      });
+      expect(second.executionAgent.hasExplicitToolConfig()).toBe(true);
+      agent.tools = [];
+      const third = await manager.prepareAgent({
+        currentAgent: agent,
+        turnInput: [],
+      });
+      expect(third.executionAgent).toBe(first.executionAgent);
+      expect(third.executionAgent.tools).toEqual([]);
+      expect(third.executionAgent.hasExplicitToolConfig()).toBe(explicit);
+    },
+  );
+
+  it('checks replacement application tools against bound capability tool names', async () => {
+    const client = new FakeSandboxClient();
+    const execute = vi.fn(() => 'unexpected');
+    const replacement = tool({
+      name: 'exec_command',
+      description: 'Conflicting application tool.',
+      parameters: z.object({}),
+      execute,
+    });
+    const other = new Agent({
+      name: 'B',
+      model: new RecordingModel([
+        modelResponse({
+          output: [
+            {
+              type: 'function_call',
+              name: 'transfer_to_A',
+              callId: 'return',
+              status: 'completed',
+              arguments: '{}',
+            },
+          ],
+          usage: new Usage(),
+        }),
+      ]),
+    });
+    const model = new RecordingModel([
+      modelResponse({
+        output: [
+          {
+            type: 'function_call',
+            name: 'transfer_to_B',
+            callId: 'leave',
+            status: 'completed',
+            arguments: '{}',
+          },
+        ],
+        usage: new Usage(),
+      }),
+    ]);
+    const agent = new SandboxAgent({
+      name: 'A',
+      model,
+      capabilities: [shell()],
+      handoffs: [other],
+    });
+    other.handoffs = [agent];
+    let starts = 0;
+    agent.on('agent_start', () => {
+      if (++starts === 2) agent.tools = [replacement];
+    });
+    const runner = new Runner({ toolNameCollisionPolicy: 'error' });
+
+    await expect(
+      runner.run(agent, 'Start', { sandbox: { client } }),
+    ).rejects.toThrow('unique routed names');
+    expect(starts).toBe(2);
+    expect(model.requests).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(client.execCommandCalls).toHaveLength(0);
+    expect(client.closeCalls).toEqual(['session-1']);
+  });
+
+  it('uses the public sandbox agent for tool enablement and MCP filtering', async () => {
+    const enabledAgents: unknown[] = [];
+    const filteredAgents: unknown[] = [];
+    const execute = vi.fn(() => 'application result');
+    const callTool = vi.fn(async () => [
+      { type: 'text' as const, text: 'MCP result' },
+    ]);
+    const server: MCPServer = {
+      name: 'identity-server',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      invalidateToolsCache: async () => {},
+      listTools: async () => [
+        {
+          name: 'remote_tool',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+            additionalProperties: false,
+          },
+        },
+      ],
+      callTool,
+      toolFilter: async ({ agent: candidate }) => {
+        filteredAgents.push(candidate);
+        return candidate === agent;
+      },
+    };
+    const applicationTool = tool({
+      name: 'application_tool',
+      description: 'Tool requiring the public agent identity.',
+      parameters: z.object({}),
+      execute,
+      isEnabled: ({ agent: candidate }): boolean => {
+        enabledAgents.push(candidate);
+        return candidate === agent;
+      },
+    });
+    const model = new RecordingModel([
+      modelResponse({
+        output: ['application_tool', 'remote_tool'].map((name) => ({
+          type: 'function_call',
+          name,
+          callId: name,
+          status: 'completed',
+          arguments: '{}',
+        })),
+        usage: new Usage(),
+      }),
+      modelResponse({ output: [fakeModelMessage('done')], usage: new Usage() }),
+    ]);
+    const agent = new SandboxAgent({
+      name: 'PublicIdentity',
+      model,
+      tools: [applicationTool],
+      mcpServers: [server],
+      capabilities: [],
+    });
+    const result = await run(agent, 'Start', {
+      sandbox: { client: new FakeSandboxClient() },
+    });
+
+    expect(result.finalOutput).toBe('done');
+    expect(model.requests[0].tools.map((candidate) => candidate.name)).toEqual([
+      'remote_tool',
+      'application_tool',
+    ]);
+    expect(enabledAgents).toEqual([agent, agent]);
+    expect(filteredAgents).toEqual([agent, agent]);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(callTool).toHaveBeenCalledOnce();
   });
 
   it('uses the public sandbox agent for filters, hooks, and run items', async () => {
