@@ -1,7 +1,70 @@
 import type { AgentInputItem } from '../types';
 import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { toUint8ArrayFromBinary } from '../utils/binary';
-import { deduplicateAgentInputItemsPreferringLatest } from './items';
+import {
+  deduplicateAgentInputItemsPreferringLatest,
+  stripReasoningItemIdForPolicy,
+} from './items';
+import type {
+  Session,
+  OpenAIResponsesCompactionAwareSession,
+} from '../memory/session';
+
+/** Return model-visible representations only when every stored occurrence is covered in order. */
+export function getModelVisibleSessionItems(
+  session: Session,
+  stored: AgentInputItem[],
+  exchange: NonNullable<
+    Parameters<OpenAIResponsesCompactionAwareSession['runCompaction']>[3]
+  >,
+): AgentInputItem[] | undefined {
+  const comparable = (items: AgentInputItem[]) => {
+    // Normalize each record separately: persistence's whole-array deduplication would lose counts.
+    const normalized = items.map(
+      (item) => normalizeItemsForSessionPersistence([item])[0],
+    );
+    return (
+      session.prepareHistoryItemsForPersistenceComparison?.(
+        structuredClone(normalized),
+      ) ?? normalized
+    );
+  };
+  const history = comparable(stored);
+  const modelItems = comparable(exchange.items);
+  if (
+    history.length !== stored.length ||
+    modelItems.length !== exchange.items.length
+  ) {
+    return undefined;
+  }
+  const visible: AgentInputItem[] = [];
+  let cursor = 0;
+  for (const item of history) {
+    const replayItem = stripReasoningItemIdForPolicy(
+      item,
+      exchange.reasoningItemIdPolicy,
+    );
+    while (
+      cursor < modelItems.length &&
+      !sessionItemArraysMatch([item], [modelItems[cursor]]) &&
+      !sessionItemArraysMatch([replayItem], [modelItems[cursor]]) &&
+      !sessionItemArraysMatch(
+        [item],
+        [
+          stripReasoningItemIdForPolicy(
+            modelItems[cursor],
+            exchange.reasoningItemIdPolicy,
+          ),
+        ],
+      )
+    ) {
+      cursor++;
+    }
+    if (cursor === modelItems.length) return undefined;
+    visible.push(exchange.items[cursor++]);
+  }
+  return visible;
+}
 
 export function normalizeItemsForSessionPersistence(
   items: AgentInputItem[],

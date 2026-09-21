@@ -13,7 +13,10 @@ import type {
   Session,
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
-import { logModelAndToolActionWarning } from '@openai/agents-core/utils/internal';
+import {
+  getModelVisibleSessionItems,
+  logModelAndToolActionWarning,
+} from '@openai/agents-core/utils/internal';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import { getInputItems } from '../openaiResponsesModel';
 import {
@@ -104,6 +107,8 @@ export type OpenAIResponsesCompactionSessionOptions = {
  *
  * This session is intended to be passed to `run()` so the runner can automatically supply the
  * latest `responseId` and invoke compaction after each completed turn is persisted.
+ * Automatic compaction skips history that is not fully covered by the latest successful model
+ * input and response. Explicit manual compaction remains caller-controlled.
  *
  * To debug compaction decisions, enable the `debug` logger for
  * `openai-agents:openai:compaction` (for example, `DEBUG=openai-agents:openai:compaction`).
@@ -155,6 +160,9 @@ export class OpenAIResponsesCompactionSession
     args: OpenAIResponsesCompactionArgs = {},
     _runContext?: RunContext<any>,
     ownership?: object | null,
+    modelExchange?: Parameters<
+      OpenAIResponsesCompactionSessionLike['runCompaction']
+    >[3],
   ): Promise<OpenAIResponsesCompactionResult | null> {
     return this.runMutationOperation(async () => {
       if (ownership !== undefined && !this.ownsCompaction(ownership)) {
@@ -163,7 +171,37 @@ export class OpenAIResponsesCompactionSession
         );
         return null;
       }
-      const result = await this.runCompactionOperation(args);
+      let automaticInput: AgentInputItem[] | undefined;
+      if (ownership !== undefined) {
+        if (!modelExchange) return null;
+        if (
+          (args.compactionMode ?? this.compactionMode) ===
+            'previous_response_id' &&
+          !modelExchange.responseId
+        )
+          return null;
+        // An explicit finite limit avoids mistaking a backend's default window for all history.
+        const history = await this.underlyingSession.getItems(
+          modelExchange.items.length + 1,
+        );
+        automaticInput = getModelVisibleSessionItems(
+          this,
+          history,
+          modelExchange,
+        );
+        if (!automaticInput || automaticInput.length === 0) {
+          logger.debug(
+            'skip: stored history is not covered by the successful model exchange',
+          );
+          return null;
+        }
+        // Keep decisions tied to the actual complete snapshot, not a stale candidate cache.
+        this.sessionItems = history;
+        this.compactionCandidateItems = selectCompactionCandidateItems(history);
+        this.responseId = modelExchange.responseId;
+        args = { ...args, responseId: modelExchange.responseId };
+      }
+      const result = await this.runCompactionOperation(args, automaticInput);
       if (result && ownership) {
         this.compactionOwnership.set(ownership, this.mutationGeneration);
       }
@@ -173,6 +211,7 @@ export class OpenAIResponsesCompactionSession
 
   private async runCompactionOperation(
     args: OpenAIResponsesCompactionArgs,
+    automaticInput?: AgentInputItem[],
   ): Promise<OpenAIResponsesCompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
@@ -199,8 +238,8 @@ export class OpenAIResponsesCompactionSession
         : await this.shouldTriggerCompaction({
             responseId: this.responseId,
             compactionMode: resolvedMode,
-            compactionCandidateItems,
-            sessionItems,
+            compactionCandidateItems: structuredClone(compactionCandidateItems),
+            sessionItems: structuredClone(sessionItems),
           });
     if (!shouldTriggerCompaction) {
       logger.debug('skip: decision hook %o', {
@@ -222,7 +261,7 @@ export class OpenAIResponsesCompactionSession
     if (resolvedMode === 'previous_response_id') {
       compactRequest.previous_response_id = this.responseId!;
     } else {
-      compactRequest.input = getInputItems(sessionItems);
+      compactRequest.input = getInputItems(automaticInput ?? sessionItems);
     }
 
     const compacted = await this.client.responses.compact(compactRequest);
