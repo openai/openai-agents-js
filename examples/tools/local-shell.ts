@@ -1,6 +1,8 @@
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import process from 'node:process';
+import { createInterface } from 'node:readline';
+import { pathToFileURL } from 'node:url';
 import {
   Agent,
   run,
@@ -15,6 +17,9 @@ import chalk from 'chalk';
 
 const execAsync = promisify(exec);
 
+// Approved commands retain access to host files and the network. This is not a
+// sandbox. For isolated execution, see container-shell-inline-skill.ts or
+// container-shell-skill-ref.ts in this directory.
 class LocalShell implements Shell {
   private readonly cwd: string;
 
@@ -34,14 +39,29 @@ class LocalShell implements Shell {
         exitCode: 0,
       };
       try {
-        const { stdout: localStdout, stderr: localStderr } = await execAsync(
-          command,
-          {
-            cwd: this.cwd,
-            timeout: action.timeoutMs,
-            maxBuffer: action.maxOutputLength,
-          },
-        );
+        // Pass only command lookup and Windows system-directory settings, not
+        // application credentials or shell startup hooks.
+        const env: NodeJS.ProcessEnv = {
+          // Node otherwise forwards this setting even with an explicit env.
+          NODE_V8_COVERAGE: undefined,
+        };
+        for (const key of Object.keys(process.env)) {
+          if (
+            key === 'PATH' ||
+            (process.platform === 'win32' &&
+              ['PATH', 'SYSTEMROOT'].includes(key.toUpperCase()))
+          ) {
+            env[key] = process.env[key];
+          }
+        }
+        const pending = execAsync(command, {
+          cwd: this.cwd,
+          timeout: action.timeoutMs,
+          maxBuffer: action.maxOutputLength,
+          env,
+        });
+        pending.child.stdin?.end();
+        const { stdout: localStdout, stderr: localStderr } = await pending;
         stdout = localStdout;
         stderr = localStderr;
       } catch (error: any) {
@@ -74,32 +94,58 @@ class LocalShell implements Shell {
 }
 
 async function promptShellApproval(commands: string[]): Promise<boolean> {
-  if (process.env.SHELL_AUTO_APPROVE === '1') {
-    return true;
+  if (
+    commands.length === 0 ||
+    process.env.EXAMPLES_INTERACTIVE_MODE?.toLowerCase() === 'auto' ||
+    !process.stdin.isTTY ||
+    !process.stdout.isTTY ||
+    process.stdin.readableEnded ||
+    process.stdin.destroyed
+  ) {
+    return false;
   }
 
   console.log(
-    chalk.bold.bgYellow.black(' Shell command approval required: \n'),
+    chalk.bold.bgYellow.black(
+      ' These commands will run on your host without sandbox isolation: \n',
+    ),
   );
-  commands.forEach((cmd) => console.log(chalk.dim(`  > ${cmd}`)));
-  const { createInterface } = await import('node:readline/promises');
+  console.log('For isolated execution, use the container-shell examples.');
+  for (const command of commands) {
+    // Escape every non-ASCII code unit as well as JSON control characters so
+    // terminal controls and bidirectional formatting cannot hide command text.
+    const display = JSON.stringify(command).replace(
+      /[\u007f-\uffff]/g,
+      (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    );
+    console.log(`  ${display}`);
+  }
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
   });
+  let deny: () => void = () => {};
   try {
-    const answer = await rl.question('\nProceed? [y/N] ');
-    const approved = answer.trim().toLowerCase();
-    return approved === 'y' || approved === 'yes';
+    return await new Promise<boolean>((resolve) => {
+      deny = () => resolve(false);
+      rl.once('close', deny);
+      rl.once('SIGINT', deny);
+      rl.question('\nProceed? [y/N] ', (answer) => {
+        const approved = answer.trim().toLowerCase();
+        resolve(approved === 'y' || approved === 'yes');
+      });
+    });
   } finally {
+    rl.off('close', deny);
+    rl.off('SIGINT', deny);
     rl.close();
   }
 }
 
-async function main() {
+export function createShellAgent() {
   const shell = new LocalShell();
 
-  const agent = new Agent({
+  return new Agent({
     name: 'Shell Assistant',
     model: 'gpt-5.4',
     instructions:
@@ -107,7 +153,6 @@ async function main() {
     tools: [
       shellTool({
         shell,
-        // could also be a function for you to determine if approval is needed
         needsApproval: true,
         onApproval: async (_ctx, approvalItem) => {
           const commands =
@@ -120,7 +165,10 @@ async function main() {
       }),
     ],
   });
+}
 
+async function main() {
+  const agent = createShellAgent();
   await withTrace('local-shell-tool-example', async () => {
     const result = await run(agent, 'Show the Node.js version.');
 
@@ -128,7 +176,12 @@ async function main() {
   });
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

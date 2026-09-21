@@ -116,6 +116,9 @@ export const CODEX_SANDBOX_AUTO_SKIP = new Map([
 ]);
 
 export const DEFAULT_AUTO_SKIP = [
+  // Host shell commands require an operator to review every command batch.
+  'tools:start:shell',
+  'tools:start:local-shell',
   // Tends to loop multiple times and produce very long output; skip in auto runs.
   'agent-patterns:start:llm-as-a-judge',
   // Requires external connector auth not available in auto runs.
@@ -745,10 +748,6 @@ const runStarts = async (
           if (start.scriptName.includes('apply-patch')) {
             childEnv.APPLY_PATCH_AUTO_APPROVE =
               childEnv.APPLY_PATCH_AUTO_APPROVE ?? '1';
-          }
-          if (start.scriptName.includes('shell')) {
-            childEnv.SHELL_AUTO_APPROVE =
-              childEnv.SHELL_AUTO_APPROVE ?? childEnv.AUTO_APPROVE_HITL ?? '1';
           }
           if (start.packageName === 'mcp') {
             childEnv.AUTO_APPROVE_MCP =
