@@ -5,6 +5,7 @@ const agent = new RealtimeAgent({
   name: 'My Agent',
 });
 
+// Authenticate the HTTP webhook and WebSocket upgrade in your server first.
 // Create a new transport mechanism that will bridge the connection between Twilio and
 // the OpenAI Realtime API.
 const twilioTransport = new TwilioRealtimeTransportLayer({
