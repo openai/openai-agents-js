@@ -39,3 +39,4 @@ export {
   validateToolInvocationApproval,
   validateToolInvocationName,
 } from '../toolInvocation';
+export { getAgentToolParentRunConfigFromDetails } from '../agentToolRunConfig';
