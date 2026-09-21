@@ -3018,6 +3018,230 @@ describe('DockerSandboxClient unit behavior', () => {
     );
   });
 
+  describe('read-only host binds with privileged storage', () => {
+    beforeEach(() => {
+      processMocks.runSandboxProcess.mockImplementation(
+        async (_command: string, args: string[]) => {
+          if (args[0] === 'version') return success('Docker version test');
+          if (args[0] === 'run') return success('container-123\n');
+          if (args[0] === 'volume') return success('volume-123\n');
+          return failure('unexpected docker command');
+        },
+      );
+      childProcessMocks.spawn.mockImplementation(() =>
+        dockerSpawnResult({ status: 0 }),
+      );
+    });
+
+    const bindCases = [
+      { binding: 'explicit-grant', mode: 'fuse' },
+      { binding: 'implicit-grant', mode: 'nfs' },
+      { binding: 'local-bind', mode: 'fuse' },
+      { binding: 'default-bind', mode: 'nfs' },
+    ] as const;
+
+    function hostBindManifest(
+      binding: (typeof bindCases)[number]['binding'],
+      readOnly: boolean,
+    ) {
+      if (binding === 'explicit-grant' || binding === 'implicit-grant') {
+        return new Manifest({
+          extraPathGrants: [
+            binding === 'explicit-grant'
+              ? { path: '/mnt/shared-data', hostPath: rootDir, readOnly }
+              : { path: rootDir, readOnly },
+          ],
+        });
+      }
+      return new Manifest({
+        entries: {
+          host: {
+            type: 'dir',
+            children: {
+              shared: {
+                type: 'mount',
+                source: rootDir,
+                ...(binding === 'local-bind'
+                  ? { mountStrategy: { type: 'local_bind' as const } }
+                  : {}),
+                ...(binding === 'default-bind' && readOnly ? {} : { readOnly }),
+              },
+            },
+          },
+        },
+      });
+    }
+
+    function storageManifest(
+      mode: 'fuse' | 'nfs',
+      readOnly: boolean,
+      binding: (typeof bindCases)[number]['binding'],
+    ) {
+      const hostManifest = hostBindManifest(binding, readOnly);
+      return new Manifest({
+        extraPathGrants: hostManifest.extraPathGrants,
+        entries: {
+          ...hostManifest.entries,
+          nested: {
+            type: 'dir',
+            children: {
+              mounted: s3Mount({
+                bucket: 'fixture',
+                mountStrategy: inContainerMountStrategy({
+                  pattern: { type: 'rclone', mode },
+                }),
+              }),
+            },
+          },
+        },
+      });
+    }
+
+    it.each(bindCases)(
+      'rejects $binding with $mode storage before create effects',
+      async ({ mode, binding }) => {
+        const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+        const manifest = storageManifest(mode, true, binding);
+        const resolveEnvironment = vi.spyOn(manifest, 'resolveEnvironment');
+
+        await expect(client.create(manifest)).rejects.toMatchObject({
+          code: 'mount_config_invalid',
+          message: expect.stringMatching(/read-only host binds.*SYS_ADMIN/u),
+        });
+
+        expect(resolveEnvironment).not.toHaveBeenCalled();
+        expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+        expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+        await expect(readdir(rootDir)).resolves.toEqual([]);
+      },
+    );
+
+    it.each(bindCases)(
+      'rejects resume and live reuse with current trusted $binding',
+      async ({ mode, binding }) => {
+        const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+        const session = await client.create(
+          storageManifest(mode, false, binding),
+        );
+        const originalManifest = session.state.manifest;
+        const candidate = rebindPersistedPathGrants(
+          session.state,
+          storageManifest(mode, true, binding),
+          { replaceWithTrustedManifest: true },
+        );
+        const workspaceBefore = await readdir(session.state.workspaceRootPath);
+        processMocks.runSandboxProcess.mockClear();
+        childProcessMocks.spawn.mockClear();
+
+        // Resume already rejects all in-container mounts before Docker access.
+        await expect(client.resume(candidate)).rejects.toMatchObject({
+          code: 'mount_config_invalid',
+          message: expect.stringMatching(
+            /in-container mounts cannot be resumed/u,
+          ),
+        });
+        await expect(
+          client.canReusePreservedOwnedSession(candidate),
+        ).rejects.toMatchObject({
+          code: 'mount_config_invalid',
+          message: expect.stringMatching(/read-only host binds.*SYS_ADMIN/u),
+        });
+
+        expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+        expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+        expect(session.state.manifest).toBe(originalManifest);
+        expect(session.state.containerId).toBe('container-123');
+        await expect(readdir(session.state.workspaceRootPath)).resolves.toEqual(
+          workspaceBefore,
+        );
+      },
+    );
+
+    it.each([
+      { operation: 'applyManifest', binding: 'implicit-grant' },
+      { operation: 'materializeEntry', binding: 'local-bind' },
+    ] as const)(
+      'rejects privileged storage through $operation with a $binding',
+      async ({ operation, binding }) => {
+        const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+        const session = await client.create(hostBindManifest(binding, true));
+        const workspaceBefore = await readdir(session.state.workspaceRootPath);
+        const originalManifest = session.state.manifest;
+        const originalEnvironment = session.state.environment;
+        const entry = s3Mount({
+          bucket: 'fixture',
+          mountStrategy: inContainerMountStrategy(),
+        });
+        const delta = new Manifest({ entries: { mounted: entry } });
+        const resolveEnvironment = vi.spyOn(
+          Manifest.prototype,
+          'resolveEnvironment',
+        );
+        processMocks.runSandboxProcess.mockClear();
+        childProcessMocks.spawn.mockClear();
+
+        await expect(
+          operation === 'applyManifest'
+            ? session.applyManifest(delta)
+            : session.materializeEntry({ path: 'mounted', entry }),
+        ).rejects.toMatchObject({
+          code: 'mount_config_invalid',
+          message: expect.stringMatching(/read-only host binds.*SYS_ADMIN/u),
+        });
+
+        expect(resolveEnvironment).not.toHaveBeenCalled();
+        expect(processMocks.runSandboxProcess).not.toHaveBeenCalled();
+        expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+        expect(session.state.manifest).toBe(originalManifest);
+        expect(session.state.environment).toBe(originalEnvironment);
+        await expect(readdir(session.state.workspaceRootPath)).resolves.toEqual(
+          workspaceBefore,
+        );
+        // A validation failure must not tombstone the otherwise usable session.
+        await expect(
+          session.applyManifest(
+            new Manifest({ environment: { FIXTURE: 'ok' } }),
+          ),
+        ).resolves.toBeUndefined();
+        expect(session.state.environment.FIXTURE).toBe('ok');
+      },
+    );
+
+    it.each(bindCases)(
+      'preserves a read-only $binding with provider-native storage',
+      async ({ binding }) => {
+        const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+        const hostManifest = hostBindManifest(binding, true);
+        await client.create(
+          new Manifest({
+            extraPathGrants: hostManifest.extraPathGrants,
+            entries: {
+              ...hostManifest.entries,
+              mounted: s3Mount({
+                bucket: 'fixture',
+                mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+              }),
+            },
+          }),
+        );
+        const runCall = processMocks.runSandboxProcess.mock.calls.find(
+          ([, args]) => args[0] === 'run',
+        );
+        const target =
+          binding === 'implicit-grant'
+            ? rootDir
+            : binding === 'explicit-grant'
+              ? '/mnt/shared-data'
+              : '/workspace/host/shared';
+        expect(runCall?.[1]).toContain(
+          `type=bind,source=${await realpath(rootDir)},target=${target},readonly`,
+        );
+        expect(runCall?.[1]).not.toContain('SYS_ADMIN');
+        expect(childProcessMocks.spawn).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   it('uses create-time path grants as command workdirs', async () => {
     processMocks.runSandboxProcess.mockImplementation(
       async (_command: string, args: string[]) => {

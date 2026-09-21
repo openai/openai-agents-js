@@ -343,6 +343,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     );
     assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
     validateMountCredentialBoundaries(nextManifest);
+    assertDockerReadOnlyHostBindsSupported(nextManifest);
     validateMountEnvironmentCredentialBoundaries(
       nextManifest,
       this.state.environment,
@@ -424,6 +425,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     const nextManifest = mergeManifestDelta(this.state.manifest, manifest);
     assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
     validateMountCredentialBoundaries(nextManifest);
+    assertDockerReadOnlyHostBindsSupported(nextManifest);
     assertDockerManifestDeltaSupported(this.state.manifest, manifest);
     assertDockerCanApplyInContainerMounts(this.state.manifest, manifest);
     const environment = await manifest.resolveEnvironment();
@@ -1358,6 +1360,7 @@ export class DockerSandboxClient implements SandboxClient<
     if (isRunStateSessionState(state)) {
       return false;
     }
+    assertDockerReadOnlyHostBindsSupported(state.manifest);
     if (
       !liveMountEnvironmentAuthorityMatches(
         state.manifest,
@@ -1805,6 +1808,7 @@ async function resolveDockerRunStateEnvironment(
 
 function assertDockerManifestSupported(manifest: Manifest): void {
   validateMountCredentialBoundaries(manifest);
+  assertDockerReadOnlyHostBindsSupported(manifest);
   assertDockerManifestRootSupported(manifest);
   for (const grant of manifest.extraPathGrants) {
     sandboxPathGrantHostPath(grant);
@@ -1818,6 +1822,25 @@ function assertDockerManifestSupported(manifest: Manifest): void {
       supportsMount: isSupportedDockerCreateMount,
     },
   );
+}
+
+function assertDockerReadOnlyHostBindsSupported(manifest: Manifest): void {
+  if (
+    (manifest.extraPathGrants.some((grant) => grant.readOnly) ||
+      manifest
+        .mountTargetsForMaterialization()
+        .some(
+          ({ entry }) => isDockerBindMount(entry) && (entry.readOnly ?? true),
+        )) &&
+    dockerInContainerMountPrivilege(manifest) !== 'none'
+  ) {
+    // SYS_ADMIN can allow a sandbox process to remount a read-only host bind.
+    throw new SandboxMountError(
+      'Docker read-only host binds cannot be combined with in-container storage mounts that require SYS_ADMIN. Remove the read-only host bind or use a storage strategy that does not require container mount privileges.',
+      undefined,
+      'mount_config_invalid',
+    );
+  }
 }
 
 type DockerContainerReuseInspection = {
