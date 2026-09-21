@@ -109,6 +109,7 @@ function createProjects(reviewTestProfile: boolean) {
           'scripts/workflow-contracts.test.mjs',
           'docs/src/scripts/headingAnchors.test.ts',
           'examples/agent-patterns/human-in-the-loop-server.test.ts',
+          'examples/realtime-twilio-sip/server.test.ts',
         ],
       },
     },
