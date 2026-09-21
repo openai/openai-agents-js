@@ -8,6 +8,7 @@
     "@openai/agents-extensions": "workspace:*",
     "dotenv": "^16.5.0",
     "fastify": "^5.12.3",
+    "twilio": "^6.1.1",
     "ws": "^8.21.3",
     "zod": "^4.0.0"
   },
