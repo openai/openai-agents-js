@@ -1,3 +1,4 @@
+import { getAgentToolStreamBuffer } from './runner/agentToolStream';
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import {
@@ -3627,6 +3628,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         signal: options.signal,
         state,
       });
+      result._setAgentToolStreamBuffer(getAgentToolStreamBuffer(this));
       const streamOptions: StreamRunOptions<TContext, TAgent> = {
         ...options,
         signal: result._getAbortSignal(),
