@@ -111,6 +111,7 @@ function createProjects(reviewTestProfile: boolean) {
           'examples/agent-patterns/human-in-the-loop-server.test.ts',
           'examples/realtime-twilio-sip/server.test.ts',
           'examples/realtime-twilio/server.test.ts',
+          'examples/tools/local-shell.test.ts',
         ],
       },
     },

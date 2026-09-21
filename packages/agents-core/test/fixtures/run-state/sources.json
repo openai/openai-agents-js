@@ -349,7 +349,7 @@
     {
       "schemaVersion": "1.21",
       "status": "current_unreleased",
-      "reason": "Re-evaluates conditional policies against refreshed normalized input on approval resume; restoration retains no normalized values or comparison evidence."
+      "reason": "Re-evaluates conditional approval policies and preserves original MCP recipients. Historical pending function calls without recipient provenance remain readable but cannot execute; start a new run."
     }
   ],
   "expectedNormalizedFixtures": [

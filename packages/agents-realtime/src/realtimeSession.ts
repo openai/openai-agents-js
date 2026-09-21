@@ -1267,7 +1267,8 @@ export class RealtimeSession<
 
     this.#deletePendingFunctionCall(agent, toolCall.callId);
     if (argumentParseError !== undefined) {
-      const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${toErrorMessage(argumentParseError)}`;
+      const errorMessage =
+        'An error occurred while parsing tool arguments. Please try again with valid JSON.';
       this.#sendCommittedFunctionCallOutput(
         agent,
         invocation,

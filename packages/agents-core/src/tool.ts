@@ -38,6 +38,10 @@ import {
 } from './toolOutputError';
 import logger, { logToolActionWarning } from './logger';
 import { getCurrentSpan } from './tracing';
+import {
+  includesFunctionToolErrorDetails,
+  REDACTED_TOOL_ERROR_MESSAGE,
+} from './functionToolTracing';
 import { RunToolApprovalItem, RunToolCallOutputItem } from './items';
 import { toSmartString } from './utils/smartString';
 import { normalizeHostedMcpRequireApproval } from './utils/mcpApproval';
@@ -1722,14 +1726,11 @@ type ToolGuardrailOptions<Context = UnknownContext> = {
 /**
  * The default function to invoke when an error occurs while running the tool.
  *
- * Always returns `An error occurred while running the tool. Please try again. Error: <error details>`
- *
- * @param context An instance of the current RunContext
- * @param error The error that occurred
+ * Returns a fixed message without inspecting the exception. Provide a custom
+ * `errorFunction` to return application-approved details to the model.
  */
-function defaultToolErrorFunction(context: RunContext, error: Error | unknown) {
-  const details = error instanceof Error ? error.toString() : String(error);
-  return `An error occurred while running the tool. Please try again. Error: ${details}`;
+function defaultToolErrorFunction() {
+  return 'An error occurred while running the tool. Please try again.';
 }
 
 function defaultFunctionToolTimeoutErrorMessage(args: {
@@ -1809,7 +1810,12 @@ type StrictToolOptionsBase<
    * The function to invoke when an error or model-visible pre-execution
    * rejection occurs. Tools with an output schema rethrow by default so they
    * cannot emit an unstructured error string. Provide this callback to return
-   * a schema-compatible fallback.
+   * a schema-compatible fallback. Without an output schema, the default returns
+   * a fixed generic error message. For failures handled during tool invocation,
+   * provide this callback for application-approved details, or set it to `null`
+   * to propagate the error. Without an output schema, `Runner` handles malformed
+   * JSON before invoking the tool and returns fixed feedback without calling this
+   * callback, even when it is `null`.
    */
   errorFunction?: ToolErrorFunction<
     Context,
@@ -1912,7 +1918,12 @@ type NonStrictToolOptionsBase<
    * The function to invoke when an error or model-visible pre-execution
    * rejection occurs. Tools with an output schema rethrow by default so they
    * cannot emit an unstructured error string. Provide this callback to return
-   * a schema-compatible fallback.
+   * a schema-compatible fallback. Without an output schema, the default returns
+   * a fixed generic error message. For failures handled during tool invocation,
+   * provide this callback for application-approved details, or set it to `null`
+   * to propagate the error. Without an output schema, `Runner` handles malformed
+   * JSON before invoking the tool and returns fixed feedback without calling this
+   * callback, even when it is `null`.
    */
   errorFunction?: ToolErrorFunction<
     Context,
@@ -2511,11 +2522,17 @@ export function tool<
       invalidInputFailure?.error ?? invalidOutputFailure?.error ?? error;
     const errorDetails = redactedBeforeCallback ? undefined : details;
     const currentSpan = getCurrentSpan();
+    const includeErrorDetails =
+      toolErrorFunction !== defaultToolErrorFunction &&
+      !redactedBeforeCallback &&
+      includesFunctionToolErrorDetails(details);
     currentSpan?.setError({
       message: 'Error running tool (non-fatal)',
       data: {
         tool_name: name,
-        error: callbackError.toString(),
+        error: includeErrorDetails
+          ? callbackError.toString()
+          : REDACTED_TOOL_ERROR_MESSAGE,
       },
     });
     try {

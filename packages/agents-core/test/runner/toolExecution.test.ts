@@ -7526,8 +7526,9 @@ describe('executeShellActions', () => {
       }
     });
 
-    it('preserves malformed JSON details in diagnostic mode', async () => {
+    it('keeps malformed JSON details in local diagnostics only', async () => {
       const secret = 'SECRT123';
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
       const flagSpy = vi
         .spyOn(logger, 'dontLogToolData', 'get')
         .mockReturnValue(false);
@@ -7553,9 +7554,13 @@ describe('executeShellActions', () => {
 
         expect(result.type).toBe('function_output');
         if (result.type === 'function_output') {
-          expect(String(result.output)).toContain(secret);
+          expect(result.output).toBe(
+            'An error occurred while parsing tool arguments. Please try again with valid JSON.',
+          );
         }
+        expect(JSON.stringify(debugSpy.mock.calls)).toContain(secret);
       } finally {
+        debugSpy.mockRestore();
         flagSpy.mockRestore();
       }
     });
@@ -7799,8 +7804,7 @@ describe('executeShellActions', () => {
 
       expect(result).toMatchObject({
         type: 'function_output',
-        output:
-          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+        output: 'An error occurred while running the tool. Please try again.',
       });
     });
 
@@ -9664,8 +9668,7 @@ describe('executeShellActions', () => {
       expect(execute).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         type: 'function_output',
-        output:
-          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+        output: 'An error occurred while running the tool. Please try again.',
       });
     });
 
@@ -9708,8 +9711,7 @@ describe('executeShellActions', () => {
       expect(innerExecute).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         type: 'function_output',
-        output:
-          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+        output: 'An error occurred while running the tool. Please try again.',
       });
     });
 

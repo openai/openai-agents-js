@@ -121,8 +121,8 @@ describe('agent tool streaming backlog', () => {
             /* Drain the parent. */
           }
         }
-        expect(result.finalOutput).toContain(
-          `onStreamMaxPendingEvents=${budget}`,
+        expect(result.finalOutput).toBe(
+          'An error occurred while running the tool. Please try again.',
         );
         expect(result.finalOutput).not.toContain('nested success');
         expect(modelSignal?.aborted).toBe(true);
@@ -368,7 +368,9 @@ describe('agent tool streaming lifecycle', () => {
       const second = await runner.run(parentFor(nestedTool), 'second');
       expect(second.finalOutput).toBe('surviving invocation');
       allowOverflow.release();
-      expect((await first).finalOutput).toContain('onStreamMaxPendingEvents=8');
+      expect((await first).finalOutput).toBe(
+        'An error occurred while running the tool. Please try again.',
+      );
       expect(second.finalOutput).toBe('surviving invocation');
     } finally {
       allowOverflow.release();
@@ -415,14 +417,14 @@ describe('agent tool streaming lifecycle', () => {
     try {
       expect(
         (await runner.run(parentFor(nestedTool), 'start')).finalOutput,
-      ).toContain('onStreamMaxPendingEvents=2');
+      ).toBe('An error occurred while running the tool. Please try again.');
       expect(closed).toHaveBeenCalledOnce();
     } finally {
       releaseHandler.release();
     }
   });
 
-  it('preserves overflow when closing the model iterator also throws', async () => {
+  it('redacts overflow and secondary model iterator cleanup failures', async () => {
     const handlerStarted = barrier();
     const releaseHandler = barrier();
     const nested = new Agent({
@@ -459,7 +461,9 @@ describe('agent tool streaming lifecycle', () => {
     });
     try {
       const result = await runner.run(parentFor(nestedTool), 'start');
-      expect(result.finalOutput).toContain('onStreamMaxPendingEvents=2');
+      expect(result.finalOutput).toBe(
+        'An error occurred while running the tool. Please try again.',
+      );
       expect(result.finalOutput).not.toContain('secondary');
     } finally {
       releaseHandler.release();
@@ -493,7 +497,7 @@ describe('agent tool streaming lifecycle', () => {
     try {
       expect(
         (await runner.run(parentFor(nestedTool), 'start')).finalOutput,
-      ).toContain('primary producer failure');
+      ).toBe('An error occurred while running the tool. Please try again.');
     } finally {
       releaseHandler.release();
     }

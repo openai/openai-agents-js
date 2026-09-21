@@ -490,8 +490,8 @@ describe('sandbox filesystem tools', () => {
         new RunContext(),
         JSON.stringify({ path: 'image.png' }),
       ),
-    ).resolves.toContain(
-      'Filesystem sandbox sessions must provide viewImage().',
+    ).resolves.toBe(
+      'An error occurred while running the tool. Please try again.',
     );
     session.assertComplete();
   });

@@ -19,11 +19,13 @@ export const financialsAgent = new Agent({
 });
 
 // --- Financial Research Planner Agent ---
+export const MAX_SEARCHES = 15;
+
 export const plannerPrompt = `You are a financial research planner.
 Given a request for financial analysis, produce a set of web searches to gather the context needed.
 Aim for recent headlines, earnings calls or 10-K snippets, analyst commentary, and industry background.
 Prioritize official investor-relations releases and SEC filings for reported results.
-Output between 5 and 15 search terms to query for.`;
+Output between 5 and ${MAX_SEARCHES} search terms to query for.`;
 
 export const FinancialSearchItem = z.object({
   reason: z

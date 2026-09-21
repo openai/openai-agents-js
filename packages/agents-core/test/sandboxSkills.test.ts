@@ -832,7 +832,9 @@ describe('Skills', () => {
         undefined,
         JSON.stringify({ skill_name: 'dynamic-skill' }),
       ),
-    ).resolves.toContain('Permission denied');
+    ).resolves.toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     expect(session.calls.map((call) => call.method)).toEqual(['pathExists']);
     session.assertComplete();
   });
