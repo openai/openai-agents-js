@@ -5,6 +5,7 @@ import {
   isRunContextAwareSession,
   isSessionHistoryTransactionAwareSession,
   type OpenAIResponsesCompactionArgs,
+  type OpenAIResponsesCompactionAwareSession,
   type Session,
   type SessionHistoryTransaction,
   type SessionInputCallback,
@@ -84,6 +85,9 @@ const SESSION_LIMIT_UNSET = Symbol('sessionLimitUnset');
 export type SessionCompactionState = {
   session: Session;
   ownership: object | null;
+  modelExchange?: Parameters<
+    OpenAIResponsesCompactionAwareSession['runCompaction']
+  >[3];
 };
 
 // Ownership survives same-live resume, but never RunState serialization or a different session.
@@ -117,6 +121,28 @@ export function bindSessionCompactionState(
   if (binding) {
     sessionCompactionStates.set(state, binding);
   }
+}
+
+/** Capture final input now, but authorize compaction only after the response succeeds. */
+export function prepareSessionCompactionExchange(
+  session: Session | undefined,
+  state: RunState<any, any>,
+  input: AgentInputItem[],
+): (output: AgentInputItem[], responseId?: string) => void {
+  const binding = getSessionCompactionState(session, state);
+  if (!binding) {
+    return () => {};
+  }
+  binding.modelExchange = undefined;
+  const snapshot = structuredClone(input);
+  const reasoningItemIdPolicy = state._reasoningItemIdPolicy;
+  return (output, responseId) => {
+    binding.modelExchange = {
+      items: [...snapshot, ...structuredClone(output)],
+      responseId,
+      reasoningItemIdPolicy,
+    };
+  };
 }
 
 async function getSessionItems(
@@ -2551,6 +2577,7 @@ async function runCompactionOnSession(
         compactionArgs,
         state._context,
         getSessionCompactionState(session, state)?.ownership ?? null,
+        getSessionCompactionState(session, state)?.modelExchange,
       )
     : isRunContextAwareSession(session)
       ? await session.runCompaction(compactionArgs, state._context)
