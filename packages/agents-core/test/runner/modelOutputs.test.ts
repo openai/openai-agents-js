@@ -757,6 +757,7 @@ describe('processModelResponse', () => {
     expect(result.toolsUsed).toEqual(['test']);
     expect(result.functions).toContainEqual({
       tool: TEST_TOOL,
+      mcpToolBinding: null,
       toolCall: TEST_MODEL_RESPONSE_WITH_FUNCTION.output[0],
     });
     expect(result.newItems[1]).toBeInstanceOf(MessageOutputItem);
@@ -1578,6 +1579,7 @@ describe('processModelResponse', () => {
       {
         toolCall: functionCall,
         tool: lookupAccount,
+        mcpToolBinding: null,
       },
     ]);
     expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
@@ -2676,6 +2678,7 @@ describe('processModelResponse', () => {
     expect(result.functions[0]).toEqual({
       toolCall: functionCall,
       tool: billingNamespace[0],
+      mcpToolBinding: null,
     });
     expect(result.toolsUsed).toEqual(['billing.lookup_account']);
   });
@@ -2764,6 +2767,7 @@ describe('processModelResponse', () => {
     expect(result.functions[0]).toEqual({
       toolCall: functionCall,
       tool: shippingEta,
+      mcpToolBinding: null,
     });
     expect(result.toolsUsed).toEqual(['get_shipping_eta']);
   });
@@ -2970,6 +2974,7 @@ describe('processModelResponse', () => {
       {
         toolCall: functionCall,
         tool: shippingEta,
+        mcpToolBinding: null,
       },
     ]);
   });
@@ -3022,6 +3027,7 @@ describe('processModelResponse', () => {
           namespace: 'crm',
         },
         tool: crmLookup,
+        mcpToolBinding: null,
       },
     ]);
     expect(result.handoffs).toEqual([]);
@@ -3077,6 +3083,7 @@ describe('processModelResponse', () => {
             namespace: 'crm',
           },
           tool: crmLookup,
+          mcpToolBinding: null,
         },
       ]);
       expect(result.handoffs).toEqual([]);
@@ -3264,7 +3271,7 @@ describe('processModelResponse', () => {
     expect(handoffResult.functions).toEqual([]);
     expect(deferredResult.handoffs).toEqual([]);
     expect(deferredResult.functions).toEqual([
-      { toolCall: deferredCall, tool: deferredLookup },
+      { toolCall: deferredCall, tool: deferredLookup, mcpToolBinding: null },
     ]);
   });
 
@@ -3342,6 +3349,7 @@ describe('processModelResponse', () => {
       {
         toolCall: functionCall,
         tool: crmLookup,
+        mcpToolBinding: null,
       },
     ]);
     expect(result.handoffs).toEqual([]);

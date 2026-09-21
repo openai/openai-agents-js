@@ -88,6 +88,7 @@ import {
   getFunctionToolQualifiedName,
   getFunctionToolStateKey,
   getFunctionToolStateKeys,
+  matchesFunctionToolRecipient,
   matchesFunctionToolName,
 } from '../toolIdentity';
 import {
@@ -358,6 +359,36 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
         : { ...deps, signal: executionSignal };
     if (executionSignal?.aborted) {
       return buildFunctionCancellationResult(executionDeps, toolRun);
+    }
+    if (
+      !matchesFunctionToolRecipient(
+        toolRun.mcpToolBinding ?? null,
+        toolRun.tool,
+      )
+    ) {
+      // Rejection is safe even when the original recipient is unavailable. Do not
+      // parse input or invoke output-schema callbacks belonging to a replacement.
+      const rejected =
+        state._context.isToolApproved({
+          toolName: getFunctionToolApprovalStateKey(toolRun),
+          callId: toolRun.toolCall.callId,
+          functionTool: false,
+          agent,
+        }) === false;
+      if (!rejected) {
+        throw new UserError(
+          'Cannot resume a function tool call with a missing or different MCP recipient binding. Restore the original MCP configuration and tool listing, or start a new run.',
+          state,
+        );
+      }
+      for (const stateKey of getFunctionToolPendingStateKeys(toolRun)) {
+        state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
+      }
+      return buildApprovalRejectionResult(executionDeps, {
+        ...toolRun,
+        availableFunctionTools: toolRun.availableFunctionTools,
+        tool: { ...toolRun.tool, outputSchema: undefined },
+      });
     }
     const pending = state._pendingFunctionToolApprovals
       .get(agent)
