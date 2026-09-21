@@ -33,6 +33,8 @@ type JsonCompatibleValue =
   | { [key: string]: JsonCompatibleValue };
 
 const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
+const OPENAI_TRACING_INGEST_ENDPOINT =
+  'https://api.openai.com/v1/traces/ingest';
 const OPENAI_TRACING_MAX_RECURSION_DEPTH = 1_000;
 const OPENAI_TRACING_STRING_TRUNCATION_SUFFIX = '... [truncated]';
 
@@ -639,6 +641,59 @@ function sanitizeGenerationUsageForTracesIngest(
   };
 }
 
+function omitAssistantReasoning(value: unknown): unknown {
+  if (!isRecord(value) || value.role !== 'assistant') {
+    return value;
+  }
+
+  const message = { ...value };
+  delete message.reasoning;
+  if (Array.isArray(message.content)) {
+    message.content = message.content
+      .filter((part) => !isRecord(part) || part.type !== 'reasoning')
+      .map((part) => {
+        if (
+          !isRecord(part) ||
+          (part.type !== 'text' && part.type !== 'refusal')
+        ) {
+          return part;
+        }
+        // Chat Completions replay copies message provider data onto these parts.
+        const content = { ...part };
+        delete content.reasoning;
+        return content;
+      });
+  }
+  return message;
+}
+
+/** Filter known generation shapes, without traversing user or tool JSON. */
+function omitGenerationReasoning(value: unknown): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+
+  return value
+    .filter((item) => !isRecord(item) || item.type !== 'reasoning')
+    .map((item) => {
+      if (
+        isRecord(item) &&
+        item.object === 'chat.completion' &&
+        Array.isArray(item.choices)
+      ) {
+        return {
+          ...item,
+          choices: item.choices.map((choice) =>
+            isRecord(choice) && isRecord(choice.message)
+              ? { ...choice, message: omitAssistantReasoning(choice.message) }
+              : choice,
+          ),
+        };
+      }
+      return omitAssistantReasoning(item);
+    });
+}
+
 /**
  * OpenAI traces ingest currently accepts only input/output token counts at the top-level
  * generation usage object. Keep those fields and move other usage data under `usage.details`
@@ -646,6 +701,7 @@ function sanitizeGenerationUsageForTracesIngest(
  */
 function sanitizeSpanDataForTracesIngest(
   spanData: Record<string, unknown>,
+  omitReasoning: boolean,
 ): Record<string, unknown> {
   let sanitizedSpanData = spanData;
   let didMutate = false;
@@ -656,8 +712,15 @@ function sanitizeSpanDataForTracesIngest(
     }
 
     let fieldValue: unknown;
+    let exportValue: unknown;
     try {
       fieldValue = spanData[fieldName];
+      // Filter before truncation so reasoning does not consume the field budget.
+      // Work on export-only copies: custom processors retain the original spans.
+      exportValue =
+        omitReasoning && isGenerationSpanData(spanData)
+          ? omitGenerationReasoning(fieldValue)
+          : fieldValue;
     } catch {
       if (!didMutate) {
         sanitizedSpanData = cloneRecordSafely(spanData);
@@ -668,7 +731,7 @@ function sanitizeSpanDataForTracesIngest(
       continue;
     }
 
-    const sanitizedField = truncateSpanFieldValue(fieldValue);
+    const sanitizedField = truncateSpanFieldValue(exportValue);
     if (sanitizedField === fieldValue) {
       continue;
     }
@@ -711,6 +774,7 @@ function sanitizeSpanDataForTracesIngest(
 
 function sanitizePayloadItemForTracesIngest(
   payloadItem: Record<string, unknown>,
+  omitReasoning: boolean,
 ): Record<string, unknown> {
   if (payloadItem.object !== 'trace.span' || !isRecord(payloadItem.span_data)) {
     return payloadItem;
@@ -718,7 +782,10 @@ function sanitizePayloadItemForTracesIngest(
 
   return {
     ...payloadItem,
-    span_data: sanitizeSpanDataForTracesIngest(payloadItem.span_data),
+    span_data: sanitizeSpanDataForTracesIngest(
+      payloadItem.span_data,
+      omitReasoning,
+    ),
   };
 }
 
@@ -733,7 +800,7 @@ export class OpenAITracingExporter implements TracingExporter {
       apiKey: options.apiKey ?? undefined,
       organization: options.organization ?? '',
       project: options.project ?? '',
-      endpoint: options.endpoint ?? 'https://api.openai.com/v1/traces/ingest',
+      endpoint: options.endpoint ?? OPENAI_TRACING_INGEST_ENDPOINT,
       maxRetries: options.maxRetries ?? 3,
       baseDelay: options.baseDelay ?? 1000,
       maxDelay: options.maxDelay ?? 30000,
@@ -768,7 +835,13 @@ export class OpenAITracingExporter implements TracingExporter {
         .map((entry) => entry.toJSON())
         .filter((item) => !!item)
         .map((item) =>
-          isRecord(item) ? sanitizePayloadItemForTracesIngest(item) : item,
+          isRecord(item)
+            ? sanitizePayloadItemForTracesIngest(
+                item,
+                this.#options.endpoint.replace(/\/$/, '') ===
+                  OPENAI_TRACING_INGEST_ENDPOINT,
+              )
+            : item,
         );
       const payload = { data: payloadItems };
 
