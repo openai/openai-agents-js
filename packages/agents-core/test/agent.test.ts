@@ -787,7 +787,7 @@ describe('Agent', () => {
 
     const result1 = await tool.invoke({} as any, 'hey how are you?');
     expect(result1).toBe(
-      'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+      'An error occurred while running the tool. Please try again.',
     );
     setDefaultModelProvider(new ScriptedModelProvider());
     const result2 = await tool.invoke(
@@ -821,7 +821,7 @@ describe('Agent', () => {
       );
 
       expect(output).toBe(
-        'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+        'An error occurred while running the tool. Please try again.',
       );
       if (dontLogToolData) {
         expect(JSON.stringify(debugSpy.mock.calls)).not.toContain(secret);
@@ -1791,7 +1791,9 @@ describe('Agent', () => {
       new RunContext(),
       JSON.stringify({ input: 'hi' }),
     );
-    expect(result).toContain('Agent tool called with invalid input');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
   });
 
   it('includes JSON Schema when includeInputSchema is true', async () => {

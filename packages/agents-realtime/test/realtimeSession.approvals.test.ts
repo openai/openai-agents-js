@@ -429,7 +429,7 @@ describe('RealtimeSession', () => {
       type: 'function_call',
       name: 'dynamic_approval',
       callId: 'malformed-approval-call',
-      arguments: '{',
+      arguments: 'SENSITIVE_ARGUMENT',
       status: 'completed',
       responseId: 'malformed-approval-response',
     } as any);
@@ -442,7 +442,7 @@ describe('RealtimeSession', () => {
     expect(localTransport.sendFunctionCallOutputCalls).toHaveLength(1);
     expect(localTransport.sendFunctionCallOutputCalls[0]).toEqual([
       expect.objectContaining({ callId: 'malformed-approval-call' }),
-      expect.stringContaining('Please try again with valid JSON.'),
+      'An error occurred while parsing tool arguments. Please try again with valid JSON.',
       true,
     ]);
     expect(needsApproval).not.toHaveBeenCalled();
@@ -473,7 +473,7 @@ describe('RealtimeSession', () => {
       type: 'function_call',
       name: 'dynamic_approval',
       callId: 'preapproved-malformed-call',
-      arguments: '{',
+      arguments: 'SENSITIVE_ARGUMENT',
       status: 'completed',
       responseId: 'preapproved-malformed-response',
     } as const;
@@ -485,7 +485,9 @@ describe('RealtimeSession', () => {
     localTransport.emit('function_call', toolCall as any);
     const [, result, startResponse] = await output;
 
-    expect(result).toContain('Please try again with valid JSON.');
+    expect(result).toBe(
+      'An error occurred while parsing tool arguments. Please try again with valid JSON.',
+    );
     expect(startResponse).toBe(true);
     expect(needsApproval).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();

@@ -65,6 +65,10 @@ import {
 } from '../tool';
 import type { ShellResult } from '../shell';
 import { RunContext } from '../runContext';
+import {
+  REDACTED_TOOL_ERROR_MESSAGE,
+  setFunctionToolTracePolicy,
+} from '../functionToolTracing';
 import type { RunResult } from '../result';
 import {
   isAbortError,
@@ -137,9 +141,6 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   signal?: AbortSignal;
   onInvalidOutputFailure?: (failure: InvalidToolOutputFailure) => void;
 };
-
-const REDACTED_TOOL_ERROR_MESSAGE =
-  'Tool execution failed. Error details are redacted.';
 
 type ParseToolArgumentsResult =
   | {
@@ -445,12 +446,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           return buildFunctionCancellationResult(executionDeps, toolRun);
         }
       }
-      return buildParseErrorResult(
-        executionDeps,
-        toolRun,
-        parseResult.error,
-        failure!,
-      );
+      return buildParseErrorResult(executionDeps, toolRun, failure!);
     }
 
     const approvalOutcome = await handlePreparedFunctionApproval(
@@ -822,7 +818,6 @@ async function resolveFunctionFailureOutput<TContext>(
 async function buildParseErrorResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
-  error: unknown,
   failure: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
   const traceToolName = getFunctionToolTraceName(toolRun);
@@ -839,22 +834,25 @@ async function buildParseErrorResult<TContext>(
       message: 'Error running tool (non-fatal)',
       data: {
         tool_name: traceToolName,
-        error: failure.error.toString(),
+        error:
+          toolRun.tool.outputSchema &&
+          toolRun.tool.errorFunction &&
+          deps.runner.config.traceIncludeSensitiveData &&
+          !failure.redacted
+            ? failure.error.toString()
+            : REDACTED_TOOL_ERROR_MESSAGE,
       },
     });
 
     const baseMessage =
       'An error occurred while parsing tool arguments. Please try again with valid JSON.';
-    const errorMessage = failure.redacted
-      ? baseMessage
-      : `${baseMessage} Error: ${(error as Error).message}`;
     let output: unknown;
     try {
       output = await resolveFunctionFailureOutput(
         deps,
         toolRun,
         failure.error,
-        errorMessage,
+        baseMessage,
         { failure, redactedLegacyOutput: baseMessage },
       );
     } finally {
@@ -1393,6 +1391,10 @@ async function runApprovedFunctionTool<TContext>(
           agentToolParentRunConfig ?? runner.config,
         );
         setToolCallParentSpanOnDetails(toolDetails, span);
+        setFunctionToolTracePolicy(
+          toolDetails,
+          runner.config.traceIncludeSensitiveData,
+        );
         invocationPending = true;
         signal?.throwIfAborted();
         const invokedToolOutput = await invokeFunctionTool({

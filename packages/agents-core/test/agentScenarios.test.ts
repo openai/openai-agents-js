@@ -648,7 +648,9 @@ describe('Agent scenarios (examples and docs patterns)', () => {
       const output = result.newItems.find(
         (item) => item.type === 'tool_call_output_item',
       );
-      expect(output?.output).toContain('OutputGuardrailTripwireTriggered');
+      expect(output?.output).toBe(
+        'An error occurred while running the tool. Please try again.',
+      );
       expect(JSON.stringify(parentModel.lastTurnArgs?.input)).not.toContain(
         'preliminary text',
       );
