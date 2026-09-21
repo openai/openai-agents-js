@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR=$(git rev-parse --show-toplevel)
 SKILL_DIR="$ROOT_DIR/.agents/skills/changeset-validation"
 
+node --experimental-vm-modules --test "$SKILL_DIR/scripts/changeset-prompt.test.mjs"
+
 node "$SKILL_DIR/scripts/changeset-prompt.mjs" --output "$SKILL_DIR/tmp/prompt.md" >/dev/null
 
 TMP_DIR=$(mktemp -d)

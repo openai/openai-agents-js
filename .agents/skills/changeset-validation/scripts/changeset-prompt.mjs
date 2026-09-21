@@ -2,7 +2,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { execSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 
 const { console, process } = globalThis;
 
@@ -41,18 +41,17 @@ Options:
 `);
 }
 
-function run(cmd, options = {}) {
-  return execSync(cmd, {
+function run(args) {
+  return execFileSync('git', args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: EXEC_MAX_BUFFER,
-    ...options,
   }).trim();
 }
 
-function runOptional(cmd) {
+function runOptional(args) {
   try {
-    return run(cmd);
+    return run(args);
   } catch (_error) {
     return '';
   }
@@ -294,7 +293,7 @@ async function main() {
     process.exit(0);
   }
 
-  const repoRoot = run('git rev-parse --show-toplevel');
+  const repoRoot = run(['rev-parse', '--show-toplevel']);
   process.chdir(repoRoot);
 
   const eventPayload = readEventPayload();
@@ -304,7 +303,7 @@ async function main() {
   const baseRef =
     options.base ||
     eventBaseSha ||
-    (runOptional('git rev-parse --verify origin/main')
+    (runOptional(['rev-parse', '--verify', 'origin/main'])
       ? 'origin/main'
       : 'main');
   const headRef = options.head || eventHeadSha || 'HEAD';
@@ -312,8 +311,8 @@ async function main() {
   let baseSha;
   let headSha;
   try {
-    headSha = run(`git rev-parse ${headRef}`);
-    baseSha = run(`git merge-base ${baseRef} ${headRef}`);
+    headSha = run(['rev-parse', headRef]);
+    baseSha = run(['merge-base', baseRef, headRef]);
   } catch (error) {
     console.error(`Failed to resolve git refs: ${error.message}`);
     process.exit(1);
@@ -321,23 +320,30 @@ async function main() {
 
   const includeWorkingTree = !options.ci;
   const changes = new Map();
-  const committedDiff = runOptional(
-    `git diff --name-status ${baseSha} ${headSha}`,
-  );
+  const committedDiff = runOptional([
+    'diff',
+    '--name-status',
+    baseSha,
+    headSha,
+  ]);
   for (const entry of parseNameStatus(committedDiff)) {
     changes.set(entry.path, entry.status);
   }
 
   if (includeWorkingTree) {
-    const staged = runOptional('git diff --name-status --cached');
-    const unstaged = runOptional('git diff --name-status');
+    const staged = runOptional(['diff', '--name-status', '--cached']);
+    const unstaged = runOptional(['diff', '--name-status']);
     for (const entry of parseNameStatus(staged)) {
       changes.set(entry.path, entry.status);
     }
     for (const entry of parseNameStatus(unstaged)) {
       changes.set(entry.path, entry.status);
     }
-    const untracked = runOptional('git ls-files --others --exclude-standard');
+    const untracked = runOptional([
+      'ls-files',
+      '--others',
+      '--exclude-standard',
+    ]);
     for (const line of untracked.split(/\r?\n/).filter(Boolean)) {
       changes.set(line, 'A');
     }
@@ -417,9 +423,7 @@ async function main() {
   );
   const committedPackageDiff =
     relevantPackagePaths.length > 0
-      ? runOptional(
-          `git diff ${baseSha} ${headSha} -- ${relevantPackagePaths.join(' ')}`,
-        )
+      ? runOptional(['diff', baseSha, headSha, '--', ...relevantPackagePaths])
       : '';
   if (committedPackageDiff) {
     diffSections.push(`Committed diff (packages):\n${committedPackageDiff}`);
@@ -428,14 +432,14 @@ async function main() {
   if (includeWorkingTree) {
     const stagedPackageDiff =
       relevantPackagePaths.length > 0
-        ? runOptional(`git diff --cached -- ${relevantPackagePaths.join(' ')}`)
+        ? runOptional(['diff', '--cached', '--', ...relevantPackagePaths])
         : '';
     if (stagedPackageDiff && relevantPackageDirs.size > 0) {
       diffSections.push(`Staged diff (packages):\n${stagedPackageDiff}`);
     }
     const unstagedPackageDiff =
       relevantPackagePaths.length > 0
-        ? runOptional(`git diff -- ${relevantPackagePaths.join(' ')}`)
+        ? runOptional(['diff', '--', ...relevantPackagePaths])
         : '';
     if (unstagedPackageDiff && relevantPackageDirs.size > 0) {
       diffSections.push(`Unstaged diff (packages):\n${unstagedPackageDiff}`);
@@ -448,7 +452,13 @@ async function main() {
       if (!dir || !relevantPackageDirs.has(dir)) continue;
       if (!fs.existsSync(filePath)) continue;
       if (
-        !runOptional(`git ls-files --others --exclude-standard -- ${filePath}`)
+        !runOptional([
+          'ls-files',
+          '--others',
+          '--exclude-standard',
+          '--',
+          filePath,
+        ])
       )
         continue;
       const diff = getDiffNoIndex(filePath);
