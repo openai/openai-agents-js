@@ -137,8 +137,9 @@ export type AgentToolOptions<
    */
   toolDescription?: string;
   /**
-   * A function that extracts the output text from the agent. If not provided, the last message
-   * from the agent will be used.
+   * A function that extracts the output text from the agent. By default, runs with output
+   * guardrail results or a handled error use the final output, including an empty string.
+   * Other runs prefer text from the latest model response, falling back to the final output.
    */
   customOutputExtractor?: (
     output: CompletedAgentToolInvocationRunResult<TContext, TAgent>,
@@ -1032,11 +1033,20 @@ export class Agent<
           } else if ((completedResult.interruptions?.length ?? 0) > 0) {
             outputText = '';
           } else {
+            const outputGuardrailResult =
+              completedResult.outputGuardrailResults?.at(-1);
+            // Reuse the checked value; reading finalOutput can rerun schema transforms.
+            const finalOutput = outputGuardrailResult
+              ? outputGuardrailResult.agentOutput
+              : completedResult.finalOutput;
+            const finalOutputType = outputGuardrailResult
+              ? outputGuardrailResult.agent.outputType
+              : this.outputType;
             const finalOutputText =
-              typeof completedResult.finalOutput !== 'undefined'
-                ? this.outputType === 'text'
-                  ? String(completedResult.finalOutput)
-                  : JSON.stringify(completedResult.finalOutput)
+              typeof finalOutput !== 'undefined'
+                ? finalOutputType === 'text'
+                  ? String(finalOutput)
+                  : JSON.stringify(finalOutput)
                 : undefined;
             const rawResponses = completedResult.rawResponses;
             const rawOutputText =
@@ -1048,7 +1058,8 @@ export class Agent<
                 ? undefined
                 : rawOutputText;
             const prefersFinalOutput =
-              completedResult.state?._finalOutputSource === 'error_handler';
+              completedResult.state?._finalOutputSource === 'error_handler' ||
+              outputGuardrailResult !== undefined;
             outputText = prefersFinalOutput
               ? (finalOutputText ?? normalizedRawOutputText ?? '')
               : (normalizedRawOutputText ?? finalOutputText ?? '');
