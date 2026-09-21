@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { Agent } from '../agent';
 import { getAgentToolSourceAgent } from '../agentToolSourceRegistry';
 import type { Handoff, HandoffInputData } from '../handoff';
-import { ModelBehaviorError, ModelRefusalError } from '../errors';
+import { ModelBehaviorError, ModelRefusalError, UserError } from '../errors';
 import {
   RunHandoffCallItem,
   RunItem,
@@ -95,6 +95,8 @@ export function preflightModelResponseToolInvocations<TContext>(
   modelResponse: ModelResponse,
   tools: Tool<TContext>[],
   handoffs: Handoff<any, any>[],
+  runner: Runner,
+  signal?: AbortSignal,
 ): void {
   const functionMap = buildFunctionToolLookupMap(
     tools.filter(
@@ -108,19 +110,24 @@ export function preflightModelResponseToolInvocations<TContext>(
   const shell = tools.find((tool) => tool.type === 'shell');
   const applyPatch = tools.find((tool) => tool.type === 'apply_patch');
   const seen = new Map<string, string>();
+  let selectedHandoff: Handoff<any, any> | undefined;
   const validate = (
     toolName: string | undefined,
     rawItem: ApprovalCapableToolCall,
   ) => {
     if (!toolName) {
-      return;
+      return false;
     }
     const { callId, fingerprint } = state._context._validateToolInvocation(
       agent,
       toolName,
       rawItem,
     );
-    state._preflightToolInvocation(agent, callId, fingerprint);
+    const completed = state._preflightToolInvocation(
+      agent,
+      callId,
+      fingerprint,
+    );
     const previous = seen.get(callId);
     if (previous !== undefined && previous !== fingerprint) {
       throw new ModelBehaviorError(
@@ -129,6 +136,7 @@ export function preflightModelResponseToolInvocations<TContext>(
       );
     }
     seen.set(callId, fingerprint);
+    return !completed && previous !== fingerprint;
   };
 
   for (const output of modelResponse.output) {
@@ -137,7 +145,13 @@ export function preflightModelResponseToolInvocations<TContext>(
         ? handoffMap.get(output.name)
         : undefined;
       if (handoff) {
-        validate(getHandoffToolInvocationName(handoff.toolName), output);
+        const shouldRun = validate(
+          getHandoffToolInvocationName(handoff.toolName),
+          output,
+        );
+        if (shouldRun && !selectedHandoff) {
+          selectedHandoff = handoff;
+        }
         continue;
       }
       const resolvedTool = resolveFunctionToolCall(output, functionMap);
@@ -175,6 +189,9 @@ export function preflightModelResponseToolInvocations<TContext>(
         output,
       );
     }
+  }
+  if (selectedHandoff && !signal?.aborted) {
+    validateHandoffInputFilter(selectedHandoff, runner, state);
   }
 }
 
@@ -1005,6 +1022,9 @@ export async function resolveInterruptedTurn<TContext>(
     (run) => !suppressedToolCalls.has(run.toolCall),
   );
   if (handoffRuns.length > 0) {
+    if (!signal?.aborted) {
+      validateHandoffInputFilter(handoffRuns[0].handoff, runner, state);
+    }
     validateHandoffAgent?.(handoffRuns[0].handoff.agent);
   }
   // call_ids for function tools
@@ -1404,6 +1424,9 @@ export async function resolveTurnAfterModelResponse<
     (run) => !suppressedToolCalls.has(run.toolCall),
   );
   if (handoffRuns.length > 0) {
+    if (!signal?.aborted) {
+      validateHandoffInputFilter(handoffRuns[0].handoff, runner, state);
+    }
     validateHandoffAgent?.(handoffRuns[0].handoff.agent);
   }
   const functionRuns = processedResponse.functions.filter(
@@ -1785,6 +1808,23 @@ type TurnFinalizationParams<TContext> = {
   newItems: RunItem[];
   additionalInterruptions?: RunToolApprovalItem[];
 };
+
+// Local handoff filters cannot remove history already owned by the server.
+function validateHandoffInputFilter(
+  handoff: Handoff<any, any>,
+  runner: Runner,
+  state: RunState<any, any>,
+): void {
+  const inputFilter = handoff.inputFilter ?? runner.config.handoffInputFilter;
+  if (
+    inputFilter != null &&
+    (state._conversationId || state._previousResponseId)
+  ) {
+    throw new UserError(
+      'Handoff input filters cannot be used with conversationId or previousResponseId because server-managed history cannot be filtered locally. Use explicit client-managed history or a Session without either continuation option.',
+    );
+  }
+}
 
 // Handoffs retain precedence over terminal tool behavior, but cannot discard pending approvals.
 async function resolveHandoffAfterTools<TContext>(
