@@ -649,13 +649,17 @@ async function getMcpToolsFromServer<TContext = UnknownContext>({
     );
     let mcpTools: MCPTool[] = fetchedMcpTools;
 
-    if (runContext && agent) {
-      const context = { runContext, agent, serverName: server.name };
+    if (server.toolFilter) {
       const filteredTools: MCPTool[] = [];
       for (const tool of fetchedMcpTools) {
         const filter = server.toolFilter;
         if (filter) {
           if (typeof filter === 'function') {
+            if (!runContext || !agent) {
+              filteredTools.push(tool);
+              continue;
+            }
+            const context = { runContext, agent, serverName: server.name };
             const [detachedTool] = snapshotMcpTools([tool]);
             const filtered = await filter(context, detachedTool);
             if (!filtered) {
