@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { Agent } from '../agent';
 import { getAgentToolSourceAgent } from '../agentToolSourceRegistry';
 import type { Handoff, HandoffInputData } from '../handoff';
-import { ModelBehaviorError, ModelRefusalError } from '../errors';
+import { ModelBehaviorError, ModelRefusalError, UserError } from '../errors';
 import {
   RunHandoffCallItem,
   RunItem,
@@ -57,6 +57,7 @@ import {
   getFunctionToolStateKeyForCall,
   getFunctionToolStateKeyForResolvedCall,
   getFunctionToolStateKeys,
+  matchesFunctionToolRecipient,
   getToolCallNamespace,
   resolveFunctionToolCall,
   getHostedMcpApprovalRequestIdentity,
@@ -208,11 +209,26 @@ export function preflightToolInvocations<TContext>(
   };
 
   for (const run of processedResponse.functions ?? []) {
-    observe(
+    const toolName =
       getFunctionToolStateKey(run.tool) ??
-        getFunctionToolStateKeyForCall(run.toolCall, run.tool.name),
-      run.toolCall,
-    );
+      getFunctionToolStateKeyForCall(run.toolCall, run.tool.name);
+    const observation = observe(toolName, run.toolCall);
+    if (
+      observation &&
+      !observation.shouldSuppress &&
+      !matchesFunctionToolRecipient(run.mcpToolBinding ?? null, run.tool) &&
+      state._context.isToolApproved({
+        toolName: toolName!,
+        callId: observation.callId,
+        agent,
+        functionTool: false,
+      }) !== false
+    ) {
+      throw new UserError(
+        'Cannot resume a function tool call with a missing or different MCP recipient binding. Restore the original MCP configuration and tool listing, or start a new run.',
+        state,
+      );
+    }
   }
   for (const run of processedResponse.functionToolsNotFound ?? []) {
     observe(
