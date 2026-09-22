@@ -1,3 +1,8 @@
+import {
+  FunctionToolApprovalInputError,
+  getFunctionToolApprovalInput,
+} from '../utils/functionToolApproval';
+import { getToolInvocationFingerprint } from '../toolInvocation';
 import { FunctionCallResultItem } from '../types/protocol';
 import { Agent, AgentOutputType, ToolsToFinalOutputResult } from '../agent';
 import {
@@ -60,6 +65,10 @@ import {
 } from '../tool';
 import type { ShellResult } from '../shell';
 import { RunContext } from '../runContext';
+import {
+  REDACTED_TOOL_ERROR_MESSAGE,
+  setFunctionToolTracePolicy,
+} from '../functionToolTracing';
 import type { RunResult } from '../result';
 import {
   isAbortError,
@@ -83,6 +92,7 @@ import {
   getFunctionToolQualifiedName,
   getFunctionToolStateKey,
   getFunctionToolStateKeys,
+  matchesFunctionToolRecipient,
   matchesFunctionToolName,
 } from '../toolIdentity';
 import {
@@ -132,9 +142,6 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   signal?: AbortSignal;
   onInvalidOutputFailure?: (failure: InvalidToolOutputFailure) => void;
 };
-
-const REDACTED_TOOL_ERROR_MESSAGE =
-  'Tool execution failed. Error details are redacted.';
 
 type ParseToolArgumentsResult =
   | {
@@ -343,7 +350,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     onInvalidOutputFailure: trackInvalidOutputFailure,
   };
 
-  const executeToolRun = async (
+  const executePreparedToolRun = async (
     toolRun: ToolRunFunction<TContext>,
     executionSignal = signal,
   ) => {
@@ -354,7 +361,49 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     if (executionSignal?.aborted) {
       return buildFunctionCancellationResult(executionDeps, toolRun);
     }
-    const parseResult = parseToolArguments(toolRun);
+    if (
+      !matchesFunctionToolRecipient(
+        toolRun.mcpToolBinding ?? null,
+        toolRun.tool,
+      )
+    ) {
+      // Rejection is safe even when the original recipient is unavailable. Do not
+      // parse input or invoke output-schema callbacks belonging to a replacement.
+      const rejected =
+        state._context.isToolApproved({
+          toolName: getFunctionToolApprovalStateKey(toolRun),
+          callId: toolRun.toolCall.callId,
+          functionTool: false,
+          agent,
+        }) === false;
+      if (!rejected) {
+        throw new UserError(
+          'Cannot resume a function tool call with a missing or different MCP recipient binding. Restore the original MCP configuration and tool listing, or start a new run.',
+          state,
+        );
+      }
+      for (const stateKey of getFunctionToolPendingStateKeys(toolRun)) {
+        state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
+      }
+      return buildApprovalRejectionResult(executionDeps, {
+        ...toolRun,
+        availableFunctionTools: toolRun.availableFunctionTools,
+        tool: { ...toolRun.tool, outputSchema: undefined },
+      });
+    }
+    const pending = state._pendingFunctionToolApprovals
+      .get(agent)
+      ?.get(toolRun.toolCall.callId);
+    const invocation = getToolInvocationFingerprint(
+      getFunctionToolIdentity(toolRun),
+      toolRun.toolCall,
+    );
+    const retainedInput =
+      pending?.invocation === invocation &&
+      pending.invoke === toolRun.tool.invoke
+        ? pending.preparedInput
+        : undefined;
+    const parseResult = parseToolArguments(toolRun, retainedInput);
     let failure: InvalidToolInputFailure | undefined;
     if (!parseResult.success) {
       failure = createInvalidToolInputFailure({
@@ -381,10 +430,10 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     // Handle parse errors gracefully instead of crashing.
     if (!parseResult.success) {
       if (parseResult.preparedInput) {
-        const approvalOutcome = await handleFunctionApproval(
+        const approvalOutcome = await handlePreparedFunctionApproval(
           executionDeps,
           toolRun,
-          parseResult.approvalArgs,
+          parseResult,
           false,
           failure,
         );
@@ -414,10 +463,10 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           throw error;
         }
       } else if (dynamicApprovalPolicy) {
-        const approvalOutcome = await handleFunctionApproval(
+        const approvalOutcome = await handlePreparedFunctionApproval(
           executionDeps,
           toolRun,
-          undefined,
+          parseResult,
           true,
           failure,
         );
@@ -428,18 +477,13 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
           return buildFunctionCancellationResult(executionDeps, toolRun);
         }
       }
-      return buildParseErrorResult(
-        executionDeps,
-        toolRun,
-        parseResult.error,
-        failure!,
-      );
+      return buildParseErrorResult(executionDeps, toolRun, failure!);
     }
 
-    const approvalOutcome = await handleFunctionApproval(
+    const approvalOutcome = await handlePreparedFunctionApproval(
       executionDeps,
       toolRun,
-      parseResult.approvalArgs,
+      parseResult,
       dynamicApprovalPolicy &&
         !hasInspectableFunctionToolArguments(parseResult.approvalArgs),
     );
@@ -470,6 +514,23 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     }
   };
 
+  const executeToolRun = async (
+    toolRun: ToolRunFunction<TContext>,
+    executionSignal = signal,
+  ) => {
+    const result = await executePreparedToolRun(toolRun, executionSignal);
+    if (
+      result.type !== 'function_approval' &&
+      (result.type !== 'function_output' || !result.interruptions?.length)
+    ) {
+      const records = state._pendingFunctionToolApprovals.get(agent);
+      records?.delete(toolRun.toolCall.callId);
+      if (records?.size === 0)
+        state._pendingFunctionToolApprovals.delete(agent);
+    }
+    return result;
+  };
+
   try {
     const results = await executeToolRunsWithConcurrency(
       toolRuns,
@@ -482,6 +543,25 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     );
     return results;
   } catch (e: unknown) {
+    // A failed batch cannot publish newly collected interruptions. Keep only
+    // records owned by an existing interruption or a surviving nested run.
+    const interruptions = state.getInterruptions();
+    const records = state._pendingFunctionToolApprovals.get(agent);
+    for (const toolRun of toolRuns) {
+      const callId = toolRun.toolCall.callId;
+      const pending =
+        interruptions.some(
+          (item) =>
+            item.agent === agent &&
+            item.rawItem.type === 'function_call' &&
+            item.rawItem.callId === callId,
+        ) ||
+        getFunctionToolPendingStateKeys(toolRun).some((key) =>
+          state.hasPendingAgentToolRun(key, callId),
+        );
+      if (!pending) records?.delete(callId);
+    }
+    if (records?.size === 0) state._pendingFunctionToolApprovals.delete(agent);
     const redactInvalidInputFailure = startedInvalidInputFailures.some(
       (failure) => refreshInvalidToolInputFailure(failure),
     );
@@ -598,6 +678,7 @@ async function executeToolRunsWithConcurrency<TContext, TToolRun>(
 
 function parseToolArguments<TContext>(
   toolRun: ToolRunFunction<TContext>,
+  retainedInput?: FunctionToolPreparedInput,
 ): ParseToolArgumentsResult {
   const toolName = getFunctionToolIdentity(toolRun);
   try {
@@ -605,10 +686,9 @@ function parseToolArguments<TContext>(
     if (toolRun.tool.parameters) {
       approvalArgs = JSON.parse(toolRun.toolCall.arguments);
     }
-    const preparedInput = prepareFunctionToolInput(
-      toolRun.tool,
-      toolRun.toolCall.arguments,
-    );
+    const preparedInput =
+      retainedInput ??
+      prepareFunctionToolInput(toolRun.tool, toolRun.toolCall.arguments);
     if (preparedInput && !preparedInput.result.success) {
       return {
         success: false,
@@ -617,38 +697,16 @@ function parseToolArguments<TContext>(
         preparedInput,
       };
     }
-    if (preparedInput?.validationMode === 'standard') {
-      approvalArgs = preparedInput?.result.success
-        ? preparedInput.result.value
-        : approvalArgs;
-      if (!hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) {
-        return { success: true, approvalArgs, preparedInput };
+    if (preparedInput?.result.success) {
+      if (hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) {
+        approvalArgs = getFunctionToolApprovalInput(preparedInput.result.value);
+      } else if (preparedInput.validationMode === 'standard') {
+        approvalArgs = preparedInput.result.value;
       }
-      const executionPreparedInput = prepareFunctionToolInput(
-        toolRun.tool,
-        toolRun.toolCall.arguments,
-      );
-      if (!executionPreparedInput) {
-        throw new Error(
-          'Standard Schema input could not be prepared for execution.',
-        );
-      }
-      if (!executionPreparedInput.result.success) {
-        return {
-          success: false,
-          error: executionPreparedInput.result.error,
-          approvalArgs,
-          preparedInput: executionPreparedInput,
-        };
-      }
-      return {
-        success: true,
-        approvalArgs,
-        preparedInput: executionPreparedInput,
-      };
     }
     return { success: true, approvalArgs, preparedInput };
   } catch (error) {
+    if (error instanceof FunctionToolApprovalInputError) throw error;
     if (logger.dontLogToolData) {
       logger.debug(`Failed to parse tool arguments for ${toolName}`);
     } else {
@@ -791,7 +849,6 @@ async function resolveFunctionFailureOutput<TContext>(
 async function buildParseErrorResult<TContext>(
   deps: FunctionToolCallDeps<TContext>,
   toolRun: ToolRunFunction<TContext>,
-  error: unknown,
   failure: InvalidToolInputFailure,
 ): Promise<FunctionToolResult<TContext>> {
   const traceToolName = getFunctionToolTraceName(toolRun);
@@ -808,22 +865,25 @@ async function buildParseErrorResult<TContext>(
       message: 'Error running tool (non-fatal)',
       data: {
         tool_name: traceToolName,
-        error: failure.error.toString(),
+        error:
+          toolRun.tool.outputSchema &&
+          toolRun.tool.errorFunction &&
+          deps.runner.config.traceIncludeSensitiveData &&
+          !failure.redacted
+            ? failure.error.toString()
+            : REDACTED_TOOL_ERROR_MESSAGE,
       },
     });
 
     const baseMessage =
       'An error occurred while parsing tool arguments. Please try again with valid JSON.';
-    const errorMessage = failure.redacted
-      ? baseMessage
-      : `${baseMessage} Error: ${(error as Error).message}`;
     let output: unknown;
     try {
       output = await resolveFunctionFailureOutput(
         deps,
         toolRun,
         failure.error,
-        errorMessage,
+        baseMessage,
         { failure, redactedLegacyOutput: baseMessage },
       );
     } finally {
@@ -913,6 +973,86 @@ async function buildApprovalRejectionResult<TContext>(
     }
     return buildFunctionFailureResult(deps, toolRun, output);
   });
+}
+
+async function handlePreparedFunctionApproval<TContext>(
+  deps: FunctionToolCallDeps<TContext>,
+  toolRun: ToolRunFunction<TContext>,
+  parsed: ParseToolArgumentsResult,
+  forceApproval: boolean,
+  invalidInputFailure?: InvalidToolInputFailure,
+): Promise<'approved' | FunctionToolResult<TContext>> {
+  if (!hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) {
+    return handleFunctionApproval(
+      deps,
+      toolRun,
+      parsed.approvalArgs,
+      forceApproval,
+      invalidInputFailure,
+    );
+  }
+  const { state, agent } = deps;
+  const callId = toolRun.toolCall.callId;
+  const invocation = getToolInvocationFingerprint(
+    getFunctionToolIdentity(toolRun),
+    toolRun.toolCall,
+  );
+  const records = state._pendingFunctionToolApprovals.get(agent);
+  const pending = records?.get(callId);
+  const approval = state._context.isToolApproved({
+    toolName: getFunctionToolApprovalStateKey(toolRun),
+    callId,
+    functionTool: false,
+    agent,
+  });
+  if (approval === true && pending) {
+    if (pending.invocation !== invocation) {
+      throw new UserError('The approved function tool invocation has changed.');
+    }
+    if (
+      parsed.success &&
+      parsed.preparedInput &&
+      (pending.preparedInput?.result !== parsed.preparedInput.result ||
+        pending.invoke !== toolRun.tool.invoke)
+    ) {
+      const approvalArgs = parsed.approvalArgs;
+      if (!hasInspectableFunctionToolArguments(approvalArgs)) {
+        throw new UserError(
+          'Cannot re-evaluate conditional approval for this normalized input. Return a plain object or use needsApproval: true for durable manual approval.',
+        );
+      }
+      // Manual approval is bound to the unchanged model invocation. Re-evaluate
+      // the policy against refreshed normalized input before honoring it. Either
+      // result is satisfied by the existing approval; a thrown policy stops the
+      // call. The handler below re-reads decisions after this await.
+      await toolRun.tool.needsApproval(
+        state._context,
+        parsed.approvalArgs,
+        callId,
+      );
+      if (deps.signal?.aborted) {
+        return buildFunctionCancellationResult(deps, toolRun);
+      }
+    }
+  }
+  const outcome = await handleFunctionApproval(
+    deps,
+    toolRun,
+    parsed.approvalArgs,
+    forceApproval,
+    invalidInputFailure,
+  );
+  if (outcome === 'approved' || outcome.type === 'function_approval') {
+    const pendingRecords =
+      state._pendingFunctionToolApprovals.get(agent) ?? new Map();
+    state._pendingFunctionToolApprovals.set(agent, pendingRecords);
+    pendingRecords.set(callId, {
+      invocation,
+      preparedInput: parsed.preparedInput,
+      invoke: toolRun.tool.invoke,
+    });
+  }
+  return outcome;
 }
 
 async function handleFunctionApproval<TContext>(
@@ -1260,7 +1400,21 @@ async function runApprovedFunctionTool<TContext>(
             onInvalidOutputFailure,
         };
         if (preparedInput) {
-          setFunctionToolPreparedInput(toolDetails, preparedInput);
+          let executionInput = preparedInput;
+          if (
+            hasDynamicFunctionToolApprovalPolicy(toolRun.tool) &&
+            preparedInput.result.success
+          ) {
+            const value = getFunctionToolApprovalInput(
+              preparedInput.result.value,
+            );
+            // Keep the retained preparation pristine across nested execution.
+            executionInput = {
+              ...preparedInput,
+              result: { success: true, value },
+            };
+          }
+          setFunctionToolPreparedInput(toolDetails, executionInput);
         }
         setToolUsageRecorder(toolDetails, getRunStateUsageRecorder(state));
         setAgentToolParentRunConfigOnDetails(
@@ -1268,6 +1422,10 @@ async function runApprovedFunctionTool<TContext>(
           agentToolParentRunConfig ?? runner.config,
         );
         setToolCallParentSpanOnDetails(toolDetails, span);
+        setFunctionToolTracePolicy(
+          toolDetails,
+          runner.config.traceIncludeSensitiveData,
+        );
         invocationPending = true;
         signal?.throwIfAborted();
         const invokedToolOutput = await invokeFunctionTool({

@@ -1,3 +1,4 @@
+import { getAgentToolStreamBuffer } from './runner/agentToolStream';
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import {
@@ -87,6 +88,7 @@ import {
   createSessionPersistenceTracker,
   getSessionCompactionState,
   bindSessionCompactionState,
+  prepareSessionCompactionExchange,
   type SessionCompactionState,
   captureSessionHistoryTransactionInputItems,
   markSessionHistoryTransactionInputPersisted,
@@ -2004,6 +2006,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               }
               serverInputMarked = true;
             };
+            const completeCompactionExchange = prepareSessionCompactionExchange(
+              options.session,
+              state,
+              preparedCall.modelInput.input,
+            );
             const pendingModelResponse = getResponseWithRetry(
               preparedCall.model,
               modelRequest,
@@ -2043,6 +2050,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             if (serverConversationTracker) {
               markServerInputAccepted();
             }
+            completeCompactionExchange(
+              state._lastTurnResponse.output,
+              state._lastTurnResponse.responseId,
+            );
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
             recordUsage(state._lastTurnResponse.usage);
@@ -3131,6 +3142,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           turnPendingModelRequest = undefined;
           result.currentTurn = result.state._currentTurn;
           sentInputToModel = true;
+          const completeCompactionExchange = prepareSessionCompactionExchange(
+            options.session,
+            result.state,
+            preparedCall.modelInput.input,
+          );
           try {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
@@ -3245,6 +3261,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           result.state._lastTurnResponse = finalResponse;
+          completeCompactionExchange(
+            finalResponse.output,
+            finalResponse.responseId,
+          );
           // Keep the tracker in sync with the streamed response so reconnections remain accurate.
           serverConversationTracker?.trackServerItems(finalResponse);
           if (serverConversationTracker) {
@@ -3608,6 +3628,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         signal: options.signal,
         state,
       });
+      result._setAgentToolStreamBuffer(getAgentToolStreamBuffer(this));
       const streamOptions: StreamRunOptions<TContext, TAgent> = {
         ...options,
         signal: result._getAbortSignal(),

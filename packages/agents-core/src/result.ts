@@ -29,6 +29,7 @@ import type {
 } from './toolGuardrail';
 import { combineAbortSignalsWithOptions } from './utils/abortSignals';
 import { processFinalOutputWithRedaction } from './utils/finalOutputError';
+import type { AgentToolStreamBuffer } from './runner/agentToolStream';
 
 type AbortHandlerRef<T extends object> = {
   current?: T;
@@ -366,8 +367,9 @@ export class StreamedRunResult<
   #abortController: AbortController;
   #readableController: ReadableStreamController<RunStreamEvent> | undefined;
   #readableStream: _ReadableStream<RunStreamEvent>;
-  #queuedStreamEvents: RunStreamEvent[] = [];
+  #queuedStreamEvents: (RunStreamEvent | undefined)[] = [];
   #queuedStreamEventIndex = 0;
+  #agentToolStreamBuffer?: AgentToolStreamBuffer;
   #streamReadPending = false;
   #streamTerminal:
     | { type: 'done' }
@@ -467,9 +469,21 @@ export class StreamedRunResult<
    */
   _addItem(item: RunStreamEvent) {
     if (!this.cancelled && !this.#streamTerminal) {
+      if (
+        this.#agentToolStreamBuffer &&
+        this.#queuedStreamEvents.length - this.#queuedStreamEventIndex >=
+          this.#agentToolStreamBuffer.maxPendingEvents
+      ) {
+        this.#agentToolStreamBuffer.overflow();
+      }
       this.#queuedStreamEvents.push(item);
       this.#drainStreamQueue();
     }
+  }
+
+  /** @internal Sets the agent-tool budget before its producer starts. */
+  _setAgentToolStreamBuffer(buffer: AgentToolStreamBuffer | undefined) {
+    this.#agentToolStreamBuffer = buffer;
   }
 
   /**
@@ -677,7 +691,11 @@ export class StreamedRunResult<
       return;
     }
     if (this.#queuedStreamEventIndex < this.#queuedStreamEvents.length) {
-      const event = this.#queuedStreamEvents[this.#queuedStreamEventIndex];
+      const event = this.#queuedStreamEvents[this.#queuedStreamEventIndex]!;
+      if (this.#agentToolStreamBuffer) {
+        // Release delivered notifications without copying the pending backlog.
+        this.#queuedStreamEvents[this.#queuedStreamEventIndex] = undefined;
+      }
       this.#queuedStreamEventIndex += 1;
       this.#compactStreamQueue();
       this.#streamReadPending = false;

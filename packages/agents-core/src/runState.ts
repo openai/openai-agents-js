@@ -67,6 +67,8 @@ import {
   getToolSearchRuntimeRoutingKey,
   HostedMCPTool,
   FunctionTool,
+  type FunctionToolPreparedInput,
+  hasDynamicFunctionToolApprovalPolicy,
   ShellTool,
   ApplyPatchTool,
   Tool,
@@ -82,6 +84,8 @@ import {
   getFunctionToolStateKeyForCall,
   getFunctionToolStateKeyForResolvedCall,
   getFunctionToolStateKeys,
+  FUNCTION_TOOL_NAMESPACE,
+  getMcpToolBinding,
   getHostedMcpApprovalRequestIdentity,
   getHostedMcpApprovalRequestKey,
   getToolCallName,
@@ -178,8 +182,12 @@ import {
  *   exact current-response ownership for serialized approval resumes, and checkpoints
  *   unacknowledged ordinary Session appends completed during approval resume, including
  *   filtered handoff input held until its source append settles.
+ * - 1.21: Re-evaluates conditional policies against refreshed normalized input
+ *   on approval resume. Normalized values and comparison evidence are never serialized.
+ *   Also preserves original local MCP recipients. Historical function calls without
+ *   recipient provenance may be rejected or retained as completed, but cannot execute.
  */
-export const CURRENT_SCHEMA_VERSION = '1.20' as const;
+export const CURRENT_SCHEMA_VERSION = '1.21' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -201,6 +209,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.17',
   '1.18',
   '1.19',
+  '1.20',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -225,7 +234,7 @@ function schemaVersionSupportsV119State(
 function schemaVersionSupportsV120State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === CURRENT_SCHEMA_VERSION;
+  return schemaVersion === '1.20' || schemaVersion === CURRENT_SCHEMA_VERSION;
 }
 
 function schemaVersionSupportsV116State(
@@ -1683,6 +1692,17 @@ const serializedProcessedResponseSchema = z.object({
     z.object({
       toolCall: z.any(),
       tool: z.any(),
+      mcpToolBinding: z
+        .union([
+          z.object({
+            serverName: z.string(),
+            toolName: z.string(),
+            serverIndex: z.number().int().nonnegative().nullable(),
+          }),
+          z.null(),
+          z.literal('unknown'),
+        ])
+        .optional(),
     }),
   ),
   functionToolsNotFound: z
@@ -2373,6 +2393,22 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    * Serialized pending nested agent runs keyed by tool name and call id.
    */
   public _pendingAgentToolRuns: Map<string, string>;
+  /**
+   * Pending conditional approval input lives only in the owning RunState.
+   * Neither normalized values nor comparison evidence are serialized.
+   * @internal
+   */
+  public _pendingFunctionToolApprovals = new Map<
+    Agent<any, any>,
+    Map<
+      string,
+      {
+        invocation: string;
+        preparedInput?: FunctionToolPreparedInput;
+        invoke?: FunctionTool<any, any, any>['invoke'];
+      }
+    >
+  >();
   /**
    * Legacy pending-run keys mapped to their canonical category-aware keys.
    */
@@ -3443,6 +3479,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    *
    * This method is used to deserialize a run state from a string that was serialized using the
    * `toString` method.
+   * Pending function calls from snapshots without recipient provenance cannot execute;
+   * start a new run instead. Rejected and completed calls remain non-executing.
+   * MCP calls require the original server names, list positions, and raw tool names.
+   * These bindings detect routing changes, not snapshot tampering or changed transport
+   * settings or credentials under the same identity.
    */
   static async fromString<TContext, TAgent extends Agent<any, any>>(
     initialAgent: TAgent,
@@ -6105,6 +6146,38 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
       context._bindLegacyApprovalInvocation(interruption);
     }
   }
+  const interruptions = state.getInterruptions();
+  for (const toolRun of state._lastProcessedResponse?.functions ?? []) {
+    const call = toolRun.toolCall;
+    const owner =
+      state._lastProcessedResponse?.newItems.find(
+        (item): item is RunToolCallItem =>
+          item instanceof RunToolCallItem && item.rawItem === call,
+      )?.agent ?? state._currentAgent;
+    const isPending =
+      interruptions.some(
+        (item) =>
+          item.agent === owner &&
+          item.rawItem.type === 'function_call' &&
+          item.rawItem.callId === call.callId,
+      ) ||
+      getFunctionToolStateKeys(
+        toolRun.tool,
+        toolRun.availableFunctionTools ?? [toolRun.tool],
+      ).some((key) => state.hasPendingAgentToolRun(key, call.callId));
+    if (!isPending) continue;
+    const invocation = getToolInvocationFingerprint(
+      getFunctionToolQualifiedName(toolRun.tool) ?? toolRun.tool.name,
+      call,
+    );
+    if (!hasDynamicFunctionToolApprovalPolicy(toolRun.tool)) continue;
+    // Restored calls have no retained normalized input. Re-evaluate the current
+    // policy before honoring a decision for refreshed successful input.
+    let records = state._pendingFunctionToolApprovals.get(owner);
+    if (!records)
+      state._pendingFunctionToolApprovals.set(owner, (records = new Map()));
+    records.set(call.callId, { invocation });
+  }
   if (contextOverride) {
     const commitCandidate = contextOverride._cloneForRunStateDeserialization();
     commitCandidate._mergeApprovalState(context);
@@ -6331,10 +6404,16 @@ function serializeProcessedResponse<TContext>(
         },
       }),
     ),
-    functions: processedResponse.functions.map(({ toolCall, tool }) => ({
-      toolCall,
-      tool,
-    })),
+    functions: processedResponse.functions.map(
+      ({ toolCall, tool, mcpToolBinding }) => ({
+        toolCall,
+        tool,
+        mcpToolBinding:
+          mcpToolBinding === undefined
+            ? getMcpToolBinding(tool)
+            : mcpToolBinding,
+      }),
+    ),
     handoffs: processedResponse.handoffs.map(
       ({ toolCall, handoff: processedHandoff }) => ({
         toolCall,
@@ -7131,6 +7210,37 @@ type DeserializeProcessedResponseOptions<TContext> = {
 /**
  * @internal
  */
+function unresolvedFunctionTool<TContext>(
+  call: protocol.FunctionCallItem,
+  serialized: { name?: string; deferLoading?: boolean },
+): FunctionTool<TContext> {
+  const name = serialized.name ?? call.name;
+  // This placeholder preserves history/rejection identity and can never execute.
+  return {
+    type: 'function',
+    name,
+    description: '',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: false,
+    },
+    strict: true,
+    deferLoading: serialized.deferLoading,
+    ...(call.namespace && call.namespace !== name
+      ? { [FUNCTION_TOOL_NAMESPACE]: call.namespace }
+      : {}),
+    needsApproval: async () => true,
+    isEnabled: async () => false,
+    invoke: async () => {
+      throw new UserError(
+        'Original function tool is unavailable; restore its configuration or start a new run.',
+      );
+    },
+  };
+}
+
 async function deserializeProcessedResponse<TContext = UnknownContext>(
   agentMap: Map<string, Agent<any, any>>,
   state: RunState<TContext, Agent<any, any>>,
@@ -7258,6 +7368,11 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
             ],
           );
         }
+        // Missing provenance must survive every rewrite, including sandbox rebinding.
+        const mcpToolBinding =
+          functionCall.mcpToolBinding === undefined
+            ? ('unknown' as const)
+            : functionCall.mcpToolBinding;
         const resolvedTool =
           exactRuntimeTool ??
           resolveFunctionToolCall(functionCall.toolCall, tools) ??
@@ -7268,7 +7383,13 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
             toolCall: functionCall.toolCall,
             toolIdentity,
             allowSerializedExecutionToolPlaceholder,
-          });
+          }) ??
+          (mcpToolBinding !== null ||
+          state._completedToolInvocations
+            .get(currentAgent)
+            ?.has(functionCall.toolCall.callId)
+            ? unresolvedFunctionTool(functionCall.toolCall, functionCall.tool)
+            : undefined);
         if (!resolvedTool) {
           throw new UserError(`Tool ${toolIdentity} not found`);
         }
@@ -7287,6 +7408,7 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
             ...new Set([...tools.values(), resolvedTool]),
           ],
           preserveToolOnExecutionRehydration: Boolean(exactRuntimeTool),
+          mcpToolBinding,
         });
       }),
     ),

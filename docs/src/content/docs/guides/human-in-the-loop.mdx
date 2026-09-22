@@ -5,6 +5,7 @@ description: Add a human in the loop check for your agent executions
 
 import { Aside, Code } from '@astrojs/starlight/components';
 import humanInTheLoopExample from '../../../../../examples/docs/human-in-the-loop/index.ts?raw';
+import serverOwnedApprovalExample from '../../../../../examples/docs/human-in-the-loop/server.ts?raw';
 import toolApprovalDefinition from '../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
 This guide covers the SDK's approval-based human-in-the-loop flow. When a tool call requires approval, the SDK pauses the run, returns `interruptions`, and lets you resume later from the same `RunState`.
@@ -109,7 +110,33 @@ Serialized run state includes your app context plus SDK-managed runtime metadata
 
 By default tracing API keys are omitted from serialized state so you do not accidentally persist secrets. Pass `result.state.toString({ includeTracingApiKey: true })` only when you intentionally need to move tracing credentials with the state.
 
-That way you can store your serialized state in a database, or along with your request.
+Store serialized state in application-controlled storage, such as a server-side database.
+
+### Keep approval state on the server
+
+Serialized `RunState` contains execution state, including approval decisions, pending tool calls, tool arguments, and application context. `RunState.fromString()` restores that state; the method does not authenticate the snapshot or the person submitting it. Only deserialize snapshots from trusted storage or after your application verifies the complete snapshot's integrity, ownership, and replay protection. Schema validation and tool-call fingerprints do not authenticate a snapshot. SDK references to agent or generated-item ownership also do not authorize an application user.
+
+For browser or mobile approval interfaces, keep the complete snapshot in application-controlled server storage. Send the reviewer only authorized display details and opaque identifiers for the pending decisions. A run ID or decision ID is not proof of authorization. Treat tool names and arguments as untrusted display content: filter sensitive values and escape content when rendering HTML. Keep full run results and errors on the server, and return only application-selected output to the client.
+
+When a decision arrives, the server must:
+
+1. Authenticate the reviewer using the application's session or authentication middleware. Never obtain the authenticated identity from the approval request body.
+2. Authorize the reviewer against the stored run and the selected pending calls.
+3. Validate decision identifiers and boolean decisions against the pending requests stored on the server. Do not accept replacement tool calls, arguments, approval records, or serialized state from the client.
+4. Atomically check ownership and consume the pending request before deserialization and resumed execution. Concurrent or replayed submissions must not resume the same snapshot twice. In shared storage, use a transaction or equivalent atomic conditional transition.
+5. Load the server-owned snapshot, obtain pending items with `state.getInterruptions()`, and apply `state.approve()` or `state.reject()` only to those items before resuming the run.
+
+The following example requires one decision for every pending call in a batch. This is an application policy; the SDK also supports partial approval as described above. The store is confined to one event loop in one process. The owner check, validation, and consumption have no intervening `await`. A request remains consumed if deserialization or execution fails, or if execution is cancelled. Consumption prevents resubmitting this snapshot; it does not guarantee exactly-once tool side effects. Reconcile completed or uncertain tool side effects before initiating recovery or another run.
+
+<Code
+  lang="typescript"
+  code={serverOwnedApprovalExample}
+  title="Server-owned approval state"
+/>
+
+See the [CLI client/server simulation](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-server.ts) for the complete example. This is not a deployable HTTP service. Production applications must supply trusted authentication, authorization for the displayed details and selected calls, request and CSRF protections where applicable, bounded storage retention, atomic consumption in shared storage, and a recovery policy. The CLI uses synthetic tool data and disables tracing; real application snapshots and diagnostics can contain sensitive data.
+
+`RunState.fromStringWithContext()` with `contextStrategy: 'replace'`, or removing only serialized approval records, does not make an untrusted snapshot safe. Other fields still control execution. If a client transports the complete snapshot, verify the complete snapshot's integrity, bind it to the authorized user and run, and prevent replay before deserialization. Integrity verification does not encrypt the snapshot or hide its contents from the client.
 
 ### Versioning pending tasks
 

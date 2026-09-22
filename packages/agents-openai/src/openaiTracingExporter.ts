@@ -33,8 +33,32 @@ type JsonCompatibleValue =
   | { [key: string]: JsonCompatibleValue };
 
 const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
+const OPENAI_TRACING_INGEST_ENDPOINT =
+  'https://api.openai.com/v1/traces/ingest';
 const OPENAI_TRACING_MAX_RECURSION_DEPTH = 1_000;
 const OPENAI_TRACING_STRING_TRUNCATION_SUFFIX = '... [truncated]';
+
+function retryAfterMs(headers: Headers): number | undefined {
+  const milliseconds = headers.get('retry-after-ms')?.trim();
+  if (milliseconds) {
+    const value = Number(milliseconds);
+    if (Number.isFinite(value) && value >= 0) {
+      return value;
+    }
+  }
+
+  const retryAfter = headers.get('retry-after')?.trim();
+  if (!retryAfter) {
+    return undefined;
+  }
+  const seconds = Number(retryAfter);
+  if (!Number.isNaN(seconds)) {
+    const value = seconds * 1000;
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  const date = Date.parse(retryAfter);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
 
 async function sleepWithAbort(
   delayMs: number,
@@ -617,6 +641,59 @@ function sanitizeGenerationUsageForTracesIngest(
   };
 }
 
+function omitAssistantReasoning(value: unknown): unknown {
+  if (!isRecord(value) || value.role !== 'assistant') {
+    return value;
+  }
+
+  const message = { ...value };
+  delete message.reasoning;
+  if (Array.isArray(message.content)) {
+    message.content = message.content
+      .filter((part) => !isRecord(part) || part.type !== 'reasoning')
+      .map((part) => {
+        if (
+          !isRecord(part) ||
+          (part.type !== 'text' && part.type !== 'refusal')
+        ) {
+          return part;
+        }
+        // Chat Completions replay copies message provider data onto these parts.
+        const content = { ...part };
+        delete content.reasoning;
+        return content;
+      });
+  }
+  return message;
+}
+
+/** Filter known generation shapes, without traversing user or tool JSON. */
+function omitGenerationReasoning(value: unknown): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+
+  return value
+    .filter((item) => !isRecord(item) || item.type !== 'reasoning')
+    .map((item) => {
+      if (
+        isRecord(item) &&
+        item.object === 'chat.completion' &&
+        Array.isArray(item.choices)
+      ) {
+        return {
+          ...item,
+          choices: item.choices.map((choice) =>
+            isRecord(choice) && isRecord(choice.message)
+              ? { ...choice, message: omitAssistantReasoning(choice.message) }
+              : choice,
+          ),
+        };
+      }
+      return omitAssistantReasoning(item);
+    });
+}
+
 /**
  * OpenAI traces ingest currently accepts only input/output token counts at the top-level
  * generation usage object. Keep those fields and move other usage data under `usage.details`
@@ -624,6 +701,7 @@ function sanitizeGenerationUsageForTracesIngest(
  */
 function sanitizeSpanDataForTracesIngest(
   spanData: Record<string, unknown>,
+  omitReasoning: boolean,
 ): Record<string, unknown> {
   let sanitizedSpanData = spanData;
   let didMutate = false;
@@ -634,8 +712,15 @@ function sanitizeSpanDataForTracesIngest(
     }
 
     let fieldValue: unknown;
+    let exportValue: unknown;
     try {
       fieldValue = spanData[fieldName];
+      // Filter before truncation so reasoning does not consume the field budget.
+      // Work on export-only copies: custom processors retain the original spans.
+      exportValue =
+        omitReasoning && isGenerationSpanData(spanData)
+          ? omitGenerationReasoning(fieldValue)
+          : fieldValue;
     } catch {
       if (!didMutate) {
         sanitizedSpanData = cloneRecordSafely(spanData);
@@ -646,7 +731,7 @@ function sanitizeSpanDataForTracesIngest(
       continue;
     }
 
-    const sanitizedField = truncateSpanFieldValue(fieldValue);
+    const sanitizedField = truncateSpanFieldValue(exportValue);
     if (sanitizedField === fieldValue) {
       continue;
     }
@@ -689,6 +774,7 @@ function sanitizeSpanDataForTracesIngest(
 
 function sanitizePayloadItemForTracesIngest(
   payloadItem: Record<string, unknown>,
+  omitReasoning: boolean,
 ): Record<string, unknown> {
   if (payloadItem.object !== 'trace.span' || !isRecord(payloadItem.span_data)) {
     return payloadItem;
@@ -696,7 +782,10 @@ function sanitizePayloadItemForTracesIngest(
 
   return {
     ...payloadItem,
-    span_data: sanitizeSpanDataForTracesIngest(payloadItem.span_data),
+    span_data: sanitizeSpanDataForTracesIngest(
+      payloadItem.span_data,
+      omitReasoning,
+    ),
   };
 }
 
@@ -711,7 +800,7 @@ export class OpenAITracingExporter implements TracingExporter {
       apiKey: options.apiKey ?? undefined,
       organization: options.organization ?? '',
       project: options.project ?? '',
-      endpoint: options.endpoint ?? 'https://api.openai.com/v1/traces/ingest',
+      endpoint: options.endpoint ?? OPENAI_TRACING_INGEST_ENDPOINT,
       maxRetries: options.maxRetries ?? 3,
       baseDelay: options.baseDelay ?? 1000,
       maxDelay: options.maxDelay ?? 30000,
@@ -746,7 +835,13 @@ export class OpenAITracingExporter implements TracingExporter {
         .map((entry) => entry.toJSON())
         .filter((item) => !!item)
         .map((item) =>
-          isRecord(item) ? sanitizePayloadItemForTracesIngest(item) : item,
+          isRecord(item)
+            ? sanitizePayloadItemForTracesIngest(
+                item,
+                this.#options.endpoint.replace(/\/$/, '') ===
+                  OPENAI_TRACING_INGEST_ENDPOINT,
+              )
+            : item,
         );
       const payload = { data: payloadItems };
 
@@ -754,6 +849,7 @@ export class OpenAITracingExporter implements TracingExporter {
       let delay = this.#options.baseDelay;
 
       while (attempts < this.#options.maxRetries) {
+        let serverDelay: number | undefined;
         try {
           const response = await fetch(this.#options.endpoint, {
             method: 'POST',
@@ -772,28 +868,66 @@ export class OpenAITracingExporter implements TracingExporter {
             break;
           }
 
-          if (response.status >= 400 && response.status < 500) {
-            if (logger.dontLogModelData || logger.dontLogToolData) {
+          const retryAdvice = response.headers
+            ?.get('x-should-retry')
+            ?.trim()
+            .toLowerCase();
+          const clientError = response.status >= 400 && response.status < 500;
+          const shouldRetry =
+            retryAdvice === 'true' ||
+            (retryAdvice !== 'false' &&
+              (!clientError ||
+                response.status === 408 ||
+                response.status === 409 ||
+                response.status === 429));
+
+          if (!shouldRetry) {
+            if (clientError) {
+              if (logger.dontLogModelData || logger.dontLogToolData) {
+                try {
+                  await response.body?.cancel();
+                } catch {
+                  // Best-effort cleanup must not replace the tracing response error.
+                }
+                logger.error(
+                  `[non-fatal] Tracing client error ${response.status}. Response data is redacted.`,
+                );
+              } else {
+                try {
+                  logger.error(
+                    `[non-fatal] Tracing client error ${
+                      response.status
+                    }: ${await response.text()}`,
+                  );
+                } catch {
+                  logger.error(
+                    `[non-fatal] Tracing client error ${response.status}. Response data could not be read.`,
+                  );
+                }
+              }
+            } else {
               try {
                 await response.body?.cancel();
               } catch {
-                // Best-effort cleanup must not replace the tracing response error.
+                // Best-effort cleanup must not replace the server retry veto.
               }
               logger.error(
-                `[non-fatal] Tracing client error ${response.status}. Response data is redacted.`,
-              );
-            } else {
-              logger.error(
-                `[non-fatal] Tracing client error ${
-                  response.status
-                }: ${await response.text()}`,
+                `[non-fatal] Tracing: server forbade retry for ${response.status}.`,
               );
             }
             break;
           }
 
+          serverDelay = response.headers
+            ? retryAfterMs(response.headers)
+            : undefined;
+          try {
+            await response.body?.cancel();
+          } catch {
+            // Best-effort cleanup must not prevent retrying the batch.
+          }
           logger.warn(
-            `[non-fatal] Tracing: server error ${response.status}, retrying.`,
+            `[non-fatal] Tracing: ${clientError ? 'client' : 'server'} error ${response.status}, retrying.`,
           );
         } catch (error: any) {
           logModelAndToolActionError(
@@ -813,7 +947,13 @@ export class OpenAITracingExporter implements TracingExporter {
           break;
         }
 
-        const sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
+        let sleepTime = delay + Math.random() * 0.1 * delay; // 10% jitter
+        if (serverDelay !== undefined) {
+          sleepTime = Math.min(
+            Math.max(sleepTime, serverDelay),
+            this.#options.maxDelay,
+          );
+        }
         const shouldContinue = await sleepWithAbort(sleepTime, signal);
         if (!shouldContinue) {
           logger.error('Tracing: request aborted');

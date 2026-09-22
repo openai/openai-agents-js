@@ -267,6 +267,12 @@ export async function resumeInterruptedTurn<
     beforeResumedSideEffects,
     onHandoff,
   } = options;
+  // Validate recipient continuity before resumed-session callbacks can run.
+  preflightToolInvocations(
+    state._currentAgent,
+    state,
+    state._lastProcessedResponse!,
+  );
   const approvedToolWillResume = state.getInterruptions().some((item) => {
     const rawItem = item.rawItem;
     if (rawItem.type === 'hosted_tool_call') {

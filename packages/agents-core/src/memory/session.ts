@@ -216,6 +216,12 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
     args?: OpenAIResponsesCompactionArgs,
     runContext?: RunContext<any>,
     ownership?: object | null,
+    /** @internal Successful, process-local model exchange for automatic compaction. */
+    modelExchange?: {
+      items: AgentInputItem[];
+      responseId?: string;
+      reasoningItemIdPolicy?: 'preserve' | 'omit';
+    },
   ):
     | Promise<OpenAIResponsesCompactionResult | null>
     | OpenAIResponsesCompactionResult
@@ -229,6 +235,8 @@ export interface OpenAIResponsesCompactionAwareSession extends Session {
  * persists its items when its receipt is stale, but must not restore that receipt's ownership.
  * Ordinary history reads must not grant ownership. The runner supplies a receipt, or null when
  * none survived, as the third runCompaction argument. Undefined preserves manual compaction.
+ * The fourth argument supplies the latest successful model exchange; implementations can use
+ * it to reject replacement of stored history omitted by input callbacks or filters.
  */
 export interface OpenAIResponsesCompactionOwnershipAwareSession extends OpenAIResponsesCompactionAwareSession {
   getItemsWithCompactionOwnership(

@@ -1,3 +1,5 @@
+// This local CLI trusts its saved state. Browser/mobile approval UIs should keep
+// snapshots on the server; see human-in-the-loop-server.ts in agent-patterns.
 import { z } from 'zod';
 import readline from 'node:readline/promises';
 import fs from 'node:fs/promises';

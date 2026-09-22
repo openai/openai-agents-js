@@ -328,6 +328,7 @@ describe('Memory', () => {
       maxRawMemoriesForConsolidation: 256,
       phaseOneModel: 'gpt-5.4-mini',
       phaseTwoModel: 'gpt-5.4',
+      phaseTwoMaxTurns: 500,
     });
     expect(() => memory({ read: false, generate: false })).toThrow(
       'Memory requires at least one of `read` or `generate`.',
@@ -342,6 +343,23 @@ describe('Memory', () => {
     ).toThrow(
       'MemoryGenerateConfig.maxRawMemoriesForConsolidation must be an integer between 1 and 4096.',
     );
+  });
+
+  it.each([undefined, true, {}, { phaseTwoMaxTurns: 2 }])(
+    'normalizes the phase-two turn budget for %j',
+    (generate) => {
+      expect(memory({ generate }).generate?.phaseTwoMaxTurns).toBe(
+        typeof generate === 'object' && 'phaseTwoMaxTurns' in generate
+          ? 2
+          : 500,
+      );
+    },
+  );
+
+  it('keeps memory generation disabled with a configured turn budget', () => {
+    expect(
+      memory({ generate: { enabled: false, phaseTwoMaxTurns: 2 } }).generate,
+    ).toBeNull();
   });
 
   it('rejects known snake_case memory config aliases', () => {
@@ -363,6 +381,10 @@ describe('Memory', () => {
       {
         args: { generate: { phase_one_model_settings: {} } },
         key: 'phase_one_model_settings',
+      },
+      {
+        args: { generate: { phase_two_max_turns: 2 } },
+        key: 'phase_two_max_turns',
       },
       {
         args: { generate: { phase_two_model: 'gpt-5.4' } },

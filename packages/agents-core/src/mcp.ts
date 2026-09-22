@@ -6,6 +6,7 @@ import {
   type ToolCallDetails,
 } from './tool';
 import { UserError } from './errors';
+import { bindMcpTool, getMcpToolBinding } from './toolIdentity';
 import {
   MCPServerStdio as UnderlyingMCPServerStdio,
   MCPServerStreamableHttp as UnderlyingMCPServerStreamableHttp,
@@ -735,20 +736,31 @@ function convertMcpToolsToFunctionTools<TContext = UnknownContext>({
   server,
   convertSchemasToStrict,
   toolNameOverrides,
+  serverIndex = null,
   errorFunction,
 }: {
   mcpTools: MCPTool[];
   server: MCPServer;
   convertSchemasToStrict: boolean;
   toolNameOverrides?: Array<string | undefined>;
+  serverIndex?: number | null;
   errorFunction?: MCPToolErrorFunction | null;
 }): FunctionTool<TContext, any, unknown>[] {
-  return mcpTools.map((mcpTool, index) =>
-    mcpToFunctionTool(mcpTool, server, convertSchemasToStrict, {
-      toolNameOverride: toolNameOverrides?.[index],
-      errorFunction,
-    }),
-  );
+  return mcpTools.map((mcpTool, index) => {
+    const converted = mcpToFunctionTool(
+      mcpTool,
+      server,
+      convertSchemasToStrict,
+      {
+        toolNameOverride: toolNameOverrides?.[index],
+        errorFunction,
+      },
+    );
+    return bindMcpTool(converted, {
+      ...getMcpToolBinding(converted)!,
+      serverIndex,
+    });
+  });
 }
 
 /**
@@ -756,6 +768,7 @@ function convertMcpToolsToFunctionTools<TContext = UnknownContext>({
  */
 async function getFunctionToolsFromServer<TContext = UnknownContext>({
   server,
+  serverIndex,
   convertSchemasToStrict,
   runContext,
   agent,
@@ -764,6 +777,7 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
   tracingParent,
 }: {
   server: MCPServer;
+  serverIndex?: number;
   convertSchemasToStrict: boolean;
   runContext?: RunContext<TContext>;
   agent?: Agent<any, any>;
@@ -780,6 +794,7 @@ async function getFunctionToolsFromServer<TContext = UnknownContext>({
   });
   return convertMcpToolsToFunctionTools({
     mcpTools,
+    serverIndex,
     server,
     convertSchemasToStrict,
     errorFunction,
@@ -857,6 +872,7 @@ export async function getAllMcpTools<TContext = UnknownContext>(
       const serverTools = convertMcpToolsToFunctionTools<TContext>({
         mcpTools,
         server,
+        serverIndex,
         convertSchemasToStrict: convertSchemasToStrictFromOpts,
         errorFunction,
         toolNameOverrides: mcpTools.map((_, toolIndex) =>
@@ -880,9 +896,10 @@ export async function getAllMcpTools<TContext = UnknownContext>(
     return allTools;
   }
 
-  for (const server of mcpServers) {
+  for (const [serverIndex, server] of mcpServers.entries()) {
     const serverTools = await getFunctionToolsFromServer({
       server,
+      serverIndex,
       convertSchemasToStrict: convertSchemasToStrictFromOpts,
       runContext: runContextFromOpts,
       agent: agentFromOpts,
@@ -1189,7 +1206,13 @@ export function mcpToFunctionTool(
   convertSchemasToStrict: boolean,
   options: MCPFunctionToolConversionOptions = {},
 ) {
-  const toolName = options.toolNameOverride ?? mcpTool.name;
+  const rawToolName = mcpTool.name;
+  const toolName = options.toolNameOverride ?? rawToolName;
+  const binding = {
+    serverName: getMcpServerExternalName(server.name),
+    toolName: rawToolName,
+    serverIndex: null,
+  };
   const inputGuardrails = server.toolInputGuardrails
     ? [...server.toolInputGuardrails]
     : undefined;
@@ -1229,7 +1252,7 @@ export function mcpToFunctionTool(
       };
     }
     const meta = runContext
-      ? await resolveMcpToolMeta(server, runContext, mcpTool.name, args)
+      ? await resolveMcpToolMeta(server, runContext, rawToolName, args)
       : undefined;
     const callOptions = details?.signal
       ? { signal: details.signal }
@@ -1241,17 +1264,17 @@ export function mcpToFunctionTool(
     let result: CallToolResult;
     if (useFullResult) {
       result = callOptions
-        ? await server.callToolResult!(mcpTool.name, args, meta, callOptions)
+        ? await server.callToolResult!(rawToolName, args, meta, callOptions)
         : meta === undefined
-          ? await server.callToolResult!(mcpTool.name, args)
-          : await server.callToolResult!(mcpTool.name, args, meta);
+          ? await server.callToolResult!(rawToolName, args)
+          : await server.callToolResult!(rawToolName, args, meta);
     } else {
       result = {
         content: callOptions
-          ? await server.callTool(mcpTool.name, args, meta, callOptions)
+          ? await server.callTool(rawToolName, args, meta, callOptions)
           : meta === undefined
-            ? await server.callTool(mcpTool.name, args)
-            : await server.callTool(mcpTool.name, args, meta),
+            ? await server.callTool(rawToolName, args)
+            : await server.callTool(rawToolName, args, meta),
       };
     }
     const content = result.content as CallToolResultContent;
@@ -1276,7 +1299,7 @@ export function mcpToFunctionTool(
       byCall.set(details.toolCall.callId, {
         runContext,
         serverName: server.name,
-        toolName: mcpTool.name,
+        toolName: rawToolName,
         toolDisplayName: toolName,
         arguments: cloneMcpCustomDataContextValue(args),
         resultMeta: cloneMcpCustomDataContextValue(resultMeta),
@@ -1320,17 +1343,20 @@ export function mcpToFunctionTool(
   if (convertSchemasToStrict || schema.additionalProperties === true) {
     try {
       assertOpenAIStrictToolSchemaPreservesOpenObjects(strictSchema);
-      return tool({
-        name: toolName,
-        description: mcpTool.description || '',
-        parameters: strictSchema,
-        strict: true,
-        execute: invoke,
-        errorFunction,
-        inputGuardrails,
-        outputGuardrails,
-        customDataExtractor: extractCustomData,
-      });
+      return bindMcpTool(
+        tool({
+          name: toolName,
+          description: mcpTool.description || '',
+          parameters: strictSchema,
+          strict: true,
+          execute: invoke,
+          errorFunction,
+          inputGuardrails,
+          outputGuardrails,
+          customDataExtractor: extractCustomData,
+        }),
+        binding,
+      );
     } catch (e) {
       if (convertSchemasToStrict && isJsonSchemaDepthError(e)) {
         throw e;
@@ -1351,17 +1377,20 @@ export function mcpToFunctionTool(
         ? schema.additionalProperties
         : true,
   } as JsonObjectSchemaNonStrict<any>;
-  return tool({
-    name: toolName,
-    description: mcpTool.description || '',
-    parameters: nonStrictSchema,
-    strict: false,
-    execute: invoke,
-    errorFunction,
-    inputGuardrails,
-    outputGuardrails,
-    customDataExtractor: extractCustomData,
-  });
+  return bindMcpTool(
+    tool({
+      name: toolName,
+      description: mcpTool.description || '',
+      parameters: nonStrictSchema,
+      strict: false,
+      execute: invoke,
+      errorFunction,
+      inputGuardrails,
+      outputGuardrails,
+      customDataExtractor: extractCustomData,
+    }),
+    binding,
+  );
 }
 
 function getMcpCustomDataContext(
@@ -1396,6 +1425,16 @@ export interface BaseMCPServerStdioOptions {
   env?: Record<string, string>;
   cwd?: string;
   cacheToolsList?: boolean;
+  /**
+   * Maximum successful pages per automatic `listTools()` call. Must be a positive
+   * integer; omission leaves pagination unlimited. A terminal page at the limit
+   * succeeds; a fresh continuation at the limit rejects without returning or
+   * caching partial tools. Existing cursor-cycle handling is unchanged: modern
+   * clients end listing on a repeated cursor; legacy clients reject it.
+   * Request retries do not reset this budget. Does not limit page size or explicit
+   * resource pagination. Configure this option when constructing the server.
+   */
+  maxListPages?: number;
   clientSessionTimeoutSeconds?: number;
   name?: string;
   encoding?: string;
@@ -1439,6 +1478,16 @@ export type MCPServerStdioOptions =
 export interface MCPServerStreamableHttpOptions {
   url: string;
   cacheToolsList?: boolean;
+  /**
+   * Maximum successful pages per automatic `listTools()` call. Must be a positive
+   * integer; omission leaves pagination unlimited. A terminal page at the limit
+   * succeeds; a fresh continuation at the limit rejects without returning or
+   * caching partial tools. Existing cursor-cycle handling is unchanged: modern
+   * clients end listing on a repeated cursor; legacy clients reject it.
+   * Request retries do not reset this budget. Does not limit page size or explicit
+   * resource pagination. Configure this option when constructing the server.
+   */
+  maxListPages?: number;
   clientSessionTimeoutSeconds?: number;
   name?: string;
   logger?: Logger;
@@ -1485,6 +1534,16 @@ export interface MCPServerStreamableHttpOptions {
 export interface MCPServerSSEOptions {
   url: string;
   cacheToolsList?: boolean;
+  /**
+   * Maximum successful pages per automatic `listTools()` call. Must be a positive
+   * integer; omission leaves pagination unlimited. A terminal page at the limit
+   * succeeds; a fresh continuation at the limit rejects without returning or
+   * caching partial tools. Existing cursor-cycle handling is unchanged: modern
+   * clients end listing on a repeated cursor; legacy clients reject it.
+   * Request retries do not reset this budget. Does not limit page size or explicit
+   * resource pagination. Configure this option when constructing the server.
+   */
+  maxListPages?: number;
   clientSessionTimeoutSeconds?: number;
   name?: string;
   logger?: Logger;

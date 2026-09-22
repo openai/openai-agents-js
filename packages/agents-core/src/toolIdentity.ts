@@ -3,6 +3,50 @@ import { UserError } from './errors';
 import { toolDisplayName, toolQualifiedName } from './tooling';
 export { toolDisplayName, toolQualifiedName } from './tooling';
 
+/** @internal Logical routing identity, not transport or snapshot authentication. */
+export type McpToolBinding = Readonly<{
+  serverName: string;
+  toolName: string;
+  serverIndex: number | null;
+}>;
+
+// Key by the invocation function so supported namespace/preparation copies retain identity.
+const mcpToolBindings = new WeakMap<FunctionTool['invoke'], McpToolBinding>();
+
+/** @internal */
+export function bindMcpTool<T extends FunctionTool<any, any, any>>(
+  tool: T,
+  binding: McpToolBinding,
+): T {
+  mcpToolBindings.set(tool.invoke, Object.freeze({ ...binding }));
+  return tool;
+}
+
+/** @internal */
+export function getMcpToolBinding(
+  tool: FunctionTool<any, any, any>,
+): McpToolBinding | null {
+  return mcpToolBindings.get(tool.invoke) ?? null;
+}
+
+/** @internal Missing historical provenance is never inferred from current configuration. */
+export type FunctionToolRecipient = McpToolBinding | null | 'unknown';
+
+/** @internal */
+export function matchesFunctionToolRecipient(
+  original: FunctionToolRecipient,
+  tool: FunctionTool<any, any, any>,
+): boolean {
+  const current = getMcpToolBinding(tool);
+  if (original === 'unknown') return false;
+  if (original === null || current === null) return original === current;
+  return (
+    original.serverName === current.serverName &&
+    original.toolName === current.toolName &&
+    original.serverIndex === current.serverIndex
+  );
+}
+
 export const FUNCTION_TOOL_NAMESPACE = Symbol('functionToolNamespace');
 export const FUNCTION_TOOL_NAMESPACE_DESCRIPTION = Symbol(
   'functionToolNamespaceDescription',

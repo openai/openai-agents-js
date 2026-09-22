@@ -17,6 +17,10 @@ import {
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import {
+  getFunctionToolApprovalInput,
+  prepareFunctionToolInput,
+  setFunctionToolPreparedInput,
+  type FunctionToolPreparedInput,
   getSafeErrorType,
   getBoundToolInvocationRejectionMessage,
   getHostedMcpApprovalToolName,
@@ -248,6 +252,7 @@ type PreparedRealtimeAgentState<TBaseContext> = {
 };
 
 type PendingRealtimeFunctionCall<TBaseContext> = {
+  preparedInput?: FunctionToolPreparedInput;
   toolCall: TransportToolCallEvent;
   tool: RealtimeFunctionTool<TBaseContext>;
   agent: SessionRealtimeAgent<TBaseContext>;
@@ -1071,6 +1076,7 @@ export class RealtimeSession<
     tool: RealtimeFunctionTool<TBaseContext>,
     agent: SessionRealtimeAgent<TBaseContext>,
     dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
+    preparedInput?: FunctionToolPreparedInput,
   ) {
     const toolCall = normalizeRealtimeFunctionCallId(incomingToolCall);
     const invocation = {
@@ -1095,6 +1101,7 @@ export class RealtimeSession<
         agent,
         dispatchSnapshot,
         invocation,
+        preparedInput,
       ),
     );
   }
@@ -1105,6 +1112,7 @@ export class RealtimeSession<
     agent: SessionRealtimeAgent<TBaseContext>,
     dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
     invocation: CanonicalRealtimeToolInvocation,
+    preparedInput?: FunctionToolPreparedInput,
   ) {
     if (!this.#isCurrentRealtimeInvocation(invocation)) {
       return;
@@ -1127,13 +1135,24 @@ export class RealtimeSession<
       }
       argumentParseError = error;
     }
-    const forceApproval =
-      dynamicApprovalPolicy &&
-      (argumentParseError !== undefined ||
-        !hasInspectableFunctionToolArguments(parsedArgs));
     const existingApproval = dynamicApprovalPolicy
       ? getToolInvocationApproval(this.context, agent, tool, toolCall)
       : undefined;
+    if (
+      dynamicApprovalPolicy &&
+      existingApproval !== false &&
+      argumentParseError === undefined
+    ) {
+      preparedInput ??= prepareFunctionToolInput(tool, toolCall.arguments);
+      if (preparedInput?.result.success) {
+        parsedArgs = getFunctionToolApprovalInput(preparedInput.result.value);
+      }
+    }
+    const forceApproval =
+      dynamicApprovalPolicy &&
+      (argumentParseError !== undefined ||
+        preparedInput?.result.success === false ||
+        !hasInspectableFunctionToolArguments(parsedArgs));
     const needsApproval =
       forceApproval ||
       existingApproval !== undefined ||
@@ -1222,6 +1241,7 @@ export class RealtimeSession<
           approvalItem: trustedApprovalItem,
           fingerprint: invocation.fingerprint,
           connectionGeneration: invocation.connectionGeneration,
+          preparedInput,
         });
         this.#issuedApprovals.set(approvalItem, {
           kind: 'function',
@@ -1247,7 +1267,8 @@ export class RealtimeSession<
 
     this.#deletePendingFunctionCall(agent, toolCall.callId);
     if (argumentParseError !== undefined) {
-      const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${toErrorMessage(argumentParseError)}`;
+      const errorMessage =
+        'An error occurred while parsing tool arguments. Please try again with valid JSON.';
       this.#sendCommittedFunctionCallOutput(
         agent,
         invocation,
@@ -1282,6 +1303,10 @@ export class RealtimeSession<
     }
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
+    const details = { toolCall };
+    if (preparedInput) {
+      setFunctionToolPreparedInput(details, preparedInput);
+    }
     const result =
       inputGuardrailResult.type === 'reject'
         ? inputGuardrailResult.message
@@ -1289,9 +1314,7 @@ export class RealtimeSession<
             tool,
             runContext: this.#context,
             input: toolCall.arguments,
-            details: {
-              toolCall,
-            },
+            details,
           });
     if (!this.#isCurrentRealtimeInvocation(invocation)) {
       return;
@@ -2269,6 +2292,7 @@ export class RealtimeSession<
         pending.tool,
         pending.agent,
         pending.dispatchSnapshot,
+        pending.preparedInput,
       );
     } else if (effectiveApprovalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysApprove) {
@@ -2342,6 +2366,7 @@ export class RealtimeSession<
         pending.tool,
         pending.agent,
         pending.dispatchSnapshot,
+        pending.preparedInput,
       );
     } else if (effectiveApprovalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysReject) {

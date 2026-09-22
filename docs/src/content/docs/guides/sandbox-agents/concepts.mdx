@@ -35,9 +35,9 @@ You define the workspace around the data the agent needs. A fresh workspace can 
 
 `Manifest` defines the starting contents for a new sandbox workspace. It does not describe the current files in every live sandbox, because reused sessions, serialized session state, and snapshots can all provide or change the workspace at run time.
 
-Throughout this page, "sandbox session" means the live execution environment managed by a sandbox client. The exact boundary depends on the client: Unix-local sessions run in a local workspace on the host, while Docker and hosted clients provide stronger environment isolation. This is different from the SDK's conversational `Session` interfaces described in [Sessions](/openai-agents-js/guides/sessions).
+Throughout this page, "sandbox session" means the live execution environment managed by a sandbox client. The exact boundary depends on the client and configuration: Unix-local sessions run host processes without adding OS-level confinement on macOS or Linux, while Docker and hosted clients use container or provider-managed execution environments. This is different from the SDK's conversational `Session` interfaces described in [Sessions](/openai-agents-js/guides/sessions).
 
-The outer runtime still owns approvals, tracing, handoffs, and resume bookkeeping. The sandbox session owns commands, file changes, and environment isolation. That split is a core part of the model.
+The outer runtime still owns approvals, tracing, handoffs, and resume bookkeeping. The sandbox session manages commands and file changes. The backend and configuration determine the isolation provided by the execution environment.
 
 ### How the pieces fit together
 
@@ -76,7 +76,7 @@ Think about the lifecycle in three phases:
 2. Execute a run by giving `run()` or `Runner` a `sandbox` run option that injects, resumes, or creates the sandbox session.
 3. Continue later from runner-managed `RunState`, explicit sandbox `sessionState`, or a saved workspace snapshot.
 
-If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Reach for sandbox agents when workspace isolation, sandbox client choice, or sandbox-session resume behavior are part of the design.
+If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Reach for sandbox agents when workspace management, sandbox client choice, or sandbox-session resume behavior are part of the design.
 
 ## When to use them
 
@@ -92,7 +92,7 @@ If you do not need access to files or a living filesystem, keep using `Agent`. I
 
 ## Choose a sandbox client
 
-Start with `UnixLocalSandboxClient` for local development on macOS or Linux. On Windows, use `DockerSandboxClient` or a hosted provider instead. On any supported platform, move to `DockerSandboxClient` when you need container isolation or image parity, or to a hosted provider when you need provider-managed execution.
+Use `UnixLocalSandboxClient` for trusted local development on macOS or Linux, or within an externally isolated environment. Unix-local workspaces, working directories, and the `HOME` environment variable do not provide OS-level confinement. For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured `DockerSandboxClient` or hosted provider, or supply external isolation. On Windows, use Docker or a hosted provider. See [Unix-local execution limits](/openai-agents-js/guides/sandbox-agents/clients#local-clients).
 
 In most cases, the `SandboxAgent` definition stays the same while the sandbox client and its options change in the `sandbox` run option. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients) for local, Docker, hosted, and remote-mount options.
 
@@ -225,6 +225,8 @@ Each path grant has a sandbox path and, when needed, a separate host path:
 - `hostPath` is an optional absolute native host path used when the host and sandbox paths differ. On Windows it must be drive-qualified; UNC and device paths are not supported.
 
 `UnixLocalSandboxClient` requires the host and sandbox paths to be the same, so omit `hostPath` there. `DockerSandboxClient` supports a separate `hostPath` when the grant is present in the manifest used to create the container. It cannot add or change that mapping on an already-running container. A Docker command can use a create-time granted sandbox path as its `workdir`; paths outside the workspace and configured grants remain rejected.
+
+For Unix-local sessions, these grants govern access to local sources through the SDK and paths accessed by SDK file APIs. A `readOnly: true` grant prevents SDK file API writes to the granted path. The grants do not constrain arbitrary shell commands on macOS or Linux: commands can access host paths allowed by the process's permissions and external isolation, even when those paths have no grant.
 
 <Code
   lang="typescript"
@@ -426,9 +428,9 @@ Swap the local skill source for a repository-backed one with `skills({ from: git
 
 ### Expose as tools
 
-Tool-agents can either get their own sandbox boundary or reuse a live sandbox from the parent run. Reuse is useful for a fast read-only explorer agent: it can inspect the exact workspace the parent is using without paying to create, hydrate, or snapshot another sandbox.
+Tool-agents can either get their own sandbox session or reuse a live sandbox from the parent run. Reuse is useful for an explorer agent that only needs to inspect the parent's workspace without paying to create, hydrate, or snapshot another sandbox. Sharing a session does not itself enforce read-only access.
 
-When a tool-agent needs real isolation instead, give it its own `runConfig` through `sandboxAgent.asTool(...)`. Use a separate sandbox when the tool-agent should mutate freely, run untrusted commands, or use a different backend or image.
+Give a tool-agent its own `runConfig` through `sandboxAgent.asTool(...)` when the tool-agent needs a separate workspace, backend, or image. For untrusted commands, choose a backend and configuration that provide the required isolation. A separate Unix-local session alone does not provide OS-level confinement.
 
 ### Combine with local tools and MCP
 
@@ -447,7 +449,7 @@ Once the single-agent pattern is clear, the next design question is where the sa
 Sandbox agents still compose with the rest of the SDK:
 
 - [Handoffs](/openai-agents-js/guides/handoffs): hand document-heavy work from a non-sandbox intake agent into a sandbox reviewer.
-- [Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools): expose multiple sandbox agents as tools, usually by passing a sandbox run config on each `asTool(...)` call so each tool gets its own sandbox boundary.
+- [Agents as tools](/openai-agents-js/guides/tools#4-agents-as-tools): expose multiple sandbox agents as tools, usually by passing a sandbox run config on each `asTool(...)` call so each tool gets its own session. The backend and configuration determine the isolation provided by each session.
 - [MCP](/openai-agents-js/guides/mcp) and normal function tools: sandbox capabilities can coexist with `mcpServers` and ordinary tools.
 - [Running agents](/openai-agents-js/guides/running-agents): sandbox runs still use the normal `run()` and `Runner` APIs.
 

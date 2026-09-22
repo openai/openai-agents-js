@@ -780,7 +780,7 @@ describe('mcpToFunctionTool', () => {
     const result = await tool.invoke(new RunContext({}), '{}');
 
     expect(result).toBe(
-      'An error occurred while running the tool. Please try again. Error: AbortError: synthetic abort',
+      'An error occurred while running the tool. Please try again.',
     );
     expect(callTool).toHaveBeenCalledTimes(1);
   });
@@ -824,7 +824,9 @@ describe('mcpToFunctionTool', () => {
 
     const result = await tool.invoke(new RunContext({}), '{}');
 
-    expect(result).toContain('https://example.test:8443/mcp');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     for (const secret of [
       'ERROR_USER',
       'ERROR_PASSWORD',

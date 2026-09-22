@@ -5,7 +5,7 @@ description: Run Agents SDK voice agents over Twilio phone calls
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import twilioBasicExample from '../../../../../examples/docs/extensions/twilio-basic.ts?raw';
-import twilioServerExample from '../../../../../examples/realtime-twilio/index.ts?raw';
+import twilioConnectExample from '../../../../../examples/docs/extensions/twilio-connect.ts?raw';
 
 Twilio offers a [Media Streams API](https://www.twilio.com/docs/voice/media-streams) that sends the raw audio from a phone call to a WebSocket server. This setup can be used to connect your [voice agents](/openai-agents-js/guides/voice-agents) to Twilio. You can use the default Realtime Session transport in `websocket` mode to connect the events coming from Twilio to your Realtime Session. However, this requires you to set the right audio format and adjust your own interruption timing as phone calls will naturally introduce more latency than a web-based conversation.
 
@@ -24,9 +24,9 @@ To improve the setup experience, we've created a dedicated transport layer that 
 
 1. **Make sure you have a Twilio account and a Twilio phone number.**
 
-2. **Set up a WebSocket server that can receive events from Twilio.**
+2. **Set up a server that authenticates requests from Twilio.**
 
-   If you are developing locally, you will need to configure a local tunnel like [`ngrok`](https://ngrok.io/) or [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/) to make your local server accessible to Twilio. You can use the `TwilioRealtimeTransportLayer` to connect to Twilio.
+   If you are developing locally, you will need to configure a local tunnel like [`ngrok`](https://ngrok.io/) or [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/) to make your local server accessible to Twilio. The server must validate `X-Twilio-Signature` on both the incoming call webhook and the WebSocket upgrade before creating a transport or connecting to OpenAI. Use the [official Twilio request validator](https://www.twilio.com/docs/usage/security), the account's primary Auth Token, and a configured public URL. Do not derive that URL from request Host or forwarded headers. `TwilioRealtimeTransportLayer` receives an already authenticated WebSocket; the adapter does not authenticate HTTP requests.
 
 3. **Install the Twilio adapter by installing the extensions package:**
 
@@ -46,9 +46,7 @@ To improve the setup experience, we've created a dedicated transport layer that 
 
 5. **Connect your `RealtimeSession` to Twilio:**
 
-   ```typescript
-   session.connect({ apiKey: 'your-openai-api-key' });
-   ```
+   <Code lang="typescript" code={twilioConnectExample} />
 
 </Steps>
 
@@ -58,7 +56,7 @@ Any event and behavior that you would expect from a `RealtimeSession` will work 
 
 1. **Speed is the name of the game.**
 
-   In order to receive all the necessary events and audio from Twilio, you should create your `TwilioRealtimeTransportLayer` instance as soon as you have a reference to the WebSocket connection and immediately call `session.connect()` afterwards.
+   In order to receive all the necessary events and audio from Twilio, you should create your `TwilioRealtimeTransportLayer` instance as soon as the authenticated WebSocket connection is available and immediately call `session.connect()` afterwards.
 
 2. **Access the raw Twilio events.**
 
@@ -70,10 +68,6 @@ Any event and behavior that you would expect from a `RealtimeSession` will work 
 
 ## Full example server
 
-Below is a full end-to-end example of a WebSocket server that receives requests from Twilio and forwards them to a `RealtimeSession`.
+The [runnable Twilio example](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-twilio) includes authenticated Fastify routes and Realtime session setup. Its README describes the required server-side `OPENAI_API_KEY`, `TWILIO_AUTH_TOKEN`, and `TWILIO_PUBLIC_BASE_URL` settings. The public base URL is an HTTPS origin without a path prefix, query string, or fragment. Update that setting when a tunnel's public origin changes.
 
-<Code
-  lang="typescript"
-  code={twilioServerExample}
-  title="Example server using Fastify"
-/>
+The server rejects invalid call and upgrade signatures before opening a Realtime connection. Twilio Media Stream URLs use `wss://` and do not support query parameters. See the [Twilio Stream documentation](https://www.twilio.com/docs/voice/twiml/stream) for custom parameters.

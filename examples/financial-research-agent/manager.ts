@@ -4,6 +4,7 @@ import {
   plannerAgent,
   FinancialSearchItem,
   FinancialSearchPlan,
+  MAX_SEARCHES,
 } from './agents.ts';
 import { riskAgent } from './agents.ts';
 import { searchAgent } from './agents.ts';
@@ -84,23 +85,25 @@ export class FinancialResearchManager {
     console.log(`[planning] Planning searches...`);
     const result = await run(plannerAgent, `Query: ${query}`);
     console.log(
-      `[planning] Will perform ${result.finalOutput?.searches.length} searches`,
+      `[planning] Will perform ${Math.min(result.finalOutput!.searches.length, MAX_SEARCHES)} searches`,
     );
     return result.finalOutput!;
   }
 
   async performSearches(searchPlan: FinancialSearchPlan): Promise<string[]> {
-    // Run all searches in parallel and log progress as each completes
+    // Enforce the host's search budget before allocating or scheduling work.
+    const searches = searchPlan.searches.slice(0, MAX_SEARCHES);
+    // Run selected searches in parallel and log progress as each completes.
     console.log(`[searching] Searching...`);
     let numCompleted = 0;
-    const results: (string | null)[] = new Array(searchPlan.searches.length);
+    const results: (string | null)[] = new Array(searches.length);
     await Promise.all(
-      searchPlan.searches.map(async (item, i) => {
+      searches.map(async (item, i) => {
         const result = await this.search(item);
         results[i] = result;
         numCompleted++;
         console.log(
-          `[searching] Searching... ${numCompleted}/${searchPlan.searches.length} completed`,
+          `[searching] Searching... ${numCompleted}/${searches.length} completed`,
         );
       }),
     );

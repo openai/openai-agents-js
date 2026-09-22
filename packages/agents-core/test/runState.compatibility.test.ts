@@ -120,6 +120,7 @@ describe('historical RunState compatibility corpus', () => {
       '1.17',
       '1.18',
       '1.19',
+      '1.20',
     ]);
     expect(
       manifest.schemas
@@ -130,7 +131,7 @@ describe('historical RunState compatibility corpus', () => {
       manifest.schemas
         .filter((entry) => entry.status === 'current_unreleased')
         .map((entry) => entry.schemaVersion),
-    ).toEqual(['1.20']);
+    ).toEqual(['1.21']);
   });
 
   it('pins every fixture to immutable bytes and complete writer provenance', () => {
@@ -206,7 +207,7 @@ describe('historical RunState compatibility corpus', () => {
     expect(restored._previousResponseId).toBe('response-historical');
   });
 
-  it('approves and resumes a released nested-agent interruption', async () => {
+  it('requires a fresh run for released pending functions without recipient provenance', async () => {
     let executions = 0;
     const { outerAgent, outerModel } = createNestedApprovalAgents(() => {
       executions += 1;
@@ -219,15 +220,14 @@ describe('historical RunState compatibility corpus', () => {
     expect(approval?.agent.name).toBe('NestedAgent');
 
     restored.approve(approval!);
-    const result = await new Runner().run(outerAgent, restored);
-
-    expect(result.finalOutput).toBe('Outer done');
-    expect(result.interruptions).toEqual([]);
-    expect(executions).toBe(1);
-    expect(outerModel.requests).toHaveLength(1);
+    await expect(new Runner().run(outerAgent, restored)).rejects.toThrow(
+      /recipient binding/,
+    );
+    expect(executions).toBe(0);
+    expect(outerModel.requests).toHaveLength(0);
   });
 
-  it('rejects and resumes a released nested-agent interruption', async () => {
+  it('does not execute an unknown legacy parent even when its child was rejected', async () => {
     let executions = 0;
     const { outerAgent } = createNestedApprovalAgents(() => {
       executions += 1;
@@ -239,11 +239,34 @@ describe('historical RunState compatibility corpus', () => {
     const approval = restored.getInterruptions()[0];
 
     restored.reject(approval!);
-    const result = await new Runner().run(outerAgent, restored);
-
-    expect(result.finalOutput).toBe('Outer done');
-    expect(result.interruptions).toEqual([]);
+    await expect(new Runner().run(outerAgent, restored)).rejects.toThrow(
+      /recipient binding/,
+    );
     expect(executions).toBe(0);
+  });
+
+  it('can reject the actual released pending child without executing its tool', async () => {
+    let executions = 0;
+    const { nestedAgent } = createNestedApprovalAgents(() => {
+      executions += 1;
+    });
+    const snapshot = JSON.parse(
+      readFixture('historical/v1.2-nested-approval.json'),
+    );
+    const restored = await RunState.fromString(
+      nestedAgent,
+      snapshot.pendingAgentToolRuns['nested_tool:outer-call'],
+    );
+    restored.reject(restored.getInterruptions()[0], {
+      message: 'historical rejection',
+    });
+    const result = await new Runner({ tracingDisabled: true }).run(
+      nestedAgent,
+      restored,
+    );
+    expect(result.finalOutput).toBe('Nested done');
+    expect(executions).toBe(0);
+    expect(JSON.stringify(result.newItems)).toContain('historical rejection');
   });
 
   it('resumes after a released committed side effect without executing it again', async () => {
@@ -466,7 +489,7 @@ function createNestedApprovalAgents(onExecute: () => void) {
     tools: [nestedTool],
     modelSettings: { toolChoice: 'required' },
   });
-  return { outerAgent, outerModel };
+  return { outerAgent, outerModel, nestedAgent };
 }
 
 function message(text: string): ModelResponse['output'][number] {

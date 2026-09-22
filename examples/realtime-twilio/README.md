@@ -6,7 +6,23 @@ The demo uses a friendly voice assistant with a hosted DeepWiki MCP integration 
 
 When a call connects, start speaking after the prompt. To try an interruption, ask the agent for a longer answer and speak while it is responding.
 
-To try it out you must have a Twilio phone number. Expose your localhost with a tunneling service such as ngrok and set the phone number's incoming call URL to `https://<your-tunnel-url>/incoming-call`.
+To try it out you must have a Twilio phone number. Set these server-side environment variables before starting the example:
+
+```bash
+OPENAI_API_KEY=your-openai-api-key
+TWILIO_AUTH_TOKEN=your-primary-twilio-auth-token
+TWILIO_PUBLIC_BASE_URL=https://your-public-host.example
+```
+
+Use the primary Auth Token for the Twilio account that sends the requests. Keep both credentials on the server. `TWILIO_PUBLIC_BASE_URL` must be an HTTPS origin without credentials, a path prefix, query string, or fragment. An optional trailing slash is accepted. The example refuses to start without these settings.
+
+Expose your localhost with an HTTPS tunnel such as ngrok and set `TWILIO_PUBLIC_BASE_URL` to that tunnel's public origin. Configure the phone number's incoming call URL as `https://your-public-host.example/incoming-call`, using GET or form-encoded POST. Update the environment variable and restart the server whenever the tunnel origin changes. A proxy may terminate TLS before forwarding to the local server, but must preserve the request path, query, form values, and `X-Twilio-Signature` header.
+
+The server uses the official Twilio helper to validate incoming call webhooks and WebSocket upgrades before creating a Realtime session or connecting to OpenAI. Missing or invalid signatures return HTTP 403, including during the WebSocket handshake. If legitimate requests fail, check the account's primary Auth Token and the exact public URL configured in Twilio. Host and forwarded headers never determine the public URL. There is no option to disable authentication for local development.
+
+Media Streams use the configured origin with `wss://` and `/media-stream`. Stream URLs cannot contain query parameters; use Twilio's Stream custom parameters for application metadata. Signature validation authenticates Twilio requests; application-specific caller authorization and replay prevention are outside this example's scope. See [Twilio request validation](https://www.twilio.com/docs/usage/security) and [Stream URL requirements](https://www.twilio.com/docs/voice/twiml/stream).
+
+`index.ts` loads configuration and starts the server. `server.ts` contains the authenticated routes and Realtime session setup.
 
 Start the server with:
 
