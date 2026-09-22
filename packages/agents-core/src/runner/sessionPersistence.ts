@@ -5,6 +5,7 @@ import {
   isRunContextAwareSession,
   isSessionHistoryTransactionAwareSession,
   type OpenAIResponsesCompactionArgs,
+  type OpenAIResponsesCompactionResult,
   type OpenAIResponsesCompactionAwareSession,
   type Session,
   type SessionHistoryTransaction,
@@ -38,7 +39,10 @@ import {
   type ReasoningItemIdPolicy,
 } from './items';
 import logger, { logModelAndToolActionWarning } from '../logger';
-import { getRunStateUsageRecorder } from './usageTracking';
+import {
+  consumeModelFailureUsage,
+  getRunStateUsageRecorder,
+} from './usageTracking';
 import {
   buildRunItemPersistencePlan as buildCanonicalRunItemPersistencePlan,
   getBlockedOutputSessionSnapshotRunItems,
@@ -2570,18 +2574,26 @@ async function runCompactionOnSession(
           ...(typeof store === 'undefined' ? {} : { store }),
           ...(typeof compactionMode === 'undefined' ? {} : { compactionMode }),
         };
-  const compactionResult = isOpenAIResponsesCompactionOwnershipAwareSession(
-    session,
-  )
-    ? await session.runCompaction(
-        compactionArgs,
-        state._context,
-        getSessionCompactionState(session, state)?.ownership ?? null,
-        getSessionCompactionState(session, state)?.modelExchange,
-      )
-    : isRunContextAwareSession(session)
-      ? await session.runCompaction(compactionArgs, state._context)
-      : await session.runCompaction(compactionArgs);
+  let compactionResult: OpenAIResponsesCompactionResult | null | void;
+  try {
+    compactionResult = isOpenAIResponsesCompactionOwnershipAwareSession(session)
+      ? await session.runCompaction(
+          compactionArgs,
+          state._context,
+          getSessionCompactionState(session, state)?.ownership ?? null,
+          getSessionCompactionState(session, state)?.modelExchange,
+        )
+      : isRunContextAwareSession(session)
+        ? await session.runCompaction(compactionArgs, state._context)
+        : await session.runCompaction(compactionArgs);
+  } catch (error) {
+    const usage = consumeModelFailureUsage(error);
+    if (usage) {
+      state._context.usage.add(usage);
+      getRunStateUsageRecorder(state)?.(usage);
+    }
+    throw error;
+  }
   if (!compactionResult) {
     return;
   }

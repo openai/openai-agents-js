@@ -8,6 +8,7 @@ import {
 
 import { OpenAIResponsesCompactionSession } from '../src';
 import { OPENAI_SESSION_API } from '../src/memory/openaiSessionApi';
+import { assistantMessage } from '@openai/agents-core/testing';
 
 function createDeferred() {
   let resolve!: () => void;
@@ -1873,4 +1874,257 @@ describe('OpenAIResponsesCompactionSession', () => {
       UserError,
     );
   });
+});
+
+describe('OpenAIResponsesCompactionSession rollback item budget', () => {
+  const history: AgentInputItem[] = [
+    { type: 'message', role: 'user', content: 'first' },
+    { type: 'message', role: 'user', content: 'second' },
+  ];
+  const output = [
+    {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'summary' }],
+    },
+  ];
+
+  it.each([0, -1, 1.5])(
+    'rejects an invalid item budget: %s',
+    (maxRollbackItems) => {
+      expect(
+        () => new OpenAIResponsesCompactionSession({ maxRollbackItems }),
+      ).toThrow(UserError);
+    },
+  );
+
+  it.each([
+    { maxRollbackItems: 2, items: history },
+    { maxRollbackItems: 1, items: [] },
+    { maxRollbackItems: undefined, items: history },
+  ])(
+    'compacts at the budget, empty history, or without a budget (%j)',
+    async ({ maxRollbackItems, items }) => {
+      const underlyingSession = new MemorySession({ initialItems: items });
+      const reads = vi.spyOn(underlyingSession, 'getItems');
+      const compact = vi.fn().mockResolvedValue({ output: [] });
+      const session = new OpenAIResponsesCompactionSession({
+        underlyingSession,
+        maxRollbackItems,
+        client: { responses: { compact } } as any,
+      });
+      await session.runCompaction({ force: true });
+      expect(compact).toHaveBeenCalledTimes(1);
+      expect(reads.mock.calls.map(([limit]) => limit)).toEqual(
+        maxRollbackItems === undefined
+          ? [undefined, undefined]
+          : [maxRollbackItems + 1, undefined, maxRollbackItems + 1],
+      );
+      await expect(underlyingSession.getItems()).resolves.toEqual([]);
+    },
+  );
+
+  it.each(['input', 'previous_response_id'] as const)(
+    'rejects overflow before candidate reads, API calls, or writes in %s mode',
+    async (compactionMode) => {
+      // An omitted limit models an ordinary backend retrieval default, not complete history.
+      class WindowedSession extends MemorySession {
+        override getItems(limit = 1) {
+          return super.getItems(limit);
+        }
+      }
+      const underlyingSession = new WindowedSession({ initialItems: history });
+      const reads = vi.spyOn(underlyingSession, 'getItems');
+      const clear = vi.spyOn(underlyingSession, 'clearSession');
+      const add = vi.spyOn(underlyingSession, 'addItems');
+      const compact = vi.fn();
+      const decision = vi.fn(() => true);
+      const session = new OpenAIResponsesCompactionSession({
+        underlyingSession,
+        maxRollbackItems: 1,
+        compactionMode,
+        client: { responses: { compact } } as any,
+        shouldTriggerCompaction: decision,
+      });
+      await expect(
+        session.runCompaction({ force: true, responseId: 'resp_budget' }),
+      ).rejects.toThrow('exceeds maxRollbackItems');
+      expect(reads.mock.calls).toEqual([[2]]);
+      expect(compact).not.toHaveBeenCalled();
+      expect(decision).not.toHaveBeenCalled();
+      expect(clear).not.toHaveBeenCalled();
+      expect(add).not.toHaveBeenCalled();
+      await expect(underlyingSession.getItems(3)).resolves.toEqual(history);
+      // A rejected operation must release the wrapper's mutation queue.
+      await expect(session.popItem()).resolves.toEqual(history[1]);
+    },
+  );
+
+  it('skips over-budget history when the decision hook declines compaction', async () => {
+    const underlyingSession = new MemorySession({ initialItems: history });
+    const compact = vi.fn();
+    const decision = vi.fn(() => false);
+    const session = new OpenAIResponsesCompactionSession({
+      underlyingSession,
+      maxRollbackItems: 1,
+      shouldTriggerCompaction: decision,
+      client: { responses: { compact } } as any,
+    });
+    await expect(session.runCompaction()).resolves.toBeNull();
+    expect(decision).toHaveBeenCalledTimes(1);
+    expect(compact).not.toHaveBeenCalled();
+    await expect(underlyingSession.getItems()).resolves.toEqual(history);
+  });
+
+  it('reloads history and candidates after growth rejects a post-request snapshot', async () => {
+    const started = createDeferred();
+    const proceed = createDeferred();
+    const underlyingSession = new MemorySession({
+      initialItems: history.slice(0, 1),
+    });
+    const clear = vi.spyOn(underlyingSession, 'clearSession');
+    const compact = vi.fn(async (_request: { input?: unknown }) => {
+      started.resolve();
+      await proceed.promise;
+      return { output };
+    });
+    const session = new OpenAIResponsesCompactionSession({
+      underlyingSession,
+      maxRollbackItems: 1,
+      shouldTriggerCompaction: ({ compactionCandidateItems }) =>
+        compactionCandidateItems.length > 0,
+      client: { responses: { compact } } as any,
+    });
+    const operation = session.runCompaction({ force: true });
+    await started.promise;
+    // The wrapper lock cannot serialize an external writer using the backend directly.
+    await underlyingSession.addItems(history.slice(1));
+    proceed.resolve();
+    await expect(operation).rejects.toThrow('exceeds maxRollbackItems');
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(clear).not.toHaveBeenCalled();
+    await expect(underlyingSession.getItems()).resolves.toEqual(history);
+
+    // Model a backend expiry/retention update without touching the wrapper's caches.
+    const survivor = assistantMessage('current surviving reply');
+    await underlyingSession.clearSession();
+    await underlyingSession.addItems([survivor]);
+    await session.runCompaction();
+    expect(compact).toHaveBeenCalledTimes(2);
+    expect(compact.mock.calls[1][0].input).toEqual([
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: 'current surviving reply',
+            annotations: [],
+          },
+        ],
+      },
+    ]);
+    await expect(underlyingSession.getItems()).resolves.toEqual([
+      expect.objectContaining({ content: output[0].content }),
+    ]);
+  });
+
+  it.each(['clear', 'add'] as const)(
+    'restores the post-API snapshot after a failing %s without reviving removed items',
+    async (failureStage) => {
+      const started = createDeferred();
+      const proceed = createDeferred();
+      const underlyingSession =
+        failureStage === 'clear'
+          ? new FailingClearAfterMutationSession({ initialItems: history })
+          : new PartiallyFailingReplacementSession({ initialItems: history });
+      const compact = vi.fn(async () => {
+        started.resolve();
+        await proceed.promise;
+        return { output };
+      });
+      const session = new OpenAIResponsesCompactionSession({
+        underlyingSession,
+        maxRollbackItems: 2,
+        client: { responses: { compact } } as any,
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const operation = session.runCompaction({ force: true });
+        await started.promise;
+        await underlyingSession.popItem();
+        proceed.resolve();
+        await expect(operation).rejects.toThrow(
+          failureStage === 'clear' ? 'clear failed' : 'replacement failed',
+        );
+        await expect(underlyingSession.getItems()).resolves.toEqual(
+          history.slice(0, 1),
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
+  it('restores complete history despite a default retrieval window', async () => {
+    class WindowedFailingSession extends PartiallyFailingReplacementSession {
+      override getItems(limit = 1) {
+        return super.getItems(limit);
+      }
+    }
+    const underlyingSession = new WindowedFailingSession({
+      initialItems: history,
+    });
+    const compact = vi.fn().mockResolvedValue({ output });
+    const session = new OpenAIResponsesCompactionSession({
+      underlyingSession,
+      maxRollbackItems: 2,
+      client: { responses: { compact } } as any,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(session.runCompaction({ force: true })).rejects.toThrow(
+        'replacement failed',
+      );
+      expect(compact.mock.calls[0][0].input).toHaveLength(1);
+      await expect(underlyingSession.getItems(3)).resolves.toEqual(history);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([
+    FailingClearBeforeMutationSession,
+    FailingClearAfterMutationSession,
+  ])(
+    'bounds failed-clear inspection and retains the primary error (%s)',
+    async (SessionClass) => {
+      const underlyingSession = new SessionClass({ initialItems: history });
+      const reads = vi.spyOn(underlyingSession, 'getItems');
+      const session = new OpenAIResponsesCompactionSession({
+        underlyingSession,
+        maxRollbackItems: 2,
+        client: {
+          responses: { compact: vi.fn().mockResolvedValue({ output: [] }) },
+        } as any,
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await expect(session.runCompaction({ force: true })).rejects.toThrow(
+          'clear failed',
+        );
+        expect(reads.mock.calls.map(([limit]) => limit)).toEqual([
+          3,
+          undefined,
+          3,
+          3,
+        ]);
+        await expect(underlyingSession.getItems()).resolves.toEqual(history);
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 });
