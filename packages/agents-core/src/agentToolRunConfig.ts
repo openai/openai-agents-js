@@ -9,7 +9,8 @@ const TRANSPORT_OVERRIDE_PROVIDER_DATA_ALIAS_KEYS = [
   ['extra_query', 'extraQuery'],
   ['extra_body', 'extraBody'],
 ] as const;
-const AGENT_TOOL_PARENT_RUN_CONFIG_SYMBOL = Symbol(
+// Runner and tool adapters can load separate CJS/ESM copies of core.
+const AGENT_TOOL_PARENT_RUN_CONFIG_SYMBOL = Symbol.for(
   'openai.agents.agentToolParentRunConfig',
 );
 const TOOL_CALL_PARENT_SPAN_SYMBOL = Symbol('openai.agents.toolCallParentSpan');
@@ -26,11 +27,14 @@ export function setAgentToolParentRunConfigOnDetails(
   details: object,
   parentRunConfig: Partial<RunConfig> | undefined,
 ): void {
-  const safeParentRunConfig = getInheritedAgentToolRunConfig(
-    parentRunConfig,
-    undefined,
-  );
-  if (!safeParentRunConfig) {
+  const safeParentRunConfig = {
+    ...getInheritedAgentToolRunConfig(parentRunConfig, undefined),
+    // The invoking tool needs this policy even though nested runners do not inherit it.
+    ...(typeof parentRunConfig?.traceIncludeSensitiveData !== 'undefined'
+      ? { traceIncludeSensitiveData: parentRunConfig.traceIncludeSensitiveData }
+      : {}),
+  };
+  if (Object.keys(safeParentRunConfig).length === 0) {
     return;
   }
 
