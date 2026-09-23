@@ -107,6 +107,10 @@ Set `OPENAI_API_KEY` in your server environment for text and sandbox agents. For
 
 Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
 
+## Contributing
+
+Please share bug reports and feature requests through [GitHub issues](https://github.com/openai/openai-agents-js/issues). Pull requests are limited to repository collaborators; we do not accept pull requests from non-collaborators. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contribution policy and development guide. For security vulnerabilities, follow [SECURITY.md](SECURITY.md).
+
 ## Acknowledgements
 
 We'd like to acknowledge the excellent work of the open-source community, especially:

@@ -1,6 +1,16 @@
 # Contributing to OpenAI Agents SDK
 
-Thank you for your interest in contributing to the OpenAI Agents SDK. This document outlines the process for reporting issues, proposing changes, and submitting pull requests.
+## Contribution policy
+
+We welcome bug reports, feature requests, minimal reproductions, and root-cause analysis through [GitHub issues](https://github.com/openai/openai-agents-js/issues).
+
+**Pull requests are limited to repository collaborators. We do not accept pull requests from non-collaborators**, including documentation or example changes. If you are not a collaborator, please open an issue instead of preparing a pull request. Include the affected version, expected and actual behavior, and a small, sanitized reproduction when applicable.
+
+Report suspected security vulnerabilities privately as described in [SECURITY.md](SECURITY.md), rather than in issues or pull requests.
+
+The development and pull request instructions below are for maintainers and repository collaborators.
+
+This guide covers community issue reports and development by repository collaborators.
 
 ## Repository structure
 
@@ -140,6 +150,8 @@ Release workflows and publishing configuration require code-owner coverage and r
 
 ## Submitting a pull request
 
+These steps are for repository collaborators.
+
 1. Fork the repository and create a branch with a descriptive name (e.g., `fix/missing-error`, `feat/new-tool`).
 2. Ensure your branch is up to date with `main`.
 3. Make your changes, add or update tests, and ensure that the following succeeds:
@@ -170,4 +182,4 @@ By contributing, you agree that your contributions will be licensed under the pr
 
 ## Questions
 
-If you have any questions or need guidance, feel free to open an issue or ask in a pull request. Maintainers are happy to help.
+If you have questions or need guidance, please open an [issue](https://github.com/openai/openai-agents-js/issues).
