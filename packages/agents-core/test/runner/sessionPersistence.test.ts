@@ -52,6 +52,11 @@ import type { AgentInputItem, UnknownContext } from '../../src/types';
 import * as protocol from '../../src/types/protocol';
 import { ScriptedModelProvider, TEST_AGENT, fakeModelMessage } from '../stubs';
 import logger from '../../src/logger';
+import {
+  attachModelFailureUsage,
+  consumeModelFailureUsage,
+  setRunStateUsageRecorder,
+} from '../../src/runner/usageTracking';
 
 beforeAll(() => {
   setTracingDisabled(true);
@@ -5267,6 +5272,54 @@ describe('saveToSession', () => {
     expect(
       state.usage.requestUsageEntries?.map((entry) => entry.endpoint),
     ).toEqual(['responses.create']);
+  });
+
+  it('forwards failed compaction usage to the run recorder and consumes it once', async () => {
+    const failure = new Error('post-request snapshot failed');
+    const requestUsage = new RequestUsage({
+      inputTokens: 4,
+      outputTokens: 6,
+      totalTokens: 10,
+      endpoint: 'responses.compact',
+    });
+    class PaidFailureSession extends TransactionMemorySession {
+      async runCompaction(): Promise<never> {
+        attachModelFailureUsage(
+          failure,
+          new Usage({
+            ...requestUsage,
+            requests: 1,
+            requestUsageEntries: [requestUsage],
+          }),
+        );
+        throw failure;
+      }
+    }
+    const agent = new Agent<UnknownContext, AgentOutputType>({
+      name: 'failed compaction',
+    });
+    const state = new RunState(new RunContext(), 'hello', agent, 10);
+    const recorder = vi.fn();
+    setRunStateUsageRecorder(state, recorder);
+    await expect(
+      saveToSession(
+        new PaidFailureSession(),
+        toAgentInputList(state._originalInput),
+        new RunResult(state),
+      ),
+    ).rejects.toBe(failure);
+    expect(state.usage.requests).toBe(1);
+    expect(state.usage.totalTokens).toBe(10);
+    expect(state.usage.requestUsageEntries).toEqual([requestUsage]);
+    expect(recorder).toHaveBeenCalledTimes(1);
+    expect(recorder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requests: 1,
+        totalTokens: 10,
+        requestUsageEntries: [requestUsage],
+      }),
+    );
+    expect(consumeModelFailureUsage(failure)).toBeUndefined();
   });
 
   it('adds compaction usage to the run state when returned', async () => {

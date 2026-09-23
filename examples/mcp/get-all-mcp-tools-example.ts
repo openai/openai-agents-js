@@ -11,7 +11,7 @@ import * as path from 'node:path';
 
 async function main() {
   const require = createRequire(import.meta.url);
-  const samplesDir = path.join(__dirname, 'sample_files');
+  const samplesDir = path.join(import.meta.dirname, 'sample_files');
 
   // Create multiple MCP servers to demonstrate getAllMcpTools
   const filesystemServer = new MCPServerStdio({

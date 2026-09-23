@@ -499,7 +499,13 @@ export async function finalizeOutputGuardrails<
       completedTripwireResult !== undefined &&
       guardrailError instanceof OutputGuardrailTripwireTriggered;
 
-    if (outputBlocked || completedOutputTripwireError) {
+    // Assistant output is unvetted whenever its guardrail batch fails, even
+    // when no guardrail completed with a tripwire verdict.
+    if (
+      outputBlocked ||
+      completedOutputTripwireError ||
+      !guardedTerminalToolOutput
+    ) {
       onBlockedOutput?.();
       if (persistBlockedOutput && !signal?.aborted) {
         try {

@@ -12,7 +12,7 @@ import {
   hasFlag,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION = 'Summarize this sandbox project in 2 sentences.';
 const DEFAULT_BASIC_DOCKER_IMAGE =

@@ -14,7 +14,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const VERIFICATION_FILE = 'verification/capabilities.txt';
 const QUADRANTS_PNG = Uint8Array.from(

@@ -49,6 +49,93 @@ class StubServer extends NodeMCPServerStdio {
 }
 
 describe('MCP tools cache invalidation', () => {
+  it.each([false, true])(
+    'reevaluates callable filters for each run context with prefixed names=%s',
+    async (includeServerInToolNames) => {
+      await invalidateServerToolsCache('current-context');
+      const server = new StubServer('current-context', [toolNamed('select')]);
+      const listTools = vi.spyOn(server, 'listTools');
+      server.toolFilter = async ({ runContext }) =>
+        (runContext.context as { allowSelection: boolean }).allowSelection ===
+        true;
+      const agent = new Agent({
+        name: 'SelectionAgent',
+        mcpServers: [server],
+        mcpConfig: { includeServerInToolNames },
+      });
+      const expectedName = includeServerInToolNames
+        ? 'mcp_current_context__select'
+        : 'select';
+
+      for (const allowSelection of [true, false, true]) {
+        const tools = await agent.getAllTools(
+          new RunContext({ allowSelection }),
+        );
+        expect(tools.map((tool) => tool.name)).toEqual(
+          allowSelection ? [expectedName] : [],
+        );
+      }
+      expect(listTools).toHaveBeenCalledTimes(1);
+
+      server.toolFilter = () => {
+        throw new Error('filter unavailable');
+      };
+      await expect(agent.getAllTools(new RunContext({}))).rejects.toThrow(
+        'filter unavailable',
+      );
+      expect(listTools).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('applies changed static filters to the full cached discovery result', async () => {
+    const server = new StubServer('current-static', [
+      toolNamed('alpha'),
+      toolNamed('beta'),
+    ]);
+    const listTools = vi.spyOn(server, 'listTools');
+    const agent = new Agent({ name: 'StaticAgent', mcpServers: [server] });
+    const context = new RunContext({});
+    server.toolFilter = { allowedToolNames: ['alpha'] };
+    expect((await agent.getAllTools(context)).map((tool) => tool.name)).toEqual(
+      ['alpha'],
+    );
+
+    server.toolFilter = { blockedToolNames: ['alpha'] };
+    expect((await agent.getAllTools(context)).map((tool) => tool.name)).toEqual(
+      ['beta'],
+    );
+    server.toolFilter = undefined;
+    expect((await agent.getAllTools(context)).map((tool) => tool.name)).toEqual(
+      ['alpha', 'beta'],
+    );
+    expect(listTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('reevaluates filters when callers share a custom discovery cache key', async () => {
+    const server = new StubServer('shared-discovery', [
+      toolNamed('alpha'),
+      toolNamed('beta'),
+    ]);
+    const listTools = vi.spyOn(server, 'listTools');
+    server.toolFilter = async ({ runContext }, tool) =>
+      tool.name ===
+      (runContext.context as { selectedTool: string }).selectedTool;
+    const options = {
+      mcpServers: [server],
+      agent: new Agent({ name: 'SharedAgent' }),
+      generateMCPToolCacheKey: () => 'shared-discovery-key',
+    };
+
+    for (const selectedTool of ['alpha', 'beta', 'alpha']) {
+      const tools = await getAllMcpTools({
+        ...options,
+        runContext: new RunContext({ selectedTool }),
+      });
+      expect(tools.map((tool) => tool.name)).toEqual([selectedTool]);
+    }
+    expect(listTools).toHaveBeenCalledTimes(1);
+  });
+
   it('suppresses MCP filter diagnostics when tool logging is disabled', async () => {
     const serverSecret = 'SECRET_MCP_FILTER_PATH_123';
     const toolSecret = 'SECRET_MCP_FILTER_TOOL_123';
@@ -371,7 +458,7 @@ describe('MCP tools cache invalidation', () => {
   });
 
   it.each([
-    { cacheToolsList: true, expectedListCalls: 1, expectedFilterCalls: 1 },
+    { cacheToolsList: true, expectedListCalls: 1, expectedFilterCalls: 2 },
     { cacheToolsList: false, expectedListCalls: 2, expectedFilterCalls: 2 },
   ])(
     'isolates callable filter and FunctionTool mutations with cacheToolsList=$cacheToolsList',

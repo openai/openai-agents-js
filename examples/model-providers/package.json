@@ -8,8 +8,11 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start:custom-example-agent": "tsx custom-example-agent.ts",
+    "start:custom-example-agent": "node custom-example-agent.ts",
     "start:custom-example-global": "tsx custom-example-global.ts",
     "start:custom-example-provider": "tsx custom-example-provider.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

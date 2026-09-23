@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.20",
+  "currentSchemaAtCreation": "1.21",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -332,15 +332,31 @@
     },
     {
       "schemaVersion": "1.20",
+      "status": "published_writer",
+      "packageVersion": "0.18.0",
+      "tag": "v0.18.0",
+      "commit": "71abeaad1aac7b984ba4839a6453b36d30b9ecfd",
+      "npmIntegrity": "sha512-EMhTxl1iHX+bH3gGUnkSxU8l+fw36/+mjsvZH7zP3MyPBZ/4Zqtjg9oILcbZCkcLvii/+M+4ckck3MMdrpcWRA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.20-minimal.json",
+          "sha256": "d0b04e02da08785999fbdb02e2478903371358408015d112c6c0c663578d75cb"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.21",
       "status": "current_unreleased",
-      "reason": "Supported on main but not emitted by the latest released package v0.17.0; adds sandbox envelope version 5 for Docker labels and exact current-response ownership for serialized approval resumes."
+      "reason": "Re-evaluates conditional approval policies and preserves original MCP recipients. Historical pending function calls without recipient provenance remain readable but cannot execute; start a new run."
     }
   ],
   "expectedNormalizedFixtures": [
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "d0b04e02da08785999fbdb02e2478903371358408015d112c6c0c663578d75cb"
+      "sha256": "c401d012ba0d447a4957438fdb5071e7ce2815f7a9bbf5ce277c4a0ac6c37595"
     }
   ],
   "negativeFixtures": [

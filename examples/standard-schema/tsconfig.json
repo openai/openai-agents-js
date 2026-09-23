@@ -1,4 +1,10 @@
 {
   "extends": "../../tsconfig.examples.json",
-  "include": ["**/*.ts"]
+  "include": ["**/*.ts"],
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true
+  }
 }

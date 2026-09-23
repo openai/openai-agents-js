@@ -2,9 +2,9 @@
   "private": true,
   "name": "ai-sdk",
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.9",
-    "@ai-sdk/google": "^3.0.6",
-    "@ai-sdk/openai": "^3.0.7",
+    "@ai-sdk/anthropic": "^3.0.116",
+    "@ai-sdk/google": "^3.0.121",
+    "@ai-sdk/openai": "^3.0.109",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openrouter/ai-sdk-provider": "^2.9.0",
@@ -13,12 +13,15 @@
   "scripts": {
     "build-check": "tsc --noEmit",
     "start": "tsx index.ts",
-    "start:gpt-5": "tsx gpt-5.ts",
-    "start:retry": "tsx retry.ts",
-    "start:stream": "tsx stream.ts",
-    "start:image-tool-output": "tsx image-tool-output.ts"
+    "start:gpt-5": "node gpt-5.ts",
+    "start:retry": "node retry.ts",
+    "start:stream": "node stream.ts",
+    "start:image-tool-output": "node image-tool-output.ts"
   },
   "devDependencies": {
-    "ai": "^6.0.3"
+    "ai": "^6.0.277"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

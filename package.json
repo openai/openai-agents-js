@@ -85,7 +85,7 @@
     "examples:workflow:stop": "bash scripts/run-examples-workflow.sh stop",
     "examples:workflow:logs": "bash scripts/run-examples-workflow.sh logs",
     "examples:workflow:tail": "bash scripts/run-examples-workflow.sh tail",
-    "examples:tool-filter": "tsx examples/mcp/tool-filter-example.ts",
+    "examples:tool-filter": "node examples/mcp/tool-filter-example.ts",
     "changeset:validate-prompt": "node .agents/skills/changeset-validation/scripts/changeset-prompt.mjs",
     "changeset:validate-lite": "node scripts/changeset-validation-lite.mjs",
     "changeset:validate-result": "node .agents/skills/changeset-validation/scripts/changeset-validation-result.mjs",
@@ -105,7 +105,7 @@
     "@typescript-eslint/eslint-plugin": "^8.69.0",
     "@typescript-eslint/parser": "^8.69.0",
     "@vitest/coverage-v8": "^5.0.0",
-    "concurrently": "^9.2.3",
+    "concurrently": "^9.2.4",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-unused-imports": "^4.4.1",
@@ -118,7 +118,7 @@
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.69.0",
-    "verdaccio": "^6.7.4",
+    "verdaccio": "^6.10.3",
     "vitest": "^5.0.0"
   },
   "packageManager": "pnpm@11.24.0+sha512.bd27e345e976dcb0be0b7a1228217b049a817e21b1f355c90dbe7dc46671895a8bc1e6d06c24554505ea93ea0b45f489a27ec1bfbc8de6a9659fca0f16fa0000"

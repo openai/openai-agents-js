@@ -7,7 +7,7 @@
     "build-check": "tsc --noEmit",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "generate-token": "tsx token.ts"
+    "generate-token": "node token.ts"
   },
   "devDependencies": {
     "typescript": "~5.8.3",
@@ -19,5 +19,8 @@
     "openai": "^7.2.0",
     "tailwindcss": "^4.3.3",
     "zod": "^4.0.0"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

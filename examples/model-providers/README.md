@@ -14,3 +14,7 @@ This directory contains small scripts showing how to integrate custom model prov
   ```bash
   pnpm -F model-providers start:custom-example-provider
   ```
+
+## Runtime requirements
+
+Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start:custom-example-agent`.

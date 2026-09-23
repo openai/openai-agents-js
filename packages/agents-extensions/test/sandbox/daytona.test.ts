@@ -144,6 +144,9 @@ describe('DaytonaSandboxClient', () => {
     );
     const output = await session.execCommand({ cmd: 'ls' });
 
+    expect(daytonaConstructorMock).toHaveBeenCalledWith({
+      useDeprecatedPolling: true,
+    });
     expect(session.state.manifest.root).toBe('/home/daytona/workspace');
     expect(executeCommandMock).toHaveBeenNthCalledWith(
       1,
@@ -1404,6 +1407,7 @@ describe('DaytonaSandboxClient', () => {
       target: 'us',
     });
     expect(daytonaConstructorMock).toHaveBeenCalledWith({
+      useDeprecatedPolling: true,
       apiKey: 'daytona-create-key',
       apiUrl: 'https://daytona.example.test',
       target: 'us',

@@ -9,7 +9,7 @@ import {
   Agent,
   run,
   shellTool,
-  ShellToolInlineSkill,
+  type ShellToolInlineSkill,
   withTrace,
 } from '@openai/agents';
 

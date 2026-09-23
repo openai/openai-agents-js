@@ -8,6 +8,7 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
+import { z as z3 } from 'zod/v3';
 import {
   Agent,
   AgentInputItem,
@@ -40,6 +41,7 @@ import {
   shellTool,
   applyPatchTool,
   attachClientToolSearchExecutor,
+  type StandardSchemaWithJSON,
 } from '../src';
 import { getDefaultModelProvider } from '../src/providers';
 import { user } from '../src/helpers/message';
@@ -254,6 +256,408 @@ describe('Agent scenarios (examples and docs patterns)', () => {
   beforeEach(() => {
     // Ensure tracing stays disabled for these fake-model tests.
     // helpers/tests/setup.ts already calls setTracingDisabled(true) globally.
+  });
+
+  describe('guarded agent tool output', () => {
+    it.each([
+      { schema: 'zod-v3', stream: false },
+      { schema: 'standard', stream: true },
+    ])(
+      'returns the exact guarded $schema transform result (stream=$stream)',
+      async ({ schema, stream }) => {
+        let transformations = 0;
+        const transform = () => `checked-${++transformations}`;
+        const standardSchema: StandardSchemaWithJSON<
+          { answer: string },
+          { answer: string }
+        > = {
+          '~standard': {
+            version: 1,
+            vendor: 'test',
+            jsonSchema: {
+              input: () => ({
+                type: 'object',
+                properties: { answer: { type: 'string' } },
+                required: ['answer'],
+                additionalProperties: false,
+              }),
+              output: () => ({ type: 'object' }),
+            },
+            validate: () => ({ value: { answer: transform() } }),
+          },
+        };
+        // Zod v3 is supported at runtime; this workspace's types resolve to v4.
+        const zodSchema = z3.object({
+          answer: z3.string().transform(transform),
+        }) as unknown as z.ZodObject<{ answer: z.ZodString }>;
+        const checked: unknown[] = [];
+        const worker = new Agent({
+          name: 'TransformingWorker',
+          model: new RecordingModel([textMessage('{"answer":"raw"}')]),
+          outputType: schema === 'zod-v3' ? zodSchema : standardSchema,
+          outputGuardrails: [
+            {
+              name: 'record approved value',
+              execute: async ({ agentOutput }) => {
+                checked.push(agentOutput);
+                return { outputInfo: undefined, tripwireTriggered: false };
+              },
+            },
+          ],
+        });
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [
+            worker.asTool({
+              toolName: 'delegate',
+              toolDescription: 'Run worker.',
+              onStream: stream ? () => {} : undefined,
+            }),
+          ],
+        });
+        const result = await new Runner({ tracingDisabled: true }).run(
+          parent,
+          'start',
+        );
+        expect(checked).toHaveLength(1);
+        const approved = JSON.stringify(checked[0]);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual([approved]);
+        expect(parentModel.lastTurnArgs?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text: approved },
+            }),
+          ]),
+        );
+      },
+    );
+
+    it.each<{
+      name: string;
+      stream?: boolean;
+      finalText: string;
+      owner?: 'runner' | 'handoff' | 'none';
+      custom?: boolean;
+      resume?: boolean;
+    }>([
+      { name: 'non-streaming final text', stream: false, finalText: 'checked' },
+      { name: 'streaming final text', stream: true, finalText: 'checked' },
+      { name: 'non-streaming empty output', stream: false, finalText: '' },
+      { name: 'streaming empty output', stream: true, finalText: '' },
+      { name: 'runner guardrail', owner: 'runner', finalText: 'checked' },
+      { name: 'handoff guardrail', owner: 'handoff', finalText: 'checked' },
+      { name: 'unguarded raw text', owner: 'none', finalText: 'checked' },
+      { name: 'custom extractor', custom: true, finalText: 'checked' },
+      { name: 'non-streaming approval resume', resume: true, finalText: '' },
+      {
+        name: 'streaming approval resume',
+        stream: true,
+        resume: true,
+        finalText: '',
+      },
+    ])(
+      'preserves $name at the parent boundary',
+      async ({
+        finalText,
+        stream = false,
+        resume = false,
+        custom = false,
+        owner = 'agent',
+      }) => {
+        const checked: unknown[] = [];
+        const guardrail = {
+          name: 'check selected output',
+          execute: async ({ agentOutput }: { agentOutput: unknown }) => {
+            checked.push(agentOutput);
+            return {
+              outputInfo: undefined,
+              tripwireTriggered: agentOutput === 'preliminary text',
+            };
+          },
+        };
+        const execute = vi.fn(async () => finalText);
+        const lookup = tool({
+          name: 'lookup',
+          description: 'Return the selected result.',
+          parameters: z.object({}),
+          needsApproval: resume,
+          execute,
+        });
+        const worker = new Agent({
+          name: 'GuardedWorker',
+          model: new RecordingModel([
+            functionToolCall('lookup', '{}', 'lookup-call'),
+            ...(resume ? [] : [textMessage('preliminary text')]),
+          ]),
+          tools: [lookup],
+          toolUseBehavior: 'stop_on_first_tool',
+          outputGuardrails:
+            owner === 'agent' || owner === 'handoff' ? [guardrail] : [],
+        });
+        const nested =
+          owner === 'handoff'
+            ? new Agent({
+                name: 'Delegator',
+                model: new RecordingModel([handoffToolCall(worker)]),
+                handoffs: [worker],
+              })
+            : worker;
+        const customOutputExtractor = vi.fn(() => 'custom output');
+        const nestedTool = nested.asTool({
+          toolName: 'delegate',
+          toolDescription: 'Run the worker.',
+          runConfig: {
+            tracingDisabled: true,
+            outputGuardrails: owner === 'runner' ? [guardrail] : [],
+          },
+          onStream: stream ? () => {} : undefined,
+          customOutputExtractor: custom ? customOutputExtractor : undefined,
+        });
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [nestedTool],
+        });
+        const runner = new Runner({ tracingDisabled: true });
+        let result = await runner.run<typeof parent, unknown>(parent, 'start');
+        if (resume) {
+          expect(result.interruptions).toHaveLength(1);
+          expect(checked).toEqual([]);
+          expect(execute).not.toHaveBeenCalled();
+          expect(
+            result.newItems.filter(
+              (item) => item.type === 'tool_call_output_item',
+            ),
+          ).toEqual([]);
+          const restored = await RunState.fromString(
+            parent,
+            result.state.toString(),
+          );
+          restored.approve(restored.getInterruptions()[0]!);
+          result = await runner.run(parent, restored);
+        }
+        const expected = custom
+          ? 'custom output'
+          : owner === 'none'
+            ? 'preliminary text'
+            : finalText;
+        expect(checked).toEqual(owner === 'none' ? [] : [finalText]);
+        expect(execute).toHaveBeenCalledTimes(1);
+        expect(result.finalOutput).toBe('parent done');
+        expect(result.interruptions).toHaveLength(0);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual([expected]);
+        const parentInput = parentModel.lastTurnArgs?.input;
+        expect(parentInput).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text: expected },
+            }),
+          ]),
+        );
+        if (custom) {
+          expect(customOutputExtractor).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it.each(['direct', 'handoff'] as const)(
+      'returns serialized guarded structured output through %s execution',
+      async (route) => {
+        const checked: unknown[] = [];
+        const worker = new Agent({
+          name: 'StructuredWorker',
+          model: new RecordingModel([textMessage('{ "answer": "checked" }')]),
+          outputType: z.object({ answer: z.string() }),
+          outputGuardrails: [
+            {
+              name: 'check object',
+              execute: async ({ agentOutput }) => {
+                checked.push(agentOutput);
+                return { outputInfo: undefined, tripwireTriggered: false };
+              },
+            },
+          ],
+        });
+        const toolOptions = {
+          toolName: 'delegate',
+          toolDescription: 'Run worker.',
+        };
+        const nestedTool =
+          route === 'handoff'
+            ? Agent.create({
+                name: 'TextDelegator',
+                model: new RecordingModel([handoffToolCall(worker)]),
+                handoffs: [worker],
+              }).asTool(toolOptions)
+            : worker.asTool(toolOptions);
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [nestedTool],
+        });
+        const result = await new Runner({ tracingDisabled: true }).run(
+          parent,
+          'start',
+        );
+        expect(checked).toEqual([{ answer: 'checked' }]);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual(['{"answer":"checked"}']);
+        expect(parentModel.lastTurnArgs?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text: '{"answer":"checked"}' },
+            }),
+          ]),
+        );
+      },
+    );
+
+    it.each(['checked text', ''])(
+      'preserves guarded text %j after a structured-agent handoff',
+      async (text) => {
+        const checked: string[] = [];
+        const worker = new Agent({
+          name: 'TextWorker',
+          model: new RecordingModel([textMessage(text)]),
+          outputGuardrails: [
+            {
+              name: 'check text',
+              execute: async ({ agentOutput }) => {
+                checked.push(agentOutput);
+                return { outputInfo: undefined, tripwireTriggered: false };
+              },
+            },
+          ],
+        });
+        const nested = Agent.create({
+          name: 'StructuredDelegator',
+          outputType: z.object({ answer: z.string() }),
+          model: new RecordingModel([handoffToolCall(worker)]),
+          handoffs: [worker],
+        });
+        const parentModel = new RecordingModel([
+          functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+        ]);
+        parentModel.setNextOutput([textMessage('parent done')]);
+        const parent = new Agent({
+          name: 'Parent',
+          model: parentModel,
+          tools: [
+            nested.asTool({
+              toolName: 'delegate',
+              toolDescription: 'Run worker.',
+            }),
+          ],
+        });
+        const result = await new Runner({ tracingDisabled: true }).run(
+          parent,
+          'start',
+        );
+        expect(checked).toEqual([text]);
+        expect(
+          result.newItems
+            .filter((item) => item.type === 'tool_call_output_item')
+            .map((item) => item.output),
+        ).toEqual([text]);
+        expect(parentModel.lastTurnArgs?.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_result',
+              callId: 'delegate-call',
+              output: { type: 'text', text },
+            }),
+          ]),
+        );
+      },
+    );
+
+    it('does not forward preliminary text when the final output is rejected', async () => {
+      const worker = new Agent({
+        name: 'RejectedWorker',
+        model: new RecordingModel([
+          functionToolCall('lookup', '{}', 'lookup-call'),
+          textMessage('preliminary text'),
+        ]),
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Return a rejected result.',
+            parameters: z.object({}),
+            execute: async () => 'rejected result',
+          }),
+        ],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [
+          {
+            name: 'reject final output',
+            execute: async () => ({
+              outputInfo: undefined,
+              tripwireTriggered: true,
+            }),
+          },
+        ],
+      });
+      const parentModel = new RecordingModel([
+        functionToolCall('delegate', '{"input":"work"}', 'delegate-call'),
+      ]);
+      parentModel.setNextOutput([textMessage('parent done')]);
+      const parent = new Agent({
+        name: 'Parent',
+        model: parentModel,
+        tools: [
+          worker.asTool({
+            toolName: 'delegate',
+            toolDescription: 'Run worker.',
+          }),
+        ],
+      });
+      const result = await new Runner({ tracingDisabled: true }).run(
+        parent,
+        'start',
+      );
+      const output = result.newItems.find(
+        (item) => item.type === 'tool_call_output_item',
+      );
+      expect(output?.output).toBe(
+        'An error occurred while running the tool. Please try again.',
+      );
+      expect(JSON.stringify(parentModel.lastTurnArgs?.input)).not.toContain(
+        'preliminary text',
+      );
+      expect(JSON.stringify(parentModel.lastTurnArgs?.input)).not.toContain(
+        'rejected result',
+      );
+    });
   });
 
   it('loops until evaluator passes the outline (llm_as_judge)', async () => {

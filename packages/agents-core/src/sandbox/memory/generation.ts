@@ -434,7 +434,7 @@ export class SandboxMemoryGenerationManager {
           session: this.session,
           manifest: this.currentManifest(),
         },
-        maxTurns: 500,
+        maxTurns: generate.phaseTwoMaxTurns ?? 500,
       },
     );
     await this.storage.writePhaseTwoSelection({

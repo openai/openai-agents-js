@@ -7,7 +7,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION =
   'Review the Acme renewal materials and give me a short recommendation for the deal desk. Include pricing risk, rollout risk, and the most important next step.';

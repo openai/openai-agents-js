@@ -15,7 +15,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const FIRST_PROMPT =
   'Inspect the workspace, fix the invoice total bug in src/acme_metrics/report.mjs, run node --test, and update the existing memories/MEMORY.md plus memories/memory_summary.md files with the bug, root cause, changed file, and verification command.';
@@ -110,8 +110,7 @@ async function main() {
   });
 
   let resumedSession:
-    | Awaited<ReturnType<typeof resumableClient.resume>>
-    | undefined;
+    Awaited<ReturnType<typeof resumableClient.resume>> | undefined;
 
   try {
     const first = await run(agent, FIRST_PROMPT, {

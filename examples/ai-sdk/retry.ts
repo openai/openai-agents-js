@@ -1,6 +1,6 @@
 import {
   Agent,
-  ModelRetrySettings,
+  type ModelRetrySettings,
   Runner,
   retryPolicies,
 } from '@openai/agents';

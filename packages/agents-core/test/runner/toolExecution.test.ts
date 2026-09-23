@@ -7526,8 +7526,9 @@ describe('executeShellActions', () => {
       }
     });
 
-    it('preserves malformed JSON details in diagnostic mode', async () => {
+    it('keeps malformed JSON details in local diagnostics only', async () => {
       const secret = 'SECRT123';
+      const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
       const flagSpy = vi
         .spyOn(logger, 'dontLogToolData', 'get')
         .mockReturnValue(false);
@@ -7553,9 +7554,13 @@ describe('executeShellActions', () => {
 
         expect(result.type).toBe('function_output');
         if (result.type === 'function_output') {
-          expect(String(result.output)).toContain(secret);
+          expect(result.output).toBe(
+            'An error occurred while parsing tool arguments. Please try again with valid JSON.',
+          );
         }
+        expect(JSON.stringify(debugSpy.mock.calls)).toContain(secret);
       } finally {
+        debugSpy.mockRestore();
         flagSpy.mockRestore();
       }
     });
@@ -7799,8 +7804,7 @@ describe('executeShellActions', () => {
 
       expect(result).toMatchObject({
         type: 'function_output',
-        output:
-          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+        output: 'An error occurred while running the tool. Please try again.',
       });
     });
 
@@ -9511,15 +9515,15 @@ describe('executeShellActions', () => {
       });
     });
 
-    it('validates isolated Standard Schema outputs for approval and invocation', async () => {
+    it('rejects custom Standard Schema outputs before approval', async () => {
       type Input = { value?: string | null };
       class Output {
-        readonly normalized = true;
+        #normalized = true;
 
         constructor(public value: string) {}
 
         read() {
-          return this.value;
+          return this.#normalized ? this.value : 'invalid';
         }
       }
       const validate = vi.fn((input: unknown) => ({
@@ -9541,12 +9545,7 @@ describe('executeShellActions', () => {
           validate,
         },
       };
-      const needsApproval = vi.fn(async (_context, input: Output) => {
-        expect(input).toBeInstanceOf(Output);
-        expect(input.read()).toBe('default');
-        input.value = 'mutated by approval';
-        return false;
-      });
+      const needsApproval = vi.fn(async () => false);
       const execute = vi.fn(async (input: Output) => input.read());
       const t = tool({
         name: 'standard_schema_single_parse',
@@ -9561,37 +9560,25 @@ describe('executeShellActions', () => {
         arguments: JSON.stringify({ value: null }),
       };
 
-      const result = await executeFunctionToolCalls(
-        state._currentAgent,
-        [{ toolCall: inputToolCall, tool: t }],
-        runner,
-        state,
+      await expect(
+        executeFunctionToolCalls(
+          state._currentAgent,
+          [{ toolCall: inputToolCall, tool: t }],
+          runner,
+          state,
+        ),
+      ).rejects.toThrow(
+        'Conditional tool approval requires copyable plain normalized input',
       );
 
-      const parsed = new Output('default');
-      expect(validate).toHaveBeenCalledTimes(2);
-      expect(needsApproval).toHaveBeenCalledWith(
-        state._context,
-        expect.any(Output),
-        toolCall.callId,
-      );
-      expect(execute).toHaveBeenCalledWith(
-        parsed,
-        state._context,
-        expect.objectContaining({ toolCall: inputToolCall }),
-      );
-      expect(result[0]).toMatchObject({
-        type: 'function_output',
-        output: 'default',
-      });
+      expect(validate).toHaveBeenCalledTimes(1);
+      expect(needsApproval).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
     });
 
     it('rejects async Standard Schema validation before runner callbacks', async () => {
       const asyncValidationError = new Error('async validation failed');
-      const validate = vi
-        .fn()
-        .mockReturnValueOnce({ value: {} })
-        .mockReturnValueOnce(Promise.reject(asyncValidationError));
+      const validate = vi.fn(() => Promise.reject(asyncValidationError));
       const parameters: StandardSchemaWithJSON<object> = {
         '~standard': {
           version: 1,
@@ -9639,7 +9626,7 @@ describe('executeShellActions', () => {
       expect((error as ToolCallError).error).toBeInstanceOf(
         InvalidToolInputError,
       );
-      expect(validate).toHaveBeenCalledTimes(2);
+      expect(validate).toHaveBeenCalledTimes(1);
       expect(needsApproval).not.toHaveBeenCalled();
       expect(inputGuardrail.run).not.toHaveBeenCalled();
       expect(state._toolInputGuardrailResults).toHaveLength(0);
@@ -9681,8 +9668,7 @@ describe('executeShellActions', () => {
       expect(execute).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         type: 'function_output',
-        output:
-          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+        output: 'An error occurred while running the tool. Please try again.',
       });
     });
 
@@ -9725,8 +9711,7 @@ describe('executeShellActions', () => {
       expect(innerExecute).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         type: 'function_output',
-        output:
-          'An error occurred while running the tool. Please try again. Error: InvalidToolInputError: Invalid JSON input for tool',
+        output: 'An error occurred while running the tool. Please try again.',
       });
     });
 
@@ -10118,6 +10103,89 @@ describe('executeShellActions', () => {
         { id: 'sc2', code: 'irrelevant_domain' },
       ]);
     });
+
+    it('preserves cancellation while formatting a declined safety check', async () => {
+      const comp = makeComputer();
+      const create = vi.fn(async () => comp);
+      const controller = new AbortController();
+      const tool = computerTool({
+        computer: create,
+        onSafetyCheck: async () => false,
+      });
+      const toolCall: protocol.ComputerUseCallItem = {
+        type: 'computer_call',
+        callId: 'cancelled-safety-check',
+        status: 'completed',
+        action: { type: 'screenshot' },
+        providerData: {
+          pendingSafetyChecks: [{ id: 'check-1', code: 'sensitive_domain' }],
+        },
+      };
+      const runner = new Runner({ tracingDisabled: true });
+      const end = vi.fn();
+      runner.on('agent_tool_end', end);
+      const formatter = vi.fn(async () => {
+        controller.abort();
+        await Promise.resolve();
+        return 'declined';
+      });
+      const items = await executeComputerActions(
+        new Agent({ name: 'C' }),
+        [{ toolCall, computer: tool }],
+        runner,
+        new RunContext(),
+        undefined,
+        formatter,
+        controller.signal,
+      );
+      expect(formatter).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
+      expect(comp.screenshot).not.toHaveBeenCalled();
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        rawItem: {
+          type: 'computer_call_result',
+          providerData: { status: 'incomplete' },
+        },
+      });
+      expect(end).toHaveBeenCalledTimes(1);
+      expect(end.mock.calls[0][3]).toBe('aborted');
+    });
+
+    it.each(['absent', 'void'] as const)(
+      'preserves execution when the safety callback is %s',
+      async (mode) => {
+        const comp = makeComputer();
+        const tool = computerTool({
+          computer: comp,
+          onSafetyCheck: mode === 'void' ? async () => undefined : undefined,
+        });
+        const toolCall: protocol.ComputerUseCallItem = {
+          type: 'computer_call',
+          callId: 'unacknowledged-call',
+          status: 'completed',
+          action: { type: 'screenshot' },
+          providerData: {
+            pending_safety_checks: [
+              { id: 'check-1', code: 'sensitive_domain' },
+            ],
+          },
+        };
+        const [result] = await executeComputerActions(
+          new Agent({ name: 'C' }),
+          [{ toolCall, computer: tool }],
+          new Runner({ tracingDisabled: true }),
+          new RunContext(),
+        );
+        expect(comp.screenshot).toHaveBeenCalledTimes(1);
+        expect(result.rawItem).toMatchObject({
+          output: { data: 'data:image/png;base64,img' },
+        });
+        expect(
+          result.rawItem.providerData?.acknowledgedSafetyChecks,
+        ).toBeUndefined();
+      },
+    );
 
     it('accepts boolean true from onSafetyCheck', async () => {
       const comp = makeComputer();

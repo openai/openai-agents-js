@@ -35,6 +35,8 @@ import type { RunResult, StreamedRunResult } from './result';
 import { getHandoff, type Handoff } from './handoff';
 import { StreamRunOptions, RunConfig, Runner } from './run';
 import { RunState } from './runState';
+import { getPublicAgent } from './agentToolConfiguration';
+import { selectModel } from './runner/modelSettings';
 import { toFunctionToolName } from './utils/tools';
 import { getOutputText } from './utils/messages';
 import { isZodObject } from './utils/typeGuards';
@@ -75,6 +77,11 @@ import {
   setRunnerParentUsageRecorder,
 } from './runner/usageTracking';
 import { setRunnerInvocationSpanParent } from './runner/invocationContext';
+import {
+  createAgentToolStreamBuffer,
+  drainAgentToolStream,
+  setAgentToolStreamBuffer,
+} from './runner/agentToolStream';
 import type { Span } from './tracing';
 import { hasDefinitelyDifferentOutputTypes } from './agentOutputTypeWarning';
 import type { ZodObjectLike } from './utils/zodCompat';
@@ -132,8 +139,9 @@ export type AgentToolOptions<
    */
   toolDescription?: string;
   /**
-   * A function that extracts the output text from the agent. If not provided, the last message
-   * from the agent will be used.
+   * A function that extracts the output text from the agent. By default, runs with output
+   * guardrail results or a handled error use the final output, including an empty string.
+   * Other runs prefer text from the latest model response, falling back to the final output.
    */
   customOutputExtractor?: (
     output: CompletedAgentToolInvocationRunResult<TContext, TAgent>,
@@ -158,6 +166,8 @@ export type AgentToolOptions<
   includeInputSchema?: boolean;
   /**
    * Run configuration for initializing the internal agent runner.
+   * When the child uses an explicit Model object, parent transport overrides
+   * in providerData are not inherited. Supply child transport overrides here.
    */
   runConfig?: Partial<RunConfig>;
   /**
@@ -181,6 +191,15 @@ export type AgentToolOptions<
    * Optional hook to receive streamed events from the nested agent run.
    */
   onStream?: (event: AgentToolStreamEvent<TAgent>) => void | Promise<void>;
+  /**
+   * Maximum events waiting for onStream or on(...) handlers, excluding the event
+   * currently being handled. Defaults to 1024; null permits an unlimited backlog.
+   * Must be a positive safe integer when set. Overflow aborts the nested run and
+   * fails the tool through its normal error handling. Already started handler
+   * promises cannot be cancelled. This bounds event count, not event sizes or
+   * total memory, and has no effect without streaming handlers.
+   */
+  onStreamMaxPendingEvents?: number | null;
 };
 export type AgentToolOptionsWithDefault<
   TContext,
@@ -767,7 +786,17 @@ export class Agent<
       resumeState,
       isEnabled,
       onStream,
+      onStreamMaxPendingEvents = 1024,
     } = options;
+    if (
+      onStreamMaxPendingEvents !== null &&
+      (!Number.isSafeInteger(onStreamMaxPendingEvents) ||
+        onStreamMaxPendingEvents <= 0)
+    ) {
+      throw new UserError(
+        'onStreamMaxPendingEvents must be a positive safe integer or null.',
+      );
+    }
     // Event handlers are scoped to this agent tool instance and are not shared; we only support registration (no removal) to keep the API surface small.
     const eventHandlers = new Map<
       AgentToolEventName,
@@ -859,6 +888,7 @@ export class Agent<
         const inheritedRunConfig = getInheritedAgentToolRunConfig(
           getAgentToolParentRunConfigFromDetails(details),
           runConfig,
+          selectModel(this.model, runConfig?.model),
         );
         const nestedRunConfig = mergeAgentToolRunConfig(
           inheritedRunConfig,
@@ -906,9 +936,25 @@ export class Agent<
           typeof onStream === 'function' || eventHandlers.size > 0;
         const configuredSignal = runOptions?.signal;
         const toolCallSignal = details?.signal;
+        const streamController = shouldStream
+          ? new AbortController()
+          : undefined;
+        if (streamController && onStreamMaxPendingEvents !== null) {
+          setAgentToolStreamBuffer(
+            runner,
+            createAgentToolStreamBuffer(
+              onStreamMaxPendingEvents,
+              streamController,
+            ),
+          );
+        }
         const { signal: combinedSignal, cleanup: cleanupSignalListeners } =
-          configuredSignal && toolCallSignal
-            ? combineAbortSignals(configuredSignal, toolCallSignal)
+          streamController || (configuredSignal && toolCallSignal)
+            ? combineAbortSignals(
+                configuredSignal,
+                toolCallSignal,
+                streamController?.signal,
+              )
             : {
                 signal: toolCallSignal ?? configuredSignal,
                 cleanup: () => {},
@@ -939,13 +985,12 @@ export class Agent<
               Agent<TContext, AgentOutputType>
             >;
             // Drain the stream to deliver every event to registered handlers; ensure completion awaited so the nested run finishes before returning.
-            for await (const event of streamResult) {
-              await emitEvent({
-                event,
-                ...streamPayload,
-              });
-            }
-            await streamResult.completed;
+            await drainAgentToolStream(
+              streamResult,
+              (event) => emitEvent({ event, ...streamPayload }),
+              combinedSignal!,
+              streamController!,
+            );
             if (streamResult.cancelled) {
               const currentStep = streamResult.state._currentStep;
               const hasCommittedOutcome =
@@ -993,11 +1038,20 @@ export class Agent<
           } else if ((completedResult.interruptions?.length ?? 0) > 0) {
             outputText = '';
           } else {
+            const outputGuardrailResult =
+              completedResult.outputGuardrailResults?.at(-1);
+            // Reuse the checked value; reading finalOutput can rerun schema transforms.
+            const finalOutput = outputGuardrailResult
+              ? outputGuardrailResult.agentOutput
+              : completedResult.finalOutput;
+            const finalOutputType = outputGuardrailResult
+              ? outputGuardrailResult.agent.outputType
+              : this.outputType;
             const finalOutputText =
-              typeof completedResult.finalOutput !== 'undefined'
-                ? this.outputType === 'text'
-                  ? String(completedResult.finalOutput)
-                  : JSON.stringify(completedResult.finalOutput)
+              typeof finalOutput !== 'undefined'
+                ? finalOutputType === 'text'
+                  ? String(finalOutput)
+                  : JSON.stringify(finalOutput)
                 : undefined;
             const rawResponses = completedResult.rawResponses;
             const rawOutputText =
@@ -1009,7 +1063,8 @@ export class Agent<
                 ? undefined
                 : rawOutputText;
             const prefersFinalOutput =
-              completedResult.state?._finalOutputSource === 'error_handler';
+              completedResult.state?._finalOutputSource === 'error_handler' ||
+              outputGuardrailResult !== undefined;
             outputText = prefersFinalOutput
               ? (finalOutputText ?? normalizedRawOutputText ?? '')
               : (normalizedRawOutputText ?? finalOutputText ?? '');
@@ -1088,7 +1143,7 @@ export class Agent<
       return getAllMcpTools({
         mcpServers: this.mcpServers,
         runContext,
-        agent: this,
+        agent: getPublicAgent(this),
         convertSchemasToStrict: this.mcpConfig.convertSchemasToStrict === true,
         errorFunction: this.mcpConfig.errorFunction,
         includeServerInToolNames,
@@ -1133,7 +1188,7 @@ export class Agent<
     const mcpTools = await this.getMcpTools(runContext, tracingParent);
     const enabledTools: Tool<TContext>[] = [];
 
-    for (const candidate of this.tools) {
+    for (const candidate of [...this.tools]) {
       if (candidate.type === 'function') {
         const maybeIsEnabled = (
           candidate as { isEnabled?: ToolEnabledFunction<TContext> | boolean }
@@ -1141,7 +1196,7 @@ export class Agent<
 
         const enabled =
           typeof maybeIsEnabled === 'function'
-            ? await maybeIsEnabled(runContext, this)
+            ? await maybeIsEnabled(runContext, getPublicAgent(this))
             : typeof maybeIsEnabled === 'boolean'
               ? maybeIsEnabled
               : true;

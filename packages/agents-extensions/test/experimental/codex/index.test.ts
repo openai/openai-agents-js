@@ -3,6 +3,8 @@ import {
   BatchTraceProcessor,
   ConsoleSpanExporter,
   RunContext,
+  Runner,
+  createCustomSpan,
   Span,
   TracingProcessor,
   setTraceProcessors,
@@ -13,6 +15,7 @@ import {
 } from '@openai/agents';
 import { describe, afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { z } from 'zod';
+import { ScriptedModel, functionCall } from '@openai/agents-core/testing';
 import { codexTool } from '../../../src/experimental/codex';
 
 type AnySpan = Span<any>;
@@ -21,6 +24,8 @@ const codexMockState: {
   events: any[];
   threadId: string | null;
   lastTurnOptions?: any;
+  afterEvent?: () => void;
+  streamError?: Error;
 } = {
   events: [],
   threadId: 'thread-1',
@@ -47,9 +52,16 @@ vi.mock('@openai/codex-sdk', () => {
       async function* eventStream(events: any[]) {
         for (const event of events) {
           yield event;
+          codexMockState.afterEvent?.();
         }
       }
-      return { events: eventStream(codexMockState.events) };
+      const stream = async function* () {
+        yield* eventStream(codexMockState.events);
+        if (codexMockState.streamError) {
+          throw codexMockState.streamError;
+        }
+      };
+      return { events: stream() };
     }
   }
 
@@ -67,12 +79,17 @@ vi.mock('@openai/codex-sdk', () => {
 
 class CollectingProcessor implements TracingProcessor {
   public spans: AnySpan[] = [];
+  public started: AnySpan[] = [];
+  public startSnapshots: unknown[] = [];
 
   async onTraceStart(): Promise<void> {}
 
   async onTraceEnd(): Promise<void> {}
 
-  async onSpanStart(): Promise<void> {}
+  async onSpanStart(span: AnySpan): Promise<void> {
+    this.started.push(span);
+    this.startSnapshots.push(structuredClone(span.toJSON()));
+  }
 
   async onSpanEnd(span: AnySpan): Promise<void> {
     this.spans.push(span);
@@ -90,6 +107,10 @@ describe('codexTool', () => {
 
   beforeEach(() => {
     processor.spans = [];
+    processor.started = [];
+    processor.startSnapshots = [];
+    codexMockState.afterEvent = undefined;
+    codexMockState.streamError = undefined;
     setTracingDisabled(false);
     setTraceProcessors([processor]);
     codexMockState.events = [];
@@ -116,6 +137,405 @@ describe('codexTool', () => {
       process.env.CODEX_API_KEY = originalCodexKey;
     }
   });
+
+  function policyEvents() {
+    const events: any[] = [{ type: 'thread.started', thread_id: 'thread-1' }];
+    for (const phase of ['started', 'updated', 'completed']) {
+      const payload = `private-${phase}`;
+      const status = phase === 'completed' ? 'failed' : 'in_progress';
+      const items = [
+        {
+          id: 'command',
+          type: 'command_execution',
+          command: payload,
+          aggregated_output: payload,
+          exit_code: 7,
+          status,
+        },
+        {
+          id: 'files',
+          type: 'file_change',
+          changes: [{ path: payload, kind: 'update' }],
+          status,
+        },
+        {
+          id: 'mcp',
+          type: 'mcp_tool_call',
+          server: 'server',
+          tool: 'lookup',
+          arguments: { query: payload },
+          result: {
+            content: [{ type: 'text', text: payload }],
+            structured_content: { answer: payload },
+          },
+          error: { message: payload },
+          status,
+        },
+        { id: 'search', type: 'web_search', query: payload },
+        {
+          id: 'todo',
+          type: 'todo_list',
+          items: [{ text: payload, completed: phase === 'completed' }],
+        },
+        { id: 'reason', type: 'reasoning', text: payload },
+        { id: 'error', type: 'error', message: payload },
+      ];
+      events.push(...items.map((item) => ({ type: `item.${phase}`, item })));
+    }
+    events.push(
+      {
+        type: 'item.completed',
+        item: {
+          id: 'message',
+          type: 'agent_message',
+          text: 'private-response',
+        },
+      },
+      {
+        type: 'turn.completed',
+        usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 3 },
+      },
+    );
+    return events;
+  }
+
+  async function runPolicyTool({
+    includeSensitiveData = true,
+    disabled = false,
+    stream = false,
+    onStream,
+  }: {
+    includeSensitiveData?: boolean;
+    disabled?: boolean;
+    stream?: boolean;
+    onStream?: NonNullable<Parameters<typeof codexTool>[0]>['onStream'];
+  } = {}) {
+    const codex = codexTool({ onStream, useRunContextThreadId: true });
+    const model = new ScriptedModel([
+      [
+        functionCall(
+          codex.name,
+          { inputs: [{ type: 'text', text: 'private-input' }] },
+          { callId: 'codex-call' },
+        ),
+      ],
+    ]);
+    const agent = new Agent({
+      name: 'Policy agent',
+      model,
+      tools: [codex],
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const runner = new Runner({
+      traceIncludeSensitiveData: includeSensitiveData,
+      tracingDisabled: disabled,
+    });
+    const context: Record<string, unknown> = {};
+    const result = stream
+      ? await runner.run(agent, 'Run the tool.', { stream: true, context })
+      : await runner.run(agent, 'Run the tool.', { context });
+    if ('completed' in result) {
+      for await (const _event of result) {
+        // Drain all events before asserting completed trace data.
+      }
+      await result.completed;
+    }
+    return { result, context };
+  }
+
+  test.each([false, true])(
+    'honors the Runner policy through every Codex item phase (stream=%s)',
+    async (stream) => {
+      for (const includeSensitiveData of [false, true]) {
+        processor.spans = [];
+        processor.started = [];
+        processor.startSnapshots = [];
+        codexMockState.events = policyEvents();
+        const eventSnapshots: string[] = [];
+        codexMockState.afterEvent = () =>
+          eventSnapshots.push(
+            JSON.stringify(processor.started.map((span) => span.toJSON())),
+          );
+        const onStream = vi.fn();
+        const { result, context } = await runPolicyTool({
+          includeSensitiveData,
+          stream,
+          onStream,
+        });
+        const custom = processor.spans.filter(
+          (span) => span.spanData.type === 'custom',
+        );
+        expect(custom).toHaveLength(7);
+        const functionSpan = processor.spans.find(
+          (span) => span.spanData.type === 'function',
+        );
+        expect(
+          custom.every((span) => span.parentId === functionSpan?.spanId),
+        ).toBe(true);
+        const data = Object.fromEntries(
+          custom.map((span) => [span.spanData.name, span.spanData.data]),
+        );
+        expect(data['Codex command execution']).toMatchObject({
+          status: 'failed',
+          exitCode: 7,
+        });
+        expect(data['Codex MCP tool call']).toMatchObject({
+          server: 'server',
+          tool: 'lookup',
+          status: 'failed',
+          result: { content_items: 1 },
+        });
+        if (includeSensitiveData) {
+          expect(JSON.stringify(processor.startSnapshots)).toContain(
+            'private-started',
+          );
+          expect(
+            eventSnapshots.some((snapshot) =>
+              snapshot.includes('private-updated'),
+            ),
+          ).toBe(true);
+          expect(data['Codex command execution']).toMatchObject({
+            command: 'private-completed',
+            output: 'private-completed',
+          });
+          expect(data['Codex file change'].changes).toEqual([
+            { path: 'private-completed', kind: 'update' },
+          ]);
+          expect(data['Codex MCP tool call']).toMatchObject({
+            arguments: '{"query":"private-completed"}',
+            error: 'private-completed',
+            result: { structured_content: '{"answer":"private-completed"}' },
+          });
+          expect(data['Codex web search']).toEqual({
+            query: 'private-completed',
+          });
+          expect(data['Codex todo list']).toEqual({
+            items: [{ text: 'private-completed', completed: true }],
+          });
+          expect(data['Codex reasoning']).toEqual({
+            text: 'private-completed',
+          });
+          expect(data['Codex error']).toEqual({ message: 'private-completed' });
+          expect(
+            custom.find(
+              (span) => span.spanData.name === 'Codex command execution',
+            )?.error?.data,
+          ).toEqual({ exitCode: 7, output: 'private-completed' });
+        } else {
+          expect(JSON.stringify(processor.startSnapshots)).not.toContain(
+            'private-',
+          );
+          expect(
+            eventSnapshots.every((snapshot) => !snapshot.includes('private-')),
+          ).toBe(true);
+          expect(
+            JSON.stringify(processor.spans.map((span) => span.toJSON())),
+          ).not.toContain('private-');
+          expect(data).toEqual({
+            'Codex command execution': { status: 'failed', exitCode: 7 },
+            'Codex file change': {
+              status: 'failed',
+              changes: [{ kind: 'update' }],
+            },
+            'Codex MCP tool call': {
+              server: 'server',
+              tool: 'lookup',
+              status: 'failed',
+              result: { content_items: 1 },
+            },
+            'Codex web search': {},
+            'Codex todo list': { items: [{ completed: true }] },
+            'Codex reasoning': {},
+            'Codex error': {},
+          });
+          expect(
+            custom.find(
+              (span) => span.spanData.name === 'Codex command execution',
+            )?.error?.data,
+          ).toEqual({ exitCode: 7 });
+          expect(
+            custom.find((span) => span.spanData.name === 'Codex file change')
+              ?.error?.data,
+          ).toEqual({ changes_total: 1 });
+        }
+        expect(result.finalOutput).toContain('private-response');
+        expect(result.finalOutput).toContain('thread-1');
+        expect(result.state.usage.inputTokens).toBeGreaterThanOrEqual(10);
+        expect(result.state.usage.outputTokens).toBeGreaterThanOrEqual(3);
+        expect(context.codexThreadId).toBe('thread-1');
+        expect(onStream.mock.calls.map(([payload]) => payload.event)).toEqual(
+          codexMockState.events,
+        );
+        expect(processor.spans).toHaveLength(processor.started.length);
+      }
+    },
+  );
+
+  test.each(['turn.failed', 'error', 'iterator'])(
+    'filters %s failure traces and preserves the default redacted error',
+    async (failure) => {
+      for (const includeSensitiveData of [false, true]) {
+        processor.spans = [];
+        processor.started = [];
+        codexMockState.events = policyEvents().slice(0, 2);
+        if (failure === 'iterator') {
+          codexMockState.streamError = new Error('private-failure');
+        } else {
+          codexMockState.events.push(
+            failure === 'turn.failed'
+              ? { type: failure, error: { message: 'private-failure' } }
+              : { type: failure, message: 'private-failure' },
+          );
+        }
+        const { result } = await runPolicyTool({ includeSensitiveData });
+        expect(result.finalOutput).toBe(
+          'An error occurred while running the tool. Please try again.',
+        );
+        const functionSpan = processor.spans.find(
+          (span) => span.spanData.type === 'function',
+        );
+        expect(functionSpan?.error?.message).toBe(
+          'Error running tool (non-fatal)',
+        );
+        const trace = JSON.stringify(
+          processor.spans.map((span) => span.toJSON()),
+        );
+        expect(trace).not.toContain('private-failure');
+        expect(functionSpan?.error?.data).toEqual({
+          tool_name: 'codex',
+          error: 'Tool execution failed. Error details are redacted.',
+        });
+        if (includeSensitiveData) {
+          expect(trace).toContain('private-started');
+        } else {
+          expect(trace).not.toContain('private-');
+        }
+        expect(processor.spans).toHaveLength(processor.started.length);
+        expect(new Set(processor.spans.map((span) => span.spanId)).size).toBe(
+          processor.spans.length,
+        );
+        expect(
+          processor.spans.some(
+            (span) => span.spanData.name === 'Codex command execution',
+          ),
+        ).toBe(true);
+      }
+    },
+  );
+
+  test.each([false, true])(
+    'preserves no-op tracing and restores ambient context (stream=%s)',
+    async (stream) => {
+      for (const ambient of [false, true]) {
+        for (const fail of [false, true]) {
+          processor.spans = [];
+          processor.started = [];
+          codexMockState.events = fail
+            ? policyEvents().slice(0, 2)
+            : policyEvents();
+          codexMockState.streamError = fail
+            ? new Error('private-failure')
+            : undefined;
+          const execute = async () => {
+            await runPolicyTool({ disabled: true, stream });
+            expect(processor.started).toHaveLength(0);
+            const span = createCustomSpan({
+              data: {
+                name: 'Application span',
+                data: { text: 'application-data' },
+              },
+            });
+            span.start();
+            span.end();
+          };
+          if (ambient) {
+            await withTrace('Ambient caller', execute);
+            expect(processor.spans.map((span) => span.spanData.name)).toEqual([
+              'Application span',
+            ]);
+          } else {
+            await execute();
+            expect(processor.spans).toHaveLength(0);
+          }
+        }
+      }
+    },
+  );
+
+  test('leaves application-owned callback spans unchanged', async () => {
+    codexMockState.events = policyEvents();
+    await runPolicyTool({
+      includeSensitiveData: false,
+      onStream: ({ event }) => {
+        if (event.type === 'thread.started') {
+          const span = createCustomSpan({
+            data: {
+              name: 'Application span',
+              data: { text: 'application-data' },
+            },
+          });
+          span.start();
+          span.end();
+        }
+      },
+    });
+    expect(
+      processor.spans.find((span) => span.spanData.name === 'Application span')
+        ?.spanData.data,
+    ).toEqual({ text: 'application-data' });
+  });
+
+  test.each([undefined, false])(
+    'uses the immediate nested Runner policy (child=%s)',
+    async (childPolicy) => {
+      codexMockState.events = policyEvents();
+      const codex = codexTool();
+      const child = new Agent({
+        name: 'Child',
+        model: new ScriptedModel([
+          [
+            functionCall(
+              codex.name,
+              { inputs: [{ type: 'text', text: 'Run Codex.' }] },
+              { callId: 'inner' },
+            ),
+          ],
+        ]),
+        tools: [codex],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const childTool = child.asTool({
+        toolName: 'child',
+        toolDescription: 'Run child.',
+        runConfig: { traceIncludeSensitiveData: childPolicy },
+      });
+      const parent = new Agent({
+        name: 'Parent',
+        model: new ScriptedModel([
+          [
+            functionCall(
+              childTool.name,
+              { input: 'Run Codex.' },
+              { callId: 'outer' },
+            ),
+          ],
+        ]),
+        tools: [childTool],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      await new Runner({ traceIncludeSensitiveData: false }).run(
+        parent,
+        'Start.',
+      );
+      const command = processor.spans.find(
+        (span) => span.spanData.name === 'Codex command execution',
+      );
+      expect(command).toBeDefined();
+      expect(command?.spanData.data.command).toBe(
+        childPolicy === false ? undefined : 'private-completed',
+      );
+    },
+  );
 
   test('creates child spans for streamed Codex events and returns final response', async () => {
     codexMockState.events = [
@@ -427,8 +847,7 @@ describe('codexTool', () => {
     );
 
     const options = codexConstructorState.options as
-      | { apiKey?: string }
-      | undefined;
+      { apiKey?: string } | undefined;
     expect(options?.apiKey).toBe('openai-key');
   });
 
@@ -464,8 +883,7 @@ describe('codexTool', () => {
     );
 
     const options = codexConstructorState.options as
-      | { apiKey?: string }
-      | undefined;
+      { apiKey?: string } | undefined;
     expect(options?.apiKey).toBe('openai-key');
   });
 
@@ -706,8 +1124,7 @@ describe('codexTool', () => {
     );
 
     const options = codexConstructorState.options as
-      | { apiKey?: string }
-      | undefined;
+      { apiKey?: string } | undefined;
     expect(options?.apiKey).toBe('codex-key');
   });
 
@@ -1105,7 +1522,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('useRunContextThreadId=true');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1139,7 +1558,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('useRunContextThreadId=true');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1173,7 +1594,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('must be a string');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
     expect(codexConstructorState.instance).toBeUndefined();
   });
 
@@ -1217,7 +1640,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('persistSession=true');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
   });
 
   test('throws when Codex turn fails', async () => {
@@ -1244,7 +1669,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('Codex turn failed: bad turn');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
   });
 
   test('throws when Codex emits an error event', async () => {
@@ -1268,7 +1695,9 @@ describe('codexTool', () => {
       }),
     );
 
-    expect(result).toContain('Codex stream error: stream error');
+    expect(result).toBe(
+      'An error occurred while running the tool. Please try again.',
+    );
   });
 
   test('returns a default response when no agent message is streamed', async () => {

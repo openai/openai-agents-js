@@ -1,4 +1,5 @@
-import { Agent, run, tool, ToolOutputFileContent } from '@openai/agents';
+import { pathToFileURL } from 'node:url';
+import { Agent, run, tool, type ToolOutputFileContent } from '@openai/agents';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -10,7 +11,7 @@ const fetchSystemCard = tool({
   execute: async ({ topic }): Promise<ToolOutputFileContent> => {
     console.log('[tool] Fetching system card for topic:', topic);
     const pdfPath = path.join(
-      __dirname,
+      import.meta.dirname,
       'media',
       'partial_o3-and-o4-mini-system-card.pdf',
     );
@@ -42,7 +43,10 @@ async function main() {
   // The version of the Preparedness Framework used is Version 2.
 }
 
-if (require.main === module) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   main().catch((error) => {
     console.error(error);
     process.exit(1);
