@@ -60,9 +60,4 @@ export async function invalidateServerToolsCache(serverName: string) {
   }
 
   delete cachedMcpTools[serverName];
-  for (const cacheKey of Object.keys(cachedMcpTools)) {
-    if (cacheKey.startsWith(`${serverName}:`)) {
-      delete cachedMcpTools[cacheKey];
-    }
-  }
 }
