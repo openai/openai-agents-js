@@ -3,14 +3,8 @@ title: Quickstart
 description: Create your first sandbox agent with a managed workspace, filesystem tools, shell commands, and sandbox session state.
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import basicExample from '../../../../../examples/docs/sandbox-agents/basic.ts?raw';
-
-<Aside type="caution" title="Beta feature">
-  Sandbox agents are in beta. API details, defaults, and supported capabilities
-  may change before general availability, and more advanced features are
-  expected over time.
-</Aside>
 
 Modern agents work best when they can operate on real files in a filesystem. **Sandbox Agents** in the Agents SDK give the model a persistent workspace where it can search large document sets, edit files, run commands, generate artifacts, and pick work back up from saved sandbox state.
 

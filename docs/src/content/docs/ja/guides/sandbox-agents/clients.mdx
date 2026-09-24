@@ -46,7 +46,7 @@ canonicalHeadingIds:
       - '機能サポートマトリックス'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import developerOwnedSessionExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-session.ts?raw';
 import dockerClientExample from '../../../../../../../examples/docs/sandbox-agents/docker-client.ts?raw';
 import exposedPortsExample from '../../../../../../../examples/docs/sandbox-agents/exposed-ports.ts?raw';
@@ -55,13 +55,6 @@ import resumeSessionStateExample from '../../../../../../../examples/docs/sandbo
 import selectLocalClientExample from '../../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
 
 このページを使用して、サンドボックスの処理を実行する場所を選択します。ほとんどの場合、`SandboxAgent` の定義はそのままで、`sandbox` 実行オプション内のサンドボックスクライアントとクライアント固有のオプションのみを変更します。
-
-<Aside type="caution" title="ベータ機能">
-  サンドボックスエージェントはベータ版です。API
-  の詳細、デフォルト、サポートされる機能は、
-  一般提供までに変更される可能性があります。また、今後さらに高度な機能が
-  追加される予定です。
-</Aside>
 
 ## 選択ガイド
 

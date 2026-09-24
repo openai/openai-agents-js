@@ -137,18 +137,13 @@ canonicalHeadingIds:
       - '延伸阅读'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import harnessWithCompute from '../../../../../assets/images/harness_with_compute.png';
 import basicExample from '../../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 import developerOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-lifecycle.ts?raw';
 import manifestExample from '../../../../../../../examples/docs/sandbox-agents/manifest.ts?raw';
 import pathGrantsExample from '../../../../../../../examples/docs/sandbox-agents/path-grants.ts?raw';
 import sdkOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
-
-<Aside type="caution" title="Beta 功能">
-  沙盒智能体目前处于 Beta 阶段。在正式发布之前，API 细节、默认值和支持的功能
-  可能发生变化，预计未来还会逐步增加更多高级功能。
-</Aside>
 
 现代智能体能够在文件系统中操作真实文件时，通常可以发挥最佳效果。**沙盒智能体**可以使用专用工具和 shell 命令搜索并处理大型文档集、编辑文件、生成产物和运行命令。沙盒为模型提供持久工作区，智能体可在其中代您完成工作。Agents SDK 中的沙盒智能体可帮助您运行与沙盒环境配套的智能体，让您能够轻松地将所需文件放入文件系统，并大规模编排沙盒以启动、停止和恢复任务。
 

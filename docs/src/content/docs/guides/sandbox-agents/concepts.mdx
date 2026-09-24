@@ -3,19 +3,13 @@ title: Concepts
 description: Understand manifests, capabilities, permissions, snapshots, sandbox lifecycle, run config, and composition patterns.
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import harnessWithCompute from '../../../../assets/images/harness_with_compute.png';
 import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 import developerOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-agents/developer-owned-lifecycle.ts?raw';
 import manifestExample from '../../../../../../examples/docs/sandbox-agents/manifest.ts?raw';
 import pathGrantsExample from '../../../../../../examples/docs/sandbox-agents/path-grants.ts?raw';
 import sdkOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
-
-<Aside type="caution" title="Beta feature">
-  Sandbox agents are in beta. API details, defaults, and supported capabilities
-  may change before general availability, and more advanced features are
-  expected over time.
-</Aside>
 
 Modern agents work best when they can operate on real files in a filesystem. **Sandbox Agents** can make use of specialized tools and shell commands to search over and manipulate large document sets, edit files, generate artifacts, and run commands. The sandbox provides the model with a persistent workspace that the agent can use to do work on your behalf. Sandbox Agents in the Agents SDK help you run agents paired with a sandbox environment, making it easy to get the right files on the filesystem and orchestrate sandboxes to start, stop, and resume tasks at scale.
 

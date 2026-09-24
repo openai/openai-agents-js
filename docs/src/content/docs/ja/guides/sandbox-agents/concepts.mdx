@@ -137,20 +137,13 @@ canonicalHeadingIds:
       - '関連情報'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import harnessWithCompute from '../../../../../assets/images/harness_with_compute.png';
 import basicExample from '../../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 import developerOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-lifecycle.ts?raw';
 import manifestExample from '../../../../../../../examples/docs/sandbox-agents/manifest.ts?raw';
 import pathGrantsExample from '../../../../../../../examples/docs/sandbox-agents/path-grants.ts?raw';
 import sdkOwnedLifecycleExample from '../../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
-
-<Aside type="caution" title="ベータ機能">
-  サンドボックスエージェントはベータ版です。一般提供開始までに API
-  の詳細、デフォルト、
-  サポートされる機能が変更される可能性があります。また、今後さらに高度な機能が
-  追加される予定です。
-</Aside>
 
 最新のエージェントは、ファイルシステム上の実ファイルを操作できる場合に最も効果を発揮します。 **サンドボックスエージェント** は、専用ツールやシェルコマンドを使用して、大規模なドキュメント群の検索や操作、ファイルの編集、成果物の生成、コマンドの実行を行えます。サンドボックスは、エージェントがユーザーに代わって作業するために使用できる永続的なワークスペースをモデルに提供します。Agents SDK のサンドボックスエージェントを使用すると、サンドボックス環境と組み合わせたエージェントを実行でき、適切なファイルをファイルシステム上に配置し、サンドボックスをオーケストレーションして、大規模なタスクの開始、停止、再開を簡単に行えます。
 

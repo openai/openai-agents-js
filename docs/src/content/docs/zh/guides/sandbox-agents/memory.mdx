@@ -24,7 +24,7 @@ canonicalHeadingIds:
       - '不同布局对不同智能体记忆的隔离'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import conversationIdentityExample from '../../../../../../../examples/docs/sandbox-agents/conversation-identity.ts?raw';
 import enableMemoryExample from '../../../../../../../examples/docs/sandbox-agents/enable-memory.ts?raw';
 import generateMemoryExample from '../../../../../../../examples/docs/sandbox-agents/generate-memory.ts?raw';
@@ -32,11 +32,6 @@ import memoryLayoutsExample from '../../../../../../../examples/docs/sandbox-age
 import readOnlyMemoryExample from '../../../../../../../examples/docs/sandbox-agents/read-only-memory.ts?raw';
 
 记忆让未来的沙盒智能体运行能够从先前运行中学习。它不同于 SDK 的对话式[会话](/openai-agents-js/zh/guides/sessions)记忆，后者用于存储消息历史。记忆会将先前运行的经验提炼为沙盒工作区中的文件，因此请将生成的记忆产物视为留存数据，并应用与工作区相同的敏感性和留存策略。
-
-<Aside type="caution" title="Beta 功能">
-  沙盒智能体目前处于 beta 阶段。API 细节、默认值和支持的能力
-  在正式可用之前可能会发生变化，并且预计会随着时间推移加入更多高级功能。
-</Aside>
 
 记忆可以降低未来运行中的三类成本：
 

@@ -3,7 +3,7 @@ title: Sandbox clients
 description: Choose where sandbox work should run and how sessions, snapshots, mounts, and ports behave.
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import developerOwnedSessionExample from '../../../../../../examples/docs/sandbox-agents/developer-owned-session.ts?raw';
 import dockerClientExample from '../../../../../../examples/docs/sandbox-agents/docker-client.ts?raw';
 import exposedPortsExample from '../../../../../../examples/docs/sandbox-agents/exposed-ports.ts?raw';
@@ -12,12 +12,6 @@ import resumeSessionStateExample from '../../../../../../examples/docs/sandbox-a
 import selectLocalClientExample from '../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
 
 Use this page to choose where sandbox work should run. In most cases, the `SandboxAgent` definition stays the same while the sandbox client and client-specific options change in the `sandbox` run option.
-
-<Aside type="caution" title="Beta feature">
-  Sandbox agents are in beta. API details, defaults, and supported capabilities
-  may change before general availability, and more advanced features are
-  expected over time.
-</Aside>
 
 ## Decision guide
 

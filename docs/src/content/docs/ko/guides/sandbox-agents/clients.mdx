@@ -45,7 +45,7 @@ canonicalHeadingIds:
       - '기능-지원-매트릭스'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import developerOwnedSessionExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-session.ts?raw';
 import dockerClientExample from '../../../../../../../examples/docs/sandbox-agents/docker-client.ts?raw';
 import exposedPortsExample from '../../../../../../../examples/docs/sandbox-agents/exposed-ports.ts?raw';
@@ -54,11 +54,6 @@ import resumeSessionStateExample from '../../../../../../../examples/docs/sandbo
 import selectLocalClientExample from '../../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
 
 이 페이지를 사용하여 샌드박스 작업을 실행할 위치를 선택합니다. 대부분의 경우 `SandboxAgent` 정의는 그대로 유지하고 `sandbox` 실행 옵션에서 샌드박스 클라이언트와 클라이언트별 옵션만 변경합니다.
-
-<Aside type="caution" title="베타 기능">
-  샌드박스 에이전트는 베타 버전입니다. 정식 출시 전에 API 세부 정보, 기본값,
-  지원 기능이 변경될 수 있으며, 앞으로 더 많은 고급 기능이 추가될 예정입니다.
-</Aside>
 
 ## 선택 가이드
 

@@ -60,7 +60,7 @@ console.log(result.finalOutput);
 
 ### Build a sandbox agent
 
-Use a [Sandbox Agent](https://openai.github.io/openai-agents-js/guides/sandbox-agents) when the agent should work in a filesystem, run commands, or carry workspace state across longer tasks. Sandbox Agents are in beta.
+Use a [Sandbox Agent](https://openai.github.io/openai-agents-js/guides/sandbox-agents) when the agent should work in a filesystem, run commands, or carry workspace state across longer tasks.
 
 This example uses `UnixLocalSandboxClient`, which is supported on macOS and Linux. On Windows, use `DockerSandboxClient` or a hosted sandbox client instead; see [Sandbox clients](https://openai.github.io/openai-agents-js/guides/sandbox-agents/clients) for setup details.
 
