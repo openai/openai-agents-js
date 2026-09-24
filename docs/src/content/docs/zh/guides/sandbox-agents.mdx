@@ -24,13 +24,8 @@ canonicalHeadingIds:
       - '后续步骤'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
-
-<Aside type="caution" title="Beta 功能">
-  沙盒智能体目前处于 Beta 阶段。在正式发布之前，API 细节、默认设置和支持的能力
-  可能会发生变化，并且预计未来会推出更多高级功能。
-</Aside>
 
 现代智能体只有能够操作文件系统中的真实文件，才能发挥最佳效果。Agents SDK 中的**沙盒智能体**为模型提供持久化工作区，使其能够搜索大型文档集、编辑文件、运行命令、生成产物，并基于已保存的沙盒状态继续工作。
 

@@ -45,7 +45,7 @@ canonicalHeadingIds:
       - '功能支持矩阵'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import developerOwnedSessionExample from '../../../../../../../examples/docs/sandbox-agents/developer-owned-session.ts?raw';
 import dockerClientExample from '../../../../../../../examples/docs/sandbox-agents/docker-client.ts?raw';
 import exposedPortsExample from '../../../../../../../examples/docs/sandbox-agents/exposed-ports.ts?raw';
@@ -54,11 +54,6 @@ import resumeSessionStateExample from '../../../../../../../examples/docs/sandbo
 import selectLocalClientExample from '../../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
 
 使用此页面选择沙盒任务的运行位置。在大多数情况下，`SandboxAgent` 定义保持不变，只需更改 `sandbox` 运行选项中的沙盒客户端和客户端专属选项。
-
-<Aside type="caution" title="Beta 功能">
-  沙盒智能体目前处于 Beta 阶段。在正式发布之前，API 细节、默认值和支持的功能
-  可能会发生变化，并且预计未来将提供更多高级功能。
-</Aside>
 
 ## 决策指南
 
