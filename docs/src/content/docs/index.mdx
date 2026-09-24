@@ -1,9 +1,9 @@
 ---
 title: OpenAI Agents SDK TypeScript
-description: The OpenAI Agents SDK for TypeScript enables you to build agentic AI apps in a lightweight, easy-to-use package with very few abstractions.
+description: Maintain and extend agent workflows in your application with the OpenAI Agents SDK for TypeScript.
 ---
 
-import { LinkCard } from '@astrojs/starlight/components';
+import { Aside, LinkCard } from '@astrojs/starlight/components';
 import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
 import Hero from '../../components/Hero.astro';
 
@@ -13,14 +13,27 @@ import helloWorldSandboxExample from '../../../../examples/docs/toppage/sandboxA
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    Build text, sandbox, and voice agents with a small set of primitives.
+    Maintain and extend text, sandbox, and voice agents in your application.
   </Fragment>
-  <Fragment slot="cta">Let's build</Fragment>
+  <Fragment slot="cta">Explore the SDK</Fragment>
 </Hero>
+
+<Aside type="note" title="Important notice">
+  The Agents SDK is **feature complete**. Maintenance, security fixes, critical bug
+  fixes, and compatibility work continue, but major new features are not planned.
+  For new agent applications, we recommend the **[Agents
+  API](https://developers.openai.com/api/docs/guides/agents-api/quickstart)**, which
+  runs a managed Codex harness.
+
+You can continue using the Agents SDK for existing applications. For new applications that require capabilities the Agents API does not yet support, the SDK remains a short-term option.
+
+</Aside>
 
 ## Overview
 
-The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js) enables you to build agentic AI apps in a lightweight, easy-to-use package with very few abstractions. It's a production-ready upgrade of our previous experimentation for agents, [Swarm](https://github.com/openai/swarm/tree/main), that's also [available in Python](https://github.com/openai/openai-agents-python). The Agents SDK has a very small set of primitives:
+The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js) is an open-source framework for building agent workflows in application code. It builds on [Swarm](https://github.com/openai/swarm/tree/main), bringing lightweight multi-agent orchestration into production applications with guardrails and built-in tracing. The SDK is also [available in Python](https://github.com/openai/openai-agents-python).
+
+The SDK runs the agent loop in your application, coordinating model calls and tool execution, including MCP server tools. Sessions preserve conversation context across runs, and human approvals let your application pause tool execution for review. The SDK provides a small set of primitives:
 
 - **Agents**, which are LLMs equipped with instructions and tools
 - **Sandbox agents**, which pair agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state
