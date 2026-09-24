@@ -177,6 +177,11 @@ function ensureHostedToolCallAllowed<TContext>(
     serverLabel,
     agent,
   );
+  // Hosted MCP discovery can be reported before the tool-search result.
+  // Listing tools does not execute them or mark the server as loaded.
+  if (providerType === 'mcp_list_tools' || output.name === 'mcp_list_tools') {
+    return;
+  }
   if (
     mcpTool.providerData.defer_loading !== true ||
     loadedToolNames.has(serverLabel)

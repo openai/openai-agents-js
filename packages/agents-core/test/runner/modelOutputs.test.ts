@@ -510,8 +510,8 @@ describe('processModelResponse', () => {
     },
   );
 
-  it.each(['mcp_call', 'mcp_list_tools', 'mcp_approval_request'] as const)(
-    'rejects programmatic %s items before a deferred MCP server is loaded',
+  it.each(['mcp_call', 'mcp_approval_request'] as const)(
+    'rejects programmatic %s items after listing a deferred MCP server without loading it',
     async (mcpCallType) => {
       const mcpTool = hostedMcpTool({
         serverLabel: 'server',
@@ -526,34 +526,30 @@ describe('processModelResponse', () => {
         name: mcpCallType,
         status: 'completed',
         caller: { type: 'program', callerId: 'call_program' },
-        providerData:
-          mcpCallType === 'mcp_call'
-            ? {
-                type: mcpCallType,
-                id: 'mcp_call_programmatic',
-                server_label: 'server',
-                name: 'lookup',
-                arguments: '{}',
-              }
-            : mcpCallType === 'mcp_list_tools'
-              ? {
-                  type: mcpCallType,
-                  id: 'mcp_list_tools_programmatic',
-                  server_label: 'server',
-                  tools: [],
-                }
-              : {
-                  type: mcpCallType,
-                  id: 'mcp_approval_programmatic',
-                  server_label: 'server',
-                  name: 'lookup',
-                  arguments: '{}',
-                },
+        providerData: {
+          type: mcpCallType,
+          id: `${mcpCallType}_programmatic`,
+          server_label: 'server',
+          name: 'lookup',
+          arguments: '{}',
+        },
+      };
+      const listing: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: 'mcp_listing',
+        name: 'mcp_list_tools',
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_program' },
+        providerData: {
+          type: 'mcp_list_tools',
+          server_label: 'server',
+          tools: [],
+        },
       };
 
       expect(() =>
         processModelResponse(
-          { output: [programmaticMcpCall], usage: new Usage() },
+          { output: [listing, programmaticMcpCall], usage: new Usage() },
           TEST_AGENT,
           [mcpTool],
           [],
@@ -587,7 +583,7 @@ describe('processModelResponse', () => {
       await expect(
         processModelResponseAsync(
           {
-            output: [toolSearchCall, programmaticMcpCall],
+            output: [toolSearchCall, listing, programmaticMcpCall],
             usage: new Usage(),
           },
           TEST_AGENT,
