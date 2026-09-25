@@ -1,5 +1,52 @@
 # @openai/agents-realtime
 
+## 0.19.0
+
+### Minor Changes
+
+- 39decd7: fix: bind conditional tool approvals to isolated normalized execution input in core and Realtime, re-evaluate current policies on durable approval resumes, reject uncopyable normalized values before conditional approval, and preserve invalid-input handling (#1914, #1915).
+- 3515c29: fix: redact default function-tool and Realtime approval parse failures; require explicit invocation policy for sensitive error traces and clarify when custom errorFunction feedback applies.
+
+### Patch Changes
+
+- 506f736: fix: prevent stack overflow when encoding large Realtime audio buffers.
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 7b534bb: fix(realtime): keep conversation order when updateHistory corrects or inserts items, including overlapping edits
+- 7f135af: fix: update compatible runtime and development dependencies.
+- efd907f: fix: Clear stale tools when switching to a tool-less Realtime agent without a prompt while preserving existing empty-tool configuration behavior.
+- Updated dependencies [39d5e9e]
+- Updated dependencies [c55d64d]
+- Updated dependencies [c345409]
+- Updated dependencies [a0b1c6f]
+- Updated dependencies [9c94138]
+- Updated dependencies [c3e02d2]
+- Updated dependencies [f80c91c]
+- Updated dependencies [3949bb1]
+- Updated dependencies [186f6ec]
+- Updated dependencies [fdaf0a6]
+- Updated dependencies [aeef9e1]
+- Updated dependencies [817161d]
+- Updated dependencies [20e5946]
+- Updated dependencies [39decd7]
+- Updated dependencies [9623a22]
+- Updated dependencies [58844c7]
+- Updated dependencies [d0e5d43]
+- Updated dependencies [2127475]
+- Updated dependencies [3515c29]
+- Updated dependencies [7f135af]
+- Updated dependencies [ee65014]
+- Updated dependencies [00eef0c]
+- Updated dependencies [218a2b8]
+- Updated dependencies [8ac97df]
+- Updated dependencies [8a26e30]
+- Updated dependencies [4ef9008]
+- Updated dependencies [f507590]
+- Updated dependencies [d187747]
+- Updated dependencies [fc2d2a4]
+- Updated dependencies [0bdea85]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.19.0
+
 ## 0.18.0
 
 ### Patch Changes

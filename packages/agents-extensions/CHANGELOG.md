@@ -1,5 +1,58 @@
 # @openai/agents-extensions
 
+## 0.19.0
+
+### Minor Changes
+
+- 38cee6d: fix: require Daytona SDK ^0.201.0 for patched OpenTelemetry dependencies while preserving polling-based sandbox lifecycle behavior.
+
+### Patch Changes
+
+- 742423e: fix: treat a blank CODEX_API_KEY as unconfigured so OPENAI_API_KEY can be used
+- 9c94138: fix: honor the invoking Runner's sensitive-data tracing policy in Codex spans, including mixed CommonJS and ESM applications.
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 194fea9: fix: omit supported generation reasoning from default OpenAI trace exports while preserving original spans and custom destinations
+- 5edcc76: fix: Redact MCP authentication and headers from AI SDK UI tool-search output while preserving server-side replay configuration.
+- 3515c29: fix: redact default function-tool and Realtime approval parse failures; require explicit invocation policy for sensitive error traces and clarify when custom errorFunction feedback applies.
+- 7f135af: fix: update compatible runtime and development dependencies.
+- 610fd72: fix: update AI SDK development dependencies to use patched provider response handling.
+- 056bef8: fix: trim Blaxel S3-compatible bucket prefixes in linear time while preserving mount targets.
+- 649f3b4: fix: trim Blaxel GCS mount prefixes in linear time while preserving mount behavior.
+- e6e43dd: fix: Honor local directory file concurrency across recursive sandbox source copies and drain active work before cleanup.
+- 12d1b92: fix: preserve tar name trimming with a linear suffix scan.
+- Updated dependencies [39d5e9e]
+- Updated dependencies [c55d64d]
+- Updated dependencies [c345409]
+- Updated dependencies [a0b1c6f]
+- Updated dependencies [9c94138]
+- Updated dependencies [c3e02d2]
+- Updated dependencies [f80c91c]
+- Updated dependencies [3949bb1]
+- Updated dependencies [186f6ec]
+- Updated dependencies [fdaf0a6]
+- Updated dependencies [aeef9e1]
+- Updated dependencies [817161d]
+- Updated dependencies [20e5946]
+- Updated dependencies [39decd7]
+- Updated dependencies [9623a22]
+- Updated dependencies [58844c7]
+- Updated dependencies [d0e5d43]
+- Updated dependencies [2127475]
+- Updated dependencies [3515c29]
+- Updated dependencies [7f135af]
+- Updated dependencies [ee65014]
+- Updated dependencies [00eef0c]
+- Updated dependencies [218a2b8]
+- Updated dependencies [8ac97df]
+- Updated dependencies [8a26e30]
+- Updated dependencies [4ef9008]
+- Updated dependencies [f507590]
+- Updated dependencies [d187747]
+- Updated dependencies [fc2d2a4]
+- Updated dependencies [0bdea85]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.19.0
+
 ## 0.18.0
 
 ### Patch Changes

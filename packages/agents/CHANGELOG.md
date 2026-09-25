@@ -1,5 +1,52 @@
 # @openai/agents
 
+## 0.19.0
+
+### Patch Changes
+
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 7bc7368: docs: Remove the beta label from the sandbox agent documentation.
+- 7f135af: fix: update compatible runtime and development dependencies.
+- Updated dependencies [39d5e9e]
+- Updated dependencies [c55d64d]
+- Updated dependencies [c345409]
+- Updated dependencies [a0b1c6f]
+- Updated dependencies [9c94138]
+- Updated dependencies [506f736]
+- Updated dependencies [c3e02d2]
+- Updated dependencies [f80c91c]
+- Updated dependencies [3949bb1]
+- Updated dependencies [186f6ec]
+- Updated dependencies [fdaf0a6]
+- Updated dependencies [aeef9e1]
+- Updated dependencies [817161d]
+- Updated dependencies [20e5946]
+- Updated dependencies [39decd7]
+- Updated dependencies [194fea9]
+- Updated dependencies [9623a22]
+- Updated dependencies [58844c7]
+- Updated dependencies [d0e5d43]
+- Updated dependencies [2127475]
+- Updated dependencies [7b534bb]
+- Updated dependencies [3515c29]
+- Updated dependencies [7f135af]
+- Updated dependencies [ee65014]
+- Updated dependencies [00eef0c]
+- Updated dependencies [218a2b8]
+- Updated dependencies [8ac97df]
+- Updated dependencies [8a26e30]
+- Updated dependencies [4ef9008]
+- Updated dependencies [f507590]
+- Updated dependencies [d187747]
+- Updated dependencies [fc2d2a4]
+- Updated dependencies [0bdea85]
+- Updated dependencies [efd907f]
+- Updated dependencies [202563c]
+- Updated dependencies [06bbcc0]
+  - @openai/agents-core@0.19.0
+  - @openai/agents-openai@0.19.0
+  - @openai/agents-realtime@0.19.0
+
 ## 0.18.0
 
 ### Patch Changes
