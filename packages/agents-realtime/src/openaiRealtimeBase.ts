@@ -155,6 +155,12 @@ function cloneRealtimeEvent<T>(event: T): T {
   return JSON.parse(JSON.stringify(event)) as T;
 }
 
+/**
+ * Sentinel accepted by `conversation.item.create` that places the item at the
+ * beginning of the conversation. Omitting `previous_item_id` appends instead.
+ */
+const CONVERSATION_ROOT = 'root';
+
 export abstract class OpenAIRealtimeBase
   extends EventEmitterDelegate<OpenAIRealtimeEventTypes>
   implements RealtimeTransportLayer
@@ -163,6 +169,13 @@ export abstract class OpenAIRealtimeBase
   #apiKey: ApiKey | undefined;
   #tracingConfig: RealtimeTracingConfig | null = null;
   #rawSessionConfig: Record<string, any> | null = null;
+  // Requests stay in wire order so placement can project both removals and
+  // recreations while the session still exposes server-confirmed history.
+  #pendingHistoryRequests = new Map<
+    string,
+    { itemId: string; kind: 'create' | 'delete' }
+  >();
+  #historyRequestSeq = 0;
 
   protected eventEmitter: RuntimeEventEmitter<OpenAIRealtimeEventTypes> =
     new RuntimeEventEmitter<OpenAIRealtimeEventTypes>();
@@ -239,7 +252,17 @@ export abstract class OpenAIRealtimeBase
       return;
     }
 
+    if (parsed.type === 'conversation.item.added' && parsed.item.id) {
+      this.#settleHistoryRequest(parsed.item.id, 'create');
+    }
+
     if (parsed.type === 'error') {
+      // The Realtime API reports the offending client event under `error.event_id`.
+      const causedBy = (parsed.error as { event_id?: unknown } | undefined)
+        ?.event_id;
+      if (typeof causedBy === 'string') {
+        this.#pendingHistoryRequests.delete(causedBy);
+      }
       this.emit('error', { type: 'error', error: parsed });
     } else {
       this.emit(parsed.type, parsed);
@@ -308,6 +331,7 @@ export abstract class OpenAIRealtimeBase
     }
 
     if (parsed.type === 'conversation.item.deleted') {
+      this.#settleHistoryRequest(parsed.item_id, 'delete');
       this.emit('item_deleted', {
         itemId: parsed.item_id,
       });
@@ -381,11 +405,15 @@ export abstract class OpenAIRealtimeBase
         return;
       }
       if (parsed.item.type === 'message') {
+        // `null` here is the server saying the item has nothing before it, which
+        // is what decides where local history puts it. An event that does not
+        // carry the field says nothing about placement, so it stays undefined
+        // rather than claiming the front.
         const previousItemId =
           parsed.type === 'conversation.item.added' ||
           parsed.type === 'conversation.item.done'
             ? parsed.previous_item_id
-            : null;
+            : undefined;
         const item = realtimeMessageItemSchema.parse({
           itemId: parsed.item.id,
           previousItemId,
@@ -540,7 +568,35 @@ export abstract class OpenAIRealtimeBase
     this.emit('connected');
   }
 
+  // Successful replies identify the item, so retire its oldest matching request.
+  // `done` finalizes content and must not settle another create of the same ID.
+  #settleHistoryRequest(itemId: string, kind: 'create' | 'delete'): void {
+    for (const [eventId, request] of this.#pendingHistoryRequests) {
+      if (request.itemId === itemId && request.kind === kind) {
+        this.#pendingHistoryRequests.delete(eventId);
+        return;
+      }
+    }
+  }
+
+  #sendHistoryRequest(
+    itemId: string,
+    kind: 'create' | 'delete',
+    event: RealtimeClientMessage,
+  ): void {
+    const eventId = `agents_${kind}_${++this.#historyRequestSeq}`;
+    this.#pendingHistoryRequests.set(eventId, { itemId, kind });
+    try {
+      this.sendEvent({ ...event, event_id: eventId });
+    } catch (error) {
+      this.#pendingHistoryRequests.delete(eventId);
+      throw error;
+    }
+  }
+
   protected _onClose() {
+    // Unacknowledged requests belong only to the connection that sent them.
+    this.#pendingHistoryRequests.clear();
     this.emit('disconnected');
   }
 
@@ -1015,34 +1071,76 @@ export abstract class OpenAIRealtimeBase
 
     if (removalIds.size > 0) {
       for (const itemId of removalIds) {
-        this.sendEvent({
+        this.#sendHistoryRequest(itemId, 'delete', {
           type: 'conversation.item.delete',
           item_id: itemId,
         });
       }
     }
 
-    const additionsAndUpdates = [...additions, ...updates];
+    // Walk the new history in order so each created item can name the item it
+    // follows. `conversation.item.create` appends to the end of the
+    // conversation when `previous_item_id` is omitted, which would move a
+    // corrected or inserted item behind everything after it.
+    const pendingIds = new Set(
+      [...additions, ...updates].map((item) => item.itemId),
+    );
+    // Apply outstanding operations in send order. A recreation restores an
+    // anchor even before its earlier deletion is acknowledged; a later delete
+    // removes it again. Keep this projection separate from confirmed history.
+    const projectedPresence = new Map<string, boolean>();
+    for (const request of this.#pendingHistoryRequests.values()) {
+      projectedPresence.set(request.itemId, request.kind === 'create');
+    }
+    const survives = (item: RealtimeItem) =>
+      !pendingIds.has(item.itemId) &&
+      projectedPresence.get(item.itemId) !== false;
+    // Only a create that has to land before something the server keeps needs to
+    // name an anchor. Past the last such item there is nothing to sit in front
+    // of, so those stay plain appends.
+    let lastAnchoredIndex = -1;
+    for (const [index, item] of newHistory.entries()) {
+      if (survives(item)) {
+        lastAnchoredIndex = index;
+      }
+    }
 
-    for (const addition of additionsAndUpdates) {
-      if (addition.type === 'message') {
+    // `root` places the item at the beginning; omitting the field appends it.
+    let previousItemId = CONVERSATION_ROOT;
+
+    for (const [index, item] of newHistory.entries()) {
+      if (!pendingIds.has(item.itemId)) {
+        // An item on its way out cannot anchor anything: the anchor stays on
+        // the last one that will still be there when the create arrives.
+        if (survives(item)) {
+          previousItemId = item.itemId;
+        }
+        continue;
+      }
+
+      if (item.type === 'message') {
         const itemEntry: Record<string, any> = {
           type: 'message',
-          role: addition.role,
-          content: addition.content,
-          id: addition.itemId,
+          role: item.role,
+          content: item.content,
+          id: item.itemId,
         };
-        if (addition.role !== 'system' && addition.status) {
-          itemEntry.status = addition.status;
+        if (item.role !== 'system' && item.status) {
+          itemEntry.status = item.status;
         }
-        this.sendEvent({
+        this.#sendHistoryRequest(item.itemId, 'create', {
           type: 'conversation.item.create',
+          ...(index < lastAnchoredIndex
+            ? { previous_item_id: previousItemId }
+            : {}),
           item: itemEntry,
         });
-      } else if (addition.type === 'function_call') {
+        previousItemId = item.itemId;
+      } else if (item.type === 'function_call') {
         logger.warn(
           'Function calls cannot be manually added or updated at the moment. Ignoring.',
         );
+        // Not created, so it cannot anchor the next insert.
       }
     }
   }
