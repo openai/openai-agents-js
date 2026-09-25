@@ -124,7 +124,7 @@ class HistoryTransport extends OpenAIRealtimeBase {
   }
 }
 
-async function setup() {
+async function setup(items = [message('a'), message('b'), message('c')]) {
   const transport = new HistoryTransport();
   const session = new RealtimeSession(new RealtimeAgent({ name: 'test' }), {
     transport,
@@ -132,7 +132,7 @@ async function setup() {
   const errors: unknown[] = [];
   session.on('error', (error) => errors.push(error));
   await session.connect({ apiKey: 'test' });
-  transport.seed([message('a'), message('b'), message('c')]);
+  transport.seed(items);
   return { transport, session, errors };
 }
 
@@ -165,6 +165,27 @@ describe('Realtime history placement with delayed acknowledgements', () => {
     expect(session.history[1]).toMatchObject({
       content: [{ type: 'input_text', text: 'corrected' }],
     });
+    expect(errors).toEqual([]);
+    session.close();
+  });
+
+  it('keeps a trailing append alive while a deletion is unacknowledged', async () => {
+    const { transport, session, errors } = await setup([
+      message('a'),
+      message('b'),
+    ]);
+    session.updateHistory((history) =>
+      history.filter((item) => item.itemId !== 'b'),
+    );
+    // The server has deleted b, but its acknowledgement has not arrived.
+    expect(ids(transport.history)).toEqual(['a']);
+    expect(ids(session.history)).toEqual(['a', 'b']);
+
+    session.updateHistory((history) => [...history, message('c')]);
+    transport.flush();
+
+    expect(ids(transport.history)).toEqual(['a', 'c']);
+    expect(ids(session.history)).toEqual(['a', 'c']);
     expect(errors).toEqual([]);
     session.close();
   });
