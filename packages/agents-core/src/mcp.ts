@@ -58,6 +58,7 @@ import {
   assertOpenAIStrictToolSchemaPreservesOpenObjects,
   isJsonSchemaDepthError,
 } from './utils/strictToolSchema';
+import { toFunctionToolName } from './utils/tools';
 import type {
   ToolInputGuardrailDefinition,
   ToolOutputGuardrailDefinition,
@@ -882,13 +883,13 @@ export async function getAllMcpTools<TContext = UnknownContext>(
           toolNameOverrides.get(getToolNameOverrideKey(serverIndex, toolIndex)),
         ),
       });
-      const serverToolNames = new Set(serverTools.map((t) => t.name));
-      const intersection = [...serverToolNames]
-        .filter((n) => toolNames.has(n))
-        .sort();
-      if (intersection.length > 0) {
+      const duplicateToolNames = findDuplicateToolNames(
+        serverTools.map((t) => t.name),
+        toolNames,
+      );
+      if (duplicateToolNames.length > 0) {
         throw new UserError(
-          `Duplicate tool names found across MCP servers: ${intersection.join(', ')}`,
+          `Duplicate tool names found across MCP servers: ${duplicateToolNames.join(', ')}`,
         );
       }
       for (const t of serverTools) {
@@ -910,13 +911,13 @@ export async function getAllMcpTools<TContext = UnknownContext>(
       errorFunction,
       tracingParent,
     });
-    const serverToolNames = new Set(serverTools.map((t) => t.name));
-    const intersection = [...serverToolNames]
-      .filter((n) => toolNames.has(n))
-      .sort();
-    if (intersection.length > 0) {
+    const duplicateToolNames = findDuplicateToolNames(
+      serverTools.map((t) => t.name),
+      toolNames,
+    );
+    if (duplicateToolNames.length > 0) {
       throw new UserError(
-        `Duplicate tool names found across MCP servers: ${intersection.join(', ')}`,
+        `Duplicate tool names found across MCP servers: ${duplicateToolNames.join(', ')}`,
       );
     }
     for (const t of serverTools) {
@@ -925,6 +926,25 @@ export async function getAllMcpTools<TContext = UnknownContext>(
     }
   }
   return allTools;
+}
+
+/**
+ * Returns the names that repeat within `names` or were already seen in
+ * `previousNames`.
+ */
+function findDuplicateToolNames(
+  names: string[],
+  previousNames: Set<string>,
+): string[] {
+  const seen = new Set(previousNames);
+  const duplicates = new Set<string>();
+  for (const name of names) {
+    if (seen.has(name)) {
+      duplicates.add(name);
+    }
+    seen.add(name);
+  }
+  return [...duplicates].sort();
 }
 
 function getToolNameOverrideKey(
@@ -1081,7 +1101,8 @@ function buildPrefixedToolNameOverrides(
     const serverName = getMcpServerExternalName(server.name);
     for (const mcpTool of mcpTools) {
       const baseName = buildPrefixedToolBaseName(serverName, mcpTool.name);
-      baseNameCounts.set(baseName, (baseNameCounts.get(baseName) ?? 0) + 1);
+      const publicName = toFunctionToolName(baseName);
+      baseNameCounts.set(publicName, (baseNameCounts.get(publicName) ?? 0) + 1);
     }
   }
 
@@ -1102,8 +1123,10 @@ function buildPrefixedToolNameOverrides(
         );
       }
       rawServerNamesBySeed.set(seed, server.name);
+      const functionToolName = toFunctionToolName(baseName);
       const forceHash =
-        (baseNameCounts.get(baseName) ?? 0) > 1 || reservedNames.has(baseName);
+        (baseNameCounts.get(functionToolName) ?? 0) > 1 ||
+        reservedNames.has(functionToolName);
       candidates.push({
         batchKey: getToolNameOverrideKey(serverIndex, toolIndex),
         baseName,
@@ -1127,7 +1150,7 @@ function buildPrefixedToolNameOverrides(
   })) {
     let publicName = candidate.initialName;
     let collisionIndex = 1;
-    while (usedNames.has(publicName)) {
+    while (usedNames.has(toFunctionToolName(publicName))) {
       publicName = shortenToolName(
         candidate.baseName,
         `${candidate.seed}\0${collisionIndex}`,
@@ -1136,7 +1159,7 @@ function buildPrefixedToolNameOverrides(
       collisionIndex += 1;
     }
 
-    usedNames.add(publicName);
+    usedNames.add(toFunctionToolName(publicName));
     overrides.set(candidate.batchKey, publicName);
   }
 
