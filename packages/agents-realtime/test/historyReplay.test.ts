@@ -128,6 +128,7 @@ describe('OpenAI realtime history replay', () => {
     expect(base.events).toEqual([
       {
         type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^agents_delete_\d+$/),
         item_id: 'remove-me',
       },
     ]);
@@ -144,6 +145,7 @@ describe('OpenAI realtime history replay', () => {
     expect(createEvents(base.events)).toEqual([
       {
         type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^agents_create_\d+$/),
         item: {
           id: 'new',
           type: 'message',
@@ -163,11 +165,16 @@ describe('OpenAI realtime history replay', () => {
     base.resetHistory(oldHistory, newHistory);
 
     expect(deleteEvents(base.events)).toEqual([
-      { type: 'conversation.item.delete', item_id: 'msg-1' },
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^agents_delete_\d+$/),
+        item_id: 'msg-1',
+      },
     ]);
     expect(createEvents(base.events)).toEqual([
       {
         type: 'conversation.item.create',
+        event_id: expect.stringMatching(/^agents_create_\d+$/),
         item: {
           id: 'msg-1',
           type: 'message',
@@ -187,7 +194,11 @@ describe('OpenAI realtime history replay', () => {
     base.resetHistory(oldHistory, newHistory);
 
     expect(deleteEvents(base.events)).toEqual([
-      { type: 'conversation.item.delete', item_id: 'msg-1' },
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^agents_delete_\d+$/),
+        item_id: 'msg-1',
+      },
     ]);
     expect(createEvents(base.events)).toEqual([]);
   });
@@ -210,7 +221,11 @@ describe('OpenAI realtime history replay', () => {
     base.resetHistory(oldHistory, newHistory);
 
     expect(base.events).toEqual([
-      { type: 'conversation.item.delete', item_id: 'mcp-1' },
+      {
+        type: 'conversation.item.delete',
+        event_id: expect.stringMatching(/^agents_delete_\d+$/),
+        item_id: 'mcp-1',
+      },
     ]);
   });
 
