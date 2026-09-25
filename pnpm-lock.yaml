@@ -335,6 +335,25 @@ importers:
         specifier: ^4.0.0
         version: 4.3.5
 
+  examples/live:
+    dependencies:
+      '@openai/agents':
+        specifier: workspace:*
+        version: link:../../packages/agents
+      openai:
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
+      zod:
+        specifier: ^4.0.0
+        version: 4.3.5
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+
   examples/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':

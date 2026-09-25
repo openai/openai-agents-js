@@ -112,6 +112,7 @@ function createProjects(reviewTestProfile: boolean) {
           'examples/realtime-twilio-sip/server.test.ts',
           'examples/realtime-twilio/server.test.ts',
           'examples/tools/local-shell.test.ts',
+          'examples/live/**/*.test.{ts,mjs}',
         ],
       },
     },
