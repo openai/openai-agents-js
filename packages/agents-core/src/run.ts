@@ -334,7 +334,8 @@ export type RunConfig = {
   /**
    * A global input filter to apply to all handoffs. If `Handoff.inputFilter` is set, then that
    * will take precedence. The input filter allows you to edit the inputs that are sent to the new
-   * agent. See the documentation in `Handoff.inputFilter` for more details.
+   * agent. A selected filtered handoff cannot use `conversationId` or `previousResponseId`.
+   * See the documentation in `Handoff.inputFilter` for more details.
    */
   handoffInputFilter?: HandoffInputFilter;
 
@@ -2094,6 +2095,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                     state._lastTurnResponse!,
                     preparedCall.tools,
                     preparedCall.handoffs,
+                    this,
+                    options.signal,
                   ),
               },
             );
@@ -3297,6 +3300,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   result.state._lastTurnResponse!,
                   preparedCall.tools,
                   preparedCall.handoffs,
+                  this,
+                  options.signal,
                 ),
             },
           );
