@@ -2898,6 +2898,109 @@ describe('Runner.run', () => {
       expect(model.calls).toHaveLength(0);
     });
 
+    it.each([false, true])(
+      'preserves cancellation during client-managed filtered handoff processing (stream=%s)',
+      async (stream) => {
+        const controller = new AbortController();
+        const abortReason = new Error('stop before filtered handoff');
+        let markSearchStarted!: () => void;
+        const searchStarted = new Promise<void>((resolve) => {
+          markSearchStarted = resolve;
+        });
+        let releaseSearch!: () => void;
+        const searchCanFinish = new Promise<void>((resolve) => {
+          releaseSearch = resolve;
+        });
+        const toolSearch = attachClientToolSearchExecutor(
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search', execution: 'client' },
+          },
+          async () => {
+            markSearchStarted();
+            await searchCanFinish;
+            return [];
+          },
+        );
+        const receiverModel = new ScriptedModel([
+          modelResponse(TEST_MODEL_RESPONSE_BASIC),
+        ]);
+        const receiver = new Agent({ name: 'receiver', model: receiverModel });
+        const onHandoff = vi.fn();
+        const inputFilter = vi.fn((input) => input);
+        const transfer = handoff(receiver, { onHandoff, inputFilter });
+        const source = new Agent({
+          name: 'source',
+          model: new ScriptedModel([
+            modelResponse({
+              output: [
+                {
+                  type: 'function_call',
+                  id: 'fc_handoff',
+                  callId: 'call_handoff',
+                  name: transfer.toolName,
+                  arguments: '{}',
+                  status: 'completed',
+                },
+                {
+                  type: 'tool_search_call',
+                  id: 'ts_lookup',
+                  status: 'completed',
+                  arguments: {},
+                  providerData: { call_id: 'call_lookup' },
+                },
+              ],
+              responseId: 'resp_source',
+              usage: new Usage(),
+            }),
+          ]),
+          tools: [toolSearch],
+          handoffs: [transfer],
+        });
+        const state = new RunState(new RunContext(), 'start', source, 10);
+        const outcome = (async () => {
+          const options = {
+            signal: controller.signal,
+          };
+          if (stream) {
+            const result = await new Runner().run(source, state, {
+              ...options,
+              stream: true,
+            });
+            await result.completed;
+            if (result.error) throw result.error;
+            return { cancelled: result.cancelled, error: result.error };
+          } else {
+            await new Runner().run(source, state, options);
+          }
+        })().catch((error: unknown) => error);
+
+        await searchStarted;
+        controller.abort(abortReason);
+        releaseSearch();
+
+        const result = await outcome;
+        if (stream) {
+          expect(result).toEqual({ cancelled: true, error: null });
+        } else {
+          expect(result).toBe(abortReason);
+        }
+        expect(onHandoff).not.toHaveBeenCalled();
+        expect(inputFilter).not.toHaveBeenCalled();
+        expect(receiverModel.calls).toHaveLength(0);
+        expect(
+          state._generatedItems.map((item) => item.rawItem),
+        ).toContainEqual(
+          expect.objectContaining({
+            type: 'function_call_result',
+            callId: 'call_handoff',
+            status: 'incomplete',
+          }),
+        );
+      },
+    );
+
     it('loads runtime tools from custom client tool_search execute callbacks across turns', async () => {
       const lookupAccount = tool({
         name: 'lookup_account',
@@ -9818,7 +9921,7 @@ describe('Runner.run', () => {
       ]);
     });
 
-    it('does not append ignored handoff acknowledgements after removeAllTools filters the handoff input', async () => {
+    it('rejects a selected removeAllTools handoff with server-managed history', async () => {
       const agentBModel = new TrackingModel([
         modelResponse(buildResponse([fakeModelMessage('done B')], 'resp-b')),
       ]);
@@ -9861,15 +9964,14 @@ describe('Runner.run', () => {
         handoffs: [handoffToB, handoffToC],
       });
 
-      const result = await new Runner().run(agentA, 'hi', {
-        previousResponseId: 'initial-response',
-      });
+      await expect(
+        new Runner().run(agentA, 'hi', {
+          previousResponseId: 'initial-response',
+        }),
+      ).rejects.toThrow(UserError);
 
-      expect(result.finalOutput).toBe('done B');
-      expect(agentBModel.requests).toHaveLength(1);
+      expect(agentBModel.requests).toHaveLength(0);
       expect(agentCModel.requests).toHaveLength(0);
-      expect(agentBModel.requests[0].previousResponseId).toBe('resp-a');
-      expect(agentBModel.requests[0].input).toEqual([]);
     });
 
     it('does not replay orphan hosted shell calls in default multi-turn runs', async () => {

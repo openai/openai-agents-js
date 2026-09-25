@@ -52,6 +52,45 @@ class StubServer extends NodeMCPServerStdio {
 
 describe('MCP tools cache invalidation', () => {
   it.each([false, true])(
+    'preserves colon-suffixed server caches when the base server was cached=%s',
+    async (cacheBaseServer) => {
+      const serverName = `isolated-cache-${cacheBaseServer}`;
+      const server = new StubServer(serverName, [toolNamed('query')]);
+      const suffixedServer = new StubServer(`${serverName}:readonly`, [
+        toolNamed('read'),
+      ]);
+      const listTools = vi.spyOn(server, 'listTools');
+      const listSuffixedTools = vi.spyOn(suffixedServer, 'listTools');
+
+      try {
+        if (cacheBaseServer) {
+          await getAllMcpTools({ mcpServers: [server] });
+        }
+        await getAllMcpTools({ mcpServers: [suffixedServer] });
+
+        await invalidateServerToolsCache(serverName);
+        await invalidateServerToolsCache(serverName);
+
+        const cachedTools = await getAllMcpTools({
+          mcpServers: [suffixedServer],
+        });
+        expect(cachedTools.map((tool) => tool.name)).toEqual(['read']);
+        expect(listSuffixedTools).toHaveBeenCalledTimes(1);
+
+        await getAllMcpTools({ mcpServers: [server] });
+        expect(listTools).toHaveBeenCalledTimes(cacheBaseServer ? 2 : 1);
+
+        await suffixedServer.invalidateToolsCache();
+        await getAllMcpTools({ mcpServers: [suffixedServer] });
+        expect(listSuffixedTools).toHaveBeenCalledTimes(2);
+      } finally {
+        await invalidateServerToolsCache(serverName);
+        await invalidateServerToolsCache(suffixedServer.name);
+      }
+    },
+  );
+
+  it.each([false, true])(
     'reevaluates callable filters for each run context with prefixed names=%s',
     async (includeServerInToolNames) => {
       await invalidateServerToolsCache('current-context');

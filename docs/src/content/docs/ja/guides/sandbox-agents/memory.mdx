@@ -24,7 +24,7 @@ canonicalHeadingIds:
       - '異なるエージェントのメモリを分離するためのレイアウトの使い分け'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import conversationIdentityExample from '../../../../../../../examples/docs/sandbox-agents/conversation-identity.ts?raw';
 import enableMemoryExample from '../../../../../../../examples/docs/sandbox-agents/enable-memory.ts?raw';
 import generateMemoryExample from '../../../../../../../examples/docs/sandbox-agents/generate-memory.ts?raw';
@@ -32,12 +32,6 @@ import memoryLayoutsExample from '../../../../../../../examples/docs/sandbox-age
 import readOnlyMemoryExample from '../../../../../../../examples/docs/sandbox-agents/read-only-memory.ts?raw';
 
 メモリにより、将来のサンドボックスエージェント実行は過去の実行から学習できます。これは、メッセージ履歴を保存する SDK の会話用[セッション](/openai-agents-js/ja/guides/sessions)メモリとは別のものです。メモリは、過去の実行から得た学びをサンドボックスワークスペース内のファイルに抽出します。そのため、生成されたメモリアーティファクトは保持データとして扱い、ワークスペースに使用するものと同じ機密性および保持ポリシーを適用してください。
-
-<Aside type="caution" title="ベータ機能">
-  サンドボックスエージェントはベータ版です。API
-  の詳細、デフォルト、サポートされる機能は
-  一般提供開始までに変更される可能性があり、今後さらに高度な機能が追加される予定です。
-</Aside>
 
 メモリは、将来の実行における 3 種類のコストを削減できます。
 

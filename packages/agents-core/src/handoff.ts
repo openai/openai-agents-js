@@ -213,7 +213,9 @@ export class Handoff<
    * that triggered the handoff and a tool call output item representing the handoff tool's output.
    *
    * You are free to modify the input history or new items as you see fit. The next agent that runs
-   * will receive `handoffInputData.allItems
+   * will receive `handoffInputData.allItems`.
+   * Filtered handoffs cannot use `conversationId` or `previousResponseId`, including no-op filters.
+   * Use client-managed history or a Session without either continuation option instead.
    */
   public inputFilter?: HandoffInputFilter;
 
@@ -324,6 +326,7 @@ export type HandoffConfig<
 
   /**
    * A function that filters the inputs that are passed to the next agent.
+   * Cannot be combined with `conversationId` or `previousResponseId`; see `Handoff.inputFilter`.
    */
   inputFilter?: HandoffInputFilter;
 

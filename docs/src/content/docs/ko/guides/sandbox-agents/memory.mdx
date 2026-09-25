@@ -24,7 +24,7 @@ canonicalHeadingIds:
       - '서로-다른-에이전트의-메모리-격리를-위한-서로-다른-레이아웃-사용'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import conversationIdentityExample from '../../../../../../../examples/docs/sandbox-agents/conversation-identity.ts?raw';
 import enableMemoryExample from '../../../../../../../examples/docs/sandbox-agents/enable-memory.ts?raw';
 import generateMemoryExample from '../../../../../../../examples/docs/sandbox-agents/generate-memory.ts?raw';
@@ -32,12 +32,6 @@ import memoryLayoutsExample from '../../../../../../../examples/docs/sandbox-age
 import readOnlyMemoryExample from '../../../../../../../examples/docs/sandbox-agents/read-only-memory.ts?raw';
 
 메모리를 사용하면 향후 샌드박스 에이전트 실행이 이전 실행으로부터 학습할 수 있습니다. 이는 메시지 기록을 저장하는 SDK의 대화형 [세션](/openai-agents-js/ko/guides/sessions) 메모리와는 별개입니다. 메모리는 이전 실행에서 얻은 교훈을 샌드박스 작업 영역의 파일로 요약해 저장하므로, 생성된 메모리 아티팩트는 보존 데이터로 취급하고 작업 영역에 사용하는 것과 동일한 민감도 및 보존 정책을 적용하세요.
-
-<Aside type="caution" title="베타 기능">
-  샌드박스 에이전트는 베타 버전입니다. API 세부 정보, 기본값, 지원 기능은 일반
-  제공 전까지 변경될 수 있으며, 시간이 지나면서 더 고급 기능이 추가될
-  예정입니다.
-</Aside>
 
 메모리는 향후 실행에서 세 가지 비용을 줄일 수 있습니다.
 

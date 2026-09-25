@@ -60,7 +60,7 @@ console.log(result.finalOutput);
 
 ### Build a sandbox agent
 
-Use a [Sandbox Agent](https://openai.github.io/openai-agents-js/guides/sandbox-agents) when the agent should work in a filesystem, run commands, or carry workspace state across longer tasks. Sandbox Agents are in beta.
+Use a [Sandbox Agent](https://openai.github.io/openai-agents-js/guides/sandbox-agents) when the agent should work in a filesystem, run commands, or carry workspace state across longer tasks.
 
 This example uses `UnixLocalSandboxClient`, which is supported on macOS and Linux. On Windows, use `DockerSandboxClient` or a hosted sandbox client instead; see [Sandbox clients](https://openai.github.io/openai-agents-js/guides/sandbox-agents/clients) for setup details.
 
@@ -106,6 +106,10 @@ await session.connect({ apiKey: '<client-api-key>' });
 Set `OPENAI_API_KEY` in your server environment for text and sandbox agents. For browser-based realtime agents, use your server to create a short-lived ephemeral client token and pass it to `session.connect(...)`.
 
 Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
+
+## Contributing
+
+Please share bug reports and feature requests through [GitHub issues](https://github.com/openai/openai-agents-js/issues). Pull requests are limited to repository collaborators; we do not accept pull requests from non-collaborators. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contribution policy and development guide. For security vulnerabilities, follow [SECURITY.md](SECURITY.md).
 
 ## Acknowledgements
 

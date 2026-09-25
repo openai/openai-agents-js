@@ -24,15 +24,8 @@ canonicalHeadingIds:
       - '次のステップ'
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
-
-<Aside type="caution" title="ベータ版機能">
-  サンドボックスエージェントはベータ版です。API
-  の詳細、デフォルト、およびサポートされる機能は
-  正式提供の開始前に変更される可能性があります。また、今後さらに高度な機能が
-  追加される予定です。
-</Aside>
 
 エージェントは、ファイルシステム上の実ファイルを操作できると、最も効果的に機能します。Agents SDK の **サンドボックスエージェント** は、大規模なドキュメント群の検索、ファイルの編集、コマンドの実行、成果物の生成、保存済みのサンドボックス状態からの作業再開が可能な永続ワークスペースをモデルに提供します。
 
