@@ -1,7 +1,11 @@
 import type { JsonObjectSchema, JsonSchemaDefinitionEntry } from '../types';
 import { UserError } from '../errors';
 import type { ZodObjectLike } from './zodCompat';
-import { readZodDefinition, readZodType } from './zodCompat';
+import {
+  readZodDefinition,
+  readZodDescription,
+  readZodType,
+} from './zodCompat';
 
 /**
  * The JSON-schema helpers in openai/helpers/zod only emit complete schemas for
@@ -745,37 +749,6 @@ function unwrapDecorators(value: unknown): unknown {
     current = next;
   }
   return current;
-}
-
-function readZodDescription(value: unknown): string | undefined {
-  if (typeof value === 'object' && value !== null) {
-    const direct = (value as { description?: unknown }).description;
-    if (typeof direct === 'string' && direct.trim()) {
-      return direct;
-    }
-  }
-
-  let current = value;
-  const visited = new Set<unknown>();
-  while (current && typeof current === 'object' && !visited.has(current)) {
-    visited.add(current);
-    const def = readZodDefinition(current);
-    if (typeof def?.description === 'string' && def.description.trim()) {
-      return def.description;
-    }
-    const next =
-      def?.innerType ??
-      def?.schema ??
-      def?.base ??
-      def?.type ??
-      def?.wrapped ??
-      def?.underlying;
-    if (!next || next === current) {
-      break;
-    }
-    current = next;
-  }
-  return undefined;
 }
 
 function extractFirst(

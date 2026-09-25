@@ -8,8 +8,11 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit",
-    "start": "tsx index.ts",
-    "start:types": "tsx types.ts",
-    "start:is-enabled": "tsx is-enabled.ts"
+    "start": "node index.ts",
+    "start:types": "node types.ts",
+    "start:is-enabled": "node is-enabled.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

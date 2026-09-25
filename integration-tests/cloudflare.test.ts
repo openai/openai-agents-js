@@ -50,7 +50,7 @@ describe('Cloudflare Workers', () => {
         server.kill();
       }
     });
-  }, 60000);
+  });
 
   test('should be able to run', { timeout: 60000 }, async () => {
     const response = await fetch('http://localhost:8787/');

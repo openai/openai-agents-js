@@ -26,6 +26,37 @@ export function readZodDefinition(input: unknown): ZodDefinition {
   return candidate._zod?.def || candidate._def || candidate.def;
 }
 
+export function readZodDescription(value: unknown): string | undefined {
+  if (typeof value === 'object' && value !== null) {
+    const direct = (value as { description?: unknown }).description;
+    if (typeof direct === 'string' && direct.trim()) {
+      return direct;
+    }
+  }
+
+  let current = value;
+  const visited = new Set<unknown>();
+  while (current && typeof current === 'object' && !visited.has(current)) {
+    visited.add(current);
+    const def = readZodDefinition(current);
+    if (typeof def?.description === 'string' && def.description.trim()) {
+      return def.description;
+    }
+    const next =
+      def?.innerType ??
+      def?.schema ??
+      def?.base ??
+      def?.type ??
+      def?.wrapped ??
+      def?.underlying;
+    if (!next || next === current) {
+      break;
+    }
+    current = next;
+  }
+  return undefined;
+}
+
 export function readZodType(input: unknown): string | undefined {
   const def = readZodDefinition(input);
   if (!def) {

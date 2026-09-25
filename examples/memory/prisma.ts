@@ -1,8 +1,6 @@
 // Prisma-backed Session implementation example. To try it out:
-//   pnpm add @prisma/client prisma
-//   npx prisma migrate dev --name init --schema ./examples/memory/prisma/schema.prisma
-//   npx prisma generate --schema ./examples/memory/prisma/schema.prisma
-//   pnpm start:prisma
+//   pnpm --filter memory start:prisma
+// The startup command prepares the database and generates the Prisma client.
 
 import { Agent, run, withTrace } from '@openai/agents';
 import { createPrismaSession } from './sessions';

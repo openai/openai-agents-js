@@ -15,6 +15,7 @@ import {
 } from '../../../src/shims/mcp-server/node';
 import { mcpToFunctionTool } from '../../../src/mcp';
 import { RunContext } from '../../../src/runContext';
+import { UserError } from '../../../src/errors';
 import {
   DEFAULT_REQUEST_TIMEOUT_MSEC,
   type JSONRPCMessage,
@@ -231,6 +232,27 @@ beforeEach(() => {
 });
 
 describe('NodeMCPServerStdio', () => {
+  test('forwards the tool page cap and preserves per-page timeouts', async () => {
+    listToolsImplementation = async () => ({
+      tools: [createMockTool('tool')],
+      nextCursor: 'another-page',
+    });
+    const server = new NodeMCPServerStdio({
+      fullCommand: 'synthetic',
+      maxListPages: 1,
+      clientSessionTimeoutSeconds: 7,
+    });
+    await server.connect();
+    try {
+      expect(lastClientOptions?.listMaxPages).toBe(1);
+      await expect(server.listTools()).rejects.toThrow('exceeded maxListPages');
+      expect(listToolsCalls).toHaveLength(1);
+      expect(lastListToolsOptions?.timeout).toBe(7000);
+    } finally {
+      await server.close();
+    }
+  });
+
   beforeAll(() => {
     vi.doMock('@modelcontextprotocol/client/stdio', async (importOriginal) => {
       return {
@@ -782,6 +804,27 @@ class MockSSEClientTransport {
 }
 
 describe('NodeMCPServerSSE', () => {
+  test('forwards the tool page cap and preserves per-page timeouts', async () => {
+    listToolsImplementation = async () => ({
+      tools: [createMockTool('tool')],
+      nextCursor: 'another-page',
+    });
+    const server = new NodeMCPServerSSE({
+      url: 'https://example.test/sse',
+      maxListPages: 1,
+      clientSessionTimeoutSeconds: 7,
+    });
+    await server.connect();
+    try {
+      expect(lastClientOptions?.listMaxPages).toBe(1);
+      await expect(server.listTools()).rejects.toThrow('exceeded maxListPages');
+      expect(listToolsCalls).toHaveLength(1);
+      expect(lastListToolsOptions?.timeout).toBe(7000);
+    } finally {
+      await server.close();
+    }
+  });
+
   test('should stop serving cached tools when invalidation starts', async () => {
     await expectCachedToolsInvalidatedImmediately(
       new NodeMCPServerSSE({
@@ -1331,6 +1374,27 @@ class MockStreamableHTTPClientTransport {
 }
 
 describe('NodeMCPServerStreamableHttp', () => {
+  test('forwards the tool page cap and preserves per-page timeouts', async () => {
+    listToolsImplementation = async () => ({
+      tools: [createMockTool('tool')],
+      nextCursor: 'another-page',
+    });
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.test/mcp',
+      maxListPages: 1,
+      clientSessionTimeoutSeconds: 7,
+    });
+    await server.connect();
+    try {
+      expect(lastClientOptions?.listMaxPages).toBe(1);
+      await expect(server.listTools()).rejects.toThrow('exceeded maxListPages');
+      expect(listToolsCalls).toHaveLength(1);
+      expect(lastListToolsOptions?.timeout).toBe(7000);
+    } finally {
+      await server.close();
+    }
+  });
+
   beforeEach(() => {
     MockStreamableHTTPClientTransport.instances = [];
   });
@@ -1750,5 +1814,34 @@ describe('NodeMCPServerStreamableHttp', () => {
 
   afterAll(() => {
     vi.clearAllMocks();
+  });
+});
+
+describe.each([
+  ['SSE', NodeMCPServerSSE],
+  ['Streamable HTTP', NodeMCPServerStreamableHttp],
+] as const)('%s safe tool page-limit errors', (_name, Server) => {
+  test('preserves local page-limit errors and still redacts transport UserErrors', async () => {
+    const server = new Server({ url: CREDENTIAL_ENDPOINT, maxListPages: 1 });
+    listToolsImplementation = async () => ({
+      tools: [createMockTool('first-tool')],
+      nextCursor: 'opaque-cursor',
+    });
+    await server.connect();
+    try {
+      const error = await server.listTools().catch((caught) => caught);
+      expect(error).toBeInstanceOf(UserError);
+      expect(error.message).toContain('exceeded maxListPages');
+      expectNoCredentialMarkers(error);
+      listToolsImplementation = async () => {
+        throw new UserError(`Transport failed for ${CREDENTIAL_ENDPOINT}`);
+      };
+      const transportError = await server.listTools().catch((caught) => caught);
+      expect(transportError.name).toBe('MCPTransportError');
+      expect(transportError).not.toBeInstanceOf(UserError);
+      expectNoCredentialMarkers(transportError);
+    } finally {
+      await server.close();
+    }
   });
 });

@@ -5,6 +5,8 @@ import {
   getDefaultModelSettings,
   gpt5ReasoningSettingsRequired,
   isGpt5Default,
+  isGpt5OrNewerReasoningModel,
+  isGpt5OrNewerDefault,
 } from '../src/defaultModel';
 import { loadEnv } from '../src/config';
 import { Agent } from '../src/agent';
@@ -37,6 +39,34 @@ describe('gpt5ReasoningSettingsRequired', () => {
   });
   test('returns false for non GPT-5 models', () => {
     expect(gpt5ReasoningSettingsRequired('gpt-4o')).toBe(false);
+  });
+});
+describe('GPT-5-and-newer settings family', () => {
+  test.each(['gpt-5', 'gpt-5.1', 'gpt-6-astra'])(
+    'recognizes %s independently of effort defaults',
+    (model) => {
+      expect(isGpt5OrNewerReasoningModel(model)).toBe(true);
+    },
+  );
+
+  test.each([
+    'gpt-4.1',
+    'o3',
+    'gpt-5-chat-latest',
+    'gpt-5.1-chat-latest',
+    'gpt-5.2-chat-latest',
+    'gpt-5.3-chat-latest',
+  ])('keeps %s outside the settings family', (model) => {
+    expect(isGpt5OrNewerReasoningModel(model)).toBe(false);
+  });
+
+  test('preserves the public GPT-5 helper semantics for later generations', () => {
+    mockedLoadEnv.mockReturnValue({
+      [OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]: 'gpt-6-astra',
+    });
+    expect(isGpt5OrNewerDefault()).toBe(true);
+    expect(gpt5ReasoningSettingsRequired('gpt-6-astra')).toBe(false);
+    expect(isGpt5Default()).toBe(false);
   });
 });
 describe('getDefaultModel', () => {
@@ -84,6 +114,39 @@ describe('isGpt5Default', () => {
   });
 });
 describe('getDefaultModelSettings', () => {
+  test('uses low reasoning and verbosity for Astra explicitly and through the environment', () => {
+    const expected = {
+      reasoning: { effort: 'low' },
+      text: { verbosity: 'low' },
+    };
+    expect(getDefaultModelSettings('gpt-6-astra')).toEqual(expected);
+    expect(
+      new Agent({ name: 'Astra', model: 'gpt-6-astra' }).modelSettings,
+    ).toEqual(expected);
+    mockedLoadEnv.mockReturnValue({
+      [OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME]: 'gpt-6-astra',
+    });
+    expect(getDefaultModelSettings()).toEqual(expected);
+    expect(new Agent({ name: 'Default Astra' }).modelSettings).toEqual(
+      expected,
+    );
+  });
+
+  test.each(['gpt-5-mini'])(
+    'omits an unregistered effort for %s while retaining shared verbosity',
+    (model) => {
+      expect(getDefaultModelSettings(model)).toEqual({
+        text: { verbosity: 'low' },
+      });
+      expect(
+        new Agent({ name: 'Model without an effort default', model })
+          .modelSettings,
+      ).toEqual({
+        text: { verbosity: 'low' },
+      });
+    },
+  );
+
   test('returns GPT-5.6 Luna defaults when no model is specified', () => {
     mockedLoadEnv.mockReturnValue({});
     expect(getDefaultModelSettings()).toEqual({

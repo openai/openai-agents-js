@@ -756,25 +756,40 @@ async function preparedMountsForManifest(
 }
 
 export async function runLimited<T>(
-  items: T[],
+  items: T[] | AsyncIterable<T>,
   limit: number,
   fn: (item: T) => Promise<void>,
 ): Promise<void> {
-  if (items.length === 0) {
-    return;
-  }
-
-  let nextIndex = 0;
+  const iterator = Array.isArray(items)
+    ? items[Symbol.iterator]()
+    : items[Symbol.asyncIterator]();
+  let failed = false;
+  let failure: unknown;
   const workers = Array.from(
-    { length: Math.min(limit, items.length) },
+    { length: Array.isArray(items) ? Math.min(limit, items.length) : limit },
     async () => {
-      while (nextIndex < items.length) {
-        const item = items[nextIndex++];
-        await fn(item);
+      try {
+        while (!failed) {
+          const item = await iterator.next();
+          if (item.done || failed) {
+            return;
+          }
+          await fn(item.value);
+        }
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
       }
     },
   );
+  // Keep source/workspace ownership until every started operation settles.
   await Promise.all(workers);
+  if (failed) {
+    await iterator.return?.();
+    throw failure;
+  }
 }
 
 export function resolveManifestEntryConcurrency(

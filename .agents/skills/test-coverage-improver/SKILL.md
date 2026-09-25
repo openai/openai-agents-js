@@ -1,42 +1,24 @@
 ---
 name: test-coverage-improver
-description: 'Improve test coverage in the OpenAI Agents JS monorepo: run `pnpm test:coverage`, inspect coverage artifacts, identify low-coverage files and branches, propose high-impact tests, and confirm with the user before writing tests.'
+description: Measure JS SDK coverage or address measured coverage gaps. Use for coverage audits and metric regressions, not routine test additions.
 ---
 
 # Test Coverage Improver
 
-## Overview
+Use current coverage evidence to identify missing caller-visible behavior tests. Select this workflow for coverage measurement, coverage-metric regressions, or finding gaps from coverage artifacts. When the user already specifies the behaviors to test, use the ordinary implementation/review workflow without coverage measurement unless measurement is also requested. Adding tests alone does not trigger this skill or its final `pnpm test:coverage` step.
 
-Use this skill whenever coverage needs assessment or improvement (coverage regressions, failing thresholds, or user requests for stronger tests). It runs the coverage suite, analyzes results, highlights the biggest gaps, and prepares test additions while confirming with the user before changing code.
+## Scope and authorization
 
-## Quick Start
+For assessment or proposal-only requests, report gaps and suggested tests without editing. When the user requests test improvements or has approved a plan, implement the scoped tests and complete review and verification without asking again. Ask only when a new contract decision, expanded scope, or additional authority is needed. Coverage work never authorizes live API calls or broader sandbox access.
 
-1. From the repo root run `pnpm test:coverage` to regenerate `coverage/`.
-2. Collect artifacts: `coverage/coverage-summary.json` (preferred) or `coverage/coverage-final.json`, plus `coverage/lcov.info` and `coverage/lcov-report/index.html` for drill-downs.
-3. Summarize coverage: total percentages, lowest files, branches under 80%, and uncovered lines/paths.
-4. Draft test ideas per file: scenario, behavior under test, expected outcome, and likely coverage gain.
-5. Ask the user for approval to implement the proposed tests; pause until they agree.
-6. After approval, write the tests in the relevant package, rerun `pnpm test:coverage`, and then run `$code-change-verification` before marking work complete.
+## Workflow
 
-## Workflow Details
+1. Inspect current `coverage/coverage-summary.json` or `coverage/coverage-final.json`, `coverage/lcov.info`, and any recorded command/environment evidence. Reuse them only when they represent the relevant source and test state. If missing or stale, run `pnpm test:coverage` under the repository's verification sandbox and credential policy; this initial measurement precedes implementation review. Respect host-capacity guidance before broad measurement.
+2. Identify uncovered behavior within the requested scope. Prioritize public behavior and meaningful error, cancellation, and lifecycle paths over percentage-only targets. Use the JSON report, `coverage/lcov.info`, or `coverage/lcov-report/index.html` to locate gaps. Place tests under the relevant `packages/<pkg>/test/` directory.
+3. For an assessment, report evidence and proposed scenarios. For authorized implementation, choose tests with independent expected results at the highest controllable caller boundary. Do not add tests that merely reproduce helper logic or enumerate unsupported permutations.
+4. Implement tests, run affected checks, and complete `$implementation-final-review`. Keep iterative verification focused; do not repeatedly run full coverage while review is incomplete.
+5. After clean review, run `pnpm test:coverage` for the final measurement and `$code-change-verification` for the required SDK gates. These have different purposes; reuse an already valid final measurement rather than repeating it. Report coverage changes, verified behaviors, and material gaps that remain.
 
-- **Run coverage**: Execute `pnpm test:coverage` at repo root. Avoid watch flags and keep prior coverage artifacts only if comparing trends.
-- **Parse summaries efficiently**:
-  - Prefer `coverage/coverage-summary.json` for file-level totals; fallback to `coverage/coverage-final.json` if the summary file is absent.
-  - Use `coverage/lcov.info` or `coverage/lcov-report/index.html` to spot branch- and line-level holes.
-- **Prioritize targets**:
-  - Public APIs or shared utilities in `packages/*/src` before examples or docs.
-  - Files with statements/branches below 80% or newly added code at 0%.
-  - Recent bug fixes or risky code paths (error handling, retries, timeouts, concurrency).
-- **Design impactful tests**:
-  - Hit uncovered branches: error cases, boundary inputs, optional flags, and cancellation/timeouts.
-  - Cover combinational logic rather than trivial happy paths.
-  - Place unit tests near the package (`packages/<pkg>/test/*.test.ts`) and avoid flaky async timing.
-- **Coordinate with the user**: Present a numbered, concise list of proposed test additions and expected coverage gains. Ask explicitly before editing code or fixtures.
-- **After implementation**: Rerun coverage, report the updated summary, and note any remaining low-coverage areas.
+## Reporting
 
-## Notes
-
-- Keep any added comments or code in English.
-- Do not create `scripts/`, `references/`, or `assets/` unless needed later.
-- If coverage artifacts are missing or stale, rerun `pnpm test:coverage` instead of guessing.
+State the scope and age of coverage evidence, the behavior each new test protects, validation results, and unresolved gaps. Keep comments and code in English. Do not treat coverage percentages alone as proof of correctness.

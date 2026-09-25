@@ -21,6 +21,7 @@ const createMock = vi.fn();
 const getMock = vi.fn();
 const executeCommandMock = vi.fn();
 const createPtyMock = vi.fn();
+const killPtySessionMock = vi.fn();
 const createFolderMock = vi.fn();
 const uploadFileMock = vi.fn();
 const downloadFileMock = vi.fn();
@@ -59,6 +60,7 @@ describe('DaytonaSandboxClient', () => {
     getMock.mockReset();
     executeCommandMock.mockReset();
     createPtyMock.mockReset();
+    killPtySessionMock.mockReset();
     createFolderMock.mockReset();
     uploadFileMock.mockReset();
     downloadFileMock.mockReset();
@@ -83,6 +85,7 @@ describe('DaytonaSandboxClient', () => {
       process: {
         executeCommand: executeCommandMock,
         createPty: createPtyMock,
+        killPtySession: killPtySessionMock,
       },
       getSignedPreviewUrl: getSignedPreviewUrlMock,
     };
@@ -141,6 +144,9 @@ describe('DaytonaSandboxClient', () => {
     );
     const output = await session.execCommand({ cmd: 'ls' });
 
+    expect(daytonaConstructorMock).toHaveBeenCalledWith({
+      useDeprecatedPolling: true,
+    });
     expect(session.state.manifest.root).toBe('/home/daytona/workspace');
     expect(executeCommandMock).toHaveBeenNthCalledWith(
       1,
@@ -574,12 +580,21 @@ describe('DaytonaSandboxClient', () => {
       chars: 'echo next\n',
       yieldTimeMs: 250,
     });
+    // Deliver the final character in separate callbacks before the SDK reader closes.
+    onData(new Uint8Array([0xe5]));
+    const pendingDone = session.writeStdin({ sessionId, yieldTimeMs: 250 });
+    await Promise.resolve();
+    onData(new Uint8Array([0xae, 0x8c]));
     finishWait({ exitCode: 0 });
-    const done = await session.writeStdin({
+    const done = await pendingDone;
+    expect(done).toContain('完');
+    expect(done).not.toContain('\uFFFD');
+    const missing = await session.writeStdin({
       sessionId,
       yieldTimeMs: 250,
     });
 
+    expect(missing).toContain('session not found');
     expect(next).toContain('echo next');
     expect(done).toContain('Process exited with code 0');
     expect(createPtyMock).toHaveBeenCalledWith(
@@ -615,6 +630,93 @@ describe('DaytonaSandboxClient', () => {
 
     expect(killMock).toHaveBeenCalledOnce();
     expect(disconnectMock).toHaveBeenCalledOnce();
+  });
+
+  test('does not kill a PTY when creation returns no handle', async () => {
+    const failure = new Error('create failed');
+    createPtyMock.mockRejectedValueOnce(failure);
+    const session = await new DaytonaSandboxClient().create(new Manifest());
+    await expect(session.execCommand({ cmd: 'sh', tty: true })).rejects.toBe(
+      failure,
+    );
+    await session.close();
+    expect(killPtySessionMock).not.toHaveBeenCalled();
+  });
+
+  test.each([false, true])(
+    'settles failed PTY connection cleanup before rejecting (fallback kill: %s)',
+    async (fallbackKill) => {
+      const failure = new Error('connection failed');
+      let finishKill!: () => void;
+      let finishDisconnect!: () => void;
+      const kill = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishKill = resolve;
+          }),
+      );
+      const disconnect = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishDisconnect = resolve;
+          }),
+      );
+      // Provider handles are doubled to control cleanup completion ordering.
+      createPtyMock.mockResolvedValueOnce({
+        sessionId: 'failed-connection',
+        waitForConnection: async () => {
+          throw failure;
+        },
+        ...(fallbackKill ? {} : { kill }),
+        disconnect,
+      });
+      if (fallbackKill) killPtySessionMock.mockImplementation(kill);
+      const client = new DaytonaSandboxClient();
+      const session = await client.create(new Manifest());
+      let settled = false;
+      const result = session
+        .execCommand({ cmd: 'sh', tty: true })
+        .catch((error) => {
+          settled = true;
+          return error;
+        });
+      await vi.waitFor(() => expect(kill).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      finishKill();
+      await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce());
+      expect(settled).toBe(false);
+      finishDisconnect();
+      expect(await result).toBe(failure);
+      if (fallbackKill) expect(kill).toHaveBeenCalledWith('failed-connection');
+      await session.close();
+      expect(kill).toHaveBeenCalledOnce();
+      expect(disconnect).toHaveBeenCalledOnce();
+    },
+  );
+
+  test('preserves the PTY connection error when kill and disconnect fail', async () => {
+    const failure = new Error('connection failed');
+    const kill = vi.fn(async () => {
+      throw new Error('kill failed');
+    });
+    const disconnect = vi.fn(async () => {
+      throw new Error('disconnect failed');
+    });
+    createPtyMock.mockResolvedValueOnce({
+      waitForConnection: async () => {
+        throw failure;
+      },
+      kill,
+      disconnect,
+    });
+    const session = await new DaytonaSandboxClient().create(new Manifest());
+    await expect(session.execCommand({ cmd: 'sh', tty: true })).rejects.toBe(
+      failure,
+    );
+    expect(kill).toHaveBeenCalledOnce();
+    expect(disconnect).toHaveBeenCalledOnce();
+    await session.close();
+    expect(kill).toHaveBeenCalledOnce();
   });
 
   test('registers PTY handles before sending the initial command', async () => {
@@ -1305,6 +1407,7 @@ describe('DaytonaSandboxClient', () => {
       target: 'us',
     });
     expect(daytonaConstructorMock).toHaveBeenCalledWith({
+      useDeprecatedPolling: true,
       apiKey: 'daytona-create-key',
       apiUrl: 'https://daytona.example.test',
       target: 'us',

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   Agent,
   RunState,
+  ToolGuardrailFunctionOutputFactory,
   Usage,
   UserError,
   run,
@@ -17,6 +18,8 @@ import {
   type ToolToFinalOutputFunction,
   type ToolUseBehavior,
 } from '../src';
+import { handoff, type HandoffInputData } from '../src/handoff';
+import { removeAllTools } from '../src/extensions/handoffFilters';
 import * as protocol from '../src/types/protocol';
 import { attachClientToolSearchExecutor } from '../src/tool';
 import { ScriptedModel, modelResponder } from '../src/testing';
@@ -300,6 +303,82 @@ function createApprovalRun(
   return { agent, execute, model };
 }
 
+function createApprovalHandoffRun(
+  options: {
+    calls?: number;
+    needsApproval?: boolean;
+    toolUseBehavior?: ToolUseBehavior;
+    inputFilter?: (data: HandoffInputData) => HandoffInputData;
+  } = {},
+) {
+  const execute = vi.fn(async () => 'approved-result');
+  const inputGuardrail = vi.fn(async () =>
+    ToolGuardrailFunctionOutputFactory.allow('input-checked'),
+  );
+  const outputGuardrail = vi.fn(async () =>
+    ToolGuardrailFunctionOutputFactory.allow('output-checked'),
+  );
+  const approvalTool = tool({
+    name: 'approval_tool',
+    description: 'Returns a result after approval.',
+    parameters: z.object({}),
+    needsApproval: options.needsApproval ?? true,
+    inputGuardrails: [{ name: 'input check', run: inputGuardrail }],
+    outputGuardrails: [{ name: 'output check', run: outputGuardrail }],
+    execute,
+  });
+  const targetModel = new ScriptedModel([
+    modelResponder(() => ({
+      output: [fakeModelMessage('target done')],
+      usage: new Usage(),
+    })),
+  ]);
+  const target = new Agent({ name: 'Handoff target', model: targetModel });
+  const onHandoff = vi.fn();
+  const inputFilter = vi.fn(
+    options.inputFilter ?? ((data: HandoffInputData) => data),
+  );
+  const transfer = handoff(target, { onHandoff, inputFilter });
+  const sourceModel = new ScriptedModel([
+    modelResponder(() => ({
+      output: [
+        ...Array.from({ length: options.calls ?? 1 }, (_, index) =>
+          functionToolCall(`approval-${index}`),
+        ),
+        { ...functionToolCall('handoff'), name: transfer.toolName },
+      ],
+      usage: new Usage(),
+    })),
+  ]);
+  const agent = new Agent({
+    name: 'Handoff source',
+    model: sourceModel,
+    tools: [approvalTool],
+    handoffs: [transfer],
+    toolUseBehavior: options.toolUseBehavior,
+  });
+  const toolStart = vi.fn();
+  const toolEnd = vi.fn();
+  const targetStart = vi.fn();
+  agent.on('agent_tool_start', toolStart);
+  agent.on('agent_tool_end', toolEnd);
+  target.on('agent_start', targetStart);
+  return {
+    agent,
+    target,
+    sourceModel,
+    targetModel,
+    execute,
+    inputGuardrail,
+    outputGuardrail,
+    onHandoff,
+    inputFilter,
+    toolStart,
+    toolEnd,
+    targetStart,
+  };
+}
+
 function createApprovalRunWithToolSearch(
   toolUseBehavior: 'run_llm_again' | 'stop_on_first_tool' = 'run_llm_again',
 ) {
@@ -365,6 +444,417 @@ function createApprovalRunWithToolSearch(
 describe('resumed Session write recovery', () => {
   beforeAll(() => {
     setTracingDisabled(true);
+  });
+
+  it.each(
+    (['non_streamed', 'streamed'] as const).flatMap((failingMode) =>
+      (['non_streamed', 'streamed'] as const).flatMap((retryMode) =>
+        (['before', 'after'] as const).flatMap((failure) =>
+          [false, true].map((roundTrip) => ({
+            failingMode,
+            retryMode,
+            failure,
+            roundTrip,
+          })),
+        ),
+      ),
+    ),
+  )(
+    'recovers a resumed handoff: $failingMode/$retryMode, $failure commit, roundTrip=$roundTrip',
+    async ({ failingMode, retryMode, failure, roundTrip }) => {
+      const fixture = createApprovalHandoffRun();
+      const { agent, target, targetModel, sourceModel, execute, onHandoff } =
+        fixture;
+      const session = new UncertainAppendSession();
+      const paused = await runOnce(
+        failingMode,
+        agent,
+        'Approve then transfer.',
+        session,
+      );
+      expect(paused.interruptions).toHaveLength(1);
+      expect(onHandoff).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(targetModel.calls).toHaveLength(0);
+      // Restore the interruption as well as the failed append to cover both durable boundaries.
+      const state = roundTrip
+        ? await RunState.fromString(agent, paused.state.toString())
+        : paused.state;
+      state.approve(state.getInterruptions()[0]!);
+      session.failNextAppend(failure);
+      const appendError =
+        failure === 'before' ? /before commit/ : /acknowledgement lost/;
+      if (failingMode === 'streamed') {
+        const failed = await run(agent, state, { session, stream: true });
+        await expect(failed.completed).rejects.toThrow(appendError);
+        expect(failed.lastAgent).toBe(target);
+      } else {
+        await expect(
+          runOnce(failingMode, agent, state, session),
+        ).rejects.toThrow(appendError);
+      }
+      expect(state.currentAgent).toBe(target);
+      expect(state._currentStep).toEqual({ type: 'next_step_run_again' });
+      expect(state._noActiveAgentRun).toBe(true);
+      expect(state._currentTurnInProgress).toBe(false);
+      expect(state._pendingSessionWrite?.phase).toBe('append_ready');
+      expect(targetModel.calls).toHaveLength(0);
+      expect(fixture.targetStart).not.toHaveBeenCalled();
+      expect(
+        state._toolInputGuardrailResults.map((r) => r.output.outputInfo),
+      ).toEqual(['input-checked']);
+      expect(
+        state._toolOutputGuardrailResults.map((r) => r.output.outputInfo),
+      ).toEqual(['output-checked']);
+
+      const retryState = roundTrip
+        ? await RunState.fromString(agent, state.toString())
+        : state;
+      const completed = await runOnce(retryMode, agent, retryState, session);
+      expect(completed.finalOutput).toBe('target done');
+      expect(completed.lastAgent).toBe(target);
+      expect(completed.state._currentTurn).toBe(2);
+      expect(completed.state._pendingSessionWrite).toBeUndefined();
+      for (const effect of [
+        execute,
+        onHandoff,
+        fixture.inputFilter,
+        fixture.inputGuardrail,
+        fixture.outputGuardrail,
+        fixture.toolStart,
+        fixture.toolEnd,
+        fixture.targetStart,
+      ]) {
+        expect(effect).toHaveBeenCalledTimes(1);
+      }
+      expect(sourceModel.calls).toHaveLength(1);
+      expect(targetModel.calls).toHaveLength(1);
+      expect(
+        completed.toolInputGuardrailResults.map((r) => r.output.outputInfo),
+      ).toEqual(['input-checked']);
+      expect(
+        completed.toolOutputGuardrailResults.map((r) => r.output.outputInfo),
+      ).toEqual(['output-checked']);
+      for (const items of [await session.getItems(), completed.history]) {
+        for (const callId of ['approval-0', 'handoff']) {
+          expect(
+            items
+              .filter((item) => 'callId' in item && item.callId === callId)
+              .map((item) => item.type),
+          ).toEqual(['function_call', 'function_call_result']);
+        }
+      }
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'waits for every approval before a %s handoff, including rejection',
+    async (mode) => {
+      const { agent, execute, onHandoff, target } = createApprovalHandoffRun({
+        calls: 2,
+      });
+      const session = new UncertainAppendSession();
+      const paused = await runOnce(
+        mode,
+        agent,
+        'Approve then transfer.',
+        session,
+      );
+      expect(paused.interruptions).toHaveLength(2);
+      paused.state.approve(paused.interruptions[0]!);
+      const partiallyApproved = await runOnce(
+        mode,
+        agent,
+        paused.state,
+        session,
+      );
+      expect(partiallyApproved.interruptions).toHaveLength(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(onHandoff).not.toHaveBeenCalled();
+      const restored = await RunState.fromString(
+        agent,
+        partiallyApproved.state.toString(),
+      );
+      restored.reject(restored.getInterruptions()[0]!);
+      session.failNextAppend('before');
+      await expect(runOnce(mode, agent, restored, session)).rejects.toThrow(
+        /before commit/,
+      );
+      expect(restored._pendingSessionWrite?.phase).toBe('append_ready');
+      const retry = await RunState.fromString(agent, restored.toString());
+      const completed = await runOnce(mode, agent, retry, session);
+      expect(completed.finalOutput).toBe('target done');
+      expect(completed.lastAgent).toBe(target);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(onHandoff).toHaveBeenCalledTimes(1);
+      expect(
+        completed.history.filter(
+          (item) =>
+            item.type === 'function_call_result' &&
+            item.callId === 'approval-1',
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'preserves %s handoff precedence over terminal tool behavior without pending approvals',
+    async (mode) => {
+      const { agent, target, execute, onHandoff } = createApprovalHandoffRun({
+        needsApproval: false,
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const completed = await runOnce(
+        mode,
+        agent,
+        'Transfer.',
+        new UncertainAppendSession(),
+      );
+      expect(completed.finalOutput).toBe('target done');
+      expect(completed.lastAgent).toBe(target);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(onHandoff).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'resumes a %s handoff after input compaction fails without repeating the transfer',
+    async (mode) => {
+      const { agent, target, execute, onHandoff } = createApprovalHandoffRun();
+      const session = new UncertainAppendSession();
+      const paused = await runOnce(
+        mode,
+        agent,
+        'Approve then transfer.',
+        session,
+      );
+      paused.state.approve(paused.interruptions[0]!);
+      session.failNextCompaction();
+      await expect(runOnce(mode, agent, paused.state, session)).rejects.toThrow(
+        'input compaction rejected',
+      );
+      expect(paused.state._pendingSessionWrite?.phase).toBe(
+        'compaction_pending',
+      );
+      const restored = await RunState.fromString(
+        agent,
+        paused.state.toString(),
+      );
+      const completed = await runOnce(mode, agent, restored, session);
+      expect(completed.lastAgent).toBe(target);
+      expect(completed.finalOutput).toBe('target done');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(onHandoff).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('emits one target update on a streamed approved handoff without a Session', async () => {
+    const { agent, target, execute, onHandoff, targetStart } =
+      createApprovalHandoffRun({
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+    const paused = await run(agent, 'Approve then transfer.', { stream: true });
+    await paused.completed;
+    expect(paused.interruptions).toHaveLength(1);
+    paused.state.approve(paused.interruptions[0]!);
+    const completed = await run(agent, paused.state, { stream: true });
+    const updates = [];
+    for await (const event of completed.toStream()) {
+      if (event.type === 'agent_updated_stream_event') {
+        updates.push(event.agent);
+      }
+    }
+    await completed.completed;
+    expect(updates).toEqual([target]);
+    expect(completed.finalOutput).toBe('target done');
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(onHandoff).toHaveBeenCalledTimes(1);
+    expect(targetStart).toHaveBeenCalledTimes(1);
+  });
+
+  it.each<RunMode>(['non_streamed', 'streamed'])(
+    'recovers a %s handoff after rejecting every tool',
+    async (mode) => {
+      const { agent, target, execute, onHandoff, targetModel } =
+        createApprovalHandoffRun();
+      const session = new UncertainAppendSession();
+      const paused = await runOnce(
+        mode,
+        agent,
+        'Reject then transfer.',
+        session,
+      );
+      paused.state.reject(paused.interruptions[0]!);
+      session.failNextAppend('after');
+      await expect(runOnce(mode, agent, paused.state, session)).rejects.toThrow(
+        /acknowledgement lost/,
+      );
+      expect(paused.state._pendingSessionWrite?.phase).toBe('append_ready');
+      expect(targetModel.calls).toHaveLength(0);
+      const restored = await RunState.fromString(
+        agent,
+        paused.state.toString(),
+      );
+      const completed = await runOnce(mode, agent, restored, session);
+      expect(completed.lastAgent).toBe(target);
+      expect(completed.finalOutput).toBe('target done');
+      expect(execute).not.toHaveBeenCalled();
+      expect(onHandoff).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { mode: 'non_streamed' as const, failure: 'before' as const },
+    { mode: 'streamed' as const, failure: 'after' as const },
+    { mode: 'non_streamed' as const, failure: 'compaction' as const },
+  ])(
+    'settles source pairs before restoring filtered handoff input: $mode/$failure',
+    async ({ mode, failure }) => {
+      const fixture = createApprovalHandoffRun({ inputFilter: removeAllTools });
+      const { agent, target, targetModel, execute, onHandoff, inputFilter } =
+        fixture;
+      const session = new UncertainAppendSession();
+      const paused = await runOnce(
+        mode,
+        agent,
+        'Approve then transfer.',
+        session,
+      );
+      paused.state.approve(paused.interruptions[0]!);
+      if (failure === 'compaction') session.failNextCompaction();
+      else session.failNextAppend(failure);
+      await expect(
+        runOnce(mode, agent, paused.state, session),
+      ).rejects.toThrow();
+      expect(targetModel.calls).toHaveLength(0);
+      expect(
+        paused.state._pendingSessionWrite?.handoffInput?.generatedItems,
+      ).toEqual([]);
+      const restored = await RunState.fromString(
+        agent,
+        paused.state.toString(),
+      );
+      const completed = await runOnce(mode, agent, restored, session);
+      expect(completed.lastAgent).toBe(target);
+      expect(completed.finalOutput).toBe('target done');
+      expect(completed.history.map((item) => item.type)).toEqual([
+        'message',
+        'message',
+      ]);
+      expect(completed.newItems.map((item) => item.type)).toEqual([
+        'message_output_item',
+      ]);
+      expect(targetModel.calls[0]?.request.input).toEqual([
+        { type: 'message', role: 'user', content: 'Approve then transfer.' },
+      ]);
+      for (const effect of [
+        execute,
+        onHandoff,
+        inputFilter,
+        fixture.inputGuardrail,
+        fixture.outputGuardrail,
+      ])
+        expect(effect).toHaveBeenCalledTimes(1);
+      const stored = await session.getItems();
+      for (const callId of ['approval-0', 'handoff']) {
+        expect(
+          stored
+            .filter((item) => 'callId' in item && item.callId === callId)
+            .map((item) => item.type),
+        ).toEqual(['function_call', 'function_call_result']);
+      }
+    },
+  );
+
+  it('freezes source append items before a mutating handoff filter and rejects unknown snapshot agents', async () => {
+    const fixture = createApprovalHandoffRun({
+      inputFilter: (data) => {
+        const output = data.newItems.find(
+          (item) => item.type === 'tool_call_output_item',
+        );
+        if (output?.rawItem.type === 'function_call_result')
+          output.rawItem.output = 'filtered-output';
+        return data;
+      },
+    });
+    const { agent } = fixture;
+    const session = new UncertainAppendSession();
+    const paused = await runOnce(
+      'non_streamed',
+      agent,
+      'Approve then transfer.',
+      session,
+    );
+    paused.state.approve(paused.interruptions[0]!);
+    session.failNextAppend('before');
+    await expect(
+      runOnce('non_streamed', agent, paused.state, session),
+    ).rejects.toThrow(/before commit/);
+    const serialized = paused.state.toJSON() as any;
+    const filteredItem =
+      serialized.pendingSessionWrite.handoffInput.generatedItems.find(
+        (item: { type: string }) => item.type === 'tool_call_output_item',
+      );
+    const validAgent = filteredItem.agent;
+    filteredItem.agent = {
+      name: 'Unknown snapshot agent',
+      identity: 'not-configured',
+    };
+    await expect(
+      RunState.fromString(agent, JSON.stringify(serialized)),
+    ).rejects.toThrow();
+    filteredItem.agent = validAgent;
+    const restored = await RunState.fromString(
+      agent,
+      JSON.stringify(serialized),
+    );
+    const completed = await runOnce('non_streamed', agent, restored, session);
+    expect(
+      (await session.getItems()).find(
+        (item) =>
+          item.type === 'function_call_result' && item.callId === 'approval-0',
+      ),
+    ).toMatchObject({ output: { type: 'text', text: 'approved-result' } });
+    expect(
+      completed.history.find(
+        (item) =>
+          item.type === 'function_call_result' && item.callId === 'approval-0',
+      ),
+    ).toMatchObject({ output: 'filtered-output' });
+    expect(fixture.execute).toHaveBeenCalledTimes(1);
+    expect(fixture.inputFilter).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits the target update before a streamed append fails, without replaying it on retry', async () => {
+    const { agent, target, onHandoff } = createApprovalHandoffRun();
+    const session = new UncertainAppendSession();
+    const paused = await runOnce(
+      'streamed',
+      agent,
+      'Approve then transfer.',
+      session,
+    );
+    paused.state.approve(paused.interruptions[0]!);
+    session.failNextAppend('before');
+    const failed = await run(agent, paused.state, { session, stream: true });
+    const updates: Agent[] = [];
+    const consume = async () => {
+      for await (const event of failed.toStream())
+        if (event.type === 'agent_updated_stream_event')
+          updates.push(event.agent);
+    };
+    await expect(consume()).rejects.toThrow(/before commit/);
+    await expect(failed.completed).rejects.toThrow(/before commit/);
+    expect(updates).toEqual([target]);
+    const restored = await RunState.fromString(agent, failed.state.toString());
+    const completed = await run(agent, restored, { session, stream: true });
+    for await (const event of completed.toStream())
+      if (event.type === 'agent_updated_stream_event')
+        updates.push(event.agent);
+    await completed.completed;
+    expect(updates).toEqual([target]);
+    expect(completed.lastAgent).toBe(target);
+    expect(onHandoff).toHaveBeenCalledTimes(1);
   });
 
   it.each([

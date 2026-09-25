@@ -77,6 +77,8 @@ export class RunToolCallItem extends RunItemBase {
   constructor(
     public rawItem: protocol.ToolCallItem,
     public agent: Agent,
+    /** @internal Execution-time identity for an unqualified deferred function call. */
+    public functionToolStateKey?: string,
   ) {
     super();
   }
@@ -85,6 +87,9 @@ export class RunToolCallItem extends RunItemBase {
     return {
       ...super.toJSON(),
       agent: this.agent.toJSON(),
+      ...(this.functionToolStateKey !== undefined
+        ? { functionToolStateKey: this.functionToolStateKey }
+        : {}),
     };
   }
 

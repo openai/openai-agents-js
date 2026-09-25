@@ -1,25 +1,29 @@
 ---
 name: docs-sync
-description: Analyze main branch implementation and configuration to find missing, incorrect, or outdated documentation in docs/. Use when asked to audit doc coverage, sync docs with code, or propose doc updates/structure changes. Only update English docs (docs/src/content/docs/**) and never touch translated docs under docs/src/content/docs/ja, ko, or zh. Provide a report and ask for approval before editing docs.
+description: Audit or update authored English SDK documentation within a requested topic or diff using implementation evidence.
 ---
 
 # Docs Sync
 
 ## Overview
 
-Identify doc coverage gaps and inaccuracies by comparing main branch features and configuration options against the current docs structure, then propose targeted improvements.
+Identify documentation gaps and inaccuracies within the requested topic or diff using implementation evidence.
+
+## Scope and authorization
+
+For audit or proposal-only requests, report findings without editing. When the user requests updates or has approved a plan, complete the scoped edits and verification without asking again. Ask only for unresolved behavior, scope, release timing, or additional authority. Apply the repository's Documentation Release Timing policy before including unreleased behavior in `docs/`.
 
 ## Workflow
 
 1. Confirm scope and base branch
    - Identify the current branch and default branch (usually `main`).
    - Prefer analyzing the current branch to keep work aligned with in-flight changes.
-   - If the current branch is not `main`, analyze only the diff vs `main` to scope doc updates.
+   - Use a branch diff only for a branch-scoped request. A requested topic or released-doc correction remains in scope even when unrelated to the current branch diff.
    - Avoid switching branches if it would disrupt local changes. Prefer read-only inspection such as `git show main:<path>`. If a separate checkout is genuinely required, stop and obtain the explicit approval required by `AGENTS.md` before creating or switching a worktree.
 
 2. Build a feature inventory from the selected scope
-   - If on `main`: inventory the full surface area and review docs comprehensively.
-   - If not on `main`: inventory only changes vs `main` (feature additions/changes/removals).
+   - Bound the inventory to the requested topic or diff. Inventory the full surface only for an explicitly comprehensive audit.
+   - For branch-scoped work, inspect additions, changes, and removals relative to the intended base.
    - Focus on user-facing behavior: public exports, configuration options, environment variables, CLI commands, default values, and documented runtime behaviors.
    - Capture evidence for each item (file path + symbol/setting).
    - Use targeted search to find option types and feature flags (for example: `rg "Options"`, `rg "process.env"`, `rg "export"`).
@@ -47,12 +51,11 @@ Identify doc coverage gaps and inaccuracies by comparing main branch features an
    - Classify the complete proposed diff by its highest applicable Editorial, Content, or Structural tier before editing.
    - Keep the tier-specific verification separate from the existing eligibility rules for `$implementation-final-review`, `$code-change-verification`, `$changeset-validation`, and `$pr-draft-summary`.
 
-7. Produce a Docs Sync Report and ask for approval
-   - Provide a clear report with evidence, suggested doc locations, and proposed edits.
-   - State the proposed risk tier and its required focused verification.
-   - Ask the user whether to proceed with doc updates.
+7. Report findings or continue authorized updates
+   - For audit-only work, provide evidence, suggested locations, proposed edits, and required verification, then stop.
+   - For an update request, complete the authorized edits using the findings and selected verification tier.
 
-8. If approved, apply changes (English only)
+8. Apply authorized changes (English only)
    - Edit only English docs in `docs/src/content/docs/**`.
    - Exclude `docs/src/content/docs/openai` from review and updates.
    - Do **not** edit `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, or `docs/src/content/docs/zh`.
@@ -77,7 +80,7 @@ Docs Sync Report
   - Proposed change + rationale
 - Proposed edits
   - Doc file → concise change summary
-- Questions for the user
+- Unresolved decisions, only when needed
 
 ## References
 

@@ -1,6 +1,6 @@
 ---
 name: sensitive-logging-audit
-description: Audit and fix model or tool input/output exposure through runtime logging in openai-agents-js. Use when reviewing logger or console calls, checking OPENAI_AGENTS_DONT_LOG_MODEL_DATA or OPENAI_AGENTS_DONT_LOG_TOOL_DATA coverage, investigating exceptions or payloads that may reveal model inputs and outputs, tool arguments and results, Realtime events, MCP data, session history, or arbitrary thrown values, while distinguishing those payloads from operational names, identifiers, counts, and statuses.
+description: Audit or fix sensitive-data exposure in JS SDK diagnostics, exceptions, logging, and telemetry.
 ---
 
 # Sensitive Logging Audit

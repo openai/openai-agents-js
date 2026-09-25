@@ -6,10 +6,10 @@
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
-    "@openai/codex-sdk": "^0.86.0",
+    "@openai/codex-sdk": "^0.153.4",
     "chalk": "^5.6.2",
     "openai": "^7.2.0",
-    "playwright": "^1.55.1",
+    "playwright": "^1.63.0",
     "zod": "^4.0.0"
   },
   "scripts": {
@@ -18,17 +18,20 @@
     "start:codex-same-thread": "tsx codex-same-thread.ts",
     "start:computer-use": "tsx computer-use.ts",
     "start:computer-use-hitl": "tsx computer-use-hitl.ts",
-    "start:file-search": "tsx file-search.ts",
-    "start:tool-search": "tsx tool-search.ts",
-    "start:web-search": "tsx web-search.ts",
-    "start:web-search-filters": "tsx web-search-filters.ts",
-    "start:code-interpreter": "tsx code-interpreter.ts",
+    "start:file-search": "node file-search.ts",
+    "start:tool-search": "node tool-search.ts",
+    "start:web-search": "node web-search.ts",
+    "start:web-search-filters": "node web-search-filters.ts",
+    "start:code-interpreter": "node code-interpreter.ts",
     "start:image-generation": "tsx image-generation.ts",
-    "start:programmatic-tool-calling": "tsx programmatic-tool-calling.ts",
-    "start:shell": "tsx local-shell.ts",
-    "start:local-shell": "tsx local-shell.ts",
-    "start:container-shell": "tsx container-shell-skill-ref.ts",
-    "start:container-shell-inline": "tsx container-shell-inline-skill.ts",
-    "start:apply-patch": "tsx apply-patch.ts"
+    "start:programmatic-tool-calling": "node programmatic-tool-calling.ts",
+    "start:shell": "node local-shell.ts",
+    "start:local-shell": "node local-shell.ts",
+    "start:container-shell": "node container-shell-skill-ref.ts",
+    "start:container-shell-inline": "node container-shell-inline-skill.ts",
+    "start:apply-patch": "node apply-patch.ts"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   }
 }

@@ -3,8 +3,13 @@ import OpenAI from 'openai';
 export type WebSearchTool = Omit<OpenAI.Responses.WebSearchTool, 'type'> & {
   type: 'web_search';
   name: 'web_search' | 'web_search_preview' | (string & {});
-  // The Responses API supports this field, but openai-node typings do not expose it yet.
+  // The Responses API supports these fields, but openai-node typings do not expose them yet.
   external_web_access?: boolean;
+  search_content_types?: Array<'text' | 'image'>;
+  image_settings?: {
+    max_results?: number;
+    caption?: boolean;
+  };
 };
 
 export type FileSearchTool = Omit<OpenAI.Responses.FileSearchTool, 'type'> & {

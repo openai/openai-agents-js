@@ -1,6 +1,6 @@
 ---
 name: code-change-verification
-description: Run the mandatory verification stack when changes affect runtime code, tests, or build/test behavior in the OpenAI Agents JS monorepo.
+description: Run the required final install, build, type, lint, test, and format checks after eligible SDK changes pass review.
 ---
 
 # Code Change Verification

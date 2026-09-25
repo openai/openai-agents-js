@@ -1,15 +1,12 @@
 ---
-title: Realtime Agents on Cloudflare
+title: Voice Agents on Cloudflare
 description: Connect your Agents SDK agents from Cloudflare Workers/workerd using a dedicated transport.
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers and other workerd runtimes cannot open outbound WebSockets using the global
-`WebSocket` constructor. To simplify connecting Realtime Agents from these environments, the
-extensions package provides a dedicated transport that performs the `fetch()`-based upgrade
-internally.
+Cloudflare Workers and other workerd runtimes cannot open outbound WebSockets using the global `WebSocket` constructor. To simplify connecting Voice Agents from these environments, the extensions package provides a dedicated transport that performs the `fetch()`-based upgrade internally.
 
 <Aside type="caution">
   This adapter is still in beta. You may run into edge case issues or bugs.
@@ -42,7 +39,6 @@ internally.
 
 ## Notes
 
-- The Cloudflare transport uses `fetch()` with `Upgrade: websocket` under the hood and skips
-  waiting for a socket `open` event, matching the workerd APIs.
+- The Cloudflare transport uses `fetch()` with `Upgrade: websocket` under the hood and skips waiting for a socket `open` event, matching the workerd APIs.
 - All `RealtimeSession` features (tools, guardrails, etc.) work as usual when using this transport.
 - Use `DEBUG=openai-agents*` to inspect detailed logs during development.

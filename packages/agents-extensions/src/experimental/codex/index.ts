@@ -11,7 +11,10 @@ import {
   toFunctionToolName,
   toSmartString,
 } from '@openai/agents-core/utils';
-import { recordToolUsage } from '@openai/agents-core/utils/internal';
+import {
+  getAgentToolParentRunConfigFromDetails,
+  recordToolUsage,
+} from '@openai/agents-core/utils/internal';
 import type {
   CustomSpanData,
   FunctionCallItem,
@@ -325,7 +328,10 @@ function resolveDefaultCodexApiKey(options?: CodexOptions): string | undefined {
   }
 
   const env = loadEnv();
-  return env.CODEX_API_KEY ?? env.OPENAI_API_KEY;
+  if (env.CODEX_API_KEY) {
+    return env.CODEX_API_KEY;
+  }
+  return env.OPENAI_API_KEY;
 }
 
 function resolveCodexOptions(
@@ -437,6 +443,9 @@ export function codexTool(
     parameters: resolvedParameters,
     strict: true,
     execute: async (input, runContext = new RunContext(), details) => {
+      const includeSensitiveData =
+        getAgentToolParentRunConfigFromDetails(details)
+          ?.traceIncludeSensitiveData ?? true;
       const args = normalizeParameters(input as AnyCodexToolParameters);
 
       if (useRunContextThreadId) {
@@ -480,6 +489,7 @@ export function codexTool(
         threadId: streamedThreadId,
       } = await consumeEvents(streamResult, {
         args,
+        includeSensitiveData,
         onStream,
         toolCall: details?.toolCall,
       });
@@ -1306,6 +1316,7 @@ function buildCodexInput(args: CodexToolCallArguments): string | UserInput[] {
 }
 
 type ConsumeEventsOptions = {
+  includeSensitiveData: boolean;
   args: CodexToolCallArguments;
   onStream?: CodexToolStreamHandler;
   toolCall?: FunctionCallItem;
@@ -1329,7 +1340,7 @@ async function consumeEvents(
   usage: CodexUsage | null;
   threadId: string | null;
 }> {
-  const { args, onStream, toolCall } = options;
+  const { args, onStream, toolCall, includeSensitiveData } = options;
   const activeSpans = new Map<string, CustomSpan>();
   let finalResponse = '';
   let usage: CodexUsage | null = null;
@@ -1349,13 +1360,13 @@ async function consumeEvents(
 
       switch (event.type) {
         case 'item.started':
-          handleItemStarted(event.item, activeSpans);
+          handleItemStarted(event.item, activeSpans, includeSensitiveData);
           break;
         case 'item.updated':
-          handleItemUpdated(event.item, activeSpans);
+          handleItemUpdated(event.item, activeSpans, includeSensitiveData);
           break;
         case 'item.completed':
-          handleItemCompleted(event.item, activeSpans);
+          handleItemCompleted(event.item, activeSpans, includeSensitiveData);
           if (
             event.item.type === 'agent_message' &&
             typeof event.item.text === 'string'
@@ -1391,12 +1402,16 @@ async function consumeEvents(
   return { response: finalResponse, usage, threadId };
 }
 
-function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
+function handleItemStarted(
+  item: ThreadItem,
+  spans: Map<string, CustomSpan>,
+  includeSensitiveData: boolean,
+) {
   if (isCommandExecutionItem(item)) {
     const span = createCustomSpan({
       data: {
         name: 'Codex command execution',
-        data: buildCommandSpanData(item),
+        data: buildCommandSpanData(item, includeSensitiveData),
       },
     });
     span.start();
@@ -1408,7 +1423,7 @@ function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
     const span = createCustomSpan({
       data: {
         name: 'Codex file change',
-        data: buildFileChangeSpanData(item),
+        data: buildFileChangeSpanData(item, includeSensitiveData),
       },
     });
     span.start();
@@ -1420,7 +1435,7 @@ function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
     const span = createCustomSpan({
       data: {
         name: `Codex MCP tool call`,
-        data: buildMcpToolSpanData(item),
+        data: buildMcpToolSpanData(item, includeSensitiveData),
       },
     });
     span.start();
@@ -1432,7 +1447,7 @@ function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
     const span = createCustomSpan({
       data: {
         name: 'Codex web search',
-        data: buildWebSearchSpanData(item),
+        data: buildWebSearchSpanData(item, includeSensitiveData),
       },
     });
     span.start();
@@ -1444,7 +1459,7 @@ function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
     const span = createCustomSpan({
       data: {
         name: 'Codex todo list',
-        data: buildTodoListSpanData(item),
+        data: buildTodoListSpanData(item, includeSensitiveData),
       },
     });
     span.start();
@@ -1456,7 +1471,7 @@ function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
     const span = createCustomSpan({
       data: {
         name: 'Codex error',
-        data: buildErrorSpanData(item),
+        data: buildErrorSpanData(item, includeSensitiveData),
       },
     });
     span.start();
@@ -1468,7 +1483,7 @@ function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
     const span = createCustomSpan({
       data: {
         name: 'Codex reasoning',
-        data: buildReasoningSpanData(item),
+        data: buildReasoningSpanData(item, includeSensitiveData),
       },
     });
     span.start();
@@ -1476,106 +1491,148 @@ function handleItemStarted(item: ThreadItem, spans: Map<string, CustomSpan>) {
   }
 }
 
-function handleItemUpdated(item: ThreadItem, spans: Map<string, CustomSpan>) {
+function handleItemUpdated(
+  item: ThreadItem,
+  spans: Map<string, CustomSpan>,
+  includeSensitiveData: boolean,
+) {
   const span = item.id ? spans.get(item.id) : undefined;
   if (!span) {
     return;
   }
 
   if (isCommandExecutionItem(item)) {
-    updateCommandSpan(span, item);
+    updateCommandSpan(span, item, includeSensitiveData);
   } else if (isFileChangeItem(item)) {
-    updateFileChangeSpan(span, item);
+    updateFileChangeSpan(span, item, includeSensitiveData);
   } else if (isMcpToolCallItem(item)) {
-    updateMcpToolSpan(span, item);
+    updateMcpToolSpan(span, item, includeSensitiveData);
   } else if (isWebSearchItem(item)) {
-    updateWebSearchSpan(span, item);
+    updateWebSearchSpan(span, item, includeSensitiveData);
   } else if (isTodoListItem(item)) {
-    updateTodoListSpan(span, item);
+    updateTodoListSpan(span, item, includeSensitiveData);
   } else if (isErrorItem(item)) {
-    updateErrorSpan(span, item);
+    updateErrorSpan(span, item, includeSensitiveData);
   } else if (isReasoningItem(item)) {
-    updateReasoningSpan(span, item);
+    updateReasoningSpan(span, item, includeSensitiveData);
   }
 }
 
-function handleItemCompleted(item: ThreadItem, spans: Map<string, CustomSpan>) {
+function handleItemCompleted(
+  item: ThreadItem,
+  spans: Map<string, CustomSpan>,
+  includeSensitiveData: boolean,
+) {
   const span = item.id ? spans.get(item.id) : undefined;
   if (!span) {
     return;
   }
 
   if (isCommandExecutionItem(item)) {
-    updateCommandSpan(span, item);
+    updateCommandSpan(span, item, includeSensitiveData);
     if (item.status === 'failed') {
       span.setError({
         message: 'Codex command execution failed.',
         data: {
           exitCode: item.exit_code ?? null,
-          output: item.aggregated_output ?? '',
+          ...(includeSensitiveData
+            ? { output: item.aggregated_output ?? '' }
+            : {}),
         },
       });
     }
   } else if (isFileChangeItem(item)) {
-    updateFileChangeSpan(span, item);
+    updateFileChangeSpan(span, item, includeSensitiveData);
     if (item.status === 'failed') {
       span.setError({
         message: 'Codex file change failed.',
         data: {
-          changes: item.changes,
+          ...(includeSensitiveData
+            ? { changes: item.changes }
+            : { changes_total: item.changes.length }),
         },
       });
     }
   } else if (isMcpToolCallItem(item)) {
-    updateMcpToolSpan(span, item);
+    updateMcpToolSpan(span, item, includeSensitiveData);
     if (item.status === 'failed' && item.error?.message) {
       span.setError({
-        message: item.error.message,
+        message: includeSensitiveData
+          ? item.error.message
+          : 'Codex MCP tool call failed.',
       });
     }
   } else if (isWebSearchItem(item)) {
-    updateWebSearchSpan(span, item);
+    updateWebSearchSpan(span, item, includeSensitiveData);
   } else if (isTodoListItem(item)) {
-    updateTodoListSpan(span, item);
+    updateTodoListSpan(span, item, includeSensitiveData);
   } else if (isErrorItem(item)) {
-    updateErrorSpan(span, item);
+    updateErrorSpan(span, item, includeSensitiveData);
     span.setError({
-      message: item.message,
+      message: includeSensitiveData ? item.message : 'Codex error.',
     });
   } else if (isReasoningItem(item)) {
-    updateReasoningSpan(span, item);
+    updateReasoningSpan(span, item, includeSensitiveData);
   }
 
   span.end();
   spans.delete(item.id);
 }
 
-function updateCommandSpan(span: CustomSpan, item: CommandExecutionItem) {
-  replaceSpanData(span, buildCommandSpanData(item));
+function updateCommandSpan(
+  span: CustomSpan,
+  item: CommandExecutionItem,
+  includeSensitiveData: boolean,
+) {
+  replaceSpanData(span, buildCommandSpanData(item, includeSensitiveData));
 }
 
-function updateFileChangeSpan(span: CustomSpan, item: FileChangeItem) {
-  replaceSpanData(span, buildFileChangeSpanData(item));
+function updateFileChangeSpan(
+  span: CustomSpan,
+  item: FileChangeItem,
+  includeSensitiveData: boolean,
+) {
+  replaceSpanData(span, buildFileChangeSpanData(item, includeSensitiveData));
 }
 
-function updateMcpToolSpan(span: CustomSpan, item: McpToolCallItem) {
-  replaceSpanData(span, buildMcpToolSpanData(item));
+function updateMcpToolSpan(
+  span: CustomSpan,
+  item: McpToolCallItem,
+  includeSensitiveData: boolean,
+) {
+  replaceSpanData(span, buildMcpToolSpanData(item, includeSensitiveData));
 }
 
-function updateWebSearchSpan(span: CustomSpan, item: WebSearchItem) {
-  replaceSpanData(span, buildWebSearchSpanData(item));
+function updateWebSearchSpan(
+  span: CustomSpan,
+  item: WebSearchItem,
+  includeSensitiveData: boolean,
+) {
+  replaceSpanData(span, buildWebSearchSpanData(item, includeSensitiveData));
 }
 
-function updateTodoListSpan(span: CustomSpan, item: TodoListItem) {
-  replaceSpanData(span, buildTodoListSpanData(item));
+function updateTodoListSpan(
+  span: CustomSpan,
+  item: TodoListItem,
+  includeSensitiveData: boolean,
+) {
+  replaceSpanData(span, buildTodoListSpanData(item, includeSensitiveData));
 }
 
-function updateErrorSpan(span: CustomSpan, item: ErrorItem) {
-  replaceSpanData(span, buildErrorSpanData(item));
+function updateErrorSpan(
+  span: CustomSpan,
+  item: ErrorItem,
+  includeSensitiveData: boolean,
+) {
+  replaceSpanData(span, buildErrorSpanData(item, includeSensitiveData));
 }
 
-function updateReasoningSpan(span: CustomSpan, item: ReasoningItem) {
-  replaceSpanData(span, buildReasoningSpanData(item));
+function updateReasoningSpan(
+  span: CustomSpan,
+  item: ReasoningItem,
+  includeSensitiveData: boolean,
+) {
+  replaceSpanData(span, buildReasoningSpanData(item, includeSensitiveData));
 }
 
 function buildDefaultResponse(args: CodexToolCallArguments): string {
@@ -1596,12 +1653,16 @@ function replaceSpanData(
 
 function buildCommandSpanData(
   item: CommandExecutionItem,
+  includeSensitiveData: boolean,
 ): Record<string, unknown> {
   const data: Record<string, unknown> = {
-    command: item.command,
+    ...(includeSensitiveData ? { command: item.command } : {}),
     status: item.status,
     exitCode: item.exit_code ?? null,
   };
+  if (!includeSensitiveData) {
+    return data;
+  }
   const output = item.aggregated_output ?? '';
   applyTruncatedField(data, 'output', output, {
     maxLength: MAX_SPAN_TEXT_LENGTH,
@@ -1612,9 +1673,10 @@ function buildCommandSpanData(
 
 function buildFileChangeSpanData(
   item: FileChangeItem,
+  includeSensitiveData: boolean,
 ): Record<string, unknown> {
   const changes = item.changes.slice(0, MAX_SPAN_LIST_ITEMS).map((change) => ({
-    path: change.path,
+    ...(includeSensitiveData ? { path: change.path } : {}),
     kind: change.kind,
   }));
   const data: Record<string, unknown> = {
@@ -1628,14 +1690,17 @@ function buildFileChangeSpanData(
   return data;
 }
 
-function buildMcpToolSpanData(item: McpToolCallItem): Record<string, unknown> {
+function buildMcpToolSpanData(
+  item: McpToolCallItem,
+  includeSensitiveData: boolean,
+): Record<string, unknown> {
   const data: Record<string, unknown> = {
     server: item.server,
     tool: item.tool,
     status: item.status,
   };
 
-  if (typeof item.arguments !== 'undefined') {
+  if (includeSensitiveData && typeof item.arguments !== 'undefined') {
     applyTruncatedField(data, 'arguments', toSmartString(item.arguments), {
       maxLength: MAX_SPAN_TEXT_LENGTH,
       mode: 'head',
@@ -1648,7 +1713,10 @@ function buildMcpToolSpanData(item: McpToolCallItem): Record<string, unknown> {
         ? item.result.content.length
         : 0,
     };
-    if (typeof item.result.structured_content !== 'undefined') {
+    if (
+      includeSensitiveData &&
+      typeof item.result.structured_content !== 'undefined'
+    ) {
       applyTruncatedField(
         resultSummary,
         'structured_content',
@@ -1659,7 +1727,7 @@ function buildMcpToolSpanData(item: McpToolCallItem): Record<string, unknown> {
     data.result = resultSummary;
   }
 
-  if (item.error?.message) {
+  if (includeSensitiveData && item.error?.message) {
     applyTruncatedField(data, 'error', item.error.message, {
       maxLength: MAX_SPAN_TEXT_LENGTH,
       mode: 'head',
@@ -1669,8 +1737,14 @@ function buildMcpToolSpanData(item: McpToolCallItem): Record<string, unknown> {
   return data;
 }
 
-function buildWebSearchSpanData(item: WebSearchItem): Record<string, unknown> {
+function buildWebSearchSpanData(
+  item: WebSearchItem,
+  includeSensitiveData: boolean,
+): Record<string, unknown> {
   const data: Record<string, unknown> = {};
+  if (!includeSensitiveData) {
+    return data;
+  }
   applyTruncatedField(data, 'query', item.query, {
     maxLength: MAX_SPAN_TEXT_LENGTH,
     mode: 'head',
@@ -1678,9 +1752,15 @@ function buildWebSearchSpanData(item: WebSearchItem): Record<string, unknown> {
   return data;
 }
 
-function buildTodoListSpanData(item: TodoListItem): Record<string, unknown> {
+function buildTodoListSpanData(
+  item: TodoListItem,
+  includeSensitiveData: boolean,
+): Record<string, unknown> {
   const items = item.items.slice(0, MAX_SPAN_LIST_ITEMS).map((entry) => {
     const result: Record<string, unknown> = { completed: entry.completed };
+    if (!includeSensitiveData) {
+      return result;
+    }
     applyTruncatedField(result, 'text', entry.text, {
       maxLength: MAX_TODO_TEXT_LENGTH,
       mode: 'head',
@@ -1695,8 +1775,14 @@ function buildTodoListSpanData(item: TodoListItem): Record<string, unknown> {
   return data;
 }
 
-function buildErrorSpanData(item: ErrorItem): Record<string, unknown> {
+function buildErrorSpanData(
+  item: ErrorItem,
+  includeSensitiveData: boolean,
+): Record<string, unknown> {
   const data: Record<string, unknown> = {};
+  if (!includeSensitiveData) {
+    return data;
+  }
   applyTruncatedField(data, 'message', item.message, {
     maxLength: MAX_SPAN_TEXT_LENGTH,
     mode: 'head',
@@ -1704,8 +1790,14 @@ function buildErrorSpanData(item: ErrorItem): Record<string, unknown> {
   return data;
 }
 
-function buildReasoningSpanData(item: ReasoningItem): Record<string, unknown> {
+function buildReasoningSpanData(
+  item: ReasoningItem,
+  includeSensitiveData: boolean,
+): Record<string, unknown> {
   const data: Record<string, unknown> = {};
+  if (!includeSensitiveData) {
+    return data;
+  }
   applyTruncatedField(data, 'text', item.text, {
     maxLength: MAX_SPAN_TEXT_LENGTH,
     mode: 'head',

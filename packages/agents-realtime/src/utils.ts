@@ -29,7 +29,13 @@ export function base64ToArrayBuffer(base64: string) {
  * @returns {string}
  */
 export function arrayBufferToBase64(arrayBuffer: ArrayBuffer) {
-  const binaryString = String.fromCharCode(...new Uint8Array(arrayBuffer));
+  const bytes = new Uint8Array(arrayBuffer);
+  const chunkSize = 0x8000;
+  let binaryString = '';
+  // Bound the argument count so large audio buffers do not exceed engine limits.
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binaryString += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
   return btoa(binaryString);
 }
 

@@ -1,3 +1,5 @@
+export { getFunctionToolApprovalInput } from './functionToolApproval';
+export { getModelVisibleSessionItems } from '../runner/sessionItems';
 export { formatInlineData, getInlineMediaType } from './inlineData';
 export {
   attachModelFailureUsage,
@@ -12,6 +14,9 @@ export { normalizeToolAllowedCallers } from './toolCallers';
 export { snapshotRawUsage } from './rawUsage';
 export { snapshotTestingValue } from './testingSnapshot';
 export {
+  prepareFunctionToolInput,
+  setFunctionToolPreparedInput,
+  type FunctionToolPreparedInput,
   hasDynamicFunctionToolApprovalPolicy,
   hasInspectableFunctionToolArguments,
 } from '../tool';
@@ -34,3 +39,4 @@ export {
   validateToolInvocationApproval,
   validateToolInvocationName,
 } from '../toolInvocation';
+export { getAgentToolParentRunConfigFromDetails } from '../agentToolRunConfig';

@@ -1,3 +1,3 @@
-import { registerRunStateCompactionTests } from './runState.cases';
+import { registerRunStateCompactionTests } from './runState.compaction.cases';
 
 registerRunStateCompactionTests();

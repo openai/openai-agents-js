@@ -12,12 +12,26 @@ allowBuilds:
   protobufjs: true
   sharp: true
   # used only in examples/memory
+  better-sqlite3: true
   '@prisma/client': true
   '@prisma/engines': true
   prisma: true
 
 overrides:
   '@types/node': 22.19.13
+  # Keep xcode's CommonJS UUID API on a patched release until upstream removes it.
+  'xcode@3.0.1>uuid': ^11.1.1
+  # Remove when Express 4 and body-parser 1 resolve patched qs within the release-age policy.
+  'express@4.22.2>qs': ^6.16.0
+  'body-parser@1.20.6>qs': ^6.16.0
+  # Keep the patched generator's parser on patched js-yaml until its pin is updated upstream.
+  '@hey-api/json-schema-ref-parser@1.4.2>js-yaml': 4.3.2
+  # Workspace-only security fix; remove when Blaxel ships a patched TOML dependency.
+  '@blaxel/core@0.2.82>toml': 4.2.0
+  # Remove when Prisma resolves mysql2 with the auth and decompression fixes.
+  'prisma@7.10.0>mysql2': 3.23.1
+  # Remove when Prisma config resolves deepmerge-ts with the recursive-merge fix.
+  '@prisma/config@7.10.0>deepmerge-ts': 8.0.2
 
 publishBranch: main
 minimumReleaseAge: 10080
@@ -25,3 +39,7 @@ minimumReleaseAgeExclude:
   - openai@7.2.0
 blockExoticSubdeps: true
 strictDepBuilds: true
+patchedDependencies:
+  # Preserve Prisma 6's BEGIN IMMEDIATE behavior and release on begin failure.
+  # Recheck the contention tests before removing this patch on an adapter update.
+  '@prisma/adapter-better-sqlite3@7.10.0': patches/@prisma__adapter-better-sqlite3@7.10.0.patch

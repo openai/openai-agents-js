@@ -1,3 +1,4 @@
+import { getAgentToolStreamBuffer } from './runner/agentToolStream';
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent, RunRawModelStreamEvent } from './events';
 import {
@@ -66,7 +67,7 @@ import {
   finalizeOutputGuardrails,
 } from './runner/guardrails';
 import {
-  adjustModelSettingsForNonGPT5RunnerModel,
+  adjustModelSettingsForLegacyModel,
   mergeModelSettings,
   maybeResetToolChoice,
   selectModel,
@@ -85,6 +86,10 @@ import {
 import {
   acquireResumedSessionWriteOperation,
   createSessionPersistenceTracker,
+  getSessionCompactionState,
+  bindSessionCompactionState,
+  prepareSessionCompactionExchange,
+  type SessionCompactionState,
   captureSessionHistoryTransactionInputItems,
   markSessionHistoryTransactionInputPersisted,
   prepareSessionHistoryTransactionsForRun,
@@ -129,7 +134,10 @@ import {
   mapPendingInputAfterContextProcessing,
   selectPendingInputForAdmission,
 } from './runner/pendingInput';
-import { prepareAgentArtifacts } from './runner/modelPreparation';
+import {
+  prepareAgentArtifacts,
+  trackDeferredToolRecovery,
+} from './runner/modelPreparation';
 import {
   applyTurnResult,
   assertAcceptedResponseContinuationAuthority,
@@ -297,7 +305,7 @@ export type {
 } from './runner/outputGuardrailBlockedMessage';
 
 /**
- * SDK-side execution settings for local tool calls.
+ * Behavior for missing function tools and deferred function tools that are not loaded.
  */
 export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
 
@@ -390,10 +398,18 @@ export type RunConfig = {
   toolExecution?: ToolExecutionConfig;
 
   /**
-   * Controls unresolved function tool calls emitted by the model.
+   * Controls missing function tools and deferred function tools that are not loaded.
    *
    * - `raise_error` preserves the default behavior and raises a `ModelBehaviorError`.
    * - `return_error_to_model` returns a model-visible tool error and lets the run continue.
+   *   Unloaded deferred tools must be loaded through tool_search before they can execute.
+   *   Hosted search with the default query schema uses the built-in client loader on
+   *   the recovery turn when no deferred hosted MCP tools are configured, to return
+   *   definitions already known to the server. Recovery is model-driven;
+   *   instruct the model to retry errors rather than treat them as
+   *   successful function results. Recovery intent is local to the source Agent and
+   *   live RunState; a restored state needs a fresh unloaded call before switching
+   *   to client search.
    */
   toolNotFoundBehavior?: ToolNotFoundBehavior;
 
@@ -817,6 +833,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     // When the server tracks conversation history we defer to it for previous turns so local session
     // persistence can focus solely on the new delta being generated in this process.
     const session = effectiveOptions.session;
+    const sessionCompaction = getSessionCompactionState(
+      session,
+      input instanceof RunState ? input : undefined,
+    );
     const resumedState = resumingFromState
       ? (input as RunState<TContext, TAgent>)
       : undefined;
@@ -885,6 +905,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const sessionPersistence = createSessionPersistenceTracker({
         session,
         runContext,
+        compactionState: sessionCompaction,
         hasCallModelInputFilter,
         persistInput: saveStreamInputToSession,
         resumingFromState,
@@ -908,6 +929,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             reasoningItemIdPolicy,
           },
           runContext,
+          sessionCompaction,
         );
         if (serverManagesConversation && session) {
           // When the server manages memory we only persist the new turn inputs locally so the
@@ -956,6 +978,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             },
             effectiveInvocationSpanParent,
             pendingSessionWriteReconciled,
+            sessionCompaction,
           );
           if (releaseResumedSessionWriteOperation) {
             releaseResumedSessionWriteOperationOnReturn = false;
@@ -996,6 +1019,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               }
             : undefined,
           pendingSessionWriteReconciled,
+          sessionCompaction,
         );
         return runResult;
       };
@@ -1230,6 +1254,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       options?: SessionPersistenceOptions,
     ) => Promise<void>,
     pendingSessionWriteReconciled = false,
+    sessionCompaction?: SessionCompactionState,
   ): Promise<RunResult<TContext, TAgent>> {
     return withNewSpanContext(async () => {
       // if we have a saved state we use that one, otherwise we create a new one
@@ -1246,6 +1271,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ? DEFAULT_MAX_TURNS
               : options.maxTurns,
           );
+      bindSessionCompactionState(state, sessionCompaction);
       this.#validateModelTimeoutForAgent(state._currentAgent);
       if (isResumedState) {
         state._agentToolInvocation = undefined;
@@ -1673,7 +1699,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   validateHandoffAgent: (handoffAgent) => {
                     this.#validateModelTimeoutForAgent(handoffAgent);
                   },
-                  beforeApprovedToolResume: async () => {
+                  beforeResumedSideEffects: async () => {
                     if (
                       persistResult &&
                       options.session &&
@@ -1685,13 +1711,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                           state,
                         );
                     }
+                    return resumedSessionWritePreparation;
                   },
                 });
                 const checkpointDeferred =
-                  outcome.approvedToolResumed &&
+                  outcome.resumedSideEffects &&
                   outcome.nextStep.type === 'next_step_final_output' &&
                   this.#agentHasOutputGuardrail(state._currentAgent);
-                if (outcome.approvedToolResumed) {
+                if (outcome.resumedSideEffects) {
                   const approvedToolResult = new RunResult<TContext, TAgent>(
                     state,
                   );
@@ -1754,7 +1781,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 continuingInterruptedTurn = value;
               },
             });
-            if (!shouldContinue) {
+            if (
+              !shouldContinue ||
+              interruptedOutcome.nextStep.type === 'next_step_handoff'
+            ) {
               finishRunnerSpan(currentTurnSpan);
               setRunStateTurnSpanParent(state, undefined);
               currentTurnSpan = undefined;
@@ -1976,6 +2006,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               }
               serverInputMarked = true;
             };
+            const completeCompactionExchange = prepareSessionCompactionExchange(
+              options.session,
+              state,
+              preparedCall.modelInput.input,
+            );
             const pendingModelResponse = getResponseWithRetry(
               preparedCall.model,
               modelRequest,
@@ -2015,6 +2050,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             if (serverConversationTracker) {
               markServerInputAccepted();
             }
+            completeCompactionExchange(
+              state._lastTurnResponse.output,
+              state._lastTurnResponse.responseId,
+            );
             state._modelResponses.push(state._lastTurnResponse);
             state._context.usage.add(state._lastTurnResponse.usage);
             recordUsage(state._lastTurnResponse.usage);
@@ -2038,7 +2077,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               preparedCall.tools,
               preparedCall.handoffs,
               state,
-              [...preparedCall.turnInput, ...state._generatedItems],
+              // Loading authority retains the agent ownership lost in model input.
+              [
+                ...(Array.isArray(state._originalInput)
+                  ? state._originalInput
+                  : []),
+                ...state._generatedItems,
+              ],
               options.toolNotFoundBehavior,
               {
                 allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
@@ -2053,7 +2098,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               },
             );
 
+            serverConversationTracker?.trackServerItems(
+              state._lastTurnResponse,
+              processedResponse.newItems,
+            );
             state._lastProcessedResponse = processedResponse;
+            trackDeferredToolRecovery(
+              state,
+              state._currentAgent,
+              processedResponse,
+            );
             const suppressedToolCalls = preflightToolInvocations(
               state._currentAgent,
               state,
@@ -2702,7 +2756,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               onStepItems: (turnResult) => {
                 addStepToRunResult(result, turnResult);
               },
-              beforeApprovedToolResume: async () => {
+              onHandoff: (agent) => {
+                result._addItem(new RunAgentUpdatedStreamEvent(agent));
+              },
+              beforeResumedSideEffects: async () => {
                 if (options.session && !serverManagesConversation) {
                   resumedSessionWritePreparation =
                     await prepareResumedSessionWrite(
@@ -2710,9 +2767,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                       result.state,
                     );
                 }
+                return resumedSessionWritePreparation;
               },
             });
-            if (outcome.approvedToolResumed) {
+            if (outcome.resumedSideEffects) {
               const checkpointDeferred =
                 outcome.nextStep.type === 'next_step_final_output' &&
                 this.#agentHasOutputGuardrail(result.state._currentAgent);
@@ -2757,7 +2815,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               continuingInterruptedTurn = value;
             },
           });
-          if (!shouldContinue) {
+          if (
+            !shouldContinue ||
+            interruptedOutcome.nextStep.type === 'next_step_handoff'
+          ) {
             finishRunnerSpan(currentTurnSpan);
             setRunStateTurnSpanParent(result.state, undefined);
             currentTurnSpan = undefined;
@@ -3081,6 +3142,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           turnPendingModelRequest = undefined;
           result.currentTurn = result.state._currentTurn;
           sentInputToModel = true;
+          const completeCompactionExchange = prepareSessionCompactionExchange(
+            options.session,
+            result.state,
+            preparedCall.modelInput.input,
+          );
           try {
             for await (const event of getStreamedResponseWithRetry(
               preparedCall.model,
@@ -3195,6 +3261,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           }
 
           result.state._lastTurnResponse = finalResponse;
+          completeCompactionExchange(
+            finalResponse.output,
+            finalResponse.responseId,
+          );
           // Keep the tracker in sync with the streamed response so reconnections remain accurate.
           serverConversationTracker?.trackServerItems(finalResponse);
           if (serverConversationTracker) {
@@ -3210,7 +3280,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             preparedCall.tools,
             preparedCall.handoffs,
             result.state,
-            [...preparedCall.turnInput, ...result.state._generatedItems],
+            // Loading authority retains the agent ownership lost in model input.
+            [
+              ...(Array.isArray(result.state._originalInput)
+                ? result.state._originalInput
+                : []),
+              ...result.state._generatedItems,
+            ],
             options.toolNotFoundBehavior,
             {
               allowPromptSuppliedTools: preparedCall.allowPromptSuppliedTools,
@@ -3225,7 +3301,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             },
           );
 
+          serverConversationTracker?.trackServerItems(
+            result.state._lastTurnResponse,
+            processedResponse.newItems,
+          );
           result.state._lastProcessedResponse = processedResponse;
+          trackDeferredToolRecovery(
+            result.state,
+            currentAgent,
+            processedResponse,
+          );
           const suppressedToolCalls = preflightToolInvocations(
             currentAgent,
             result.state,
@@ -3448,6 +3533,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     sandboxMemoryRunContext?: SandboxMemoryPersistenceContext,
     invocationSpanParent?: Span<any> | Trace,
     pendingSessionWriteReconciled = false,
+    sessionCompaction?: SessionCompactionState,
   ): Promise<StreamedRunResult<TContext, TAgent>> {
     options = options ?? ({} as StreamRunOptions<TContext>);
     return withNewSpanContext(async () => {
@@ -3465,6 +3551,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ? DEFAULT_MAX_TURNS
               : options.maxTurns,
           );
+      bindSessionCompactionState(state, sessionCompaction);
       this.#validateModelTimeoutForAgent(state._currentAgent);
       if (isResumedState) {
         state._agentToolInvocation = undefined;
@@ -3541,6 +3628,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         signal: options.signal,
         state,
       });
+      result._setAgentToolStreamBuffer(getAgentToolStreamBuffer(this));
       const streamOptions: StreamRunOptions<TContext, TAgent> = {
         ...options,
         signal: result._getAbortSignal(),
@@ -3627,12 +3715,18 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const agentModelSettings = hasExplicitAgentModelSettings
       ? executionAgent.modelSettings
       : undefined;
-    const implicitModelSettings = hasExplicitAgentModelSettings
-      ? undefined
-      : getImplicitModelSettingsForResolvedModel(
-          explicitlyModelSet,
-          resolvedModelName,
-        );
+    // Only adapters that honor prompt model selection can replace the default model.
+    const promptOwnsModel =
+      model.supportsPromptModelSelection === true &&
+      executionAgent.prompt !== undefined &&
+      !explicitlyModelSet;
+    const implicitModelSettings =
+      hasExplicitAgentModelSettings || promptOwnsModel
+        ? undefined
+        : getImplicitModelSettingsForResolvedModel(
+            explicitlyModelSet,
+            resolvedModelName,
+          );
     const modelRequestInternal = {
       reasoningEffortImplicit:
         implicitModelSettings?.reasoning?.effort !== undefined &&
@@ -3648,10 +3742,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       this.config.modelSettings,
     );
     modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
-    modelSettings = adjustModelSettingsForNonGPT5RunnerModel(
+    modelSettings = adjustModelSettingsForLegacyModel(
       explicitlyModelSet,
       agentModelSettings ?? implicitModelSettings ?? {},
-      model,
       modelSettings,
       resolvedModelName,
     );

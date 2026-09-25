@@ -677,6 +677,12 @@ export class RunContext<TContext = UnknownContext> {
     for (const { agentIdentity, approvals: approvalsByTool } of approvals) {
       const agent = agentsByIdentity.get(agentIdentity)!;
       for (const [toolName, incoming] of Object.entries(approvalsByTool)) {
+        const current = this.#getFunctionApprovalMap(agent).get(toolName);
+        // A saved decision must not override a current permanent decision,
+        // including its per-call exceptions and rejection messages.
+        if (current?.approved === true || current?.rejected === true) {
+          continue;
+        }
         this.#setFunctionApprovalRecord(agent, toolName, incoming);
       }
     }

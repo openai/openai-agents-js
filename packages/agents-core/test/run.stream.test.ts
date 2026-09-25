@@ -543,7 +543,7 @@ describe('Runner.run (streaming)', () => {
     expect(replaceHistoryWithCompaction).not.toHaveBeenCalled();
   });
 
-  it('treats prior tool_search outputs in input history as loaded deferred tools', async () => {
+  it('treats attributed tool_search outputs in input history as loaded deferred tools', async () => {
     const getShippingEta = tool({
       name: 'get_shipping_eta',
       description: 'Look up a shipping ETA.',
@@ -587,6 +587,7 @@ describe('Runner.run (streaming)', () => {
       user('Load shipping tools first.'),
       {
         type: 'tool_search_output',
+        toolSearchAgentName: 'StreamingShippingAgent',
         status: 'completed',
         tools: [
           {

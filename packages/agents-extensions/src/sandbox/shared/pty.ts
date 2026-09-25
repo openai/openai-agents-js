@@ -6,6 +6,7 @@ import { shellQuote } from './paths';
 const PTY_YIELD_TIME_MS_MIN = 250;
 const PTY_EMPTY_YIELD_TIME_MS_MIN = 5_000;
 const PTY_YIELD_TIME_MS_MAX = 30_000;
+const PTY_WEBSOCKET_CLOSE_TIMEOUT_MS = 1_000;
 
 const PTY_PROCESSES_MAX = 64;
 const PTY_PROCESSES_PROTECTED_RECENT = 8;
@@ -16,12 +17,22 @@ const PTY_PROCESS_ID_MAX_EXCLUSIVE = 100_000;
 export type PtyProcessEntry = {
   tty: boolean;
   output: string;
-  done: boolean;
+  /** True only after the provider can no longer append output. */
+  outputClosed: boolean;
   exitCode: number | null;
   lastUsed: number;
   waiters: Set<() => void>;
   sendInput?: (chars: string) => Promise<void>;
   terminate?: () => Promise<void>;
+  /** Carries partial UTF-8 sequences across chunk boundaries. */
+  decoder?: PtyTextDecoder;
+};
+
+type PtyTextDecoder = {
+  decode(
+    input?: Uint8Array | ArrayBuffer,
+    options?: { stream?: boolean },
+  ): string;
 };
 
 export type PtyWebSocket = {
@@ -50,7 +61,7 @@ export function createPtyProcessEntry(args: {
   return {
     tty: args.tty ?? true,
     output: '',
-    done: false,
+    outputClosed: false,
     exitCode: null,
     lastUsed: Date.now(),
     waiters: new Set(),
@@ -64,33 +75,45 @@ export function appendPtyOutput(
   chunk: string | Uint8Array | ArrayBuffer,
 ): void {
   if (typeof chunk === 'string') {
+    // Emit any bytes still buffered by the decoder before the string so the
+    // PTY output stays in the order the process produced it.
+    entry.output += flushPtyDecoder(entry);
     entry.output += chunk;
   } else {
-    entry.output += new TextDecoder().decode(chunk);
+    // A PTY chunk is an arbitrary slice of the byte stream, so a multi-byte
+    // UTF-8 sequence can straddle two chunks. Reuse one streaming decoder per
+    // process entry instead of decoding each chunk in isolation.
+    entry.decoder ??= new TextDecoder();
+    entry.output += entry.decoder.decode(chunk, { stream: true });
   }
   notifyPtyWaiters(entry);
 }
 
-export function markPtyDone(
+export function closePtyOutput(
   entry: PtyProcessEntry,
   exitCode: number | null = null,
 ): void {
-  entry.done = true;
+  if (entry.outputClosed) {
+    return;
+  }
+  entry.output += flushPtyDecoder(entry);
+  entry.outputClosed = true;
   entry.exitCode = exitCode;
   notifyPtyWaiters(entry);
 }
 
-export function watchPtyProcess(
+/** Observe a provider wait that settles after its output callbacks finish. */
+export function watchPtyOutput(
   entry: PtyProcessEntry,
-  wait: () => Promise<unknown>,
+  waitForOutputClosed: () => Promise<unknown>,
   exitCode: (result: unknown, error?: unknown) => number | null | undefined,
 ): void {
   void (async () => {
     try {
-      const result = await wait();
-      markPtyDone(entry, coerceExitCode(exitCode(result)));
+      const result = await waitForOutputClosed();
+      closePtyOutput(entry, coerceExitCode(exitCode(result)));
     } catch (error) {
-      markPtyDone(entry, coerceExitCode(exitCode(undefined, error) ?? 1));
+      closePtyOutput(entry, coerceExitCode(exitCode(undefined, error) ?? 1));
     }
   })();
 }
@@ -104,14 +127,42 @@ export async function openPtyWebSocket(args: {
   configure?: (socket: PtyWebSocket) => void | Promise<void>;
 }): Promise<PtyWebSocket> {
   const socket = await createWebSocket(args);
-  socket.binaryType = 'arraybuffer';
-  await args.configure?.(socket);
-  await waitForPtyWebSocketOpen(
-    socket,
-    args.timeoutMs ?? 30_000,
-    args.providerName,
-  );
-  return socket;
+  try {
+    socket.binaryType = 'arraybuffer';
+    await args.configure?.(socket);
+    await waitForPtyWebSocketOpen(
+      socket,
+      args.timeoutMs ?? 30_000,
+      args.providerName,
+    );
+    return socket;
+  } catch (error) {
+    await closePtyWebSocket(socket).catch(() => {});
+    throw error;
+  }
+}
+
+export async function closePtyWebSocket(socket: PtyWebSocket): Promise<void> {
+  if (socket.readyState === 3) {
+    return;
+  }
+  let removeClose = () => {};
+  let removeError = () => {};
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await new Promise<void>((resolve) => {
+      // Native WebSocket may never emit close after a failed connection.
+      timeout = setTimeout(resolve, PTY_WEBSOCKET_CLOSE_TIMEOUT_MS);
+      removeClose = addPtyWebSocketListener(socket, 'close', () => resolve());
+      // Node ws emits an error when closing a socket that is still connecting.
+      removeError = addPtyWebSocketListener(socket, 'error', () => {});
+      socket.close();
+    });
+  } finally {
+    clearTimeout(timeout);
+    removeClose();
+    removeError();
+  }
 }
 
 export function addPtyWebSocketListener(
@@ -164,7 +215,10 @@ export class PtyProcessRegistry {
     await Promise.allSettled(entries.map((entry) => terminatePtyEntry(entry)));
   }
 
-  async finalize(sessionId: number): Promise<{
+  async finalize(
+    sessionId: number,
+    outputClosed: boolean,
+  ): Promise<{
     processId?: number;
     exitCode?: number | null;
   }> {
@@ -173,7 +227,7 @@ export class PtyProcessRegistry {
       return { processId: undefined, exitCode: 1 };
     }
 
-    if (!entry.done) {
+    if (!outputClosed) {
       return { processId: sessionId };
     }
 
@@ -201,7 +255,7 @@ export class PtyProcessRegistry {
     );
 
     for (const [sessionId, entry] of byLeastRecentlyUsed) {
-      if (!protectedIds.has(sessionId) && entry.done) {
+      if (!protectedIds.has(sessionId) && entry.outputClosed) {
         this.processes.delete(sessionId);
         return entry;
       }
@@ -340,11 +394,15 @@ export async function collectPtyOutput(args: {
   entry: PtyProcessEntry;
   yieldTimeMs: number;
   maxOutputTokens?: number;
-}): Promise<{ text: string; originalTokenCount?: number }> {
+}): Promise<{
+  text: string;
+  originalTokenCount?: number;
+  outputClosed: boolean;
+}> {
   const deadline = Date.now() + args.yieldTimeMs;
   let output = consumePtyOutput(args.entry);
 
-  while (!args.entry.done && Date.now() < deadline) {
+  while (!args.entry.outputClosed && Date.now() < deadline) {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
       break;
@@ -353,11 +411,12 @@ export async function collectPtyOutput(args: {
     output += consumePtyOutput(args.entry);
   }
 
-  if (args.entry.done) {
-    output += consumePtyOutput(args.entry);
-  }
+  // Capture closure with the final drain. A caller may resume after more output
+  // arrives, so finalization must use this snapshot rather than the live entry.
+  const outputClosed = args.entry.outputClosed;
+  output += consumePtyOutput(args.entry);
 
-  return truncateOutput(output, args.maxOutputTokens);
+  return { ...truncateOutput(output, args.maxOutputTokens), outputClosed };
 }
 
 export async function writePtyStdin(args: {
@@ -397,7 +456,10 @@ export async function writePtyStdin(args: {
     maxOutputTokens: args.maxOutputTokens,
   });
   entry.lastUsed = Date.now();
-  const finalized = await args.registry.finalize(args.sessionId);
+  const finalized = await args.registry.finalize(
+    args.sessionId,
+    output.outputClosed,
+  );
 
   return formatExecResponse({
     output: output.text,
@@ -421,7 +483,10 @@ export async function formatPtyExecUpdate(args: {
     yieldTimeMs: clampPtyYieldTimeMs(args.yieldTimeMs ?? 10_000),
     maxOutputTokens: args.maxOutputTokens,
   });
-  const finalized = await args.registry.finalize(args.sessionId);
+  const finalized = await args.registry.finalize(
+    args.sessionId,
+    output.outputClosed,
+  );
 
   return formatExecResponse({
     output: output.text,
@@ -470,6 +535,15 @@ function allocatePtyProcessId(processes: Map<number, PtyProcessEntry>): number {
       return processId;
     }
   }
+}
+
+function flushPtyDecoder(entry: PtyProcessEntry): string {
+  if (!entry.decoder) {
+    return '';
+  }
+  const rest = entry.decoder.decode();
+  entry.decoder = undefined;
+  return rest;
 }
 
 function consumePtyOutput(entry: PtyProcessEntry): string {

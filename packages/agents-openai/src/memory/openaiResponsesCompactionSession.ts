@@ -3,16 +3,22 @@ import {
   getLogger,
   MemorySession,
   RequestUsage,
+  Usage,
   UserError,
 } from '@openai/agents-core';
 import type {
   AgentInputItem,
   OpenAIResponsesCompactionArgs,
-  OpenAIResponsesCompactionAwareSession as OpenAIResponsesCompactionSessionLike,
+  OpenAIResponsesCompactionOwnershipAwareSession as OpenAIResponsesCompactionSessionLike,
+  RunContext,
   Session,
 } from '@openai/agents-core';
 import type { OpenAIResponsesCompactionResult } from '@openai/agents-core';
-import { logModelAndToolActionWarning } from '@openai/agents-core/utils/internal';
+import {
+  attachModelFailureUsage,
+  getModelVisibleSessionItems,
+  logModelAndToolActionWarning,
+} from '@openai/agents-core/utils/internal';
 import { DEFAULT_OPENAI_MODEL, getDefaultOpenAIClient } from '../defaults';
 import { getInputItems } from '../openaiResponsesModel';
 import {
@@ -85,6 +91,19 @@ export type OpenAIResponsesCompactionSessionOptions = {
    */
   compactionMode?: OpenAIResponsesCompactionMode;
   /**
+   * Optional positive integer budget for complete history snapshots used for rollback.
+   * The budget plus one must be a safe integer. Omitting the budget preserves unlimited reads.
+   *
+   * Snapshot reads request at most this many items plus one overflow item. Oversized history
+   * throws a `UserError` before the compaction API call, including forced calls. The snapshot is
+   * refreshed and checked again after the API call, before replacing history. Automatic
+   * compaction that passes the ownership and model-visibility checks also honors this budget.
+   *
+   * This does not limit bytes, tokens, stored history, model input, or ordinary candidate reads.
+   * Underlying retrieval defaults remain independent of this budget.
+   */
+  maxRollbackItems?: number;
+  /**
    * Custom decision hook that determines whether to call `responses.compact`.
    *
    * The default implementation compares the length of
@@ -103,6 +122,8 @@ export type OpenAIResponsesCompactionSessionOptions = {
  *
  * This session is intended to be passed to `run()` so the runner can automatically supply the
  * latest `responseId` and invoke compaction after each completed turn is persisted.
+ * Automatic compaction skips history that is not fully covered by the latest successful model
+ * input and response. Explicit manual compaction remains caller-controlled.
  *
  * To debug compaction decisions, enable the `debug` logger for
  * `openai-agents:openai:compaction` (for example, `DEBUG=openai-agents:openai:compaction`).
@@ -118,6 +139,7 @@ export class OpenAIResponsesCompactionSession
   private readonly underlyingSession: Session;
   private readonly model: OpenAI.ResponsesModel;
   private readonly compactionMode: OpenAIResponsesCompactionMode;
+  private readonly maxRollbackItems: number | undefined;
   private responseId?: string;
   private lastStore?: boolean;
   private readonly shouldTriggerCompaction: (
@@ -126,8 +148,22 @@ export class OpenAIResponsesCompactionSession
   private compactionCandidateItems: AgentInputItem[] | undefined;
   private sessionItems: AgentInputItem[] | undefined;
   private mutationOperation: Promise<void> = Promise.resolve();
+  private mutationGeneration: object = {};
+  private readonly compactionOwnership = new WeakMap<object, object>();
 
   constructor(options: OpenAIResponsesCompactionSessionOptions) {
+    const { maxRollbackItems } = options;
+    if (
+      maxRollbackItems !== undefined &&
+      (!Number.isSafeInteger(maxRollbackItems) ||
+        maxRollbackItems <= 0 ||
+        !Number.isSafeInteger(maxRollbackItems + 1))
+    ) {
+      throw new UserError(
+        'maxRollbackItems must be a positive integer whose value plus one is a safe integer.',
+      );
+    }
+    this.maxRollbackItems = maxRollbackItems;
     this.client = resolveClient(options);
     if (isOpenAIConversationsSessionDelegate(options.underlyingSession)) {
       throw new UserError(
@@ -150,12 +186,60 @@ export class OpenAIResponsesCompactionSession
 
   async runCompaction(
     args: OpenAIResponsesCompactionArgs = {},
+    _runContext?: RunContext<any>,
+    ownership?: object | null,
+    modelExchange?: Parameters<
+      OpenAIResponsesCompactionSessionLike['runCompaction']
+    >[3],
   ): Promise<OpenAIResponsesCompactionResult | null> {
-    return this.runMutationOperation(() => this.runCompactionOperation(args));
+    return this.runMutationOperation(async () => {
+      if (ownership !== undefined && !this.ownsCompaction(ownership)) {
+        logger.debug(
+          'skip: automatic compaction no longer owns session history',
+        );
+        return null;
+      }
+      let automaticInput: AgentInputItem[] | undefined;
+      if (ownership !== undefined) {
+        if (!modelExchange) return null;
+        if (
+          (args.compactionMode ?? this.compactionMode) ===
+            'previous_response_id' &&
+          !modelExchange.responseId
+        )
+          return null;
+        // An explicit finite limit avoids mistaking a backend's default window for all history.
+        const history = await this.underlyingSession.getItems(
+          modelExchange.items.length + 1,
+        );
+        automaticInput = getModelVisibleSessionItems(
+          this,
+          history,
+          modelExchange,
+        );
+        if (!automaticInput || automaticInput.length === 0) {
+          logger.debug(
+            'skip: stored history is not covered by the successful model exchange',
+          );
+          return null;
+        }
+        // Keep decisions tied to the actual complete snapshot, not a stale candidate cache.
+        this.sessionItems = history;
+        this.compactionCandidateItems = selectCompactionCandidateItems(history);
+        this.responseId = modelExchange.responseId;
+        args = { ...args, responseId: modelExchange.responseId };
+      }
+      const result = await this.runCompactionOperation(args, automaticInput);
+      if (result && ownership) {
+        this.compactionOwnership.set(ownership, this.mutationGeneration);
+      }
+      return result;
+    });
   }
 
   private async runCompactionOperation(
     args: OpenAIResponsesCompactionArgs,
+    automaticInput?: AgentInputItem[],
   ): Promise<OpenAIResponsesCompactionResult | null> {
     this.responseId = args.responseId ?? this.responseId ?? undefined;
     if (args.store !== undefined) {
@@ -174,6 +258,11 @@ export class OpenAIResponsesCompactionSession
       );
     }
 
+    if (args.force === true && this.maxRollbackItems !== undefined) {
+      // Forced calls do not need a decision hook or potentially unlimited candidates first.
+      await this.getAllUnderlyingSessionItems();
+    }
+
     const { compactionCandidateItems, sessionItems } =
       await this.ensureCompactionCandidates();
     const shouldTriggerCompaction =
@@ -182,8 +271,8 @@ export class OpenAIResponsesCompactionSession
         : await this.shouldTriggerCompaction({
             responseId: this.responseId,
             compactionMode: resolvedMode,
-            compactionCandidateItems,
-            sessionItems,
+            compactionCandidateItems: structuredClone(compactionCandidateItems),
+            sessionItems: structuredClone(sessionItems),
           });
     if (!shouldTriggerCompaction) {
       logger.debug('skip: decision hook %o', {
@@ -191,6 +280,10 @@ export class OpenAIResponsesCompactionSession
         compactionMode: resolvedMode,
       });
       return null;
+    }
+
+    if (args.force !== true && this.maxRollbackItems !== undefined) {
+      await this.getAllUnderlyingSessionItems();
     }
 
     logger.debug('compact: start %o', {
@@ -205,7 +298,7 @@ export class OpenAIResponsesCompactionSession
     if (resolvedMode === 'previous_response_id') {
       compactRequest.previous_response_id = this.responseId!;
     } else {
-      compactRequest.input = getInputItems(sessionItems);
+      compactRequest.input = getInputItems(automaticInput ?? sessionItems);
     }
 
     const compacted = await this.client.responses.compact(compactRequest);
@@ -213,11 +306,27 @@ export class OpenAIResponsesCompactionSession
     const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
     const outputCompactionCandidateItems =
       selectCompactionCandidateItems(outputItems);
-    const previousItems = await this.getAllUnderlyingSessionItems();
-    await this.replaceUnderlyingSessionItems({
-      outputItems,
-      previousItems,
-    });
+    // Refresh after the request so rollback does not revive items that expired during the await.
+    let previousItems: AgentInputItem[];
+    try {
+      previousItems = await this.getAllUnderlyingSessionItems();
+    } catch (error) {
+      const usage = toRequestUsage(compacted.usage);
+      attachModelFailureUsage(
+        error,
+        new Usage({ ...usage, requests: 1, requestUsageEntries: [usage] }),
+      );
+      throw error;
+    }
+    try {
+      await this.replaceUnderlyingSessionItems({ outputItems, previousItems });
+    } catch (error) {
+      this.compactionCandidateItems = undefined;
+      this.sessionItems = undefined;
+      throw error;
+    } finally {
+      this.mutationGeneration = {};
+    }
     this.compactionCandidateItems = outputCompactionCandidateItems;
     this.sessionItems = outputItems;
 
@@ -241,6 +350,20 @@ export class OpenAIResponsesCompactionSession
     return this.underlyingSession.getItems(limit);
   }
 
+  async getItemsWithCompactionOwnership(
+    _runContext?: RunContext<any>,
+  ): Promise<{
+    items: AgentInputItem[];
+    ownership: object;
+  }> {
+    return this.runMutationOperation(async () => {
+      const items = await this.underlyingSession.getItems();
+      const ownership = {};
+      this.compactionOwnership.set(ownership, this.mutationGeneration);
+      return { items, ownership };
+    });
+  }
+
   prepareHistoryItemsForPersistenceComparison(
     items: AgentInputItem[],
   ): AgentInputItem[] {
@@ -250,11 +373,20 @@ export class OpenAIResponsesCompactionSession
   }
 
   async addItems(items: AgentInputItem[]) {
+    await this.addItemsWithCompactionOwnership(items, null);
+  }
+
+  async addItemsWithCompactionOwnership(
+    items: AgentInputItem[],
+    ownership: object | null,
+    _runContext?: RunContext<any>,
+  ): Promise<void> {
     if (items.length === 0) {
       return;
     }
 
     await this.runMutationOperation(async () => {
+      const ownsGeneration = this.ownsCompaction(ownership);
       try {
         await this.underlyingSession.addItems(items);
       } catch (error) {
@@ -263,6 +395,11 @@ export class OpenAIResponsesCompactionSession
         this.compactionCandidateItems = undefined;
         this.sessionItems = undefined;
         throw error;
+      } finally {
+        this.mutationGeneration = {};
+      }
+      if (ownsGeneration && ownership) {
+        this.compactionOwnership.set(ownership, this.mutationGeneration);
       }
       if (this.compactionCandidateItems) {
         const candidates = selectCompactionCandidateItems(items);
@@ -281,42 +418,56 @@ export class OpenAIResponsesCompactionSession
 
   async popItem() {
     return this.runMutationOperation(async () => {
-      const popped = await this.underlyingSession.popItem();
+      let popped: AgentInputItem | undefined;
+      try {
+        popped = await this.underlyingSession.popItem();
+      } catch (error) {
+        this.mutationGeneration = {};
+        this.responseId = undefined;
+        this.lastStore = undefined;
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+        throw error;
+      }
       if (!popped) {
         return popped;
       }
-      if (this.sessionItems) {
-        const index = this.sessionItems.lastIndexOf(popped);
-        if (index >= 0) {
-          this.sessionItems.splice(index, 1);
-        } else {
-          this.sessionItems = await this.underlyingSession.getItems();
-        }
-      }
-      if (this.compactionCandidateItems) {
-        const isCandidate = selectCompactionCandidateItems([popped]).length > 0;
-        if (isCandidate) {
-          const index = this.compactionCandidateItems.indexOf(popped);
-          if (index >= 0) {
-            this.compactionCandidateItems.splice(index, 1);
-          } else {
-            // Fallback when the popped item reference differs from stored candidates.
-            this.compactionCandidateItems = selectCompactionCandidateItems(
-              await this.underlyingSession.getItems(),
-            );
-          }
-        }
-      }
+      this.mutationGeneration = {};
+      this.responseId = undefined;
+      this.lastStore = undefined;
+      // A successful destructive mutation makes both cached history views stale.
+      // Do not try to repair them from the returned item: some backends clone
+      // values, and a refresh can fail after the pop has already committed.
+      // The next compaction decision will reload authoritative persisted history.
+      this.compactionCandidateItems = undefined;
+      this.sessionItems = undefined;
       return popped;
     });
   }
 
   async clearSession() {
     await this.runMutationOperation(async () => {
-      await this.underlyingSession.clearSession();
+      try {
+        await this.underlyingSession.clearSession();
+      } catch (error) {
+        this.compactionCandidateItems = undefined;
+        this.sessionItems = undefined;
+        throw error;
+      } finally {
+        this.mutationGeneration = {};
+        this.responseId = undefined;
+        this.lastStore = undefined;
+      }
       this.compactionCandidateItems = [];
       this.sessionItems = [];
     });
+  }
+
+  private ownsCompaction(ownership: object | null): boolean {
+    return (
+      ownership !== null &&
+      this.compactionOwnership.get(ownership) === this.mutationGeneration
+    );
   }
 
   private runMutationOperation<T>(operation: () => Promise<T>): Promise<T> {
@@ -329,7 +480,20 @@ export class OpenAIResponsesCompactionSession
   }
 
   private async getAllUnderlyingSessionItems(): Promise<AgentInputItem[]> {
-    return this.underlyingSession.getItems();
+    if (this.maxRollbackItems === undefined) {
+      return this.underlyingSession.getItems();
+    }
+    const items = await this.underlyingSession.getItems(
+      this.maxRollbackItems + 1,
+    );
+    if (items.length > this.maxRollbackItems) {
+      this.sessionItems = undefined;
+      this.compactionCandidateItems = undefined;
+      throw new UserError(
+        'Compaction history exceeds maxRollbackItems; history was retained.',
+      );
+    }
+    return items;
   }
 
   private async replaceUnderlyingSessionItems({

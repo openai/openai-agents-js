@@ -1,5 +1,71 @@
 # @openai/agents-openai
 
+## 0.18.0
+
+### Patch Changes
+
+- b665b0e: fix: recover unloaded deferred calls through opt-in model-visible errors and built-in client search, with required Responses wire defaults, live source-Agent ownership, and server-side search preserved for deferred hosted MCP tools (#1855).
+- a3a9215: feat: support the image generation tool action option
+- Updated dependencies [b665b0e]
+- Updated dependencies [19d0b5f]
+- Updated dependencies [064fcb2]
+  - @openai/agents-core@0.18.0
+
+## 0.17.2
+
+### Patch Changes
+
+- 8d1f019: fix: preserve explicit settings for GPT-5-and-newer models and concrete model instances, default gpt-6-astra reasoning to low, and use adapter-declared prompt model selection when applying implicit defaults (#1849).
+- Updated dependencies [8d1f019]
+  - @openai/agents-core@0.17.2
+
+## 0.17.1
+
+### Patch Changes
+
+- 4351bd1: fix: honor OpenAIProvider client options over the default client
+- c25fede: fix: keep Conversations session history limits local
+- b1a41cf: fix: preserve concurrent wrapper writes by skipping automatic session compaction when the run no longer owns its history snapshot.
+- 02720cd: fix: preserve empty hosted MCP tool outputs during Responses conversion
+- 5e999b5: refactor: separate Responses item conversion from model transport execution without changing behavior.
+- eb690a4: fix: recover failed resumed Session writes before continuing runs
+- a8422bf: fix: restrict redacted trace response IDs to official OpenAI endpoints
+- c242bfb: fix: reject truncated empty Chat Completions
+- c3bfb2c: fix: reject unsuccessful OpenAI Responses terminal states without losing billed usage
+- 8a98743: fix(openai): reset compaction response state after clearing a session (#1821)
+- 82d6b59: fix(openai): reset compaction response state after popping local history (#1823)
+- 6b555c8: fix: merge streamed Chat Completions tool-call turns
+- 4b539bb: fix: preserve full tracing data when streamed response consumers stop at completion
+- 0035d33: fix: strip output-only created_by metadata at replay boundaries
+- 92d1d9c: fix: Preserve tool-search Agent attribution across handoffs and history replay; persisted discovery requires a unique logical Agent name, and unattributed or ambiguous history requires a new search.
+- ffaaba6: feat: support image results in web search tools
+- Updated dependencies [dd1becb]
+- Updated dependencies [0b94437]
+- Updated dependencies [d7ed6b2]
+- Updated dependencies [b09622f]
+- Updated dependencies [6721ccd]
+- Updated dependencies [c15c3ac]
+- Updated dependencies [3261264]
+- Updated dependencies [9be3e39]
+- Updated dependencies [b4fa898]
+- Updated dependencies [8e862b3]
+- Updated dependencies [05e5851]
+- Updated dependencies [0b949bc]
+- Updated dependencies [c0a6718]
+- Updated dependencies [b1a41cf]
+- Updated dependencies [5c3c3b4]
+- Updated dependencies [cd5a2c8]
+- Updated dependencies [e668ea1]
+- Updated dependencies [eb690a4]
+- Updated dependencies [c3bfb2c]
+- Updated dependencies [d364ef2]
+- Updated dependencies [0035d33]
+- Updated dependencies [d19101e]
+- Updated dependencies [a9e3214]
+- Updated dependencies [92d1d9c]
+- Updated dependencies [2dc21b6]
+  - @openai/agents-core@0.17.1
+
 ## 0.17.0
 
 ### Patch Changes

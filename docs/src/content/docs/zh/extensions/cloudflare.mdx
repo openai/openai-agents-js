@@ -1,5 +1,5 @@
 ---
-title: Cloudflare 上的实时智能体
+title: Cloudflare 上的语音智能体
 description: Connect your Agents SDK agents from Cloudflare Workers/workerd using a dedicated transport.
 canonicalHeadingIds:
   - depth: 2
@@ -15,7 +15,7 @@ canonicalHeadingIds:
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构造函数打开出站 WebSocket。为简化在这些环境中连接实时智能体，extensions 包提供了一个专用传输机制，可在内部执行基于 `fetch()` 的升级。
+Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构造函数打开出站 WebSocket。为简化在这些环境中连接语音智能体，extensions 包提供了一个专用传输机制，可在内部执行基于 `fetch()` 的升级。
 
 <Aside type="caution">
   此适配器仍处于 beta 阶段。你可能会遇到边缘情况问题或 bug。 请通过 [GitHub

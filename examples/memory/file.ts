@@ -1,6 +1,6 @@
 import { Agent, run, withTrace } from '@openai/agents';
-import { FileSession } from './sessions';
-import { createLookupCustomerProfileTool, fetchImageData } from './tools';
+import { FileSession } from './sessions/index.ts';
+import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
 
 const directory: Record<string, string> = {
   '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',

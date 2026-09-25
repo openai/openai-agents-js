@@ -21,12 +21,32 @@ export function gpt5ReasoningSettingsRequired(modelName: string): boolean {
   return modelName.startsWith('gpt-5');
 }
 
+/**
+ * Identifies the GPT-5-and-newer settings family, excluding known chat aliases.
+ * Membership does not require a model-specific default reasoning effort.
+ */
+export function isGpt5OrNewerReasoningModel(modelName: string): boolean {
+  if (GPT_5_CHAT_MODEL_PATTERNS.some((pattern) => pattern.test(modelName))) {
+    return false;
+  }
+  const version = /^gpt-(\d+)(?:\.\d+)?(?:-|$)/.exec(modelName);
+  return version !== null && Number(version[1]) >= 5;
+}
+
+/**
+ * Returns whether the default model belongs to the GPT-5-and-newer settings family.
+ */
+export function isGpt5OrNewerDefault(): boolean {
+  return isGpt5OrNewerReasoningModel(getDefaultModel());
+}
+
 const DEFAULT_REASONING_EFFORT_PATTERNS: Array<
   readonly [
     RegExp,
     Exclude<ModelSettingsReasoningEffort, 'minimal' | 'xhigh' | 'max' | null>,
   ]
 > = [
+  [/^gpt-6-astra$/, 'low'],
   [/^gpt-5(?:-\d{4}-\d{2}-\d{2})?$/, 'low'],
   [/^gpt-5\.1(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
   [/^gpt-5\.2(?:-\d{4}-\d{2}-\d{2})?$/, 'none'],
@@ -78,12 +98,12 @@ export function getDefaultModel(): string {
 
 /**
  * Returns the default model settings.
- * If the default model is a GPT-5 model, returns the GPT-5 default model settings.
+ * GPT-5-and-newer reasoning models receive model-specific defaults when known.
  * Otherwise, returns the legacy default model settings.
  */
 export function getDefaultModelSettings(model?: string): ModelSettings {
   const _model = model ?? getDefaultModel();
-  if (gpt5ReasoningSettingsRequired(_model)) {
+  if (isGpt5OrNewerReasoningModel(_model)) {
     const effort = getDefaultReasoningEffort(_model);
     if (effort !== undefined) {
       return {
@@ -92,7 +112,7 @@ export function getDefaultModelSettings(model?: string): ModelSettings {
       };
     }
     return {
-      // Keep the GPT-5 text verbosity default, but omit reasoning.effort for
+      // Keep the shared text verbosity default, but omit reasoning.effort for
       // variants whose supported values are not confirmed yet.
       text: { verbosity: 'low' },
     };

@@ -435,6 +435,15 @@ function resolveSkillsMetadata(
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+/**
+ * Read string metadata, including wrapped plain values and folded/literal blocks.
+ * Block indentation/chomping indicators and header comments are accepted, but
+ * outer block whitespace is trimmed for the skill index regardless of chomping.
+ * This is not a YAML loader: tags, aliases, collections, multiline quoted values,
+ * and quoted escapes are not interpreted. Use explicit skill metadata or a lazy
+ * source index for those formats. Single-line quotes and inline hashes retain
+ * their existing behavior; nested fields are never promoted to root metadata.
+ */
 export function parseSkillFrontmatter(
   markdown: string,
 ): Record<string, string> {
@@ -443,15 +452,21 @@ export function parseSkillFrontmatter(
     return {};
   }
 
+  const delimiterIndent = frontmatterIndent(lines[0]);
   const endIndex = lines.findIndex(
-    (line, index) => index > 0 && line.trim() === '---',
+    (line, index) =>
+      index > 0 &&
+      line.trim() === '---' &&
+      frontmatterIndent(line) <= delimiterIndent,
   );
   if (endIndex === -1) {
     return {};
   }
 
   const metadata: Record<string, string> = {};
-  for (const line of lines.slice(1, endIndex)) {
+  let rootIndent: number | undefined;
+  for (let index = 1; index < endIndex;) {
+    const line = lines[index++];
     const stripped = line.trim();
     const delimiterIndex = stripped.indexOf(':');
     if (!stripped || stripped.startsWith('#') || delimiterIndex === -1) {
@@ -463,10 +478,88 @@ export function parseSkillFrontmatter(
     if (!key) {
       continue;
     }
-    metadata[key] = unquoteFrontmatterValue(rawValue);
+    const keyIndent = frontmatterIndent(line);
+    rootIndent ??= keyIndent;
+    if (keyIndent !== rootIndent) {
+      continue;
+    }
+
+    const blockHeader = rawValue.match(
+      /^([>|])(?:([1-9])[+-]?|[+-]([1-9])?)?(?:[ \t]+#.*)?$/,
+    );
+    const explicitIndent = blockHeader?.[2] ?? blockHeader?.[3];
+    let contentIndent = explicitIndent
+      ? keyIndent + Number(explicitIndent)
+      : undefined;
+    const body: string[] = [];
+    while (index < endIndex) {
+      const next = lines[index];
+      // Comments in plain values are metadata comments, not description text.
+      if (!blockHeader && next.trimStart().startsWith('#')) {
+        index++;
+        continue;
+      }
+      if (next.trim()) {
+        const indent = frontmatterIndent(next);
+        if (indent < (contentIndent ?? keyIndent + 1)) {
+          break;
+        }
+        if (blockHeader) {
+          contentIndent ??= indent;
+        }
+      }
+      body.push(next);
+      index++;
+    }
+
+    if (blockHeader) {
+      const content = body.map((line) => line.slice(contentIndent ?? 0));
+      metadata[key] = (
+        blockHeader[1] === '|'
+          ? content.join('\n')
+          : foldFrontmatterLines(content)
+      ).trim();
+    } else if (/^["']/.test(rawValue)) {
+      metadata[key] = unquoteFrontmatterValue(rawValue);
+    } else {
+      // Empty values can introduce mappings; consume their children without
+      // interpreting them as either root fields or a plain string.
+      metadata[key] = rawValue
+        ? foldFrontmatterLines([rawValue, ...body.map((line) => line.trim())])
+        : '';
+    }
   }
 
   return metadata;
+}
+
+function frontmatterIndent(line: string): number {
+  // Tabs after the content indentation belong to the scalar itself.
+  return line.length - line.replace(/^ +/, '').length;
+}
+
+function foldFrontmatterLines(lines: string[]): string {
+  const parts: string[] = [];
+  let previous = '';
+  let blankLines = 0;
+  for (const line of lines) {
+    if (!line) {
+      blankLines++;
+      continue;
+    }
+    if (parts.length > 0) {
+      const moreIndented = /^[ \t]/.test(previous) || /^[ \t]/.test(line);
+      parts.push(
+        moreIndented
+          ? '\n'.repeat(blankLines + 1)
+          : '\n'.repeat(blankLines) || ' ',
+      );
+    }
+    parts.push(line);
+    previous = line;
+    blankLines = 0;
+  }
+  return parts.join('');
 }
 
 function unquoteFrontmatterValue(value: string): string {

@@ -1,4 +1,5 @@
 import type { AgentOutputType } from '../../agent';
+import { registerPreparedAgentTools } from '../../agentToolConfiguration';
 import { getDefaultModel } from '../../defaultModel';
 import { UserError } from '../../errors';
 import type { RunContext } from '../../runContext';
@@ -108,10 +109,10 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
       ),
     {},
   );
-  const tools = [
-    ...agent.tools,
-    ...boundCapabilities.flatMap((capability) => capability.tools()),
-  ];
+  const capabilityTools = boundCapabilities.flatMap((capability) =>
+    capability.tools(),
+  );
+  const tools = [...agent.tools, ...capabilityTools];
 
   const prepared = agent.clone({
     capabilities: boundCapabilities,
@@ -183,15 +184,7 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
     },
   });
 
-  if (tools.length === 0 && !agent.hasExplicitToolConfig()) {
-    // agent.clone() sees an explicit tools array, but an empty post-capability tool set
-    // should preserve the original "no explicit tools" semantics for tool choice.
-    (
-      prepared as unknown as {
-        _toolsExplicitlyConfigured: boolean;
-      }
-    )._toolsExplicitlyConfigured = false;
-  }
+  registerPreparedAgentTools(prepared, agent, capabilityTools);
 
   prepared.runtimeManifest = runtimeManifest;
   return prepared;

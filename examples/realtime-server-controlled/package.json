@@ -1,0 +1,22 @@
+{
+  "name": "realtime-server-controlled",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build",
+    "build-check": "tsc --noEmit",
+    "dev": "concurrently -k -n server,client \"tsx watch server.ts\" \"vite\"",
+    "start": "tsx server.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@openai/agents-realtime": "workspace:*",
+    "dotenv": "^16.5.0",
+    "openai": "^7.2.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3"
+  }
+}

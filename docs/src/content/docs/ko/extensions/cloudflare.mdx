@@ -1,5 +1,5 @@
 ---
-title: Cloudflare용 Realtime 에이전트
+title: Cloudflare용 음성 에이전트
 description: Connect your Agents SDK agents from Cloudflare Workers/workerd using a dedicated transport.
 canonicalHeadingIds:
   - depth: 2
@@ -15,7 +15,7 @@ canonicalHeadingIds:
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 이러한 환경에서 실시간 에이전트를 더 쉽게 연결할 수 있도록, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송 방식을 제공합니다.
+Cloudflare Workers 및 기타 workerd 런타임은 전역 `WebSocket` 생성자를 사용해 아웃바운드 WebSocket을 열 수 없습니다. 이러한 환경에서 음성 에이전트를 더 쉽게 연결할 수 있도록, extensions 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송 방식을 제공합니다.
 
 <Aside type="caution">
   이 어댑터는 아직 베타입니다. 일부 엣지 케이스 문제나 버그가 발생할 수

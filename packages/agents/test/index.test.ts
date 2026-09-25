@@ -61,6 +61,16 @@ describe('isZodObject', () => {
   });
 });
 
+describe('Image generation exports', () => {
+  test('imageGenerationTool accepts the action option', () => {
+    expect(Agents.imageGenerationTool({ action: 'edit' })).toMatchObject({
+      type: 'hosted_tool',
+      name: 'image_generation',
+      providerData: { type: 'image_generation', action: 'edit' },
+    });
+  });
+});
+
 describe('Tool search exports', () => {
   test('toolNamespace and toolSearchTool should be available', () => {
     expect(typeof Agents.toolNamespace).toBe('function');

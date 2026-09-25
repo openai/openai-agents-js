@@ -16,6 +16,7 @@ dotenv.config();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_WEBHOOK_SECRET = process.env.OPENAI_WEBHOOK_SECRET;
 const PORT = Number(process.env.PORT ?? 8000);
+const LOG_TRANSCRIPTS = process.env.TWILIO_SIP_LOG_TRANSCRIPTS === '1';
 
 if (!OPENAI_API_KEY || !OPENAI_WEBHOOK_SECRET) {
   console.error(
@@ -79,7 +80,7 @@ async function main() {
   }
 
   function logHistoryItem(item: RealtimeItem): void {
-    if (item.type !== 'message') {
+    if (!LOG_TRANSCRIPTS || item.type !== 'message') {
       return;
     }
 
@@ -112,8 +113,8 @@ async function main() {
     session.on('agent_handoff', (_context, fromAgent, toAgent) => {
       console.info(`Handing off from ${fromAgent.name} to ${toAgent.name}.`);
     });
-    session.on('error', (event) => {
-      console.error('Realtime session error:', event.error);
+    session.on('error', () => {
+      console.error(`Realtime session error for call ${callId}.`);
     });
 
     try {
@@ -134,8 +135,8 @@ async function main() {
         };
         session.transport.on('disconnected', handleDisconnect);
       });
-    } catch (error) {
-      console.error(`Error while observing call ${callId}:`, error);
+    } catch {
+      console.error(`Error while observing call ${callId}.`);
     } finally {
       session.close();
       console.info(`Call ${callId} ended`);
@@ -164,7 +165,7 @@ async function main() {
         reply.status(400).send({ error: 'Invalid webhook signature.' });
         return;
       }
-      console.error('Failed to parse webhook payload.', error);
+      console.error('Failed to parse webhook payload.');
       reply.status(500).send({ error: 'Failed to parse webhook payload.' });
       return;
     }
@@ -173,19 +174,16 @@ async function main() {
       const callId = event.data.call_id;
       try {
         await acceptCall(callId);
-      } catch (error) {
-        console.error(`Failed to accept call ${callId}:`, error);
+      } catch {
+        console.error(`Failed to accept call ${callId}.`);
         reply.status(500).send({ error: 'Failed to accept call.' });
         return;
       }
 
       if (!activeCallTasks.has(callId)) {
         const task = observeCall(callId)
-          .catch((error) => {
-            console.error(
-              `Unhandled error while observing call ${callId}:`,
-              error,
-            );
+          .catch(() => {
+            console.error(`Unhandled error while observing call ${callId}.`);
           })
           .finally(() => {
             activeCallTasks.delete(callId);
@@ -206,8 +204,8 @@ async function main() {
   const shutdown = async () => {
     try {
       await fastify.close();
-    } catch (error) {
-      console.error('Error during shutdown.', error);
+    } catch {
+      console.error('Error during shutdown.');
     } finally {
       process.exit(0);
     }
@@ -219,13 +217,13 @@ async function main() {
   try {
     await fastify.listen({ host: '0.0.0.0', port: PORT });
     console.log(`Server listening on port ${PORT}`);
-  } catch (error) {
-    console.error('Failed to start server.', error);
+  } catch {
+    console.error('Failed to start server.');
     process.exit(1);
   }
 }
 
-main().catch((error) => {
-  console.error('Failed to start server.', error);
+main().catch(() => {
+  console.error('Failed to start server.');
   process.exit(1);
 });

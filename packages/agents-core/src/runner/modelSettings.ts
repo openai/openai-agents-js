@@ -1,10 +1,13 @@
 import { Agent } from '../agent';
-import { gpt5ReasoningSettingsRequired, isGpt5Default } from '../defaultModel';
+import {
+  isGpt5OrNewerReasoningModel,
+  isGpt5OrNewerDefault,
+} from '../defaultModel';
 import { Model, ModelSettings } from '../model';
 import { AgentToolUseTracker } from './toolUseTracker';
 export { mergeModelSettings } from './modelSettingsMerge';
 
-const hasGpt5OnlySettings = (settings?: ModelSettings): boolean => {
+const hasReasoningModelSettings = (settings?: ModelSettings): boolean => {
   const providerData = settings?.providerData as
     | {
         reasoning?: unknown;
@@ -58,44 +61,37 @@ export function maybeResetToolChoice(
 }
 
 /**
- * When the default model is a GPT-5 variant, agents may carry GPT-5-specific providerData
- * (e.g., reasoning effort, text verbosity). If a run resolves to a non-GPT-5 model and the
- * agent relied on the default model (i.e., no explicit model set), these GPT-5-only settings
- * are incompatible and should be stripped to avoid runtime errors.
+ * Preserves legacy settings cleanup for explicitly selected models outside the
+ * GPT-5-and-newer reasoning family when the default model belongs to that family.
  */
-export function adjustModelSettingsForNonGPT5RunnerModel(
+export function adjustModelSettingsForLegacyModel(
   explicitlyModelSet: boolean,
   agentModelSettings: ModelSettings,
-  runnerModel: string | Model,
   modelSettings: ModelSettings,
   resolvedModelName?: string,
 ): ModelSettings {
-  const modelName =
-    resolvedModelName ??
-    (typeof runnerModel === 'string'
-      ? runnerModel
-      : ((runnerModel as { model?: string; name?: string } | undefined)
-          ?.model ?? (runnerModel as { name?: string } | undefined)?.name));
-  const isNonGpt5RunnerModel =
-    typeof modelName === 'string'
-      ? !gpt5ReasoningSettingsRequired(modelName)
-      : true;
-  const hasGpt5Defaults =
-    hasGpt5OnlySettings(agentModelSettings) ||
-    hasGpt5OnlySettings(modelSettings);
+  // Only a resolved string selection establishes model identity.
+  const isLegacyModel =
+    typeof resolvedModelName === 'string' &&
+    !isGpt5OrNewerReasoningModel(resolvedModelName);
+  const hasReasoningSettings =
+    hasReasoningModelSettings(agentModelSettings) ||
+    hasReasoningModelSettings(modelSettings);
 
   if (
-    isGpt5Default() &&
+    isGpt5OrNewerDefault() &&
     explicitlyModelSet &&
-    isNonGpt5RunnerModel &&
-    hasGpt5Defaults
+    isLegacyModel &&
+    hasReasoningSettings
   ) {
-    return stripGpt5OnlySettings(modelSettings);
+    return stripReasoningModelSettings(modelSettings);
   }
   return modelSettings;
 }
 
-function stripGpt5OnlySettings(modelSettings: ModelSettings): ModelSettings {
+function stripReasoningModelSettings(
+  modelSettings: ModelSettings,
+): ModelSettings {
   const copiedProviderData = modelSettings.providerData
     ? { ...modelSettings.providerData }
     : undefined;

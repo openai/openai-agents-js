@@ -9,7 +9,7 @@ import {
   Agent,
   run,
   shellTool,
-  ShellToolSkillReference,
+  type ShellToolSkillReference,
   withTrace,
 } from '@openai/agents';
 import OpenAI, { toFile } from 'openai';

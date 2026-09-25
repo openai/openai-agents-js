@@ -1,6 +1,6 @@
 ---
 name: examples-run-analysis
-description: Analyze the latest completed repository example run from its existing logs and source files. This skill is strictly read-only and never starts, reruns, stops, retries, escalates, or owns workflow processes.
+description: Analyze logs and source from a completed repository example run. Never execute or control examples.
 ---
 
 # Examples Run Analysis

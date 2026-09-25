@@ -42,7 +42,7 @@ import {
   shellQuote,
   shellCommandForPty,
   serializeRemoteSandboxSessionState,
-  watchPtyProcess,
+  watchPtyOutput,
   isRecord,
   readOptionalBoolean,
   readOptionalNumber,
@@ -313,7 +313,7 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
         requestTimeoutMs: this.state.requestTimeoutMs,
       });
     };
-    watchPtyProcess(
+    watchPtyOutput(
       entry,
       async () => (handle.wait ? await handle.wait() : undefined),
       (result, error) =>

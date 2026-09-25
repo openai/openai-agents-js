@@ -17,8 +17,23 @@ export function applyDiff(
     return parseCreateDiff(diffLines);
   }
 
-  const { chunks } = parseUpdateDiff(diffLines, input);
-  return applyChunks(input, chunks);
+  const lineEnding = updateLineEnding(input);
+  const normalizedInput =
+    lineEnding === '\r\n' ? input.replace(/\r\n/g, '\n') : input;
+  const { chunks } = parseUpdateDiff(diffLines, normalizedInput);
+  return applyChunks(normalizedInput, chunks, lineEnding);
+}
+
+function updateLineEnding(input: string): '\n' | '\r\n' {
+  let hasNewline = false;
+  for (let index = 0; index < input.length; index += 1) {
+    if (input[index] !== '\n') continue;
+    hasNewline = true;
+    if (index === 0 || input[index - 1] !== '\r') {
+      return '\n';
+    }
+  }
+  return hasNewline ? '\r\n' : '\n';
 }
 
 type Chunk = { origIndex: number; delLines: string[]; insLines: string[] };
@@ -325,10 +340,18 @@ function findContext(
   eof: boolean,
 ): { newIndex: number; fuzz: number } {
   if (eof) {
-    const endStart = Math.max(0, lines.length - context.length);
-    const endMatch = findContextCore(lines, context, endStart);
+    const searchLines =
+      lines.length > 1 && lines[lines.length - 1] === ''
+        ? lines.slice(0, -1)
+        : lines;
+    const endStart = Math.max(0, searchLines.length - context.length);
+    const endMatch = findContextCore(searchLines, context, endStart);
     if (endMatch.newIndex !== -1) return endMatch;
-    const fallback = findContextCore(lines, context, start);
+    const fallback = findContextCore(
+      searchLines,
+      context,
+      Math.min(start, searchLines.length),
+    );
     return { newIndex: fallback.newIndex, fuzz: fallback.fuzz + 10000 };
   }
   return findContextCore(lines, context, start);
@@ -372,7 +395,11 @@ function equalsSlice(
   return true;
 }
 
-function applyChunks(input: string, chunks: Chunk[]): string {
+function applyChunks(
+  input: string,
+  chunks: Chunk[],
+  lineEnding: '\n' | '\r\n',
+): string {
   const origLines = input.split('\n');
   const destLines: string[] = [];
   let origIndex = 0;
@@ -400,6 +427,6 @@ function applyChunks(input: string, chunks: Chunk[]): string {
   }
 
   destLines.push(...origLines.slice(origIndex));
-  const result = destLines.join('\n');
+  const result = destLines.join(lineEnding);
   return result;
 }

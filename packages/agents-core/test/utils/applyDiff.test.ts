@@ -41,6 +41,45 @@ describe('applyDiff', () => {
     );
   });
 
+  it.each([
+    [
+      'insertion',
+      'alpha\r\nbeta\r\n',
+      '@@\n alpha\n+inserted\n beta',
+      'alpha\r\ninserted\r\nbeta\r\n',
+    ],
+    [
+      'replacement',
+      'alpha\r\nbeta\r\n',
+      '@@\n alpha\n-beta\n+gamma',
+      'alpha\r\ngamma\r\n',
+    ],
+    [
+      'EOF insertion without a final newline',
+      'alpha\r\nbeta',
+      '@@\n alpha\n beta\n+inserted',
+      'alpha\r\nbeta\r\ninserted',
+    ],
+    [
+      'EOF replacement without a final newline',
+      'alpha\r\nbeta',
+      '@@\n alpha\n-beta\n+gamma',
+      'alpha\r\ngamma',
+    ],
+  ])(
+    'preserves CRLF line endings for %s hunks',
+    (_name, input, diff, expected) => {
+      expect(applyDiff(input, diff)).toBe(expected);
+    },
+  );
+
+  it('preserves mixed line endings byte-for-byte outside inserted LF content', () => {
+    const input = 'alpha\r\nbeta\ngamma';
+    const diff = '@@\n alpha\r\n beta\n+inserted\n gamma';
+
+    expect(applyDiff(input, diff)).toBe('alpha\r\nbeta\ninserted\ngamma');
+  });
+
   it('applies V4A replacements with context', () => {
     const input = ['line1', 'line2', 'line3'].join('\n') + '\n';
     const diff = ['@@ line1', '-line2', '+updated', ' line3'].join('\n');
@@ -53,6 +92,35 @@ describe('applyDiff', () => {
     const diff = ['@@ keep', '-remove me', ' stay'].join('\n');
     const result = applyDiff(input, diff);
     expect(result).toBe(['keep', 'stay'].join('\n') + '\n');
+  });
+
+  it('appends EOF hunks without changing the trailing newline state', () => {
+    const diff = ['@@', '+c', '*** End of File'].join('\n');
+
+    expect(applyDiff('a\nb\n', diff)).toBe('a\nb\nc\n');
+    expect(applyDiff('a\nb', diff)).toBe('a\nb\nc');
+  });
+
+  it('matches EOF context at the final occurrence across multiple hunks', () => {
+    const input = 'start\nx\nfoo\ny\nfoo\n';
+    const diff = [
+      '@@',
+      '-start',
+      '+updated',
+      '@@',
+      ' foo',
+      '+added',
+      '*** End of File',
+    ].join('\n');
+
+    expect(applyDiff(input, diff)).toBe('updated\nx\nfoo\ny\nfoo\nadded\n');
+  });
+
+  it('preserves an intentional blank line before an EOF append', () => {
+    const input = 'a\n\n';
+    const diff = ['@@', '+b', '*** End of File'].join('\n');
+
+    expect(applyDiff(input, diff)).toBe('a\n\nb\n');
   });
 
   it('applies V4A context marker diffs (class method rename)', () => {

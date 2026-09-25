@@ -17,6 +17,10 @@ import {
 import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import {
+  getFunctionToolApprovalInput,
+  prepareFunctionToolInput,
+  setFunctionToolPreparedInput,
+  type FunctionToolPreparedInput,
   getSafeErrorType,
   getBoundToolInvocationRejectionMessage,
   getHostedMcpApprovalToolName,
@@ -40,6 +44,7 @@ import type {
 } from './clientMessages';
 import {
   defineRealtimeOutputGuardrail,
+  formatRealtimeGuardrailOutputInfo,
   getRealtimeGuardrailFeedbackMessage,
   getRealtimeGuardrailSettings,
   RealtimeOutputGuardrail,
@@ -247,6 +252,7 @@ type PreparedRealtimeAgentState<TBaseContext> = {
 };
 
 type PendingRealtimeFunctionCall<TBaseContext> = {
+  preparedInput?: FunctionToolPreparedInput;
   toolCall: TransportToolCallEvent;
   tool: RealtimeFunctionTool<TBaseContext>;
   agent: SessionRealtimeAgent<TBaseContext>;
@@ -577,6 +583,7 @@ export class RealtimeSession<
   }
 
   async #getSessionConfig(
+    phase: 'initial' | 'update',
     additionalConfig: Partial<RealtimeSessionConfig> = {},
     preparedAgent?: PreparedRealtimeAgentState<TBaseContext>,
     connectionGeneration?: number,
@@ -667,6 +674,16 @@ export class RealtimeSession<
       this.#lastSessionConfig = fullConfig;
     }
 
+    // Empty tool arrays retain their released transport semantics elsewhere.
+    // Only agent transitions without a target prompt explicitly revoke old tools.
+    // Keep this wire override out of the cache so later prompts can inherit tools.
+    if (phase === 'update' && configTools?.length === 0 && !fullConfig.prompt) {
+      return {
+        ...fullConfig,
+        providerData: { ...fullConfig.providerData, tools: [] },
+      };
+    }
+
     return fullConfig;
   }
 
@@ -684,7 +701,7 @@ export class RealtimeSession<
     overrides: Partial<RealtimeSessionConfig> = {},
   ): Promise<Partial<RealtimeSessionConfig>> {
     await this.#setCurrentAgent(this.initialAgent);
-    return this.#getSessionConfig({
+    return this.#getSessionConfig('initial', {
       ...(this.options.config ?? {}),
       ...(overrides ?? {}),
     });
@@ -723,7 +740,9 @@ export class RealtimeSession<
     this.emit('agent_handoff', this.#context, this.#currentAgent, newAgent);
 
     this.#applyPreparedAgent(prepared);
-    await this.#transport.updateSessionConfig(await this.#getSessionConfig());
+    await this.#transport.updateSessionConfig(
+      await this.#getSessionConfig('update'),
+    );
 
     return newAgent;
   }
@@ -749,6 +768,7 @@ export class RealtimeSession<
       return undefined;
     }
     const sessionConfig = await this.#getSessionConfig(
+      'update',
       {},
       prepared,
       invocation.connectionGeneration,
@@ -1056,6 +1076,7 @@ export class RealtimeSession<
     tool: RealtimeFunctionTool<TBaseContext>,
     agent: SessionRealtimeAgent<TBaseContext>,
     dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
+    preparedInput?: FunctionToolPreparedInput,
   ) {
     const toolCall = normalizeRealtimeFunctionCallId(incomingToolCall);
     const invocation = {
@@ -1080,6 +1101,7 @@ export class RealtimeSession<
         agent,
         dispatchSnapshot,
         invocation,
+        preparedInput,
       ),
     );
   }
@@ -1090,6 +1112,7 @@ export class RealtimeSession<
     agent: SessionRealtimeAgent<TBaseContext>,
     dispatchSnapshot: RealtimeDispatchSnapshot<TBaseContext>,
     invocation: CanonicalRealtimeToolInvocation,
+    preparedInput?: FunctionToolPreparedInput,
   ) {
     if (!this.#isCurrentRealtimeInvocation(invocation)) {
       return;
@@ -1112,13 +1135,24 @@ export class RealtimeSession<
       }
       argumentParseError = error;
     }
-    const forceApproval =
-      dynamicApprovalPolicy &&
-      (argumentParseError !== undefined ||
-        !hasInspectableFunctionToolArguments(parsedArgs));
     const existingApproval = dynamicApprovalPolicy
       ? getToolInvocationApproval(this.context, agent, tool, toolCall)
       : undefined;
+    if (
+      dynamicApprovalPolicy &&
+      existingApproval !== false &&
+      argumentParseError === undefined
+    ) {
+      preparedInput ??= prepareFunctionToolInput(tool, toolCall.arguments);
+      if (preparedInput?.result.success) {
+        parsedArgs = getFunctionToolApprovalInput(preparedInput.result.value);
+      }
+    }
+    const forceApproval =
+      dynamicApprovalPolicy &&
+      (argumentParseError !== undefined ||
+        preparedInput?.result.success === false ||
+        !hasInspectableFunctionToolArguments(parsedArgs));
     const needsApproval =
       forceApproval ||
       existingApproval !== undefined ||
@@ -1207,6 +1241,7 @@ export class RealtimeSession<
           approvalItem: trustedApprovalItem,
           fingerprint: invocation.fingerprint,
           connectionGeneration: invocation.connectionGeneration,
+          preparedInput,
         });
         this.#issuedApprovals.set(approvalItem, {
           kind: 'function',
@@ -1232,7 +1267,8 @@ export class RealtimeSession<
 
     this.#deletePendingFunctionCall(agent, toolCall.callId);
     if (argumentParseError !== undefined) {
-      const errorMessage = `An error occurred while parsing tool arguments. Please try again with valid JSON. Error: ${toErrorMessage(argumentParseError)}`;
+      const errorMessage =
+        'An error occurred while parsing tool arguments. Please try again with valid JSON.';
       this.#sendCommittedFunctionCallOutput(
         agent,
         invocation,
@@ -1267,6 +1303,10 @@ export class RealtimeSession<
     }
 
     this.#context.context.history = JSON.parse(JSON.stringify(this.#history)); // deep copy of the history
+    const details = { toolCall };
+    if (preparedInput) {
+      setFunctionToolPreparedInput(details, preparedInput);
+    }
     const result =
       inputGuardrailResult.type === 'reject'
         ? inputGuardrailResult.message
@@ -1274,9 +1314,7 @@ export class RealtimeSession<
             tool,
             runContext: this.#context,
             input: toolCall.arguments,
-            details: {
-              toolCall,
-            },
+            details,
           });
     if (!this.#isCurrentRealtimeInvocation(invocation)) {
       return;
@@ -1492,7 +1530,7 @@ export class RealtimeSession<
       }
       this.#interruptedByGuardrail[responseId] = true;
       const error = new OutputGuardrailTripwireTriggered(
-        `Output guardrail triggered: ${JSON.stringify(firstTripwireTriggered.output.outputInfo)}`,
+        `Output guardrail triggered: ${formatRealtimeGuardrailOutputInfo(firstTripwireTriggered.output.outputInfo)}`,
         firstTripwireTriggered,
       );
       this.emit('guardrail_tripped', this.#context, sourceAgent, error, {
@@ -1674,8 +1712,8 @@ export class RealtimeSession<
         };
         itemId = typeof lastItem?.id === 'string' ? lastItem.id : '';
       }
-      this.emit('agent_end', this.#context, this.#currentAgent, textOutput);
-      this.#currentAgent.emit('agent_end', this.#context, textOutput);
+      this.emit('agent_end', this.#context, sourceAgent, textOutput);
+      sourceAgent.emit('agent_end', this.#context, textOutput);
 
       this.#scheduleOutputGuardrails(
         textOutput,
@@ -1965,6 +2003,7 @@ export class RealtimeSession<
       this.#eventListenersAttached = true;
     }
     const initialSessionConfig = await this.#getSessionConfig(
+      'initial',
       this.options.config,
     );
     if (connectionGeneration !== this.#connectionGeneration) {
@@ -2253,6 +2292,7 @@ export class RealtimeSession<
         pending.tool,
         pending.agent,
         pending.dispatchSnapshot,
+        pending.preparedInput,
       );
     } else if (effectiveApprovalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysApprove) {
@@ -2326,6 +2366,7 @@ export class RealtimeSession<
         pending.tool,
         pending.agent,
         pending.dispatchSnapshot,
+        pending.preparedInput,
       );
     } else if (effectiveApprovalItem.rawItem.type === 'hosted_tool_call') {
       if (options.alwaysReject) {

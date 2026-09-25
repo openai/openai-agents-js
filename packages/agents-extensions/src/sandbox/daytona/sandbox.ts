@@ -79,7 +79,7 @@ import {
   serializeRemoteSandboxSessionState,
   truncateOutput,
   validateRemoteSandboxPathForManifest,
-  watchPtyProcess,
+  watchPtyOutput,
   readOptionalNumber,
   readOptionalNumberArray,
   readOptionalRecord,
@@ -352,29 +352,32 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
       rows: 24,
       onData: (data: Uint8Array | string) => appendPtyOutput(entry, data),
     });
-    if (handle.waitForConnection) {
-      await handle.waitForConnection();
-    }
+    try {
+      if (handle.waitForConnection) {
+        await handle.waitForConnection();
+      }
 
-    if (!handle.sendInput) {
+      if (!handle.sendInput) {
+        throw new SandboxUnsupportedFeatureError(
+          'DaytonaSandboxClient tty=true requires Daytona SDK PTY stdin support.',
+          {
+            provider: 'daytona',
+            feature: 'tty.stdin',
+          },
+        );
+      }
+      if (!handle.wait) {
+        throw new SandboxUnsupportedFeatureError(
+          'DaytonaSandboxClient tty=true requires Daytona SDK PTY wait support.',
+          {
+            provider: 'daytona',
+            feature: 'tty.wait',
+          },
+        );
+      }
+    } catch (error) {
       await this.terminatePtyHandle(handle, providerSessionId);
-      throw new SandboxUnsupportedFeatureError(
-        'DaytonaSandboxClient tty=true requires Daytona SDK PTY stdin support.',
-        {
-          provider: 'daytona',
-          feature: 'tty.stdin',
-        },
-      );
-    }
-    if (!handle.wait) {
-      await this.terminatePtyHandle(handle, providerSessionId);
-      throw new SandboxUnsupportedFeatureError(
-        'DaytonaSandboxClient tty=true requires Daytona SDK PTY wait support.',
-        {
-          provider: 'daytona',
-          feature: 'tty.wait',
-        },
-      );
+      throw error;
     }
     const waitForExit = handle.wait.bind(handle);
     entry.sendInput = async (chars) => {
@@ -394,7 +397,7 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
     if (pruned) {
       await pruned.terminate?.().catch(() => {});
     }
-    watchPtyProcess(
+    watchPtyOutput(
       entry,
       async () => await waitForExit(),
       (result, error) =>
@@ -1616,6 +1619,8 @@ async function createDaytonaClient(
     const { Daytona } = await import('@daytonaio/sdk');
     return adaptDaytonaClient(
       new Daytona({
+        // Preserve polling without acquiring a client-owned event connection.
+        useDeprecatedPolling: true,
         ...(options.apiKey ? { apiKey: options.apiKey } : {}),
         ...(options.apiUrl ? { apiUrl: options.apiUrl } : {}),
         ...(options.target ? { target: options.target } : {}),

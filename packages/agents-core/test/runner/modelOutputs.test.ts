@@ -510,8 +510,8 @@ describe('processModelResponse', () => {
     },
   );
 
-  it.each(['mcp_call', 'mcp_list_tools', 'mcp_approval_request'] as const)(
-    'rejects programmatic %s items before a deferred MCP server is loaded',
+  it.each(['mcp_call', 'mcp_approval_request'] as const)(
+    'rejects programmatic %s items after listing a deferred MCP server without loading it',
     async (mcpCallType) => {
       const mcpTool = hostedMcpTool({
         serverLabel: 'server',
@@ -526,34 +526,30 @@ describe('processModelResponse', () => {
         name: mcpCallType,
         status: 'completed',
         caller: { type: 'program', callerId: 'call_program' },
-        providerData:
-          mcpCallType === 'mcp_call'
-            ? {
-                type: mcpCallType,
-                id: 'mcp_call_programmatic',
-                server_label: 'server',
-                name: 'lookup',
-                arguments: '{}',
-              }
-            : mcpCallType === 'mcp_list_tools'
-              ? {
-                  type: mcpCallType,
-                  id: 'mcp_list_tools_programmatic',
-                  server_label: 'server',
-                  tools: [],
-                }
-              : {
-                  type: mcpCallType,
-                  id: 'mcp_approval_programmatic',
-                  server_label: 'server',
-                  name: 'lookup',
-                  arguments: '{}',
-                },
+        providerData: {
+          type: mcpCallType,
+          id: `${mcpCallType}_programmatic`,
+          server_label: 'server',
+          name: 'lookup',
+          arguments: '{}',
+        },
+      };
+      const listing: protocol.HostedToolCallItem = {
+        type: 'hosted_tool_call',
+        id: 'mcp_listing',
+        name: 'mcp_list_tools',
+        status: 'completed',
+        caller: { type: 'program', callerId: 'call_program' },
+        providerData: {
+          type: 'mcp_list_tools',
+          server_label: 'server',
+          tools: [],
+        },
       };
 
       expect(() =>
         processModelResponse(
-          { output: [programmaticMcpCall], usage: new Usage() },
+          { output: [listing, programmaticMcpCall], usage: new Usage() },
           TEST_AGENT,
           [mcpTool],
           [],
@@ -587,7 +583,7 @@ describe('processModelResponse', () => {
       await expect(
         processModelResponseAsync(
           {
-            output: [toolSearchCall, programmaticMcpCall],
+            output: [toolSearchCall, listing, programmaticMcpCall],
             usage: new Usage(),
           },
           TEST_AGENT,
@@ -757,6 +753,7 @@ describe('processModelResponse', () => {
     expect(result.toolsUsed).toEqual(['test']);
     expect(result.functions).toContainEqual({
       tool: TEST_TOOL,
+      mcpToolBinding: null,
       toolCall: TEST_MODEL_RESPONSE_WITH_FUNCTION.output[0],
     });
     expect(result.newItems[1]).toBeInstanceOf(MessageOutputItem);
@@ -1578,6 +1575,7 @@ describe('processModelResponse', () => {
       {
         toolCall: functionCall,
         tool: lookupAccount,
+        mcpToolBinding: null,
       },
     ]);
     expect((result.newItems[1] as ToolSearchOutputItem).rawItem).toMatchObject({
@@ -2676,6 +2674,7 @@ describe('processModelResponse', () => {
     expect(result.functions[0]).toEqual({
       toolCall: functionCall,
       tool: billingNamespace[0],
+      mcpToolBinding: null,
     });
     expect(result.toolsUsed).toEqual(['billing.lookup_account']);
   });
@@ -2764,6 +2763,7 @@ describe('processModelResponse', () => {
     expect(result.functions[0]).toEqual({
       toolCall: functionCall,
       tool: shippingEta,
+      mcpToolBinding: null,
     });
     expect(result.toolsUsed).toEqual(['get_shipping_eta']);
   });
@@ -2970,6 +2970,7 @@ describe('processModelResponse', () => {
       {
         toolCall: functionCall,
         tool: shippingEta,
+        mcpToolBinding: null,
       },
     ]);
   });
@@ -3022,6 +3023,7 @@ describe('processModelResponse', () => {
           namespace: 'crm',
         },
         tool: crmLookup,
+        mcpToolBinding: null,
       },
     ]);
     expect(result.handoffs).toEqual([]);
@@ -3077,6 +3079,7 @@ describe('processModelResponse', () => {
             namespace: 'crm',
           },
           tool: crmLookup,
+          mcpToolBinding: null,
         },
       ]);
       expect(result.handoffs).toEqual([]);
@@ -3264,7 +3267,7 @@ describe('processModelResponse', () => {
     expect(handoffResult.functions).toEqual([]);
     expect(deferredResult.handoffs).toEqual([]);
     expect(deferredResult.functions).toEqual([
-      { toolCall: deferredCall, tool: deferredLookup },
+      { toolCall: deferredCall, tool: deferredLookup, mcpToolBinding: null },
     ]);
   });
 
@@ -3342,6 +3345,7 @@ describe('processModelResponse', () => {
       {
         toolCall: functionCall,
         tool: crmLookup,
+        mcpToolBinding: null,
       },
     ]);
     expect(result.handoffs).toEqual([]);

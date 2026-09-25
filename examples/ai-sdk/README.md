@@ -18,3 +18,7 @@ These examples show how to wrap models from the [AI SDK](https://www.npmjs.com/p
 - Export the relevant API key(s) shown in the table above before running a script.
 
 Once the environment variable is set, run the corresponding command from the repository root. Each script prints the final output produced by the Agents runner.
+
+## Runtime requirements
+
+Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start:gpt-5`, `start:retry`, `start:stream`, `start:image-tool-output`.

@@ -74,3 +74,7 @@ This directory contains small scripts that demonstrate features of the Agents SD
   ```bash
   pnpm -F basic start
   ```
+
+## Runtime requirements
+
+Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start`, `start:agent-lifecycle-example`, `start:chat`, `start:dynamic-system-prompt`, `start:hello-world`, `start:hello-world-gpt-5`, `start:lifecycle-example`, `start:local-image`, `start:image-tool-output`, `start:file-tool-output`, `start:previous-response-id`, `start:retry`, `start:remote-image`, `start:remote-pdf`, `start:stream-items`, `start:stream-ws`, `start:stream-text`, `start:json-schema-output-type`, `start:tool-use-behavior`, `start:tools`, `start:reasoning`, `start:local-file`, `start:conversations`.

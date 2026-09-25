@@ -6,8 +6,19 @@ import {
   getInputItems,
   convertToOutputItem,
 } from '../src/openaiResponsesModel';
+import {
+  getInputItems as converterGetInputItems,
+  convertToOutputItem as converterConvertToOutputItem,
+} from '../src/openaiResponsesConverter';
 import { UserError } from '@openai/agents-core';
 import logger from '../src/logger';
+
+describe('Responses item conversion exports', () => {
+  it('preserves helper identity through the model module', () => {
+    expect(getInputItems).toBe(converterGetInputItems);
+    expect(convertToOutputItem).toBe(converterConvertToOutputItem);
+  });
+});
 
 describe('getToolChoice', () => {
   it('returns default choices', () => {
@@ -628,6 +639,22 @@ describe('convertTool', () => {
 });
 
 describe('getInputItems', () => {
+  it('keeps SDK tool-search ownership out of provider input and output conversion', () => {
+    const raw = {
+      type: 'tool_search_output' as const,
+      id: 'search-output',
+      execution: 'server' as const,
+      status: 'completed',
+      tools: [],
+    };
+    const owned = { ...raw, toolSearchAgentName: 'Owner' };
+    expect(getInputItems([owned])).toEqual(getInputItems([raw]));
+    expect(owned.toolSearchAgentName).toBe('Owner');
+    expect(
+      convertToOutputItem(getInputItems([owned]) as any)[0],
+    ).not.toHaveProperty('toolSearchAgentName');
+  });
+
   it('replays caller linkage on MCP approval requests and responses', () => {
     expect(
       getInputItems([

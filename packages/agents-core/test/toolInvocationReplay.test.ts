@@ -1466,7 +1466,7 @@ describe('tool invocation replay binding', () => {
     const runner = new Runner();
 
     const interrupted = await runner.run(agent, 'start');
-    expect(screenshot).toHaveBeenCalledTimes(2);
+    expect(screenshot).toHaveBeenCalledTimes(1);
     const serialized = interrupted.state.toJSON() as any;
     serialized.$schemaVersion = '1.17';
     delete serialized.currentResponseGeneratedItemOwnership;
@@ -1481,7 +1481,7 @@ describe('tool invocation replay binding', () => {
     const result = await runner.run(agent, restored);
 
     expect(result.finalOutput).toBe('done');
-    expect(screenshot).toHaveBeenCalledTimes(2);
+    expect(screenshot).toHaveBeenCalledTimes(1);
   });
 
   it('reconstructs unapproved apply-patch completion from schema 1.17 state', async () => {

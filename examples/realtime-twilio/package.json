@@ -2,13 +2,14 @@
   "private": true,
   "name": "realtime-twilio",
   "dependencies": {
-    "@fastify/formbody": "^8.0.2",
-    "@fastify/websocket": "^11.1.0",
+    "@fastify/formbody": "^9.0.0",
+    "@fastify/websocket": "^11.3.0",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "dotenv": "^16.5.0",
-    "fastify": "^5.8.5",
-    "ws": "^8.21.0",
+    "fastify": "^5.12.3",
+    "twilio": "^6.1.1",
+    "ws": "^8.21.3",
     "zod": "^4.0.0"
   },
   "scripts": {

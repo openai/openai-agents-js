@@ -98,6 +98,7 @@ function createProjects(reviewTestProfile: boolean) {
         maxConcurrency: 4,
         include: [
           'helpers/tests/consoleGuard.test.ts',
+          'integration-tests/cloudflare-workers/worker.test.ts',
           'helpers/vitest/codeChangeVerificationPolicy.test.ts',
           'helpers/vitest/reviewTestProfile.test.ts',
           'helpers/vitest/testConcurrency.test.ts',
@@ -107,6 +108,10 @@ function createProjects(reviewTestProfile: boolean) {
           'scripts/run-integration-tests-managed.test.mjs',
           'scripts/workflow-contracts.test.mjs',
           'docs/src/scripts/headingAnchors.test.ts',
+          'examples/agent-patterns/human-in-the-loop-server.test.ts',
+          'examples/realtime-twilio-sip/server.test.ts',
+          'examples/realtime-twilio/server.test.ts',
+          'examples/tools/local-shell.test.ts',
         ],
       },
     },
@@ -139,7 +144,6 @@ export default defineConfig(({ mode }) => {
       coverage: {
         provider: 'v8',
         reporter: ['text', 'html', 'json', 'json-summary', 'lcov'],
-        all: true,
         include: ['packages/**/src/**/*.ts'],
         exclude: ['**/*.d.ts', 'packages/**/test/**', 'packages/**/dist/**'],
       },

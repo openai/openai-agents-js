@@ -21,6 +21,7 @@ import type { ModelInputData } from './conversation';
 import type { Span } from '../tracing/spans';
 import type { Trace } from '../tracing/traces';
 import type { ToolNameCollisionPolicy } from './runConfig';
+import { getMcpToolBinding, type FunctionToolRecipient } from '../toolIdentity';
 
 export type ToolRunHandoff = {
   toolCall: protocol.FunctionCallItem;
@@ -30,6 +31,8 @@ export type ToolRunHandoff = {
 export type ToolRunFunction<TContext = UnknownContext> = {
   toolCall: protocol.FunctionCallItem;
   tool: FunctionTool<TContext>;
+  /** @internal Original recipient, retained independently of the current callable. */
+  mcpToolBinding?: FunctionToolRecipient;
   /** @internal Exact prepared function-tool snapshot used to resolve this call. */
   availableFunctionTools?: FunctionTool<TContext>[];
   /** @internal Preserve a trusted runtime-loaded handler during sandbox tool rebinding. */
@@ -42,10 +45,15 @@ export function createToolRunFunction<TContext>(args: {
   tool: FunctionTool<TContext>;
   availableFunctionTools: FunctionTool<TContext>[];
   preserveToolOnExecutionRehydration?: boolean;
+  mcpToolBinding?: FunctionToolRecipient;
 }): ToolRunFunction<TContext> {
   const toolRun: ToolRunFunction<TContext> = {
     toolCall: args.toolCall,
     tool: args.tool,
+    mcpToolBinding:
+      args.mcpToolBinding === undefined
+        ? getMcpToolBinding(args.tool)
+        : args.mcpToolBinding,
   };
   Object.defineProperty(toolRun, 'availableFunctionTools', {
     value: args.availableFunctionTools,
@@ -63,6 +71,7 @@ export function createToolRunFunction<TContext>(args: {
 export type ToolRunFunctionNotFound = {
   toolCall: protocol.FunctionCallItem;
   toolName: string;
+  reason?: 'not_loaded';
 };
 
 export type ToolRunComputer = {

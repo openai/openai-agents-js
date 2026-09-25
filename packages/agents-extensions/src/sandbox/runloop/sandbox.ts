@@ -2754,9 +2754,7 @@ function buildShellCommand(
     assertShellEnvironmentName(key);
     return `export ${key}=${shellQuote(value)}`;
   });
-  const shellCommand = [`cd ${shellQuote(cwd)}`, ...exports, command].join(
-    ' && ',
-  );
+  const shellCommand = `cd ${shellQuote(cwd)} || exit $?\n${[...exports, command].join(' && ')}`;
   return runloopShellCommandForUser(shellCommand, user, userParameters);
 }
 

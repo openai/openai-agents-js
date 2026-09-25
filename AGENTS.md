@@ -13,48 +13,31 @@ This guide helps new contributors get started with the OpenAI Agents JS monorepo
 
 ## Policies & Mandatory Rules
 
+### Security Requirements
+
+Follow [SECURITY.md](SECURITY.md) for repository scope and private vulnerability reporting, and [CONTRIBUTING.md](CONTRIBUTING.md#security) for contributor security practices. These requirements guide work; their presence does not prove that GitHub or registry controls are configured or that a security scan has completed.
+
+- **Private reporting:** Keep suspected undisclosed vulnerabilities and sensitive evidence out of public issues, pull requests, comments, logs, and artifacts. Use the reporting route in `SECURITY.md`; ordinary PR and review instructions do not authorize public disclosure.
+- **Secrets and data:** Never commit or print real credentials, authorization headers, cookies, signed URLs, or customer data. Use synthetic fixtures and redact prompts, tool inputs and outputs, audio, traces, errors, and serialized state before sharing. If a secret is exposed, stop propagating it, notify the responsible maintainer privately, and arrange revocation or rotation; removing the text is insufficient.
+- **Credential boundaries:** Keep standard API keys and other long-lived secrets out of browser bundles and client examples. Use server-side credentials and the supported short-lived client credential flow when a browser integration needs direct access. Preserve redaction and tracing opt-outs, and verify sensitive-data handling across success, error, streaming, retry, and resume paths affected by a change.
+- **Sensitive changes:** Request explicit maintainer security review for changes to authentication, credential or header handling, endpoints or redirects, uploads, deserialization, tool approvals, MCP execution, sandbox paths or mounts, persistence, logging, tracing, dependencies, CI, or publishing. Describe the affected trust boundary and include focused regression evidence for concrete SDK-owned risks within the accepted scope.
+- **Dependencies:** Justify new dependencies and review their source, maintenance, transitive changes, and install scripts. Inspect manifest and lockfile diffs together. Preserve configured release-age cooldowns for ordinary updates without delaying security updates; do not invent a cooldown or treat an alert's presence or absence as proof of runtime exploitability. Escalate actionable findings and record approved exceptions with an owner, rationale, mitigation, and expiry instead of silently dismissing them.
+- **CI isolation:** Treat pull request code and metadata as untrusted. Do not expose secrets or write-capable tokens to untrusted code, execute untrusted checkout content in privileged workflows, or interpolate untrusted metadata into shell commands. Keep `GITHUB_TOKEN` permissions explicit and minimal, pin third-party actions to full commit SHAs, and preserve required checks, secret scanning, push protection, code scanning, and contributor approval controls. Do not bypass a failing security check to make CI pass.
+- **Release integrity:** Changes to release workflows and publishing configuration require code-owner coverage and required code-owner review on release PRs. A separate environment-reviewer approval gate is not required by the shared release policy. Preserve branch and tag restrictions, trusted-publisher bindings, OIDC publishing, and provenance controls; do not substitute long-lived publishing tokens. Verify registry bindings and published artifact provenance separately from workflow configuration, and escalate missing controls rather than claiming compliance from documentation alone.
+- **Review evidence:** Record what was reviewed, the revision, coverage limits, checks performed, and unresolved findings. A completed scan does not clear findings or establish overall compliance. Keep unverified controls and unapproved exceptions explicitly unresolved; do not convert proposed response targets into promised deadlines.
+
 ### Mandatory Skill Usage
 
-Repository skills are stored under `.agents/skills/`. A reference such as `$<skill-name>` in this file is a repository instruction reference, not a request for manual user invocation. When a rule requires a skill, read `.agents/skills/<skill-name>/SKILL.md` completely before taking task actions, follow its instructions, and resolve referenced files relative to that skill directory.
+Repository skills are stored under `.agents/skills/`. References below authorize their use when the stated condition applies; no separate manual invocation is needed unless explicitly required. Read the selected `SKILL.md`, then only the supporting references needed for its route. User instructions and already-approved scope take precedence over skill defaults, subject to applicable permissions. Do not repeat approval already given for local implementation, review, or verification.
 
-#### `$code-change-verification`
+- **`$implementation-strategy`:** Use before changing or reviewing SDK runtime behavior, public APIs, configuration, persisted schemas, or wire protocols. Record required behavior, compatibility, unsupported cases, and an existing alternative in a short scope contract. Revisit it when feedback changes the contract or implementation shape. Independent reviewers inherit that contract and report uncertainty instead of rerunning strategy.
+- **`$implementation-final-review`:** After focused checks, use for runtime code, tests, examples, build/test behavior, and behavior-impacting docs. Its entrypoint owns the lightweight/ordinary/high-risk classification: behavior changes normally require independent review; only demonstrably non-semantic changes can omit it. Finish required review before broad final checks. Planning, investigation, and report-only tasks do not invoke this workflow. Repo-meta changes use applicable skill validation; implementing changes to decision-making guidance requires realistic scenario checks and an independent pass. Report-only assessments can use existing evidence without starting an implementation review.
+- **`$code-change-verification`:** Run the final SDK stack for changes under `packages/`, `examples/`, `helpers/`, `scripts/`, or `integration-tests/`, and root build/test configuration such as `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig*.json`, `tsc-multi.json`, `eslint.config.*`, or `vitest*.ts`. Docs-only and repo-meta changes can skip it unless they affect build/test behavior or the user requests the full stack. Lightweight review does not waive eligible SDK checks. The skill owns command order, sandbox execution, host-capacity checks, and retry rules.
+- **`$changeset-validation`:** When anything under `packages/` or `.changeset/` changes, create and validate an appropriate changeset covering every changed package before handoff. Use a Conventional Commit-style summary such as `fix: ...` or `feat: ...`. Complete final validation after required review, alongside `$code-change-verification`.
+- **`$openai-knowledge`:** Use when OpenAI API/platform behavior needs authoritative external evidence. Inspect local code for SDK-owned behavior; do not repeat unchanged external research for purely local implementation details.
+- **`$pr-draft-summary`:** After applicable review, changeset validation, and verification, generate the local PR draft for runtime code, tests, examples, build/test changes, or behavior-impacting docs, including uncommitted work. Skip repo-meta or docs without behavior impact, conversation-only tasks, or an explicit user opt-out. An explicit request for a draft takes precedence over automatic-trigger exclusions. A draft never authorizes a branch, commit, push, or PR creation.
 
-Run `$code-change-verification` before marking work complete when changes affect runtime code, tests, or build/test behavior.
-
-Run it when you change:
-
-- `packages/`, `examples/`, `helpers/`, `scripts/`, or `integration-tests/`
-- Root build/test config such as `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig*.json`, `eslint.config.*`, or `vitest*.ts`
-
-You can skip `$code-change-verification` for docs-only or repo-meta changes (for example, `docs/`, `.agents/`, `README.md`, `AGENTS.md`, `.github/`), unless a user explicitly asks to run the full verification stack.
-
-Treat `$code-change-verification` as the post-review final gate, not as an iterative review check. When `$implementation-final-review` applies, satisfy its clean-review condition before starting the repository-wide install, build, lint, typecheck, test, examples, integration, and format-check stack. Immediately before starting that stack, use available read-only task or process evidence to check for another broad test, typecheck, build, examples, or integration command already running on the same host. When concrete contention is visible, keep making progress on review, remediation, evidence preparation, or focused checks and defer the broad stack until capacity is available. Do not add a repository lock, host-wide mutex, sentinel file, or user-triggered `finalize` step. Lack of host telemetry alone is not a blocker.
-
-#### `$changeset-validation`
-
-When you change anything under `packages/` or touch `.changeset/`, use `$changeset-validation` to create and validate the changeset before you treat the code as final. Codex must ensure an appropriate changeset exists that covers every changed package, and run this skill alongside `$code-change-verification` ahead of handoff. When writing the changeset summary, use a Conventional Commit-style message (for example, `fix: ...` or `feat: ...`) so it can serve as a commit title.
-
-#### `$openai-knowledge`
-
-When working on OpenAI API or OpenAI platform integrations in this repo (Responses API, tools, streaming, Realtime API, auth, models, rate limits, MCP, Agents SDK/ChatGPT Apps SDK), use `$openai-knowledge` to pull authoritative docs via the OpenAI Developer Docs MCP server (and guide setup if it is not configured).
-
-#### `$implementation-strategy`
-
-Before changing or reviewing runtime code, exported APIs, external configuration, persisted schemas, wire protocols, or other user-facing behavior, use `$implementation-strategy` to decide the compatibility boundary and implementation shape. Before coding, write an implementation scope contract that states the required behavior, compatibility requirements, intentionally unsupported cases and their failure behavior, and an already-supported alternative for those cases or that none exists. Treat this contract as a short, updateable engineering decision record, not as a new public API promise. During review, use the skill before requesting compatibility layers, migrations, new abstractions, or broader refactors.
-
-Repeat the skill before editing each new review-feedback batch; an earlier strategy decision is stale when a comment would widen the supported contract or add another compatibility branch, resolver condition, or test permutation. Judge breaking changes against the latest release tag, not unreleased branch-local churn. Interfaces introduced or changed after the latest release tag may be rewritten without compatibility shims unless they already have a released or otherwise supported durable-state consumer, or the user explicitly asks for a migration path.
-
-An independent reviewer dispatched by `$implementation-final-review` must not invoke `$implementation-strategy` again when its complete reviewer packet contains the parent-prepared implementation scope contract, current compatibility boundary, and resolved base. For that read-only review, the parent invocation satisfies the strategy preparation requirement; the reviewer validates the supplied contract against the complete diff and reports a missing or inconsistent packet instead of reconstructing the workflow. This exception does not apply to the implementer or to a reviewer asked to propose a widened contract.
-
-#### `$implementation-final-review`
-
-After implementing runtime code, tests, examples, build/test behavior, or behavior-impacting docs and completing focused tests, run `$implementation-final-review` before final `$changeset-validation`, `$code-change-verification`, and `$pr-draft-summary` work and before declaring the task complete. Do not start repository-wide lint, typecheck, tests, builds, examples, integration suites, or format checks while the independent review is incomplete or finding-bearing. This repository instruction authorizes automatic invocation without a separate user mention. Do not invoke it for planning, investigation, review, or report-only tasks, repo-meta changes, or docs without behavior impact. The skill's clean-review gate does not replace any other mandatory repository skill or verification gate.
-
-#### `$pr-draft-summary`
-
-Before sending the final response for a task, inspect the actual task diff. If it includes runtime code, tests, examples, build/test configuration, or docs with behavior impact, invoke `$pr-draft-summary` to generate the required PR summary block, branch suggestion, title, and draft description. This is a mandatory close-out gate regardless of the perceived size of the change; do not classify an eligible runtime, test, example, or build/test configuration change as trivial. Run it after any required `$code-change-verification` and `$changeset-validation` work.
-
-Skip `$pr-draft-summary` only when no eligible files changed, every change is limited to repo metadata or docs without behavior impact, the task is conversation-only, or the user explicitly says not to include the PR draft block.
+Continue authorized local work through fixes, applicable review, verification, and handoff. Stop for a concrete unresolved contract or scope decision, missing authority, or an external blocker. When a skill causes a stop, identify the exact instruction and explain the missing decision; do not ask for a generic continuation prompt. Never push, open a PR, or otherwise mutate GitHub.
 
 ### Documentation Change Verification Tiers
 
@@ -90,15 +73,9 @@ Determine whether documentation is required separately from deciding which pull 
 
 ### Scope Discipline and Complexity Reset
 
-- Implement the narrowest explicitly stated set of behaviors that satisfies the request. Do not interpret every shape accepted by TypeScript structural typing, an overloaded or generic API, or a third-party interface unless those shapes are required by the task or supported behavior shipped in the latest release.
-- Prefer adapting the required case into an existing pipeline over creating a parallel contract, resolver, conversion path, or source of truth. Continue to derive schema, validation, identity, documentation, package exports, and invocation from the existing source-of-truth functions, types, or modules.
-- Every new abstraction, state field, cached classification, compatibility branch, or dispatch mode must map to a stated requirement, released contract, supported durable boundary, or verified runtime risk. Remove it if that mapping cannot be stated concretely.
-- Treat a second related review finding that would add another condition, protocol hop, compatibility case, or test permutation to the same abstraction as a mandatory complexity-reset checkpoint, not another item to patch. Continue the design only when concrete evidence shows that the additional case belongs to the supported contract.
-- When that signal appears, stop extending the current design. Re-read the original requirement, group all findings by root cause, compare the complete diff with the merge base of the intended target branch or with the latest release tag when it is the compatibility baseline, and replace branch-local machinery with a narrower contract. Existing unreleased code and tests are not sunk costs. Perform this reset proactively; do not wait for the user or reviewer to request it.
-- A released-version reproducer proves reachability, not a supported contract. Verify the exact shape against documentation, tests, examples, intentional public typing, explicit maintainer intent, or concrete user reliance before adding compatibility machinery.
-- Prefer an actionable error during construction or validation, before a model/tool request, persisted mutation, or other side effect, and an existing supported alternative (for example an explicit function wrapper, typed adapter, configuration, or lower-level API) over partially emulating a broad interface. Do not add another alternative when an adequate supported one already exists.
-- A growing diff is not itself proof of overengineering, but unexpected cross-package spread, duplicated metadata, combinatorial tests, or repeated special cases requires restarting the design review from the original requirement before more code is added.
-- Before handoff, verify that the patch has one source of truth per concern, tests the required behavior and intentionally unsupported cases, and does not accidentally make every constructible type or runtime combination part of the supported SDK behavior.
+Implement the smallest supported behavior requested. Reuse existing sources of truth; every new abstraction, state field, compatibility branch, or test permutation needs a requirement, released contract, durable boundary, or verified risk. Constructibility and a released-version reproducer alone do not establish support.
+
+When related findings repeatedly expand the same design, stop adding conditions, group root causes, and reassess the complete diff against the original requirement. A second related finding that adds another compatibility case, protocol hop, or test permutation triggers this reset. Prefer deleting unsupported branch-local machinery or rejecting unsupported inputs before side effects with an existing alternative. Follow `$implementation-strategy` for the detailed reset procedure; preserve released contracts and unrelated user changes.
 
 ### ExecPlans
 
@@ -151,7 +128,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - `packages/agents-extensions`: Extensions for agent workflows.
 - `docs`: Documentation site powered by Astro.
 - `examples`: Sample projects demonstrating usage patterns.
-- `scripts`: Automation scripts (`dev.mts`, `embedMeta.ts`).
+- `scripts`: Automation scripts (`dev.mts`, `embedMeta.mts`).
 - `helpers`: Shared utilities for testing and other internal use.
 
 ### Repo Structure & Important Files
@@ -161,7 +138,7 @@ The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 - Every TypeScript or TSX snippet shown in authored docs must come from a compilable source file under `examples/docs/`, be imported into MDX with `?raw`, and pass `pnpm -F docs-code build-check`. Do not add ad hoc TypeScript or TSX fenced blocks directly to MDX. If an example is not useful enough to maintain and build-check as a complete source file, explain the behavior in prose instead. Do not add artificial runtime side effects, such as `console.log`, solely to mark declarations as used; the `examples/docs/` TypeScript project permits unused declarations so documentation examples can stay focused on the behavior they teach.
 - `examples/`: Subdirectories (e.g. `basic`, `agent-patterns`) with their own `package.json` and start scripts.
 - `scripts/dev.mts`: Runs concurrent build-watchers and the docs dev server (`pnpm dev`).
-- `scripts/embedMeta.ts`: Generates `src/metadata.ts` for each package before build.
+- `scripts/embedMeta.mts`: Generates `src/metadata.ts` for each package before build.
 - `helpers/tests/`: Shared test utilities.
 - `.agents/references/`: Durable SDK maintainer architecture references. Start with [the reference map](.agents/references/README.md) and open only the files relevant to the affected boundary.
 - `README.md`: High-level overview and installation instructions.
@@ -215,133 +192,32 @@ Use this checklist when the touched code is in the relevant area. Add focused re
 
 ### Development Workflow
 
-1.  Stay in the user's current checkout and on the current branch unless the user explicitly asks for or approves a Git state change.
-2.  If the user explicitly requests a feature/fix branch, create one with a descriptive name:
-    ```bash
-    git checkout -b feat/<short-description>
-    ```
-3.  Make changes and add/update unit tests in `packages/<pkg>/test` unless doing so is truly infeasible.
-4.  Run `pnpm -r build-check` early to catch TypeScript errors across packages, tests, and examples.
-5.  When `$code-change-verification` applies (see Mandatory Skill Usage), run it to execute the full verification stack with the skill-defined phase barriers before considering the work complete.
-6.  Commit using Conventional Commits.
-7.  Push and open a pull request.
-8.  Before reporting eligible changes as complete, inspect the actual task diff and invoke `$pr-draft-summary` as the mandatory final handoff step unless the task falls under the documented skip cases.
+Stay in the current checkout and branch unless a Git state change is explicitly authorized. Implement the requested behavior, add meaningful regression coverage, and follow the applicable skills above through local handoff. Commit only when authorized, using Conventional Commits. Never push, open a PR, or otherwise mutate GitHub.
 
 ### Testing & Automated Checks
 
-Before submitting changes, ensure all checks pass and augment tests when you touch code:
+Use focused checks during iteration. Add tests for required behavior and concrete regressions, not to mirror implementation logic. Reuse passing checks for unchanged content; broaden or repeat them only when changes, failures, or unresolved concerns justify it. Run eligible final SDK verification after clean review and documentation checks according to their tiers. `$code-change-verification` owns the required final command sequence, including installation and build barriers; do not run broad builds or type checking merely to begin review. Explicit requests to run a suite outside implementation review remain supported.
 
-When `$code-change-verification` applies (see Mandatory Skill Usage), invoke it to run the required verification stack from the repository root. Rerun the full stack after fixes.
+- Use `pnpm exec vitest run <path>` for focused tests. See [CONTRIBUTING.md](CONTRIBUTING.md) and root `package.json` for test and development commands.
+- For provider-neutral agent workflow tests, prefer `ScriptedModel` over a new mock or fake `Model`. Prefer `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox calls. Keep a specialized double only for provider-wire conversion, malformed streams, controlled suspension/concurrency, or exact abort/lifecycle delivery that the scripted utilities cannot preserve; document that boundary in the test.
+- Keep machine-specific pnpm configuration outside the repository. Preserve the pnpm safety rules above and do not use watch mode for validation.
+- Code style follows `eslint.config.mjs` and Prettier. Do not manually hard-wrap Markdown/MDX prose. Comments must end with a period.
+- Integration setup is described in [integration-tests/README.md](integration-tests/README.md). Live API runs require the existing credential and execution permissions; running examples is not implicit in reading their source.
+- When editing GitHub Actions, verify the latest stable major versions of official actions before updating pins.
+- Evaluate review feedback against the requirement, source, and supported contracts before applying it.
 
-- Add or update unit tests for any code change unless it is truly infeasible; if something prevents adding tests, explain why in the PR.
-- For provider-neutral agent workflow tests, prefer `ScriptedModel` over adding a new mock or fake `Model`. Prefer `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox session calls. Keep a specialized double only for a boundary the scripted utilities cannot preserve, such as provider-wire conversion, malformed streams, controlled suspension or concurrency, or exact abort or lifecycle delivery, and document that reason in the test.
+### GitHub-ready Output
 
-#### Build and Type Checking
+Apply these rules to release readiness reports and text requested for pasting into GitHub, including comments, reviews, PR descriptions, and release notes. Ordinary conversational answers do not need this packaging.
 
-- Always run the full build first to validate the latest build outputs:
-  ```bash
-  pnpm build
-  ```
-  NEVER USE `-w` or other watch modes.
-- Run this early to catch TypeScript errors in packages, tests, and examples:
-  ```bash
-  pnpm -r build-check
-  ```
-
-#### Unit Tests
-
-- Run the full test suite:
-  ```bash
-  pnpm test
-  ```
-- Tests are located under each package in `packages/<pkg>/test/`.
-- The test script already sets `CI=1` to avoid watch mode.
-
-#### Integration Tests
-
-- Not required for typical contributions. These tests rely on a local npm registry (Verdaccio) and other environment setup.
-- To run locally only if needed:
-  ```bash
-  pnpm local-npm:start   # starts Verdaccio on :4873
-  pnpm local-npm:publish # public packages to the local repo
-  pnpm test:integration  # runs integration tests
-  ```
-
-See [this README](integration-tests/README.md) for details.
-
-#### Code Coverage
-
-- Generate coverage report:
-  ```bash
-  pnpm test:coverage
-  ```
-- Reports output to `coverage/`.
-
-#### Linting & Formatting
-
-- Run ESLint:
-  ```bash
-  pnpm lint
-  ```
-- Code style follows `eslint.config.mjs` and Prettier defaults.
-- Markdown / MDX prose should not be manually hard-wrapped; keep paragraphs unwrapped and let Prettier formatting decide line breaks.
-- Comments must end with a period.
-
-#### Build Details
-
-- Build runs `tsx scripts/embedMeta.ts` (prebuild) and `tsc` for each package.
-
-#### Mandatory Local Run Order
-
-When `$code-change-verification` applies (see Mandatory Skill Usage), run the full validation sequence locally via the `$code-change-verification` skill; do not skip any step, and preserve the skill-defined barriers (`pnpm i --frozen-lockfile`, `pnpm build`, then the remaining validation steps).
-
-Before opening a pull request, always run `$changeset-validation` to ensure all changed packages are covered by a changeset and the validation passes; if no packages were touched and a changeset is unnecessary, you can skip creating one.
-
-#### Pre-commit Hooks
-
-- You can skip failing precommit hooks using `--no-verify` during commit.
-
-### Utilities & Tips
-
-- `pnpm dev`: Runs concurrent watch builds for all packages and starts the docs dev server.
-  ```bash
-  pnpm dev
-  ```
-- Documentation site:
-  ```bash
-  pnpm docs:dev
-  pnpm docs:build
-  ```
-- Examples:
-  ```bash
-  pnpm examples:basic
-  pnpm examples:agents-as-tools
-  pnpm examples:deterministic
-  pnpm examples:tools-shell
-  pnpm examples:tools-apply-patch
-  # See root package.json "examples:*" scripts for full list
-  ```
-- Metadata embedding (prebuild):
-  ```bash
-  pnpm -F <package> build
-  # runs embedMeta.ts automatically
-  ```
-- Workspace scoping (operate on a single package):
-  ```bash
-  pnpm -F agents-core build
-  pnpm -F agents-openai test
-  ```
-- Use `pnpm -F <pkg>` to operate on a specific package.
-- Study `vitest.config.ts` for test patterns (e.g., setup files, aliasing).
-- Explore `scripts/embedMeta.ts` for metadata generation logic.
-- Examples in `examples/` are fully functional apps—run them to understand usage.
-- Docs in `docs/src/` use Astro and Starlight; authored content lives under `docs/src/content/docs/` and mirrors package APIs.
-- When editing GitHub Actions workflows, always web-search for the latest stable major versions of official actions (e.g., `actions/checkout`, `actions/setup-node`) before updating version pins.
-- Treat review feedback critically: reviewers can be wrong. Reproduce or verify each comment, cross-check with source docs, and only make changes when the feedback remains valid after your own validation.
+- Deliver the complete copy-ready artifact in one fenced `markdown` code block so the code-block copy action preserves literal Markdown instead of copying the app's rendered links. Use an outer fence longer than any fence inside the artifact. Honor an explicit request for raw text without fences. Do not wrap the artifact in a blockquote or repeat it as rendered Markdown outside the fence.
+- Keep the copied content valid GitHub-flavored Markdown. Do not include Codex-specific URIs, UI directives, citation markers, or nested or double-escaped link markup. Keep any host-required citations or annotations outside the copyable artifact.
+- Do not include absolute local filesystem paths or local-file links in the artifact. Use repository-relative paths in inline code when file evidence is useful; when the user requests no file paths, name the affected components or documentation sections instead.
+- In copy-ready GitHub text, use native issue and pull-request references: exactly `#123` for this repository and `owner/repo#123` for another repository. Do not qualify same-repository references as `openai/openai-agents-js#123`. Preserve closing forms such as `Fixes #123` or `Resolves #123`. Never wrap these references in Markdown links such as `[PR #123](https://github.com/owner/repo/pull/123)` or `[#123](...)`; those Codex-friendly links require manual cleanup after pasting into GitHub. Use descriptive Markdown links only for external resources or GitHub targets that cannot be expressed as a native issue or pull-request reference.
+- Before sending, inspect the literal content that will be copied: preserve identifiers, native GitHub references, and URL targets; remove app-generated link wrappers and local paths. Rebuild a corrupted link from its original target instead of escaping the rendered wrapper again. A formatting-only reissue preserves the reviewed commits and conclusions and does not imply a fresh remote review.
 
 ### Pull Request & Commit Guidelines
 
-- In copy-ready GitHub text, use native issue and pull-request references: exactly `#123` for this repository and `owner/repo#123` for another repository. Do not qualify same-repository references as `openai/openai-agents-js#123`. Preserve closing forms such as `Fixes #123` or `Resolves #123`. Never wrap these references in Markdown links such as `[PR #123](https://github.com/owner/repo/pull/123)` or `[#123](...)`; those Codex-friendly links require manual cleanup after pasting into GitHub. Use descriptive Markdown links only for external resources or GitHub targets that cannot be expressed as a native issue or pull-request reference.
 - Add focused regression tests for accepted new behavior when feasible. Update documentation or examples when the change would otherwise make existing guidance materially false, unsafe, or misleading; correct use depends on a non-obvious constraint, migration step, compatibility boundary, or operational warning; or the accepted feature would otherwise be practically unusable. Do not require optional documentation or examples solely for completeness.
 - Determine `docs/` delivery timing separately from documentation necessity. When required `docs/` content would describe behavior that is not yet in the latest published release, leave it out of the feature or bug-fix pull request and treat it as separately timed docs-only work, not as an incomplete current pull request. This exception does not automatically apply to examples or code-level documentation that ships with the changed API.
 - Use **Conventional Commits**:

@@ -47,7 +47,9 @@ function isTopLevelDeferredFunctionTool(
   );
 }
 
-function isDeferredHostedMcpTool(tool: Tool<any>): tool is HostedMCPTool<any> {
+export function isDeferredHostedMcpTool(
+  tool: Tool<any>,
+): tool is HostedMCPTool<any> {
   return (
     tool.type === 'hosted_tool' &&
     tool.providerData?.type === 'mcp' &&

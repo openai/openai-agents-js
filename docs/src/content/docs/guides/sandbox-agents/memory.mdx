@@ -3,7 +3,7 @@ title: Agent memory
 description: Preserve and reuse lessons from previous sandbox-agent runs.
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import conversationIdentityExample from '../../../../../../examples/docs/sandbox-agents/conversation-identity.ts?raw';
 import enableMemoryExample from '../../../../../../examples/docs/sandbox-agents/enable-memory.ts?raw';
 import generateMemoryExample from '../../../../../../examples/docs/sandbox-agents/generate-memory.ts?raw';
@@ -11,12 +11,6 @@ import memoryLayoutsExample from '../../../../../../examples/docs/sandbox-agents
 import readOnlyMemoryExample from '../../../../../../examples/docs/sandbox-agents/read-only-memory.ts?raw';
 
 Memory lets future sandbox-agent runs learn from prior runs. It is separate from the SDK's conversational [Session](/openai-agents-js/guides/sessions) memory, which stores message history. Memory distills lessons from prior runs into files in the sandbox workspace, so treat generated memory artifacts as retained data and apply the same sensitivity and retention policy you use for the workspace.
-
-<Aside type="caution" title="Beta feature">
-  Sandbox agents are in beta. API details, defaults, and supported capabilities
-  may change before general availability, and more advanced features are
-  expected over time.
-</Aside>
 
 Memory can reduce three kinds of cost for future runs:
 

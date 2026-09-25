@@ -10,8 +10,8 @@ import {
 } from '@openai/agents';
 
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
-import { createLookupCustomerProfileTool, fetchImageData } from './tools';
-import { runAutoTurn } from './auto-mode';
+import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
+import { runAutoTurn } from './auto-mode.ts';
 
 const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
 const AUTO_MODE = process.env.EXAMPLES_INTERACTIVE_MODE === 'auto';

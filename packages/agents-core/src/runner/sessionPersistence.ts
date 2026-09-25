@@ -1,9 +1,12 @@
 import { UserError } from '../errors';
 import {
   isOpenAIResponsesCompactionAwareSession,
+  isOpenAIResponsesCompactionOwnershipAwareSession,
   isRunContextAwareSession,
   isSessionHistoryTransactionAwareSession,
   type OpenAIResponsesCompactionArgs,
+  type OpenAIResponsesCompactionResult,
+  type OpenAIResponsesCompactionAwareSession,
   type Session,
   type SessionHistoryTransaction,
   type SessionInputCallback,
@@ -36,7 +39,10 @@ import {
   type ReasoningItemIdPolicy,
 } from './items';
 import logger, { logModelAndToolActionWarning } from '../logger';
-import { getRunStateUsageRecorder } from './usageTracking';
+import {
+  consumeModelFailureUsage,
+  getRunStateUsageRecorder,
+} from './usageTracking';
 import {
   buildRunItemPersistencePlan as buildCanonicalRunItemPersistencePlan,
   getBlockedOutputSessionSnapshotRunItems,
@@ -75,9 +81,73 @@ export type ResumedSessionWritePreparation = {
   readonly state: RunState<any, any>;
   readonly sessionId: string;
   readonly reasoningItemIdPolicy: ReasoningItemIdPolicy;
+  handoffInput?: PendingSessionWrite['handoffInput'];
 };
 
 const SESSION_LIMIT_UNSET = Symbol('sessionLimitUnset');
+
+export type SessionCompactionState = {
+  session: Session;
+  ownership: object | null;
+  modelExchange?: Parameters<
+    OpenAIResponsesCompactionAwareSession['runCompaction']
+  >[3];
+};
+
+// Ownership survives same-live resume, but never RunState serialization or a different session.
+const sessionCompactionStates = new WeakMap<
+  RunState<any, any>,
+  SessionCompactionState
+>();
+
+export function getSessionCompactionState(
+  session: Session | undefined,
+  state?: RunState<any, any>,
+): SessionCompactionState | undefined {
+  if (!isOpenAIResponsesCompactionOwnershipAwareSession(session)) {
+    return undefined;
+  }
+  const existing = state && sessionCompactionStates.get(state);
+  if (existing?.session === session) {
+    return existing;
+  }
+  const binding = { session, ownership: null };
+  if (state) {
+    sessionCompactionStates.set(state, binding);
+  }
+  return binding;
+}
+
+export function bindSessionCompactionState(
+  state: RunState<any, any>,
+  binding: SessionCompactionState | undefined,
+): void {
+  if (binding) {
+    sessionCompactionStates.set(state, binding);
+  }
+}
+
+/** Capture final input now, but authorize compaction only after the response succeeds. */
+export function prepareSessionCompactionExchange(
+  session: Session | undefined,
+  state: RunState<any, any>,
+  input: AgentInputItem[],
+): (output: AgentInputItem[], responseId?: string) => void {
+  const binding = getSessionCompactionState(session, state);
+  if (!binding) {
+    return () => {};
+  }
+  binding.modelExchange = undefined;
+  const snapshot = structuredClone(input);
+  const reasoningItemIdPolicy = state._reasoningItemIdPolicy;
+  return (output, responseId) => {
+    binding.modelExchange = {
+      items: [...snapshot, ...structuredClone(output)],
+      responseId,
+      reasoningItemIdPolicy,
+    };
+  };
+}
 
 async function getSessionItems(
   session: Session,
@@ -99,7 +169,16 @@ async function addSessionItems(
   session: Session,
   items: AgentInputItem[],
   runContext: RunContext<any> | undefined,
+  compactionState?: SessionCompactionState,
 ): Promise<void> {
+  if (isOpenAIResponsesCompactionOwnershipAwareSession(session)) {
+    await session.addItemsWithCompactionOwnership(
+      items,
+      compactionState?.session === session ? compactionState.ownership : null,
+      runContext,
+    );
+    return;
+  }
   if (runContext && isRunContextAwareSession(session)) {
     await session.addItems(items, runContext);
     return;
@@ -382,6 +461,7 @@ function checkpointPreparedResumedSessionWrite(options: {
   const pending: Extract<PendingSessionWrite, { phase: 'prepared' }> = {
     phase: 'prepared',
     ...pendingItems,
+    handoffInput: preparation.handoffInput,
     terminalToolFinalization:
       capturePendingSessionWriteTerminalFinalization(state),
   };
@@ -451,6 +531,7 @@ async function appendPreparedResumedSessionWrite(options: {
     session,
     getPendingSessionWriteAppendItems(state, pending),
     state._context,
+    getSessionCompactionState(session, state),
   );
 }
 
@@ -547,7 +628,12 @@ export async function reconcilePendingSessionWriteBeforeRun(
       ...appendReady.comparableAppendItems,
     ];
     if (sessionItemArraysMatch(currentItems, appendReady.beforeItems)) {
-      await addSessionItems(session, appendItems, state._context);
+      await addSessionItems(
+        session,
+        appendItems,
+        state._context,
+        getSessionCompactionState(session, state),
+      );
     } else if (!sessionItemArraysMatch(currentItems, expectedAfterItems)) {
       throw new UserError(
         'Session history changed while a resumed write was unacknowledged and cannot be reconciled safely.',
@@ -757,7 +843,16 @@ function commitApprovedToolInputCompaction(
   state: RunState<any, any>,
   persistedItemCount: number,
 ): void {
-  state._currentTurnSessionWriteCompactedItemCount = persistedItemCount;
+  const handoffInput = state._pendingSessionWrite?.handoffInput;
+  if (handoffInput) {
+    const input = state._deserializeHandoffInput(handoffInput);
+    state._originalInput = input.originalInput;
+    state._replaceGeneratedItems(input.generatedItems);
+    state._currentTurnPersistedItemCount = input.generatedItems.length;
+  }
+  state._currentTurnSessionWriteCompactedItemCount = handoffInput
+    ? state._generatedItems.length
+    : persistedItemCount;
   state._pendingSessionWrite = undefined;
   clearPendingSessionWriteTerminalProducer(state);
 }
@@ -989,6 +1084,7 @@ export type SessionPersistenceTracker = {
 export function createSessionPersistenceTracker(options: {
   session?: Session;
   runContext?: RunContext<any>;
+  compactionState?: SessionCompactionState;
   hasCallModelInputFilter: boolean;
   persistInput?: typeof saveStreamInputToSession;
   resumingFromState?: boolean;
@@ -1139,7 +1235,16 @@ export function createSessionPersistenceTracker(options: {
           return;
         }
         this.persistedInput = true;
-        await persistInput(this.session, itemsToPersist, this.runContext);
+        if (options.compactionState) {
+          await persistInput(
+            this.session,
+            itemsToPersist,
+            this.runContext,
+            options.compactionState,
+          );
+        } else {
+          await persistInput(this.session, itemsToPersist, this.runContext);
+        }
       };
     };
   }
@@ -1607,6 +1712,7 @@ export async function saveStreamInputToSession(
   session: Session | undefined,
   sessionInputItems: AgentInputItem[] | undefined,
   runContext?: RunContext<any>,
+  compactionState?: SessionCompactionState,
 ): Promise<void> {
   if (!session) {
     return;
@@ -1627,7 +1733,7 @@ export async function saveStreamInputToSession(
     );
     return;
   }
-  await addSessionItems(session, sanitizedInput, runContext);
+  await addSessionItems(session, sanitizedInput, runContext, compactionState);
 }
 
 export async function saveStreamResultToSession(
@@ -1777,6 +1883,7 @@ export async function prepareInputItemsWithSession(
     reasoningItemIdPolicy?: ReasoningItemIdPolicy;
   },
   runContext?: RunContext<any>,
+  compactionState?: SessionCompactionState,
 ): Promise<PreparedInputWithSessionResult> {
   const newInputItems = toAgentInputList(input);
   assertValidCompactionItems(newInputItems);
@@ -1792,9 +1899,18 @@ export async function prepareInputItemsWithSession(
   const preserveDroppedNewItems = options?.preserveDroppedNewItems ?? false;
   const reasoningItemIdPolicy = options?.reasoningItemIdPolicy;
 
-  const history = trimToLatestCompaction(
-    await getSessionItems(session, runContext),
-  );
+  let storedItems: AgentInputItem[];
+  if (
+    compactionState?.session === session &&
+    isOpenAIResponsesCompactionOwnershipAwareSession(session)
+  ) {
+    const snapshot = await session.getItemsWithCompactionOwnership(runContext);
+    compactionState.ownership = snapshot.ownership;
+    storedItems = snapshot.items;
+  } else {
+    storedItems = await getSessionItems(session, runContext);
+  }
+  const history = trimToLatestCompaction(storedItems);
   assertPersistableCompactionBoundary(history);
   if (!sessionInputCallback) {
     const historyForModelInput = history.map((item) =>
@@ -2186,7 +2302,12 @@ async function persistRunItemsToSession(options: {
         preparation: resumedSessionWritePreparation,
       });
     } else {
-      await addSessionItems(session, sanitizedItems, state._context);
+      await addSessionItems(
+        session,
+        sanitizedItems,
+        state._context,
+        getSessionCompactionState(session, state),
+      );
     }
   }
   if (resumedSessionWritePreparation) {
@@ -2453,9 +2574,26 @@ async function runCompactionOnSession(
           ...(typeof store === 'undefined' ? {} : { store }),
           ...(typeof compactionMode === 'undefined' ? {} : { compactionMode }),
         };
-  const compactionResult = isRunContextAwareSession(session)
-    ? await session.runCompaction(compactionArgs, state._context)
-    : await session.runCompaction(compactionArgs);
+  let compactionResult: OpenAIResponsesCompactionResult | null | void;
+  try {
+    compactionResult = isOpenAIResponsesCompactionOwnershipAwareSession(session)
+      ? await session.runCompaction(
+          compactionArgs,
+          state._context,
+          getSessionCompactionState(session, state)?.ownership ?? null,
+          getSessionCompactionState(session, state)?.modelExchange,
+        )
+      : isRunContextAwareSession(session)
+        ? await session.runCompaction(compactionArgs, state._context)
+        : await session.runCompaction(compactionArgs);
+  } catch (error) {
+    const usage = consumeModelFailureUsage(error);
+    if (usage) {
+      state._context.usage.add(usage);
+      getRunStateUsageRecorder(state)?.(usage);
+    }
+    throw error;
+  }
   if (!compactionResult) {
     return;
   }

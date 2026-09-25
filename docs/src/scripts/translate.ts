@@ -22,7 +22,7 @@ import {
   refreshLocalizedHeadingIds,
   validateTranslationHeadingInputs,
   writeCanonicalHeadingCopy,
-} from './headingAnchors';
+} from './headingAnchors.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -141,7 +141,7 @@ const languages: Record<string, string> = {
   zh: 'Chinese',
   // Add more languages here
 };
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-sol';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-6-astra';
 setDefaultOpenAIKey(process.env.OPENAI_API_KEY || '');
 const ENABLE_CODE_SNIPPET_EXCLUSION = true;
 
@@ -194,7 +194,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Hosted tool': '組み込みツール（Hosted）',
     'Hosted MCP server tools': 'リモート MCP サーバーツール',
     raw: '元',
-    'Realtime Agents': 'リアルタイムエージェント',
+    'Voice Agents': '音声エージェント',
     'Build your first agent in minutes.':
       'ほんの数分ではじめてのエージェントをつくることができます。',
     "Let's build": 'はじめる',
@@ -226,7 +226,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Hosted tool': '托管工具',
     'Hosted MCP server tools': '远程 MCP 服务器工具',
     raw: '原始',
-    'Realtime Agents': '实时智能体',
+    'Voice Agents': '语音智能体',
     'Build your first agent in minutes.': '几分钟内构建您的第一个智能体。',
     "Let's build": '开始构建',
     Overview: '概述',
@@ -261,7 +261,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
     'Hosted tool': '호스티드 툴',
     'Hosted MCP server tools': '호스티드 MCP 서버 도구',
     raw: '원문',
-    'Realtime Agents': '실시간 에이전트',
+    'Voice Agents': '음성 에이전트',
     'Build your first agent in minutes.':
       '단 몇 분 만에 첫 에이전트를 만들 수 있습니다',
     "Let's build": '시작하기',
@@ -270,6 +270,7 @@ const engToNonEngMapping: Record<string, Record<string, string>> = {
 
 const engToNonEngInstructions: Record<string, string[]> = {
   common: [
+    '* Preserve the scope, conditions, and strength of security and privacy warnings. Do not narrow a broad category of sensitive information to one example, such as API keys.',
     "* The term 'examples' must be code examples when the page mentions the code examples in the repo, it can be translated as either 'code examples' or 'sample code'.",
     "* The term 'primitives' can be translated as basic components.",
     "* When the terms 'instructions' and 'tools' are mentioned as API parameter names, they must be kept as is.",
@@ -281,6 +282,7 @@ const engToNonEngInstructions: Record<string, string[]> = {
     "* Don't put 。 at the end for non-sentence bullet points",
   ],
   zh: [
+    "* When 'secret' or 'secrets' refers to confidential information in general, translate it as '机密信息'. Use '密钥' only when the source specifically refers to keys, such as API keys or cryptographic keys.",
     "* The term 'result' in the Runner guide context must be translated as '运行结果' or '执行结果'",
     '* Use clear and concise Chinese expressions, avoiding overly formal or archaic language',
     '* For technical terms, prefer commonly accepted Chinese translations over literal translations',

@@ -1,3 +1,4 @@
+import { refreshPreparedAgentTools } from '../../agentToolConfiguration';
 import type { Agent, AgentOutputType } from '../../agent';
 import logger, { logModelAndToolActionWarning } from '../../logger';
 import { UserError } from '../../errors';
@@ -1048,6 +1049,7 @@ export class SandboxRuntimeManager<TContext> {
       for (const capability of cachedSandboxAgent.capabilities) {
         capability.bindTracingParent(tracingParent);
       }
+      refreshPreparedAgentTools(cachedSandboxAgent);
       return cachedSandboxAgent;
     }
 

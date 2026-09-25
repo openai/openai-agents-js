@@ -42,8 +42,7 @@ import helloWorldSandboxExample from '../../../../../examples/docs/toppage/sandb
 <Hero>
   <Fragment slot="title">OpenAI Agents SDK</Fragment>
   <Fragment slot="description">
-    소수의 기본 구성요소로 텍스트, 샌드박스, 실시간 에이전트를 구축할 수
-    있습니다.
+    소수의 기본 구성요소로 텍스트, 샌드박스, 음성 에이전트를 구축할 수 있습니다.
   </Fragment>
   <Fragment slot="cta">시작하기</Fragment>
 </Hero>
@@ -54,7 +53,7 @@ import helloWorldSandboxExample from '../../../../../examples/docs/toppage/sandb
 
 - **에이전트**: instructions와 tools를 갖춘 LLM
 - **샌드박스 에이전트**: 에이전트에 격리된 파일 시스템 작업공간, 셸 명령, 파일 편집, 스냅샷, 샌드박스 세션 상태를 결합한 구성요소
-- **실시간 에이전트**: 도구, 가드레일, 핸드오프, 대화 기록을 활용하는 지연 시간이 짧은 음성 상호작용 지원
+- **음성 에이전트**: 도구, 가드레일, 핸드오프, 대화 기록을 활용하는 지연 시간이 짧은 음성 상호작용 지원
 - **Agents as tools와 핸드오프**: 특정 작업을 다른 에이전트에 위임할 수 있는 구성요소
 - **가드레일**: 에이전트 입력을 검증할 수 있는 구성요소
 
@@ -71,7 +70,7 @@ SDK의 주요 기능은 다음과 같습니다.
 
 - **에이전트 루프**: 도구 호출을 처리하고 결과를 LLM으로 다시 전송하며 작업이 완료될 때까지 실행을 이어 가는 내장 에이전트 루프입니다.
 - **샌드박스 실행**: 작업공간이 필요한 경우 격리된 파일 시스템 작업공간, 셸 명령, 파일 편집, 스냅샷, 샌드박스 세션 상태를 사용하여 에이전트를 실행합니다.
-- **실시간 에이전트**: 자동 인터럽션(중단 처리) 감지, 컨텍스트 관리, 가드레일 등의 기능을 활용하여 지연 시간이 짧은 음성 상호작용을 구축합니다.
+- **음성 에이전트**: 자동 인터럽션(중단 처리) 감지, 컨텍스트 관리, 가드레일 등의 기능을 활용하여 지연 시간이 짧은 음성 상호작용을 구축합니다.
 - **TypeScript 우선**: 새로운 추상화를 학습할 필요 없이 TypeScript의 기본 언어 기능을 사용하여 에이전트를 오케스트레이션하고 연결합니다.
 - **Agents as tools와 핸드오프**: 여러 에이전트 사이에서 작업을 조율하고 위임하는 강력한 메커니즘입니다.
 - **가드레일**: 에이전트 실행과 병렬로 입력 검증 및 안전성 검사를 수행하고, 검사를 통과하지 못하면 즉시 실패 처리합니다.
@@ -145,7 +144,7 @@ export OPENAI_API_KEY=sk-...
 <LinkCard
   title="빠른 시작"
   href="/openai-agents-js/ko/guides/voice-agents/quickstart"
-  description="음성 상호작용을 구축하는 경우 실시간 에이전트로 시작합니다."
+  description="음성 상호작용을 구축하는 경우 음성 에이전트로 시작합니다."
 />
 
 ## 경로 선택
@@ -161,4 +160,4 @@ export OPENAI_API_KEY=sk-...
 | 턴 간 메모리 유지 | [에이전트 실행](/openai-agents-js/ko/guides/running-agents) 및 [세션](/openai-agents-js/ko/guides/sessions) |
 | OpenAI 모델, WebSocket 전송 또는 OpenAI 이외의 프로바이더 사용 | [모델](/openai-agents-js/ko/guides/models) |
 | 출력, 실행 항목, 인터럽션(중단 처리), 재개 상태 검토 | [실행 결과](/openai-agents-js/ko/guides/results) |
-| 지연 시간이 짧은 실시간 에이전트 구축 | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart) |
+| 지연 시간이 짧은 음성 에이전트 구축 | [빠른 시작](/openai-agents-js/ko/guides/voice-agents/quickstart) |

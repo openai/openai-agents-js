@@ -685,11 +685,13 @@ export function getTurnInput(
   ]);
 }
 
-export function trimToLatestCompaction(
-  items: AgentInputItem[],
-): AgentInputItem[] {
+export function trimToLatestCompaction<T extends AgentInputItem | RunItem>(
+  items: T[],
+): T[] {
   for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index]?.type === 'compaction') {
+    const item = items[index];
+    const rawItem = item && 'rawItem' in item ? item.rawItem : item;
+    if (rawItem?.type === 'compaction') {
       return items.slice(index);
     }
   }

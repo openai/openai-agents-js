@@ -653,6 +653,262 @@ describe('itemsToMessages', () => {
     ]);
   });
 
+  test('converges streamed and non-streamed assistant tool turn ordering', () => {
+    const reasoning = {
+      type: 'reasoning',
+      content: [],
+      rawContent: [{ type: 'reasoning_text', text: 'why' }],
+    } as protocol.ReasoningItem;
+    const assistantMessage = {
+      id: 'msg_1',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [
+        {
+          type: 'output_text',
+          text: 'Let me calculate.',
+          providerData: { type: 'ignored', text: 'ignored', textExtra: true },
+        },
+        {
+          type: 'refusal',
+          refusal: 'I cannot explain private reasoning.',
+          providerData: {
+            type: 'ignored',
+            refusal: 'ignored',
+            refusalExtra: true,
+          },
+        },
+        {
+          type: 'audio',
+          audio: 'encoded-audio',
+          providerData: { id: 'audio_1' },
+        },
+      ],
+      providerData: {
+        role: 'tool',
+        content: 'ignored',
+        tool_calls: [{ id: 'ignored' }],
+        audio: { id: 'ignored' },
+        messageExtra: true,
+        sharedExtra: 'message',
+      },
+    } as protocol.AssistantMessageItem;
+    const firstCall = {
+      type: 'function_call',
+      id: '1',
+      callId: 'call1',
+      name: 'first',
+      arguments: '{"value":1}',
+      status: 'completed',
+      providerData: {
+        role: 'tool',
+        content: 'ignored',
+        tool_calls: [{ id: 'ignored' }],
+        audio: { id: 'ignored' },
+        callExtra: true,
+        sharedExtra: 'call',
+      },
+    } as protocol.FunctionCallItem;
+    const secondCall = {
+      type: 'function_call',
+      id: '2',
+      callId: 'call2',
+      name: 'second',
+      arguments: '{"value":2}',
+      status: 'completed',
+    } as protocol.FunctionCallItem;
+    const results: protocol.FunctionCallResultItem[] = [
+      {
+        type: 'function_call_result',
+        id: '3',
+        callId: 'call1',
+        name: 'first',
+        status: 'completed',
+        output: 'one',
+      },
+      {
+        type: 'function_call_result',
+        id: '4',
+        callId: 'call2',
+        name: 'second',
+        status: 'completed',
+        output: 'two',
+      },
+    ];
+
+    const streamed = itemsToMessages([
+      reasoning,
+      firstCall,
+      secondCall,
+      assistantMessage,
+      ...results,
+    ]);
+    const nonStreamed = itemsToMessages([
+      reasoning,
+      assistantMessage,
+      firstCall,
+      secondCall,
+      ...results,
+    ]);
+
+    expect(streamed).toEqual(nonStreamed);
+    expect(streamed).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Let me calculate.', textExtra: true },
+          {
+            type: 'refusal',
+            refusal: 'I cannot explain private reasoning.',
+            refusalExtra: true,
+          },
+        ],
+        reasoning: 'why',
+        audio: { id: 'audio_1' },
+        messageExtra: true,
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: { name: 'first', arguments: '{"value":1}' },
+            callExtra: true,
+            sharedExtra: 'call',
+          },
+          {
+            id: 'call2',
+            type: 'function',
+            function: { name: 'second', arguments: '{"value":2}' },
+          },
+        ],
+        callExtra: true,
+        sharedExtra: 'call',
+      },
+      { role: 'tool', tool_call_id: 'call1', content: 'one' },
+      { role: 'tool', tool_call_id: 'call2', content: 'two' },
+    ]);
+  });
+
+  test('keeps an assistant message after a completed tool turn separate', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Calling the tool.' }],
+      } as protocol.AssistantMessageItem,
+      {
+        type: 'function_call_result',
+        id: '2',
+        callId: 'call1',
+        name: 'f',
+        status: 'completed',
+        output: 'result',
+      } as protocol.FunctionCallResultItem,
+      {
+        id: 'msg_2',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Done.' }],
+      } as protocol.AssistantMessageItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Calling the tool.' }],
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: { name: 'f', arguments: '{}' },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call1', content: 'result' },
+      { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
+    ]);
+  });
+
+  test('keeps a later reasoning tool turn separate from prior assistant content', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Earlier answer.' }],
+      } as protocol.AssistantMessageItem,
+      {
+        type: 'reasoning',
+        content: [],
+        rawContent: [{ type: 'reasoning_text', text: 'new reasoning' }],
+      } as protocol.ReasoningItem,
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+    ];
+
+    expect(itemsToMessages(items)).toEqual([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Earlier answer.' }],
+      },
+      {
+        role: 'assistant',
+        content: null,
+        reasoning: 'new reasoning',
+        tool_calls: [
+          {
+            id: 'call1',
+            type: 'function',
+            function: { name: 'f', arguments: '{}' },
+          },
+        ],
+      },
+    ]);
+  });
+
+  test('keeps strict assistant phase validation with pending tool calls', () => {
+    const items: protocol.ModelItem[] = [
+      {
+        type: 'function_call',
+        id: '1',
+        callId: 'call1',
+        name: 'f',
+        arguments: '{}',
+        status: 'completed',
+      } as protocol.FunctionCallItem,
+      {
+        id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        phase: 'commentary',
+        content: [{ type: 'output_text', text: 'Calling the tool.' }],
+      } as protocol.AssistantMessageItem,
+    ];
+
+    expect(() =>
+      itemsToMessages(items, { strictFeatureValidation: true }),
+    ).toThrow('Use the Responses API to preserve assistant message phases.');
+  });
+
   test('uses placeholder for empty structured function output by default', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const items: protocol.ModelItem[] = [

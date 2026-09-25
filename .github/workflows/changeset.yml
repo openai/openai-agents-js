@@ -14,7 +14,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      issues: write
       pull-requests: write
     steps:
       - name: Resolve PR context
@@ -53,7 +52,7 @@ jobs:
             "https://github.com/${PR_HEAD_REPO}.git" \
             "${PR_HEAD_SHA}"
       - name: Install pnpm
-        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
         with:
           run_install: false
       - name: Setup Node

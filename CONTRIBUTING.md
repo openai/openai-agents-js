@@ -1,6 +1,16 @@
 # Contributing to OpenAI Agents SDK
 
-Thank you for your interest in contributing to the OpenAI Agents SDK. This document outlines the process for reporting issues, proposing changes, and submitting pull requests.
+## Contribution policy
+
+We welcome bug reports, feature requests, minimal reproductions, and root-cause analysis through [GitHub issues](https://github.com/openai/openai-agents-js/issues).
+
+**Pull requests are limited to repository collaborators. We do not accept pull requests from non-collaborators**, including documentation or example changes. If you are not a collaborator, please open an issue instead of preparing a pull request. Include the affected version, expected and actual behavior, and a small, sanitized reproduction when applicable.
+
+Report suspected security vulnerabilities privately as described in [SECURITY.md](SECURITY.md), rather than in issues or pull requests.
+
+The development and pull request instructions below are for maintainers and repository collaborators.
+
+This guide covers community issue reports and development by repository collaborators.
 
 ## Repository structure
 
@@ -23,8 +33,8 @@ Other important directories:
 
 ### Prerequisites
 
-- Node.js 22 or later
-- pnpm 10 or later
+- Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later
+- The pnpm version pinned in the root `package.json` `packageManager` field
 
 ### Setup
 
@@ -54,7 +64,7 @@ Optionally, you can run the example app or docs site:
 
 ### Building
 
-After making code changes, run:
+To build the packages, run:
 
 ```bash
 pnpm build
@@ -74,13 +84,15 @@ Tests use Vitest and are located alongside source files in each package under `p
 
 For provider-neutral agent workflow tests, prefer `ScriptedModel` from the Core testing utilities instead of adding a new mock or fake `Model`. Use `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox session calls. Keep a specialized test double only when the test specifically requires provider-wire conversion, malformed streams, controlled suspension or concurrency, or an exact abort or lifecycle boundary that the scripted utilities cannot preserve; document that boundary in the test.
 
-During an iterative review, `pnpm test:review` skips the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. Choose review coverage by impact:
+`pnpm test:review` omits the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. These remain mandatory in final `pnpm test` verification. This broad subset does not replace focused checks during implementation review or the final suite.
 
-- For changes unrelated to every review-optional owner, run `pnpm test:review`.
-- For a leaf subsystem change, run `pnpm test:review` plus that subsystem's complete test file or directory with `pnpm test <path>`.
-- For cross-cutting core changes, shared test infrastructure changes, or an uncertain boundary, run the complete `pnpm test` suite.
+During iterative implementation review, run focused tests for the changed behavior and relevant subsystem boundaries with `pnpm exec vitest run <path>`, including applicable review-optional cases. Resolve uncertain coverage by tracing affected callers and dependencies and selecting the needed focused checks. Follow [implementation-final-review](.agents/skills/implementation-final-review/SKILL.md) for review sequencing; defer broad tests, builds, and repository-wide type checking until clean review. Then follow [code-change-verification](.agents/skills/code-change-verification/SKILL.md) for the complete final SDK stack. Explicit requests to run a suite outside implementation review remain supported.
 
-The reduced profile is only for preliminary feedback. Final verification must always run `pnpm test`, including every review-optional test.
+### Repository skill tests
+
+Run `pnpm test:repo-skills` to check executable repository skill helpers independently of the SDK test suite. This offline command requires Node.js 22+, Python 3.10+, Git, and installed development dependencies; it does not require a package build. It runs the four Python handoff/review suites, the Node logging inventory suite, runner regression tests, and three changeset result-validator fixtures. A failed suite stops the command with a nonzero exit status.
+
+The runner isolates temporary files and Git configuration, passes only required environment variables to children, and limits Git fixture transports to local files. The changeset shell's prompt-generation check and all four milestone cases are excluded. The runner never invokes `run-fixtures.sh` or milestone assignment. `.github/workflows/repo-skills.yml` runs this command when its owning scripts, skills, or dependency manifests change.
 
 ### Code style
 
@@ -100,6 +112,8 @@ Follow the interactive prompts. Do not manually bump package versions.
 
 ## Reporting issues
 
+For a suspected security vulnerability, follow [SECURITY.md](SECURITY.md) and report privately. Do not open a public issue or pull request for an undisclosed vulnerability.
+
 Before opening a new issue, search existing issues to avoid duplicates. When opening an issue, include:
 
 - A clear and descriptive title
@@ -108,7 +122,35 @@ Before opening a new issue, search existing issues to avoid duplicates. When ope
 - A minimal code snippet or example (if applicable)
 - Expected and actual behavior
 
+Use synthetic examples and sanitize attachments before posting. The security guidance below applies to issue reports as well as code contributions.
+
+## Security
+
+### Credentials, examples, and diagnostics
+
+- Never commit real API keys, tokens, authorization headers, cookies, signed URLs, or customer data. Keep local credentials outside version control and use the repository's documented environment-variable setup for authorized live tests.
+- Use synthetic fixtures and examples. Inspect logs, snapshots, traces, errors, tool arguments and results, audio, and serialized session or run state for sensitive data before committing or sharing them. Redact secrets and personal information even in private reports.
+- Keep standard API keys and other long-lived credentials on the server, outside browser bundles. Browser integrations that connect directly must use the supported short-lived client credential flow.
+- Preserve tracing and logging privacy controls. When a change affects sensitive data, test the relevant success and failure paths with synthetic values, including streaming or resumed execution when applicable.
+- Review the complete diff and run secret scanning before submitting. If a secret is exposed, stop sharing it, arrange prompt revocation or rotation, and notify maintainers through [SECURITY.md](SECURITY.md#reporting-a-vulnerability). Deleting a file or comment does not revoke the credential.
+
+### Dependencies and security-sensitive changes
+
+Explain why each new dependency is needed. Review package provenance, maintenance, transitive dependencies, and install scripts, and inspect lockfile changes alongside manifests. Preserve any configured release-age cooldown for ordinary dependency updates while allowing security updates without that delay. Triage alerts by affected version, reachability, and impact across runtime, development, and example usage; do not dismiss development dependencies automatically.
+
+Request explicit maintainer security review when changing authentication, credentials or headers, endpoints or redirects, uploads, deserialization, tool approvals, MCP execution, sandbox paths or mounts, persistence, logging, tracing, dependencies, CI, or publishing. Describe the affected trust boundary and provide focused tests for the relevant security property. Handle evidence of an undisclosed vulnerability privately rather than including it in a public PR.
+
+Do not bypass security checks or dismiss alerts solely to unblock a merge. Escalate critical or actively exploited findings promptly through the private reporting route. Any accepted exception needs a responsible owner, rationale, mitigation, approval, and expiry; a scan completion or passing build does not resolve an outstanding finding.
+
+### CI and package publication
+
+Treat external pull request code and metadata as untrusted. Keep secrets and write-capable tokens away from untrusted execution, avoid privileged workflows that run untrusted checkout content, and do not interpolate untrusted metadata into shell commands. Use explicit least-privilege workflow permissions and full commit SHA pins for third-party actions. Preserve required review and security checks, secret scanning and push protection, code scanning, and contributor approval controls.
+
+Release workflows and publishing configuration require code-owner coverage and required code-owner review before release PRs merge. The shared release policy does not require a separate environment-reviewer approval gate. Preserve branch and tag deployment restrictions, trusted-publisher bindings, OIDC publishing, and provenance; do not replace trusted publishing with a long-lived registry token. Workflow configuration alone does not verify a registry binding or published artifact provenance. Maintainers must verify those controls and registry access and recovery arrangements separately, and track missing or unverified controls explicitly.
+
 ## Submitting a pull request
+
+These steps are for repository collaborators.
 
 1. Fork the repository and create a branch with a descriptive name (e.g., `fix/missing-error`, `feat/new-tool`).
 2. Ensure your branch is up to date with `main`.
@@ -140,4 +182,4 @@ By contributing, you agree that your contributions will be licensed under the pr
 
 ## Questions
 
-If you have any questions or need guidance, feel free to open an issue or ask in a pull request. Maintainers are happy to help.
+If you have questions or need guidance, please open an [issue](https://github.com/openai/openai-agents-js/issues).

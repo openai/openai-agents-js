@@ -4,6 +4,7 @@ import { Handoff } from '../handoff';
 import {
   RunCompactionItem,
   RunHandoffCallItem,
+  RunInputItem,
   RunItem,
   RunMessageOutputItem,
   RunReasoningItem,
@@ -35,6 +36,8 @@ import {
   type FunctionToolLookupKey,
   getFunctionToolNamespace,
   getFunctionToolQualifiedName,
+  getFunctionToolStateKey,
+  isDeferredTopLevelFunctionTool,
   getToolCallNamespace,
   resolveFunctionToolCall,
 } from '../toolIdentity';
@@ -66,7 +69,8 @@ import {
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
-import { assertValidCompactionItems } from './items';
+import { assertValidCompactionItems, trimToLatestCompaction } from './items';
+import { attributeToolSearchOutput } from './toolSearchAttribution';
 
 function ensureToolAvailable<T>(
   tool: T | undefined,
@@ -108,6 +112,7 @@ function ensureProgrammaticToolCallingAvailable<TContext>(
 }
 
 type ModelResponseProcessingOptions = {
+  toolSearchAgentName?: string;
   allowPromptSuppliedTools?: boolean;
   beforeClientToolSearch?: () => void;
 };
@@ -172,6 +177,11 @@ function ensureHostedToolCallAllowed<TContext>(
     serverLabel,
     agent,
   );
+  // Hosted MCP discovery can be reported before the tool-search result.
+  // Listing tools does not execute them or mark the server as loaded.
+  if (providerType === 'mcp_list_tools' || output.name === 'mcp_list_tools') {
+    return;
+  }
   if (
     mcpTool.providerData.defer_loading !== true ||
     loadedToolNames.has(serverLabel)
@@ -305,12 +315,14 @@ function recordMissingFunctionTool(
   items: RunItem[],
   toolsUsed: string[],
   functionToolsNotFound: ToolRunFunctionNotFound[],
+  reason?: ToolRunFunctionNotFound['reason'],
 ): void {
   toolsUsed.push(toolName);
   items.push(new RunToolCallItem(output, agent));
   functionToolsNotFound.push({
     toolCall: output,
     toolName,
+    ...(reason ? { reason } : {}),
   });
 }
 
@@ -395,6 +407,7 @@ function recordLoadedToolSearchOutput(
 function collectLoadedDeferredToolStateFromHistory(
   items: Array<RunItem | AgentInputItem>,
   agent: Agent<any, any>,
+  agentName: string | undefined,
 ): LoadedDeferredToolState {
   const state: LoadedDeferredToolState = {
     anonymousToolSearchOutputs: [],
@@ -402,16 +415,27 @@ function collectLoadedDeferredToolStateFromHistory(
     loadedToolNames: new Set<string>(),
   };
 
-  for (const item of items) {
+  // Use the active history boundary without discarding the surviving item owners.
+  for (const item of trimToLatestCompaction(items)) {
     if (
-      item instanceof RunToolSearchOutputItem &&
-      item.agent.name !== agent.name
+      (item instanceof RunToolSearchOutputItem ||
+        item instanceof RunInputItem) &&
+      item.agent !== agent
     ) {
       continue;
     }
 
     const rawItem = getRawAgentInputItem(item);
     if (rawItem?.type !== 'tool_search_output') {
+      continue;
+    }
+
+    // Raw history has no live owner; only an unambiguous recorded name can restore discovery.
+    if (
+      !(item instanceof RunToolSearchOutputItem) &&
+      (typeof agentName !== 'string' ||
+        rawItem.toolSearchAgentName !== agentName)
+    ) {
       continue;
     }
 
@@ -616,14 +640,15 @@ async function buildGeneratedClientToolSearchOutputMapAsync<TContext>(args: {
   return generatedOutputs;
 }
 
-function ensureDeferredFunctionToolLoaded(
+function checkDeferredFunctionToolLoaded(
   toolCall: protocol.FunctionCallItem,
   tool: FunctionTool<any>,
   loadedToolNames: Set<string>,
   agent: Agent<any, any>,
-): void {
+  behavior: ToolNotFoundBehavior,
+): boolean {
   if (tool.deferLoading !== true) {
-    return;
+    return true;
   }
 
   const explicitNamespace = getFunctionToolNamespace(tool);
@@ -634,7 +659,11 @@ function ensureDeferredFunctionToolLoaded(
       loadedToolNames.has(tool.name));
 
   if (isLoaded) {
-    return;
+    return true;
+  }
+
+  if (behavior === 'return_error_to_model') {
+    return false;
   }
 
   const toolName = qualifiedName ?? tool.name;
@@ -731,6 +760,7 @@ export function processModelResponse<TContext>(
   const loadedDeferredToolState = collectLoadedDeferredToolStateFromHistory(
     priorItems,
     agent,
+    processingOptions.toolSearchAgentName,
   );
   seedHostedMcpToolsFromLoadedDeferredToolState(
     loadedDeferredToolState,
@@ -756,7 +786,15 @@ export function processModelResponse<TContext>(
       const generatedOutput =
         generatedClientToolSearchOutputsByCall.get(output);
       if (generatedOutput) {
-        items.push(new RunToolSearchOutputItem(generatedOutput, agent));
+        items.push(
+          new RunToolSearchOutputItem(
+            attributeToolSearchOutput(
+              generatedOutput,
+              processingOptions.toolSearchAgentName,
+            ),
+            agent,
+          ),
+        );
         recordLoadedToolSearchOutput(loadedDeferredToolState, generatedOutput);
         addHostedMcpToolsFromToolSearchOutput(generatedOutput, mcpToolMap, {
           preserveExistingServerLabels: originalMcpServerLabels,
@@ -764,7 +802,15 @@ export function processModelResponse<TContext>(
         hasGeneratedClientToolSearchOutputs = true;
       }
     } else if (output.type === 'tool_search_output') {
-      items.push(new RunToolSearchOutputItem(output, agent));
+      items.push(
+        new RunToolSearchOutputItem(
+          attributeToolSearchOutput(
+            output,
+            processingOptions.toolSearchAgentName,
+          ),
+          agent,
+        ),
+      );
       recordLoadedToolSearchOutput(loadedDeferredToolState, output);
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,
@@ -957,12 +1003,26 @@ export function processModelResponse<TContext>(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
         agent,
       );
-      ensureDeferredFunctionToolLoaded(
-        output,
-        resolved.tool,
-        loadedDeferredToolState.loadedToolNames,
-        agent,
-      );
+      if (
+        !checkDeferredFunctionToolLoaded(
+          output,
+          resolved.tool,
+          loadedDeferredToolState.loadedToolNames,
+          agent,
+          toolNotFoundBehavior,
+        )
+      ) {
+        recordMissingFunctionTool(
+          normalizeFunctionToolCallForStorage(output, resolved.tool),
+          getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+          agent,
+          items,
+          toolsUsed,
+          functionToolsNotFound,
+          'not_loaded',
+        );
+        continue;
+      }
       const normalizedToolCall = normalizeFunctionToolCallForStorage(
         output,
         resolved.tool,
@@ -970,7 +1030,16 @@ export function processModelResponse<TContext>(
       toolsUsed.push(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
       );
-      items.push(new RunToolCallItem(normalizedToolCall, agent));
+      items.push(
+        new RunToolCallItem(
+          normalizedToolCall,
+          agent,
+          !getToolCallNamespace(normalizedToolCall) &&
+            isDeferredTopLevelFunctionTool(resolved.tool)
+            ? getFunctionToolStateKey(resolved.tool)
+            : undefined,
+        ),
+      );
       runFunctions.push(
         createToolRunFunction({
           toolCall: normalizedToolCall,
@@ -1018,6 +1087,10 @@ export async function processModelResponseAsync<TContext>(
   processingOptions: ModelResponseProcessingOptions = {},
 ): Promise<ProcessedResponse<TContext>> {
   assertValidCompactionItems(modelResponse.output);
+  processingOptions = {
+    ...processingOptions,
+    toolSearchAgentName: state._getToolSearchAgentName(agent),
+  };
   const clientToolSearchTool = getClientToolSearchHelper(tools);
   const hasCustomClientToolSearchExecutor = Boolean(
     clientToolSearchTool && getClientToolSearchExecutor(clientToolSearchTool),
@@ -1078,6 +1151,7 @@ export async function processModelResponseAsync<TContext>(
   const loadedDeferredToolState = collectLoadedDeferredToolStateFromHistory(
     priorItems,
     agent,
+    processingOptions.toolSearchAgentName,
   );
   seedHostedMcpToolsFromLoadedDeferredToolState(
     loadedDeferredToolState,
@@ -1107,7 +1181,15 @@ export async function processModelResponseAsync<TContext>(
       const generatedOutput =
         generatedClientToolSearchOutputsByCall.get(output);
       if (generatedOutput) {
-        items.push(new RunToolSearchOutputItem(generatedOutput.output, agent));
+        items.push(
+          new RunToolSearchOutputItem(
+            attributeToolSearchOutput(
+              generatedOutput.output,
+              processingOptions.toolSearchAgentName,
+            ),
+            agent,
+          ),
+        );
         recordLoadedToolSearchOutput(
           loadedDeferredToolState,
           generatedOutput.output,
@@ -1140,7 +1222,15 @@ export async function processModelResponseAsync<TContext>(
         hasGeneratedClientToolSearchOutputs = true;
       }
     } else if (output.type === 'tool_search_output') {
-      items.push(new RunToolSearchOutputItem(output, agent));
+      items.push(
+        new RunToolSearchOutputItem(
+          attributeToolSearchOutput(
+            output,
+            processingOptions.toolSearchAgentName,
+          ),
+          agent,
+        ),
+      );
       recordLoadedToolSearchOutput(loadedDeferredToolState, output);
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,
@@ -1323,12 +1413,26 @@ export async function processModelResponseAsync<TContext>(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
         agent,
       );
-      ensureDeferredFunctionToolLoaded(
-        output,
-        resolved.tool,
-        loadedDeferredToolState.loadedToolNames,
-        agent,
-      );
+      if (
+        !checkDeferredFunctionToolLoaded(
+          output,
+          resolved.tool,
+          loadedDeferredToolState.loadedToolNames,
+          agent,
+          toolNotFoundBehavior,
+        )
+      ) {
+        recordMissingFunctionTool(
+          normalizeFunctionToolCallForStorage(output, resolved.tool),
+          getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
+          agent,
+          items,
+          toolsUsed,
+          functionToolsNotFound,
+          'not_loaded',
+        );
+        continue;
+      }
       const normalizedToolCall = normalizeFunctionToolCallForStorage(
         output,
         resolved.tool,
@@ -1336,7 +1440,16 @@ export async function processModelResponseAsync<TContext>(
       toolsUsed.push(
         getFunctionToolQualifiedName(resolved.tool) ?? resolved.tool.name,
       );
-      items.push(new RunToolCallItem(normalizedToolCall, agent));
+      items.push(
+        new RunToolCallItem(
+          normalizedToolCall,
+          agent,
+          !getToolCallNamespace(normalizedToolCall) &&
+            isDeferredTopLevelFunctionTool(resolved.tool)
+            ? getFunctionToolStateKey(resolved.tool)
+            : undefined,
+        ),
+      );
       runFunctions.push(
         createToolRunFunction({
           toolCall: normalizedToolCall,

@@ -3,7 +3,7 @@ title: Sandbox clients
 description: Choose where sandbox work should run and how sessions, snapshots, mounts, and ports behave.
 ---
 
-import { Aside, Code } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
 import developerOwnedSessionExample from '../../../../../../examples/docs/sandbox-agents/developer-owned-session.ts?raw';
 import dockerClientExample from '../../../../../../examples/docs/sandbox-agents/docker-client.ts?raw';
 import exposedPortsExample from '../../../../../../examples/docs/sandbox-agents/exposed-ports.ts?raw';
@@ -13,19 +13,13 @@ import selectLocalClientExample from '../../../../../../examples/docs/sandbox-ag
 
 Use this page to choose where sandbox work should run. In most cases, the `SandboxAgent` definition stays the same while the sandbox client and client-specific options change in the `sandbox` run option.
 
-<Aside type="caution" title="Beta feature">
-  Sandbox agents are in beta. API details, defaults, and supported capabilities
-  may change before general availability, and more advanced features are
-  expected over time.
-</Aside>
-
 ## Decision guide
 
 | Goal | Start with | Why |
 | --- | --- | --- |
-| Fastest local iteration on macOS or Linux | `UnixLocalSandboxClient` | No extra service dependency and a simple local filesystem workflow. |
+| Trusted local development on macOS or Linux | `UnixLocalSandboxClient` | Runs host processes with a managed workspace; adds no OS-level confinement. |
 | Basic container isolation | `DockerSandboxClient` | Runs work inside Docker with a specific image. |
-| Hosted execution or production-style isolation | A hosted sandbox client | Moves the workspace boundary to a provider-managed environment. |
+| Hosted execution | A hosted sandbox client | Uses a provider-managed environment; isolation depends on the provider and configuration. |
 
 ## Local clients
 
@@ -33,10 +27,16 @@ For most users, start with one of these two sandbox clients:
 
 | Client | Install | Choose it when |
 | --- | --- | --- |
-| `UnixLocalSandboxClient` | none | Fastest local iteration on macOS or Linux. Good default for local development. |
+| `UnixLocalSandboxClient` | none | Trusted local development on macOS or Linux, or execution within an externally isolated environment. |
 | `DockerSandboxClient` | Docker CLI available locally | You want container isolation or a specific image for local parity. |
 
-Unix-local is the easiest way to start developing against a local filesystem. Move to Docker or a hosted provider when you need stronger environment isolation or production-style parity.
+`UnixLocalSandboxClient` runs shell commands as host processes on both macOS and Linux, including commands that use a PTY. The client does not add OS-level filesystem or network isolation. Commands run with the permissions of the selected host user, subject to any externally enforced isolation. The workspace directory, command working directory, and `HOME` environment variable do not confine commands to the workspace.
+
+Each new Unix-local session receives a separate temporary workspace. `Manifest.root` is a logical path, and `workspaceBaseDir` selects the parent directory for temporary workspaces. Using the same value for either setting does not make newly created sessions share a workspace. Reusing a live session shares that session's workspace. Separate Unix-local sessions and workspaces do not establish an OS isolation boundary.
+
+Unix-local path grants restrict supported host source access and SDK file APIs. A `readOnly` grant prevents SDK file API writes to the granted path; the grant does not restrict arbitrary shell commands. Commands can access host paths allowed by the process's permissions and external isolation even without a path grant. See [manifest path grants](/openai-agents-js/guides/sandbox-agents/concepts#manifest).
+
+For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured `DockerSandboxClient` or hosted backend, or provide external isolation. Select the backend and configuration for the filesystem, network, and process isolation your application requires.
 
 To switch from Unix-local to Docker, keep the agent definition the same and change only the client:
 
@@ -51,6 +51,10 @@ The same agent can usually run with either local client:
 />
 
 `DockerSandboxClient` uses Docker's default networking unless you set `networkMode: 'none'` in the client constructor or the per-run `sandbox.options`. The `'none'` mode starts the container with networking disabled. It cannot be combined with `exposedPorts`; the SDK rejects that configuration before creating or resuming a container. No other explicit `networkMode` value is currently supported.
+
+Set `labels: Record<string, string>` in the `DockerSandboxClient` constructor or per-run `sandbox.options` to apply user-defined labels to the created container. A per-run `labels` record replaces the constructor record instead of merging with it. The SDK rejects non-string values and reserves `openai-agents-sandbox`, `openai-agents-sandbox.session-identity`, and `openai-agents-sandbox.mount-authority-fingerprint` for its own ownership checks.
+
+The SDK copies user-defined labels into serialized Docker session state. When you explicitly resume that state, caller-provided labels must exactly match the persisted label record; start a fresh sandbox session to change them. Live-container reuse also verifies that every configured label still has its required value. Unrelated labels added outside the SDK do not prevent reuse.
 
 ### Session ownership
 

@@ -813,6 +813,31 @@ describe('OpenAIRealtimeWebSocket', () => {
     expect(baseSpy).toHaveBeenCalled();
   });
 
+  it.each([0, 2, 1024 * 1024 + 2])(
+    'sendAudio preserves a %i-byte buffer and commits it',
+    async (size) => {
+      const ws = new OpenAIRealtimeWebSocket();
+      const connection = ws.connect({ apiKey: 'ek_test', model: 'm' });
+      await vi.runAllTimersAsync();
+      await connection;
+      const audio = new Uint8Array(size);
+      for (let i = 0; i < audio.length; i++) {
+        audio[i] = i % 256;
+      }
+
+      ws.sendAudio(audio.buffer, { commit: true });
+
+      expect(sentPayloads().slice(-2)).toEqual([
+        {
+          type: 'input_audio_buffer.append',
+          audio: Buffer.from(audio).toString('base64'),
+        },
+        { type: 'input_audio_buffer.commit' },
+      ]);
+      ws.close();
+    },
+  );
+
   it('_interrupt floors fractional audio length when clamping', () => {
     const ws = new OpenAIRealtimeWebSocket();
     const sendSpy = vi

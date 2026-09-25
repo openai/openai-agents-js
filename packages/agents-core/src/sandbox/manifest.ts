@@ -1007,6 +1007,10 @@ function normalizeEntry(
       throw new Error('git_repo entries must include a non-empty repo.');
     }
     normalized.repo = repo.trim();
+    // URL-like values pass through to host Git without an HTTPS prefix.
+    if (normalized.repo.startsWith('-') && normalized.repo.includes('://')) {
+      throw new Error('git_repo repository URL must not start with "-".');
+    }
     normalized.host = normalizeGitHost(normalized.host);
     if (normalized.subpath !== undefined) {
       normalized.subpath = normalizeGitRepoSubpath(

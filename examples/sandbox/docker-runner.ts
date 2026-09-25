@@ -8,7 +8,7 @@ import {
   getStringArg,
   requireOpenAIKey,
   runExampleMain,
-} from './support';
+} from './support.ts';
 
 const DEFAULT_QUESTION = 'Summarize this sandbox project in 2 sentences.';
 const MAX_STREAM_TOOL_OUTPUT_CHARS = 2000;
@@ -108,6 +108,9 @@ async function main() {
   const manifest = buildManifest();
   const client = new DockerSandboxClient({ image });
   const session = await client.create(manifest);
+  // Docker file APIs use the running container and its default user.
+  // Host Python is unnecessary; use runAs to select a different container user.
+  console.log(`[file backend] ${session.fileIOBackend}`);
 
   const agent = new SandboxAgent({
     name: 'Docker Sandbox Assistant',

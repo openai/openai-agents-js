@@ -44,7 +44,7 @@ async function runFixture(
     const configPath = join(fixtureDir, 'vitest.config.ts');
     await writeFile(
       configPath,
-      `export default { test: { include: ['*.test.ts'], maxWorkers: 1, minWorkers: 1, setupFiles: ['./console-guard.ts']${options.globalSetup ? `, globalSetup: ${JSON.stringify(options.globalSetup)}` : ''} } };\n`,
+      `export default { test: { include: ['*.test.ts'], reporters: ['default'], maxWorkers: 1, minWorkers: 1, setupFiles: ['./console-guard.ts']${options.globalSetup ? `, globalSetup: ${JSON.stringify(options.globalSetup)}` : ''} } };\n`,
     );
     return await execa(
       process.execPath,

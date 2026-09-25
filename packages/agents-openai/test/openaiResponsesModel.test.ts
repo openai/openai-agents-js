@@ -6,6 +6,7 @@ import {
 import { HEADERS } from '../src/defaults';
 import { ResponsesWebSocketInternalError } from '../src/responsesWebSocketConnection';
 import OpenAI from 'openai';
+import { fileSearchTool, imageGenerationTool, webSearchTool } from '../src';
 import {
   Agent,
   retryPolicies,
@@ -128,6 +129,242 @@ describe('OpenAIResponsesModel', () => {
     setTracingDisabled(true);
     setTraceProcessors([]);
   });
+
+  describe.each([false, true])(
+    'image generation requests (stream=%s)',
+    (stream) => {
+      it.each(['generate', 'edit', 'auto', undefined] as const)(
+        'serializes action %s without changing existing options',
+        async (action) => {
+          const bodies: Record<string, unknown>[] = [];
+          const response = {
+            id: 'resp_image_generation',
+            object: 'response',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          };
+          // Capture the real client's serialized payload without network requests.
+          const client = new OpenAI({
+            apiKey: 'test-key',
+            fetch: async (_url, init) => {
+              bodies.push(JSON.parse(init!.body as string));
+              const body = stream
+                ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 0, response })}\n\n`
+                : JSON.stringify(response);
+              return new Response(body, {
+                headers: {
+                  'content-type': stream
+                    ? 'text/event-stream'
+                    : 'application/json',
+                },
+              });
+            },
+          });
+          const model = new OpenAIResponsesModel(client, 'gpt-test');
+          const request: ModelRequest = {
+            systemInstructions: undefined,
+            input: 'Create an image.',
+            modelSettings: {},
+            tools: [
+              imageGenerationTool(
+                action === undefined
+                  ? {}
+                  : {
+                      action,
+                      inputFidelity: 'high',
+                      inputImageMask: { file_id: 'file_mask' },
+                      outputCompression: 80,
+                      outputFormat: 'webp',
+                      partialImages: 1,
+                    },
+              ),
+            ],
+            outputType: 'text',
+            handoffs: [],
+            tracing: false,
+          };
+          if (stream) {
+            for await (const event of model.getStreamedResponse(request)) {
+              if (event.type === 'response_done') {
+                expect(event.response.output).toEqual([]);
+              }
+            }
+          } else {
+            const result = await withTrace('image generation request', () =>
+              model.getResponse(request),
+            );
+            expect(result.output).toEqual([]);
+          }
+
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0].stream).toBe(stream);
+          expect(bodies[0].tools).toEqual([
+            action === undefined
+              ? { type: 'image_generation' }
+              : {
+                  type: 'image_generation',
+                  action,
+                  input_fidelity: 'high',
+                  input_image_mask: { file_id: 'file_mask' },
+                  output_compression: 80,
+                  output_format: 'webp',
+                  partial_images: 1,
+                },
+          ]);
+        },
+      );
+    },
+  );
+
+  describe.each([false, true])(
+    'web search image requests (stream=%s)',
+    (stream) => {
+      const cases: {
+        label: string;
+        options: NonNullable<Parameters<typeof webSearchTool>[0]>;
+        expectedFields: Record<string, unknown>;
+        expectedInclude: string[];
+      }[] = [
+        {
+          label: 'default',
+          options: {},
+          expectedFields: {},
+          expectedInclude: [],
+        },
+        {
+          label: 'text only',
+          options: { searchContentTypes: ['text'] },
+          expectedFields: { search_content_types: ['text'] },
+          expectedInclude: [],
+        },
+        {
+          label: 'image only with default settings',
+          options: { searchContentTypes: ['image'] },
+          expectedFields: { search_content_types: ['image'] },
+          expectedInclude: ['web_search_call.results'],
+        },
+        {
+          label: 'image and text with settings',
+          options: {
+            searchContentTypes: ['image', 'text'],
+            imageSettings: { maxResults: 3, caption: false },
+            externalWebAccess: false,
+          },
+          expectedFields: {
+            search_content_types: ['image', 'text'],
+            image_settings: { max_results: 3, caption: false },
+            external_web_access: false,
+          },
+          expectedInclude: ['web_search_call.results'],
+        },
+        {
+          label: 'settings without image selection',
+          options: { imageSettings: { caption: true } },
+          expectedFields: { image_settings: { caption: true } },
+          expectedInclude: [],
+        },
+      ];
+
+      it.each(cases)(
+        'serializes $label and preserves returned image metadata',
+        async ({ options, expectedFields, expectedInclude }) => {
+          const imageResults = [
+            {
+              type: 'image_result',
+              image_url: 'https://example.com/bridge.jpg',
+              source_website_url: 'https://example.com/bridge',
+              thumbnail_url: 'https://example.com/bridge-thumb.jpg',
+            },
+          ];
+          const response = {
+            id: 'resp_web_search',
+            object: 'response',
+            status: 'completed',
+            output: expectedInclude.length
+              ? [
+                  {
+                    id: 'ws_image',
+                    type: 'web_search_call',
+                    status: 'completed',
+                    action: { type: 'search', query: 'bridge' },
+                    results: imageResults,
+                  },
+                ]
+              : [],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          };
+          const bodies: Record<string, unknown>[] = [];
+          // Capture the real client's serialized wire payload without making network requests.
+          const client = new OpenAI({
+            apiKey: 'test-key',
+            fetch: async (_url, init) => {
+              bodies.push(JSON.parse(init!.body as string));
+              const body = stream
+                ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 0, response })}\n\n`
+                : JSON.stringify(response);
+              return new Response(body, {
+                headers: {
+                  'content-type': stream
+                    ? 'text/event-stream'
+                    : 'application/json',
+                },
+              });
+            },
+          });
+          const model = new OpenAIResponsesModel(client, 'gpt-test');
+          const request: ModelRequest = {
+            systemInstructions: undefined,
+            input: 'Find bridge images.',
+            modelSettings: {},
+            tools: [
+              webSearchTool(options),
+              fileSearchTool('vs_test', { includeSearchResults: true }),
+            ],
+            outputType: 'text',
+            handoffs: [],
+            tracing: false,
+          };
+          let output;
+          if (stream) {
+            for await (const event of model.getStreamedResponse(request)) {
+              if (event.type === 'response_done') {
+                output = event.response.output;
+              }
+            }
+          } else {
+            output = (
+              await withTrace('web search image request', () =>
+                model.getResponse(request),
+              )
+            ).output;
+          }
+
+          expect(bodies).toHaveLength(1);
+          expect(bodies[0]).toMatchObject({
+            stream,
+            include: [...expectedInclude, 'file_search_call.results'],
+          });
+          expect((bodies[0].tools as unknown[])[0]).toEqual({
+            type: 'web_search',
+            search_context_size: 'medium',
+            ...expectedFields,
+          });
+          if (expectedInclude.length) {
+            expect(output).toMatchObject([
+              {
+                type: 'hosted_tool_call',
+                name: 'web_search_call',
+                providerData: { results: imageResults },
+              },
+            ]);
+          } else {
+            expect(output).toEqual([]);
+          }
+        },
+      );
+    },
+  );
 
   it.each([
     {
@@ -3893,6 +4130,49 @@ describe('OpenAIResponsesModel', () => {
     });
   });
 
+  it('supplies the built-in client search schema required by Responses', async () => {
+    await withTrace('test', async () => {
+      const create = vi.fn().mockResolvedValue({
+        id: 'client-search-defaults',
+        usage: {},
+        output: [],
+      });
+      const model = new OpenAIResponsesModel(
+        { responses: { create } } as unknown as OpenAI,
+        'gpt-5.4',
+      );
+      await model.getResponse({
+        systemInstructions: undefined,
+        input: 'Load syntax',
+        modelSettings: {},
+        tools: [
+          {
+            type: 'hosted_tool',
+            name: 'tool_search',
+            providerData: { type: 'tool_search', execution: 'client' },
+          },
+        ],
+        outputType: 'text',
+        handoffs: [],
+        tracing: false,
+      });
+      expect(create.mock.calls[0][0].tools).toEqual([
+        {
+          type: 'tool_search',
+          execution: 'client',
+          description:
+            'Load tools by namespace or tool name before calling them.',
+          parameters: {
+            type: 'object',
+            properties: { paths: { type: 'array', items: { type: 'string' } } },
+            required: ['paths'],
+            additionalProperties: false,
+          },
+        },
+      ]);
+    });
+  });
+
   it('keeps explicit client toolSearchTool even without deferred local tools', async () => {
     await withTrace('test', async () => {
       const fakeResponse = {
@@ -6296,6 +6576,62 @@ describe('OpenAIResponsesModel', () => {
       );
     },
   );
+
+  it('records full tracing data before a response_done consumer closes the stream', async () => {
+    const responseSpans = captureResponseSpans();
+    const input = 'full tracing stream input';
+    const terminalResponse = {
+      id: 'resp_full_data_stream',
+      status: 'completed',
+      output: [],
+      usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+    };
+    async function* fakeStream() {
+      yield {
+        type: 'response.completed',
+        response: terminalResponse,
+        sequence_number: 0,
+      } as unknown as OpenAIResponseStreamEvent;
+    }
+    const model = new OpenAIResponsesModel(
+      {
+        responses: { create: vi.fn().mockResolvedValue(fakeStream()) },
+      } as unknown as OpenAI,
+      'model-stream',
+    );
+
+    await withTrace('test', async () => {
+      const iterator = model
+        .getStreamedResponse({
+          systemInstructions: undefined,
+          input,
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: true,
+          signal: undefined,
+        } as any)
+        [Symbol.asyncIterator]();
+
+      expect(await iterator.next()).toMatchObject({
+        done: false,
+        value: {
+          type: 'response_done',
+          response: { id: 'resp_full_data_stream' },
+        },
+      });
+      await iterator.return?.();
+    });
+
+    expect(responseSpans).toHaveLength(1);
+    expect(responseSpans[0]?.endedAt).not.toBeNull();
+    expect(responseSpans[0]?.spanData._input).toBe(input);
+    expect(responseSpans[0]?.spanData._response).toBe(terminalResponse);
+    expect(getSerializedResponseSpanData(responseSpans[0]!).response_id).toBe(
+      'resp_full_data_stream',
+    );
+  });
 
   it('prevents extra_body from overriding streamed request mode', async () => {
     await withTrace('test', async () => {

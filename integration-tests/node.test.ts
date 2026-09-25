@@ -15,7 +15,7 @@ describe('Node.js', () => {
     await execa`rm -rf node_modules`;
     console.log('[node] Installing dependencies');
     await execa`npm install`;
-  }, 60000);
+  });
 
   test('should be able to run using CommonJS', { timeout: 15000 }, async () => {
     const { stdout } = await execa`npm run start:cjs`;
