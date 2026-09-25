@@ -1,5 +1,44 @@
 # @openai/agents-core
 
+## 0.19.0
+
+### Minor Changes
+
+- 39d5e9e: fix: bound agent tool streaming callbacks to 1024 pending events by default, with onStreamMaxPendingEvents to adjust the limit or restore unlimited buffering with null.
+- aeef9e1: fix: bind resumed MCP calls to their original recipients and require a fresh run for historical pending function calls without recipient provenance.
+- 39decd7: fix: bind conditional tool approvals to isolated normalized execution input in core and Realtime, re-evaluate current policies on durable approval resumes, reject uncopyable normalized values before conditional approval, and preserve invalid-input handling (#1914, #1915).
+- 3515c29: fix: redact default function-tool and Realtime approval parse failures; require explicit invocation policy for sensitive error traces and clarify when custom errorFunction feedback applies.
+
+### Patch Changes
+
+- c55d64d: fix: add an optional rollback item budget for Responses session compaction.
+- c345409: feat: add optional page limits for automatic MCP tool listing
+- a0b1c6f: fix: Preserve current permanent function approval decisions when restoring nested runs from saved state.
+- 9c94138: fix: honor the invoking Runner's sensitive-data tracing policy in Codex spans, including mixed CommonJS and ESM applications.
+- c3e02d2: fix: Refresh cached sandbox application tools and preserve public agent identity in tool filters.
+- f80c91c: fix: Preserve guarded final outputs, including empty strings, in default Agent.asTool output extraction.
+- 3949bb1: fix: Apply static MCP tool filters when discovering tools without full agent and run context.
+- 186f6ec: fix: Trim local workspace logical path separators in linear time.
+- fdaf0a6: fix: handle MCP tools from one server whose names normalize to the same function tool name
+- 817161d: build: Generate package metadata with native Node.js TypeScript support.
+- 20e5946: chore: Run PTY signal regression tests with native Node.js instead of the tsx CLI.
+- 9623a22: fix: preserve multiline skill frontmatter descriptions and keep nested fields out of skill index metadata.
+- 58844c7: fix: Withhold unvetted final assistant output from session history when output guardrails fail to complete.
+- d0e5d43: fix: Keep parent transport overrides out of agent tool runs with an explicit Model while preserving common settings and explicit child overrides.
+- 2127475: fix: preserve stored history excluded from the latest successful model exchange during automatic compaction.
+- 7f135af: fix: update compatible runtime and development dependencies.
+- ee65014: fix: Reject read-only host binds combined with privileged in-container Docker storage before provider or filesystem effects.
+- 00eef0c: fix: Reject selected handoff input filters with server-managed conversationId or previousResponseId before handoff side effects; use client-managed history or a Session without continuation options instead.
+- 218a2b8: fix: snapshot configured tool candidates during asynchronous enablement so in-place array changes do not duplicate or skip tools.
+- 8ac97df: fix: Reject computer calls without aborting the run when onSafetyCheck explicitly returns false.
+- 8a26e30: fix: Serialize hosted MCP approval tool references without live configuration.
+- 4ef9008: fix: Preserve cached MCP tools for unrelated servers with colon-suffixed names when invalidating another server's cache (#1976).
+- f507590: fix: accept deferred hosted MCP listings before tool-search results (#1978)
+- d187747: fix: Apply current MCP tool filters on every lookup while reusing cached tool discovery.
+- fc2d2a4: feat: allow configuring phase-two memory consolidation turns.
+- 0bdea85: fix: Compute sandbox parent paths in linear time while preserving existing path semantics.
+- 06bbcc0: chore: migrate tracing test mocks to Vitest 5.
+
 ## 0.18.0
 
 ### Minor Changes
