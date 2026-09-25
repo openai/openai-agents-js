@@ -557,6 +557,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     });
     expect(base.events[1]).toEqual({
       type: 'conversation.item.create',
+      event_id: expect.stringMatching(/^agents_create_\d+$/),
       item: {
         id: '2',
         role: 'user',
