@@ -30,12 +30,6 @@ importers:
       '@types/node':
         specifier: 22.19.13
         version: 22.19.13
-      '@typescript-eslint/eslint-plugin':
-        specifier: ^8.69.0
-        version: 8.69.0(@typescript-eslint/parser@8.69.0(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
-      '@typescript-eslint/parser':
-        specifier: ^8.69.0
-        version: 8.69.0(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
       '@vitest/coverage-v8':
         specifier: ^5.0.0
         version: 5.0.0(vitest@5.0.0)
@@ -48,9 +42,6 @@ importers:
       eslint-config-prettier:
         specifier: ^10.1.8
         version: 10.1.8(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))
-      eslint-plugin-unused-imports:
-        specifier: ^4.4.1
-        version: 4.4.1(@typescript-eslint/eslint-plugin@8.69.0(@typescript-eslint/parser@8.69.0(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))
       execa:
         specifier: ^9.6.1
         version: 9.6.1
@@ -63,9 +54,6 @@ importers:
       prettier:
         specifier: ^3.9.6
         version: 3.9.6
-      rimraf:
-        specifier: ^6.1.3
-        version: 6.1.3
       tsc-multi:
         specifier: ^1.1.0
         version: 1.1.0(supports-color@10.2.2)(typescript@5.9.3)
@@ -309,10 +297,6 @@ importers:
       zod:
         specifier: ^4.0.0
         version: 4.3.5
-    devDependencies:
-      typedoc-plugin-zod:
-        specifier: ^1.4.3
-        version: 1.4.3(typedoc@0.28.19(typescript@5.9.3))
 
   examples/financial-research-agent:
     dependencies:
@@ -408,9 +392,6 @@ importers:
       '@radix-ui/react-slot':
         specifier: ^1.3.3
         version: 1.3.3(@types/react@19.1.8)(react@19.2.8)
-      '@tanstack/react-query':
-        specifier: ^5.102.8
-        version: 5.102.8(react@19.2.8)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -432,9 +413,6 @@ importers:
       tailwind-merge:
         specifier: ^3.6.0
         version: 3.6.0
-      wavtools:
-        specifier: ^0.1.5
-        version: 0.1.5
       zod:
         specifier: ^4.0.0
         version: 4.3.5
@@ -731,16 +709,10 @@ importers:
       '@openai/agents-realtime':
         specifier: workspace:*
         version: link:../agents-realtime
-      debug:
-        specifier: ^4.4.3
-        version: 4.4.3(supports-color@10.2.2)
       openai:
         specifier: ^7.2.0
         version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
     devDependencies:
-      '@types/debug':
-        specifier: ^4.1.13
-        version: 4.1.13
       zod:
         specifier: ^4.2.0
         version: 4.3.5
@@ -776,9 +748,6 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
-      debug:
-        specifier: ^4.4.3
-        version: 4.4.3(supports-color@10.2.2)
     devDependencies:
       '@ai-sdk/provider':
         specifier: ^4.0.3
@@ -801,9 +770,6 @@ importers:
       '@runloop/api-client':
         specifier: 1.16.2
         version: 1.16.2
-      '@types/debug':
-        specifier: ^4.1.13
-        version: 4.1.13
       '@vercel/sandbox':
         specifier: 1.9.3
         version: 1.9.3
@@ -831,19 +797,10 @@ importers:
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../agents-core
-      debug:
-        specifier: ^4.4.3
-        version: 4.4.3(supports-color@10.2.2)
       openai:
         specifier: ^7.2.0
         version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
     devDependencies:
-      '@ai-sdk/provider':
-        specifier: ^1.1.3
-        version: 1.1.3
-      '@types/debug':
-        specifier: ^4.1.13
-        version: 4.1.13
       zod:
         specifier: ^4.2.0
         version: 4.3.5
@@ -856,16 +813,10 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
-      debug:
-        specifier: ^4.4.3
-        version: 4.4.3(supports-color@10.2.2)
       ws:
         specifier: ^8.21.3
         version: 8.21.3
     devDependencies:
-      '@types/debug':
-        specifier: ^4.1.13
-        version: 4.1.13
       vite:
         specifier: ^6.4.3
         version: 6.4.3(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.22.4)(yaml@2.9.0)
@@ -922,10 +873,6 @@ packages:
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/provider@1.1.3':
-    resolution: {integrity: sha512-qZMxYJ0qqX/RfnuIaab+zp8UAeJn/ygXXAffR5I4N0n1IrvA6qBsjc8hXLmBiMV2zoXlifkacF7sEFnYnjBcqg==}
-    engines: {node: '>=18'}
 
   '@ai-sdk/provider@3.0.15':
     resolution: {integrity: sha512-XeZW1CcDF2GMbH4wejW6xBRI2QCOgnkVYUnxoeDadB1mf85riL2bMUeDoh+6gJ/r4mjNfzUPW8OjLjvwTP0u1Q==}
@@ -4464,14 +4411,6 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@tanstack/query-core@5.102.8':
-    resolution: {integrity: sha512-ZNjkJ33CqvPNec/6lZBnHqLc3EVGPZ9ySLhYahU9TcuRFdmwXewuj0c4hwSWcGHqEUwcSrKeZ+oGcvPBqXcQcg==}
-
-  '@tanstack/react-query@5.102.8':
-    resolution: {integrity: sha512-TYBea4OuXWD7MhaSHq069TWbFe7rcwWN6kzT7JF0OKi1K6c1gTv2IzD6A6ExJsCMozdkqBWeuIUZmu4KQg0O5A==}
-    peerDependencies:
-      react: ^18 || ^19
-
   '@tybys/wasm-util@0.10.3':
     resolution: {integrity: sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg==}
 
@@ -6086,15 +6025,6 @@ packages:
     hasBin: true
     peerDependencies:
       eslint: '>=7.0.0'
-
-  eslint-plugin-unused-imports@4.4.1:
-    resolution: {integrity: sha512-oZGYUz1X3sRMGUB+0cZyK2VcvRX5lm/vB56PgNNcU+7ficUCKm66oZWKUubXWnOuPjQ8PvmXtCViXBMONPe7tQ==}
-    peerDependencies:
-      '@typescript-eslint/eslint-plugin': ^8.0.0-0 || ^7.0.0 || ^6.0.0 || ^5.0.0
-      eslint: ^10.0.0 || ^9.0.0 || ^8.0.0
-    peerDependenciesMeta:
-      '@typescript-eslint/eslint-plugin':
-        optional: true
 
   eslint-scope@8.4.0:
     resolution: {integrity: sha512-sNXOfKCn74rt8RICKMvJS7XKV/Xk9kA7DyJr8mJik3S7Cwgy3qlkkmyS2uQB3jiJg6VNdZd/pDBJu0nvG2NlTg==}
@@ -8883,11 +8813,6 @@ packages:
     deprecated: Rimraf versions prior to v4 are no longer supported
     hasBin: true
 
-  rimraf@6.1.3:
-    resolution: {integrity: sha512-LKg+Cr2ZF61fkcaK1UdkH2yEBBKnYjTyWzTJT6KNPcSPaiT7HSdhtMXQuN5wkTX0Xu72KQ1l8S42rlmexS2hSA==}
-    engines: {node: 20 || >=22}
-    hasBin: true
-
   robust-predicates@3.0.3:
     resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
 
@@ -10272,10 +10197,6 @@ snapshots:
       eventsource-parser: 3.1.1
       undici: 7.29.0
       zod: 4.3.5
-
-  '@ai-sdk/provider@1.1.3':
-    dependencies:
-      json-schema: 0.4.0
 
   '@ai-sdk/provider@3.0.15':
     dependencies:
@@ -14583,13 +14504,6 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 6.4.3(@types/node@22.19.13)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.0)(tsx@4.22.4)(yaml@2.9.0)
 
-  '@tanstack/query-core@5.102.8': {}
-
-  '@tanstack/react-query@5.102.8(react@19.2.8)':
-    dependencies:
-      '@tanstack/query-core': 5.102.8
-      react: 19.2.8
-
   '@tybys/wasm-util@0.10.3':
     dependencies:
       tslib: 2.8.1
@@ -16537,12 +16451,6 @@ snapshots:
   eslint-config-prettier@10.1.8(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2)):
     dependencies:
       eslint: 9.39.4(jiti@2.7.0)(supports-color@10.2.2)
-
-  eslint-plugin-unused-imports@4.4.1(@typescript-eslint/eslint-plugin@8.69.0(@typescript-eslint/parser@8.69.0(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2)):
-    dependencies:
-      eslint: 9.39.4(jiti@2.7.0)(supports-color@10.2.2)
-    optionalDependencies:
-      '@typescript-eslint/eslint-plugin': 8.69.0(@typescript-eslint/parser@8.69.0(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
 
   eslint-scope@8.4.0:
     dependencies:
@@ -20076,11 +19984,6 @@ snapshots:
   rimraf@3.0.2:
     dependencies:
       glob: 7.2.3
-
-  rimraf@6.1.3:
-    dependencies:
-      glob: 13.0.6
-      package-json-from-dist: 1.0.1
 
   robust-predicates@3.0.3: {}
 
