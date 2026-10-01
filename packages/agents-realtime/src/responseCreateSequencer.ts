@@ -1,9 +1,7 @@
 import type { RealtimeClientMessage } from './clientMessages';
 
 export type ResponseCreateControl =
-  | 'free'
-  | 'create_requested'
-  | 'cancel_requested';
+  'free' | 'create_requested' | 'cancel_requested';
 
 type PendingResponseCreate = {
   event: RealtimeClientMessage;
@@ -188,7 +186,10 @@ export class ResponseCreateSequencer {
     requestVersion: number;
     generation: number;
   }): Promise<PendingResponseCreate | null> {
-    while (generation === this.#generation) {
+    while (
+      generation === this.#generation &&
+      this.#pendingRequestVersions.has(requestVersion)
+    ) {
       const pending = this.#tryPrepareResponseCreate({
         event,
         manual,

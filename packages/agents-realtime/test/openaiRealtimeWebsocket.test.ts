@@ -3,6 +3,7 @@ import { OpenAIRealtimeBase } from '../src/openaiRealtimeBase';
 import { OpenAIRealtimeWebSocket } from '../src/openaiRealtimeWebsocket';
 import { OpenAIRealtimeSIP } from '../src/openaiRealtimeSip';
 import { RealtimeAgent } from '../src/realtimeAgent';
+import { RealtimeSession } from '../src/realtimeSession';
 
 let lastFakeSocket: any;
 let fakeSockets: any[] = [];
@@ -1044,6 +1045,77 @@ describe('OpenAIRealtimeWebSocket', () => {
       'response.create',
     ]);
   });
+
+  it.each(['response.created', 'response.done'])(
+    'retires coalesced session requests after %s without closing',
+    async (acceptanceEvent) => {
+      const ws = new OpenAIRealtimeWebSocket();
+      const session = new RealtimeSession(new RealtimeAgent({ name: 'test' }), {
+        transport: ws,
+      });
+      const connecting = ws.connect({ apiKey: 'ek_test', model: 'm' });
+      await vi.runAllTimersAsync();
+      await connecting;
+
+      const emitResponse = (type: string) => {
+        lastFakeSocket!.emit('message', {
+          data: JSON.stringify({ type, event_id: type, response: {} }),
+        });
+      };
+
+      try {
+        emitResponse('response.created');
+        // Observe the resolver set during one synchronous queued send, without
+        // adding production diagnostics or changing the sequencer's state.
+        const add = Set.prototype.add;
+        const registrations: Set<unknown>[] = [];
+        try {
+          Set.prototype.add = function (value) {
+            if (typeof value === 'function') {
+              registrations.push(this);
+            }
+            return add.call(this, value);
+          };
+          session.sendMessage('first');
+        } finally {
+          Set.prototype.add = add;
+        }
+        expect(registrations).toHaveLength(1);
+        const waiters = registrations[0];
+
+        for (let round = 0; round < 3; round++) {
+          if (round > 0) {
+            emitResponse('response.created');
+            session.sendMessage('first');
+          }
+          await vi.runAllTimersAsync();
+          session.sendMessage('second');
+          await vi.runAllTimersAsync();
+          session.sendMessage('third');
+          await vi.runAllTimersAsync();
+          expect(waiters.size).toBe(3);
+
+          lastFakeSocket!.sent.length = 0;
+          emitResponse('response.done');
+          await vi.runAllTimersAsync();
+          expect(sentPayloads()).toEqual([
+            { type: 'response.create', event_id: expect.any(String) },
+          ]);
+
+          emitResponse(acceptanceEvent);
+          await vi.runAllTimersAsync();
+          expect(waiters.size).toBe(0);
+          emitResponse('response.done');
+          await vi.runAllTimersAsync();
+          expect(waiters.size).toBe(0);
+          expect(ws.status).toBe('connected');
+          expect(sentPayloads()).toHaveLength(1);
+        }
+      } finally {
+        session.close();
+      }
+    },
+  );
 
   it('sends automatic response.create synchronously before later same-tick events', async () => {
     const ws = new OpenAIRealtimeWebSocket();
