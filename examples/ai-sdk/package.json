@@ -8,7 +8,7 @@
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openrouter/ai-sdk-provider": "^2.9.0",
-    "zod": "4.6.5"
+    "zod": "4.3.5"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

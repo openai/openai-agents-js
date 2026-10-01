@@ -128,7 +128,7 @@
   ],
   "license": "MIT",
   "optionalDependencies": {
-    "@modelcontextprotocol/client": "^2.1.0"
+    "@modelcontextprotocol/client": "^2.0.0"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0",
@@ -185,7 +185,7 @@
   },
   "devDependencies": {
     "@types/debug": "^4.1.13",
-    "zod": "^4.6.5"
+    "zod": "^4.3.5"
   },
   "files": [
     "dist"

@@ -20,7 +20,7 @@
     "react": "19.2.0",
     "react-native": "0.83.10",
     "react-native-webrtc": "124.0.8",
-    "zod": "^4.6.5"
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@config-plugins/react-native-webrtc": "14.0.0",

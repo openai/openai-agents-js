@@ -76,7 +76,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/debug": "^4.1.13",
-    "zod": "^4.6.5"
+    "zod": "^4.3.5"
   },
   "peerDependencies": {
     "zod": "^4.0.0"

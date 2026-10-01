@@ -13,7 +13,7 @@
     "openai": "^7.2.0",
     "server-only": "^0.0.1",
     "valibot": "^1.5.0",
-    "zod": "^4.6.5"
+    "zod": "^4.3.5"
   },
   "scripts": {
     "build-check": "tsc --noEmit"
