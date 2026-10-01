@@ -5,7 +5,7 @@
     "@openai/agents": "workspace:*",
     "@prisma/adapter-better-sqlite3": "^7.10.0",
     "@prisma/client": "^7.10.0",
-    "zod": "^4.0.0"
+    "zod": "^4.6.5"
   },
   "scripts": {
     "build-check": "prisma generate && tsc --noEmit",

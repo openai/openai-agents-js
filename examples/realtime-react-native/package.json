@@ -17,14 +17,14 @@
     "expo-dev-client": "~55.0.37",
     "expo-device": "~55.0.19",
     "expo-status-bar": "~55.0.6",
-    "react": "19.2.0",
-    "react-native": "0.83.10",
+    "react": "19.3.0",
+    "react-native": "0.87.1",
     "react-native-webrtc": "124.0.8",
-    "zod": "^4.0.0"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@config-plugins/react-native-webrtc": "14.0.0",
-    "@types/react": "~19.2.18",
+    "@types/react": "~19.3.0",
     "typescript": "~5.9.2"
   },
   "overrides": {
