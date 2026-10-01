@@ -12,16 +12,31 @@ import {
   skills,
   type Entry,
   Manifest,
+  prepareSandboxAgent,
+  SandboxAgent,
   SandboxSkillsConfigError,
   SandboxWorkspaceReadNotFoundError,
 } from '../src/sandbox';
 import { localDirLazySkillSource } from '../src/sandbox/local';
 import { scriptedSandboxSession } from '../src/testing';
+import { RunContext } from '../src/runContext';
 
 describe('Skills', () => {
   describe.each(['lazy', 'runtime'] as const)(
     '%s frontmatter discovery',
     (mode) => {
+      it('renders a large literal description in instructions', async () => {
+        const description = `First line\n${'Detail\n'.repeat(1_000_000)}Last line`;
+        const markdown = `---\nname: large-skill\ndescription: |\n  ${description.split('\n').join('\n  ')}\n---\n`;
+        await expectDiscoveredSkillIndex(
+          mode,
+          markdown,
+          'large-skill',
+          description,
+          mode === 'runtime',
+        );
+      });
+
       it.each([
         {
           label: 'wrapped plain description',
@@ -956,6 +971,7 @@ async function expectDiscoveredSkillIndex(
   markdown: string,
   name: string,
   description: string,
+  prepareAgent = false,
 ): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), 'agents-skill-frontmatter-'));
   try {
@@ -980,7 +996,13 @@ async function expectDiscoveredSkillIndex(
       capability.bind(session);
     }
 
-    const instructions = await capability.instructions(manifest);
+    const instructions = prepareAgent
+      ? await prepareSandboxAgent({
+          agent: new SandboxAgent({ name: 'skills', baseInstructions: 'Base' }),
+          session: { ...session, state: { manifest } },
+          capabilities: [capability],
+        }).getSystemPrompt(new RunContext())
+      : await capability.instructions(manifest);
 
     expect(instructions).toContain(
       `- ${name}: ${description} (file: .agents/review)`,

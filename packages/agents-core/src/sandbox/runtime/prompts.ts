@@ -174,8 +174,9 @@ export function prompt(
 function dedent(value: string): string {
   const lines = value.replace(/\r\n/g, '\n').split('\n');
   const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
-  const indent = Math.min(
-    ...nonEmptyLines.map((line) => line.match(/^\s*/)?.[0].length ?? 0),
+  const indent = nonEmptyLines.reduce(
+    (minimum, line) => Math.min(minimum, line.match(/^\s*/)?.[0].length ?? 0),
+    Infinity,
   );
   if (!Number.isFinite(indent) || indent === 0) {
     return value;
