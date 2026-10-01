@@ -227,6 +227,9 @@ jobs:
       - name: Install dependencies
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm install
+      - name: Verify pnpm parallel failure cleanup
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        run: node --test scripts/tests/pnpm-parallel-cleanup.test.mjs
       - name: Build packages
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm build

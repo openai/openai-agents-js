@@ -45,7 +45,7 @@ On macOS/Linux, use the exact Codex command from Quick start so an inherited `OP
 ### scripts/run.sh
 
 - Executes the full verification sequence (including declaration checks) with fail-fast semantics.
-- Keeps `pnpm i --frozen-lockfile` and `pnpm build` as barriers, then delegates independent validation steps to `concurrently`.
+- Keeps `pnpm i --frozen-lockfile` and `pnpm build` as barriers, then runs the root `verify:*` scripts in parallel with pnpm.
 - Prefer this entry point to ensure the commands always run from the repo root with the expected fail-fast behavior.
 
 ### scripts/run.ps1

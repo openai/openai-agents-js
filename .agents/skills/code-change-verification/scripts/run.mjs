@@ -8,21 +8,6 @@ const { console, process } = globalThis;
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(scriptPath);
 
-const VALIDATION_NAMES = [
-  'build-check',
-  'dist-check',
-  'lint',
-  'test',
-  'format-check',
-];
-const VALIDATION_COMMANDS = [
-  'pnpm -r build-check',
-  'pnpm -r -F "@openai/*" dist:check',
-  'pnpm lint',
-  'pnpm test',
-  'pnpm format:check:changed',
-];
-
 function printUsage() {
   console.log(`code-change-verification
 
@@ -94,14 +79,11 @@ function runVerification() {
   }
 
   const validationExitCode = runPnpm(repoRoot, 'validation', [
-    'exec',
-    'concurrently',
-    '--kill-others-on-fail',
-    '--kill-timeout',
-    '5000',
-    '--names',
-    VALIDATION_NAMES.join(','),
-    ...VALIDATION_COMMANDS,
+    '--filter',
+    'openai-agents-js',
+    'run',
+    '--parallel',
+    '/^verify:/',
   ]);
   if (validationExitCode !== 0) {
     return validationExitCode;
