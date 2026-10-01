@@ -1,5 +1,6 @@
 import { chromium, Browser, Page } from 'playwright';
 import { createInterface } from 'node:readline/promises';
+import { pathToFileURL } from 'node:url';
 import { Agent, run, withTrace, computerTool, Computer } from '@openai/agents';
 
 const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
@@ -133,7 +134,7 @@ function describeInterruption(interruption: { rawItem?: unknown }): string {
   return 'tool action';
 }
 
-async function singletonComputer() {
+export async function singletonComputer() {
   // If your app never runs multiple computer using agents at the same time,
   // you can create a singleton computer and use it in all your agents.
   const computer = await new LocalPlaywrightComputer().init();
@@ -147,7 +148,9 @@ async function singletonComputer() {
         computerTool({
           computer,
           needsApproval: async (_ctx, action) =>
-            ['click', 'type', 'keypress'].includes(action.type),
+            ['click', 'double_click', 'drag', 'type', 'keypress'].includes(
+              action.type,
+            ),
         }),
       ],
     });
@@ -160,7 +163,7 @@ async function singletonComputer() {
   }
 }
 
-async function computerPerRequest() {
+export async function computerPerRequest() {
   // If your app runs multiple computer using agents at the same time,
   // you can create a computer per request.
   const agent = new Agent({
@@ -188,7 +191,9 @@ async function computerPerRequest() {
           // or return true to acknowledge all pending safety checks
         },
         needsApproval: async (_ctx, action) =>
-          ['click', 'type', 'keypress'].includes(action.type),
+          ['click', 'double_click', 'drag', 'type', 'keypress'].includes(
+            action.type,
+          ),
       }),
     ],
   });
@@ -399,18 +404,23 @@ class LocalPlaywrightComputer implements Computer {
   }
 }
 
-const mode = (process.argv[2] ?? '').toLowerCase();
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  const mode = (process.argv[2] ?? '').toLowerCase();
 
-if (mode === 'singleton') {
-  // Choose singleton mode for cases where concurrent runs are not expected.
-  singletonComputer().catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
-} else {
-  // Default to per-request mode to avoid sharing state across runs.
-  computerPerRequest().catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+  if (mode === 'singleton') {
+    // Choose singleton mode for cases where concurrent runs are not expected.
+    singletonComputer().catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
+  } else {
+    // Default to per-request mode to avoid sharing state across runs.
+    computerPerRequest().catch((error) => {
+      console.error(error);
+      process.exit(1);
+    });
+  }
 }
