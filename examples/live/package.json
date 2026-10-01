@@ -3,7 +3,7 @@
   "name": "live",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "openai": "^7.23.0",
+    "openai": "^7.2.0",
     "ws": "^8.21.3",
     "zod": "^4.6.5"
   },
