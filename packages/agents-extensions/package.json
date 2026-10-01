@@ -15,8 +15,7 @@
   },
   "dependencies": {
     "@openai/agents-core": "workspace:*",
-    "@types/ws": "^8.18.1",
-    "debug": "^4.4.3"
+    "@types/ws": "^8.18.1"
   },
   "exports": {
     ".": {
@@ -137,7 +136,6 @@
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.156.1",
     "@runloop/api-client": "1.32.0",
-    "@types/debug": "^4.1.13",
     "@vercel/sandbox": "1.9.3",
     "ai": "^6.0.277",
     "e2b": "2.51.0",

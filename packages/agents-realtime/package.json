@@ -85,7 +85,6 @@
   "dependencies": {
     "@openai/agents-core": "workspace:*",
     "@types/ws": "^8.18.1",
-    "debug": "^4.4.3",
     "ws": "^8.21.3"
   },
   "keywords": [
@@ -99,7 +98,6 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@types/debug": "^4.1.13",
     "vite": "^6.4.3",
     "zod": "^4.3.5"
   },

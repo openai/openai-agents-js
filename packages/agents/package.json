@@ -64,7 +64,6 @@
     "@openai/agents-core": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "debug": "^4.4.3",
     "openai": "^7.2.0"
   },
   "keywords": [
@@ -75,7 +74,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@types/debug": "^4.1.13",
     "zod": "^4.3.5"
   },
   "peerDependencies": {

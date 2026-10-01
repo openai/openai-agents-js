@@ -17,8 +17,5 @@
   },
   "scripts": {
     "build-check": "tsc --noEmit"
-  },
-  "devDependencies": {
-    "typedoc-plugin-zod": "^1.4.3"
   }
 }
