@@ -3717,9 +3717,15 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     const hasExplicitAgentModelSettings =
       executionAgent.hasExplicitModelSettings();
+    // Store is caller-owned even when reasoning/text settings are implicit defaults.
     const agentModelSettings = hasExplicitAgentModelSettings
       ? executionAgent.modelSettings
-      : undefined;
+      : Object.prototype.hasOwnProperty.call(
+            executionAgent.modelSettings,
+            'store',
+          )
+        ? { store: executionAgent.modelSettings.store }
+        : undefined;
     // Only adapters that honor prompt model selection can replace the default model.
     const promptOwnsModel =
       model.supportsPromptModelSelection === true &&
