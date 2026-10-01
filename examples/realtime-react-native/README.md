@@ -4,8 +4,9 @@ This Expo development-build example uses `@openai/agents-realtime` with an app-o
 
 ## Requirements
 
-- Node.js and pnpm
-- Xcode or Android Studio with a simulator/emulator, or a physical device
+- Node.js 22.13 or newer and pnpm
+- Xcode 26.4 or newer for iOS, or Android Studio with Android SDK 36 for Android
+- iOS 16.4 or newer, or Android 7 or newer, on a simulator/emulator or physical device
 - An `OPENAI_API_KEY` available only to the local token server
 
 Expo Go is not supported because `react-native-webrtc` contains native code. Build an Expo development client instead.
@@ -46,7 +47,15 @@ EXPO_PUBLIC_REALTIME_TOKEN_URL=http://192.168.1.20:8787/token pnpm -F realtime-r
 
 Binding the development token server to `0.0.0.0` exposes it to the local network. Use it only on a trusted network and stop it when testing is complete.
 
-Rebuild the development client after changing native dependencies or the Expo config plugin.
+This example uses Expo SDK 57 with React Native 0.86. After upgrading from SDK 55, regenerate the ignored native projects and rebuild the development client:
+
+```sh
+pnpm -F realtime-react-native exec expo prebuild
+pnpm -F realtime-react-native ios
+# Or: pnpm -F realtime-react-native android
+```
+
+Expo SDK 57 prebuild clears and regenerates the native directories by default. Preserve any local native edits first, then reapply them after generation. Rebuild the development client after every native dependency or Expo config plugin change; an SDK 55 development client cannot load this upgrade.
 
 ## What this example supports
 
