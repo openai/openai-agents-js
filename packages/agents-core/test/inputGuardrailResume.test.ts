@@ -25,6 +25,87 @@ beforeAll(() => setTracingDisabled(true));
 describe.each([false, true])(
   'input guardrail recovery (stream=%s)',
   (stream) => {
+    it.each([
+      { serialized: false, failure: 'tripwire' },
+      { serialized: true, failure: 'tripwire' },
+      { serialized: false, failure: 'exception' },
+      { serialized: true, failure: 'exception' },
+    ])(
+      'rejects appended input after a blocking $failure at turn zero (serialized=$serialized)',
+      async ({ serialized, failure }) => {
+        const model = new ScriptedModel([
+          modelResponse([assistantMessage('accepted')]),
+        ]);
+        const validate = vi.fn(async ({ input }: { input: unknown }) => {
+          if (JSON.stringify(input).includes('blocked original')) {
+            if (failure === 'exception') {
+              throw new Error('synthetic classifier unavailable');
+            }
+            return { tripwireTriggered: true, outputInfo: null };
+          }
+          return { tripwireTriggered: false, outputInfo: null };
+        });
+        const agent = new Agent({
+          name: 'Blocking recovery',
+          model,
+          inputGuardrails: [
+            {
+              name: 'check original input',
+              runInParallel: false,
+              execute: validate,
+            },
+          ],
+        });
+        const runner = new Runner({ tracingDisabled: true });
+        const getItems = vi.fn().mockResolvedValue([]);
+        const session = {
+          getSessionId: async () => 'synthetic-session',
+          getItems,
+          addItems: vi.fn(),
+          popItem: vi.fn(),
+          clearSession: vi.fn(),
+        };
+        const invoke = async (
+          input: string | RunState<unknown, typeof agent>,
+          withSession = false,
+        ) => {
+          const options = withSession ? { session } : {};
+          const result = await (stream
+            ? runner.run(agent, input, { ...options, stream: true })
+            : runner.run(agent, input, options));
+          if ('completed' in result) await result.completed;
+          return result;
+        };
+        const failureClass =
+          failure === 'tripwire'
+            ? InputGuardrailTripwireTriggered
+            : GuardrailExecutionError;
+        const error = await invoke('blocked original').catch((error) => error);
+        expect(error).toBeInstanceOf(failureClass);
+        expect(error.state._currentTurn).toBe(0);
+        let state = serialized
+          ? await RunState.fromString(agent, error.state.toString())
+          : error.state;
+        state.addInput('benign correction');
+        if (serialized)
+          state = await RunState.fromString(agent, state.toString());
+
+        await expect(invoke(state, true)).rejects.toThrow(/fresh run/i);
+        expect(model.calls).toHaveLength(0);
+        expect(getItems).not.toHaveBeenCalled();
+        expect(validate).toHaveBeenCalledTimes(1);
+        expect(state.pendingInput).toHaveLength(1);
+
+        state.clearPendingInput();
+        await expect(invoke(state)).rejects.toBeInstanceOf(failureClass);
+        expect(validate).toHaveBeenCalledTimes(2);
+        expect(model.calls).toHaveLength(0);
+        expect((await invoke('benign correction')).finalOutput).toBe(
+          'accepted',
+        );
+      },
+    );
+
     it.each([false, true])(
       'rejects a failed input checkpoint before another model or tool call (serialized=%s)',
       async (serialized) => {

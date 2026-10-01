@@ -731,7 +731,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   > {
     if (
       input instanceof RunState &&
-      input._currentTurn > 0 &&
+      (input._currentTurn > 0 || input._pendingInput.length > 0) &&
       !input._initialInputGuardrailsCompleted
     ) {
       throw new UserError(
