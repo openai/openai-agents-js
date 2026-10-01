@@ -817,6 +817,79 @@ describe('ReactNativeWebRTCTransport connection ownership', () => {
     expect(secondStream.track.stop).not.toHaveBeenCalled();
   });
 
+  it.each(['before connect', 'during acquisition'] as const)(
+    'applies mute requested %s before attaching microphone audio',
+    async (timing) => {
+      const media = deferred<InstanceType<typeof webrtc.FakeMediaStream>>();
+      webrtc.getUserMedia.mockReturnValueOnce(media.promise);
+      const transport = new ReactNativeWebRTCTransport();
+      if (timing === 'before connect') {
+        transport.mute(true);
+      }
+      const connection = transport.connect({ apiKey: 'ek_test' });
+      const peer = await nextPeer(0);
+      await waitFor(() => webrtc.getUserMedia.mock.calls.length === 1);
+      if (timing === 'during acquisition') {
+        transport.mute(true);
+      }
+      const enabledAtAttachment: boolean[] = [];
+      peer.addTrack.mockImplementation((track) => {
+        enabledAtAttachment.push(track.enabled);
+      });
+      const stream = await completeConnection(connection, peer, media);
+
+      expect(enabledAtAttachment).toEqual([false]);
+      expect(transport.muted).toBe(true);
+      expect(stream.track.enabled).toBe(false);
+      transport.mute(false);
+      expect(transport.muted).toBe(false);
+      expect(stream.track.enabled).toBe(true);
+      transport.close();
+    },
+  );
+
+  it('preserves mute when reconnecting with a replacement microphone track', async () => {
+    const firstMedia = deferred<InstanceType<typeof webrtc.FakeMediaStream>>();
+    const secondMedia = deferred<InstanceType<typeof webrtc.FakeMediaStream>>();
+    webrtc.getUserMedia
+      .mockReturnValueOnce(firstMedia.promise)
+      .mockReturnValueOnce(secondMedia.promise);
+    const transport = new ReactNativeWebRTCTransport();
+    const firstConnect = transport.connect({ apiKey: 'ek_first' });
+    const firstPeer = await nextPeer(0);
+    const firstStream = await completeConnection(
+      firstConnect,
+      firstPeer,
+      firstMedia,
+    );
+    expect(firstStream.track.enabled).toBe(true);
+    transport.mute(true);
+    expect(firstStream.track.enabled).toBe(false);
+    transport.close();
+    expect(firstStream.track.stop).toHaveBeenCalledOnce();
+
+    const secondConnect = transport.connect({ apiKey: 'ek_second' });
+    const secondPeer = await nextPeer(1);
+    const enabledAtAttachment: boolean[] = [];
+    secondPeer.addTrack.mockImplementation((track) => {
+      enabledAtAttachment.push(track.enabled);
+    });
+    const secondStream = await completeConnection(
+      secondConnect,
+      secondPeer,
+      secondMedia,
+    );
+
+    expect(secondStream).not.toBe(firstStream);
+    expect(enabledAtAttachment).toEqual([false]);
+    expect(transport.muted).toBe(true);
+    expect(secondStream.track.enabled).toBe(false);
+    transport.mute(false);
+    expect(secondStream.track.enabled).toBe(true);
+    expect(firstStream.track.enabled).toBe(false);
+    transport.close();
+  });
+
   it('does not initialize media for a text-only connection', async () => {
     const transport = new ReactNativeWebRTCTransport({
       enableAudio: false,

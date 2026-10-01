@@ -174,6 +174,7 @@ export class ReactNativeWebRTCTransport extends OpenAIRealtimeBase {
         if (!audioTrack) {
           throw new Error('No microphone audio track was available.');
         }
+        audioTrack.enabled = !this.#muted;
         peerConnection.addTrack(audioTrack, localStream);
       } else {
         // The Realtime API requires an audio media section in the SDP offer.
