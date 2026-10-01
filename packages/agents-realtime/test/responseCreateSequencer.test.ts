@@ -88,6 +88,26 @@ describe('ResponseCreateSequencer', () => {
     expect(sequencer.pendingResponseCreateEventId).toBeNull();
   });
 
+  it('does not dispatch prepared work after a new generation starts', async () => {
+    const sendEventNow = vi.fn();
+    const sequencer = new ResponseCreateSequencer(sendEventNow);
+    sequencer.markResponseCreated();
+    sequencer.requestResponseCreate(responseCreateEvent('old'));
+
+    sequencer.markResponseDone();
+    // Let the waiting task prepare its create, but close before dispatch.
+    await Promise.resolve();
+    expect(sequencer.pendingResponseCreateEventId).toBe('old');
+    sequencer.releaseWaiters();
+    sequencer.requestResponseCreate(responseCreateEvent('new'));
+    await Promise.resolve();
+
+    expect(sendEventNow).toHaveBeenCalledExactlyOnceWith(
+      responseCreateEvent('new'),
+    );
+    expect(sequencer.pendingResponseCreateEventId).toBe('new');
+  });
+
   it('ignores unrelated errors and releases queued work on shutdown', async () => {
     const sendEventNow = vi.fn();
     const sequencer = new ResponseCreateSequencer(sendEventNow);

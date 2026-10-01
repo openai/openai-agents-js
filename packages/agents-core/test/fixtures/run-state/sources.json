@@ -356,7 +356,7 @@
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "c401d012ba0d447a4957438fdb5071e7ce2815f7a9bbf5ce277c4a0ac6c37595"
+      "sha256": "5cce048bd38ac9a27634e9cbcb6ec2af12778f8fd154fa179c166aa94f0b9e3b"
     }
   ],
   "negativeFixtures": [

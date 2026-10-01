@@ -4131,15 +4131,10 @@ describe('Runner.run (streaming)', () => {
     const restored = await RunState.fromString(agent, result.state.toString());
     expect(restored._currentTurn).toBe(1);
 
-    const resumed = await runner.run(agent, restored, {
-      stream: true,
-      maxTurns: 1,
-    });
-    await expect(resumed.completed).rejects.toBeInstanceOf(
-      MaxTurnsExceededError,
-    );
-    expect(resumed.currentTurn).toBe(1);
-    expect(resumed.state._currentTurn).toBe(1);
+    await expect(
+      runner.run(agent, restored, { stream: true, maxTurns: 1 }),
+    ).rejects.toThrow(/fresh run/i);
+    expect(restored._currentTurn).toBe(1);
     expect(model.calls).toHaveLength(1);
   });
 
@@ -4254,6 +4249,7 @@ describe('Runner.run (streaming)', () => {
     });
     const state = new RunState(new RunContext(), 'input', agent, 1);
     state._currentTurn = 1;
+    state._initialInputGuardrailsCompleted = true;
     state._currentTurnInProgress = true;
     state._currentStep = {
       type: 'next_step_final_output',
@@ -4784,6 +4780,7 @@ describe('StreamedRunResult.currentTurn (streamed runs)', () => {
     });
     const state = new RunState(new RunContext(), 'x', agent, 1);
     state._currentTurn = 1;
+    state._initialInputGuardrailsCompleted = true;
     state._currentTurnInProgress = true;
     const restored = await RunState.fromString(agent, state.toString());
 
