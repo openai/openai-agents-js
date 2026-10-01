@@ -1210,6 +1210,7 @@ describe('sandbox runner integration', () => {
       });
       const state = new RunState(new RunContext(), 'initial', agent, 3);
       state._currentTurn = 1;
+      state._initialInputGuardrailsCompleted = true;
       state._currentStep = { type: 'next_step_run_again' };
       state.addInput('staged sandbox input');
       const session = serverManaged ? undefined : new MemorySession();

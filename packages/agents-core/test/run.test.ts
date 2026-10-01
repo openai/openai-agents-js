@@ -4730,10 +4730,9 @@ describe('Runner.run', () => {
       } catch (error) {
         resumedError = error;
       }
-      expect(resumedError).toBeInstanceOf(MaxTurnsExceededError);
-      expect((resumedError as MaxTurnsExceededError).state?._currentTurn).toBe(
-        1,
-      );
+      expect(resumedError).toBeInstanceOf(UserError);
+      expect((resumedError as Error).message).toMatch(/fresh run/i);
+      expect((resumedError as UserError).state?._currentTurn).toBe(1);
       expect(model.calls).toHaveLength(1);
     });
 
@@ -5296,6 +5295,7 @@ describe('Runner.run', () => {
       });
       const state = new RunState(new RunContext(), 'x', agent, 1);
       state._currentTurn = 1;
+      state._initialInputGuardrailsCompleted = true;
       state._currentTurnInProgress = true;
       const restored = await RunState.fromString(agent, state.toString());
 
@@ -5982,6 +5982,7 @@ describe('Runner.run', () => {
       // Simulate a resumed state after an interruption
       const resumedState = new RunState(new RunContext(), 'x', agent, 1);
       resumedState._currentTurn = 1;
+      resumedState._initialInputGuardrailsCompleted = true;
       resumedState._currentTurnPersistedItemCount = 0;
       resumedState._currentStep = { type: 'next_step_run_again' };
       // Set these to simulate a state that was resumed from interruption
@@ -8383,6 +8384,7 @@ describe('Runner.run', () => {
 
       const state = new RunState(new RunContext(), 'hi', agent, 1);
       state._currentTurn = 1;
+      state._initialInputGuardrailsCompleted = true;
       (state as any)._currentTurnInProgress = true;
       state._currentStep = { type: 'next_step_run_again' } as const;
 
@@ -8440,6 +8442,7 @@ describe('Runner.run', () => {
 
       const state = new RunState(new RunContext(), 'hi', agent, 2);
       state._currentTurn = 1;
+      state._initialInputGuardrailsCompleted = true;
       (state as any)._currentTurnInProgress = true;
       state._currentStep = { type: 'next_step_run_again' } as const;
       state._noActiveAgentRun = true;
@@ -8504,6 +8507,7 @@ describe('Runner.run', () => {
 
       const state = new RunState(new RunContext(), 'hi', agent, 2);
       state._currentTurn = 1;
+      state._initialInputGuardrailsCompleted = true;
       (state as any)._currentTurnInProgress = true;
       state._currentStep = { type: 'next_step_run_again' } as const;
       state._noActiveAgentRun = true;
@@ -9859,6 +9863,7 @@ describe('Runner.run', () => {
 
       state._currentAgent = agentB;
       state._currentTurn = 1;
+      state._initialInputGuardrailsCompleted = true;
       state._currentTurnInProgress = true;
       state._currentStep = { type: 'next_step_run_again' } as const;
       state._noActiveAgentRun = true;
