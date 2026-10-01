@@ -99,7 +99,7 @@
   },
   "devDependencies": {
     "vite": "^6.4.3",
-    "zod": "^4.2.0"
+    "zod": "^4.3.5"
   },
   "files": [
     "dist"
