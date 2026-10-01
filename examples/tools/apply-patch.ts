@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import {
   Agent,
@@ -26,7 +27,7 @@ function printDiff(diff: string) {
   }
 }
 
-class WorkspaceEditor implements Editor {
+export class WorkspaceEditor implements Editor {
   private readonly root: string;
 
   constructor(root: string) {
@@ -68,7 +69,12 @@ class WorkspaceEditor implements Editor {
 
   private async resolve(relativePath: string): Promise<string> {
     const resolved = path.resolve(this.root, relativePath);
-    if (!resolved.startsWith(this.root)) {
+    const relative = path.relative(this.root, resolved);
+    if (
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
       throw new Error(`Operation outside workspace: ${relativePath}`);
     }
     return resolved;
@@ -175,7 +181,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
