@@ -100,7 +100,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.2",
-    "@eslint/js": "^9.39.4",
+    "@eslint/js": "^9.39.5",
     "@types/node": "22.19.13",
     "@typescript-eslint/eslint-plugin": "^8.69.0",
     "@typescript-eslint/parser": "^8.69.0",
