@@ -734,11 +734,20 @@ export class Agent<
           ? this.modelSettings
           : undefined;
 
-    return new Agent({
+    const cloned = new Agent({
       ...this,
       ...config,
       modelSettings,
     });
+    if (
+      !('modelSettings' in config) &&
+      !this.hasExplicitModelSettings() &&
+      Object.prototype.hasOwnProperty.call(this.modelSettings, 'store')
+    ) {
+      // Preserve storage policy without making generated model defaults explicit.
+      cloned.modelSettings.store = this.modelSettings.store;
+    }
+    return cloned;
   }
 
   /**
