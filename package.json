@@ -31,7 +31,7 @@
     "api-contract:package": "node scripts/released-api-contract.mjs package",
     "api-contract:promote": "node scripts/released-api-contract.mjs promote",
     "test:watch": "vitest --watch --mode watch",
-    "dev": "node scripts/dev.mts",
+    "dev": "pnpm --filter openai-agents-js run --parallel \"/^(packages|docs):dev$/\"",
     "format": "prettier --write \"packages/**/*.ts\" \"examples/**/*.ts\" \"integration-tests/**/*.ts\"",
     "format:changed": "node scripts/prettier-changed.mjs",
     "format:check:changed": "node scripts/prettier-changed.mjs --check",
@@ -96,14 +96,18 @@
     "clear:deps": "rm -rf node_modules && pnpm -r exec rm -rf node_modules",
     "local-npm:reset": "rm -rf .cache/verdaccio/storage",
     "local-npm:start": "verdaccio --config verdaccio-config.yml",
-    "local-npm:publish": "pnpm -r publish --registry http://localhost:4873 --force --no-git-checks"
+    "local-npm:publish": "pnpm -r publish --registry http://localhost:4873 --force --no-git-checks",
+    "verify:types": "pnpm -r build-check",
+    "verify:dist": "pnpm -r -F \"@openai/*\" dist:check",
+    "verify:lint": "pnpm lint",
+    "verify:test": "pnpm test",
+    "verify:format": "pnpm format:check:changed"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
     "@eslint/js": "^9.39.5",
     "@types/node": "22.19.13",
     "@vitest/coverage-v8": "^5.0.1",
-    "concurrently": "^10.0.5",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "execa": "^9.6.1",
@@ -117,5 +121,5 @@
     "verdaccio": "^6.10.4",
     "vitest": "^5.0.1"
   },
-  "packageManager": "pnpm@11.24.0+sha512.bd27e345e976dcb0be0b7a1228217b049a817e21b1f355c90dbe7dc46671895a8bc1e6d06c24554505ea93ea0b45f489a27ec1bfbc8de6a9659fca0f16fa0000"
+  "packageManager": "pnpm@12.6.0+sha512.3ef68f951cb111ac204b4a5a16f0b2ddf0da56a96e0413e81d855d9f0b55ef926714709028e1cd00c405c2c5fb7b9e8ec4dc46777c805d0373c2f2ff00fd20ec"
 }

@@ -5,9 +5,11 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "build-check": "tsc --noEmit",
-    "dev": "concurrently -k -n server,client \"tsx watch server.ts\" \"vite\"",
+    "dev": "pnpm --filter realtime-server-controlled run --parallel \"/^dev:/\"",
     "start": "tsx server.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev:server": "tsx watch server.ts",
+    "dev:client": "vite"
   },
   "dependencies": {
     "@openai/agents-realtime": "workspace:*",
