@@ -32,6 +32,8 @@ overrides:
   'prisma@7.10.0>mysql2': 3.23.1
   # Remove when Prisma config resolves deepmerge-ts with the recursive-merge fix.
   '@prisma/config@7.10.0>deepmerge-ts': 8.0.2
+  # Remove when Verdaccio config updates its vulnerable exact js-yaml pin.
+  '@verdaccio/config@8.3.0>js-yaml': 5.4.1
 
 publishBranch: main
 minimumReleaseAge: 10080
