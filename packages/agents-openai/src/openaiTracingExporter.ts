@@ -33,6 +33,10 @@ type JsonCompatibleValue =
   | { [key: string]: JsonCompatibleValue };
 
 const OPENAI_TRACING_MAX_FIELD_BYTES = 100_000;
+// Limit repeated sizing work independently of the retained field size.
+const OPENAI_TRACING_MAX_TRUNCATION_WORK_BYTES = 8_000_000;
+type TruncationWork = { remainingBytes: number };
+const TRUNCATION_WORK_EXHAUSTED = Symbol('truncationWorkExhausted');
 const OPENAI_TRACING_INGEST_ENDPOINT =
   'https://api.openai.com/v1/traces/ingest';
 const OPENAI_TRACING_MAX_RECURSION_DEPTH = 1_000;
@@ -124,29 +128,46 @@ function isFiniteJsonNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-function valueJsonSizeBytes(value: unknown): number {
+function valueJsonSizeBytes(value: unknown, work?: TruncationWork): number {
+  // Check before starting another traversal. The final traversal can exceed the
+  // budget by one value's size, keeping total work linear in input plus budget.
+  if (work && work.remainingBytes <= 0) {
+    throw TRUNCATION_WORK_EXHAUSTED;
+  }
+  let size: number;
   try {
     const serialized = JSON.stringify(value);
-    if (serialized === undefined) {
-      return 0;
-    }
-    if (typeof serialized !== 'string') {
-      return OPENAI_TRACING_MAX_FIELD_BYTES + 1;
-    }
-    return textEncoder.encode(serialized).length;
+    size =
+      serialized === undefined
+        ? 0
+        : typeof serialized === 'string'
+          ? textEncoder.encode(serialized).length
+          : OPENAI_TRACING_MAX_FIELD_BYTES + 1;
   } catch {
-    return OPENAI_TRACING_MAX_FIELD_BYTES + 1;
+    size = OPENAI_TRACING_MAX_FIELD_BYTES + 1;
   }
+  if (work) {
+    work.remainingBytes -= Math.max(1, size);
+    if (work.remainingBytes < 0) {
+      throw TRUNCATION_WORK_EXHAUSTED;
+    }
+  }
+  return size;
 }
 
-function truncateStringForJsonLimit(value: string, maxBytes: number): string {
-  const valueSize = valueJsonSizeBytes(value);
+function truncateStringForJsonLimit(
+  value: string,
+  maxBytes: number,
+  work?: TruncationWork,
+): string {
+  const valueSize = valueJsonSizeBytes(value, work);
   if (valueSize <= maxBytes) {
     return value;
   }
 
   const suffixSize = valueJsonSizeBytes(
     OPENAI_TRACING_STRING_TRUNCATION_SUFFIX,
+    work,
   );
   if (suffixSize > maxBytes) {
     return '';
@@ -163,7 +184,7 @@ function truncateStringForJsonLimit(value: string, maxBytes: number): string {
 
   let best =
     value.slice(0, estimatedChars) + OPENAI_TRACING_STRING_TRUNCATION_SUFFIX;
-  let bestSize = valueJsonSizeBytes(best);
+  let bestSize = valueJsonSizeBytes(best, work);
   while (bestSize > maxBytes && estimatedChars > 0) {
     const overflowRatio = (bestSize - maxBytes) / Math.max(bestSize, 1);
     const trimChars = Math.max(
@@ -173,7 +194,7 @@ function truncateStringForJsonLimit(value: string, maxBytes: number): string {
     estimatedChars = Math.max(0, estimatedChars - trimChars);
     best =
       value.slice(0, estimatedChars) + OPENAI_TRACING_STRING_TRUNCATION_SUFFIX;
-    bestSize = valueJsonSizeBytes(best);
+    bestSize = valueJsonSizeBytes(best, work);
   }
 
   return best;
@@ -373,25 +394,28 @@ function truncateJsonValueForLimit(
   value: JsonCompatibleValue,
   maxBytes: number,
   depth: number = 0,
+  work: TruncationWork = {
+    remainingBytes: OPENAI_TRACING_MAX_TRUNCATION_WORK_BYTES,
+  },
 ): JsonCompatibleValue {
   if (depth >= OPENAI_TRACING_MAX_RECURSION_DEPTH) {
     return truncatedPreview(value);
   }
 
-  if (valueJsonSizeBytes(value) <= maxBytes) {
+  if (valueJsonSizeBytes(value, work) <= maxBytes) {
     return value;
   }
 
   if (typeof value === 'string') {
-    return truncateStringForJsonLimit(value, maxBytes);
+    return truncateStringForJsonLimit(value, maxBytes, work);
   }
 
   if (Array.isArray(value)) {
-    return truncateListForJsonLimit(value, maxBytes, depth + 1);
+    return truncateListForJsonLimit(value, maxBytes, depth + 1, work);
   }
 
   if (isPlainObject(value)) {
-    return truncateMappingForJsonLimit(value, maxBytes, depth + 1);
+    return truncateMappingForJsonLimit(value, maxBytes, depth + 1, work);
   }
 
   return truncatedPreview(value);
@@ -401,16 +425,19 @@ function truncateMappingForJsonLimit(
   value: Record<string, JsonCompatibleValue>,
   maxBytes: number,
   depth: number = 0,
+  work: TruncationWork = {
+    remainingBytes: OPENAI_TRACING_MAX_TRUNCATION_WORK_BYTES,
+  },
 ): Record<string, JsonCompatibleValue> {
   const truncated = { ...value };
-  let currentSize = valueJsonSizeBytes(truncated);
+  let currentSize = valueJsonSizeBytes(truncated, work);
 
   while (Object.keys(truncated).length > 0 && currentSize > maxBytes) {
     let largestKey: string | undefined;
     let largestChildSize = -1;
 
     for (const [key, child] of Object.entries(truncated)) {
-      const childSize = valueJsonSizeBytes(child);
+      const childSize = valueJsonSizeBytes(child, work);
       if (childSize > largestChildSize) {
         largestKey = key;
         largestChildSize = childSize;
@@ -428,7 +455,7 @@ function truncateMappingForJsonLimit(
     );
     if (childBudget === 0) {
       delete truncated[largestKey];
-      currentSize = valueJsonSizeBytes(truncated);
+      currentSize = valueJsonSizeBytes(truncated, work);
       continue;
     }
 
@@ -436,8 +463,9 @@ function truncateMappingForJsonLimit(
       child,
       childBudget,
       depth + 1,
+      work,
     );
-    const truncatedChildSize = valueJsonSizeBytes(truncatedChild);
+    const truncatedChildSize = valueJsonSizeBytes(truncatedChild, work);
 
     if (truncatedChild === child || truncatedChildSize >= largestChildSize) {
       delete truncated[largestKey];
@@ -445,7 +473,7 @@ function truncateMappingForJsonLimit(
       truncated[largestKey] = truncatedChild;
     }
 
-    currentSize = valueJsonSizeBytes(truncated);
+    currentSize = valueJsonSizeBytes(truncated, work);
   }
 
   return truncated;
@@ -455,16 +483,19 @@ function truncateListForJsonLimit(
   value: JsonCompatibleValue[],
   maxBytes: number,
   depth: number = 0,
+  work: TruncationWork = {
+    remainingBytes: OPENAI_TRACING_MAX_TRUNCATION_WORK_BYTES,
+  },
 ): JsonCompatibleValue[] {
   const truncated = [...value];
-  let currentSize = valueJsonSizeBytes(truncated);
+  let currentSize = valueJsonSizeBytes(truncated, work);
 
   while (truncated.length > 0 && currentSize > maxBytes) {
     let largestIndex = 0;
     let largestChildSize = -1;
 
     for (let index = 0; index < truncated.length; index += 1) {
-      const childSize = valueJsonSizeBytes(truncated[index]);
+      const childSize = valueJsonSizeBytes(truncated[index], work);
       if (childSize > largestChildSize) {
         largestIndex = index;
         largestChildSize = childSize;
@@ -478,7 +509,7 @@ function truncateListForJsonLimit(
     );
     if (childBudget === 0) {
       truncated.splice(largestIndex, 1);
-      currentSize = valueJsonSizeBytes(truncated);
+      currentSize = valueJsonSizeBytes(truncated, work);
       continue;
     }
 
@@ -486,8 +517,9 @@ function truncateListForJsonLimit(
       child,
       childBudget,
       depth + 1,
+      work,
     );
-    const truncatedChildSize = valueJsonSizeBytes(truncatedChild);
+    const truncatedChildSize = valueJsonSizeBytes(truncatedChild, work);
 
     if (truncatedChild === child || truncatedChildSize >= largestChildSize) {
       truncated.splice(largestIndex, 1);
@@ -495,7 +527,7 @@ function truncateListForJsonLimit(
       truncated[largestIndex] = truncatedChild;
     }
 
-    currentSize = valueJsonSizeBytes(truncated);
+    currentSize = valueJsonSizeBytes(truncated, work);
   }
 
   return truncated;
@@ -570,7 +602,8 @@ function truncateSpanFieldValue(value: unknown): unknown {
       OPENAI_TRACING_MAX_FIELD_BYTES,
     );
   } catch {
-    // Deeply nested or otherwise hostile values should degrade to a preview
+    // Excessive truncation work, deep nesting, or otherwise hostile values
+    // should degrade to a preview
     // instead of failing the whole export batch.
     return truncatedPreview(value);
   }
