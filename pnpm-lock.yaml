@@ -550,8 +550,8 @@ importers:
         specifier: ~55.0.37
         version: 55.0.37(expo@55.0.28)
       expo-device:
-        specifier: ~55.0.19
-        version: 55.0.19(expo@55.0.28)
+        specifier: ~57.0.2
+        version: 57.0.2(expo@55.0.28)
       expo-status-bar:
         specifier: ~55.0.6
         version: 55.0.6(react-native@0.83.10(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.0)(supports-color@8.1.1))(react@19.2.0)
@@ -6227,8 +6227,8 @@ packages:
     peerDependencies:
       expo: '*'
 
-  expo-device@55.0.19:
-    resolution: {integrity: sha512-BYEr3oyjtnXk432usxavftybCtucelCQD1QGIo2zruxeT/hzoGe36uclOC49a+tYFQoybqOylSV2035H7kDIPg==}
+  expo-device@57.0.2:
+    resolution: {integrity: sha512-1A0/FICR3CgrH43FeiDQP3l5eHDmiMoh4EjXfhfoHHkMgdBQdyD0kwDWskiGZlQ3E0Nd0LHkCFH6vJ1ofm/jow==}
     peerDependencies:
       expo: '*'
 
@@ -16678,7 +16678,7 @@ snapshots:
       expo: 55.0.28(@babel/core@7.29.7(supports-color@8.1.1))(@expo/dom-webview@55.0.6)(react-dom@19.2.8(react@19.2.0))(react-native@0.83.10(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.0)(supports-color@8.1.1))(react@19.2.0)(supports-color@8.1.1)(typescript@5.9.3)
       expo-dev-menu-interface: 55.0.2(expo@55.0.28)
 
-  expo-device@55.0.19(expo@55.0.28):
+  expo-device@57.0.2(expo@55.0.28):
     dependencies:
       expo: 55.0.28(@babel/core@7.29.7(supports-color@8.1.1))(@expo/dom-webview@55.0.6)(react-dom@19.2.8(react@19.2.0))(react-native@0.83.10(@babel/core@7.29.7(supports-color@8.1.1))(@types/react@19.2.18)(react@19.2.0)(supports-color@8.1.1))(react@19.2.0)(supports-color@8.1.1)(typescript@5.9.3)
       ua-parser-js: 0.7.41
