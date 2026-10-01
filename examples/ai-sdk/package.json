@@ -3,7 +3,7 @@
   "name": "ai-sdk",
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.116",
-    "@ai-sdk/google": "^3.0.121",
+    "@ai-sdk/google": "^4.0.79",
     "@ai-sdk/openai": "^3.0.109",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
