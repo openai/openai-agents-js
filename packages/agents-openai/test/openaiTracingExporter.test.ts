@@ -1,8 +1,6 @@
+import { _tracingFieldProcessingTestUtils } from '../src/tracingFieldProcessing';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import {
-  OpenAITracingExporter,
-  _openAITracingExporterTestUtils,
-} from '../src/openaiTracingExporter';
+import { OpenAITracingExporter } from '../src/openaiTracingExporter';
 import { HEADERS } from '../src/defaults';
 import { BatchTraceProcessor, createCustomSpan } from '@openai/agents-core';
 import logger from '../src/logger';
@@ -1112,7 +1110,7 @@ describe('OpenAITracingExporter', () => {
 
   it('deletes mapping children when child budget is zero', () => {
     const truncated =
-      _openAITracingExporterTestUtils.truncateMappingForJsonLimit(
+      _tracingFieldProcessingTestUtils.truncateMappingForJsonLimit(
         { a: {}, b: {} },
         0,
       );
@@ -1122,7 +1120,7 @@ describe('OpenAITracingExporter', () => {
 
   it('truncates mapping children stored under empty-string keys', () => {
     const truncated =
-      _openAITracingExporterTestUtils.truncateMappingForJsonLimit(
+      _tracingFieldProcessingTestUtils.truncateMappingForJsonLimit(
         { '': 'x'.repeat(maxFieldBytes), keep: 'y' },
         128,
       );
@@ -1135,7 +1133,7 @@ describe('OpenAITracingExporter', () => {
   });
 
   it('deletes list children when child budget is zero', () => {
-    const truncated = _openAITracingExporterTestUtils.truncateListForJsonLimit(
+    const truncated = _tracingFieldProcessingTestUtils.truncateListForJsonLimit(
       [{}, {}],
       0,
     );
