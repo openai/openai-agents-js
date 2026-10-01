@@ -298,6 +298,14 @@ async function runInputGuardrailsForTurn<
 
   const guardrailDefs = buildInputGuardrailDefinitions(state, runnerGuardrails);
   const guardrails = splitInputGuardrails(guardrailDefs);
+  if (guardrailInput === undefined) {
+    state._initialInputGuardrailsCompleted = false;
+  }
+  const completeInitialInputGuardrails = () => {
+    if (guardrailInput === undefined) {
+      state._initialInputGuardrailsCompleted = true;
+    }
+  };
   if (guardrails.blocking.length > 0) {
     await runInputGuardrails(state, guardrails.blocking, {
       input: guardrailInput,
@@ -311,8 +319,15 @@ async function runInputGuardrailsForTurn<
         input: guardrailInput,
         onErrorObserved: handlers.onParallelError,
       },
-    ).catch(() => []);
+    )
+      .then((results) => {
+        completeInitialInputGuardrails();
+        return results;
+      })
+      .catch(() => []);
     handlers.onParallelPromise?.(parallelGuardrailPromise);
+  } else {
+    completeInitialInputGuardrails();
   }
 }
 

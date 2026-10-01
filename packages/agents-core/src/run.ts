@@ -729,6 +729,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
   ): Promise<
     RunResult<TContext, TAgent> | StreamedRunResult<TContext, TAgent>
   > {
+    if (
+      input instanceof RunState &&
+      (input._currentTurn > 0 || input._pendingInput.length > 0) &&
+      !input._initialInputGuardrailsCompleted
+    ) {
+      throw new UserError(
+        'Cannot resume this checkpoint because completion of initial input guardrails is unverified. Start a fresh run with the original input and context.',
+        input,
+      );
+    }
     this.#validateModelTimeoutForAgent(
       input instanceof RunState ? input._currentAgent : agent,
     );

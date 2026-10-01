@@ -25,6 +25,7 @@
   "maxTurns": 3,
   "noActiveAgentRun": true,
   "inputGuardrailResults": [],
+  "initialInputGuardrailsCompleted": false,
   "outputGuardrailResults": [],
   "toolInputGuardrailResults": [],
   "toolOutputGuardrailResults": [],

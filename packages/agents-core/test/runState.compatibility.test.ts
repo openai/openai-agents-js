@@ -207,7 +207,7 @@ describe('historical RunState compatibility corpus', () => {
     expect(restored._previousResponseId).toBe('response-historical');
   });
 
-  it('requires a fresh run for released pending functions without recipient provenance', async () => {
+  it('requires a fresh run for released pending functions without input validation evidence', async () => {
     let executions = 0;
     const { outerAgent, outerModel } = createNestedApprovalAgents(() => {
       executions += 1;
@@ -221,7 +221,7 @@ describe('historical RunState compatibility corpus', () => {
 
     restored.approve(approval!);
     await expect(new Runner().run(outerAgent, restored)).rejects.toThrow(
-      /recipient binding/,
+      /initial input guardrails is unverified/,
     );
     expect(executions).toBe(0);
     expect(outerModel.requests).toHaveLength(0);
@@ -240,12 +240,12 @@ describe('historical RunState compatibility corpus', () => {
 
     restored.reject(approval!);
     await expect(new Runner().run(outerAgent, restored)).rejects.toThrow(
-      /recipient binding/,
+      /initial input guardrails is unverified/,
     );
     expect(executions).toBe(0);
   });
 
-  it('can reject the actual released pending child without executing its tool', async () => {
+  it('preserves a released pending child rejection but requires a fresh run', async () => {
     let executions = 0;
     const { nestedAgent } = createNestedApprovalAgents(() => {
       executions += 1;
@@ -260,16 +260,14 @@ describe('historical RunState compatibility corpus', () => {
     restored.reject(restored.getInterruptions()[0], {
       message: 'historical rejection',
     });
-    const result = await new Runner({ tracingDisabled: true }).run(
-      nestedAgent,
-      restored,
-    );
-    expect(result.finalOutput).toBe('Nested done');
+    await expect(
+      new Runner({ tracingDisabled: true }).run(nestedAgent, restored),
+    ).rejects.toThrow(/initial input guardrails is unverified/);
     expect(executions).toBe(0);
-    expect(JSON.stringify(result.newItems)).toContain('historical rejection');
+    expect(JSON.stringify(restored.toJSON())).toContain('historical rejection');
   });
 
-  it('resumes after a released committed side effect without executing it again', async () => {
+  it('rejects a released checkpoint without replaying its committed side effect', async () => {
     let executions = 0;
     const finalModel = new QueueModel([[message('done')]]);
     const sideEffectTool = tool({
@@ -291,30 +289,14 @@ describe('historical RunState compatibility corpus', () => {
       readFixture('historical/v1.17-side-effect-committed.json'),
     );
 
-    const result = await new Runner().run(agent, restored);
-
-    expect(result.finalOutput).toBe('done');
+    await expect(new Runner().run(agent, restored)).rejects.toThrow(
+      /initial input guardrails is unverified/,
+    );
     expect(executions).toBe(0);
-    expect(finalModel.requests).toHaveLength(1);
-    const resumedInput = finalModel.requests[0]!.input;
-    expect(Array.isArray(resumedInput)).toBe(true);
-    if (!Array.isArray(resumedInput)) {
-      throw new Error('Expected resumed model input to be an item array.');
-    }
-    expect(
-      resumedInput.filter(
-        (item) =>
-          item.type === 'function_call' && item.callId === 'side-effect-call',
-      ),
-    ).toHaveLength(1);
-    expect(
-      resumedInput.filter(
-        (item) =>
-          item.type === 'function_call_result' &&
-          item.callId === 'side-effect-call' &&
-          item.output === 'side effect completed',
-      ),
-    ).toHaveLength(1);
+    expect(finalModel.requests).toHaveLength(0);
+    expect(JSON.stringify(restored.toJSON())).toContain(
+      'side effect completed',
+    );
   });
 
   it('honors an exact rejection from the released schema 1.18 writer', async () => {

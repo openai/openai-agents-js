@@ -213,6 +213,7 @@ function createResumableState<TAgent extends Agent<any, any>>(
 ) {
   const state = new RunState(new RunContext(), 'initial', agent, maxTurns);
   state._currentTurn = 1;
+  state._initialInputGuardrailsCompleted = true;
   state._currentStep = { type: 'next_step_run_again' };
   return state;
 }
