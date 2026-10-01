@@ -104,22 +104,22 @@
     "verify:format": "pnpm format:check:changed"
   },
   "devDependencies": {
-    "@changesets/cli": "^3.0.2",
+    "@changesets/cli": "^3.0.3",
     "@eslint/js": "^9.39.5",
     "@types/node": "22.19.13",
-    "@vitest/coverage-v8": "^5.0.0",
+    "@vitest/coverage-v8": "^5.0.1",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "execa": "^9.6.1",
     "husky": "^9.1.7",
     "playwright": "^1.63.0",
-    "prettier": "^3.9.6",
+    "prettier": "^3.9.9",
     "tsc-multi": "^1.1.0",
-    "tsx": "^4.22.4",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.69.0",
-    "verdaccio": "^6.10.3",
-    "vitest": "^5.0.0"
+    "typescript-eslint": "^8.70.1",
+    "verdaccio": "^6.10.4",
+    "vitest": "^5.0.1"
   },
   "packageManager": "pnpm@12.6.0+sha512.3ef68f951cb111ac204b4a5a16f0b2ddf0da56a96e0413e81d855d9f0b55ef926714709028e1cd00c405c2c5fb7b9e8ec4dc46777c805d0373c2f2ff00fd20ec"
 }
