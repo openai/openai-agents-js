@@ -48,6 +48,7 @@ import {
   assertSandboxManifestMetadataSupported,
   MOUNT_MANIFEST_METADATA_SUPPORT,
   closeRemoteSessionOnManifestError,
+  resolveCreateArchiveLimits,
   cloneManifestWithRoot,
   createRunAsRemoteEditor,
   rehydrateRemoteSandboxSessionStateValues,
@@ -1314,6 +1315,11 @@ export class DaytonaSandboxClient implements SandboxClient<
     manifestOptions?: DaytonaSandboxClientOptions,
   ): Promise<DaytonaSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
+    const archiveLimits = resolveCreateArchiveLimits(
+      createArgs.archiveLimits,
+      createArgs.options?.archiveLimits,
+      this.options.archiveLimits,
+    );
     assertCoreSnapshotUnsupported('DaytonaSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
     const resolvedOptions = {
@@ -1386,7 +1392,7 @@ export class DaytonaSandboxClient implements SandboxClient<
         const session = new DaytonaSandboxSession({
           sandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits,
           state: {
             manifest: resolvedManifest,
             sandboxId: sandbox.id,

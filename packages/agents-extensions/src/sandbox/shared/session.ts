@@ -3,12 +3,30 @@ import {
   SandboxProviderError,
   SandboxUnsupportedFeatureError,
   withSandboxSpan,
+  validateSandboxArchiveLimits,
+  type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type SnapshotSpec,
 } from '@openai/agents-core/sandbox';
 import { isRecord } from './typeGuards';
 
 export { withSandboxSpan };
+
+/** Select and validate the creation policy before allocating provider resources. */
+export function resolveCreateArchiveLimits(
+  override: SandboxArchiveLimits | null | undefined,
+  options: SandboxArchiveLimits | null | undefined,
+  defaults: SandboxArchiveLimits | null | undefined,
+): SandboxArchiveLimits | null | undefined {
+  const limits =
+    override !== undefined
+      ? override
+      : options !== undefined
+        ? options
+        : defaults;
+  validateSandboxArchiveLimits(limits);
+  return limits;
+}
 
 export async function closeRemoteSessionOnManifestError(
   providerName: string,

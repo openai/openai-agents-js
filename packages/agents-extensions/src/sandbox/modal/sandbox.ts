@@ -46,6 +46,7 @@ import {
   assertSandboxManifestMetadataSupported,
   MOUNT_MANIFEST_METADATA_SUPPORT,
   closeRemoteSessionOnManifestError,
+  resolveCreateArchiveLimits,
   createRunAsRemoteEditor,
   decodeNativeSnapshotRef,
   rehydrateRemoteSandboxSessionStateValues,
@@ -1357,6 +1358,12 @@ export class ModalSandboxClient implements SandboxClient<
       args,
       manifestOptions as ModalSandboxClientOptions | undefined,
     );
+    const archiveLimits = resolveCreateArchiveLimits(
+      createArgs.archiveLimits,
+      (createArgs.options as ModalSandboxClientOptions | undefined)
+        ?.archiveLimits,
+      this.options.archiveLimits,
+    );
     assertCoreSnapshotUnsupported('ModalSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
     const resolvedOptions = resolveOptions(
@@ -1511,7 +1518,7 @@ export class ModalSandboxClient implements SandboxClient<
           state: sessionState,
           cloudBucketMounts,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits,
           cloudBucketMountsProvider: async () =>
             await modalCloudBucketMountsForManifest({
               modal,

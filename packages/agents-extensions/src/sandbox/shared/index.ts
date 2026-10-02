@@ -85,6 +85,7 @@ export {
   assertResumeRecreateAllowed,
   assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
+  resolveCreateArchiveLimits,
   isProviderSandboxNotFoundError,
   providerErrorDetails,
   providerErrorMessage,

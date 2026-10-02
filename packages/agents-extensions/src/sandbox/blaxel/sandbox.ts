@@ -33,6 +33,7 @@ import {
   SANDBOX_MANIFEST_METADATA_SUPPORT,
   assertRunAsUnsupported,
   closeRemoteSessionOnManifestError,
+  resolveCreateArchiveLimits,
   assertShellEnvironmentName,
   rehydrateRemoteSandboxSessionStateValues,
   formatPtyExecUpdate,
@@ -864,6 +865,11 @@ export class BlaxelSandboxClient implements SandboxClient<
     internalOptions: BlaxelCreateInternalOptions = {},
   ): Promise<BlaxelSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
+    const archiveLimits = resolveCreateArchiveLimits(
+      createArgs.archiveLimits,
+      createArgs.options?.archiveLimits,
+      this.options.archiveLimits,
+    );
     assertCoreSnapshotUnsupported('BlaxelSandboxClient', createArgs.snapshot);
     const manifest = createArgs.manifest;
     const resolvedOptions = {
@@ -971,7 +977,7 @@ export class BlaxelSandboxClient implements SandboxClient<
           apiKey: resolvedOptions.apiKey ?? loadEnv().BL_API_KEY,
           ownsSandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits,
           state: {
             manifest,
             sandboxName,

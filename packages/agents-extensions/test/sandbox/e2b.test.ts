@@ -192,6 +192,107 @@ describe('E2BSandboxClient', () => {
     killMock.mockResolvedValue(undefined);
   });
 
+  test.each(['constructor', 'create options', 'undefined override'] as const)(
+    'enforces archive limits from %s before hydration side effects',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 1 };
+      const client = new E2BSandboxClient({
+        archiveLimits: source !== 'create options' ? archiveLimits : undefined,
+      });
+      const session = await client.create({
+        options:
+          source === 'create options'
+            ? { archiveLimits }
+            : source === 'undefined override'
+              ? { archiveLimits: undefined }
+              : undefined,
+      });
+      const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
+      writeMock.mockClear();
+      runMock.mockClear();
+      await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+        'archive extracted size exceeds limit',
+      );
+      expect(writeMock).not.toHaveBeenCalled();
+      expect(runMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['constructor', 'create options', 'top-level'] as const)(
+    'rejects invalid archive limits from %s before provisioning',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 0 };
+      const client = new E2BSandboxClient({
+        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+      });
+      await expect(
+        client.create({
+          options: source === 'create options' ? { archiveLimits } : undefined,
+          archiveLimits: source === 'top-level' ? archiveLimits : undefined,
+        }),
+      ).rejects.toThrow('archiveLimits.maxExtractedBytes must be at least 1.');
+      expect(createMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each([null, { maxExtractedBytes: 5 }])(
+    'validates only the effective archive policy %j',
+    async (archiveLimits) => {
+      const client = new E2BSandboxClient({
+        archiveLimits: { maxExtractedBytes: 0 },
+      });
+      const session = await client.create({
+        options: { archiveLimits: { maxExtractedBytes: 0 } },
+        archiveLimits,
+      });
+      await expect(
+        session.hydrateWorkspace(
+          makeTarArchive([{ name: 'ok.txt', content: 'small' }]),
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  test.each(['create options', 'top-level', 'manifest overload'] as const)(
+    'preserves explicit null archive limits from %s',
+    async (source) => {
+      const client = new E2BSandboxClient({
+        archiveLimits: { maxExtractedBytes: 1 },
+      });
+      const session =
+        source === 'manifest overload'
+          ? await client.create(new Manifest(), { archiveLimits: null })
+          : await client.create(
+              source === 'top-level'
+                ? { archiveLimits: null }
+                : { options: { archiveLimits: null } },
+            );
+      await expect(
+        session.hydrateWorkspace(
+          makeTarArchive([{ name: 'README.md', content: 'large' }]),
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  test('top-level archive limits override provider options', async () => {
+    const client = new E2BSandboxClient({ archiveLimits: null });
+    const session = await client.create({
+      options: { archiveLimits: null },
+      archiveLimits: { maxExtractedBytes: 5 },
+    });
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'ok.txt', content: 'small' }]),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'large.txt', content: 'too large' }]),
+      ),
+    ).rejects.toThrow('archive extracted size exceeds limit');
+  });
+
   test('rejects unsupported core create options instead of ignoring them', async () => {
     const client = new E2BSandboxClient();
 

@@ -1,3 +1,4 @@
+import { makeTarArchive } from './tarFixture';
 import {
   boxMount,
   Manifest,
@@ -117,6 +118,49 @@ describe('DaytonaSandboxClient', () => {
     stopMock.mockResolvedValue(undefined);
     deleteMock.mockResolvedValue(undefined);
   });
+
+  test.each(['constructor', 'create options', 'undefined override'] as const)(
+    'enforces archive limits from %s before hydration side effects',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 1 };
+      const client = new DaytonaSandboxClient({
+        archiveLimits: source !== 'create options' ? archiveLimits : undefined,
+      });
+      const session = await client.create({
+        options:
+          source === 'create options'
+            ? { archiveLimits }
+            : source === 'undefined override'
+              ? { archiveLimits: undefined }
+              : undefined,
+      });
+      const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
+      uploadFileMock.mockClear();
+      executeCommandMock.mockClear();
+      await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+        'archive extracted size exceeds limit',
+      );
+      expect(uploadFileMock).not.toHaveBeenCalled();
+      expect(executeCommandMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['constructor', 'create options', 'top-level'] as const)(
+    'rejects invalid archive limits from %s before provisioning',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 0 };
+      const client = new DaytonaSandboxClient({
+        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+      });
+      await expect(
+        client.create({
+          options: source === 'create options' ? { archiveLimits } : undefined,
+          archiveLimits: source === 'top-level' ? archiveLimits : undefined,
+        }),
+      ).rejects.toThrow('archiveLimits.maxExtractedBytes must be at least 1.');
+      expect(createMock).not.toHaveBeenCalled();
+    },
+  );
 
   test('rejects unsupported core create options instead of ignoring them', async () => {
     const client = new DaytonaSandboxClient();
