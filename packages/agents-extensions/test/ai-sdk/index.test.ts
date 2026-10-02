@@ -15,6 +15,7 @@ import {
   protocol,
   run,
   RunContext,
+  Runner,
   tool,
   toolNamespace,
   withTrace,
@@ -5066,6 +5067,86 @@ describe('AiSdkModel', () => {
   });
 
   describe('Error handling with tracing', () => {
+    test.each(['generate', 'stream-request', 'stream-chunk'] as const)(
+      'omits raw provider error diagnostics from traces for %s',
+      async (failureMode) => {
+        const privateMarker = 'SYNTHETIC_PRIVATE_DIAGNOSTIC';
+        const providerError = new APICallError({
+          message: 'Provider request failed',
+          url: 'https://provider.example.invalid',
+          requestBodyValues: { prompt: privateMarker },
+          responseBody: privateMarker,
+          responseHeaders: { 'set-cookie': privateMarker },
+          cause: { diagnostic: privateMarker },
+          statusCode: 400,
+          isRetryable: false,
+        });
+        const model = new AiSdkModel(
+          stubModel({
+            async doGenerate() {
+              throw providerError;
+            },
+            async doStream() {
+              if (failureMode === 'stream-request') {
+                throw providerError;
+              }
+              return {
+                stream: partsStream([{ type: 'error', error: providerError }]),
+              } as any;
+            },
+          }),
+        );
+        const agent = new Agent({ name: 'trace-error-test', model });
+        // Omitted configuration exercises the default sensitive tracing setting.
+        for (const traceIncludeSensitiveData of [undefined, false]) {
+          const processor = new RecordingTracingProcessor();
+          setTraceProcessors([processor]);
+          setTracingDisabled(false);
+          try {
+            const runner = new Runner({ traceIncludeSensitiveData });
+            if (failureMode === 'generate') {
+              await expect(runner.run(agent, 'test')).rejects.toBe(
+                providerError,
+              );
+            } else {
+              const result = await runner.run(agent, 'test', { stream: true });
+              await expect(result.completed).rejects.toBe(providerError);
+            }
+            const spans = processor.spansEnded.map((span) => span.toJSON());
+            expect(JSON.stringify(spans)).not.toContain(privateMarker);
+            const generationSpans = processor.spansEnded.filter(
+              (span) => span.spanData.type === 'generation',
+            );
+            expect(generationSpans).toHaveLength(1);
+            expect(generationSpans[0].error).toEqual({
+              message:
+                traceIncludeSensitiveData === false
+                  ? 'Unknown error'
+                  : 'Provider request failed',
+              data: {
+                error:
+                  traceIncludeSensitiveData === false
+                    ? 'AI_APICallError'
+                    : {
+                        name: 'AI_APICallError',
+                        message: 'Provider request failed',
+                        statusCode: 400,
+                      },
+              },
+            });
+            expect(providerError.responseBody).toBe(privateMarker);
+            expect(providerError.responseHeaders).toEqual({
+              'set-cookie': privateMarker,
+            });
+            expect(providerError.cause).toEqual({ diagnostic: privateMarker });
+          } finally {
+            setTraceProcessors([]);
+            setTracingDisabled(true);
+          }
+        }
+      },
+    );
+
     test('getRetryAdvice ignores status-only AI SDK errors without provider guidance', () => {
       const aiSdkError = new Error('API call failed');
       (aiSdkError as any).statusCode = 429;
