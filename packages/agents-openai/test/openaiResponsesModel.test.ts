@@ -943,6 +943,126 @@ describe('OpenAIResponsesModel', () => {
     expect(result.output).toEqual([]);
   });
 
+  describe.each([false, true])('sensitive tracing with stream=%s', (stream) => {
+    it.each([false, true])(
+      'honors traceIncludeSensitiveData=%s on successful runs',
+      async (traceIncludeSensitiveData) => {
+        const spans = captureResponseSpans();
+        const input = 'synthetic-private-input';
+        const output = 'synthetic-private-output';
+        const response = {
+          id: 'resp_sensitive_test',
+          status: 'completed',
+          usage: {},
+          output: [
+            {
+              id: 'msg_sensitive_test',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: output, annotations: [] }],
+            },
+          ],
+        };
+        async function* events() {
+          yield { type: 'response.completed', response, sequence_number: 0 };
+        }
+        const model = new OpenAIResponsesModel(
+          {
+            baseURL: 'https://api.openai.com/v1',
+            responses: {
+              create: vi
+                .fn()
+                .mockReturnValue(
+                  createResponsePromiseWithURL(
+                    stream ? events() : response,
+                    'https://api.openai.com/v1/responses',
+                  ),
+                ),
+            },
+          } as unknown as OpenAI,
+          'gpt-test',
+        );
+        const runner = new Runner({ traceIncludeSensitiveData });
+        const agent = new Agent({ name: 'TracingTest', model });
+        if (stream) {
+          const result = await runner.run(agent, input, { stream: true });
+          for await (const _event of result) {
+            /* consume */
+          }
+          await result.completed;
+          expect(result.finalOutput).toBe(output);
+        } else {
+          expect((await runner.run(agent, input)).finalOutput).toBe(output);
+        }
+        expect(spans).toHaveLength(1);
+        expect(spans[0].spanData.response_id).toBe(response.id);
+        if (traceIncludeSensitiveData) {
+          expect(JSON.stringify(spans[0].spanData._input)).toContain(input);
+          expect(JSON.stringify(spans[0].spanData._response)).toContain(output);
+        } else {
+          expect(spans[0].spanData._input).toBeUndefined();
+          expect(spans[0].spanData._response).toBeUndefined();
+          expect(JSON.stringify(spans[0].toJSON())).not.toContain(input);
+          expect(JSON.stringify(spans[0].toJSON())).not.toContain(output);
+        }
+      },
+    );
+
+    it.each([true, 'enabled_without_data'] as const)(
+      'preserves the caller error and honors tracing=%s on provider failure',
+      async (tracing) => {
+        const spans = captureResponseSpans();
+        const error = new Error('synthetic-private-provider-error');
+        async function* events() {
+          yield { type: 'response.created', response: { id: 'resp_error' } };
+          throw error;
+        }
+        const model = new OpenAIResponsesModel(
+          {
+            responses: {
+              create: stream
+                ? vi.fn().mockResolvedValue(events())
+                : vi.fn().mockRejectedValue(error),
+            },
+          } as unknown as OpenAI,
+          'gpt-test',
+        );
+        const request: ModelRequest = {
+          systemInstructions: undefined,
+          input: 'synthetic-private-input',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing,
+        };
+        await expect(
+          withTrace('test', async () => {
+            if (stream) {
+              for await (const _event of model.getStreamedResponse(request)) {
+                /* consume */
+              }
+            } else {
+              await model.getResponse(request);
+            }
+          }),
+        ).rejects.toBe(error);
+        expect(spans).toHaveLength(1);
+        expect(spans[0].error).not.toBeNull();
+        if (tracing === true) {
+          expect(JSON.stringify(spans[0].error)).toContain(error.message);
+        } else {
+          expect(JSON.stringify(spans[0].toJSON())).not.toContain(
+            error.message,
+          );
+          expect(spans[0].spanData._input).toBeUndefined();
+          expect(spans[0].spanData._response).toBeUndefined();
+        }
+      },
+    );
+  });
+
   it('redacts an unsuccessful non-streaming response from no-data tracing', async () => {
     setTracingDisabled(false);
     let responseSpan: Span<any> | undefined;

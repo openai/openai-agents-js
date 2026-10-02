@@ -1884,7 +1884,12 @@ export class OpenAIResponsesModel implements Model {
           request,
           false,
           endpointMetadata,
-        );
+        ).catch((error: unknown) => {
+          if (request.tracing === 'enabled_without_data') {
+            span.setError({ message: 'Error getting response' });
+          }
+          throw error;
+        });
         const rawUsage =
           request.modelSettings.preserveRawUsage === true
             ? snapshotRawUsage(response.usage)
@@ -1903,7 +1908,7 @@ export class OpenAIResponsesModel implements Model {
           ) {
             span.spanData.response_id = response.id;
           }
-          if (request.tracing === true || !terminalType) {
+          if (request.tracing === true) {
             span.spanData._input = request.input;
             span.spanData._response = response;
           }
@@ -2113,26 +2118,18 @@ export class OpenAIResponsesModel implements Model {
         }
       }
 
-      if (request.tracing && span && finalResponse) {
-        if (request.tracing === true) {
-          span.spanData.response_id = finalResponse.id;
-        }
-        if (request.tracing === true || !terminalError) {
-          span.spanData._response = finalResponse;
-        }
+      if (request.tracing === true && span && finalResponse) {
+        span.spanData.response_id = finalResponse.id;
+        span.spanData._response = finalResponse;
       }
     } catch (error) {
       const errorToThrow = terminalError ?? error;
       if (span?.error === null) {
         span.setError({
           message: 'Error streaming response',
-          data: {
-            error: request.tracing
-              ? String(errorToThrow)
-              : errorToThrow instanceof Error
-                ? errorToThrow.name
-                : undefined,
-          },
+          ...(request.tracing === true
+            ? { data: { error: String(errorToThrow) } }
+            : {}),
         });
       }
       throw errorToThrow;
