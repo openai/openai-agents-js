@@ -1600,6 +1600,7 @@ describe('executeComputerActions', () => {
       const callbackError = Object.assign(
         new Error('synthetic safety secret'),
         {
+          name: 'synthetic safety error name',
           data: { detail: 'synthetic safety payload' },
         },
       );
@@ -1644,6 +1645,19 @@ describe('executeComputerActions', () => {
         expect(onSafetyCheck).toHaveBeenCalledOnce();
         expect(screenshot).not.toHaveBeenCalled();
         const functionSpan = getEndedFunctionSpan(processor, 'computer');
+        for (const type of ['agent', 'turn', 'task']) {
+          const runSpan = processor.spansEnded.find(
+            (span) => span.spanData.type === type,
+          );
+          expect(runSpan?.error).toEqual({
+            message: 'Error in agent run',
+            data: {
+              error: traceIncludeSensitiveData
+                ? String(callbackError)
+                : 'Error',
+            },
+          });
+        }
         if (traceIncludeSensitiveData) {
           expect(functionSpan.error).toEqual({
             message: callbackError.message,
@@ -1661,6 +1675,7 @@ describe('executeComputerActions', () => {
             processor.spansEnded.map((span) => span.toJSON()),
           );
           expect(serializedSpans).not.toContain(callbackError.message);
+          expect(serializedSpans).not.toContain(callbackError.name);
           expect(serializedSpans).not.toContain(callbackError.data.detail);
         }
       });

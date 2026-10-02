@@ -250,7 +250,7 @@ export function getRunnerSpanErrorDetails(
   if (traceIncludeSensitiveData) {
     return String(error);
   }
-  return error instanceof Error ? error.name : 'Error';
+  return 'Error';
 }
 
 /**
