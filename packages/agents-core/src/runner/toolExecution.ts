@@ -1776,7 +1776,23 @@ async function withToolFunctionSpan<T>(
   }
 
   return withFunctionSpan(
-    async (span) => fn(span),
+    async (span) => {
+      try {
+        return await fn(span);
+      } catch (error) {
+        // Escaping callbacks must not fall through to generic error capture.
+        if (!runner.config.traceIncludeSensitiveData && span.error === null) {
+          span.setError({
+            message: 'Error running tool',
+            data: {
+              tool_name: toolName,
+              error: REDACTED_TOOL_ERROR_MESSAGE,
+            },
+          });
+        }
+        throw error;
+      }
+    },
     {
       data: {
         name: toolName,
