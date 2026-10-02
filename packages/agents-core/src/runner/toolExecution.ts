@@ -2561,6 +2561,15 @@ export async function executeComputerActions(
           if (isSiblingCancellationSignal(signal)) {
             return buildStartedCancellationItem();
           }
+          if (!runner.config.traceIncludeSensitiveData) {
+            span?.setError({
+              message: 'Error running tool',
+              data: {
+                tool_name: COMPUTER_TRACE_NAME,
+                error: REDACTED_TOOL_ERROR_MESSAGE,
+              },
+            });
+          }
           throw error;
         }
         if (signal?.aborted) {

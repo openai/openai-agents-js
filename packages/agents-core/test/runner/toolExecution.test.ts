@@ -76,7 +76,10 @@ import {
   ScriptedModelProvider,
   FakeShell,
   FakeEditor,
+  FakeComputer,
 } from '../stubs';
+import { ScriptedModel, modelResponse } from '../../src/testing';
+import { Usage } from '../../src/usage';
 import * as protocol from '../../src/types/protocol';
 import { AgentToolUseTracker } from '../../src/runner/toolUseTracker';
 import { runWithSiblingCancellation } from '../../src/runner/siblingCancellation';
@@ -1585,6 +1588,84 @@ describe('executeComputerActions', () => {
       );
     });
   });
+
+  it.each([
+    { stream: false, traceIncludeSensitiveData: false },
+    { stream: true, traceIncludeSensitiveData: false },
+    { stream: false, traceIncludeSensitiveData: true },
+    { stream: true, traceIncludeSensitiveData: true },
+  ])(
+    'respects sensitive tracing for safety-check errors (stream=$stream, sensitive=$traceIncludeSensitiveData)',
+    async ({ stream, traceIncludeSensitiveData }) => {
+      const callbackError = Object.assign(
+        new Error('synthetic safety secret'),
+        {
+          data: { detail: 'synthetic safety payload' },
+        },
+      );
+      const computer = new FakeComputer();
+      const screenshot = vi.spyOn(computer, 'screenshot');
+      const onSafetyCheck = vi.fn().mockRejectedValue(callbackError);
+      const agent = new Agent({
+        name: 'SafetyCheckAgent',
+        model: new ScriptedModel([
+          modelResponse({
+            output: [
+              {
+                type: 'computer_call',
+                callId: 'safety-call',
+                status: 'completed',
+                action: { type: 'screenshot' },
+                providerData: {
+                  pending_safety_checks: [
+                    { id: 'check-1', code: 'sensitive_domain' },
+                  ],
+                },
+              },
+            ],
+            usage: new Usage(),
+          }),
+        ]),
+        tools: [computerTool({ computer, onSafetyCheck })],
+      });
+      const runner = new Runner({
+        tracingDisabled: false,
+        traceIncludeSensitiveData,
+      });
+
+      await withRecordingTrace(async (processor) => {
+        if (stream) {
+          const result = await runner.run(agent, 'start', { stream: true });
+          await expect(result.completed).rejects.toBe(callbackError);
+        } else {
+          await expect(runner.run(agent, 'start')).rejects.toBe(callbackError);
+        }
+
+        expect(onSafetyCheck).toHaveBeenCalledOnce();
+        expect(screenshot).not.toHaveBeenCalled();
+        const functionSpan = getEndedFunctionSpan(processor, 'computer');
+        if (traceIncludeSensitiveData) {
+          expect(functionSpan.error).toEqual({
+            message: callbackError.message,
+            data: callbackError.data,
+          });
+        } else {
+          expect(functionSpan.error).toEqual({
+            message: 'Error running tool',
+            data: {
+              tool_name: 'computer',
+              error: REDACTED_TOOL_ERROR_MESSAGE,
+            },
+          });
+          const serializedSpans = JSON.stringify(
+            processor.spansEnded.map((span) => span.toJSON()),
+          );
+          expect(serializedSpans).not.toContain(callbackError.message);
+          expect(serializedSpans).not.toContain(callbackError.data.detail);
+        }
+      });
+    },
+  );
 
   it('propagates onSafetyCheck callback errors', async () => {
     const sensitiveError = 'safety check leaked data';
