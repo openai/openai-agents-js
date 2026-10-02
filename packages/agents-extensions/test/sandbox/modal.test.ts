@@ -296,6 +296,72 @@ describe('ModalSandboxClient', () => {
     sandboxesFromIdMock.mockResolvedValue(sandbox);
   });
 
+  test.each(['constructor', 'create options'] as const)(
+    'enforces archive limits from %s before hydration side effects',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 1 };
+      const client = new ModalSandboxClient({
+        appName: 'sandbox-tests',
+        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+      });
+      const session = await client.create({
+        options: source === 'create options' ? { archiveLimits } : undefined,
+      });
+      const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
+      sandboxFilesystemWriteBytesMock.mockClear();
+      sandboxExecMock.mockClear();
+      await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+        'archive extracted size exceeds limit',
+      );
+      expect(sandboxFilesystemWriteBytesMock).not.toHaveBeenCalled();
+      expect(sandboxExecMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['create options', 'top-level', 'manifest overload'] as const)(
+    'preserves explicit null archive limits from %s',
+    async (source) => {
+      const client = new ModalSandboxClient({
+        appName: 'sandbox-tests',
+        archiveLimits: { maxExtractedBytes: 1 },
+      });
+      const session =
+        source === 'manifest overload'
+          ? await client.create(new Manifest(), { archiveLimits: null })
+          : await client.create(
+              source === 'top-level'
+                ? { archiveLimits: null }
+                : { options: { archiveLimits: null } },
+            );
+      await expect(
+        session.hydrateWorkspace(
+          makeTarArchive([{ name: 'README.md', content: 'large' }]),
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  test('top-level archive limits override provider options', async () => {
+    const client = new ModalSandboxClient({
+      appName: 'sandbox-tests',
+      archiveLimits: null,
+    });
+    const session = await client.create({
+      options: { archiveLimits: null },
+      archiveLimits: { maxExtractedBytes: 5 },
+    });
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'ok.txt', content: 'small' }]),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      session.hydrateWorkspace(
+        makeTarArchive([{ name: 'large.txt', content: 'too large' }]),
+      ),
+    ).rejects.toThrow('archive extracted size exceeds limit');
+  });
+
   test('rejects unsupported core create options instead of ignoring them', async () => {
     const client = new ModalSandboxClient();
 

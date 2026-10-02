@@ -260,6 +260,27 @@ describe('VercelSandboxClient', () => {
     vi.unstubAllEnvs();
   });
 
+  test.each(['constructor', 'create options'] as const)(
+    'enforces archive limits from %s before hydration side effects',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 1 };
+      const client = new VercelSandboxClient({
+        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+      });
+      const session = await client.create({
+        options: source === 'create options' ? { archiveLimits } : undefined,
+      });
+      const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
+      writeFilesMock.mockClear();
+      runCommandMock.mockClear();
+      await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+        'archive extracted size exceeds limit',
+      );
+      expect(writeFilesMock).not.toHaveBeenCalled();
+      expect(runCommandMock).not.toHaveBeenCalled();
+    },
+  );
+
   test('rejects unsupported core create options instead of ignoring them', async () => {
     const client = new VercelSandboxClient();
 

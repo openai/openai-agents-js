@@ -971,7 +971,10 @@ export class BlaxelSandboxClient implements SandboxClient<
           apiKey: resolvedOptions.apiKey ?? loadEnv().BL_API_KEY,
           ownsSandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits:
+            createArgs.archiveLimits === undefined
+              ? resolvedOptions.archiveLimits
+              : createArgs.archiveLimits,
           state: {
             manifest,
             sandboxName,

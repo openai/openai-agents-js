@@ -1386,7 +1386,10 @@ export class DaytonaSandboxClient implements SandboxClient<
         const session = new DaytonaSandboxSession({
           sandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits:
+            createArgs.archiveLimits === undefined
+              ? resolvedOptions.archiveLimits
+              : createArgs.archiveLimits,
           state: {
             manifest: resolvedManifest,
             sandboxId: sandbox.id,

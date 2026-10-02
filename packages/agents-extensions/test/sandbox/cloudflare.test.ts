@@ -239,6 +239,26 @@ describe('CloudflareSandboxClient', () => {
     TestWebSocket.instances = [];
   });
 
+  test.each(['constructor', 'create options'] as const)(
+    'enforces archive limits from %s before hydration side effects',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 1 };
+      const client = new CloudflareSandboxClient({
+        workerUrl: 'https://worker.example.com',
+        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+      });
+      const session = await client.create({
+        options: source === 'create options' ? { archiveLimits } : undefined,
+      });
+      const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
+      vi.mocked(global.fetch).mockClear();
+      await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+        'archive extracted size exceeds limit',
+      );
+      expect(vi.mocked(global.fetch)).not.toHaveBeenCalled();
+    },
+  );
+
   test('rejects unsupported core create options instead of ignoring them', async () => {
     const client = new CloudflareSandboxClient();
 

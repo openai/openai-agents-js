@@ -1241,7 +1241,10 @@ export class CloudflareSandboxClient implements SandboxClient<
         const session = new CloudflareSandboxSession({
           apiKey,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits:
+            createArgs.archiveLimits === undefined
+              ? resolvedOptions.archiveLimits
+              : createArgs.archiveLimits,
           state: {
             manifest,
             workerUrl: normalizedWorkerUrl,

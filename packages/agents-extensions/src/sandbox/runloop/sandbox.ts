@@ -1763,7 +1763,10 @@ export class RunloopSandboxClient implements SandboxClient<
           devbox,
           mountSecretAuthorityTrusted: true,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits:
+            createArgs.archiveLimits === undefined
+              ? resolvedOptions.archiveLimits
+              : createArgs.archiveLimits,
           state: {
             manifest,
             devboxId: devbox.id,

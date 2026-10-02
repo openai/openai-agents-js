@@ -1511,7 +1511,10 @@ export class ModalSandboxClient implements SandboxClient<
           state: sessionState,
           cloudBucketMounts,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits:
+            createArgs.archiveLimits === undefined
+              ? resolvedOptions.archiveLimits
+              : createArgs.archiveLimits,
           cloudBucketMountsProvider: async () =>
             await modalCloudBucketMountsForManifest({
               modal,
@@ -2259,6 +2262,10 @@ function resolveOptions(
   overrides?: ModalSandboxClientOptions,
 ): ModalSandboxClientOptions {
   return {
+    archiveLimits:
+      overrides?.archiveLimits === undefined
+        ? defaults.archiveLimits
+        : overrides.archiveLimits,
     appName: overrides?.appName ?? defaults.appName ?? '',
     image: overrides?.image ?? defaults.image,
     sandbox: overrides?.sandbox ?? defaults.sandbox,

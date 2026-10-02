@@ -917,7 +917,10 @@ export class E2BSandboxClient implements SandboxClient<
         const session = new E2BSandboxSession({
           sandbox,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits:
+            createArgs.archiveLimits === undefined
+              ? resolvedOptions.archiveLimits
+              : createArgs.archiveLimits,
           state: {
             manifest,
             sandboxId: sandbox.sandboxId,

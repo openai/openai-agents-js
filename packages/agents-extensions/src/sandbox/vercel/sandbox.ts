@@ -1653,7 +1653,10 @@ export class VercelSandboxClient implements SandboxClient<
           sandbox,
           credentials,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits: createArgs.archiveLimits,
+          archiveLimits:
+            createArgs.archiveLimits === undefined
+              ? resolvedOptions.archiveLimits
+              : createArgs.archiveLimits,
           state: {
             manifest: persistentManifest,
             sandboxId: sandbox.sandboxId,
