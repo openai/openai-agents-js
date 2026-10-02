@@ -374,15 +374,20 @@ describe('RunloopSandboxClient', () => {
     shutdownMock.mockResolvedValue(undefined);
   });
 
-  test.each(['constructor', 'create options'] as const)(
+  test.each(['constructor', 'create options', 'undefined override'] as const)(
     'enforces archive limits from %s before hydration side effects',
     async (source) => {
       const archiveLimits = { maxExtractedBytes: 1 };
       const client = new RunloopSandboxClient({
-        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+        archiveLimits: source !== 'create options' ? archiveLimits : undefined,
       });
       const session = await client.create({
-        options: source === 'create options' ? { archiveLimits } : undefined,
+        options:
+          source === 'create options'
+            ? { archiveLimits }
+            : source === 'undefined override'
+              ? { archiveLimits: undefined }
+              : undefined,
       });
       const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
       uploadMock.mockClear();
@@ -392,6 +397,23 @@ describe('RunloopSandboxClient', () => {
       );
       expect(uploadMock).not.toHaveBeenCalled();
       expect(execMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['constructor', 'create options', 'top-level'] as const)(
+    'rejects invalid archive limits from %s before provisioning',
+    async (source) => {
+      const archiveLimits = { maxExtractedBytes: 0 };
+      const client = new RunloopSandboxClient({
+        archiveLimits: source === 'constructor' ? archiveLimits : undefined,
+      });
+      await expect(
+        client.create({
+          options: source === 'create options' ? { archiveLimits } : undefined,
+          archiveLimits: source === 'top-level' ? archiveLimits : undefined,
+        }),
+      ).rejects.toThrow('archiveLimits.maxExtractedBytes must be at least 1.');
+      expect(createMock).not.toHaveBeenCalled();
     },
   );
 

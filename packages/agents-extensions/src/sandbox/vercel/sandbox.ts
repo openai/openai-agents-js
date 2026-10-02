@@ -25,6 +25,7 @@ import {
 } from '@openai/agents-core/sandbox';
 import {
   assertCoreSnapshotUnsupported,
+  resolveCreateArchiveLimits,
   assertRemoteSandboxSessionStateCanResume,
   assertSandboxManifestMetadataSupported,
   assertRunAsUnsupported,
@@ -1589,6 +1590,11 @@ export class VercelSandboxClient implements SandboxClient<
         : { ...(args ?? {}), manifest: compatibilityManifest },
       manifestOptions,
     );
+    const archiveLimits = resolveCreateArchiveLimits(
+      createArgs.archiveLimits,
+      createArgs.options?.archiveLimits,
+      this.options.archiveLimits,
+    );
     assertCoreSnapshotUnsupported('VercelSandboxClient', createArgs.snapshot);
     const resolvedManifest = resolveManifestRoot(createArgs.manifest);
     assertSandboxManifestMetadataSupported(
@@ -1653,10 +1659,7 @@ export class VercelSandboxClient implements SandboxClient<
           sandbox,
           credentials,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits:
-            createArgs.archiveLimits === undefined
-              ? resolvedOptions.archiveLimits
-              : createArgs.archiveLimits,
+          archiveLimits,
           state: {
             manifest: persistentManifest,
             sandboxId: sandbox.sandboxId,

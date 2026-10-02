@@ -91,6 +91,7 @@ import {
 import {
   assertCoreSnapshotUnsupported,
   closeRemoteSessionOnManifestError,
+  resolveCreateArchiveLimits,
   withProviderError,
   withSandboxSpan,
 } from '../shared/session';
@@ -1145,6 +1146,12 @@ export class CloudflareSandboxClient implements SandboxClient<
       args,
       manifestOptions as CloudflareSandboxClientOptions | undefined,
     );
+    const archiveLimits = resolveCreateArchiveLimits(
+      createArgs.archiveLimits,
+      (createArgs.options as CloudflareSandboxClientOptions | undefined)
+        ?.archiveLimits,
+      this.options.archiveLimits,
+    );
     assertCoreSnapshotUnsupported(
       'CloudflareSandboxClient',
       createArgs.snapshot,
@@ -1241,10 +1248,7 @@ export class CloudflareSandboxClient implements SandboxClient<
         const session = new CloudflareSandboxSession({
           apiKey,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits:
-            createArgs.archiveLimits === undefined
-              ? resolvedOptions.archiveLimits
-              : createArgs.archiveLimits,
+          archiveLimits,
           state: {
             manifest,
             workerUrl: normalizedWorkerUrl,

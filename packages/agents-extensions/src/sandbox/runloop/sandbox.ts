@@ -41,6 +41,7 @@ import {
   assertSandboxManifestMetadataSupported,
   SANDBOX_MANIFEST_METADATA_SUPPORT,
   closeRemoteSessionOnManifestError,
+  resolveCreateArchiveLimits,
   cloneManifestWithRoot,
   decodeNativeSnapshotRef,
   assertShellEnvironmentName,
@@ -1649,6 +1650,11 @@ export class RunloopSandboxClient implements SandboxClient<
     manifestOptions?: RunloopSandboxClientOptions,
   ): Promise<RunloopSandboxSession> {
     const createArgs = normalizeSandboxClientCreateArgs(args, manifestOptions);
+    const archiveLimits = resolveCreateArchiveLimits(
+      createArgs.archiveLimits,
+      createArgs.options?.archiveLimits,
+      this.options.archiveLimits,
+    );
     assertCoreSnapshotUnsupported('RunloopSandboxClient', createArgs.snapshot);
     const resolvedOptions = resolveRunloopOptions(
       this.options,
@@ -1763,10 +1769,7 @@ export class RunloopSandboxClient implements SandboxClient<
           devbox,
           mountSecretAuthorityTrusted: true,
           concurrencyLimits: createArgs.concurrencyLimits,
-          archiveLimits:
-            createArgs.archiveLimits === undefined
-              ? resolvedOptions.archiveLimits
-              : createArgs.archiveLimits,
+          archiveLimits,
           state: {
             manifest,
             devboxId: devbox.id,
