@@ -613,8 +613,7 @@ function normalizeFunctionCallOutputForChat(
 
     if (options.strictFeatureValidation && textItems.length !== output.length) {
       throw new UserError(
-        'Only text tool outputs are supported for chat completions. Got item: ' +
-          JSON.stringify(output),
+        'Only text tool outputs are supported for chat completions.',
       );
     }
 

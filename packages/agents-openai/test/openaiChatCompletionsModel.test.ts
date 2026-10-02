@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
   ModelBehaviorError,
+  UserError,
   Runner,
   Span,
   Trace,
@@ -394,6 +395,56 @@ describe('OpenAIChatCompletionsModel', () => {
     );
     expect(client.chat.completions.create).not.toHaveBeenCalled();
   });
+
+  it.each(['non-streaming', 'streaming'] as const)(
+    'omits mixed tool output from strict errors and traces (%s)',
+    async (mode) => {
+      setTracingDisabled(false);
+      const processor = new RecordingProcessor();
+      setTraceProcessors([processor]);
+      const client = new FakeClient();
+      const model = new OpenAIChatCompletionsModel(client as any, 'gpt', {
+        strictFeatureValidation: true,
+      });
+      const request = {
+        input: [
+          {
+            type: 'function_call_result',
+            callId: 'call_mixed',
+            name: 'lookup',
+            status: 'completed',
+            output: [
+              { type: 'input_text', text: 'SYNTHETIC_PRIVATE_TOOL_TEXT' },
+              {
+                type: 'input_image',
+                image: 'https://example.com/SYNTHETIC_PRIVATE_IMAGE',
+              },
+            ],
+          },
+        ],
+        modelSettings: {},
+        tools: [],
+        outputType: 'text',
+        handoffs: [],
+        tracing: 'enabled_without_data',
+      };
+
+      await expect(callModel(model, request, mode)).rejects.toThrow(
+        new UserError(
+          'Only text tool outputs are supported for chat completions.',
+        ),
+      );
+      expect(client.chat.completions.create).not.toHaveBeenCalled();
+      const generation = processor.spansEnded.find(
+        (span) => span.spanData.type === 'generation',
+      );
+      expect(generation).toBeDefined();
+      expect(generation?.error).toBeDefined();
+      expect(JSON.stringify(generation?.toJSON())).not.toContain(
+        'SYNTHETIC_PRIVATE',
+      );
+    },
+  );
 
   it('warns and ignores server-managed conversation state by default', async () => {
     const client = new FakeClient();
