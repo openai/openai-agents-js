@@ -1171,25 +1171,9 @@ export class AiSdkModel implements Model {
                   ? {
                       name: error.name,
                       message: error.message,
-                      // Include AI SDK specific error fields if they exist.
-                      ...(typeof error === 'object' && error !== null
-                        ? {
-                            ...('responseBody' in error
-                              ? { responseBody: (error as any).responseBody }
-                              : {}),
-                            ...('responseHeaders' in error
-                              ? {
-                                  responseHeaders: (error as any)
-                                    .responseHeaders,
-                                }
-                              : {}),
-                            ...('statusCode' in error
-                              ? { statusCode: (error as any).statusCode }
-                              : {}),
-                            ...('cause' in error
-                              ? { cause: (error as any).cause }
-                              : {}),
-                          }
+                      // Keep raw provider payloads and transport metadata out of traces.
+                      ...('statusCode' in error
+                        ? { statusCode: (error as any).statusCode }
                         : {}),
                     }
                   : error.name,
@@ -1662,25 +1646,9 @@ export class AiSdkModel implements Model {
                   ? {
                       name: error.name,
                       message: error.message,
-                      // Include AI SDK specific error fields if they exist.
-                      ...(typeof error === 'object' && error !== null
-                        ? {
-                            ...('responseBody' in error
-                              ? { responseBody: (error as any).responseBody }
-                              : {}),
-                            ...('responseHeaders' in error
-                              ? {
-                                  responseHeaders: (error as any)
-                                    .responseHeaders,
-                                }
-                              : {}),
-                            ...('statusCode' in error
-                              ? { statusCode: (error as any).statusCode }
-                              : {}),
-                            ...('cause' in error
-                              ? { cause: (error as any).cause }
-                              : {}),
-                          }
+                      // Keep raw provider payloads and transport metadata out of traces.
+                      ...('statusCode' in error
+                        ? { statusCode: (error as any).statusCode }
                         : {}),
                     }
                   : String(error)
