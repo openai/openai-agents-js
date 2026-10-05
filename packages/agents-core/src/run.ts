@@ -2306,7 +2306,9 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             try {
               await persistNonStreamingResult(
                 resultToPersist,
-                cancelledOutputRedacted ? { outputBlocked: true } : undefined,
+                // The current response is already redacted; append the full
+                // suffix so earlier completed turns remain replayable.
+                cancelledOutputRedacted ? { runCompaction: false } : undefined,
               );
             } catch (error) {
               setRunnerSpanError(

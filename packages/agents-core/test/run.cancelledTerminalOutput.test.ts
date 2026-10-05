@@ -123,9 +123,13 @@ describe('cancelled terminal tool output', () => {
     },
   );
 
-  it.each(['string', 'array'] as const)(
-    'preserves redacted completion history for ordinary %s input',
-    async (inputKind) => {
+  it.each([
+    { inputKind: 'string', earlierTool: false },
+    { inputKind: 'array', earlierTool: false },
+    { inputKind: 'string', earlierTool: true },
+  ] as const)(
+    'preserves redacted completion history for $inputKind input (earlier tool: $earlierTool)',
+    async ({ inputKind, earlierTool }) => {
       const pending = pendingLookup();
       const controller = new AbortController();
       const abortReason = new Error('cancel ordinary tool call');
@@ -133,7 +137,24 @@ describe('cancelled terminal tool output', () => {
         tripwireTriggered: false,
         outputInfo: {},
       }));
+      const prepare = vi.fn(async () => 'EARLIER_TOOL_RESULT');
+      const earlier = tool({
+        name: 'prepare',
+        description: 'Completes before the terminal tool',
+        parameters: z.object({}),
+        execute: prepare,
+      });
       const model = new ScriptedModel([
+        ...(earlierTool
+          ? [
+              modelResponse({
+                usage: new Usage(),
+                output: [
+                  functionCall('prepare', {}, { callId: 'prepare-call' }),
+                ],
+              }),
+            ]
+          : []),
         modelResponse({
           usage: new Usage(),
           output: [functionCall('lookup', {}, { callId: 'lookup-call' })],
@@ -156,6 +177,21 @@ describe('cancelled terminal tool output', () => {
                 }),
               ]),
             );
+            if (earlierTool) {
+              expect(request.input).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    type: 'function_call',
+                    callId: 'prepare-call',
+                  }),
+                  expect.objectContaining({
+                    type: 'function_call_result',
+                    callId: 'prepare-call',
+                    output: { type: 'text', text: 'EARLIER_TOOL_RESULT' },
+                  }),
+                ]),
+              );
+            }
             return [assistantMessage('The tool already completed.')];
           },
         },
@@ -163,13 +199,13 @@ describe('cancelled terminal tool output', () => {
       const agent = new Agent({
         name: 'Ordinary cancelled output',
         model,
-        tools: [pending.lookup],
-        toolUseBehavior: 'stop_on_first_tool',
+        tools: [earlier, pending.lookup],
+        toolUseBehavior: { stopAtToolNames: ['lookup'] },
         outputGuardrails: [{ name: 'Validate output', execute: guardrail }],
       });
       const session = new MemorySession();
-      const earlier = user('earlier accepted input');
-      await session.addItems([earlier]);
+      const earlierInput = user('earlier accepted input');
+      await session.addItems([earlierInput]);
       const runner = new Runner({ tracingDisabled: true });
       const promise = runner.run(
         agent,
@@ -186,15 +222,16 @@ describe('cancelled terminal tool output', () => {
       await rejected;
       expect(guardrail).not.toHaveBeenCalled();
       const history = await session.getItems();
-      expect(history[0]).toEqual(earlier);
+      expect(history[0]).toEqual(earlierInput);
       expect(JSON.stringify(history)).not.toContain(privateRecord);
       expect(
         history.filter((item) => item.type === 'function_call_result'),
-      ).toHaveLength(1);
+      ).toHaveLength(earlierTool ? 2 : 1);
       const continued = await runner.run(agent, 'What happened?', { session });
       expect(continued.finalOutput).toBe('The tool already completed.');
       expect(pending.execute).toHaveBeenCalledTimes(1);
       expect(guardrail).toHaveBeenCalledTimes(1);
+      expect(prepare).toHaveBeenCalledTimes(earlierTool ? 1 : 0);
     },
   );
 
