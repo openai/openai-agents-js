@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { OpenAIConversationsSession } from '@openai/agents-openai';
-import { createSession, findSession } from '@/app/lib/session';
+import { findSession, getOwnerId } from '@/app/lib/session';
 import { toUiMessages } from '@/app/lib/messageConverters';
 import TextStreamChatClient from './TextStreamChatClient';
 
@@ -25,17 +25,10 @@ export default async function TextStreamPage({ searchParams }: PageProps) {
   const resolvedSearchParams = await Promise.resolve(searchParams);
   const sessionId = readSessionId(resolvedSearchParams);
 
-  if (!sessionId) {
-    const nextSessionId = crypto.randomUUID();
-    await createSession(nextSessionId);
-    redirect(`/text?${SESSION_QUERY_KEY}=${nextSessionId}`);
-  }
-
-  const entry = findSession(sessionId);
-  if (!entry) {
-    const fallbackSessionId = crypto.randomUUID();
-    await createSession(fallbackSessionId);
-    redirect(`/text?${SESSION_QUERY_KEY}=${fallbackSessionId}`);
+  const ownerId = sessionId ? await getOwnerId(sessionId) : undefined;
+  const entry = sessionId ? findSession(sessionId, ownerId) : undefined;
+  if (!sessionId || !entry) {
+    redirect('/api/session?stream=text');
   }
 
   const session = new OpenAIConversationsSession({

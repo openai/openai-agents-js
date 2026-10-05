@@ -1,4 +1,5 @@
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -616,6 +617,69 @@ describe('UnixLocalSandboxClient', () => {
 
     expect(binStat.mode & 0o777).toBe(0o755);
     expect(runStat.mode & 0o777).toBe(0o755);
+  });
+
+  it.each([
+    ['drwxrwxrwt', 0o1777],
+    ['drwxrwxrwT', 0o1776],
+    [0o41777, 0o1777],
+  ])(
+    'materializes and serializes sticky directory permissions: %s',
+    async (permissions, mode) => {
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+      const session = await client.create(
+        new Manifest({
+          entries: { shared: { type: 'dir', permissions } },
+        }),
+        { snapshot: new NoopSnapshotSpec() },
+      );
+      try {
+        expect(
+          (await stat(join(session.state.workspaceRootPath, 'shared'))).mode &
+            0o7777,
+        ).toBe(mode);
+        const serialized = JSON.parse(
+          JSON.stringify(await client.serializeSessionState(session.state)),
+        );
+        const restored = await client.deserializeSessionState(serialized);
+        const recreated = await client.create(restored.manifest, {
+          snapshot: new NoopSnapshotSpec(),
+        });
+        try {
+          expect(
+            (await stat(join(recreated.state.workspaceRootPath, 'shared')))
+              .mode & 0o7777,
+          ).toBe(mode);
+        } finally {
+          await recreated.close();
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
+  it('rejects non-boolean sticky values in persisted session manifests', async () => {
+    const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(
+      new Manifest({
+        entries: { shared: { type: 'dir', permissions: 'drwxrwxrwt' } },
+      }),
+      { snapshot: new NoopSnapshotSpec() },
+    );
+    try {
+      const serialized = JSON.parse(
+        JSON.stringify(await client.serializeSessionState(session.state)),
+      );
+      for (const sticky of ['false', 1, null]) {
+        serialized.manifest.entries.shared.permissions.sticky = sticky;
+        await expect(
+          client.deserializeSessionState(serialized),
+        ).rejects.toThrow('Permission sticky must be a boolean.');
+      }
+    } finally {
+      await session.close();
+    }
   });
 
   it('rejects manifest identity metadata that cannot be enforced locally', async () => {
@@ -1451,6 +1515,87 @@ describe('UnixLocalSandboxClient', () => {
       /must not escape root/,
     );
   });
+
+  it.each(['local', 'remote'] as const)(
+    'reapplies manifest sticky intent when restoring a %s snapshot',
+    async (type) => {
+      const client = new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+        snapshot:
+          type === 'local'
+            ? { type, baseDir: rootDir }
+            : { type, store: new InMemoryRemoteSnapshotStore() },
+      });
+      const session = await client.create(
+        new Manifest({
+          entries: {
+            parent: {
+              type: 'dir',
+              children: {
+                shared: {
+                  type: 'dir',
+                  permissions: 'drwxrwxrwt',
+                  children: {
+                    'value.txt': { type: 'file', content: 'original' },
+                  },
+                },
+                deleted: { type: 'dir', permissions: 'drwxrwxrwt' },
+                replaced: {
+                  type: 'dir',
+                  permissions: 'drwxrwxrwt',
+                  children: {
+                    nested: { type: 'dir', permissions: 'drwxrwxrwt' },
+                  },
+                },
+                ordinary: { type: 'dir', permissions: 0o777 },
+              },
+            },
+          },
+        }),
+      );
+      let restored: UnixLocalSandboxSession | undefined;
+      try {
+        const parent = join(session.state.workspaceRootPath, 'parent');
+        // The manifest policy intentionally reinstates sticky after runtime removal.
+        await chmod(join(parent, 'shared'), 0o777);
+        await writeFile(join(parent, 'shared/value.txt'), 'snapshot contents');
+        await rm(join(parent, 'deleted'), { recursive: true });
+        await rm(join(parent, 'replaced'), { recursive: true });
+        await writeFile(join(parent, 'replaced'), 'now a file');
+        const serialized = JSON.parse(
+          JSON.stringify(await client.serializeSessionState(session.state)),
+        );
+        await rm(session.state.workspaceRootPath, {
+          recursive: true,
+          force: true,
+        });
+        restored = await client.resume(
+          await client.deserializeSessionState(serialized),
+        );
+        const restoredParent = join(restored.state.workspaceRootPath, 'parent');
+        const mode = (await stat(join(restoredParent, 'shared'))).mode & 0o7777;
+        expect(mode).toBe((0o777 & ~process.umask()) | 0o1000);
+        expect(
+          (await stat(join(restoredParent, 'ordinary'))).mode & 0o7777,
+        ).toBe(0o777 & ~process.umask());
+        expect(
+          await readFile(join(restoredParent, 'shared/value.txt'), 'utf8'),
+        ).toBe('snapshot contents');
+        await expect(
+          stat(join(restoredParent, 'deleted')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(join(restoredParent, 'replaced'), 'utf8')).toBe(
+          'now a file',
+        );
+        expect(
+          (await stat(join(restoredParent, 'replaced'))).mode & 0o1000,
+        ).toBe(0);
+      } finally {
+        await restored?.close();
+        await session.close();
+      }
+    },
+  );
 
   it('reattaches to a live workspace and falls back to a local snapshot restore', async () => {
     const client = new UnixLocalSandboxClient({

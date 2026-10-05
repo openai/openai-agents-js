@@ -65,6 +65,7 @@ import {
   materializeLocalWorkspaceManifest,
   materializeLocalWorkspaceManifestEntry,
   materializeLocalWorkspaceManifestMounts,
+  restoreLocalWorkspaceManifestStickyPermissions,
   pathExists,
 } from './shared/localWorkspace';
 import {
@@ -1320,6 +1321,11 @@ async function restoreSnapshotAndMounts(
     state,
     workspaceRootPath,
     { archiveLimits },
+  );
+  // Restore sticky intent before mounts can expose host-owned directories.
+  await restoreLocalWorkspaceManifestStickyPermissions(
+    restoredState.manifest,
+    restoredState.workspaceRootPath,
   );
   await materializeLocalWorkspaceManifestMounts(
     restoredState.manifest,

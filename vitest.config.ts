@@ -119,6 +119,20 @@ function createProjects(reviewTestProfile: boolean) {
       },
     },
     ...packageProjects,
+    {
+      root: resolve(rootDir, 'examples/ai-sdk-ui'),
+      resolve: {
+        alias: {
+          ...testAliases,
+          '@': resolve(rootDir, 'examples/ai-sdk-ui/src'),
+        },
+      },
+      test: {
+        ...baseTestConfig,
+        name: 'ai-sdk-ui-example',
+        include: ['test/**/*.test.ts'],
+      },
+    },
     financialResearchExampleProject,
     realtimeReactNativeExampleProject,
   ];

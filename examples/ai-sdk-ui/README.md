@@ -10,6 +10,8 @@ pnpm -F ai-sdk-ui dev
 
 Open http://localhost:3000 for the UI message stream (tool calls and reasoning parts are rendered). Open http://localhost:3000/text for the text-only stream.
 
+This is a local demo, not a production authentication example. Each conversation is bound to its own HttpOnly browser cookie: opening a conversation link in another browser starts a new conversation, and clearing cookies loses access to existing conversations. Both stream views use the same cookie for a given conversation. Browser cookie limits also limit how many conversations this demo can retain. Before hosting this for other users, add your application's authentication and authorization.
+
 ## Run the Node.js text stream samples
 
 ```bash

@@ -1,6 +1,18 @@
+import { cookies } from 'next/headers';
 import { OpenAIConversationsSession } from '@openai/agents-openai';
 
+export function ownerCookieName(sessionId: string): string {
+  return `ai-sdk-ui-owner-${sessionId}`;
+}
+
+export async function getOwnerId(
+  sessionId: string,
+): Promise<string | undefined> {
+  return (await cookies()).get(ownerCookieName(sessionId))?.value;
+}
+
 export type SessionEntry = {
+  ownerId: string;
   conversationId: string;
   activeAgentName?: string;
 };
@@ -19,8 +31,12 @@ if (!globalStore.__aiSdkUiSessionStore) {
   globalStore.__aiSdkUiSessionStore = sessionStore;
 }
 
-export function findSession(sessionId: string): SessionEntry | undefined {
-  return sessionStore.get(sessionId);
+export function findSession(
+  sessionId: string,
+  ownerId: string | undefined,
+): SessionEntry | undefined {
+  const entry = sessionStore.get(sessionId);
+  return ownerId && entry?.ownerId === ownerId ? entry : undefined;
 }
 
 export function saveSession(sessionId: string, entry: SessionEntry): void {
@@ -29,28 +45,14 @@ export function saveSession(sessionId: string, entry: SessionEntry): void {
 
 export async function createSession(
   sessionId: string,
-  options: { activeAgentName?: string } = {},
+  ownerId: string,
 ): Promise<SessionEntry> {
   const session = new OpenAIConversationsSession();
   const conversationId = await session.getSessionId();
   const entry: SessionEntry = {
     conversationId,
-    activeAgentName: options.activeAgentName,
+    ownerId,
   };
   sessionStore.set(sessionId, entry);
   return entry;
-}
-
-export async function findOrCreateSession(
-  sessionId: string,
-  options: { activeAgentName?: string } = {},
-): Promise<SessionEntry> {
-  const existing = sessionStore.get(sessionId);
-  if (existing) {
-    if (!existing.activeAgentName && options.activeAgentName) {
-      existing.activeAgentName = options.activeAgentName;
-    }
-    return existing;
-  }
-  return createSession(sessionId, options);
 }

@@ -34,29 +34,28 @@ describe('RealtimeSession guardrail outputInfo serialization', () => {
       guardrail: { name: 'test', version: '1', policyHint: 'bad' },
       output: { tripwireTriggered: true, outputInfo },
     }));
-    vi.spyOn(
-      guardrailModule,
-      'defineRealtimeOutputGuardrail',
-    ).mockReturnValue({ run: runMock } as any);
+    vi.spyOn(guardrailModule, 'defineRealtimeOutputGuardrail').mockReturnValue({
+      run: runMock,
+    } as any);
 
     const transport = new FakeTransport();
     const agent = new RealtimeAgent({ name: 'A', handoffs: [] });
     const session = new RealtimeSession(agent, {
       transport,
-      outputGuardrails: [
-        { name: 'test', execute: async () => ({}) } as any,
-      ],
+      outputGuardrails: [{ name: 'test', execute: async () => ({}) } as any],
       outputGuardrailSettings: { debounceTextLength: -1 },
     });
     await session.connect({ apiKey: 'test' });
 
-    const guardrailTripped = waitForEvent<any[]>(
-      session,
-      'guardrail_tripped',
-    );
+    const guardrailTripped = waitForEvent<any[]>(session, 'guardrail_tripped');
     transport.emit('turn_done', {
       response: {
-        output: [fakeModelMessage('bad output')],
+        output: [
+          {
+            ...fakeModelMessage('bad output'),
+            content: [{ type: 'output_audio', transcript: 'bad output' }],
+          },
+        ],
         usage: new Usage(),
       },
     } as any);
