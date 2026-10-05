@@ -1694,12 +1694,19 @@ export class RealtimeSession<
       const outputItems = event.response.output ?? [];
       let textOutput = '';
       let itemId = '';
+      let source: OutputGuardrailDeltaSource | 'final' = 'final';
 
       for (let idx = outputItems.length - 1; idx >= 0; idx--) {
         const candidate = outputItems[idx];
         const candidateText = getLastTextFromAudioOutputMessage(candidate);
         if (typeof candidateText === 'string') {
           textOutput = candidateText;
+          if (
+            candidate.type === 'message' &&
+            candidate.content.at(-1)?.type === 'output_text'
+          ) {
+            source = 'text';
+          }
           const candidateId = (candidate as { id?: unknown })?.id;
           itemId = typeof candidateId === 'string' ? candidateId : '';
           break;
@@ -1719,7 +1726,7 @@ export class RealtimeSession<
         textOutput,
         responseId,
         itemId,
-        'final',
+        source,
         sourceAgent,
         responseGeneration,
         connectionGeneration,

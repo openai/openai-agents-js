@@ -647,7 +647,7 @@ describe('RealtimeSession', () => {
     expect(newHist).toEqual([]);
   });
 
-  it('triggers guardrail and emits feedback', async () => {
+  it('triggers final text guardrail and emits feedback without interrupting audio', async () => {
     const runMock = vi.fn(async () => ({
       guardrail: { name: 'test', version: '1', policyHint: 'bad' },
       output: { tripwireTriggered: true, outputInfo: { r: 'bad' } },
@@ -677,7 +677,7 @@ describe('RealtimeSession', () => {
       },
     } as any);
     const [, , , details] = await guardrailTripped;
-    expect(transport.interruptCalls).toBe(1);
+    expect(transport.interruptCalls).toBe(0);
     expect(transport.sendMessageCalls.at(-1)?.[0]).toContain('blocked');
     expect(details).toEqual({ itemId: '123' });
     vi.restoreAllMocks();

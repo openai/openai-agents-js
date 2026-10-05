@@ -809,6 +809,114 @@ describe('OpenAIRealtimeWebSocket', () => {
     },
   );
 
+  it('preserves buffered audio when a later text-only response trips a final guardrail', async () => {
+    const execute = vi.fn(async ({ agentOutput }: { agentOutput: string }) => ({
+      tripwireTriggered: agentOutput === 'Blocked text',
+      outputInfo: null,
+    }));
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'test' }), {
+      transport: 'websocket',
+      outputGuardrails: [{ name: 'test-policy', execute }],
+      outputGuardrailSettings: { debounceTextLength: -1 },
+    });
+    const interrupted = vi.fn();
+    const tripped = vi.fn();
+    session.on('audio_interrupted', interrupted);
+    session.on('guardrail_tripped', tripped);
+    const connect = session.connect({ apiKey: 'ek_test' });
+    await vi.runAllTimersAsync();
+    await connect;
+    const emit = (event: Record<string, unknown>) =>
+      lastFakeSocket.emit('message', { data: JSON.stringify(event) });
+    emit({
+      type: 'response.created',
+      event_id: 'created-a',
+      response: { id: 'a' },
+    });
+    emit({
+      type: 'response.output_audio.delta',
+      event_id: 'audio-a',
+      response_id: 'a',
+      item_id: 'audio-item',
+      output_index: 0,
+      content_index: 0,
+      delta: Buffer.alloc(48000).toString('base64'),
+    });
+    emit({
+      type: 'response.output_audio.done',
+      event_id: 'audio-done-a',
+      response_id: 'a',
+      item_id: 'audio-item',
+      output_index: 0,
+      content_index: 0,
+    });
+    emit({
+      type: 'response.done',
+      event_id: 'done-a',
+      response: {
+        id: 'a',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            id: 'audio-item',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_audio', transcript: 'Safe audio' }],
+          },
+        ],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    session.transport.requestResponse!({ output_modalities: ['text'] });
+    emit({
+      type: 'response.created',
+      event_id: 'created-b',
+      response: { id: 'b', output_modalities: ['text'] },
+    });
+    emit({
+      type: 'response.done',
+      event_id: 'done-b',
+      response: {
+        id: 'b',
+        status: 'completed',
+        output_modalities: ['text'],
+        output: [
+          {
+            type: 'message',
+            id: 'text-item',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'Blocked text' }],
+          },
+        ],
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(tripped).toHaveBeenCalledTimes(1);
+    expect(interrupted).not.toHaveBeenCalled();
+    expect(
+      sentPayloads().some(
+        (event: any) => event.type === 'conversation.item.truncate',
+      ),
+    ).toBe(false);
+    expect(
+      sentPayloads().some(
+        (event: any) => event.type === 'conversation.item.create',
+      ),
+    ).toBe(true);
+    session.interrupt();
+    expect(interrupted).toHaveBeenCalledTimes(1);
+    expect(sentPayloads()).toContainEqual({
+      type: 'conversation.item.truncate',
+      item_id: 'audio-item',
+      content_index: 0,
+      audio_end_ms: 100,
+    });
+    session.close();
+  });
+
   it.each([
     {
       sessionFormat: { type: 'audio/pcm', rate: 24000 },
