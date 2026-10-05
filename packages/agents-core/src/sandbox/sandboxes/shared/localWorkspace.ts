@@ -263,6 +263,40 @@ export async function materializeLocalWorkspaceManifestMounts(
   }
 }
 
+/** Reapply manifest sticky intent without replacing snapshot contents or modes. */
+export async function restoreLocalWorkspaceManifestStickyPermissions(
+  manifest: Manifest,
+  workspaceRootPath: string,
+): Promise<void> {
+  for (const { logicalPath, entry } of manifest.iterEntries()) {
+    if (
+      isMount(entry) ||
+      !permissionsForSandboxEntry(entry.permissions).sticky
+    ) {
+      continue;
+    }
+    const destination = resolve(workspaceRootPath, logicalPath);
+    const info = await lstat(destination).catch((error: unknown) => {
+      // A snapshot may have replaced a manifest ancestor with a file.
+      if (
+        isSandboxPathNotFoundError(error) ||
+        (error as NodeJS.ErrnoException).code === 'ENOTDIR'
+      ) {
+        return null;
+      }
+      throw error;
+    });
+    if (info?.isDirectory()) {
+      await assertSafeMaterializationPath(
+        workspaceRootPath,
+        destination,
+        logicalPath,
+      );
+      await chmod(destination, (info.mode & 0o7777) | 0o1000);
+    }
+  }
+}
+
 export async function applyOwnershipRecursive(
   targetPath: string,
   uid: number,
