@@ -124,12 +124,13 @@ describe('cancelled terminal tool output', () => {
   );
 
   it.each([
-    { inputKind: 'string', earlierTool: false },
-    { inputKind: 'array', earlierTool: false },
-    { inputKind: 'string', earlierTool: true },
+    { inputKind: 'string', earlierTool: false, mixed: false },
+    { inputKind: 'array', earlierTool: false, mixed: false },
+    { inputKind: 'string', earlierTool: true, mixed: false },
+    { inputKind: 'array', earlierTool: true, mixed: true },
   ] as const)(
-    'preserves redacted completion history for $inputKind input (earlier tool: $earlierTool)',
-    async ({ inputKind, earlierTool }) => {
+    'preserves redacted completion history for $inputKind input (earlier tool: $earlierTool, mixed: $mixed)',
+    async ({ inputKind, earlierTool, mixed }) => {
       const pending = pendingLookup();
       const controller = new AbortController();
       const abortReason = new Error('cancel ordinary tool call');
@@ -157,12 +158,31 @@ describe('cancelled terminal tool output', () => {
           : []),
         modelResponse({
           usage: new Usage(),
-          output: [functionCall('lookup', {}, { callId: 'lookup-call' })],
+          output: [
+            ...(mixed
+              ? [
+                  {
+                    type: 'reasoning' as const,
+                    id: 'reasoning-mixed',
+                    content: [
+                      {
+                        type: 'input_text' as const,
+                        text: 'UNCHECKED_REASONING',
+                      },
+                    ],
+                  },
+                  assistantMessage('UNCHECKED_ASSISTANT_BEFORE'),
+                ]
+              : []),
+            functionCall('lookup', {}, { callId: 'lookup-call' }),
+            ...(mixed ? [assistantMessage('UNCHECKED_ASSISTANT_AFTER')] : []),
+          ],
         }),
         {
           type: 'responder',
           respond: ({ request }) => {
             expect(JSON.stringify(request.input)).not.toContain(privateRecord);
+            expect(JSON.stringify(request.input)).not.toContain('UNCHECKED_');
             expect(request.input).toEqual(
               expect.arrayContaining([
                 expect.objectContaining({
@@ -224,6 +244,7 @@ describe('cancelled terminal tool output', () => {
       const history = await session.getItems();
       expect(history[0]).toEqual(earlierInput);
       expect(JSON.stringify(history)).not.toContain(privateRecord);
+      expect(JSON.stringify(history)).not.toContain('UNCHECKED_');
       expect(
         history.filter((item) => item.type === 'function_call_result'),
       ).toHaveLength(earlierTool ? 2 : 1);

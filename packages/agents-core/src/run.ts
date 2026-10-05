@@ -119,7 +119,7 @@ import {
   hasPersistedToolOutput,
   hasTerminalToolOutputSource,
   sanitizeBlockedTerminalToolOutput,
-  redactBlockedResponseToolOutputs,
+  redactCancelledResponseToolOutputs,
   shouldDeferInterruptedSessionItems,
 } from './runner/blockedOutputPersistence';
 import {
@@ -2167,7 +2167,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 // Ordinary callers cannot recover the runner-owned state from
                 // the original abort reason. Keep a replay-safe completion
                 // record without publishing the unchecked tool output.
-                redactBlockedResponseToolOutputs(
+                redactCancelledResponseToolOutputs(
                   state,
                   'Tool output discarded because the run was cancelled before output validation.',
                 );

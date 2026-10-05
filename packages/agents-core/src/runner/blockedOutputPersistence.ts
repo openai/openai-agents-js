@@ -3,6 +3,8 @@ import type { OutputGuardrailResult } from '../guardrail';
 import {
   RunHandoffOutputItem,
   RunItem,
+  RunMessageOutputItem,
+  RunReasoningItem,
   RunToolApprovalItem,
   RunToolCallItem,
   RunToolCallOutputItem,
@@ -1841,6 +1843,44 @@ function markBlockedState(
   if (state._lastProcessedResponse) {
     invalidateOutputItemNormalization(state._lastProcessedResponse.newItems);
   }
+}
+
+/** Redacts runner-owned cancellation state without dropping mixed-response tool pairs. */
+export function redactCancelledResponseToolOutputs(
+  state: RunState<any, any>,
+  blockedMessage: string,
+): boolean {
+  const response = currentResponse(state);
+  const responseOutput = getResponseOutput(response);
+  if (
+    response &&
+    responseOutput &&
+    responseOutput.some((item) => item.type === 'function_call')
+  ) {
+    const selection = currentRunItemSelection(state, responseOutput);
+    if (selection.proven) {
+      // Project the owned live response onto the existing function-pair path.
+      // Remove non-tool aliases together, before positional pair validation.
+      const removals = new Map<RunItem, undefined>();
+      for (const item of selection.aliases) {
+        if (
+          item instanceof RunMessageOutputItem ||
+          item instanceof RunReasoningItem
+        ) {
+          removals.set(item, undefined);
+        }
+      }
+      replaceRunItems(state, removals, undefined, []);
+      replaceCurrentResponse(
+        state,
+        response,
+        responseOutput.filter(
+          (item) => item.type !== 'message' && item.type !== 'reasoning',
+        ),
+      );
+    }
+  }
+  return redactBlockedResponseToolOutputs(state, blockedMessage);
 }
 
 /** Replaces a rejected function response with allowlisted replay-safe values. */
