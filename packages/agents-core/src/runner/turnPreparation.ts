@@ -344,9 +344,9 @@ function beginTurn<TContext, TAgent extends Agent<TContext, AgentOutputType>>(
   const resumingTurnInProgress =
     options.isResumedState && state._currentTurnInProgress === true;
 
-  // Do not advance the turn when resuming from an interruption; the next model call is
-  // still part of the same logical turn.
-  if (!isResumingFromInterruption && !resumingTurnInProgress) {
+  // Resolving approvals does not consume a turn, but the next model call does.
+  // Only resume an already-counted turn when its model work is still in progress.
+  if (!resumingTurnInProgress) {
     state._currentTurn++;
     if (!options.isResumedState || !options.preserveTurnPersistenceOnResume) {
       state.resetTurnPersistence();

@@ -3078,7 +3078,7 @@ describe('approved tool output guardrail session persistence', () => {
       ) => {
         const options = {
           session,
-          maxTurns: 1,
+          maxTurns: 2,
           callModelInputFilter: ({ modelData }: CallModelInputFilterArgs) => ({
             ...modelData,
             input: modelData.input.filter(

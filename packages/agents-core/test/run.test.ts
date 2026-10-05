@@ -5942,74 +5942,7 @@ describe('Runner.run', () => {
       );
     });
 
-    it('enforces maxTurns across resumed interruptions', async () => {
-      // Bug: After resuming from interruption, ALL subsequent calls are treated as same turn
-      // because _lastTurnResponse is still set. The first post-interruption call should NOT
-      // advance the turn, but the second call SHOULD advance the turn.
-      const testTool = tool({
-        name: 'test_tool',
-        description: 'A test tool',
-        parameters: z.object({}),
-        execute: async () => 'result',
-      });
-
-      const agent = new Agent({
-        name: 'ResumeTurnCounter',
-        model: new ScriptedModel([
-          modelResponse({
-            output: [
-              {
-                type: 'function_call',
-                id: 'fc_1',
-                callId: 'call_1',
-                name: 'test_tool',
-                status: 'completed',
-                arguments: '{}',
-                providerData: {},
-              } as protocol.FunctionCallItem,
-            ],
-            usage: new Usage(),
-          }),
-          modelResponse({
-            output: [fakeModelMessage('second')],
-            usage: new Usage(),
-          }),
-        ]),
-        tools: [testTool],
-        toolUseBehavior: 'run_llm_again',
-      });
-
-      // Simulate a resumed state after an interruption
-      const resumedState = new RunState(new RunContext(), 'x', agent, 1);
-      resumedState._currentTurn = 1;
-      resumedState._initialInputGuardrailsCompleted = true;
-      resumedState._currentTurnPersistedItemCount = 0;
-      resumedState._currentStep = { type: 'next_step_run_again' };
-      // Set these to simulate a state that was resumed from interruption
-      resumedState._lastTurnResponse = {
-        output: [fakeModelMessage('previous')],
-        usage: new Usage(),
-      };
-      resumedState._lastProcessedResponse = {
-        newItems: [],
-        functions: [],
-        computerActions: [],
-        shellActions: [],
-        applyPatchActions: [],
-        handoffs: [],
-        mcpApprovalRequests: [],
-        toolsUsed: [],
-      } as any;
-
-      // With maxTurns=1, after the first post-interruption call completes and tries to make
-      // a second call, the turn should advance to 2 and then throw MaxTurnsExceededError.
-      // Currently fails because turn counter doesn't advance after first post-interruption call.
-      await expect(
-        run(agent, resumedState, { maxTurns: 1 }),
-      ).rejects.toBeInstanceOf(MaxTurnsExceededError);
-    });
-
-    it('does not advance the turn when resuming an interruption without persisted items', async () => {
+    it('counts the model call after resolving an interruption', async () => {
       const approvalTool = tool({
         name: 'get_weather',
         description: 'Gets weather for a city.',
@@ -6046,16 +5979,16 @@ describe('Runner.run', () => {
         toolUseBehavior: 'run_llm_again',
       });
 
-      let result = await run(agent, 'How is the weather?', { maxTurns: 1 });
+      let result = await run(agent, 'How is the weather?', { maxTurns: 2 });
       expect(result.interruptions).toHaveLength(1);
       expect(result.state._currentTurn).toBe(1);
       expect(result.state._currentTurnPersistedItemCount).toBe(0);
 
       result.state.approve(result.interruptions[0]);
 
-      result = await run(agent, result.state, { maxTurns: 1 });
+      result = await run(agent, result.state, { maxTurns: 2 });
       expect(result.finalOutput).toBe('All set.');
-      expect(result.state._currentTurn).toBe(1);
+      expect(result.state._currentTurn).toBe(2);
     });
 
     it('does nothing when no input guardrails are configured', async () => {
@@ -6250,7 +6183,7 @@ describe('Runner.run', () => {
 
       const firstRun = await run(agent, 'hello', {
         reasoningItemIdPolicy: 'omit',
-        maxTurns: 1,
+        maxTurns: 2,
       });
       expect(firstRun.interruptions).toHaveLength(1);
       firstRun.state.approve(firstRun.interruptions[0]);
@@ -6259,7 +6192,7 @@ describe('Runner.run', () => {
         agent,
         firstRun.state.toString(),
       );
-      const resumedRun = await run(agent, restoredState, { maxTurns: 1 });
+      const resumedRun = await run(agent, restoredState, { maxTurns: 2 });
 
       expect(resumedRun.finalOutput).toBe('done');
       expect(model.calls).toHaveLength(2);

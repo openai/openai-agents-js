@@ -2657,7 +2657,7 @@ describe('Runner.run (streaming)', () => {
     }
   });
 
-  it('does not advance the turn for streaming runs resuming an interruption without persisted items', async () => {
+  it('counts the streamed model call after resolving an interruption', async () => {
     const approvalTool = tool({
       name: 'get_weather',
       description: 'Gets weather for a city.',
@@ -2696,7 +2696,7 @@ describe('Runner.run (streaming)', () => {
     });
 
     let result = await run(agent, 'Stream weather?', {
-      maxTurns: 1,
+      maxTurns: 2,
       stream: true,
     });
 
@@ -2711,7 +2711,7 @@ describe('Runner.run (streaming)', () => {
 
     result.state.approve(result.interruptions[0]);
 
-    result = await run(agent, result.state, { maxTurns: 1, stream: true });
+    result = await run(agent, result.state, { maxTurns: 2, stream: true });
 
     for await (const _event of result.toStream()) {
       // Consume stream.
@@ -2719,7 +2719,7 @@ describe('Runner.run (streaming)', () => {
     await result.completed;
 
     expect(result.finalOutput).toBe('Stream done.');
-    expect(result.state._currentTurn).toBe(1);
+    expect(result.state._currentTurn).toBe(2);
   });
 
   it('emits run item events in the order items are generated', async () => {
