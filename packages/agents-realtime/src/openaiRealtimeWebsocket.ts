@@ -8,7 +8,11 @@ import {
   RealtimeTransportLayer,
 } from './transportLayer';
 
-import { RealtimeClientMessage, RealtimeSessionConfig } from './clientMessages';
+import {
+  RealtimeClientMessage,
+  RealtimeSessionConfig,
+  RealtimeAudioFormat,
+} from './clientMessages';
 import {
   OpenAIRealtimeBase,
   OpenAIRealtimeBaseOptions,
@@ -107,6 +111,7 @@ export class OpenAIRealtimeWebSocket
   #currentItemId: string | undefined;
   #currentAudioContentIndex: number | undefined;
   #audioGenerationDone = false;
+  #responseAudioFormats = new Map<string, RealtimeAudioFormat>();
   /**
    * Timestamp maintained by the transport layer to aid with the calculation of the elapsed time
    * since the response started to compute the right interruption time.
@@ -137,6 +142,7 @@ export class OpenAIRealtimeWebSocket
     }
 
     this.#responseCreateSequencer.releaseWaiters();
+    this.#responseAudioFormats.clear();
     this.#resetAudioPlaybackState();
 
     if (this.#state.status === 'disconnected') {
@@ -440,7 +446,9 @@ export class OpenAIRealtimeWebSocket
         const buff = base64ToArrayBuffer(parsed.delta);
         // calculate the audio length in milliseconds
         // GA format: session.audio.output.format supports structured { type: "audio/pcm", rate } or "audio/pcmu" etc.
-        const fmt = this._rawSessionConfig?.audio?.output?.format;
+        const fmt =
+          this.#responseAudioFormats.get(parsed.response_id) ??
+          this._rawSessionConfig?.audio?.output?.format;
         if (fmt && typeof fmt === 'object') {
           // Structured format
           const t = fmt.type as string;
@@ -479,8 +487,18 @@ export class OpenAIRealtimeWebSocket
             ?.interrupt_response ?? false;
         this.interrupt(!automaticResponseCancellationEnabled);
       } else if (parsed.type === 'response.created') {
+        if (parsed.response.id) {
+          this.#responseAudioFormats.set(
+            parsed.response.id,
+            parsed.response.audio?.output?.format ??
+              this._rawSessionConfig?.audio?.output?.format,
+          );
+        }
         this.#responseCreateSequencer.markResponseCreated();
       } else if (parsed.type === 'response.done') {
+        if (parsed.response.id) {
+          this.#responseAudioFormats.delete(parsed.response.id);
+        }
         this.#responseCreateSequencer.markResponseDone();
       } else if (parsed.type === 'session.created') {
         this._tracingConfig = parsed.session.tracing;

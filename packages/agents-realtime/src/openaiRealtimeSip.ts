@@ -81,6 +81,17 @@ export class OpenAIRealtimeSIP extends OpenAIRealtimeWebSocket {
     );
   }
 
+  override interrupt(cancelOngoingResponse: boolean = true): void {
+    if (this.status !== 'connected') {
+      return;
+    }
+    if (cancelOngoingResponse) {
+      this._cancelResponse();
+    }
+    // SIP playback and its truncation boundary are owned by the server.
+    this.sendEvent({ type: 'output_audio_buffer.clear' });
+  }
+
   async connect(options: RealtimeTransportLayerConnectOptions): Promise<void> {
     if (!options.callId) {
       throw new UserError(
@@ -95,9 +106,7 @@ export class OpenAIRealtimeSIP extends OpenAIRealtimeWebSocket {
     payload: RealtimeSessionPayload,
   ): void {
     const turnDetection = payload.audio?.input?.turn_detection as
-      | Record<string, unknown>
-      | null
-      | undefined;
+      Record<string, unknown> | null | undefined;
 
     if (!turnDetection || typeof turnDetection !== 'object') {
       return;
