@@ -11,7 +11,12 @@ import {
   tool,
   user,
 } from '../src';
-import { ScriptedModel, functionCall, modelResponse } from '../src/testing';
+import {
+  ScriptedModel,
+  assistantMessage,
+  functionCall,
+  modelResponse,
+} from '../src/testing';
 
 const privateRecord = 'SYNTHETIC_PRIVATE_RECORD';
 
@@ -115,6 +120,81 @@ describe('cancelled terminal tool output', () => {
       expect(guardrail).toHaveBeenCalledTimes(1);
       expect(pending.execute).toHaveBeenCalledTimes(1);
       expect((await session.getItems())[0]).toEqual(earlier);
+    },
+  );
+
+  it.each(['string', 'array'] as const)(
+    'preserves redacted completion history for ordinary %s input',
+    async (inputKind) => {
+      const pending = pendingLookup();
+      const controller = new AbortController();
+      const abortReason = new Error('cancel ordinary tool call');
+      const guardrail = vi.fn(async () => ({
+        tripwireTriggered: false,
+        outputInfo: {},
+      }));
+      const model = new ScriptedModel([
+        modelResponse({
+          usage: new Usage(),
+          output: [functionCall('lookup', {}, { callId: 'lookup-call' })],
+        }),
+        {
+          type: 'responder',
+          respond: ({ request }) => {
+            expect(JSON.stringify(request.input)).not.toContain(privateRecord);
+            expect(request.input).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  type: 'function_call',
+                  callId: 'lookup-call',
+                }),
+                expect.objectContaining({
+                  type: 'function_call_result',
+                  callId: 'lookup-call',
+                  output:
+                    'Tool output discarded because the run was cancelled before output validation.',
+                }),
+              ]),
+            );
+            return [assistantMessage('The tool already completed.')];
+          },
+        },
+      ]);
+      const agent = new Agent({
+        name: 'Ordinary cancelled output',
+        model,
+        tools: [pending.lookup],
+        toolUseBehavior: 'stop_on_first_tool',
+        outputGuardrails: [{ name: 'Validate output', execute: guardrail }],
+      });
+      const session = new MemorySession();
+      const earlier = user('earlier accepted input');
+      await session.addItems([earlier]);
+      const runner = new Runner({ tracingDisabled: true });
+      const promise = runner.run(
+        agent,
+        inputKind === 'string' ? 'lookup' : [user('lookup')],
+        {
+          session,
+          signal: controller.signal,
+        },
+      );
+      const rejected = expect(promise).rejects.toBe(abortReason);
+      await pending.toolStarted;
+      controller.abort(abortReason);
+      pending.finish();
+      await rejected;
+      expect(guardrail).not.toHaveBeenCalled();
+      const history = await session.getItems();
+      expect(history[0]).toEqual(earlier);
+      expect(JSON.stringify(history)).not.toContain(privateRecord);
+      expect(
+        history.filter((item) => item.type === 'function_call_result'),
+      ).toHaveLength(1);
+      const continued = await runner.run(agent, 'What happened?', { session });
+      expect(continued.finalOutput).toBe('The tool already completed.');
+      expect(pending.execute).toHaveBeenCalledTimes(1);
+      expect(guardrail).toHaveBeenCalledTimes(1);
     },
   );
 

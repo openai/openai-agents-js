@@ -119,6 +119,7 @@ import {
   hasPersistedToolOutput,
   hasTerminalToolOutputSource,
   sanitizeBlockedTerminalToolOutput,
+  redactBlockedResponseToolOutputs,
   shouldDeferInterruptedSessionItems,
 } from './runner/blockedOutputPersistence';
 import {
@@ -1408,6 +1409,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       setRunStateUsageRecorder(state, recordUsage);
       let completedResult: RunResult<TContext, TAgent> | undefined;
       let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
+      let cancelledOutputRedacted = false;
       const resumedStateHasPersistedToolOutput =
         isResumedState && hasPersistedToolOutput(state);
       let approvedToolCheckpointCompacted =
@@ -2157,14 +2159,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
               resetTurnPersistence: !isResumedState,
             });
-            if (
-              options.signal?.aborted &&
-              (turnResult.nextStep.type !== 'next_step_final_output' ||
-                !this.#agentHasOutputGuardrail(state._currentAgent))
-            ) {
-              // Guarded final output must wait for validation on resume before
-              // it can become replayable session history.
-              persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+            if (options.signal?.aborted) {
+              const guardedFinalOutput =
+                turnResult.nextStep.type === 'next_step_final_output' &&
+                this.#agentHasOutputGuardrail(state._currentAgent);
+              if (guardedFinalOutput && !isResumedState) {
+                // Ordinary callers cannot recover the runner-owned state from
+                // the original abort reason. Keep a replay-safe completion
+                // record without publishing the unchecked tool output.
+                redactBlockedResponseToolOutputs(
+                  state,
+                  'Tool output discarded because the run was cancelled before output validation.',
+                );
+                cancelledOutputRedacted = true;
+              }
+              if (!guardedFinalOutput || cancelledOutputRedacted) {
+                persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+              }
+              // Caller-owned RunState retains the candidate for validation on resume.
             }
             options.signal?.throwIfAborted();
             if (turnResult.nextStep.type !== 'next_step_final_output') {
@@ -2292,7 +2304,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const resultToPersist = completedResult ?? persistenceCheckpoint;
           if (resultToPersist && !completedResultPersisted) {
             try {
-              await persistNonStreamingResult(resultToPersist);
+              await persistNonStreamingResult(
+                resultToPersist,
+                cancelledOutputRedacted ? { outputBlocked: true } : undefined,
+              );
             } catch (error) {
               setRunnerSpanError(
                 taskSpan,
