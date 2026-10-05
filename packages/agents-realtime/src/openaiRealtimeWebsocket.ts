@@ -106,6 +106,7 @@ export class OpenAIRealtimeWebSocket
   #useInsecureApiKey: boolean;
   #currentItemId: string | undefined;
   #currentAudioContentIndex: number | undefined;
+  #audioGenerationDone = false;
   /**
    * Timestamp maintained by the transport layer to aid with the calculation of the elapsed time
    * since the response started to compute the right interruption time.
@@ -123,6 +124,7 @@ export class OpenAIRealtimeWebSocket
     (error) => this._onError(error),
   );
   #resetAudioPlaybackState() {
+    this.#audioGenerationDone = false;
     this.#currentItemId = undefined;
     this._firstAudioTimestamp = undefined;
     this._audioLengthMs = 0;
@@ -278,7 +280,8 @@ export class OpenAIRealtimeWebSocket
   }
 
   protected override _afterAudioDoneEvent() {
-    this.#resetAudioPlaybackState();
+    // Generation can finish while the application still has buffered audio.
+    this.#audioGenerationDone = true;
   }
 
   async #setupWebSocket(
@@ -419,6 +422,12 @@ export class OpenAIRealtimeWebSocket
       }
 
       if (parsed.type === 'response.output_audio.delta') {
+        if (
+          this.#currentItemId !== parsed.item_id ||
+          this.#currentAudioContentIndex !== parsed.content_index
+        ) {
+          this.#resetAudioPlaybackState();
+        }
         this.#currentAudioContentIndex = parsed.content_index;
         this.#currentItemId = parsed.item_id;
         if (this._firstAudioTimestamp === undefined) {
@@ -723,6 +732,11 @@ export class OpenAIRealtimeWebSocket
     const audio_end_ms = Math.max(0, Math.floor(Math.min(elapsedTime, length)));
 
     this.emit('audio_interrupted');
+    // Avoid removing the transcript of audio estimated to be fully played.
+    // Still notify the player: only the application knows its actual buffer.
+    if (this.#audioGenerationDone && elapsedTime >= length) {
+      return;
+    }
     this.sendEvent({
       type: 'conversation.item.truncate',
       item_id: this.#currentItemId,

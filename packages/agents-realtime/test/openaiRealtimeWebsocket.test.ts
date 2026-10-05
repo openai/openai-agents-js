@@ -691,8 +691,146 @@ describe('OpenAIRealtimeWebSocket', () => {
     ).toBe(true);
   });
 
+  it.each([-1, 1])(
+    'stops buffered audio after generation ends with guardrail debounce %i',
+    async (debounceTextLength) => {
+      const check = createDeferred<{
+        tripwireTriggered: boolean;
+        outputInfo: null;
+      }>();
+      const execute = vi.fn(() => check.promise);
+      const session = new RealtimeSession(new RealtimeAgent({ name: 'test' }), {
+        transport: 'websocket',
+        outputGuardrails: [{ name: 'test-policy', execute }],
+        outputGuardrailSettings: { debounceTextLength },
+      });
+      const interrupted = vi.fn();
+      session.on('audio_interrupted', interrupted);
+      const connect = session.connect({ apiKey: 'ek_test' });
+      await vi.runAllTimersAsync();
+      await connect;
+      const emit = (event: Record<string, unknown>) =>
+        lastFakeSocket.emit('message', { data: JSON.stringify(event) });
+      emit({
+        type: 'response.created',
+        event_id: 'created',
+        response: { id: 'r' },
+      });
+      emit({
+        type: 'response.output_audio.delta',
+        event_id: 'audio',
+        response_id: 'r',
+        item_id: 'i',
+        output_index: 0,
+        content_index: 0,
+        delta: Buffer.alloc(48000).toString('base64'), // One second of PCM16.
+      });
+      emit({
+        type: 'response.output_audio_transcript.delta',
+        event_id: 'transcript',
+        response_id: 'r',
+        item_id: 'i',
+        output_index: 0,
+        content_index: 0,
+        delta: 'Synthetic blocked output',
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(execute).toHaveBeenCalledTimes(debounceTextLength === -1 ? 0 : 1);
+      emit({
+        type: 'response.output_audio.done',
+        event_id: 'audio-done',
+        response_id: 'r',
+        item_id: 'i',
+        output_index: 0,
+        content_index: 0,
+      });
+      emit({
+        type: 'response.done',
+        event_id: 'done',
+        response: {
+          id: 'r',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              id: 'i',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_audio',
+                  transcript: 'Synthetic blocked output',
+                },
+              ],
+            },
+          ],
+        },
+      });
+      check.resolve({ tripwireTriggered: true, outputInfo: null });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(interrupted).toHaveBeenCalledTimes(1);
+      expect(sentPayloads()).toContainEqual({
+        type: 'conversation.item.truncate',
+        item_id: 'i',
+        content_index: 0,
+        audio_end_ms: 100,
+      });
+      expect(
+        sentPayloads().filter((event: any) => event.type === 'response.cancel'),
+      ).toEqual([]);
+      session.interrupt();
+      expect(interrupted).toHaveBeenCalledTimes(1);
+      session.close();
+    },
+  );
+
+  it('starts a fresh playback clock for the next audio item', async () => {
+    const ws = new OpenAIRealtimeWebSocket();
+    const connect = ws.connect({ apiKey: 'ek_test', model: 'm' });
+    await vi.runAllTimersAsync();
+    await connect;
+    const emit = (event: Record<string, unknown>) =>
+      lastFakeSocket.emit('message', { data: JSON.stringify(event) });
+    for (const itemId of ['first', 'second']) {
+      emit({
+        type: 'response.output_audio.delta',
+        event_id: `delta-${itemId}`,
+        response_id: `response-${itemId}`,
+        item_id: itemId,
+        output_index: 0,
+        content_index: 0,
+        delta: Buffer.alloc(48000).toString('base64'),
+      });
+      emit({
+        type: 'response.output_audio.done',
+        event_id: `done-${itemId}`,
+        response_id: `response-${itemId}`,
+        item_id: itemId,
+        output_index: 0,
+        content_index: 0,
+      });
+      await vi.advanceTimersByTimeAsync(itemId === 'first' ? 1500 : 100);
+    }
+    ws.interrupt();
+    expect(
+      sentPayloads().filter(
+        (event: any) => event.type === 'conversation.item.truncate',
+      ),
+    ).toEqual([
+      {
+        type: 'conversation.item.truncate',
+        item_id: 'second',
+        content_index: 0,
+        audio_end_ms: 100,
+      },
+    ]);
+    ws.close();
+  });
+
   it('does not send truncate events once audio playback completed', async () => {
     const ws = new OpenAIRealtimeWebSocket();
+    const interrupted = vi.fn();
+    ws.on('audio_interrupted', interrupted);
     const sendSpy = vi.spyOn(ws as any, 'sendEvent');
     const p = ws.connect({ apiKey: 'ek', model: 'm' });
     await vi.runAllTimersAsync();
@@ -721,6 +859,7 @@ describe('OpenAIRealtimeWebSocket', () => {
       }),
     });
 
+    await vi.advanceTimersByTimeAsync(1);
     sendSpy.mockClear();
 
     lastFakeSocket!.emit('message', {
@@ -733,6 +872,8 @@ describe('OpenAIRealtimeWebSocket', () => {
     });
 
     expect(sendSpy).not.toHaveBeenCalled();
+    expect(interrupted).toHaveBeenCalledTimes(1);
+    ws.close();
   });
 
   it('sendEvent throws when not connected', () => {
