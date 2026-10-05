@@ -1,10 +1,14 @@
 import { cookies } from 'next/headers';
 import { OpenAIConversationsSession } from '@openai/agents-openai';
 
-export const OWNER_COOKIE = 'ai-sdk-ui-owner';
+export function ownerCookieName(sessionId: string): string {
+  return `ai-sdk-ui-owner-${sessionId}`;
+}
 
-export async function getOwnerId(): Promise<string | undefined> {
-  return (await cookies()).get(OWNER_COOKIE)?.value;
+export async function getOwnerId(
+  sessionId: string,
+): Promise<string | undefined> {
+  return (await cookies()).get(ownerCookieName(sessionId))?.value;
 }
 
 export type SessionEntry = {

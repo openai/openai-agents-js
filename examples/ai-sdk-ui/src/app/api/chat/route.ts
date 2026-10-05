@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   if (!sessionId) {
     return new Response('Missing session ID.', { status: 400 });
   }
-  const entry = findSession(sessionId, await getOwnerId());
+  const entry = findSession(sessionId, await getOwnerId(sessionId));
   if (!entry) {
     return new Response('Session not found.', { status: 404 });
   }

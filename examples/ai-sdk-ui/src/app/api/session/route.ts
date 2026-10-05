@@ -1,22 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createSession, getOwnerId, OWNER_COOKIE } from '@/app/lib/session';
+import { createSession, ownerCookieName } from '@/app/lib/session';
 
 export async function GET(req: NextRequest) {
-  const ownerId = await getOwnerId();
-  if (!ownerId) {
-    // Establish browser ownership before any remote conversation work.
-    const response = NextResponse.redirect(req.url);
-    response.cookies.set(OWNER_COOKIE, crypto.randomUUID(), {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: req.nextUrl.protocol === 'https:',
-      path: '/',
-    });
-    response.headers.set('Cache-Control', 'no-store');
-    return response;
-  }
-
   const sessionId = crypto.randomUUID();
+  const ownerId = crypto.randomUUID();
   await createSession(sessionId, ownerId);
 
   const path =
@@ -24,6 +11,12 @@ export async function GET(req: NextRequest) {
   const response = NextResponse.redirect(
     new URL(`${path}?session=${sessionId}`, req.url),
   );
+  response.cookies.set(ownerCookieName(sessionId), ownerId, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: req.nextUrl.protocol === 'https:',
+    path: '/',
+  });
   response.headers.set('Cache-Control', 'no-store');
   return response;
 }

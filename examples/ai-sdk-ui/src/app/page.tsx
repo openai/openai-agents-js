@@ -25,7 +25,7 @@ export default async function Page({ searchParams }: PageProps) {
   const resolvedSearchParams = await Promise.resolve(searchParams);
   const sessionId = readSessionId(resolvedSearchParams);
 
-  const ownerId = await getOwnerId();
+  const ownerId = sessionId ? await getOwnerId(sessionId) : undefined;
   const entry = sessionId ? findSession(sessionId, ownerId) : undefined;
   if (!sessionId || !entry) {
     redirect('/api/session');
