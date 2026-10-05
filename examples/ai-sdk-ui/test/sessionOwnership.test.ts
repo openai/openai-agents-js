@@ -54,12 +54,22 @@ import { POST as postText } from '../src/app/api/chat/text/route';
 import { OWNER_COOKIE } from '../src/app/lib/session';
 
 async function openConversation(stream = 'ui') {
-  const response = await GET(
+  let response = await GET(
     new NextRequest(`https://demo.test/api/session?stream=${stream}`),
   );
+  const bootstrapResponse = response;
+  const cookie = response.cookies.get(OWNER_COOKIE);
+  if (cookie) {
+    provider.cookie = cookie.value;
+    response = await GET(new NextRequest(response.headers.get('location')!));
+  }
   const url = new URL(response.headers.get('location')!);
-  provider.cookie = response.cookies.get(OWNER_COOKIE)!.value;
-  return { response, url, sessionId: url.searchParams.get('session')! };
+  return {
+    bootstrapResponse,
+    response,
+    url,
+    sessionId: url.searchParams.get('session')!,
+  };
 }
 
 function messageRequest(identifier: Record<string, string> = {}) {
@@ -87,10 +97,21 @@ beforeEach(() => {
 });
 
 describe('browser-owned conversations', () => {
+  it('establishes the owner cookie before any remote conversation creation', async () => {
+    const response = await GET(
+      new NextRequest('https://demo.test/api/session'),
+    );
+    expect(response.cookies.get(OWNER_COOKIE)?.value).toBeTruthy();
+    expect(provider.create).not.toHaveBeenCalled();
+    expect(response.headers.get('location')).toBe(
+      'https://demo.test/api/session',
+    );
+  });
+
   it('issues a private cookie and retains it when opening another conversation', async () => {
     const first = await openConversation();
     const owner = provider.cookie;
-    expect(first.response.cookies.get(OWNER_COOKIE)).toMatchObject({
+    expect(first.bootstrapResponse.cookies.get(OWNER_COOKIE)).toMatchObject({
       httpOnly: true,
       sameSite: 'lax',
       secure: true,
@@ -104,6 +125,66 @@ describe('browser-owned conversations', () => {
     expect(provider.cookie).toBe(owner);
     expect(second.sessionId).not.toBe(first.sessionId);
     expect(second.url.pathname).toBe('/text');
+    expect(first.response.headers.has('set-cookie')).toBe(false);
+    expect(second.response.headers.has('set-cookie')).toBe(false);
+  });
+
+  it('keeps both first-use tabs usable when conversation creation completes out of order', async () => {
+    const [firstBootstrap, secondBootstrap] = await Promise.all([
+      GET(new NextRequest('https://demo.test/api/session')),
+      GET(new NextRequest('https://demo.test/api/session?stream=text')),
+    ]);
+    expect(provider.create).not.toHaveBeenCalled();
+
+    provider.cookie = firstBootstrap.cookies.get(OWNER_COOKIE)!.value;
+    let finishFirst!: (id: string) => void;
+    provider.create.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finishFirst = resolve;
+        }),
+    );
+    const pendingFirst = GET(
+      new NextRequest(firstBootstrap.headers.get('location')!),
+    );
+    await vi.waitFor(() => expect(provider.create).toHaveBeenCalledTimes(1));
+
+    // The second bootstrap response arrives while the first tab is creating its conversation.
+    provider.cookie = secondBootstrap.cookies.get(OWNER_COOKIE)!.value;
+    const survivingOwner = provider.cookie;
+    const second = await openConversation('text');
+    expect(
+      (await postText(messageRequest({ sessionId: second.sessionId }))).status,
+    ).toBe(200);
+
+    finishFirst('conv_slow_first_tab');
+    const firstResponse = await pendingFirst;
+    // A late provider response must never restore the earlier cookie.
+    expect(firstResponse.headers.has('set-cookie')).toBe(false);
+    expect(provider.cookie).toBe(survivingOwner);
+    expect(
+      (await TextPage({ searchParams: { session: second.sessionId } })).props
+        .sessionId,
+    ).toBe(second.sessionId);
+
+    const firstId = new URL(
+      firstResponse.headers.get('location')!,
+    ).searchParams.get('session')!;
+    await expect(Page({ searchParams: { session: firstId } })).rejects.toThrow(
+      'redirect:/api/session',
+    );
+    const recoveredFirst = await openConversation();
+    expect(
+      (await Page({ searchParams: { session: recoveredFirst.sessionId } }))
+        .props.sessionId,
+    ).toBe(recoveredFirst.sessionId);
+    expect(
+      (await postUi(messageRequest({ sessionId: recoveredFirst.sessionId })))
+        .status,
+    ).toBe(200);
+    expect(
+      (await postText(messageRequest({ sessionId: second.sessionId }))).status,
+    ).toBe(200);
   });
 
   it('supports a cookie on the documented HTTP localhost demo', async () => {
