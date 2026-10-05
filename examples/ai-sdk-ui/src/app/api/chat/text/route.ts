@@ -3,7 +3,7 @@ import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-
 import type { UIMessage } from 'ai';
 
 import { toAgentInput } from '@/app/lib/messageConverters';
-import { findOrCreateSession } from '@/app/lib/session';
+import { findSession, getOwnerId } from '@/app/lib/session';
 
 const textAgent = new Agent({
   name: 'Sky Guide',
@@ -26,7 +26,15 @@ export async function POST(req: Request) {
       ? body.sessionId
       : typeof body?.id === 'string'
         ? body.id
-        : 'default';
+        : undefined;
+  if (!sessionId) {
+    return new Response('Missing session ID.', { status: 400 });
+  }
+  const entry = findSession(sessionId, await getOwnerId(sessionId));
+  if (!entry) {
+    return new Response('Session not found.', { status: 404 });
+  }
+
   const lastUserMessage = [...messages]
     .reverse()
     .find((message) => message.role === 'user');
@@ -36,7 +44,6 @@ export async function POST(req: Request) {
     return new Response('Missing messages.', { status: 400 });
   }
 
-  const entry = await findOrCreateSession(sessionId);
   const stream = await run(textAgent, input, {
     stream: true,
     conversationId: entry.conversationId,
