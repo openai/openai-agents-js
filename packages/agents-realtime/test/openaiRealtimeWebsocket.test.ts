@@ -810,6 +810,59 @@ describe('OpenAIRealtimeWebSocket', () => {
     },
   );
 
+  it.each([
+    { name: 'missing content', output: [{ type: 'message' }] },
+    { name: 'non-array content', output: [{ type: 'message', content: {} }] },
+    { name: 'null output member', output: [null] },
+    {
+      name: 'malformed content members',
+      output: [{ type: 'message', content: [null, 7] }],
+    },
+  ])('handles final output with $name without throwing', async ({ output }) => {
+    const execute = vi.fn(async () => ({
+      tripwireTriggered: true,
+      outputInfo: null,
+    }));
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'test' }), {
+      transport: 'websocket',
+      outputGuardrails: [{ name: 'test-policy', execute }],
+      outputGuardrailSettings: { debounceTextLength: -1 },
+    });
+    const interrupted = vi.fn();
+    const tripped = vi.fn();
+    session.on('audio_interrupted', interrupted);
+    session.on('guardrail_tripped', tripped);
+    const connect = session.connect({ apiKey: 'ek_test' });
+    await vi.runAllTimersAsync();
+    await connect;
+    const emit = (event: Record<string, unknown>) =>
+      lastFakeSocket.emit('message', { data: JSON.stringify(event) });
+    emit({
+      type: 'response.created',
+      event_id: 'created',
+      response: { id: 'r' },
+    });
+    expect(() =>
+      emit({
+        type: 'response.done',
+        event_id: 'done',
+        response: { id: 'r', status: 'completed', output },
+      }),
+    ).not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(execute).toHaveBeenCalledWith(
+      expect.objectContaining({ agentOutput: '' }),
+    );
+    expect(tripped).toHaveBeenCalledTimes(1);
+    expect(interrupted).not.toHaveBeenCalled();
+    expect(
+      sentPayloads().some(
+        (event: any) => event.type === 'conversation.item.create',
+      ),
+    ).toBe(true);
+    session.close();
+  });
+
   it.each(['text', 'tool'])(
     'preserves buffered audio when a later %s response trips a final guardrail',
     async (outputKind) => {

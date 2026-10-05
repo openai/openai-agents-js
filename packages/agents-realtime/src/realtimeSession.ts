@@ -1696,11 +1696,12 @@ export class RealtimeSession<
       let itemId = '';
       const source: OutputGuardrailSource = outputItems.some(
         (item) =>
-          item.type === 'message' &&
+          item?.type === 'message' &&
+          Array.isArray(item.content) &&
           // Realtime transports retain provider-specific content tags.
           item.content.some(
-            (content: { type: string }) =>
-              content.type === 'output_audio' || content.type === 'audio',
+            (content: { type?: string } | null) =>
+              content?.type === 'output_audio' || content?.type === 'audio',
           ),
       )
         ? 'audio'

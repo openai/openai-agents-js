@@ -73,6 +73,8 @@ export function getLastTextFromAudioOutputMessage(
   const lastContentItem = item.content[item.content.length - 1];
 
   if (
+    lastContentItem === null ||
+    typeof lastContentItem !== 'object' ||
     !('type' in lastContentItem) ||
     typeof lastContentItem.type !== 'string'
   ) {
