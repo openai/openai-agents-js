@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import {
   Agent,
+  MaxTurnsExceededError,
   RunState,
   ToolGuardrailFunctionOutputFactory,
   Usage,
@@ -3490,6 +3491,72 @@ describe('resumed Session write recovery', () => {
       ),
     );
   });
+
+  it.each([
+    { mode: 'non_streamed' as const, maxTurns: 2 },
+    { mode: 'streamed' as const, maxTurns: 2 },
+    { mode: 'non_streamed' as const, maxTurns: 1 },
+    { mode: 'streamed' as const, maxTurns: 1 },
+  ])(
+    'preserves approval writes after a transient Session-ID failure ($mode, maxTurns=$maxTurns)',
+    async ({ mode, maxTurns }) => {
+      const { agent, execute, model } = createApprovalRun();
+      const session = new UncertainAppendSession();
+      const first =
+        mode === 'streamed'
+          ? await run<typeof agent, unknown>(agent, 'Use approval_tool', {
+              stream: true,
+              maxTurns,
+            })
+          : await run<typeof agent, unknown>(agent, 'Use approval_tool', {
+              maxTurns,
+            });
+      if ('completed' in first) await first.completed;
+      first.state.approve(first.interruptions[0]!);
+      session.failNextSessionIdRead();
+      await expect(runOnce(mode, agent, first.state, session)).rejects.toThrow(
+        'session ID read rejected',
+      );
+      expect(execute).not.toHaveBeenCalled();
+      expect(await session.getItems()).toEqual([]);
+
+      let retryState = first.state;
+      if (maxTurns === 1) {
+        const error = await runOnce(mode, agent, retryState, session).catch(
+          (error: unknown) => error,
+        );
+        expect(error).toBeInstanceOf(MaxTurnsExceededError);
+        expect(model.calls).toHaveLength(1);
+        expect(execute).toHaveBeenCalledTimes(1);
+        retryState = await RunState.fromString(
+          agent,
+          (error as MaxTurnsExceededError).state!.toString(),
+        );
+      }
+      const completed =
+        mode === 'streamed'
+          ? await run<typeof agent, unknown>(agent, retryState, {
+              session,
+              stream: true,
+              maxTurns: 2,
+            })
+          : await run<typeof agent, unknown>(agent, retryState, {
+              session,
+              maxTurns: 2,
+            });
+      if ('completed' in completed) await completed.completed;
+      expect(completed.finalOutput).toBe('done');
+      expect(model.calls).toHaveLength(2);
+      expect(execute).toHaveBeenCalledTimes(1);
+      const items = await session.getItems();
+      expect(
+        items.filter((item) => item.type === 'function_call'),
+      ).toHaveLength(1);
+      expect(
+        items.filter((item) => item.type === 'function_call_result'),
+      ).toHaveLength(1);
+    },
+  );
 
   it('rejects concurrent recovery on the same live RunState', async () => {
     const { agent, execute, model } = createApprovalRun();
