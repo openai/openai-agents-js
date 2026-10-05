@@ -2157,7 +2157,13 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               toolsUsed: state._lastProcessedResponse?.toolsUsed ?? [],
               resetTurnPersistence: !isResumedState,
             });
-            if (options.signal?.aborted) {
+            if (
+              options.signal?.aborted &&
+              (turnResult.nextStep.type !== 'next_step_final_output' ||
+                !this.#agentHasOutputGuardrail(state._currentAgent))
+            ) {
+              // Guarded final output must wait for validation on resume before
+              // it can become replayable session history.
               persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
             }
             options.signal?.throwIfAborted();
