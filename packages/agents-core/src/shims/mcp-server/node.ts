@@ -1120,7 +1120,15 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
 
       try {
         if (typeof detachedTransport.terminateSession === 'function') {
-          await detachedTransport.terminateSession();
+          // start() installs the abort controller used by terminateSession().
+          // Closing this detached transport then cancels a stalled DELETE too.
+          await detachedTransport.start();
+          await withTimeout(
+            detachedTransport.terminateSession(),
+            this.getClientSessionTimeoutMs(),
+            () =>
+              new Error('Timed out terminating streamable HTTP MCP session.'),
+          );
         }
       } finally {
         await detachedTransport.close().catch(() => {});
