@@ -13,6 +13,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxClientResumeOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
   type MaterializeEntryArgs,
@@ -238,23 +239,24 @@ export type VercelWorkspacePersistence = 'tar' | 'snapshot';
 
 export interface VercelSandboxClientOptions extends SandboxClientOptions {
   /**
-   * Vercel project ID. Per-create options override constructor options, which
+   * Vercel project ID. Per-create or per-resume options override constructor options, which
    * override `VERCEL_PROJECT_ID`. Credentials are forwarded only when the
    * resolved `projectId`, `teamId`, and `token` are all non-empty.
    */
   projectId?: string;
   /**
-   * Vercel team ID. Per-create options override constructor options, which
+   * Vercel team ID. Per-create or per-resume options override constructor options, which
    * override `VERCEL_TEAM_ID`. Credentials are forwarded only when the
    * resolved `projectId`, `teamId`, and `token` are all non-empty.
    */
   teamId?: string;
   /**
-   * Vercel access token. Per-create options override constructor options,
+   * Vercel access token. Per-create or per-resume options override constructor options,
    * which override `VERCEL_TOKEN`. Credentials are forwarded only when the
    * resolved `projectId`, `teamId`, and `token` are all non-empty; otherwise
-   * authentication is delegated to `@vercel/sandbox`. Resolved tokens are
-   * included in serialized session state.
+   * authentication is delegated to `@vercel/sandbox`. Create-time tokens are
+   * included in serialized session state; current restoration credentials
+   * remain runtime-only.
    */
   token?: string;
   runtime?: string;
@@ -609,7 +611,13 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
       }
       throw error;
     });
-    await this.closePromise;
+    try {
+      await this.closePromise;
+    } finally {
+      if (this.closeCompleted) {
+        vercelSessionAuthentication.delete(this.state);
+      }
+    }
   }
 
   private async closeOnce(): Promise<void> {
@@ -1539,6 +1547,11 @@ export class VercelSandboxSession extends RemoteSandboxSessionBase<VercelSandbox
   }
 }
 
+const vercelSessionAuthentication = new WeakMap<
+  VercelSandboxSessionState,
+  { owner?: VercelSandboxClient; credentials?: NormalizedVercelCredentials }
+>();
+
 /**
  * @see {@link https://vercel.com/docs/vercel-sandbox | Vercel Sandbox overview}.
  * @see {@link https://vercel.com/docs/vercel-sandbox/sdk-reference | Sandbox SDK reference}.
@@ -1550,7 +1563,6 @@ export class VercelSandboxClient implements SandboxClient<
 > {
   readonly backendId = 'vercel';
   private readonly options: VercelSandboxClientOptions;
-  private readonly liveSessionStates = new WeakSet<VercelSandboxSessionState>();
 
   constructor(options: VercelSandboxClientOptions = {}) {
     this.options = options;
@@ -1696,7 +1708,7 @@ export class VercelSandboxClient implements SandboxClient<
           }
           throw error;
         }
-        this.liveSessionStates.add(session.state);
+        vercelSessionAuthentication.set(session.state, { owner: this });
         return session;
       },
     );
@@ -1716,7 +1728,9 @@ export class VercelSandboxClient implements SandboxClient<
     recordLiveMountCredentialAuthority(sanitizedManifest, liveManifest);
     state.manifest = sanitizedManifest;
     const credentials = this.resolveSessionCredentials(state);
-    applyVercelCredentials(state, credentials);
+    if (!vercelSessionAuthentication.get(state)?.credentials) {
+      applyVercelCredentials(state, credentials);
+    }
     if (
       !hasVercelMounts(state.manifest) &&
       state.workspacePersistence === 'snapshot' &&
@@ -1849,10 +1863,11 @@ export class VercelSandboxClient implements SandboxClient<
   }
 
   async resume(
-    state: VercelSandboxSessionState,
+    inputState: VercelSandboxSessionState,
+    options: SandboxClientResumeOptions<VercelSandboxClientOptions> = {},
   ): Promise<VercelSandboxSession> {
-    assertRemoteSandboxSessionStateCanResume(state);
-    if (hasVercelMounts(state.manifest)) {
+    assertRemoteSandboxSessionStateCanResume(inputState);
+    if (hasVercelMounts(inputState.manifest)) {
       // This is an intentional lifecycle boundary, not a missing restore path.
       // A fresh create supplies trusted credentials and mount configuration.
       throw new SandboxUnsupportedFeatureError(
@@ -1863,8 +1878,18 @@ export class VercelSandboxClient implements SandboxClient<
         },
       );
     }
+    // Resume owns its authentication attempt; a failed attempt must not
+    // replace the credentials of a surviving live session.
+    const state = { ...inputState };
+    const liveAuthentication = vercelSessionAuthentication.get(inputState);
+    if (liveAuthentication) {
+      vercelSessionAuthentication.set(state, liveAuthentication);
+    }
     const Sandbox = await loadVercelSandboxClass();
-    const credentials = this.resolveSessionCredentials(state);
+    const credentials = this.resolveSessionCredentials(
+      state,
+      options.clientOptions,
+    );
     const resumeFromSnapshot = hasFreshVercelSnapshot(state);
     const authentication = resumeFromSnapshot
       ? await withProviderError(
@@ -1899,7 +1924,10 @@ export class VercelSandboxClient implements SandboxClient<
                   env: state.environment,
                 }),
             ),
-          { snapshotId: state.snapshotId, sandboxId: state.sandboxId },
+          {
+            snapshotId: state.snapshotId,
+            sandboxId: state.sandboxId,
+          },
         )
       : await withProviderError(
           'VercelSandboxClient',
@@ -1918,6 +1946,9 @@ export class VercelSandboxClient implements SandboxClient<
           { sandboxId: state.sandboxId },
         );
     applyVercelAuthentication(state, authentication);
+    if (!vercelSessionAuthentication.get(state)?.credentials) {
+      applyVercelAuthentication(inputState, authentication);
+    }
     const sandbox = authentication.value;
     const resolvedCredentials = authentication.credentials;
 
@@ -1954,24 +1985,37 @@ export class VercelSandboxClient implements SandboxClient<
       }
       throw error;
     }
-    this.liveSessionStates.add(session.state);
+    vercelSessionAuthentication.set(session.state, {
+      ...vercelSessionAuthentication.get(state),
+      owner: this,
+    });
     return session;
   }
 
   private resolveSessionCredentials(
     state: VercelSandboxSessionState,
+    options: VercelSandboxClientOptions = {},
   ): NormalizedVercelCredentials {
-    // Only this client's live sessions can retain trusted per-create overrides.
-    // Restored state cannot override current credentials or enable legacy fallback.
-    if (!this.liveSessionStates.has(state)) {
-      const credentials = resolveVercelCredentials(this.options);
-      if (credentials.token) {
-        applyVercelCredentials(state, credentials);
-        state.authenticationMode = 'explicit';
-        return credentials;
-      }
+    // Live sessions retain their per-create choice unless this resume supplies
+    // credentials. Restored state cannot select authentication for the host.
+    if (
+      vercelSessionAuthentication.get(state)?.owner !== this ||
+      hasVercelCredentialOptions(options)
+    ) {
+      const env = loadEnv();
+      const hasCurrentConfiguration =
+        hasVercelCredentialOptions(options) ||
+        hasVercelCredentialOptions(this.options) ||
+        Boolean(
+          env.VERCEL_PROJECT_ID || env.VERCEL_TEAM_ID || env.VERCEL_TOKEN,
+        );
+      vercelSessionAuthentication.set(state, {
+        credentials: hasCurrentConfiguration
+          ? resolveVercelCredentials(options, this.options)
+          : undefined,
+      });
     }
-    return selectVercelSessionCredentials(state, this.options);
+    return selectVercelSessionCredentials(state, options, this.options);
   }
 }
 
@@ -2241,6 +2285,12 @@ function resolveManifestRoot(manifest: Manifest): Manifest {
   );
 }
 
+function hasVercelCredentialOptions(options: VercelCredentials): boolean {
+  return ['projectId', 'teamId', 'token'].some(
+    (field) => options[field as keyof VercelCredentials] != null,
+  );
+}
+
 function normalizeVercelCredentials(
   options: VercelCredentials,
 ): NormalizedVercelCredentials {
@@ -2300,6 +2350,11 @@ function selectVercelSessionCredentials(
   state: VercelSandboxSessionState,
   ...fallbackLayers: VercelCredentials[]
 ): NormalizedVercelCredentials {
+  const currentCredentials =
+    vercelSessionAuthentication.get(state)?.credentials;
+  if (currentCredentials) {
+    return currentCredentials;
+  }
   if (state.authenticationMode === 'sdk') {
     return {};
   }
@@ -2317,6 +2372,14 @@ async function runWithLegacyVercelAuthenticationFallback<T>(
   credentials: NormalizedVercelCredentials,
   operation: (credentials: NormalizedVercelCredentials) => Promise<T>,
 ): Promise<VercelAuthenticationResult<T>> {
+  const currentCredentials =
+    vercelSessionAuthentication.get(state)?.credentials;
+  if (currentCredentials) {
+    return {
+      value: await operation(currentCredentials),
+      credentials: currentCredentials,
+    };
+  }
   const serializedCredentials = normalizeVercelCredentials(state);
   const hasLegacySerializedCredentials =
     state.authenticationMode === undefined &&
@@ -2360,6 +2423,10 @@ function applyVercelAuthentication<T>(
   state: VercelSandboxSessionState,
   authentication: VercelAuthenticationResult<T>,
 ): void {
+  // Current restoration credentials belong to this process, not the snapshot.
+  if (vercelSessionAuthentication.get(state)?.credentials) {
+    return;
+  }
   applyVercelCredentials(state, authentication.credentials);
   if (authentication.authenticationMode === undefined) {
     delete state.authenticationMode;
