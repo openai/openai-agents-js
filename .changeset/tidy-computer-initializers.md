@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix: Preserve computer initializers on directly configured and copied tools across runs.
+fix: Preserve computer tool initializers and serialize each run's resolved computer across overlapping runs.

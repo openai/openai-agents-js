@@ -97,6 +97,8 @@ describe('computer initializer isolation through Runner', () => {
         first: new FakeComputer(),
         second: new FakeComputer(),
       };
+      computers.first.dimensions = [800, 600];
+      computers.second.dimensions = [1280, 720];
       const closed = new Set<Computer>();
       for (const [label, computer] of Object.entries(computers)) {
         computer.type = vi.fn(async () => {
@@ -142,6 +144,25 @@ describe('computer initializer isolation through Runner', () => {
           modelResponder(async () => {
             firstReady();
             await released;
+            return {
+              output: [
+                {
+                  type: 'computer_call',
+                  callId: 'call-first-again',
+                  status: 'completed',
+                  action: { type: 'type', text: 'first-again' },
+                },
+              ],
+              usage: new Usage(),
+            };
+          }),
+          modelResponder(async ({ request }) => {
+            expect(request.tools).toContainEqual({
+              type: 'computer',
+              name: 'computer_use_preview',
+              environment: computers.first.environment,
+              dimensions: [800, 600],
+            });
             return { output: [fakeModelMessage('done')], usage: new Usage() };
           }),
         ]),
@@ -182,8 +203,15 @@ describe('computer initializer isolation through Runner', () => {
         runContext: first.state._context,
         computer: computers.first,
       });
-      expect(computers.first.type).toHaveBeenCalledExactlyOnceWith(
+      expect(computers.first.type).toHaveBeenCalledTimes(2);
+      expect(computers.first.type).toHaveBeenNthCalledWith(
+        1,
         'first',
+        expect.anything(),
+      );
+      expect(computers.first.type).toHaveBeenNthCalledWith(
+        2,
+        'first-again',
         expect.anything(),
       );
       expect(computers.second.type).toHaveBeenCalledExactlyOnceWith(

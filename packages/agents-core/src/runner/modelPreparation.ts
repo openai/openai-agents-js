@@ -138,7 +138,22 @@ export async function prepareAgentArtifacts<
     serializedHandoffs: capabilities.handoffs.map((handoff) =>
       serializeHandoff(handoff),
     ),
-    serializedTools: capabilities.tools.map((tool) => serializeTool(tool)),
+    serializedTools: await Promise.all(
+      capabilities.tools.map(async (tool) =>
+        serializeTool(
+          tool.type === 'computer'
+            ? {
+                ...tool,
+                // Another run may replace tool.computer while preparation awaits.
+                computer: await resolveComputer({
+                  tool,
+                  runContext: state._context,
+                }),
+              }
+            : tool,
+        ),
+      ),
+    ),
     toolsExplicitlyProvided: executionAgent.hasExplicitToolConfig(),
   };
 }
