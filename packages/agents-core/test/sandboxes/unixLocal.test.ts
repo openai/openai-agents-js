@@ -658,6 +658,29 @@ describe('UnixLocalSandboxClient', () => {
     },
   );
 
+  it('rejects non-boolean sticky values in persisted session manifests', async () => {
+    const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+    const session = await client.create(
+      new Manifest({
+        entries: { shared: { type: 'dir', permissions: 'drwxrwxrwt' } },
+      }),
+      { snapshot: new NoopSnapshotSpec() },
+    );
+    try {
+      const serialized = JSON.parse(
+        JSON.stringify(await client.serializeSessionState(session.state)),
+      );
+      for (const sticky of ['false', 1, null]) {
+        serialized.manifest.entries.shared.permissions.sticky = sticky;
+        await expect(
+          client.deserializeSessionState(serialized),
+        ).rejects.toThrow('Permission sticky must be a boolean.');
+      }
+    } finally {
+      await session.close();
+    }
+  });
+
   it('rejects manifest identity metadata that cannot be enforced locally', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,

@@ -1170,6 +1170,41 @@ describe('Manifest', () => {
     },
   );
 
+  it.each(['false', 1, null])(
+    'rejects raw manifest sticky value %s',
+    (sticky) => {
+      const raw = JSON.parse(
+        JSON.stringify({
+          entries: { shared: { type: 'dir', permissions: { sticky } } },
+        }),
+      );
+      expect(() => new Manifest(raw)).toThrow(
+        'Permission sticky must be a boolean.',
+      );
+    },
+  );
+
+  it.each([true, false, undefined])(
+    'normalizes boolean or absent sticky value %s',
+    (sticky) => {
+      const manifest = new Manifest({
+        entries: {
+          shared: {
+            type: 'dir',
+            permissions: { owner: 7, group: 7, other: 7, sticky },
+          },
+        },
+      });
+      expect(manifest.entries.shared.permissions).toEqual({
+        owner: 7,
+        group: 7,
+        other: 7,
+        directory: false,
+        ...(sticky === true ? { sticky: true } : {}),
+      });
+    },
+  );
+
   it.each([
     '-rwTr--r--',
     '-rwxrwTr--',

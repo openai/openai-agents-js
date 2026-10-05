@@ -75,6 +75,9 @@ export class Permissions {
     this.group = normalizePermissionBits(init.group ?? FileMode.NONE, 'group');
     this.other = normalizePermissionBits(init.other ?? FileMode.NONE, 'other');
     this.directory = init.directory ?? false;
+    if (init.sticky !== undefined && typeof init.sticky !== 'boolean') {
+      throw new TypeError('Permission sticky must be a boolean.');
+    }
     this.sticky = init.sticky ?? false;
   }
 
