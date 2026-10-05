@@ -1718,7 +1718,8 @@ export class VercelSandboxClient implements SandboxClient<
     state: VercelSandboxSessionState,
     options?: SandboxSessionSerializationOptions,
   ): Promise<Record<string, unknown>> {
-    const stateGeneration = captureSandboxStateGeneration(state);
+    const sourceState = state;
+    const stateGeneration = captureSandboxStateGeneration(sourceState);
     const liveManifest = state.manifest;
     const sanitizedMountEnvironment =
       sanitizeMountCredentialEnvironmentForPersistence(state);
@@ -1727,7 +1728,15 @@ export class VercelSandboxClient implements SandboxClient<
     );
     recordLiveMountCredentialAuthority(sanitizedManifest, liveManifest);
     state.manifest = sanitizedManifest;
-    const credentials = this.resolveSessionCredentials(state);
+    // Serialization does not resume a live session, even through another client.
+    // Resolve restored-state authentication on a separate state object.
+    const liveAuthentication = vercelSessionAuthentication.get(state);
+    if (!liveAuthentication?.owner) {
+      state = { ...state };
+    }
+    const credentials = liveAuthentication?.owner
+      ? selectVercelSessionCredentials(state, this.options)
+      : this.resolveSessionCredentials(state);
     if (!vercelSessionAuthentication.get(state)?.credentials) {
       applyVercelCredentials(state, credentials);
     }
@@ -1749,9 +1758,9 @@ export class VercelSandboxClient implements SandboxClient<
         ...state,
         environment: sanitizedMountEnvironment.environment,
       },
-      state,
+      sourceState,
     );
-    assertSandboxStateGenerationUnchanged(state, stateGeneration);
+    assertSandboxStateGenerationUnchanged(sourceState, stateGeneration);
     return serialized;
   }
 

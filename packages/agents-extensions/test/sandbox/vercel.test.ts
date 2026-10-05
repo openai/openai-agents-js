@@ -2616,6 +2616,66 @@ describe('VercelSandboxClient', () => {
     expect(getMock).toHaveBeenLastCalledWith({ sandboxId: 'vercel_original' });
   });
 
+  test('preserves provided live session authentication when a run serializes through another client', async () => {
+    const clientA = new VercelSandboxClient({
+      projectId: 'prj_a',
+      teamId: 'team_a',
+      token: 'constructor_a',
+    });
+    const liveA = await clientA.create(new Manifest(), {
+      token: 'create_a',
+      workspacePersistence: 'snapshot',
+    });
+    const clientB = new VercelSandboxClient({
+      projectId: 'prj_b',
+      teamId: 'team_b',
+      token: 'token_b',
+    });
+    const serialize = vi.spyOn(clientB, 'serializeSessionState');
+    const agent = new SandboxAgent({
+      name: 'VercelWorker',
+      model: new SequenceModel([
+        {
+          output: [
+            {
+              id: 'message-1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'done',
+                  providerData: { annotations: [] },
+                },
+              ],
+            },
+          ],
+          usage: new Usage(),
+        },
+      ]),
+    });
+    const result = await new Runner({ tracingDisabled: true }).run(
+      agent,
+      'Hello',
+      { sandbox: { session: liveA, client: clientB } },
+    );
+    expect(result.finalOutput).toBe('done');
+    expect(serialize).toHaveBeenCalled();
+    expect(stopMock).not.toHaveBeenCalled();
+    createMock.mockClear();
+    const snapshot = await liveA.persistWorkspace();
+    await liveA.hydrateWorkspace(snapshot);
+    expect(createMock).toHaveBeenCalledTimes(2);
+    for (const [params] of createMock.mock.calls) {
+      expect(params).toMatchObject({
+        projectId: 'prj_a',
+        teamId: 'team_a',
+        token: 'create_a',
+      });
+    }
+  });
+
   test('preserves trusted per-create delegation for live snapshot sessions', async () => {
     const client = new VercelSandboxClient({
       projectId: 'prj_current',
