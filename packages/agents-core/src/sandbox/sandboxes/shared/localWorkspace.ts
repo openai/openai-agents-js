@@ -292,7 +292,21 @@ export async function restoreLocalWorkspaceManifestStickyPermissions(
         destination,
         logicalPath,
       );
-      await chmod(destination, (info.mode & 0o7777) | 0o1000);
+      const handle = await open(destination, LOCAL_SOURCE_DIRECTORY_READ_FLAGS);
+      try {
+        const openedInfo = await handle.stat();
+        if (
+          !openedInfo.isDirectory() ||
+          !sameFilesystemEntry(info, openedInfo)
+        ) {
+          throw new UserError(
+            `Sandbox sticky permission target changed during restore: ${logicalPath || '.'}`,
+          );
+        }
+        await handle.chmod((openedInfo.mode & 0o7777) | 0o1000);
+      } finally {
+        await handle.close();
+      }
     }
   }
 }

@@ -13,7 +13,7 @@ export type PermissionsValue = {
   directory?: boolean;
   /**
    * Preserve the Unix sticky bit (01000), including on shared directories.
-   * Unix-local snapshot restore reapplies this flag to existing directories,
+   * Unix-local and Docker snapshot restore reapply this flag to existing directories,
    * even if execution removed it; other restored permission bits are unchanged.
    */
   sticky?: boolean;

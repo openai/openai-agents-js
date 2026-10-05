@@ -1,10 +1,19 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   DockerSandboxClient,
+  InMemoryRemoteSnapshotStore,
   inContainerMountStrategy,
   Manifest,
   NoopSnapshotSpec,
@@ -208,6 +217,93 @@ describe('DockerSandboxClient', () => {
         baseDir: rootDir,
       });
       expect(restoredOutput).toContain('after');
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker.each(['local', 'remote'] as const)(
+    'reapplies manifest sticky intent during %s snapshot recovery',
+    async (type) => {
+      rootDir = await mkdtemp(
+        join(tmpdir(), 'agents-core-docker-sticky-test-'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        image: DOCKER_TEST_IMAGE,
+        snapshot:
+          type === 'local'
+            ? { type, baseDir: rootDir }
+            : { type, store: new InMemoryRemoteSnapshotStore() },
+      });
+      const session = await client.create(
+        new Manifest({
+          users: [{ name: 'sticky-user' }],
+          entries: {
+            '.': { type: 'dir', permissions: 'drwxrwxrwt' },
+            shared: {
+              type: 'dir',
+              permissions: 'drwxrwxrwt',
+              children: {
+                'value.txt': { type: 'file', content: 'original' },
+              },
+            },
+            deleted: { type: 'dir', permissions: 'drwxrwxrwt' },
+            replaced: {
+              type: 'dir',
+              children: {
+                nested: { type: 'dir', permissions: 'drwxrwxrwt' },
+              },
+            },
+            ordinary: { type: 'dir', permissions: 0o777 },
+          },
+        }),
+      );
+      cleanupContainerIds.add(session.state.containerId);
+      const workspace = session.state.workspaceRootPath;
+      await chmod(join(workspace, 'shared'), 0o777);
+      await writeFile(join(workspace, 'shared/value.txt'), 'snapshot contents');
+      await rm(join(workspace, 'deleted'), { recursive: true });
+      await rm(join(workspace, 'replaced'), { recursive: true });
+      await writeFile(join(workspace, 'replaced'), 'now a file');
+      const serialized = JSON.parse(
+        JSON.stringify(await client.serializeSessionState(session.state)),
+      );
+      removeDockerContainer(session.state.containerId);
+      cleanupContainerIds.delete(session.state.containerId);
+      // Exercise both existing-workspace extraction and new-workspace extraction.
+      for (const recovery of ['drifted', 'missing']) {
+        if (recovery === 'drifted') {
+          await writeFile(join(workspace, 'shared/value.txt'), 'drift');
+        } else {
+          await rm(workspace, { recursive: true, force: true });
+        }
+        const restored = await client.resume(
+          await client.deserializeSessionState(serialized),
+        );
+        cleanupContainerIds.add(restored.state.containerId);
+        const restoredRoot = restored.state.workspaceRootPath;
+        expect((await stat(restoredRoot)).mode & 0o7777).toBe(0o1755);
+        expect((await stat(join(restoredRoot, 'shared'))).mode & 0o7777).toBe(
+          (0o777 & ~process.umask()) | 0o1000,
+        );
+        expect((await stat(join(restoredRoot, 'ordinary'))).mode & 0o7777).toBe(
+          0o777 & ~process.umask(),
+        );
+        expect(
+          await readFile(join(restoredRoot, 'shared/value.txt'), 'utf8'),
+        ).toBe('snapshot contents');
+        await expect(stat(join(restoredRoot, 'deleted'))).rejects.toMatchObject(
+          { code: 'ENOENT' },
+        );
+        expect(await readFile(join(restoredRoot, 'replaced'), 'utf8')).toBe(
+          'now a file',
+        );
+        expect(
+          await restored.execCommand({ cmd: 'stat -c %a shared' }),
+        ).toContain(((0o777 & ~process.umask()) | 0o1000).toString(8));
+        removeDockerContainer(restored.state.containerId);
+        cleanupContainerIds.delete(restored.state.containerId);
+      }
     },
     DOCKER_TEST_TIMEOUT_MS,
   );
