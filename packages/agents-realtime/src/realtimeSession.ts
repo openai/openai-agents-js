@@ -293,7 +293,7 @@ type IssuedRealtimeApproval<TBaseContext> = {
   decisionState: 'pending' | 'sending' | 'decided';
 };
 
-type OutputGuardrailDeltaSource = 'audio' | 'text';
+type OutputGuardrailSource = 'audio' | 'text';
 
 type OutputGuardrailDeltaState = {
   text: string;
@@ -1499,7 +1499,7 @@ export class RealtimeSession<
     responseId: string,
     itemId: string,
     sourceAgent: SessionRealtimeAgent<TBaseContext>,
-    source: OutputGuardrailDeltaSource | 'final',
+    source: OutputGuardrailSource,
     responseGeneration: number,
     connectionGeneration: number,
   ) {
@@ -1566,7 +1566,7 @@ export class RealtimeSession<
     output: string,
     responseId: string,
     itemId: string,
-    source: OutputGuardrailDeltaSource | 'final',
+    source: OutputGuardrailSource,
     sourceAgent: SessionRealtimeAgent<TBaseContext>,
     responseGeneration = this.#responseGeneration,
     connectionGeneration = this.#connectionGeneration,
@@ -1586,7 +1586,7 @@ export class RealtimeSession<
 
   #handleOutputGuardrailDelta(
     event: TransportLayerTranscriptDelta | TransportLayerOutputTextDelta,
-    source: OutputGuardrailDeltaSource,
+    source: OutputGuardrailSource,
   ) {
     const { delta, itemId, responseId } = event;
     if (this.#activeResponseId === undefined) {
@@ -1694,19 +1694,22 @@ export class RealtimeSession<
       const outputItems = event.response.output ?? [];
       let textOutput = '';
       let itemId = '';
-      let source: OutputGuardrailDeltaSource | 'final' = 'final';
+      const source: OutputGuardrailSource = outputItems.some(
+        (item) =>
+          item.type === 'message' &&
+          // Realtime transports retain provider-specific content tags.
+          item.content.some(
+            (content: { type: string }) => content.type === 'output_audio',
+          ),
+      )
+        ? 'audio'
+        : 'text';
 
       for (let idx = outputItems.length - 1; idx >= 0; idx--) {
         const candidate = outputItems[idx];
         const candidateText = getLastTextFromAudioOutputMessage(candidate);
         if (typeof candidateText === 'string') {
           textOutput = candidateText;
-          if (
-            candidate.type === 'message' &&
-            candidate.content.at(-1)?.type === 'output_text'
-          ) {
-            source = 'text';
-          }
           const candidateId = (candidate as { id?: unknown })?.id;
           itemId = typeof candidateId === 'string' ? candidateId : '';
           break;
