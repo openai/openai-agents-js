@@ -356,6 +356,12 @@ export async function resumeInterruptedTurn<
     onStepItems: unfilteredHandoffInput ? undefined : onStepItems,
   });
 
+  if (turnResult.nextStep.type === 'next_step_run_again') {
+    // Approval resolution completes the previous model turn. Persist that fact
+    // before session writes so a retry also counts the next model request.
+    state._currentTurnInProgress = false;
+  }
+
   if (turnResult.nextStep.type === 'next_step_handoff') {
     // The transfer and tool effects have completed. Persist their continuation before
     // the caller attempts the fallible resumed Session append.
@@ -383,7 +389,7 @@ export async function resumeInterruptedTurn<
   }
 
   // Map next-step outcomes to interruption flow control for the outer run loop.
-  // return_interruption: still waiting on approvals. rerun_turn: same turn rerun without increment.
+  // return_interruption: still waiting on approvals. rerun_turn: prepare the next model turn.
   // advance_step: proceed without rerunning the same turn.
   if (turnResult.nextStep.type === 'next_step_interruption') {
     return {
@@ -421,7 +427,7 @@ export function handleInterruptedOutcome<
       state._currentStep = outcome.nextStep;
       return { shouldReturn: true, shouldContinue: false };
     case 'rerun_turn':
-      // Clear the step so the outer loop treats this as a new run-again without incrementing the turn.
+      // Preserve interruption context for preparation of the next model turn.
       setContinuingInterruptedTurn(true);
       state._currentStep = undefined;
       return { shouldReturn: false, shouldContinue: true };

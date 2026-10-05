@@ -1792,14 +1792,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                 continuingInterruptedTurn = value;
               },
             });
-            if (
-              !shouldContinue ||
-              interruptedOutcome.nextStep.type === 'next_step_handoff'
-            ) {
-              finishRunnerSpan(currentTurnSpan);
-              setRunStateTurnSpanParent(state, undefined);
-              currentTurnSpan = undefined;
-            }
+            // Approval resolution belongs to the previous turn; any next model call
+            // starts a new counted turn with its own span and usage.
+            finishRunnerSpan(currentTurnSpan);
+            setRunStateTurnSpanParent(state, undefined);
+            currentTurnSpan = undefined;
             if (shouldReturn) {
               // we are still in an interruption, so we need to avoid an infinite loop
               return completeResult(new RunResult<TContext, TAgent>(state));
@@ -2828,14 +2825,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               continuingInterruptedTurn = value;
             },
           });
-          if (
-            !shouldContinue ||
-            interruptedOutcome.nextStep.type === 'next_step_handoff'
-          ) {
-            finishRunnerSpan(currentTurnSpan);
-            setRunStateTurnSpanParent(result.state, undefined);
-            currentTurnSpan = undefined;
-          }
+          // Approval resolution belongs to the previous turn; any next model call
+          // starts a new counted turn with its own span and usage.
+          finishRunnerSpan(currentTurnSpan);
+          setRunStateTurnSpanParent(result.state, undefined);
+          currentTurnSpan = undefined;
           if (shouldReturn) {
             // we are still in an interruption, so we need to avoid an infinite loop
             return;

@@ -420,7 +420,7 @@ describe('RunState pending input', () => {
     });
     const session = new MemorySession();
 
-    const first = await run(agent, 'initial', { session, maxTurns: 1 });
+    const first = await run(agent, 'initial', { session, maxTurns: 2 });
     const approval = first.interruptions[0];
     expect(approval).toBeDefined();
     expect(first.state._currentTurn).toBe(1);
