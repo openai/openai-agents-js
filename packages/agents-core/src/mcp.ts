@@ -1431,8 +1431,9 @@ export interface BaseMCPServerStdioOptions {
   cacheToolsList?: boolean;
   /**
    * Maximum successful pages per automatic `listTools()` call. Must be a positive
-   * integer; omission leaves pagination unlimited. A terminal page at the limit
-   * succeeds; a fresh continuation at the limit rejects without returning or
+   * integer; defaults to 64. Set a higher limit for larger listings.
+   * A terminal page at the limit succeeds; a fresh continuation at the limit
+   * rejects without returning or
    * caching partial tools. Existing cursor-cycle handling is unchanged: modern
    * clients end listing on a repeated cursor; legacy clients reject it.
    * Request retries do not reset this budget. Does not limit page size or explicit
@@ -1484,8 +1485,9 @@ export interface MCPServerStreamableHttpOptions {
   cacheToolsList?: boolean;
   /**
    * Maximum successful pages per automatic `listTools()` call. Must be a positive
-   * integer; omission leaves pagination unlimited. A terminal page at the limit
-   * succeeds; a fresh continuation at the limit rejects without returning or
+   * integer; defaults to 64. Set a higher limit for larger listings.
+   * A terminal page at the limit succeeds; a fresh continuation at the limit
+   * rejects without returning or
    * caching partial tools. Existing cursor-cycle handling is unchanged: modern
    * clients end listing on a repeated cursor; legacy clients reject it.
    * Request retries do not reset this budget. Does not limit page size or explicit
@@ -1540,8 +1542,9 @@ export interface MCPServerSSEOptions {
   cacheToolsList?: boolean;
   /**
    * Maximum successful pages per automatic `listTools()` call. Must be a positive
-   * integer; omission leaves pagination unlimited. A terminal page at the limit
-   * succeeds; a fresh continuation at the limit rejects without returning or
+   * integer; defaults to 64. Set a higher limit for larger listings.
+   * A terminal page at the limit succeeds; a fresh continuation at the limit
+   * rejects without returning or
    * caching partial tools. Existing cursor-cycle handling is unchanged: modern
    * clients end listing on a repeated cursor; legacy clients reject it.
    * Request retries do not reset this budget. Does not limit page size or explicit

@@ -109,7 +109,7 @@ describe('MCP SDK v2 compatibility', () => {
     }
   });
 
-  it('lists more than 64 tool pages for a pinned session', async () => {
+  it('lists more than 64 tool pages for a pinned session with an explicit limit', async () => {
     const pageCount = 65;
     const requestedCursors: Array<string | undefined> = [];
     const fetch = async (_url: string | URL | Request, init?: RequestInit) => {
@@ -140,6 +140,7 @@ describe('MCP SDK v2 compatibility', () => {
     };
     const server = new NodeMCPServerStreamableHttp({
       name: 'large-pinned-tool-list',
+      maxListPages: 65,
       url: 'https://example.test/mcp',
       sessionId: 'existing-session',
       fetch,

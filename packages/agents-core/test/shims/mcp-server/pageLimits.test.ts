@@ -278,8 +278,41 @@ describe.each(['modern', 'legacy'] as const)(
       }
     });
 
-    it('leaves omitted limits unlimited beyond the native default of 64 pages', async () => {
+    it('accepts a terminal page at the default limit of 64', async () => {
       const fixture = paginatedServer(era);
+      fixture.terminalAt(64);
+      await fixture.server.connect();
+      try {
+        const tools = await fixture.server.listTools();
+        expect(tools).toHaveLength(64);
+        expect(tools.at(-1)?.name).toBe('tool-64');
+        expect(fixture.cursors).toHaveLength(64);
+      } finally {
+        await fixture.server.close();
+      }
+    });
+
+    it('rejects fresh continuation cursors at the default limit without caching partial tools', async () => {
+      const fixture = paginatedServer(era);
+      fixture.terminalAt(70);
+      await fixture.server.connect();
+      try {
+        await expect(fixture.server.listTools()).rejects.toThrow(
+          'exceeded maxListPages',
+        );
+        expect(fixture.cursors).toHaveLength(64);
+        fixture.terminalAt(1);
+        await expect(fixture.server.listTools()).resolves.toMatchObject([
+          { name: 'tool-1' },
+        ]);
+        expect(fixture.cursors).toHaveLength(65);
+      } finally {
+        await fixture.server.close();
+      }
+    });
+
+    it('allows an explicit limit above the default', async () => {
+      const fixture = paginatedServer(era, 65);
       fixture.terminalAt(65);
       await fixture.server.connect();
       try {

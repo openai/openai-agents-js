@@ -790,6 +790,7 @@ function getComputerInitializer<Context>(
     typeof tool.computer === 'function' ||
     isComputerProvider(tool.computer)
   ) {
+    computerInitializerMap.set(tool as AnyComputerTool, tool.computer);
     return tool.computer as ComputerInitializer<Context, any>;
   }
   return undefined;
