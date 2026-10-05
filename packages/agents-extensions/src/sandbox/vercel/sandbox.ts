@@ -1954,7 +1954,10 @@ export class VercelSandboxClient implements SandboxClient<
 
     const session = new VercelSandboxSession({
       credentials: resolvedCredentials,
-      archiveLimits: this.options.archiveLimits,
+      archiveLimits:
+        options.archiveLimits === undefined
+          ? this.options.archiveLimits
+          : options.archiveLimits,
       state: resumeFromSnapshot
         ? {
             ...state,

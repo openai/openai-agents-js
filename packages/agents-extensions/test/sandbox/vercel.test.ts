@@ -286,6 +286,42 @@ describe('VercelSandboxClient', () => {
     },
   );
 
+  test.each(['override', 'fallback', 'disabled'] as const)(
+    'honors resumed archive limits: %s',
+    async (mode) => {
+      const client = new VercelSandboxClient({
+        archiveLimits: { maxExtractedBytes: mode === 'override' ? 100 : 1 },
+      });
+      const state = await client.deserializeSessionState({
+        manifest: new Manifest(),
+        sandboxId: 'vercel_original',
+        environment: {},
+        workspacePersistence: 'tar',
+      });
+      const session = await client.resume(state, {
+        archiveLimits:
+          mode === 'override'
+            ? { maxExtractedBytes: 1 }
+            : mode === 'disabled'
+              ? null
+              : undefined,
+      });
+      const archive = makeTarArchive([{ name: 'README.md', content: 'large' }]);
+      writeFilesMock.mockClear();
+      runCommandMock.mockClear();
+      if (mode === 'disabled') {
+        await session.hydrateWorkspace(archive);
+        expect(writeFilesMock).toHaveBeenCalled();
+      } else {
+        await expect(session.hydrateWorkspace(archive)).rejects.toThrow(
+          'archive extracted size exceeds limit',
+        );
+        expect(writeFilesMock).not.toHaveBeenCalled();
+        expect(runCommandMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+
   test.each(['constructor', 'create options', 'top-level'] as const)(
     'rejects invalid archive limits from %s before provisioning',
     async (source) => {
