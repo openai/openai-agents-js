@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { OpenAIConversationsSession } from '@openai/agents-openai';
 import ChatView from '@/app/components/ChatView';
 import { toUiMessages } from '@/app/lib/messageConverters';
-import { createSession, findSession } from '@/app/lib/session';
+import { findSession, getOwnerId } from '@/app/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,17 +25,10 @@ export default async function Page({ searchParams }: PageProps) {
   const resolvedSearchParams = await Promise.resolve(searchParams);
   const sessionId = readSessionId(resolvedSearchParams);
 
-  if (!sessionId) {
-    const nextSessionId = crypto.randomUUID();
-    await createSession(nextSessionId);
-    redirect(`/?${SESSION_QUERY_KEY}=${nextSessionId}`);
-  }
-
-  const entry = findSession(sessionId);
-  if (!entry) {
-    const fallbackSessionId = crypto.randomUUID();
-    await createSession(fallbackSessionId);
-    redirect(`/?${SESSION_QUERY_KEY}=${fallbackSessionId}`);
+  const ownerId = await getOwnerId();
+  const entry = sessionId ? findSession(sessionId, ownerId) : undefined;
+  if (!sessionId || !entry) {
+    redirect('/api/session');
   }
 
   const session = new OpenAIConversationsSession({

@@ -4,7 +4,7 @@ import type { UIMessage } from 'ai';
 
 import { agent, customerSupportAgent } from './agents';
 import { toAgentInput } from '@/app/lib/messageConverters';
-import { findOrCreateSession, saveSession } from '@/app/lib/session';
+import { findSession, getOwnerId, saveSession } from '@/app/lib/session';
 
 const agentRegistry = new Map<string, Agent<any, any>>([
   [agent.name, agent],
@@ -21,7 +21,15 @@ export async function POST(req: Request) {
       ? body.sessionId
       : typeof body?.id === 'string'
         ? body.id
-        : 'default';
+        : undefined;
+  if (!sessionId) {
+    return new Response('Missing session ID.', { status: 400 });
+  }
+  const entry = findSession(sessionId, await getOwnerId());
+  if (!entry) {
+    return new Response('Session not found.', { status: 404 });
+  }
+
   const lastUserMessage = [...messages]
     .reverse()
     .find((message) => message.role === 'user');
@@ -31,9 +39,6 @@ export async function POST(req: Request) {
     return new Response('Missing messages.', { status: 400 });
   }
 
-  const entry = await findOrCreateSession(sessionId, {
-    activeAgentName: agent.name,
-  });
   const activeAgentName = entry.activeAgentName ?? agent.name;
   const activeAgent = agentRegistry.get(activeAgentName) ?? agent;
 
