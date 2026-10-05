@@ -11,11 +11,17 @@ export type PermissionsValue = {
   group?: number;
   other?: number;
   directory?: boolean;
+  /** Preserve the Unix sticky bit (01000), including on shared directories. */
+  sticky?: boolean;
 };
+
+// Omit a disabled sticky bit to preserve the shape of ordinary permission records.
+type NormalizedPermissions = Required<Omit<PermissionsValue, 'sticky'>> &
+  Pick<PermissionsValue, 'sticky'>;
 
 export type PermissionsInit = PermissionsValue | string | number | Permissions;
 
-export const DEFAULT_SANDBOX_ENTRY_PERMISSIONS: Required<PermissionsValue> = {
+export const DEFAULT_SANDBOX_ENTRY_PERMISSIONS: NormalizedPermissions = {
   owner: FileMode.ALL,
   group: FileMode.READ | FileMode.EXEC,
   other: FileMode.READ | FileMode.EXEC,
@@ -33,6 +39,7 @@ export class Permissions {
   readonly group: number;
   readonly other: number;
   readonly directory: boolean;
+  readonly sticky: boolean;
 
   constructor(init: PermissionsInit = {}) {
     if (init instanceof Permissions) {
@@ -40,6 +47,7 @@ export class Permissions {
       this.group = init.group;
       this.other = init.other;
       this.directory = init.directory;
+      this.sticky = init.sticky;
       return;
     }
 
@@ -49,6 +57,7 @@ export class Permissions {
       this.group = parsed.group;
       this.other = parsed.other;
       this.directory = parsed.directory;
+      this.sticky = parsed.sticky;
       return;
     }
 
@@ -58,6 +67,7 @@ export class Permissions {
       this.group = parsed.group;
       this.other = parsed.other;
       this.directory = parsed.directory;
+      this.sticky = parsed.sticky;
       return;
     }
 
@@ -65,6 +75,7 @@ export class Permissions {
     this.group = normalizePermissionBits(init.group ?? FileMode.NONE, 'group');
     this.other = normalizePermissionBits(init.other ?? FileMode.NONE, 'other');
     this.directory = init.directory ?? false;
+    this.sticky = init.sticky ?? false;
   }
 
   static fromMode(mode: number): Permissions {
@@ -73,6 +84,7 @@ export class Permissions {
       group: (mode >> 3) & 0b111,
       other: mode & 0b111,
       directory: (mode & 0o40000) !== 0,
+      sticky: (mode & 0o1000) !== 0,
     });
   }
 
@@ -88,6 +100,7 @@ export class Permissions {
 
     return new Permissions({
       directory: permissions[0] === 'd',
+      sticky: permissions[9] === 't' || permissions[9] === 'T',
       owner: parsePermissionTriplet(permissions.slice(1, 4), ['s', 'S']),
       group: parsePermissionTriplet(permissions.slice(4, 7), ['s', 'S']),
       other: parsePermissionTriplet(permissions.slice(7, 10), ['t', 'T']),
@@ -97,18 +110,20 @@ export class Permissions {
   toMode(): number {
     return (
       (this.directory ? 0o40000 : 0) |
+      (this.sticky ? 0o1000 : 0) |
       (this.owner << 6) |
       (this.group << 3) |
       this.other
     );
   }
 
-  normalized(): Required<PermissionsValue> {
+  normalized(): NormalizedPermissions {
     return {
       owner: this.owner,
       group: this.group,
       other: this.other,
       directory: this.directory,
+      ...(this.sticky ? { sticky: true } : {}),
     };
   }
 
@@ -117,13 +132,14 @@ export class Permissions {
       this.owner,
     )}${formatPermissionTriplet(this.group)}${formatPermissionTriplet(
       this.other,
+      this.sticky,
     )}`;
   }
 }
 
 export function normalizePermissions(
   permissions: PermissionsInit,
-): Required<PermissionsValue> {
+): NormalizedPermissions {
   return new Permissions(permissions).normalized();
 }
 
@@ -162,10 +178,16 @@ function parsePermissionTriplet(
   return mode;
 }
 
-function formatPermissionTriplet(value: number): string {
+function formatPermissionTriplet(value: number, sticky = false): string {
   return [
     value & FileMode.READ ? 'r' : '-',
     value & FileMode.WRITE ? 'w' : '-',
-    value & FileMode.EXEC ? 'x' : '-',
+    sticky
+      ? value & FileMode.EXEC
+        ? 't'
+        : 'T'
+      : value & FileMode.EXEC
+        ? 'x'
+        : '-',
   ].join('');
 }

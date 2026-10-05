@@ -618,6 +618,46 @@ describe('UnixLocalSandboxClient', () => {
     expect(runStat.mode & 0o777).toBe(0o755);
   });
 
+  it.each([
+    ['drwxrwxrwt', 0o1777],
+    ['drwxrwxrwT', 0o1776],
+    [0o41777, 0o1777],
+  ])(
+    'materializes and serializes sticky directory permissions: %s',
+    async (permissions, mode) => {
+      const client = new UnixLocalSandboxClient({ workspaceBaseDir: rootDir });
+      const session = await client.create(
+        new Manifest({
+          entries: { shared: { type: 'dir', permissions } },
+        }),
+        { snapshot: new NoopSnapshotSpec() },
+      );
+      try {
+        expect(
+          (await stat(join(session.state.workspaceRootPath, 'shared'))).mode &
+            0o7777,
+        ).toBe(mode);
+        const serialized = JSON.parse(
+          JSON.stringify(await client.serializeSessionState(session.state)),
+        );
+        const restored = await client.deserializeSessionState(serialized);
+        const recreated = await client.create(restored.manifest, {
+          snapshot: new NoopSnapshotSpec(),
+        });
+        try {
+          expect(
+            (await stat(join(recreated.state.workspaceRootPath, 'shared')))
+              .mode & 0o7777,
+          ).toBe(mode);
+        } finally {
+          await recreated.close();
+        }
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
   it('rejects manifest identity metadata that cannot be enforced locally', async () => {
     const client = new UnixLocalSandboxClient({
       workspaceBaseDir: rootDir,

@@ -1289,7 +1289,7 @@ async function applyEntryPermissions(
     logicalPath,
   );
   const permissions = permissionsForSandboxEntry(entry.permissions);
-  await chmod(destination, permissions.toMode() & 0o777);
+  await chmod(destination, permissions.toMode() & 0o1777);
 }
 
 function materializationEscapesWorkspaceError(logicalPath: string): UserError {
