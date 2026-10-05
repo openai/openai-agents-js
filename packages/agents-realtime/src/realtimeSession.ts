@@ -1699,7 +1699,8 @@ export class RealtimeSession<
           item.type === 'message' &&
           // Realtime transports retain provider-specific content tags.
           item.content.some(
-            (content: { type: string }) => content.type === 'output_audio',
+            (content: { type: string }) =>
+              content.type === 'output_audio' || content.type === 'audio',
           ),
       )
         ? 'audio'

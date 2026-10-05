@@ -692,12 +692,13 @@ describe('OpenAIRealtimeWebSocket', () => {
   });
 
   it.each([
-    { debounceTextLength: -1, sip: false },
-    { debounceTextLength: 1, sip: false },
-    { debounceTextLength: -1, sip: true },
+    { debounceTextLength: -1, sip: false, contentType: 'output_audio' },
+    { debounceTextLength: 1, sip: false, contentType: 'output_audio' },
+    { debounceTextLength: -1, sip: true, contentType: 'output_audio' },
+    { debounceTextLength: -1, sip: false, contentType: 'audio' },
   ])(
-    'stops buffered audio after generation ends (debounce=$debounceTextLength, sip=$sip)',
-    async ({ debounceTextLength, sip }) => {
+    'stops buffered audio after generation ends (debounce=$debounceTextLength, sip=$sip, content=$contentType)',
+    async ({ debounceTextLength, sip, contentType }) => {
       const check = createDeferred<{
         tripwireTriggered: boolean;
         outputInfo: null;
@@ -767,7 +768,7 @@ describe('OpenAIRealtimeWebSocket', () => {
               status: 'completed',
               content: [
                 {
-                  type: 'output_audio',
+                  type: contentType,
                   transcript: 'Synthetic blocked output',
                 },
               ],
