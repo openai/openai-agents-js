@@ -1550,6 +1550,7 @@ export class VercelSandboxClient implements SandboxClient<
 > {
   readonly backendId = 'vercel';
   private readonly options: VercelSandboxClientOptions;
+  private readonly liveSessionStates = new WeakSet<VercelSandboxSessionState>();
 
   constructor(options: VercelSandboxClientOptions = {}) {
     this.options = options;
@@ -1695,6 +1696,7 @@ export class VercelSandboxClient implements SandboxClient<
           }
           throw error;
         }
+        this.liveSessionStates.add(session.state);
         return session;
       },
     );
@@ -1713,7 +1715,7 @@ export class VercelSandboxClient implements SandboxClient<
     );
     recordLiveMountCredentialAuthority(sanitizedManifest, liveManifest);
     state.manifest = sanitizedManifest;
-    const credentials = selectVercelSessionCredentials(state, this.options);
+    const credentials = this.resolveSessionCredentials(state);
     applyVercelCredentials(state, credentials);
     if (
       !hasVercelMounts(state.manifest) &&
@@ -1862,7 +1864,7 @@ export class VercelSandboxClient implements SandboxClient<
       );
     }
     const Sandbox = await loadVercelSandboxClass();
-    const credentials = selectVercelSessionCredentials(state, this.options);
+    const credentials = this.resolveSessionCredentials(state);
     const resumeFromSnapshot = hasFreshVercelSnapshot(state);
     const authentication = resumeFromSnapshot
       ? await withProviderError(
@@ -1952,7 +1954,24 @@ export class VercelSandboxClient implements SandboxClient<
       }
       throw error;
     }
+    this.liveSessionStates.add(session.state);
     return session;
+  }
+
+  private resolveSessionCredentials(
+    state: VercelSandboxSessionState,
+  ): NormalizedVercelCredentials {
+    // Only this client's live sessions can retain trusted per-create overrides.
+    // Restored state cannot override current credentials or enable legacy fallback.
+    if (!this.liveSessionStates.has(state)) {
+      const credentials = resolveVercelCredentials(this.options);
+      if (credentials.token) {
+        applyVercelCredentials(state, credentials);
+        state.authenticationMode = 'explicit';
+        return credentials;
+      }
+    }
+    return selectVercelSessionCredentials(state, this.options);
   }
 }
 

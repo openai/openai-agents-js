@@ -2311,7 +2311,139 @@ describe('VercelSandboxClient', () => {
     );
   });
 
-  test('retains serialized access token credentials when resuming live sandboxes', async () => {
+  test.each(['live', 'snapshot', 'snapshot lookup'] as const)(
+    'uses current explicit credentials for restored %s state',
+    async (operation) => {
+      const client = new VercelSandboxClient({
+        projectId: 'prj_current',
+        teamId: 'team_current',
+        token: 'current_token',
+      });
+      const state = await client.deserializeSessionState({
+        manifest: new Manifest(),
+        sandboxId: 'vercel_original',
+        environment: {},
+        authenticationMode: 'sdk',
+        workspacePersistence: operation === 'live' ? 'tar' : 'snapshot',
+        ...(operation === 'snapshot'
+          ? {
+              snapshotId: 'snap_original',
+              snapshotSandboxId: 'vercel_original',
+            }
+          : {}),
+      });
+      if (operation === 'snapshot lookup') {
+        await client.serializeSessionState(state, {
+          willCloseAfterSerialize: true,
+        });
+      } else {
+        const session = await client.resume(state);
+        // Subsequent snapshot replacement must retain the selected identity.
+        if (operation === 'snapshot') {
+          await session.hydrateWorkspace(
+            encodeNativeSnapshotRef({
+              provider: 'vercel',
+              snapshotId: 'snap_restore',
+            }),
+          );
+        }
+      }
+      const calls =
+        operation === 'snapshot' ? createMock.mock.calls : getMock.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      for (const [params] of calls) {
+        expect(params).toMatchObject({
+          projectId: 'prj_current',
+          teamId: 'team_current',
+          token: 'current_token',
+        });
+      }
+      expect(state.authenticationMode).toBe('explicit');
+    },
+  );
+
+  test.each(['sdk', 'explicit', undefined] as const)(
+    'does not downgrade restored %s authentication after a 401',
+    async (authenticationMode) => {
+      const client = new VercelSandboxClient({
+        projectId: 'prj_current',
+        teamId: 'team_current',
+        token: 'current_token',
+      });
+      // Direct resume is also a public restored-state boundary.
+      const state = {
+        manifest: new Manifest(),
+        sandboxId: 'vercel_original',
+        environment: {},
+        authenticationMode,
+        workspacePersistence: 'tar' as const,
+        projectId: 'prj_old',
+        teamId: 'team_old',
+        token: 'old_token',
+      };
+      getMock.mockRejectedValueOnce(vercelHttpError(401));
+      await expect(client.resume(state)).rejects.toThrow();
+      expect(getMock).toHaveBeenCalledExactlyOnceWith({
+        sandboxId: 'vercel_original',
+        projectId: 'prj_current',
+        teamId: 'team_current',
+        token: 'current_token',
+      });
+    },
+  );
+
+  test('preserves trusted per-create delegation for live snapshot sessions', async () => {
+    const client = new VercelSandboxClient({
+      projectId: 'prj_current',
+      teamId: 'team_current',
+      token: 'current_token',
+    });
+    const session = await client.create(new Manifest(), {
+      token: '',
+      workspacePersistence: 'snapshot',
+    });
+    expect(createMock.mock.calls[0][0]).not.toHaveProperty('token');
+    const serialized = await client.serializeSessionState(session.state, {
+      willCloseAfterSerialize: true,
+    });
+    expect(getMock).toHaveBeenCalledExactlyOnceWith({
+      sandboxId: 'vercel_test',
+    });
+    expect(serialized.authenticationMode).toBe('sdk');
+    expect(serialized).not.toHaveProperty('token');
+    getMock.mockClear();
+    // Serialization removes live provenance, so restoration uses current configuration.
+    const restored = await client.deserializeSessionState(serialized);
+    await client.resume(restored);
+    expect(createMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ token: 'current_token' }),
+    );
+  });
+
+  test('preserves per-create explicit credentials for live sessions', async () => {
+    const client = new VercelSandboxClient({
+      projectId: 'prj_current',
+      teamId: 'team_current',
+      token: 'current_token',
+    });
+    const session = await client.create(new Manifest(), {
+      projectId: 'prj_create',
+      teamId: 'team_create',
+      token: 'create_token',
+      workspacePersistence: 'snapshot',
+    });
+    const serialized = await client.serializeSessionState(session.state, {
+      willCloseAfterSerialize: true,
+    });
+    expect(getMock).toHaveBeenCalledExactlyOnceWith({
+      sandboxId: 'vercel_test',
+      projectId: 'prj_create',
+      teamId: 'team_create',
+      token: 'create_token',
+    });
+    expect(serialized.token).toBe('create_token');
+  });
+  test('uses current environment credentials when resuming live sandboxes', async () => {
     vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
     vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
     vi.stubEnv('VERCEL_TOKEN', 'env_token');
@@ -2331,9 +2463,9 @@ describe('VercelSandboxClient', () => {
     expect(getMock).toHaveBeenCalledWith(
       expect.objectContaining({
         sandboxId: 'vercel_existing',
-        projectId: 'prj_serialized',
-        teamId: 'team_serialized',
-        token: 'serialized_token',
+        projectId: 'prj_env',
+        teamId: 'team_env',
+        token: 'env_token',
       }),
     );
   });
@@ -2515,7 +2647,7 @@ describe('VercelSandboxClient', () => {
     });
   });
 
-  test('retains serialized access token credentials when resuming snapshot sandboxes', async () => {
+  test('uses current environment credentials when resuming snapshot sandboxes', async () => {
     vi.stubEnv('VERCEL_PROJECT_ID', 'prj_env');
     vi.stubEnv('VERCEL_TEAM_ID', 'team_env');
     vi.stubEnv('VERCEL_TOKEN', 'env_token');
@@ -2537,9 +2669,9 @@ describe('VercelSandboxClient', () => {
 
     expect(createMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        projectId: 'prj_serialized',
-        teamId: 'team_serialized',
-        token: 'serialized_token',
+        projectId: 'prj_env',
+        teamId: 'team_env',
+        token: 'env_token',
         source: {
           type: 'snapshot',
           snapshotId: 'snap_original',
