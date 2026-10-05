@@ -279,7 +279,7 @@ describe('NodeMCPServerStdio', () => {
     await server.connect();
     expect(lastConnectOptions?.timeout).toBe(5000);
     expect(lastClientOptions?.versionNegotiation).toEqual({ mode: 'auto' });
-    expect(lastClientOptions?.listMaxPages).toBe(0);
+    expect(lastClientOptions?.listMaxPages).toBe(64);
     await server.close();
   });
 

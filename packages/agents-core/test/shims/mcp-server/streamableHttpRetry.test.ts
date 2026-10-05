@@ -432,7 +432,7 @@ describe('NodeMCPServerStreamableHttp closed-session recovery', () => {
     expect(client.connectMock).toHaveBeenCalledOnce();
     expect(client.clientOptions).toEqual({
       versionNegotiation: { mode: 'auto' },
-      listMaxPages: 0,
+      listMaxPages: 64,
     });
     expect((server as any).session).toBe(client);
     expect((server as any).transport).toBe(

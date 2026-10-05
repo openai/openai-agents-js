@@ -92,11 +92,11 @@ function buildCacheableRequestOptions(
   };
 }
 
-function validateMaxListPages(value: number | undefined): number | undefined {
+function validateMaxListPages(value: number | undefined): number {
   if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
     throw new UserError('maxListPages must be a positive integer.');
   }
-  return value;
+  return value ?? 64;
 }
 
 class ToolListPageLimitError extends UserError {
