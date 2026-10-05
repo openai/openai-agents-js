@@ -1338,6 +1338,27 @@ describe('E2BSandboxClient', () => {
     expect(writeMock).toHaveBeenCalledWith('/workspace/notes.txt', 'hello\n');
   });
 
+  test.each([
+    ['drwxrwxrwt', '1777'],
+    ['drwxrwxrwT', '1776'],
+  ])(
+    'applies sticky directory metadata through the provider: %s',
+    async (permissions, mode) => {
+      const client = new E2BSandboxClient();
+      await client.create(
+        new Manifest({
+          entries: { shared: { type: 'dir', permissions } },
+        }),
+      );
+      const commands = runMock.mock.calls.map(([command]) => String(command));
+      expect(
+        commands.some((command) =>
+          command.includes(`chmod ${mode} -- '/workspace/shared'`),
+        ),
+      ).toBe(true);
+    },
+  );
+
   test('preserves client env while manifest values take precedence', async () => {
     const client = new E2BSandboxClient({
       env: {

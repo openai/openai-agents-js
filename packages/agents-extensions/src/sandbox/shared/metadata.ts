@@ -31,7 +31,7 @@ export function sandboxEntryPermissionsMode(entry: Entry): string {
       other: FileMode.READ | FileMode.EXEC,
     },
   );
-  return (permissions.toMode() & 0o777).toString(8).padStart(4, '0');
+  return (permissions.toMode() & 0o1777).toString(8).padStart(4, '0');
 }
 
 export function assertSandboxManifestMetadataSupported(

@@ -81,11 +81,13 @@ import {
   UnixLocalSandboxSession,
   type UnixLocalSandboxSessionState,
 } from './unixLocal';
+import { permissionsForSandboxEntry } from '../permissions';
 import {
   assertLocalWorkspaceManifestMetadataSupported,
   joinSandboxLogicalPath,
   materializeLocalWorkspaceManifest,
   materializeLocalWorkspaceManifestMounts,
+  restoreLocalWorkspaceManifestStickyPermissions,
   pathExists,
 } from './shared/localWorkspace';
 import {
@@ -1602,6 +1604,10 @@ export class DockerSandboxClient implements SandboxClient<
           state.workspaceRootPath,
           { archiveLimits },
         );
+        await restoreLocalWorkspaceManifestStickyPermissions(
+          restoredState.manifest,
+          restoredState.workspaceRootPath,
+        );
         await this.cleanupDockerResources(state);
         return await this.restartContainer(
           restoredState,
@@ -1651,6 +1657,10 @@ export class DockerSandboxClient implements SandboxClient<
         },
         workspaceRootPath,
         { archiveLimits },
+      );
+      await restoreLocalWorkspaceManifestStickyPermissions(
+        restoredState.manifest,
+        workspaceRootPath,
       );
       return await this.restartContainer(
         restoredState,
@@ -2577,7 +2587,10 @@ async function prepareDockerWorkspaceRoot(
   if (manifest.users.length === 0 && manifest.groups.length === 0) {
     return;
   }
-  await chmod(workspaceRootPath, 0o755);
+  const sticky = permissionsForSandboxEntry(
+    manifest.entries['']?.permissions,
+  ).sticky;
+  await chmod(workspaceRootPath, 0o755 | (sticky ? 0o1000 : 0));
 }
 
 async function provisionDockerAccounts(
