@@ -512,7 +512,7 @@ function createApprovedAgentToolScenario(stream: boolean) {
   });
   const responses = [
     agentToolCallResponse(nestedTool.name),
-    responseWithoutUsage(),
+    responseWithSpecificUsage(7, 3),
   ];
   const outerAgent = new Agent({
     name: 'Outer approval agent',
@@ -824,8 +824,10 @@ describe('runner task and turn tracing', () => {
       processor.spansEnded.filter((span) => span.spanData.type === 'task'),
     ).toHaveLength(1);
     expect(
-      processor.spansEnded.filter((span) => span.spanData.type === 'turn'),
-    ).toHaveLength(1);
+      processor.spansEnded
+        .filter((span) => span.spanData.type === 'turn')
+        .map((span) => span.spanData.turn),
+    ).toEqual([1, 2]);
   });
 
   it.each([false, true])(
@@ -877,8 +879,10 @@ describe('runner task and turn tracing', () => {
         processor.spansEnded.filter((span) => span.spanData.type === 'task'),
       ).toHaveLength(1);
       expect(
-        processor.spansEnded.filter((span) => span.spanData.type === 'turn'),
-      ).toHaveLength(1);
+        processor.spansEnded
+          .filter((span) => span.spanData.type === 'turn')
+          .map((span) => span.spanData.turn),
+      ).toEqual([1, 2]);
     },
   );
 
@@ -2957,7 +2961,7 @@ describe('runner task and turn tracing', () => {
   });
 
   it.each([false, true])(
-    'keeps rejected approval resumes in the resumed turn (stream=%s)',
+    'starts a new model turn after rejecting approval (stream=%s)',
     async (stream) => {
       let executions = 0;
       const approvalTool = tool({
@@ -3024,11 +3028,13 @@ describe('runner task and turn tracing', () => {
         (span) => span.spanData.type === 'function',
       );
 
-      expect(turnSpans).toHaveLength(1);
+      expect(turnSpans.map((span) => span.spanData.turn)).toEqual([1, 2]);
       expect(agentSpan?.parentId).toBe(taskSpan?.spanId);
       expect(turnSpans[0]?.parentId).toBe(agentSpan?.spanId);
       expect(functionSpan?.parentId).toBe(turnSpans[0]?.spanId);
-      expect(turnSpans[0]?.spanData.usage).toMatchObject({
+      expect(turnSpans[0]?.spanData.usage).toBeUndefined();
+      expect(turnSpans[1]?.parentId).toBe(agentSpan?.spanId);
+      expect(turnSpans[1]?.spanData.usage).toMatchObject({
         input_tokens: 12,
         output_tokens: 4,
       });
@@ -3056,8 +3062,8 @@ describe('runner task and turn tracing', () => {
         span.spanData.type === 'turn' &&
         span.spanData.agent_name === 'Outer approval agent',
     );
-    expect(turnSpans).toHaveLength(1);
-    const [turnSpan] = turnSpans;
+    expect(turnSpans.map((span) => span.spanData.turn)).toEqual([1, 2]);
+    const [turnSpan, modelTurnSpan] = turnSpans;
     const taskSpan = resumedSpans.find(
       (span) => span.spanData.type === 'task' && span.parentId === null,
     );
@@ -3070,6 +3076,11 @@ describe('runner task and turn tracing', () => {
     expect(resumedAgentSpan?.parentId).toBe(taskSpan?.spanId);
     expect(turnSpan?.parentId).toBe(resumedAgentSpan?.spanId);
     expect(functionSpan?.parentId).toBe(turnSpan?.spanId);
+    expect(modelTurnSpan?.parentId).toBe(resumedAgentSpan?.spanId);
+    expect(modelTurnSpan?.spanData.usage).toMatchObject({
+      input_tokens: 7,
+      output_tokens: 3,
+    });
     expect(turnSpan?.spanData.usage).toMatchObject({
       input_tokens: 12,
       output_tokens: 4,
@@ -3101,8 +3112,8 @@ describe('runner task and turn tracing', () => {
         span.spanData.type === 'turn' &&
         span.spanData.agent_name === 'Outer approval agent',
     );
-    expect(turnSpans).toHaveLength(1);
-    const [turnSpan] = turnSpans;
+    expect(turnSpans.map((span) => span.spanData.turn)).toEqual([1, 2]);
+    const [turnSpan, modelTurnSpan] = turnSpans;
     const taskSpan = resumedSpans.find(
       (span) => span.spanData.type === 'task' && span.parentId === null,
     );
@@ -3115,6 +3126,11 @@ describe('runner task and turn tracing', () => {
     expect(resumedAgentSpan?.parentId).toBe(taskSpan?.spanId);
     expect(turnSpan?.parentId).toBe(resumedAgentSpan?.spanId);
     expect(functionSpan?.parentId).toBe(turnSpan?.spanId);
+    expect(modelTurnSpan?.parentId).toBe(resumedAgentSpan?.spanId);
+    expect(modelTurnSpan?.spanData.usage).toMatchObject({
+      input_tokens: 7,
+      output_tokens: 3,
+    });
     expect(turnSpan?.spanData.usage).toMatchObject({
       input_tokens: 12,
       output_tokens: 4,
