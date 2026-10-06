@@ -694,7 +694,10 @@ export type ComputerTool<
   needsApproval: ComputerApprovalFunction;
 
   /**
-   * Optional handler to acknowledge pending safety checks.
+   * Optional handler invoked before execution when the model reports pending safety checks.
+   * If omitted, the checks remain unacknowledged and execution continues with a warning.
+   * Return false to reject the call, or true to acknowledge all checks.
+   * Returning void allows execution without acknowledgment.
    */
   onSafetyCheck?: ComputerOnSafetyCheckFunction;
 
