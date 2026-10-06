@@ -187,7 +187,7 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
 
     it.each([
       [0o755, 'EACCES'],
-      [0o1777, 'EPERM'],
+      [0o1777, process.platform === 'darwin' ? 'EACCES' : 'EPERM'],
     ])(
       'leaves both files unchanged when source removal is denied (%i)',
       async (mode, code) => {

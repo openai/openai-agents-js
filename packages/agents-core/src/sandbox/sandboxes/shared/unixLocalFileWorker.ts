@@ -249,6 +249,12 @@ def write_destination(path):
             close(fd)
 
 def check_removal(directory, name):
+    if sys.platform == "darwin":
+        # Darwin's _DELETE_OK checks both file and parent ACLs, including sticky-directory rules.
+        if not os.access(name, 1 << 12, dir_fd=directory, effective_ids=True, follow_symlinks=False):
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+            raise PermissionError(errno.EACCES, "Source entry does not allow removal", name)
+        return
     if not os.access(".", os.W_OK | os.X_OK, dir_fd=directory, effective_ids=True):
         raise PermissionError(errno.EACCES, "Source directory does not allow removal", name)
     parent_info = os.fstat(directory)

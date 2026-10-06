@@ -860,6 +860,130 @@ os.open = swapped_open
       );
     });
 
+    it.each([false, true])(
+      'uses native deletion access when allowed is %s',
+      async (allowed) => {
+        const destination = join(
+          session.state.workspaceRootPath,
+          'destination.txt',
+        );
+        await writeFile(destination, 'destination\n');
+        workerHook(`
+original_check_removal = check_removal
+def mac_check_removal(*args):
+    platform = sys.platform
+    sys.platform = "darwin"
+    try:
+        return original_check_removal(*args)
+    finally:
+        sys.platform = platform
+check_removal = mac_check_removal
+original_access = os.access
+def deletion_access(path, mode, *args, **kwargs):
+    if mode == 1 << 12:
+        return ${allowed ? 'True' : 'False'}
+    return ${allowed ? 'False' : 'original_access(path, mode, *args, **kwargs)'}
+os.access = deletion_access
+original_unlink = os.unlink
+def denied_unlink(name, *args, **kwargs):
+    if name == "note.txt" and ${allowed ? 'False' : 'True'}:
+        raise PermissionError(errno.EACCES, "Deletion denied by file access rules")
+    return original_unlink(name, *args, **kwargs)
+os.unlink = denied_unlink
+`);
+        const move = session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'nested/note.txt',
+          moveTo: 'destination.txt',
+          diff: patch,
+        });
+        if (allowed) {
+          await move;
+          expect(await readFile(destination, 'utf8')).toBe('after\n');
+          await expect(
+            lstat(join(session.state.workspaceRootPath, 'nested/note.txt')),
+          ).rejects.toMatchObject({ code: 'ENOENT' });
+          return;
+        }
+        await expect(move).rejects.toThrow();
+        expect(await readFile(destination, 'utf8')).toBe('destination\n');
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'nested/missing.txt',
+            moveTo: 'destination.txt',
+            diff: patch,
+          }),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(
+          await readFile(
+            join(session.state.workspaceRootPath, 'nested/note.txt'),
+            'utf8',
+          ),
+        ).toBe('before\n');
+      },
+    );
+
+    it
+      .skipIf(process.platform !== 'darwin' || process.getuid?.() === 0)
+      .each([false, true])(
+      'honors macOS deletion ACLs when allowed is %s',
+      async (allowed) => {
+        const parent = join(session.state.workspaceRootPath, 'nested');
+        const source = join(parent, 'note.txt');
+        const destination = join(
+          session.state.workspaceRootPath,
+          'destination.txt',
+        );
+        const username = userInfo().username;
+        await writeFile(destination, 'destination\n');
+        try {
+          if (allowed) {
+            childProcess.execFileSync('/bin/chmod', [
+              '+a',
+              `${username} allow delete`,
+              source,
+            ]);
+            await chmod(parent, 0o555);
+          } else {
+            childProcess.execFileSync('/bin/chmod', [
+              '+a',
+              `${username} deny delete`,
+              source,
+            ]);
+            childProcess.execFileSync('/bin/chmod', [
+              '+a',
+              `${username} deny delete_child`,
+              parent,
+            ]);
+          }
+          const move = session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'nested/note.txt',
+            moveTo: 'destination.txt',
+            diff: patch,
+          });
+          if (allowed) {
+            await move;
+            expect(await readFile(destination, 'utf8')).toBe('after\n');
+            await expect(lstat(source)).rejects.toMatchObject({
+              code: 'ENOENT',
+            });
+            return;
+          }
+          await expect(move).rejects.toThrow();
+          expect(await readFile(destination, 'utf8')).toBe('destination\n');
+          expect(await readFile(source, 'utf8')).toBe('before\n');
+        } finally {
+          await chmod(parent, 0o700);
+          childProcess.execFileSync('/bin/chmod', ['-N', parent]);
+          if (!allowed) {
+            childProcess.execFileSync('/bin/chmod', ['-N', source]);
+          }
+        }
+      },
+    );
+
     it('unlinks a moved source relative to its opened parent after replacement', async () => {
       const nested = join(session.state.workspaceRootPath, 'nested');
       workerHook(`
