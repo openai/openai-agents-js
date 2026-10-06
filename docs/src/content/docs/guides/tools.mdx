@@ -7,6 +7,7 @@ import { Code } from '@astrojs/starlight/components';
 import toolsFunctionExample from '../../../../../examples/docs/tools/functionTools.ts?raw';
 import toolsHostedToolsExample from '../../../../../examples/docs/tools/hostedTools.ts?raw';
 import localBuiltInToolsExample from '../../../../../examples/docs/tools/localBuiltInTools.ts?raw';
+import computerSafetyChecksExample from '../../../../../examples/docs/tools/computerSafetyChecks.ts?raw';
 import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
 import toolSearchExample from '../../../../../examples/docs/tools/toolSearch.ts?raw';
 import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
@@ -99,6 +100,31 @@ To use OpenAI's current computer-use path, set a computer-capable model such as 
 GA computer calls can contain batched `actions[]` in a single `computer_call`. The SDK executes them in order, evaluates `needsApproval` against each action, and returns the final screenshot as the tool output. If you build an approval UI from `interruption.rawItem`, read `actions` when present and fall back to `action` for legacy preview items.
 
 Use `needsApproval` when high-impact computer actions should pause for user review, and `onSafetyCheck` when you want to acknowledge or reject the pending safety checks reported for a computer call. For model-side guidance and migration details, see the official [OpenAI computer use guide](https://developers.openai.com/api/docs/guides/tools-computer-use/) and its [migration note](https://developers.openai.com/api/docs/guides/tools-computer-use/#migration-from-computer-use-preview).
+
+##### Pending computer safety checks
+
+The Responses API can include `pending_safety_checks` in a `computer_call` to flag concerns for your application to review. Each check has an `id` and optional `code` and `message` fields that describe the type of concern and provide details. These checks come from the API. See the [Responses API reference](https://developers.openai.com/api/reference/resources/responses/methods/create) for `pending_safety_checks` and `acknowledged_safety_checks`, and the [computer-use safety guidance](https://developers.openai.com/api/docs/guides/tools-computer-use#run-safely) for application-level precautions.
+
+Configure `computerTool({ onSafetyCheck })` to decide whether to proceed with a flagged computer call. The JavaScript SDK passes checks with non-empty `id` and `code` values to this callback and ignores checks missing either value. The SDK invokes the callback before executing the call's actions, only when at least one check meets these requirements.
+
+The callback receives `{ runContext, pendingSafetyChecks, toolCall }` and handles the checks passed in `pendingSafetyChecks`:
+
+- Return `true` to acknowledge all checks passed to the callback and allow execution.
+- Return `false` to reject the call before its actions or screenshot execute. The SDK returns a rejection result and lets the agent run continue.
+- Return an object containing `acknowledgedSafetyChecks` (or `acknowledged_safety_checks`) to acknowledge the supplied checks and allow execution. A partial or empty list does not reject the call.
+- Return `undefined` or no value to allow execution without acknowledgment.
+
+If `onSafetyCheck` is omitted, the SDK proceeds with execution and leaves the checks unacknowledged. The SDK does not prompt a person automatically. Configure the callback explicitly when your application requires review of the checks the SDK forwards. For example, this conservative policy rejects every call passed to the callback:
+
+<Code
+  lang="typescript"
+  code={computerSafetyChecksExample}
+  title="Reject flagged computer calls"
+/>
+
+To allow reviewed calls, replace the example callback with a callback that presents `pendingSafetyChecks` and the proposed `toolCall` to your application's reviewer, waits for a decision, and returns that decision. Treat unknown check codes as requiring review as well.
+
+Computer calls without pending checks do not invoke this callback. To collect a person's decision, your callback must arrange that interaction and return the decision; `onSafetyCheck` does not use the pause-and-resume flow described in [Human-in-the-loop](/openai-agents-js/guides/human-in-the-loop). Use `needsApproval` when your application requires that approval flow for computer actions, including calls that do not invoke `onSafetyCheck`.
 
 #### Shell tool specifics
 

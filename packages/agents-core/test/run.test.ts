@@ -4026,6 +4026,100 @@ describe('Runner.run', () => {
       expect(runnerEndEvents[0].output).toBe('Hello World');
     });
 
+    it.each(
+      [false, true].flatMap((stream) =>
+        ['missing', 'no-checks', 'accept', 'reject', 'void'].map((mode) => ({
+          stream,
+          mode,
+        })),
+      ),
+    )(
+      'warns only for unhandled computer safety checks (stream=$stream, mode=$mode)',
+      async ({ stream, mode }) => {
+        const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+        try {
+          const computer = new FakeComputer();
+          const click = vi.spyOn(computer, 'click');
+          const screenshot = vi.spyOn(computer, 'screenshot');
+          const checks = [
+            'malicious_instructions',
+            'irrelevant_domain',
+            'sensitive_domain',
+            'future_check',
+          ].map((code, index) => ({
+            id: `check-${index}`,
+            code,
+            message: 'synthetic private message',
+          }));
+          const model = new ScriptedModel([
+            modelResponse({
+              output: [
+                {
+                  type: 'computer_call',
+                  callId: 'computer-call',
+                  status: 'completed',
+                  action: { type: 'click', x: 1, y: 2, button: 'left' },
+                  providerData: {
+                    pending_safety_checks: mode === 'no-checks' ? [] : checks,
+                  },
+                },
+              ],
+              usage: new Usage(),
+            }),
+            modelResponse({
+              output: [fakeModelMessage('done')],
+              usage: new Usage(),
+            }),
+          ]);
+          const agent = new Agent({
+            name: 'Computer safety checks',
+            model,
+            tools: [
+              computerTool({
+                computer,
+                onSafetyCheck:
+                  mode === 'missing' || mode === 'no-checks'
+                    ? undefined
+                    : async () =>
+                        mode === 'void' ? undefined : mode === 'accept',
+              }),
+            ],
+          });
+          const runner = new Runner({ tracingDisabled: true });
+          const result = stream
+            ? await runner.run(agent, 'start', { stream: true })
+            : await runner.run(agent, 'start');
+          if ('completed' in result) {
+            await result.completed;
+          }
+
+          expect(result.finalOutput).toBe('done');
+          expect(click).toHaveBeenCalledTimes(mode === 'reject' ? 0 : 1);
+          expect(screenshot).toHaveBeenCalledTimes(mode === 'reject' ? 0 : 1);
+          expect(warn).toHaveBeenCalledTimes(mode === 'missing' ? 1 : 0);
+          if (mode === 'missing') {
+            expect(warn).toHaveBeenCalledWith(
+              'Computer call has pending safety checks, but no onSafetyCheck handler is configured. ' +
+                'The action will proceed without acknowledging the checks. ' +
+                'Configure computerTool({ onSafetyCheck }) to review or reject them.',
+            );
+            expect(warn.mock.invocationCallOrder[0]).toBeLessThan(
+              click.mock.invocationCallOrder[0],
+            );
+          }
+          const output = result.newItems.find(
+            (item) => item.rawItem.type === 'computer_call_result',
+          );
+          expect(output).toBeDefined();
+          expect(
+            output?.rawItem.providerData?.acknowledgedSafetyChecks,
+          ).toEqual(mode === 'accept' ? checks : undefined);
+        } finally {
+          warn.mockRestore();
+        }
+      },
+    );
+
     it.each([
       { stream: false, needsApproval: false },
       { stream: true, needsApproval: false },

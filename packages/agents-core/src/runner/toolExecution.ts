@@ -3124,6 +3124,11 @@ async function resolveSafetyCheckAcknowledgements(options: {
 }): Promise<ComputerSafetyCheck[] | false | undefined> {
   const { runContext, toolCall, pendingSafetyChecks, onSafetyCheck } = options;
   if (!onSafetyCheck) {
+    logger.warn(
+      'Computer call has pending safety checks, but no onSafetyCheck handler is configured. ' +
+        'The action will proceed without acknowledging the checks. ' +
+        'Configure computerTool({ onSafetyCheck }) to review or reject them.',
+    );
     return undefined;
   }
   const result = await onSafetyCheck({
