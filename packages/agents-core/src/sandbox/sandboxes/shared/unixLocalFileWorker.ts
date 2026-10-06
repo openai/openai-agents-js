@@ -9,7 +9,10 @@ import sys
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
 
-TRAVERSE = getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY)) | os.O_DIRECTORY | os.O_NOFOLLOW
+TRAVERSE = getattr(os, "O_SEARCH", getattr(os, "O_PATH", None))
+if TRAVERSE is None:
+    raise RuntimeError("Search-only directory descriptors are unavailable")
+TRAVERSE |= os.O_DIRECTORY | os.O_NOFOLLOW
 DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 FILE_READ = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 HOST_UID = os.geteuid()
