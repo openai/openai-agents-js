@@ -666,7 +666,9 @@ export class UnixLocalSandboxSession<
     mode: 'content' | 'entry' = 'content',
   ): LocalFilePath {
     // Preserve provider overrides that reject container-only paths before host I/O.
-    this.resolveSandboxPath(path, options);
+    if (mode === 'content') {
+      this.resolveSandboxPath(path, options);
+    }
     return this.resolveHostPath(path, options, mode);
   }
 
@@ -1388,6 +1390,20 @@ function validateResolvedHostPath(args: {
   preserveLeaf?: boolean;
 }): LocalFilePath {
   const allowedRootRealPath = args.allowedRoot;
+  if (args.preserveLeaf && args.resolvedPath !== allowedRootRealPath) {
+    // Unlink owns the leaf entry, so only its parent needs target validation.
+    const parent = realpathForValidation(dirname(args.resolvedPath), args.path);
+    if (!isHostPathWithinRoot(allowedRootRealPath, parent)) {
+      throw new UserError(
+        `Sandbox path "${args.path}" escapes the workspace root.`,
+      );
+    }
+    return {
+      path: resolve(parent, basename(args.resolvedPath)),
+      accessPath: args.accessPath,
+      preserveLeaf: true,
+    };
+  }
   const existingPath = nearestExistingPath(args.resolvedPath);
   if (!existingPath) {
     throw new UserError(
@@ -1401,25 +1417,11 @@ function validateResolvedHostPath(args: {
     );
   }
   if (args.preserveLeaf) {
-    // Unlink owns the original leaf entry, while content I/O owns its target.
-    if (args.resolvedPath === args.allowedRoot) {
-      return {
-        path: args.entryRoot!,
-        accessPath: args.accessPath,
-        preserveLeaf: true,
-        rootTarget: allowedRootRealPath,
-      };
-    }
-    const parent = realpathForValidation(dirname(args.resolvedPath), args.path);
-    if (!isHostPathWithinRoot(allowedRootRealPath, parent)) {
-      throw new UserError(
-        `Sandbox path "${args.path}" escapes the workspace root.`,
-      );
-    }
     return {
-      path: resolve(parent, basename(args.resolvedPath)),
+      path: args.entryRoot!,
       accessPath: args.accessPath,
       preserveLeaf: true,
+      rootTarget: allowedRootRealPath,
     };
   }
   return {

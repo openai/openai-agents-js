@@ -216,6 +216,38 @@ describe.skipIf(process.platform === 'win32')(
       },
     );
 
+    it.each(['dangling', 'outside'] as const)(
+      'deletes a contained symlink when its target is %s',
+      async (targetKind) => {
+        const target = join(
+          outside,
+          targetKind === 'dangling' ? 'missing.txt' : 'note.txt',
+        );
+        const link = join(session.state.workspaceRootPath, 'link.txt');
+        await symlink(target, link);
+        const editor = session.createEditor(userInfo().username);
+
+        await expect(session.readFile({ path: 'link.txt' })).rejects.toThrow(
+          /escapes the workspace root/,
+        );
+        await expect(
+          editor.updateFile({
+            type: 'update_file',
+            path: 'link.txt',
+            diff: patch,
+          }),
+        ).rejects.toThrow(/escapes the workspace root/);
+
+        await editor.deleteFile({ type: 'delete_file', path: 'link.txt' });
+        await expect(lstat(link)).rejects.toMatchObject({ code: 'ENOENT' });
+        if (targetKind === 'dangling') {
+          await expect(lstat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+        } else {
+          expect(await readFile(target, 'utf8')).toBe('outside\n');
+        }
+      },
+    );
+
     it('deletes an explicitly granted file alias without deleting its target', async () => {
       const alias = join(root, 'granted.txt');
       await symlink(join(outside, 'note.txt'), alias);
