@@ -129,6 +129,7 @@ import {
   serializeLocalSnapshotSpec,
 } from './shared/localSnapshots';
 import { spawnInPseudoTerminal } from './shared/pty';
+import { preparedFileIO } from './shared/unixLocalFiles';
 import {
   formatSandboxProcessError,
   runSandboxProcess,
@@ -224,7 +225,8 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     defaultShell?: string;
     archiveLimits?: SandboxArchiveLimits | null;
   }) {
-    super({ ...args, fileIOProtection: 'off' });
+    // Container file APIs do not use a host file worker.
+    super({ ...args, [preparedFileIO]: null });
     this.mountedPathGrants = args.state.manifest.extraPathGrants.map(
       (grant) => ({ ...grant }),
     );

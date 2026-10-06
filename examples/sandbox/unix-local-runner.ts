@@ -58,8 +58,8 @@ async function main() {
   const model = getStringArg('--model', DEFAULT_MODEL);
   const question = getStringArg('--question', DEFAULT_QUESTION);
   const manifest = buildManifest();
-  // 'auto' uses Python protection when available and otherwise uses Node I/O.
-  // Use 'required' to fail before setup without protection, or 'off' to skip it.
+  // 'auto' and 'required' both require a trusted Python 3 interpreter.
+  // 'off' is unsupported. Missing file I/O support fails before workspace setup.
   // This applies to file APIs; shell commands still run directly on the host.
   const client = new UnixLocalSandboxClient({ fileIOProtection: 'auto' });
   const session = await client.create(manifest);
