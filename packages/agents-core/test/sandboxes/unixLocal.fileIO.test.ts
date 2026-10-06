@@ -663,6 +663,170 @@ input_file = replacing_input_file
       },
     );
 
+    it('rejects a mode change made while preparing replacement metadata', async () => {
+      const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+      const alias = join(outside, 'original.txt');
+      await link(note, alias);
+      workerHook(`
+original_copy_attributes = copy_attributes
+def changing_copy_attributes(source, destination):
+    attributes = original_copy_attributes(source, destination)
+    os.chmod(${JSON.stringify(note)}, 0o400)
+    return attributes
+copy_attributes = changing_copy_attributes
+`);
+      await expect(
+        session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'nested/note.txt',
+          diff: patch,
+        }),
+      ).rejects.toMatchObject({ code: 'ESTALE' });
+      expect(await readFile(note, 'utf8')).toBe('before\n');
+      expect((await lstat(note)).mode & 0o777).toBe(0o400);
+      expect(await readFile(alias, 'utf8')).toBe('before\n');
+      expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+    });
+
+    it.skipIf(process.platform !== 'linux')(
+      'rejects an attribute change made while preparing move metadata',
+      async () => {
+        const destination = join(
+          session.state.workspaceRootPath,
+          'nested/destination.txt',
+        );
+        const alias = join(outside, 'original.txt');
+        await writeFile(destination, 'destination\n');
+        await chmod(destination, 0o644);
+        await link(destination, alias);
+        workerHook(`
+original_fchmod = os.fchmod
+def changing_fchmod(fd, mode):
+    original_fchmod(fd, mode)
+    if stat.S_ISREG(os.fstat(fd).st_mode) and mode == 0o644:
+        os.setxattr(${JSON.stringify(destination)}, "user.agents-test", b"new value")
+os.fchmod = changing_fchmod
+
+# Model a filesystem whose change timestamp does not advance for this write.
+original_stat, original_fstat = os.stat, os.fstat
+class SameTickStat:
+    def __init__(self, info):
+        self.info = info
+    def __getattr__(self, name):
+        return 0 if name == "st_ctime_ns" else getattr(self.info, name)
+os.stat = lambda *args, **kwargs: SameTickStat(original_stat(*args, **kwargs))
+os.fstat = lambda *args, **kwargs: SameTickStat(original_fstat(*args, **kwargs))
+`);
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'nested/note.txt',
+            moveTo: 'nested/destination.txt',
+            diff: patch,
+          }),
+        ).rejects.toMatchObject({ code: 'ESTALE' });
+        expect(await readFile(destination, 'utf8')).toBe('destination\n');
+        expect(await readFile(alias, 'utf8')).toBe('destination\n');
+        expect(
+          await readFile(
+            join(session.state.workspaceRootPath, 'nested/note.txt'),
+            'utf8',
+          ),
+        ).toBe('before\n');
+        expect(
+          childProcess.execFileSync(
+            process.env.OPENAI_AGENTS_PYTHON ?? 'python3',
+            [
+              '-I',
+              '-S',
+              '-c',
+              'import os, sys; sys.stdout.buffer.write(os.getxattr(sys.argv[1], "user.agents-test"))',
+              destination,
+            ],
+            { stdio: 'pipe' },
+          ),
+        ).toEqual(Buffer.from('new value'));
+        expect(await session.listDir({ path: 'nested' })).toHaveLength(3);
+      },
+    );
+
+    it.skipIf(process.platform !== 'linux')(
+      'rejects a reported native metadata change and closes its watcher',
+      async () => {
+        const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+        const closed = join(outside, 'watcher-closed');
+        workerHook(`
+from types import SimpleNamespace
+class MetadataChanges:
+    pending = False
+    def control(self, changes, count, timeout):
+        return [object()] if self.pending else []
+    def close(self):
+        Path(${JSON.stringify(closed)}).touch()
+changes = MetadataChanges()
+select = SimpleNamespace(kqueue=lambda: changes, kevent=lambda *args, **kwargs: None,
+    KQ_FILTER_VNODE=1, KQ_EV_ADD=1, KQ_EV_CLEAR=2, KQ_NOTE_ATTRIB=4)
+original_input_file = input_file
+def native_input_file(fd):
+    original_input_file(fd)
+    sys.platform = "darwin"
+input_file = native_input_file
+original_copy_attributes = copy_attributes
+def native_copy_attributes(source, destination):
+    sys.platform = "linux"
+    try:
+        original_copy_attributes(source, destination)
+    finally:
+        sys.platform = "darwin"
+    changes.pending = True
+copy_attributes = native_copy_attributes
+`);
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'nested/note.txt',
+            diff: patch,
+          }),
+        ).rejects.toMatchObject({ code: 'ESTALE' });
+        expect(await readFile(note, 'utf8')).toBe('before\n');
+        expect(await readFile(closed, 'utf8')).toBe('');
+        expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+      },
+    );
+
+    it.skipIf(process.platform !== 'darwin')(
+      'rejects a native attribute change made while preparing replacement metadata',
+      async () => {
+        const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+        workerHook(`
+import subprocess
+original_copy_attributes = copy_attributes
+def changing_copy_attributes(source, destination):
+    original_copy_attributes(source, destination)
+    subprocess.run(["/usr/bin/xattr", "-w", "com.openai.agents-test", "new value", ${JSON.stringify(note)}], check=True, capture_output=True)
+copy_attributes = changing_copy_attributes
+`);
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'nested/note.txt',
+            diff: patch,
+          }),
+        ).rejects.toMatchObject({ code: 'ESTALE' });
+        expect(await readFile(note, 'utf8')).toBe('before\n');
+        expect(
+          childProcess
+            .execFileSync(
+              '/usr/bin/xattr',
+              ['-p', 'com.openai.agents-test', note],
+              { encoding: 'utf8' },
+            )
+            .trim(),
+        ).toBe('new value');
+        expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+      },
+    );
+
     it('preserves a mode change made while receiving replacement contents', async () => {
       const note = join(session.state.workspaceRootPath, 'nested/note.txt');
       const alias = join(outside, 'original.txt');

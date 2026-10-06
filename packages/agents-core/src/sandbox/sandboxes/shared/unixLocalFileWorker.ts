@@ -3,6 +3,7 @@ export const UNIX_LOCAL_FILE_WORKER = String.raw`
 import errno
 import json
 import os
+import select
 import signal
 import stat
 import sys
@@ -56,6 +57,8 @@ def preserve_ownership(fd, info):
         os.fchown(fd, info.st_uid, info.st_gid)
 
 if sys.platform == "darwin":
+    if not all(hasattr(select, name) for name in ("kqueue", "kevent", "KQ_FILTER_VNODE", "KQ_EV_ADD", "KQ_EV_CLEAR", "KQ_NOTE_ATTRIB")):
+        raise RuntimeError("File metadata change notifications are unavailable")
     import ctypes
     system = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
     system.fcopyfile.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
@@ -160,6 +163,13 @@ def write_new(path):
     with parent(path, create=True) as (directory, name):
         create_file(directory, name)
 
+def file_attributes(fd):
+    with host_identity():
+        attributes = os.listxattr(fd)
+        if {"security.ima", "security.evm"}.intersection(attributes):
+            raise OSError(errno.ENOTSUP, "Cannot replace files with integrity signatures")
+        return {name: os.getxattr(fd, name) for name in attributes}
+
 def copy_attributes(source, destination):
     if sys.platform == "darwin":
         # COPYFILE_ACL | COPYFILE_XATTR preserves access rules without copying data or set-ID modes.
@@ -167,21 +177,17 @@ def copy_attributes(source, destination):
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
     else:
-        with host_identity():
-            attributes = os.listxattr(source)
-        if {"security.ima", "security.evm"}.intersection(attributes):
-            raise OSError(errno.ENOTSUP, "Cannot replace files with integrity signatures")
+        attributes = file_attributes(source)
         destination_attributes = os.listxattr(destination)
         for attribute in destination_attributes:
             if attribute not in attributes or attribute == "security.capability":
                 os.removexattr(destination, attribute)
-        for attribute in attributes:
+        for attribute, value in attributes.items():
             if attribute != "security.capability":
-                with host_identity():
-                    value = os.getxattr(source, attribute)
                 if attribute == "security.selinux" and attribute in destination_attributes and os.getxattr(destination, attribute) == value:
                     continue
                 os.setxattr(destination, attribute, value)
+        return attributes
 
 def restrict_directory_access(fd):
     if sys.platform == "darwin":
@@ -253,23 +259,39 @@ def staging_directory(directory):
                 os.rmdir(temporary, dir_fd=directory)
 
 def replace_file(directory, name, source_fd):
-    with staging_directory(directory) as stage:
+    with staging_directory(directory) as stage, ExitStack() as resources:
         fd = None
         try:
             with defer_cancellation():
                 fd = os.open("content", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=stage)
                 os.fchmod(fd, 0o600)
             input_file(fd)
+            changes = None
+            if sys.platform == "darwin":
+                with defer_cancellation():
+                    changes = select.kqueue()
+                    resources.callback(changes.close)
+                    changes.control([select.kevent(source_fd, filter=select.KQ_FILTER_VNODE, flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR, fflags=select.KQ_NOTE_ATTRIB)], 0, 0)
             info = regular(source_fd, name)
             created = os.fstat(fd)
-            copy_attributes(source_fd, fd)
+            attributes = copy_attributes(source_fd, fd)
             # Content changes must not restore set-user-ID or set-group-ID privileges.
             os.fchmod(fd, stat.S_IMODE(info.st_mode) & 0o777)
             if (created.st_uid, created.st_gid) != (info.st_uid, info.st_gid):
                 # Only this newly created descriptor needs the original owner restored.
                 preserve_ownership(fd, info)
+            if attributes is not None and file_attributes(source_fd) != attributes:
+                raise OSError(errno.ESTALE, "File metadata changed during update", name)
+            if changes is not None and changes.control([], 1, 0):
+                raise OSError(errno.ESTALE, "File metadata changed during update", name)
             current = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+            if (
+                current.st_dev, current.st_ino, current.st_ctime_ns,
+                current.st_mode, current.st_uid, current.st_gid,
+            ) != (
+                info.st_dev, info.st_ino, info.st_ctime_ns,
+                info.st_mode, info.st_uid, info.st_gid,
+            ):
                 raise OSError(errno.ESTALE, "File changed during update", name)
             os.rename("content", name, src_dir_fd=stage, dst_dir_fd=directory)
         finally:

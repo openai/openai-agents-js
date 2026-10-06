@@ -169,6 +169,65 @@ ${rewritten[3]}`;
       expect(await readFile(join(shared, 'new.txt'), 'utf8')).toBe('new');
     });
 
+    it('retains an owner change completed while restoring the staged owner', async () => {
+      const shared = join(workspace, 'shared');
+      await mkdir(shared);
+      await chown(shared, 0, nobodyGid);
+      await chmod(shared, 0o2770);
+      const file = join(shared, 'note.txt');
+      const original = join(root, 'outside', 'note.txt');
+      await writeFile(file, 'before\n');
+      await chown(file, 0, nobodyGid);
+      await chmod(file, 0o660);
+      await link(file, original);
+      const before = await lstat(file);
+
+      const spawn = childProcess.spawn;
+      vi.spyOn(childProcess, 'spawn').mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnOptions,
+      ) => {
+        const rewritten = args.map((arg) =>
+          arg === UNIX_LOCAL_FILE_WORKER
+            ? arg.replace(
+                'try:\n    run(json.loads(sys.argv[1]))',
+                `
+original_preserve_ownership = preserve_ownership
+def changed_source_owner(fd, info):
+    original_preserve_ownership(fd, info)
+    with host_identity():
+        os.chown(${JSON.stringify(file)}, ${nobodyUid}, ${nobodyGid})
+preserve_ownership = changed_source_owner
+try:
+    run(json.loads(sys.argv[1]))`,
+              )
+            : arg,
+        );
+        return spawn(command, rewritten, options);
+      }) as typeof childProcess.spawn);
+
+      await expect(
+        session.createEditor('nobody').updateFile({
+          type: 'update_file',
+          path: 'shared/note.txt',
+          diff: patch,
+        }),
+      ).rejects.toMatchObject({ code: 'ESTALE' });
+
+      for (const path of [file, original]) {
+        expect(await readFile(path, 'utf8')).toBe('before\n');
+        const retained = await lstat(path);
+        expect([
+          retained.ino,
+          retained.uid,
+          retained.gid,
+          retained.mode,
+        ]).toEqual([before.ino, nobodyUid, nobodyGid, before.mode]);
+      }
+      expect(await readdir(shared)).toEqual(['note.txt']);
+    });
+
     it.skipIf(process.platform !== 'linux')(
       'moves over a write-only shared destination and preserves its attributes',
       async () => {
