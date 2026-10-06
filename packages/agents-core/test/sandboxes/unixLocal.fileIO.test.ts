@@ -1,6 +1,7 @@
 import * as childProcess from 'node:child_process';
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -133,7 +134,7 @@ describe.skipIf(process.platform === 'win32')(
       },
     );
 
-    it('preserves exclusive creation and in-place patching', async () => {
+    it('preserves exclusive creation and patching', async () => {
       const editor = session.createEditor(userInfo().username);
       await editor.createFile({
         type: 'create_file',
@@ -428,23 +429,24 @@ os.fstat = swapped_fstat
       );
     });
 
-    it('keeps update writes and ownership on the opened source after leaf replacement', async () => {
+    it('replaces the authorized entry without changing a substituted symlink target', async () => {
       const note = join(session.state.workspaceRootPath, 'nested/note.txt');
       const outsideStat = await lstat(join(outside, 'note.txt'));
       workerHook(`
-original_lseek = os.lseek
-def swapped_lseek(fd, offset, whence):
-    os.rename(${JSON.stringify(note)}, ${JSON.stringify(`${note}-original`)})
+original_rename = os.rename
+def swapped_rename(source, destination, *args, **kwargs):
+    original_rename(${JSON.stringify(note)}, ${JSON.stringify(`${note}-original`)})
     os.symlink(${JSON.stringify(join(outside, 'note.txt'))}, ${JSON.stringify(note)})
-    return original_lseek(fd, offset, whence)
-os.lseek = swapped_lseek
+    return original_rename(source, destination, *args, **kwargs)
+os.rename = swapped_rename
 `);
       await session.createEditor(userInfo().username).updateFile({
         type: 'update_file',
         path: 'nested/note.txt',
         diff: patch,
       });
-      expect(await readFile(`${note}-original`, 'utf8')).toBe('after\n');
+      expect(await readFile(`${note}-original`, 'utf8')).toBe('before\n');
+      expect(await readFile(note, 'utf8')).toBe('after\n');
       expect(await readFile(join(outside, 'note.txt'), 'utf8')).toBe(
         'outside\n',
       );
@@ -455,6 +457,190 @@ os.lseek = swapped_lseek
         outsideStat.mode,
       ]);
     });
+
+    it.each(['update', 'move-destination'] as const)(
+      'leaves a read-only grant unchanged when its hardlink is the %s',
+      async (operation) => {
+        const original = join(outside, 'note.txt');
+        await writeFile(original, 'before\n');
+        await chmod(original, 0o640);
+        await session.applyManifest(
+          new Manifest({
+            extraPathGrants: [{ path: outside, readOnly: true }],
+          }),
+        );
+        const linked = join(session.state.workspaceRootPath, 'linked.txt');
+        await link(original, linked);
+        const before = await lstat(original);
+        await session.createEditor().updateFile({
+          type: 'update_file',
+          path: operation === 'update' ? 'linked.txt' : 'nested/note.txt',
+          moveTo: operation === 'move-destination' ? 'linked.txt' : undefined,
+          diff: patch,
+        });
+        expect(await readFile(linked, 'utf8')).toBe('after\n');
+        expect(await readFile(original, 'utf8')).toBe('before\n');
+        const after = await lstat(original);
+        expect([after.ino, after.uid, after.gid, after.mode]).toEqual([
+          before.ino,
+          before.uid,
+          before.gid,
+          before.mode,
+        ]);
+        const replacement = await lstat(linked);
+        expect(replacement.ino).not.toBe(before.ino);
+        expect([replacement.uid, replacement.gid, replacement.mode]).toEqual([
+          before.uid,
+          before.gid,
+          before.mode,
+        ]);
+      },
+    );
+
+    it('leaves a hardlink created after the source was opened unchanged', async () => {
+      const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+      const alias = join(outside, 'late-link.txt');
+      workerHook(`
+original_regular = regular
+linked = False
+def linking_regular(fd, path):
+    global linked
+    info = original_regular(fd, path)
+    if not linked and path == ${JSON.stringify(note)}:
+        linked = True
+        os.link(${JSON.stringify(note)}, ${JSON.stringify(alias)})
+    return info
+regular = linking_regular
+`);
+      await session.createEditor().updateFile({
+        type: 'update_file',
+        path: 'nested/note.txt',
+        diff: patch,
+      });
+      expect(await readFile(note, 'utf8')).toBe('after\n');
+      expect(await readFile(alias, 'utf8')).toBe('before\n');
+    });
+
+    it('preserves the original and removes its temporary file when replacement fails', async () => {
+      workerHook(`
+def failing_rename(*args, **kwargs):
+    raise PermissionError(errno.EACCES, "replacement denied")
+os.rename = failing_rename
+`);
+      await expect(
+        session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'nested/note.txt',
+          diff: patch,
+        }),
+      ).rejects.toMatchObject({ code: 'EACCES' });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'nested/note.txt'),
+          'utf8',
+        ),
+      ).toBe('before\n');
+      expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+    });
+
+    it.skipIf(process.platform !== 'linux')(
+      'restores access rules before writing replacement contents',
+      async () => {
+        const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+        const python = process.env.OPENAI_AGENTS_PYTHON ?? 'python3';
+        childProcess.execFileSync(
+          python,
+          [
+            '-I',
+            '-S',
+            '-c',
+            [
+              'import os, struct, sys',
+              'os.setxattr(sys.argv[1], "user.agents-test", b"preserved")',
+              // A replacement must not acquire extra access from its parent's default ACL.
+              'entries = [(1, 7, -1), (2, 4, os.getuid()), (4, 0, -1), (16, 4, -1), (32, 0, -1)]',
+              'acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", tag, perm, uid & 0xffffffff) for tag, perm, uid in entries)',
+              'os.setxattr(os.path.dirname(sys.argv[1]), "system.posix_acl_default", acl)',
+            ].join('; '),
+            note,
+          ],
+          { stdio: 'pipe' },
+        );
+        workerHook(`
+original_fchmod = os.fchmod
+def checking_fchmod(fd, mode):
+    original_fchmod(fd, mode)
+    info = os.fstat(fd)
+    if stat.S_ISREG(info.st_mode) and "system.posix_acl_access" in os.listxattr(fd):
+        raise OSError(errno.EACCES, "Replacement inherited broader access rules")
+os.fchmod = checking_fchmod
+`);
+        await session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'nested/note.txt',
+          diff: patch,
+        });
+        expect(
+          childProcess.execFileSync(
+            python,
+            [
+              '-I',
+              '-S',
+              '-c',
+              [
+                'import os, sys',
+                'assert "system.posix_acl_access" not in os.listxattr(sys.argv[1])',
+                'sys.stdout.buffer.write(os.getxattr(sys.argv[1], "user.agents-test"))',
+              ].join('; '),
+              note,
+            ],
+            { stdio: 'pipe' },
+          ),
+        ).toEqual(Buffer.from('preserved'));
+      },
+    );
+
+    it.skipIf(process.platform !== 'darwin')(
+      'preserves macOS access rules and extended attributes',
+      async () => {
+        const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+        childProcess.execFileSync(
+          '/usr/bin/xattr',
+          ['-w', 'com.openai.agents-test', 'preserved', note],
+          { stdio: 'pipe' },
+        );
+        childProcess.execFileSync(
+          '/bin/chmod',
+          ['+a', 'everyone allow read', note],
+          { stdio: 'pipe' },
+        );
+        const accessRules = () =>
+          childProcess
+            .execFileSync('/bin/ls', ['-le', note], {
+              encoding: 'utf8',
+              stdio: 'pipe',
+            })
+            .split('\n')
+            .filter((line) => /^\s*\d+:/.test(line));
+        const before = accessRules();
+        expect(before).toHaveLength(1);
+        await session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'nested/note.txt',
+          diff: patch,
+        });
+        expect(accessRules()).toEqual(before);
+        expect(
+          childProcess
+            .execFileSync(
+              '/usr/bin/xattr',
+              ['-p', 'com.openai.agents-test', note],
+              { encoding: 'utf8', stdio: 'pipe' },
+            )
+            .trim(),
+        ).toBe('preserved');
+      },
+    );
 
     it('preserves source and destination when patch application fails', async () => {
       await expect(
@@ -515,8 +701,9 @@ os.open = swapped_open
       workerHook(`
 original_unlink = os.unlink
 def swapped_unlink(name, *args, **kwargs):
-    os.rename(${JSON.stringify(nested)}, ${JSON.stringify(`${nested}-original`)})
-    os.symlink(${JSON.stringify(outside)}, ${JSON.stringify(nested)})
+    if name == "note.txt":
+        os.rename(${JSON.stringify(nested)}, ${JSON.stringify(`${nested}-original`)})
+        os.symlink(${JSON.stringify(outside)}, ${JSON.stringify(nested)})
     return original_unlink(name, *args, **kwargs)
 os.unlink = swapped_unlink
 `);

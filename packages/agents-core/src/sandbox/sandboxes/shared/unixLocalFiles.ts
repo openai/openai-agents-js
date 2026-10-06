@@ -1,23 +1,21 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { accessSync, constants, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
-import {
-  mkdir,
-  readFile,
-  readdir,
-  stat,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
-import { applyOwnershipRecursive, pathExists } from './localWorkspace';
+import { isAbsolute, join } from 'node:path';
 import { UserError } from '../../../errors';
 import { UNIX_LOCAL_FILE_WORKER } from './unixLocalFileWorker';
 
-/** Controls optional descriptor-relative protection for Unix host file operations. */
+/** Host file protection. auto is an alias for required; off is rejected. */
 export type LocalFileIOProtection = 'auto' | 'required' | 'off';
 
 // Transfer trusted preparation across setup without selecting a backend twice.
 export const preparedFileIO = Symbol('preparedFileIO');
+
+/** Canonical host authority plus the requested path to check as the worker user. */
+export type LocalFilePath = {
+  path: string;
+  accessPath: string;
+  preserveLeaf: boolean;
+};
 
 type FileRequest = {
   operation:
@@ -29,22 +27,23 @@ type FileRequest = {
     | 'create'
     | 'update'
     | 'delete';
-  path: string;
-  destination?: string;
-  unlinkPath?: string;
+  path: LocalFilePath;
+  destination?: LocalFilePath;
+  unlinkPath?: LocalFilePath;
   limit?: number;
-  owner?: { uid: number; gid: number };
 };
 
 // Resolve from trusted host configuration, never the manifest's command environment.
-function pythonExecutable(mode: LocalFileIOProtection): string | undefined {
-  if (mode === 'off') return undefined;
+function pythonExecutable(mode: LocalFileIOProtection): string {
+  if (mode === 'off') {
+    throw new UserError(
+      'UnixLocal file I/O protection cannot be disabled. Use a trusted Python 3 installation with descriptor-relative filesystem support.',
+    );
+  }
   if (process.platform === 'win32') {
-    if (mode === 'required')
-      throw new UserError(
-        'Required file I/O protection is supported only on Unix hosts.',
-      );
-    return undefined;
+    throw new UserError(
+      'Required file I/O protection is supported only on Unix hosts.',
+    );
   }
   const configured = process.env.OPENAI_AGENTS_PYTHON;
   const candidates = configured
@@ -81,24 +80,17 @@ function pythonExecutable(mode: LocalFileIOProtection): string | undefined {
       // Try the next trusted installation path.
     }
   }
-  if (mode === 'required') {
-    throw new UserError(
-      'Required file I/O protection needs a trusted Python 3 installation with descriptor-relative filesystem support. Set the host OPENAI_AGENTS_PYTHON to an absolute executable path.',
-    );
-  }
-  return undefined;
+  throw new UserError(
+    'Required file I/O protection needs a trusted Python 3 installation with descriptor-relative filesystem support. Set the host OPENAI_AGENTS_PYTHON to an absolute executable path.',
+  );
 }
 
 /** Owns trusted file workers independently of sandbox shell processes. */
 export class UnixLocalFiles {
-  private readonly executable: string | undefined;
+  private readonly executable: string;
 
-  constructor(mode: LocalFileIOProtection = 'auto') {
+  constructor(mode: LocalFileIOProtection = 'required') {
     this.executable = pythonExecutable(mode);
-  }
-
-  get backend(): 'python' | 'node' {
-    return this.executable ? 'python' : 'node';
   }
 
   private readonly active = new Set<{
@@ -128,7 +120,6 @@ export class UnixLocalFiles {
   ): Promise<Buffer> {
     if (this.closed)
       throw new UserError('UnixLocal file operations are closed.');
-    if (!this.executable) return runNodeHostFileOperation(request, options);
     const child = spawn(
       this.executable,
       ['-I', '-S', '-c', UNIX_LOCAL_FILE_WORKER, JSON.stringify(request)],
@@ -205,7 +196,7 @@ export class UnixLocalFiles {
               new Error(
                 `${detail.code ?? 'EIO'}: ${detail.message ?? 'UnixLocal file worker failed. Python 3 with its standard library is required.'}`,
               ),
-              { code: detail.code ?? 'EIO', path: request.path },
+              { code: detail.code ?? 'EIO', path: request.path.path },
             );
           }
           if (primaryError) reject(primaryError);
@@ -217,59 +208,4 @@ export class UnixLocalFiles {
       resolveDone();
     }
   }
-}
-
-// Preserve the released host filesystem pipeline when protection is not selected.
-async function runNodeHostFileOperation(
-  request: FileRequest,
-  options: { input?: string; update?: (current: string) => string },
-): Promise<Buffer> {
-  const { operation, path } = request;
-  if (operation === 'exists')
-    return Buffer.from(JSON.stringify(await pathExists(path)));
-  if (operation === 'list') {
-    const entries = await readdir(path, { withFileTypes: true });
-    return Buffer.from(
-      JSON.stringify(
-        entries.map((entry) => ({
-          name: entry.name,
-          type: entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other',
-        })),
-      ),
-    );
-  }
-  if (operation === 'read') return readFile(path);
-  if (operation === 'image') {
-    const info = await stat(path);
-    if (!info.isFile())
-      throw Object.assign(new Error('Image path is not a file.'), {
-        code: 'EINVAL',
-      });
-    if (info.size > request.limit!)
-      throw Object.assign(new Error('Image file exceeds the limit.'), {
-        code: 'EFBIG',
-      });
-    return readFile(path);
-  }
-  if (operation === 'delete') await unlink(path);
-  else if (operation === 'create' || operation === 'update') {
-    const destination = request.destination ?? path;
-    const content =
-      operation === 'create'
-        ? options.input!
-        : options.update!(await readFile(path, 'utf8'));
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, content, {
-      encoding: 'utf8',
-      flag: operation === 'create' ? 'wx' : 'w',
-    });
-    if (request.unlinkPath) await unlink(request.unlinkPath);
-    if (request.owner)
-      await applyOwnershipRecursive(
-        destination,
-        request.owner.uid,
-        request.owner.gid,
-      );
-  }
-  return Buffer.alloc(0);
 }
