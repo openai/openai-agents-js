@@ -224,6 +224,28 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
       );
     });
 
+    it('deletes an owned-directory symlink without requiring access to its contained target', async () => {
+      const target = join(workspace, 'private/note.txt');
+      const alias = join(workspace, 'owned/private-note.txt');
+      const osAlias = join(workspace, 'owned/os-private-note.txt');
+      await symlink('../private/note.txt', alias);
+      await symlink('../private/note.txt', osAlias);
+
+      // The same user can unlink this entry in Unix despite not traversing its target.
+      execFileSync('/usr/bin/unlink', [osAlias], {
+        uid,
+        gid,
+        stdio: 'pipe',
+      });
+      await session.createEditor('nobody').deleteFile({
+        type: 'delete_file',
+        path: 'owned/private-note.txt',
+      });
+
+      await expect(lstat(alias)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(target, 'utf8')).toBe('before\n');
+    });
+
     it('requires write access to an existing file even in a writable directory', async () => {
       const protectedFile = join(workspace, 'owned/protected.txt');
       const source = join(workspace, 'owned/source.txt');

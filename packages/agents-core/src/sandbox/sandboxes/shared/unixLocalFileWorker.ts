@@ -70,6 +70,8 @@ def close(fd):
 def checked_path(spec):
     # Resolve the original spelling as the selected user, not only its host-resolved target.
     path = spec["accessPath"]
+    if "rootTarget" in spec and str(Path(path).resolve(strict=True)) != spec["rootTarget"]:
+        raise OSError(errno.ELOOP, "Sandbox root changed during file validation", path)
     if spec["preserveLeaf"]:
         resolved = str(Path(path).parent.resolve(strict=True) / Path(path).name)
     else:
@@ -156,12 +158,18 @@ def copy_attributes(source, destination):
             raise OSError(error, os.strerror(error))
     elif all(hasattr(os, name) for name in ("listxattr", "getxattr", "setxattr", "removexattr")):
         attributes = os.listxattr(source)
-        for attribute in os.listxattr(destination):
+        if {"security.ima", "security.evm"}.intersection(attributes):
+            raise OSError(errno.ENOTSUP, "Cannot replace files with integrity signatures")
+        destination_attributes = os.listxattr(destination)
+        for attribute in destination_attributes:
             if attribute not in attributes or attribute == "security.capability":
                 os.removexattr(destination, attribute)
         for attribute in attributes:
             if attribute != "security.capability":
-                os.setxattr(destination, attribute, os.getxattr(source, attribute))
+                value = os.getxattr(source, attribute)
+                if attribute == "security.selinux" and attribute in destination_attributes and os.getxattr(destination, attribute) == value:
+                    continue
+                os.setxattr(destination, attribute, value)
     else:
         raise OSError(errno.ENOTSUP, "Cannot preserve file access rules on this host")
 
@@ -211,6 +219,9 @@ def replace_file(directory, name, source_fd):
             if (created.st_uid, created.st_gid) != (info.st_uid, info.st_gid):
                 # Only this newly created descriptor needs the original owner restored.
                 preserve_ownership(fd, info)
+            current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                raise OSError(errno.ESTALE, "File changed during update", name)
             os.rename("content", name, src_dir_fd=stage, dst_dir_fd=directory)
         finally:
             with defer_cancellation():
@@ -257,8 +268,7 @@ def run(request):
         write_new(path)
         return
     if operation == "delete":
-        unlink_path = checked_path(request["unlinkPath"])
-        with parent(unlink_path) as (directory, name):
+        with parent(path) as (directory, name):
             os.unlink(name, dir_fd=directory)
         return
     if operation == "exists" or operation == "directoryExists":

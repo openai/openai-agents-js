@@ -657,7 +657,7 @@ export class UnixLocalSandboxSession<
     path?: string,
     options: ResolveSandboxPathOptions = {},
   ): string {
-    return this.resolveHostPath(path, options, 'content').lexical;
+    return this.resolveHostPath(path, options, 'content').accessPath;
   }
 
   private resolveFilesystemPath(
@@ -667,21 +667,21 @@ export class UnixLocalSandboxSession<
   ): LocalFilePath {
     // Preserve provider overrides that reject container-only paths before host I/O.
     this.resolveSandboxPath(path, options);
-    return this.resolveHostPath(path, options, mode).file;
+    return this.resolveHostPath(path, options, mode);
   }
 
   private resolveHostPath(
     path: string | undefined,
     options: ResolveSandboxPathOptions,
     mode: 'content' | 'entry',
-  ): { lexical: string; file: LocalFilePath } {
+  ): LocalFilePath {
     this.assertSessionUsable();
     const resolved = this.resolveSandboxPathTarget(path, options);
     const workspaceRelativePath = resolved.workspaceRelativePath ?? '';
     if (resolved.grant) {
       const authority = this.filesystemRoot(resolved.grant.path);
       const root = authority.content;
-      const validated = validateResolvedHostPath({
+      return validateResolvedHostPath({
         path,
         accessPath: resolved.path,
         resolvedPath: resolve(
@@ -692,7 +692,6 @@ export class UnixLocalSandboxSession<
         entryRoot: authority.entry,
         preserveLeaf: mode === 'entry',
       });
-      return { lexical: resolved.path, file: validated };
     }
 
     const mountPath = this.resolveLocalBindMountPath(
@@ -712,7 +711,7 @@ export class UnixLocalSandboxSession<
     if (relativeHostPathEscapesRoot(relativeToRoot)) {
       throw new UserError(`Sandbox path "${path}" escapes the workspace root.`);
     }
-    const validated = validateResolvedHostPath({
+    return validateResolvedHostPath({
       path,
       accessPath: resolve(this.state.workspaceRootPath, workspaceRelativePath),
       resolvedPath,
@@ -720,10 +719,6 @@ export class UnixLocalSandboxSession<
       entryRoot: authority.entry,
       preserveLeaf: mode === 'entry',
     });
-    return {
-      lexical: resolve(this.state.workspaceRootPath, workspaceRelativePath),
-      file: validated,
-    };
   }
 
   protected resolveCommandWorkdir(path?: string): string {
@@ -777,7 +772,11 @@ export class UnixLocalSandboxSession<
   ): Promise<void> {
     this.assertSessionUsable();
     const identity = await this.resolveFilesystemRunAs(runAs);
-    const path = this.resolveFilesystemPath(operation.path, { forWrite: true });
+    const path = this.resolveFilesystemPath(
+      operation.path,
+      { forWrite: true },
+      operation.type === 'delete_file' ? 'entry' : 'content',
+    );
     if (operation.type === 'create_file') {
       const input = applyDiff('', operation.diff, 'create');
       await this.files.run({ operation: 'create', path }, { input, identity });
@@ -800,15 +799,7 @@ export class UnixLocalSandboxSession<
         { identity, update: (current) => applyDiff(current, operation.diff) },
       );
     } else {
-      const unlinkPath = this.resolveFilesystemPath(
-        operation.path,
-        { forWrite: true },
-        'entry',
-      );
-      await this.files.run(
-        { operation: 'delete', path, unlinkPath },
-        { identity },
-      );
+      await this.files.run({ operation: 'delete', path }, { identity });
     }
   }
 
@@ -827,7 +818,7 @@ export class UnixLocalSandboxSession<
     path: string | undefined,
     options: ResolveSandboxPathOptions,
     mode: 'content' | 'entry',
-  ): { lexical: string; file: LocalFilePath } | undefined {
+  ): LocalFilePath | undefined {
     for (const { entry, mountPath } of this.state.manifest.mountTargets()) {
       const source = localBindMountSource(entry);
       if (!source) {
@@ -854,7 +845,7 @@ export class UnixLocalSandboxSession<
       const authority = this.filesystemRoot(source);
       const root = authority.content;
       const resolvedPath = childPath ? resolve(root, childPath) : root;
-      const validated = validateResolvedHostPath({
+      return validateResolvedHostPath({
         path,
         accessPath: childPath ? resolve(source, childPath) : source,
         resolvedPath,
@@ -862,10 +853,6 @@ export class UnixLocalSandboxSession<
         entryRoot: authority.entry,
         preserveLeaf: mode === 'entry',
       });
-      return {
-        lexical: childPath ? resolve(source, childPath) : source,
-        file: validated,
-      };
     }
     return undefined;
   }
@@ -1420,6 +1407,7 @@ function validateResolvedHostPath(args: {
         path: args.entryRoot!,
         accessPath: args.accessPath,
         preserveLeaf: true,
+        rootTarget: allowedRootRealPath,
       };
     }
     const parent = realpathForValidation(dirname(args.resolvedPath), args.path);

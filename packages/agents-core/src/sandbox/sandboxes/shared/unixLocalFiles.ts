@@ -15,6 +15,8 @@ export type LocalFilePath = {
   path: string;
   accessPath: string;
   preserveLeaf: boolean;
+  /** Only root entries require their pinned referent to remain unchanged. */
+  rootTarget?: string;
 };
 
 type FileRequest = {

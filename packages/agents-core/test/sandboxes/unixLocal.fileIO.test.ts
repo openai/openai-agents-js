@@ -586,6 +586,127 @@ os.rename = failing_rename
       expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
     });
 
+    it.each(['update', 'move'] as const)(
+      'keeps a newer destination installed during %s',
+      async (operation) => {
+        const workspace = session.state.workspaceRootPath;
+        const source = join(workspace, 'nested/note.txt');
+        const destination =
+          operation === 'move'
+            ? join(workspace, 'nested/destination.txt')
+            : source;
+        if (operation === 'move') await writeFile(destination, 'destination\n');
+        workerHook(`
+original_input_file = input_file
+def replacing_input_file(fd):
+    original_input_file(fd)
+    os.rename(${JSON.stringify(destination)}, ${JSON.stringify(`${destination}-old`)})
+    with open(${JSON.stringify(destination)}, "w") as replacement:
+        replacement.write("newer contents\\n")
+input_file = replacing_input_file
+`);
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'nested/note.txt',
+            diff: patch,
+            ...(operation === 'move'
+              ? { moveTo: 'nested/destination.txt' }
+              : {}),
+          }),
+        ).rejects.toMatchObject({ code: 'ESTALE' });
+        expect(await readFile(destination, 'utf8')).toBe('newer contents\n');
+        expect(await readFile(`${destination}-old`, 'utf8')).toBe(
+          operation === 'move' ? 'destination\n' : 'before\n',
+        );
+        if (operation === 'move')
+          expect(await readFile(source, 'utf8')).toBe('before\n');
+        expect(
+          (await session.listDir({ path: 'nested' })).map(
+            (entry) => entry.name,
+          ),
+        ).not.toEqual(
+          expect.arrayContaining([expect.stringMatching(/^\.openai-agents-/)]),
+        );
+      },
+    );
+
+    it.skipIf(process.platform !== 'linux').each([true, false])(
+      'preserves an inherited SELinux label without relabeling when matching=%s',
+      async (matching) => {
+        const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+        const original = (await lstat(note)).ino;
+        // Model the kernel's label policy; all file operations still use the real worker.
+        workerHook(`
+original_listxattr = os.listxattr
+original_getxattr = os.getxattr
+original_setxattr = os.setxattr
+def labeled_attributes(fd):
+    return original_listxattr(fd) + ["security.selinux"]
+def label_value(fd, attribute):
+    if attribute == "security.selinux":
+        return b"original" if ${matching ? 'True' : 'False'} or os.fstat(fd).st_ino == ${original} else b"different"
+    return original_getxattr(fd, attribute)
+def denied_relabel(fd, attribute, value):
+    if attribute == "security.selinux":
+        raise PermissionError(errno.EPERM, "Relabeling is not permitted")
+    return original_setxattr(fd, attribute, value)
+os.listxattr = labeled_attributes
+os.getxattr = label_value
+os.setxattr = denied_relabel
+`);
+        const update = session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'nested/note.txt',
+          diff: patch,
+        });
+        if (matching) await update;
+        else await expect(update).rejects.toMatchObject({ code: 'EPERM' });
+        expect(await readFile(note, 'utf8')).toBe(
+          matching ? 'after\n' : 'before\n',
+        );
+        expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+      },
+    );
+
+    it
+      .skipIf(process.platform !== 'linux')
+      .each(['security.ima', 'security.evm'])(
+      'rejects replacement of content protected by %s',
+      async (attribute) => {
+        // Integrity signatures describe the old data and cannot be copied to a patched file.
+        workerHook(`
+original_listxattr = os.listxattr
+original_getxattr = os.getxattr
+original_setxattr = os.setxattr
+def signed_attributes(fd):
+    return original_listxattr(fd) + [${JSON.stringify(attribute)}]
+def signature_value(fd, name):
+    return b"old content signature" if name == ${JSON.stringify(attribute)} else original_getxattr(fd, name)
+def permit_signature_copy(fd, name, value):
+    if name != ${JSON.stringify(attribute)}:
+        original_setxattr(fd, name, value)
+os.listxattr = signed_attributes
+os.getxattr = signature_value
+os.setxattr = permit_signature_copy
+`);
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'nested/note.txt',
+            diff: patch,
+          }),
+        ).rejects.toMatchObject({ code: 'ENOTSUP' });
+        expect(
+          await readFile(
+            join(session.state.workspaceRootPath, 'nested/note.txt'),
+            'utf8',
+          ),
+        ).toBe('before\n');
+        expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+      },
+    );
+
     it.skipIf(process.platform !== 'linux')(
       'restores access rules before writing replacement contents',
       async () => {
