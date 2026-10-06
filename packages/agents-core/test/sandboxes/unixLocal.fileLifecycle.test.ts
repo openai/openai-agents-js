@@ -207,16 +207,18 @@ describe.skipIf(process.platform === 'win32')(
     });
 
     it.each(['stop', 'close'] as const)(
-      'cleans a blocked replacement in a writable grant when %s completes',
+      'cancels active and queued replacements when %s completes',
       async (operation) => {
         const spawn = childProcess.spawn;
+        let blocked = false;
         vi.spyOn(childProcess, 'spawn').mockImplementation(((
           command: string,
           args: string[],
           options: childProcess.SpawnOptions,
         ) => {
           const child = spawn(command, args, options);
-          if (args.includes(UNIX_LOCAL_FILE_WORKER)) {
+          if (args.includes(UNIX_LOCAL_FILE_WORKER) && !blocked) {
+            blocked = true;
             // Deliver the real update but withhold EOF so the trusted worker waits
             // on its input pipe after opening the staged replacement.
             const stdin = child.stdin!;
@@ -248,13 +250,67 @@ describe.skipIf(process.platform === 'win32')(
           'before\n',
         );
 
-        await Promise.all([session[operation](), session[operation]()]);
+        const queued = session.createEditor().updateFile({
+          type: 'update_file',
+          path: join(grant, 'note.txt'),
+          diff: '@@\n-before\n+queued\n',
+        });
+        const queuedRejected =
+          expect(queued).rejects.toThrow(/cancelled|closed/);
+        const stops = [session[operation](), session[operation]()];
+        const duringStop = session.createEditor().updateFile({
+          type: 'update_file',
+          path: join(grant, 'note.txt'),
+          diff: '@@\n-before\n+during stop\n',
+        });
+        const duringStopRejected =
+          expect(duringStop).rejects.toThrow(/cancelled|closed/);
+        await Promise.all(stops);
         await rejected;
+        await queuedRejected;
+        await duringStopRejected;
         expect(await readdir(grant)).toEqual(['note.txt']);
         expect(await readFile(join(grant, 'note.txt'), 'utf8')).toBe(
           'before\n',
         );
+        if (operation === 'stop') {
+          await session.createEditor().updateFile({
+            type: 'update_file',
+            path: join(grant, 'note.txt'),
+            diff: '@@\n-before\n+after stop\n',
+          });
+          expect(await readFile(join(grant, 'note.txt'), 'utf8')).toBe(
+            'after stop\n',
+          );
+        }
       },
     );
+
+    it('cancels an edit awaiting its selected identity when stop begins', async () => {
+      let entered!: () => void;
+      const lookup = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let finishLookup!: () => void;
+      vi.spyOn(session, 'resolveFilesystemRunAs').mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishLookup = () => resolve(undefined);
+            entered();
+          }),
+      );
+      const pending = session.createEditor().updateFile({
+        type: 'update_file',
+        path: join(grant, 'note.txt'),
+        diff: '@@\n-before\n+after\n',
+      });
+      const rejected = expect(pending).rejects.toThrow(/cancelled/);
+      await lookup;
+      const stopped = session.stop();
+      finishLookup();
+      await stopped;
+      await rejected;
+      expect(await readFile(join(grant, 'note.txt'), 'utf8')).toBe('before\n');
+    });
   },
 );

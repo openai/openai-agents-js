@@ -206,7 +206,12 @@ def staging_directory(directory):
     inner_created = False
     try:
         with defer_cancellation():
-            os.mkdir(temporary, 0o700, dir_fd=directory)
+            # The SDK staging directory needs owner access regardless of the host umask.
+            previous_umask = os.umask(0o077)
+            try:
+                os.mkdir(temporary, 0o700, dir_fd=directory)
+            finally:
+                os.umask(previous_umask)
             created = True
             outer = os.open(temporary, DIRECTORY, dir_fd=directory)
             owner = os.fstat(outer)

@@ -80,7 +80,7 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
       if (root) await rm(root, { recursive: true, force: true });
     });
 
-    it('lets a primary-group writer replace a foreign-owned file while preserving the owner and other hardlinks', async () => {
+    it('lets a primary-group writer replace a foreign-owned file with a restrictive umask', async () => {
       const shared = join(workspace, 'shared');
       await mkdir(shared);
       await chown(shared, 0, nobodyGid);
@@ -92,6 +92,22 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
       const original = join(root, 'outside', 'note.txt');
       await link(file, original);
       const before = await lstat(original);
+
+      const spawn = childProcess.spawn;
+      vi.spyOn(childProcess, 'spawn').mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnOptions,
+      ) => {
+        const rewritten = [...args];
+        if (args.includes(UNIX_LOCAL_FILE_WORKER)) {
+          // Set the real worker's umask without changing concurrent Vitest workers.
+          rewritten[3] = `import os
+os.umask(0o777)
+${rewritten[3]}`;
+        }
+        return spawn(command, rewritten, options);
+      }) as typeof childProcess.spawn);
 
       await session.createEditor('nobody').updateFile({
         type: 'update_file',
@@ -112,6 +128,14 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
         before.gid,
         before.mode,
       ]);
+
+      await session.createEditor('nobody').createFile({
+        type: 'create_file',
+        path: 'shared/new.txt',
+        diff: '+new',
+      });
+      expect((await lstat(join(shared, 'new.txt'))).mode & 0o777).toBe(0);
+      expect(await readFile(join(shared, 'new.txt'), 'utf8')).toBe('new');
     });
 
     it.each(['finish', 'stop'] as const)(

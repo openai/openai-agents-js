@@ -187,6 +187,8 @@ export class UnixLocalSandboxSession<
   private readonly activeProcesses = new Map<number, ActiveProcess>();
   private nextSessionId = 1;
   private closePromise?: Promise<void>;
+  private stopPromise?: Promise<void>;
+  private fileOperationGeneration = 0;
   private readonly hostFiles: UnixLocalFiles | null;
 
   private get files(): UnixLocalFiles {
@@ -614,7 +616,18 @@ export class UnixLocalSandboxSession<
   }
 
   async stop(): Promise<void> {
-    await this.hostFiles?.stop();
+    this.stopPromise ??= this.stopResources().finally(() => {
+      this.stopPromise = undefined;
+    });
+    await this.stopPromise;
+  }
+
+  private async stopResources(): Promise<void> {
+    this.fileOperationGeneration++;
+    if (this.hostFiles) {
+      await this.hostFiles.stop();
+      await withUnixLocalFileAccess(this.state, async () => {});
+    }
     await this.stopActiveProcesses();
   }
 
@@ -633,7 +646,7 @@ export class UnixLocalSandboxSession<
 
   private async closeResources(): Promise<void> {
     await this.hostFiles?.close();
-    await this.stopActiveProcesses();
+    await this.stop();
 
     if (this.state.workspaceRootOwned) {
       await rm(this.state.workspaceRootPath, { recursive: true, force: true });
@@ -775,9 +788,21 @@ export class UnixLocalSandboxSession<
     operation: ApplyPatchOperation,
     runAs?: string,
   ): Promise<void> {
+    const generation = this.fileOperationGeneration;
+    const assertCurrent = () => {
+      if (this.closePromise) {
+        throw new UserError('UnixLocal file operations are closed.');
+      }
+      if (this.stopPromise || generation !== this.fileOperationGeneration) {
+        throw new UserError('UnixLocal file operation cancelled.');
+      }
+    };
+    assertCurrent();
     return await withUnixLocalFileAccess(this.state, async () => {
+      assertCurrent();
       this.assertSessionUsable();
       const identity = await this.resolveFilesystemRunAs(runAs);
+      assertCurrent();
       const path = this.resolveFilesystemPath(
         operation.path,
         { forWrite: true },
