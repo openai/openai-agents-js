@@ -10,6 +10,23 @@ export type LocalFileIOProtection = 'auto' | 'required' | 'off';
 // Transfer trusted preparation across setup without selecting a backend twice.
 export const preparedFileIO = Symbol('preparedFileIO');
 
+const fileAccessTails = new WeakMap<object, Promise<unknown>>();
+
+/** Keep native file changes and snapshot capture separate from state inspection. */
+export async function withUnixLocalFileAccess<T>(
+  state: object,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = fileAccessTails.get(state) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(operation);
+  fileAccessTails.set(state, current);
+  try {
+    return await current;
+  } finally {
+    if (fileAccessTails.get(state) === current) fileAccessTails.delete(state);
+  }
+}
+
 /** Canonical host authority plus the requested path to check as the worker user. */
 export type LocalFilePath = {
   path: string;

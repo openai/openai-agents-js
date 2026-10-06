@@ -40,15 +40,20 @@ def select_identity(identity):
     os.setegid(identity["gid"])
     os.seteuid(identity["uid"])
 
-def preserve_ownership(fd, info):
+@contextmanager
+def host_identity():
     current_uid = os.geteuid()
     try:
         if HOST_UID == 0:
             os.seteuid(0)
-        os.fchown(fd, info.st_uid, info.st_gid)
+        yield
     finally:
         if HOST_UID == 0:
             os.seteuid(current_uid)
+
+def preserve_ownership(fd, info):
+    with host_identity():
+        os.fchown(fd, info.st_uid, info.st_gid)
 
 if sys.platform == "darwin":
     import ctypes
@@ -61,6 +66,8 @@ if sys.platform == "darwin":
     system.acl_set_fd.restype = ctypes.c_int
     system.acl_free.argtypes = [ctypes.c_void_p]
     system.acl_free.restype = ctypes.c_int
+elif not all(hasattr(os, name) for name in ("listxattr", "getxattr", "setxattr", "removexattr")):
+    raise RuntimeError("File access metadata preservation is unavailable")
 
 def close(fd):
     failing = sys.exc_info()[0] is not None
@@ -159,7 +166,7 @@ def copy_attributes(source, destination):
         if system.fcopyfile(source, destination, None, (1 << 0) | (1 << 2)) != 0:
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
-    elif all(hasattr(os, name) for name in ("listxattr", "getxattr", "setxattr", "removexattr")):
+    else:
         attributes = os.listxattr(source)
         if {"security.ima", "security.evm"}.intersection(attributes):
             raise OSError(errno.ENOTSUP, "Cannot replace files with integrity signatures")
@@ -173,37 +180,68 @@ def copy_attributes(source, destination):
                 if attribute == "security.selinux" and attribute in destination_attributes and os.getxattr(destination, attribute) == value:
                     continue
                 os.setxattr(destination, attribute, value)
-    else:
-        raise OSError(errno.ENOTSUP, "Cannot preserve file access rules on this host")
+
+def restrict_directory_access(fd):
+    if sys.platform == "darwin":
+        # Remove inherited access before creating a file that another user could open.
+        empty = system.acl_init(0)
+        if not empty:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+        try:
+            if system.acl_set_fd(fd, empty) != 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+        finally:
+            system.acl_free(empty)
+    os.fchmod(fd, 0o700)
 
 @contextmanager
 def staging_directory(directory):
     temporary = ".openai-agents-" + os.urandom(16).hex()
     created = False
+    outer = None
     stage = None
+    private = False
+    inner_created = False
     try:
         with defer_cancellation():
             os.mkdir(temporary, 0o700, dir_fd=directory)
             created = True
-        stage = os.open(temporary, DIRECTORY, dir_fd=directory)
-        if sys.platform == "darwin":
-            # Remove inherited access before creating a file that another user could open.
-            empty = system.acl_init(0)
-            if not empty:
-                error = ctypes.get_errno()
-                raise OSError(error, os.strerror(error))
-            try:
-                if system.acl_set_fd(stage, empty) != 0:
-                    error = ctypes.get_errno()
-                    raise OSError(error, os.strerror(error))
-            finally:
-                system.acl_free(empty)
-        os.fchmod(stage, 0o700)
+            outer = os.open(temporary, DIRECTORY, dir_fd=directory)
+            owner = os.fstat(outer)
+            if owner.st_uid != os.geteuid():
+                raise PermissionError(errno.EPERM, "Temporary directory ownership changed")
+            private = HOST_UID == 0 and owner.st_uid != 0
+            if private:
+                # Seal the outer directory before anything is created inside it.
+                # The selected user can still publish through the held inner descriptor.
+                with host_identity():
+                    os.fchown(outer, 0, -1)
+                    restrict_directory_access(outer)
+                    os.mkdir("files", 0o700, dir_fd=outer)
+                    inner_created = True
+                    stage = os.open("files", DIRECTORY, dir_fd=outer)
+                    os.fchown(stage, owner.st_uid, os.getegid())
+            else:
+                stage = outer
+            restrict_directory_access(stage)
         yield stage
     finally:
         with defer_cancellation():
-            if stage is not None:
-                close(stage)
+            with host_identity():
+                if stage is not None and stage != outer:
+                    close(stage)
+                if private:
+                    if inner_created:
+                        os.rmdir("files", dir_fd=outer)
+                    # Restore only the empty outer before unlinking from a sticky parent.
+                    os.fchown(outer, owner.st_uid, owner.st_gid)
+            if outer is not None:
+                current = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (owner.st_dev, owner.st_ino):
+                    raise OSError(errno.ESTALE, "Temporary directory changed")
+                close(outer)
             if created:
                 os.rmdir(temporary, dir_fd=directory)
 
@@ -229,11 +267,14 @@ def replace_file(directory, name, source_fd):
         finally:
             with defer_cancellation():
                 if fd is not None:
-                    close(fd)
-                try:
-                    os.unlink("content", dir_fd=stage)
-                except FileNotFoundError:
-                    pass
+                    try:
+                        with host_identity():
+                            try:
+                                os.unlink("content", dir_fd=stage)
+                            except FileNotFoundError:
+                                pass
+                    finally:
+                        close(fd)
 
 def write_destination(path):
     with parent(path, create=True) as (directory, name):

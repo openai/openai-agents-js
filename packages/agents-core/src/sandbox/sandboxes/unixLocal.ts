@@ -93,6 +93,7 @@ import { MAX_VIEW_IMAGE_BYTES, imageOutputFromBytes } from '../shared/media';
 import {
   UnixLocalFiles,
   preparedFileIO,
+  withUnixLocalFileAccess,
   type LocalFileIOProtection,
   type LocalFilePath,
 } from './shared/unixLocalFiles';
@@ -589,11 +590,13 @@ export class UnixLocalSandboxSession<
   }
 
   async persistWorkspace(): Promise<Uint8Array> {
-    this.assertSessionUsable();
-    return await createWorkspaceArchive(
-      this.state.workspaceRootPath,
-      this.state.manifest.ephemeralPersistencePaths(),
-    );
+    return await withUnixLocalFileAccess(this.state, async () => {
+      this.assertSessionUsable();
+      return await createWorkspaceArchive(
+        this.state.workspaceRootPath,
+        this.state.manifest.ephemeralPersistencePaths(),
+      );
+    });
   }
 
   async hydrateWorkspace(
@@ -772,37 +775,42 @@ export class UnixLocalSandboxSession<
     operation: ApplyPatchOperation,
     runAs?: string,
   ): Promise<void> {
-    this.assertSessionUsable();
-    const identity = await this.resolveFilesystemRunAs(runAs);
-    const path = this.resolveFilesystemPath(
-      operation.path,
-      { forWrite: true },
-      operation.type === 'delete_file' ? 'entry' : 'content',
-    );
-    if (operation.type === 'create_file') {
-      const input = applyDiff('', operation.diff, 'create');
-      await this.files.run({ operation: 'create', path }, { input, identity });
-    } else if (operation.type === 'update_file') {
-      const destination = operation.moveTo
-        ? this.resolveFilesystemPath(operation.moveTo, { forWrite: true })
-        : path;
-      const unlinkPath =
-        operation.moveTo &&
-        this.resolveSandboxPath(operation.moveTo, { forWrite: true }) !==
-          this.resolveSandboxPath(operation.path, { forWrite: true })
-          ? this.resolveFilesystemPath(
-              operation.path,
-              { forWrite: true },
-              'entry',
-            )
-          : undefined;
-      await this.files.run(
-        { operation: 'update', path, destination, unlinkPath },
-        { identity, update: (current) => applyDiff(current, operation.diff) },
+    return await withUnixLocalFileAccess(this.state, async () => {
+      this.assertSessionUsable();
+      const identity = await this.resolveFilesystemRunAs(runAs);
+      const path = this.resolveFilesystemPath(
+        operation.path,
+        { forWrite: true },
+        operation.type === 'delete_file' ? 'entry' : 'content',
       );
-    } else {
-      await this.files.run({ operation: 'delete', path }, { identity });
-    }
+      if (operation.type === 'create_file') {
+        const input = applyDiff('', operation.diff, 'create');
+        await this.files.run(
+          { operation: 'create', path },
+          { input, identity },
+        );
+      } else if (operation.type === 'update_file') {
+        const destination = operation.moveTo
+          ? this.resolveFilesystemPath(operation.moveTo, { forWrite: true })
+          : path;
+        const unlinkPath =
+          operation.moveTo &&
+          this.resolveSandboxPath(operation.moveTo, { forWrite: true }) !==
+            this.resolveSandboxPath(operation.path, { forWrite: true })
+            ? this.resolveFilesystemPath(
+                operation.path,
+                { forWrite: true },
+                'entry',
+              )
+            : undefined;
+        await this.files.run(
+          { operation: 'update', path, destination, unlinkPath },
+          { identity, update: (current) => applyDiff(current, operation.diff) },
+        );
+      } else {
+        await this.files.run({ operation: 'delete', path }, { identity });
+      }
+    });
   }
 
   private resolveSandboxPathTarget(
@@ -1251,6 +1259,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
       'UnixLocalSandboxClient',
       state,
       snapshotSpec,
+      (capture) => withUnixLocalFileAccess(state, capture),
     );
     state.snapshotSpec = snapshotSpec;
 

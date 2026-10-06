@@ -195,6 +195,29 @@ ${rewritten[3]}`;
       expect(await readdir(root)).toEqual([]);
     });
 
+    it.skipIf(process.platform === 'darwin')(
+      'rejects Python without file metadata preservation before setup',
+      async () => {
+        const spawnSync = childProcess.spawnSync;
+        vi.spyOn(childProcess, 'spawnSync').mockImplementation(((
+          command: string,
+          args: string[],
+          options: childProcess.SpawnSyncOptions,
+        ) => {
+          const rewritten = [...args];
+          rewritten[3] = `import os
+if hasattr(os, "removexattr"):
+    del os.removexattr
+${rewritten[3]}`;
+          return spawnSync(command, rewritten, options);
+        }) as typeof childProcess.spawnSync);
+        await expect(create()).rejects.toThrow(
+          /descriptor-relative filesystem support/,
+        );
+        expect(await readdir(root)).toEqual([]);
+      },
+    );
+
     it('does not retry failed Python writes with Node in auto mode', async () => {
       const session = await create();
       const spawn = childProcess.spawn;
