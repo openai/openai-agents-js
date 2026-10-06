@@ -89,6 +89,19 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
       await writeFile(file, 'before\n');
       await chown(file, 0, nobodyGid);
       await chmod(file, 0o660);
+      if (process.platform === 'linux') {
+        execFileSync(
+          'python3',
+          [
+            '-I',
+            '-S',
+            '-c',
+            'import os, sys; os.setxattr(sys.argv[1], "user.agents-test", b"preserved")',
+            file,
+          ],
+          { stdio: 'pipe' },
+        );
+      }
       const original = join(root, 'outside', 'note.txt');
       await link(file, original);
       const before = await lstat(original);
@@ -129,6 +142,24 @@ ${rewritten[3]}`;
         before.mode,
       ]);
 
+      if (process.platform === 'linux') {
+        for (const path of [file, original]) {
+          expect(
+            execFileSync(
+              'python3',
+              [
+                '-I',
+                '-S',
+                '-c',
+                'import os, sys; sys.stdout.buffer.write(os.getxattr(sys.argv[1], "user.agents-test"))',
+                path,
+              ],
+              { stdio: 'pipe' },
+            ).toString(),
+          ).toBe('preserved');
+        }
+      }
+
       await session.createEditor('nobody').createFile({
         type: 'create_file',
         path: 'shared/new.txt',
@@ -137,6 +168,84 @@ ${rewritten[3]}`;
       expect((await lstat(join(shared, 'new.txt'))).mode & 0o777).toBe(0);
       expect(await readFile(join(shared, 'new.txt'), 'utf8')).toBe('new');
     });
+
+    it.skipIf(process.platform !== 'linux')(
+      'moves over a write-only shared destination and preserves its attributes',
+      async () => {
+        const shared = join(workspace, 'shared');
+        await mkdir(shared);
+        await chown(shared, 0, nobodyGid);
+        await chmod(shared, 0o2770);
+        const source = join(shared, 'source.txt');
+        const destination = join(shared, 'destination.txt');
+        const original = join(root, 'outside', 'destination.txt');
+        await writeFile(source, 'before\n');
+        await chown(source, nobodyUid, nobodyGid);
+        await chmod(source, 0o600);
+        await writeFile(destination, 'destination\n');
+        await chown(destination, 0, nobodyGid);
+        execFileSync(
+          'python3',
+          [
+            '-I',
+            '-S',
+            '-c',
+            'import os, sys; os.setxattr(sys.argv[1], "user.agents-test", b"preserved")',
+            destination,
+          ],
+          { stdio: 'pipe' },
+        );
+        await chmod(destination, 0o620);
+        await link(destination, original);
+        const before = await lstat(original);
+        const readAttribute = (file: string) =>
+          execFileSync(
+            'python3',
+            [
+              '-I',
+              '-S',
+              '-c',
+              'import os, sys; sys.stdout.buffer.write(os.getxattr(sys.argv[1], "user.agents-test"))',
+              file,
+            ],
+            { stdio: 'pipe' },
+          ).toString();
+
+        await expect(
+          session.readFile({ path: 'shared/destination.txt', runAs: 'nobody' }),
+        ).rejects.toMatchObject({ code: 'EACCES' });
+        await session.createEditor('nobody').updateFile({
+          type: 'update_file',
+          path: 'shared/source.txt',
+          moveTo: 'shared/destination.txt',
+          diff: patch,
+        });
+
+        await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(destination, 'utf8')).toBe('after\n');
+        expect(await readFile(original, 'utf8')).toBe('destination\n');
+        const retained = await lstat(original);
+        const replacement = await lstat(destination);
+        expect([
+          retained.ino,
+          retained.uid,
+          retained.gid,
+          retained.mode,
+        ]).toEqual([before.ino, before.uid, before.gid, before.mode]);
+        expect(replacement.ino).not.toBe(before.ino);
+        expect([replacement.uid, replacement.gid, replacement.mode]).toEqual([
+          before.uid,
+          before.gid,
+          before.mode,
+        ]);
+        expect(readAttribute(original)).toBe('preserved');
+        expect(readAttribute(destination)).toBe('preserved');
+        await expect(
+          session.readFile({ path: 'shared/destination.txt', runAs: 'nobody' }),
+        ).rejects.toMatchObject({ code: 'EACCES' });
+        expect(await readdir(shared)).toEqual(['destination.txt']);
+      },
+    );
 
     it.each(['finish', 'stop'] as const)(
       'keeps pending foreign-owned replacement contents private from other processes of the selected user on %s',

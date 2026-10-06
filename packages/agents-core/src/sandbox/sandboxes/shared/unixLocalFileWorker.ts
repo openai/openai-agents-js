@@ -167,7 +167,8 @@ def copy_attributes(source, destination):
             error = ctypes.get_errno()
             raise OSError(error, os.strerror(error))
     else:
-        attributes = os.listxattr(source)
+        with host_identity():
+            attributes = os.listxattr(source)
         if {"security.ima", "security.evm"}.intersection(attributes):
             raise OSError(errno.ENOTSUP, "Cannot replace files with integrity signatures")
         destination_attributes = os.listxattr(destination)
@@ -176,7 +177,8 @@ def copy_attributes(source, destination):
                 os.removexattr(destination, attribute)
         for attribute in attributes:
             if attribute != "security.capability":
-                value = os.getxattr(source, attribute)
+                with host_identity():
+                    value = os.getxattr(source, attribute)
                 if attribute == "security.selinux" and attribute in destination_attributes and os.getxattr(destination, attribute) == value:
                     continue
                 os.setxattr(destination, attribute, value)
@@ -256,12 +258,13 @@ def replace_file(directory, name, source_fd):
         try:
             with defer_cancellation():
                 fd = os.open("content", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=stage)
+                os.fchmod(fd, 0o600)
+            input_file(fd)
             info = regular(source_fd, name)
             created = os.fstat(fd)
             copy_attributes(source_fd, fd)
             # Content changes must not restore set-user-ID or set-group-ID privileges.
             os.fchmod(fd, stat.S_IMODE(info.st_mode) & 0o777)
-            input_file(fd)
             if (created.st_uid, created.st_gid) != (info.st_uid, info.st_gid):
                 # Only this newly created descriptor needs the original owner restored.
                 preserve_ownership(fd, info)

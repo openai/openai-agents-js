@@ -663,6 +663,71 @@ input_file = replacing_input_file
       },
     );
 
+    it('preserves a mode change made while receiving replacement contents', async () => {
+      const note = join(session.state.workspaceRootPath, 'nested/note.txt');
+      const alias = join(outside, 'original.txt');
+      await link(note, alias);
+      workerHook(`
+original_input_file = input_file
+def changing_input_file(fd):
+    os.chmod(${JSON.stringify(note)}, 0o400)
+    original_input_file(fd)
+input_file = changing_input_file
+`);
+      await session.createEditor().updateFile({
+        type: 'update_file',
+        path: 'nested/note.txt',
+        diff: patch,
+      });
+      expect(await readFile(note, 'utf8')).toBe('after\n');
+      expect((await lstat(note)).mode & 0o777).toBe(0o400);
+      expect(await readFile(alias, 'utf8')).toBe('before\n');
+      expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+    });
+
+    it.skipIf(process.platform !== 'linux')(
+      'preserves an attribute change made while receiving move contents',
+      async () => {
+        const destination = join(
+          session.state.workspaceRootPath,
+          'nested/destination.txt',
+        );
+        const alias = join(outside, 'original.txt');
+        await writeFile(destination, 'destination\n');
+        await link(destination, alias);
+        workerHook(`
+original_input_file = input_file
+def changing_input_file(fd):
+    os.setxattr(${JSON.stringify(destination)}, "user.agents-test", b"new value")
+    original_input_file(fd)
+input_file = changing_input_file
+`);
+        await session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'nested/note.txt',
+          moveTo: 'nested/destination.txt',
+          diff: patch,
+        });
+        expect(await readFile(destination, 'utf8')).toBe('after\n');
+        expect(await readFile(alias, 'utf8')).toBe('destination\n');
+        expect(await session.pathExists('nested/note.txt')).toBe(false);
+        expect(
+          childProcess.execFileSync(
+            process.env.OPENAI_AGENTS_PYTHON ?? 'python3',
+            [
+              '-I',
+              '-S',
+              '-c',
+              'import os, sys; sys.stdout.buffer.write(os.getxattr(sys.argv[1], "user.agents-test"))',
+              destination,
+            ],
+            { stdio: 'pipe' },
+          ),
+        ).toEqual(Buffer.from('new value'));
+        expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+      },
+    );
+
     it.skipIf(process.platform !== 'linux').each([true, false])(
       'preserves an inherited SELinux label without relabeling when matching=%s',
       async (matching) => {
@@ -740,7 +805,7 @@ os.setxattr = permit_signature_copy
     );
 
     it.skipIf(process.platform !== 'linux')(
-      'restores access rules before writing replacement contents',
+      'preserves access rules when the parent has a default ACL',
       async () => {
         const note = join(session.state.workspaceRootPath, 'nested/note.txt');
         const python = process.env.OPENAI_AGENTS_PYTHON ?? 'python3';
@@ -762,15 +827,6 @@ os.setxattr = permit_signature_copy
           ],
           { stdio: 'pipe' },
         );
-        workerHook(`
-original_fchmod = os.fchmod
-def checking_fchmod(fd, mode):
-    original_fchmod(fd, mode)
-    info = os.fstat(fd)
-    if stat.S_ISREG(info.st_mode) and "system.posix_acl_access" in os.listxattr(fd):
-        raise OSError(errno.EACCES, "Replacement inherited broader access rules")
-os.fchmod = checking_fchmod
-`);
         await session.createEditor().updateFile({
           type: 'update_file',
           path: 'nested/note.txt',
