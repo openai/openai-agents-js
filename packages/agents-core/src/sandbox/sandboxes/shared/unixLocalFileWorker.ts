@@ -173,9 +173,11 @@ def file_attributes(fd):
 def copy_attributes(source, destination):
     if sys.platform == "darwin":
         # COPYFILE_ACL | COPYFILE_XATTR preserves access rules without copying data or set-ID modes.
-        if system.fcopyfile(source, destination, None, (1 << 0) | (1 << 2)) != 0:
-            error = ctypes.get_errno()
-            raise OSError(error, os.strerror(error))
+        # The source is already write-authorized; the destination is a new private file.
+        with host_identity():
+            if system.fcopyfile(source, destination, None, (1 << 0) | (1 << 2)) != 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
     else:
         attributes = file_attributes(source)
         destination_attributes = os.listxattr(destination)

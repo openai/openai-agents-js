@@ -228,9 +228,9 @@ try:
       expect(await readdir(shared)).toEqual(['note.txt']);
     });
 
-    it.skipIf(process.platform !== 'linux')(
-      'moves over a write-only shared destination and preserves its attributes',
-      async () => {
+    it.skipIf(process.platform !== 'linux').each(['Linux', 'native'] as const)(
+      'moves over a write-only shared destination and preserves its attributes with %s metadata copying',
+      async (metadataCopy) => {
         const shared = join(workspace, 'shared');
         await mkdir(shared);
         await chown(shared, 0, nobodyGid);
@@ -273,6 +273,56 @@ try:
         await expect(
           session.readFile({ path: 'shared/destination.txt', runAs: 'nobody' }),
         ).rejects.toMatchObject({ code: 'EACCES' });
+        if (metadataCopy === 'native') {
+          const spawn = childProcess.spawn;
+          vi.spyOn(childProcess, 'spawn').mockImplementation(((
+            command: string,
+            args: string[],
+            options: childProcess.SpawnOptions,
+          ) => {
+            const rewritten = args.map((arg) =>
+              arg === UNIX_LOCAL_FILE_WORKER
+                ? arg.replace(
+                    'try:\n    run(json.loads(sys.argv[1]))',
+                    `
+import ctypes
+from types import SimpleNamespace
+def native_copy(source, destination, state, flags):
+    if os.geteuid() != 0:
+        ctypes.set_errno(errno.EACCES)
+        return -1
+    for name in os.listxattr(source):
+        os.setxattr(destination, name, os.getxattr(source, name))
+    return 0
+system = SimpleNamespace(fcopyfile=native_copy)
+original_copy_attributes = copy_attributes
+def copying_native_attributes(source, destination):
+    sys.platform = "darwin"
+    try:
+        return original_copy_attributes(source, destination)
+    finally:
+        sys.platform = "linux"
+copy_attributes = copying_native_attributes
+original_fchmod = os.fchmod
+def selected_user_fchmod(fd, mode):
+    if stat.S_ISREG(os.fstat(fd).st_mode) and os.geteuid() != ${nobodyUid}:
+        raise PermissionError(errno.EPERM, "File modes require selected-user authority")
+    return original_fchmod(fd, mode)
+os.fchmod = selected_user_fchmod
+original_rename = os.rename
+def selected_user_rename(*args, **kwargs):
+    if os.geteuid() != ${nobodyUid}:
+        raise PermissionError(errno.EPERM, "File publication requires selected-user authority")
+    return original_rename(*args, **kwargs)
+os.rename = selected_user_rename
+try:
+    run(json.loads(sys.argv[1]))`,
+                  )
+                : arg,
+            );
+            return spawn(command, rewritten, options);
+          }) as typeof childProcess.spawn);
+        }
         await session.createEditor('nobody').updateFile({
           type: 'update_file',
           path: 'shared/source.txt',
@@ -299,6 +349,95 @@ try:
         ]);
         expect(readAttribute(original)).toBe('preserved');
         expect(readAttribute(destination)).toBe('preserved');
+        await expect(
+          session.readFile({ path: 'shared/destination.txt', runAs: 'nobody' }),
+        ).rejects.toMatchObject({ code: 'EACCES' });
+        expect(await readdir(shared)).toEqual(['destination.txt']);
+      },
+    );
+
+    it.skipIf(process.platform !== 'darwin')(
+      'moves over a write-only destination whose macOS ACL denies the writer extended-attribute reads',
+      async () => {
+        const shared = join(workspace, 'shared');
+        await mkdir(shared);
+        await chown(shared, 0, nobodyGid);
+        await chmod(shared, 0o2770);
+        const source = join(shared, 'source.txt');
+        const destination = join(shared, 'destination.txt');
+        const original = join(root, 'outside', 'destination.txt');
+        await writeFile(source, 'before\n');
+        await chown(source, nobodyUid, nobodyGid);
+        await chmod(source, 0o600);
+        await writeFile(destination, 'destination\n');
+        await chown(destination, 0, nobodyGid);
+        await chmod(destination, 0o620);
+        execFileSync('/usr/bin/xattr', [
+          '-w',
+          'com.openai.agents-test',
+          'preserved',
+          destination,
+        ]);
+        execFileSync('/bin/chmod', [
+          '+a',
+          'user:nobody deny readextattr',
+          destination,
+        ]);
+        await link(destination, original);
+        const before = await lstat(original);
+        const readAttribute = (file: string) =>
+          execFileSync(
+            '/usr/bin/xattr',
+            ['-p', 'com.openai.agents-test', file],
+            {
+              encoding: 'utf8',
+            },
+          ).trim();
+        const readACL = (file: string) =>
+          execFileSync('/bin/ls', ['-le', file], { encoding: 'utf8' })
+            .split('\n')
+            .filter((line) => /^\s*\d+:/.test(line));
+        const beforeACL = readACL(original);
+        expect(beforeACL).toHaveLength(1);
+        expect(() =>
+          execFileSync(
+            '/usr/bin/xattr',
+            ['-p', 'com.openai.agents-test', destination],
+            { uid: nobodyUid, gid: nobodyGid, stdio: 'pipe' },
+          ),
+        ).toThrow();
+
+        await expect(
+          session.readFile({ path: 'shared/destination.txt', runAs: 'nobody' }),
+        ).rejects.toMatchObject({ code: 'EACCES' });
+        await session.createEditor('nobody').updateFile({
+          type: 'update_file',
+          path: 'shared/source.txt',
+          moveTo: 'shared/destination.txt',
+          diff: patch,
+        });
+
+        await expect(lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(destination, 'utf8')).toBe('after\n');
+        expect(await readFile(original, 'utf8')).toBe('destination\n');
+        const retained = await lstat(original);
+        const replacement = await lstat(destination);
+        expect([
+          retained.ino,
+          retained.uid,
+          retained.gid,
+          retained.mode,
+        ]).toEqual([before.ino, before.uid, before.gid, before.mode]);
+        expect(replacement.ino).not.toBe(before.ino);
+        expect([replacement.uid, replacement.gid, replacement.mode]).toEqual([
+          before.uid,
+          before.gid,
+          before.mode,
+        ]);
+        for (const file of [original, destination]) {
+          expect(readACL(file)).toEqual(beforeACL);
+          expect(readAttribute(file)).toBe('preserved');
+        }
         await expect(
           session.readFile({ path: 'shared/destination.txt', runAs: 'nobody' }),
         ).rejects.toMatchObject({ code: 'EACCES' });
