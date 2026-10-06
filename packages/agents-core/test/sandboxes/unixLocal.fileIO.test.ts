@@ -237,6 +237,33 @@ describe.skipIf(process.platform === 'win32')(
       }
     });
 
+    it('keeps a granted file alias when its target changes before deletion', async () => {
+      const alias = join(root, 'granted.txt');
+      const original = join(outside, 'note.txt');
+      const replacement = join(outside, 'replacement.txt');
+      await writeFile(replacement, 'replacement\n');
+      await symlink(original, alias);
+      const granted = await new UnixLocalSandboxClient({
+        workspaceBaseDir: root,
+      }).create(
+        new Manifest({ extraPathGrants: [{ path: alias, readOnly: false }] }),
+      );
+      try {
+        await rm(alias);
+        await symlink(replacement, alias);
+        await expect(
+          granted
+            .createEditor()
+            .deleteFile({ type: 'delete_file', path: alias }),
+        ).rejects.toMatchObject({ code: 'ELOOP' });
+        expect((await lstat(alias)).isSymbolicLink()).toBe(true);
+        expect(await readFile(alias, 'utf8')).toBe('replacement\n');
+        expect(await readFile(original, 'utf8')).toBe('outside\n');
+      } finally {
+        await granted.close();
+      }
+    });
+
     it.each([
       'read',
       'image',
@@ -293,7 +320,7 @@ describe.skipIf(process.platform === 'win32')(
       },
     );
 
-    it('keeps a granted alias pinned across operations and manifest updates', async () => {
+    it('rejects a changed granted alias across operations and manifest updates', async () => {
       const granted = join(root, 'granted');
       const alias = join(root, 'alias');
       await mkdir(granted);
@@ -305,16 +332,22 @@ describe.skipIf(process.platform === 'win32')(
       await rm(alias);
       await symlink(outside, alias);
       await session.applyManifest(new Manifest());
+      await expect(
+        session.readFile({ path: join(alias, 'note.txt') }),
+      ).rejects.toMatchObject({ code: 'ELOOP' });
+      await expect(session.listDir({ path: alias })).rejects.toMatchObject({
+        code: 'ELOOP',
+      });
+      expect(await readFile(join(granted, 'note.txt'), 'utf8')).toBe(
+        'granted\n',
+      );
+      await rm(alias);
+      await symlink(granted, alias);
       expect(
         Buffer.from(
           await session.readFile({ path: join(alias, 'note.txt') }),
         ).toString(),
       ).toBe('granted\n');
-      expect(await session.listDir({ path: alias })).toContainEqual({
-        name: 'note.txt',
-        path: join(alias, 'note.txt'),
-        type: 'file',
-      });
       await expect(
         session.createEditor().createFile({
           type: 'create_file',
@@ -349,7 +382,7 @@ describe.skipIf(process.platform === 'win32')(
       );
     });
 
-    it('keeps a writable local bind source alias pinned after replacement', async () => {
+    it('rejects a changed local bind source alias until restored', async () => {
       const source = join(root, 'mount-source');
       const alias = join(root, 'mount-alias');
       await mkdir(source);
@@ -369,15 +402,25 @@ describe.skipIf(process.platform === 'win32')(
       );
       await rm(alias);
       await symlink(outside, alias);
+      await expect(
+        session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'mounted/note.txt',
+          diff: patch,
+        }),
+      ).rejects.toMatchObject({ code: 'ELOOP' });
+      expect(await readFile(join(source, 'note.txt'), 'utf8')).toBe('before\n');
+      expect(await readFile(join(outside, 'note.txt'), 'utf8')).toBe(
+        'outside\n',
+      );
+      await rm(alias);
+      await symlink(source, alias);
       await session.createEditor().updateFile({
         type: 'update_file',
         path: 'mounted/note.txt',
         diff: patch,
       });
       expect(await readFile(join(source, 'note.txt'), 'utf8')).toBe('after\n');
-      expect(await readFile(join(outside, 'note.txt'), 'utf8')).toBe(
-        'outside\n',
-      );
     });
 
     it('creates missing parents without following a replacement directory', async () => {
@@ -745,7 +788,9 @@ time.sleep(60)
         const worker = spawn.mock.results[0].value as childProcess.ChildProcess;
         await Promise.all([session[operation](), session[operation]()]);
         await rejected;
-        expect(worker.signalCode).toBe('SIGKILL');
+        expect(worker.exitCode !== null || worker.signalCode !== null).toBe(
+          true,
+        );
         spawn.mockRestore();
         if (operation === 'stop') {
           expect(

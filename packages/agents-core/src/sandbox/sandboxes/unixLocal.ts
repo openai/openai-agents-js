@@ -683,6 +683,7 @@ export class UnixLocalSandboxSession<
       const root = authority.content;
       const validated = validateResolvedHostPath({
         path,
+        accessPath: resolved.path,
         resolvedPath: resolve(
           root,
           relative(resolved.grant.path, resolved.path),
@@ -713,6 +714,7 @@ export class UnixLocalSandboxSession<
     }
     const validated = validateResolvedHostPath({
       path,
+      accessPath: resolve(this.state.workspaceRootPath, workspaceRelativePath),
       resolvedPath,
       allowedRoot: root,
       entryRoot: authority.entry,
@@ -775,11 +777,7 @@ export class UnixLocalSandboxSession<
   ): Promise<void> {
     this.assertSessionUsable();
     const identity = await this.resolveFilesystemRunAs(runAs);
-    const path = this.resolveFilesystemPath(
-      operation.path,
-      { forWrite: true },
-      operation.type === 'delete_file' ? 'entry' : 'content',
-    );
+    const path = this.resolveFilesystemPath(operation.path, { forWrite: true });
     if (operation.type === 'create_file') {
       const input = applyDiff('', operation.diff, 'create');
       await this.files.run({ operation: 'create', path }, { input, identity });
@@ -802,7 +800,15 @@ export class UnixLocalSandboxSession<
         { identity, update: (current) => applyDiff(current, operation.diff) },
       );
     } else {
-      await this.files.run({ operation: 'delete', path }, { identity });
+      const unlinkPath = this.resolveFilesystemPath(
+        operation.path,
+        { forWrite: true },
+        'entry',
+      );
+      await this.files.run(
+        { operation: 'delete', path, unlinkPath },
+        { identity },
+      );
     }
   }
 
@@ -850,6 +856,7 @@ export class UnixLocalSandboxSession<
       const resolvedPath = childPath ? resolve(root, childPath) : root;
       const validated = validateResolvedHostPath({
         path,
+        accessPath: childPath ? resolve(source, childPath) : source,
         resolvedPath,
         allowedRoot: root,
         entryRoot: authority.entry,
@@ -1387,6 +1394,7 @@ function assertUnixLocalHostPathGrantsUnsupported(manifest: Manifest): void {
 
 function validateResolvedHostPath(args: {
   path?: string;
+  accessPath: string;
   resolvedPath: string;
   allowedRoot: string;
   entryRoot?: string;
@@ -1410,7 +1418,7 @@ function validateResolvedHostPath(args: {
     if (args.resolvedPath === args.allowedRoot) {
       return {
         path: args.entryRoot!,
-        accessPath: args.entryRoot!,
+        accessPath: args.accessPath,
         preserveLeaf: true,
       };
     }
@@ -1422,13 +1430,13 @@ function validateResolvedHostPath(args: {
     }
     return {
       path: resolve(parent, basename(args.resolvedPath)),
-      accessPath: args.resolvedPath,
+      accessPath: args.accessPath,
       preserveLeaf: true,
     };
   }
   return {
     path: resolve(realPath, relative(existingPath, args.resolvedPath)),
-    accessPath: args.resolvedPath,
+    accessPath: args.accessPath,
     preserveLeaf: false,
   };
 }

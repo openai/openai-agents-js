@@ -185,6 +185,33 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
       );
     });
 
+    it.each([
+      [0o755, 'EACCES'],
+      [0o1777, 'EPERM'],
+    ])(
+      'leaves both files unchanged when source removal is denied (%i)',
+      async (mode, code) => {
+        const directory = join(workspace, 'source-parent');
+        const source = join(directory, 'note.txt');
+        const destination = join(workspace, 'owned/destination.txt');
+        await mkdir(directory, { mode: mode as number });
+        await chmod(directory, mode as number);
+        await writeFile(source, 'before\n', { mode: 0o644 });
+        await writeFile(destination, 'destination\n');
+        await chown(destination, uid, gid);
+        await expect(
+          session.createEditor('nobody').updateFile({
+            type: 'update_file',
+            path: 'source-parent/note.txt',
+            moveTo: 'owned/destination.txt',
+            diff: patch,
+          }),
+        ).rejects.toMatchObject({ code });
+        expect(await readFile(source, 'utf8')).toBe('before\n');
+        expect(await readFile(destination, 'utf8')).toBe('destination\n');
+      },
+    );
+
     it('denies deleting an entry in another user’s private directory', async () => {
       await expect(
         session.createEditor('nobody').deleteFile({
@@ -223,6 +250,67 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
       expect(await readFile(protectedFile, 'utf8')).toBe('protected\n');
       expect(await readFile(source, 'utf8')).toBe('before\n');
     });
+
+    it.each(['grant', 'local_bind'] as const)(
+      'checks the original %s source before following its alias',
+      async (kind) => {
+        const source = join(workspace, 'private/source');
+        const target = join(workspace, 'owned');
+        await symlink(target, source);
+        await writeFile(join(target, 'note.txt'), 'before\n');
+        await chown(join(target, 'note.txt'), uid, gid);
+        const manifest =
+          kind === 'grant'
+            ? new Manifest({
+                extraPathGrants: [{ path: source, readOnly: false }],
+              })
+            : new Manifest({
+                entries: {
+                  mounted: {
+                    type: 'mount',
+                    source,
+                    readOnly: false,
+                    mountStrategy: { type: 'local_bind' },
+                  },
+                },
+              });
+        const granted = await new UnixLocalSandboxClient({
+          workspaceBaseDir: root,
+        }).create(manifest);
+        try {
+          await chmod(granted.state.workspaceRootPath, 0o755);
+          const path =
+            kind === 'grant' ? join(source, 'note.txt') : 'mounted/note.txt';
+          await expect(
+            granted.readFile({ path, runAs: 'nobody' }),
+          ).rejects.toMatchObject({ code: 'EACCES' });
+          await expect(
+            granted.createEditor('nobody').updateFile({
+              type: 'update_file',
+              path,
+              diff: patch,
+            }),
+          ).rejects.toMatchObject({ code: 'EACCES' });
+          expect(await readFile(join(target, 'note.txt'), 'utf8')).toBe(
+            'before\n',
+          );
+          await chmod(join(workspace, 'private'), 0o755);
+          await expect(
+            granted.readFile({ path, runAs: 'nobody' }),
+          ).resolves.toEqual(Buffer.from('before\n'));
+          await granted.createEditor('nobody').updateFile({
+            type: 'update_file',
+            path,
+            diff: patch,
+          });
+          expect(await readFile(join(target, 'note.txt'), 'utf8')).toBe(
+            'after\n',
+          );
+        } finally {
+          await granted.close();
+        }
+      },
+    );
 
     describe('contained symlinks with inaccessible ancestors', () => {
       beforeEach(async () => {

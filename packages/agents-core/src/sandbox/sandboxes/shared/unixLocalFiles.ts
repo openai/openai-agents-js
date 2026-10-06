@@ -115,24 +115,33 @@ export class UnixLocalFiles {
     options: {
       input?: string;
       update?: (current: string) => string;
-      identity?: { uid: number; gid: number };
+      identity?: {
+        username: string;
+        uid: number;
+        gid: number;
+        isCurrentUser: boolean;
+      };
     } = {},
   ): Promise<Buffer> {
     if (this.closed)
       throw new UserError('UnixLocal file operations are closed.');
     const child = spawn(
       this.executable,
-      ['-I', '-S', '-c', UNIX_LOCAL_FILE_WORKER, JSON.stringify(request)],
+      [
+        '-I',
+        '-S',
+        '-c',
+        UNIX_LOCAL_FILE_WORKER,
+        JSON.stringify({ ...request, identity: options.identity }),
+      ],
       {
         cwd: '/',
         env: { PATH: '/usr/bin:/bin' },
-        ...(options.identity
-          ? { uid: options.identity.uid, gid: options.identity.gid }
-          : {}),
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
     let primaryError: unknown;
+    let cancelled = false;
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let stderrBytes = 0;
@@ -143,8 +152,10 @@ export class UnixLocalFiles {
     const worker = {
       done,
       cancel: () => {
+        if (cancelled) return;
+        cancelled = true;
         primaryError ??= new UserError('UnixLocal file operation cancelled.');
-        child.kill('SIGKILL');
+        child.kill('SIGTERM');
       },
     };
     this.active.add(worker);
