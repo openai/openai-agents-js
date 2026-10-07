@@ -511,58 +511,76 @@ describe('selectRunItemsForBlockedOutput', () => {
     ).toEqual([searchCall, searchOutput, callItem, result]);
   });
 
-  it('retains tool-search provenance that loaded a completed hosted MCP call', () => {
-    const searchCall = new ToolSearchCallItem(
-      {
-        type: 'tool_search_call',
-        arguments: { paths: ['inventory'] },
-        execution: 'client',
-        providerData: {
-          call_id: 'call-tool-search-hosted-mcp',
-          execution: 'client',
-        },
-      },
-      TEST_AGENT,
-    );
-    const searchOutput = new ToolSearchOutputItem(
-      {
-        type: 'tool_search_output',
-        status: 'completed',
-        execution: 'client',
-        tools: [
-          {
-            type: 'mcp',
-            server_label: 'inventory',
-            server_url: 'https://inventory.example.com/mcp',
-            defer_loading: true,
-            require_approval: 'never',
+  it.each(['descriptor', 'namespace'] as const)(
+    'retains %s tool-search provenance that loaded a completed hosted MCP call',
+    (shape) => {
+      const searchCall = new ToolSearchCallItem(
+        {
+          type: 'tool_search_call',
+          status: 'completed',
+          arguments: { paths: ['inventory'] },
+          execution: shape === 'namespace' ? 'server' : 'client',
+          providerData: {
+            call_id: 'call-tool-search-hosted-mcp',
+            execution: shape === 'namespace' ? 'server' : 'client',
           },
-        ],
-        providerData: {
-          call_id: 'call-tool-search-hosted-mcp',
-          execution: 'client',
         },
-      },
-      TEST_AGENT,
-    );
-    const hostedMcpCall = new ToolCallItem(
-      {
-        type: 'hosted_tool_call',
-        id: 'hosted-mcp-call',
-        name: 'hosted_mcp',
-        status: 'completed',
-        providerData: {
-          type: 'mcp_call',
-          server_label: 'inventory',
+        TEST_AGENT,
+      );
+      const searchOutput = new ToolSearchOutputItem(
+        {
+          type: 'tool_search_output',
+          status: 'completed',
+          execution: shape === 'namespace' ? 'server' : 'client',
+          tools:
+            shape === 'namespace'
+              ? [
+                  {
+                    type: 'namespace',
+                    name: 'mcp_inventory',
+                    tools: [{ type: 'function', name: 'lookup' }],
+                  },
+                ]
+              : [
+                  {
+                    type: 'mcp',
+                    server_label: 'inventory',
+                    server_url: 'https://inventory.example.com/mcp',
+                    defer_loading: true,
+                    require_approval: 'never',
+                  },
+                ],
+          providerData: {
+            call_id: 'call-tool-search-hosted-mcp',
+            execution: shape === 'namespace' ? 'server' : 'client',
+          },
         },
-      },
-      TEST_AGENT,
-    );
+        TEST_AGENT,
+      );
+      const hostedMcpCall = new ToolCallItem(
+        {
+          type: 'hosted_tool_call',
+          id: 'hosted-mcp-call',
+          name: 'hosted_mcp',
+          status: 'completed',
+          providerData: {
+            type: 'mcp_call',
+            name: 'lookup',
+            server_label: 'inventory',
+          },
+        },
+        TEST_AGENT,
+      );
 
-    expect(
-      selectRunItemsForBlockedOutput([searchCall, searchOutput, hostedMcpCall]),
-    ).toEqual([searchCall, searchOutput, hostedMcpCall]);
-  });
+      expect(
+        selectRunItemsForBlockedOutput([
+          searchCall,
+          searchOutput,
+          hostedMcpCall,
+        ]),
+      ).toEqual([searchCall, searchOutput, hostedMcpCall]);
+    },
+  );
 
   it('keeps an earlier committed tool when an unrelated matching search appears later', () => {
     const call = {

@@ -48,7 +48,10 @@ import {
   getToolResultCorrelationForResult,
   getToolResultCorrelationKey,
 } from './toolResultCorrelation';
-import { addLoadedToolNamesFromToolSearchOutput } from './toolSearch';
+import {
+  addLoadedToolNamesFromToolSearchOutput,
+  isHostedMcpToolLoaded,
+} from './toolSearch';
 import { OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT } from './outputGuardrailBlockedMessage';
 
 type BlockedPairKind = 'tool' | 'handoff';
@@ -755,13 +758,21 @@ function toolSearchOutputLoadsRetainedCall(
     call.type === 'hosted_tool_call' &&
     call.providerData &&
     typeof call.providerData === 'object'
-      ? (call.providerData as { type?: unknown; server_label?: unknown })
+      ? (call.providerData as {
+          type?: unknown;
+          server_label?: unknown;
+          name?: unknown;
+        })
       : undefined;
   return (
     (providerData?.type === 'mcp_call' ||
       providerData?.type === 'mcp_list_tools') &&
     typeof providerData.server_label === 'string' &&
-    loadedToolNames.has(providerData.server_label)
+    isHostedMcpToolLoaded(
+      loadedToolNames,
+      providerData.server_label,
+      providerData.name,
+    )
   );
 }
 
