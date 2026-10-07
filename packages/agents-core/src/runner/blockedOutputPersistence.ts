@@ -50,7 +50,7 @@ import {
 } from './toolResultCorrelation';
 import {
   addLoadedToolNamesFromToolSearchOutput,
-  isHostedMcpToolLoaded,
+  toolSearchOutputLoadsHostedMcpTool,
 } from './toolSearch';
 import { OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT } from './outputGuardrailBlockedMessage';
 
@@ -768,8 +768,8 @@ function toolSearchOutputLoadsRetainedCall(
     (providerData?.type === 'mcp_call' ||
       providerData?.type === 'mcp_list_tools') &&
     typeof providerData.server_label === 'string' &&
-    isHostedMcpToolLoaded(
-      loadedToolNames,
+    toolSearchOutputLoadsHostedMcpTool(
+      output,
       providerData.server_label,
       providerData.name,
     )

@@ -19,12 +19,16 @@ import {
   getExplicitFunctionToolNamespace,
   getFunctionToolNamespaceDescription,
   getFunctionToolQualifiedName,
+  isDeferredTopLevelFunctionTool,
   toolQualifiedName,
   type FunctionToolLookupKey,
 } from '../toolIdentity';
 import { serializeTool } from '../utils/serialize';
 import { normalizeHostedMcpRequireApproval } from '../utils/mcpApproval';
-import { resolveToolSearchCallId } from '../utils/toolSearch';
+import {
+  resolveToolSearchCallId,
+  getToolSearchExecution,
+} from '../utils/toolSearch';
 
 type BuiltInClientToolSearchArguments = {
   paths: string[];
@@ -289,6 +293,7 @@ function collectLoadedToolNamesFromSearchResult(
   searchResult: unknown,
   loadedToolNames: Set<string>,
   namespace?: string,
+  includeMcpDescriptors = true,
 ): void {
   if (!searchResult || typeof searchResult !== 'object') {
     return;
@@ -322,7 +327,9 @@ function collectLoadedToolNamesFromSearchResult(
 
   const mcpProviderData = getHostedMcpProviderDataFromSearchResult(candidate);
   if (mcpProviderData) {
-    addLoadedToolName(loadedToolNames, mcpProviderData.server_label);
+    if (includeMcpDescriptors) {
+      addLoadedToolName(loadedToolNames, mcpProviderData.server_label);
+    }
     return;
   }
 
@@ -336,6 +343,7 @@ function collectLoadedToolNamesFromSearchResult(
         nestedTool,
         loadedToolNames,
         nestedNamespace,
+        includeMcpDescriptors,
       );
     }
   }
@@ -463,20 +471,71 @@ export function addLoadedToolNamesFromToolSearchOutput(
   }
 }
 
-/** Matches descriptor discovery or the exact tool in a hosted MCP namespace. */
-export function isHostedMcpToolLoaded(
-  loadedToolNames: ReadonlySet<string>,
+/** Snapshots namespace discovery before configuration changes can alter its meaning. */
+export function recordHostedMcpDiscovery(
+  output: protocol.ToolSearchOutputItem,
+  tools: Tool<any>[],
+): protocol.ToolSearchOutputItem {
+  const names = new Set<string>();
+  if (getToolSearchExecution(output) !== 'client') {
+    for (const result of output.tools) {
+      collectLoadedToolNamesFromSearchResult(result, names, undefined, false);
+    }
+  }
+  const functionNames = new Set(
+    tools
+      .filter((tool) => tool.type === 'function')
+      .flatMap((tool) => [
+        getFunctionToolQualifiedName(tool),
+        ...(isDeferredTopLevelFunctionTool(tool)
+          ? [toolQualifiedName(tool.name, tool.name)]
+          : []),
+      ]),
+  );
+  const toolSearchMcpToolNames = [...names].filter(
+    (name) => name.startsWith('mcp_') && !functionNames.has(name),
+  );
+  const { toolSearchMcpToolNames: _suppliedProvenance, ...rawOutput } = output;
+  return toolSearchMcpToolNames.length > 0
+    ? { ...rawOutput, toolSearchMcpToolNames }
+    : rawOutput;
+}
+
+/** Matches explicit MCP discovery or an unambiguous hosted namespace result. */
+export function toolSearchOutputLoadsHostedMcpTool(
+  output: protocol.ToolSearchOutputItem,
   serverLabel: string,
   toolName: unknown,
 ): boolean {
-  if (loadedToolNames.has(serverLabel)) {
+  if (
+    output.tools.some(
+      (result) =>
+        getHostedMcpProviderDataFromSearchResult(result)?.server_label ===
+        serverLabel,
+    )
+  ) {
     return true;
   }
-  const qualifiedName =
-    typeof toolName === 'string'
-      ? toolQualifiedName(toolName, `mcp_${serverLabel}`)
-      : undefined;
-  return qualifiedName !== undefined && loadedToolNames.has(qualifiedName);
+
+  // Client search namespaces describe application functions, not hosted MCP tools.
+  if (
+    getToolSearchExecution(output) === 'client' ||
+    typeof toolName !== 'string'
+  ) {
+    return false;
+  }
+  const qualifiedName = toolQualifiedName(toolName, `mcp_${serverLabel}`);
+  if (
+    !qualifiedName ||
+    !output.toolSearchMcpToolNames?.includes(qualifiedName)
+  ) {
+    // Missing provenance cannot be reconstructed from today's tool configuration.
+    // Require fresh discovery rather than reinterpreting historical function results.
+    return false;
+  }
+  const loadedToolNames = new Set<string>();
+  addLoadedToolNamesFromToolSearchOutput(output, loadedToolNames);
+  return loadedToolNames.has(qualifiedName);
 }
 
 export function addHostedMcpToolsFromToolSearchOutput(

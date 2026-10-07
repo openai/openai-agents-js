@@ -188,8 +188,10 @@ import {
  *   recipient provenance may be rejected or retained as completed, but cannot execute.
  *   Records completion of initial input guardrails. Started snapshots without this
  *   evidence require a fresh run rather than resuming unvalidated input.
+ * - 1.22: Records hosted MCP namespace discovery provenance. Older namespace-only
+ *   search outputs require rediscovery; explicit MCP descriptors remain usable.
  */
-export const CURRENT_SCHEMA_VERSION = '1.21' as const;
+export const CURRENT_SCHEMA_VERSION = '1.22' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -212,6 +214,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.18',
   '1.19',
   '1.20',
+  '1.21',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -236,7 +239,11 @@ function schemaVersionSupportsV119State(
 function schemaVersionSupportsV120State(
   schemaVersion: SupportedSchemaVersion,
 ): boolean {
-  return schemaVersion === '1.20' || schemaVersion === CURRENT_SCHEMA_VERSION;
+  return (
+    schemaVersion === '1.20' ||
+    schemaVersion === '1.21' ||
+    schemaVersion === CURRENT_SCHEMA_VERSION
+  );
 }
 
 function schemaVersionSupportsV116State(
