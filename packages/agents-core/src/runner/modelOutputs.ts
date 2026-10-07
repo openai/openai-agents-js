@@ -66,7 +66,7 @@ import {
   createBuiltInClientToolSearchOutput,
   executeCustomClientToolSearch,
   getClientToolSearchHelper,
-  isHostedMcpToolLoaded,
+  toolSearchOutputLoadsHostedMcpTool,
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
@@ -129,7 +129,7 @@ function ensureHostedToolCallAllowed<TContext>(
   output: protocol.HostedToolCallItem,
   tools: Tool<TContext>[],
   mcpToolMap: Map<string, HostedMCPTool>,
-  loadedToolNames: Set<string>,
+  loadedState: LoadedDeferredToolState,
   agent: Agent<any, any>,
 ): void {
   const providerType = output.providerData?.type;
@@ -185,10 +185,17 @@ function ensureHostedToolCallAllowed<TContext>(
   }
   if (
     mcpTool.providerData.defer_loading !== true ||
-    isHostedMcpToolLoaded(
-      loadedToolNames,
-      serverLabel,
-      output.providerData?.name,
+    [
+      ...loadedState.keyedToolSearchOutputsByKey.values(),
+      ...loadedState.anonymousToolSearchOutputs,
+    ].some((searchOutput) =>
+      toolSearchOutputLoadsHostedMcpTool(
+        searchOutput,
+        serverLabel,
+        output.providerData?.name,
+        // Search history outlives per-turn enablement; declared collisions remain ambiguous.
+        [...agent.tools, ...tools],
+      ),
     )
   ) {
     return;
@@ -836,7 +843,7 @@ export function processModelResponse<TContext>(
         output,
         tools,
         mcpToolMap,
-        loadedDeferredToolState.loadedToolNames,
+        loadedDeferredToolState,
         agent,
       );
       items.push(new RunToolCallItem(output, agent));
@@ -1256,7 +1263,7 @@ export async function processModelResponseAsync<TContext>(
         output,
         availableTools,
         mcpToolMap,
-        loadedDeferredToolState.loadedToolNames,
+        loadedDeferredToolState,
         agent,
       );
       items.push(new RunToolCallItem(output, agent));

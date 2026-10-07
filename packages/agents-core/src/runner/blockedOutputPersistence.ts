@@ -50,7 +50,7 @@ import {
 } from './toolResultCorrelation';
 import {
   addLoadedToolNamesFromToolSearchOutput,
-  isHostedMcpToolLoaded,
+  toolSearchOutputLoadsHostedMcpTool,
 } from './toolSearch';
 import { OUTPUT_GUARDRAIL_BLOCKED_TOOL_OUTPUT } from './outputGuardrailBlockedMessage';
 
@@ -737,6 +737,7 @@ function collectBlockedToolSearchPairs(
 function toolSearchOutputLoadsRetainedCall(
   output: ToolSearchOutputItem,
   call: AgentInputItem,
+  agent: RunToolSearchCallItem['agent'],
 ): boolean {
   const loadedToolNames = new Set<string>();
   addLoadedToolNamesFromToolSearchOutput(output, loadedToolNames);
@@ -768,10 +769,11 @@ function toolSearchOutputLoadsRetainedCall(
     (providerData?.type === 'mcp_call' ||
       providerData?.type === 'mcp_list_tools') &&
     typeof providerData.server_label === 'string' &&
-    isHostedMcpToolLoaded(
-      loadedToolNames,
+    toolSearchOutputLoadsHostedMcpTool(
+      output,
       providerData.server_label,
       providerData.name,
+      agent.tools,
     )
   );
 }
@@ -934,7 +936,7 @@ export function selectRunItemIndexesForBlockedOutput(
         pair.outputIndex < retainedCallIndex,
     );
     const hasMatchingOutput = precedingOccurrences.some((pair) =>
-      toolSearchOutputLoadsRetainedCall(pair.output, rawItem),
+      toolSearchOutputLoadsRetainedCall(pair.output, rawItem, pair.agent),
     );
     if (!hasMatchingOutput) {
       continue;
@@ -956,7 +958,11 @@ export function selectRunItemIndexesForBlockedOutput(
         (occurrence) =>
           occurrence.valid &&
           occurrence.callIndex !== undefined &&
-          toolSearchOutputLoadsRetainedCall(occurrence.output, rawItem),
+          toolSearchOutputLoadsRetainedCall(
+            occurrence.output,
+            rawItem,
+            occurrence.agent,
+          ),
       )
       .sort((left, right) => left.outputIndex - right.outputIndex)
       .at(-1);

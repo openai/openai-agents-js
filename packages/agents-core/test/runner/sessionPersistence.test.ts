@@ -44,7 +44,7 @@ import type {
 } from '../../src/memory/session';
 import { MemorySession as TransactionMemorySession } from '../../src/memory/memorySession';
 import { toAgentInputList } from '../../src/runner/items';
-import { tool } from '../../src/tool';
+import { tool, toolNamespace } from '../../src/tool';
 import type { FunctionTool } from '../../src/tool';
 import { Usage, RequestUsage } from '../../src/usage';
 import { z } from 'zod';
@@ -511,51 +511,79 @@ describe('selectRunItemsForBlockedOutput', () => {
     ).toEqual([searchCall, searchOutput, callItem, result]);
   });
 
-  it.each(['descriptor', 'namespace'] as const)(
+  it.each([
+    'descriptor',
+    'namespace',
+    'namespace collision',
+    'client namespace',
+    'descriptor collision',
+  ] as const)(
     'retains %s tool-search provenance that loaded a completed hosted MCP call',
     (shape) => {
+      const collision = shape.endsWith('collision');
+      const isNamespace = shape.includes('namespace');
+      const execution =
+        isNamespace && shape !== 'client namespace' ? 'server' : 'client';
+      const agent = collision
+        ? new Agent({
+            name: 'Local',
+            tools: toolNamespace({
+              name: 'mcp_inventory',
+              description: 'Local inventory',
+              tools: [
+                tool({
+                  name: 'lookup',
+                  description: 'Local lookup',
+                  parameters: z.object({}),
+                  deferLoading: true,
+                  execute: async () => 'local',
+                }),
+              ],
+            }),
+          })
+        : TEST_AGENT;
+
       const searchCall = new ToolSearchCallItem(
         {
           type: 'tool_search_call',
           status: 'completed',
           arguments: { paths: ['inventory'] },
-          execution: shape === 'namespace' ? 'server' : 'client',
+          execution: execution,
           providerData: {
             call_id: 'call-tool-search-hosted-mcp',
-            execution: shape === 'namespace' ? 'server' : 'client',
+            execution: execution,
           },
         },
-        TEST_AGENT,
+        agent,
       );
       const searchOutput = new ToolSearchOutputItem(
         {
           type: 'tool_search_output',
           status: 'completed',
-          execution: shape === 'namespace' ? 'server' : 'client',
-          tools:
-            shape === 'namespace'
-              ? [
-                  {
-                    type: 'namespace',
-                    name: 'mcp_inventory',
-                    tools: [{ type: 'function', name: 'lookup' }],
-                  },
-                ]
-              : [
-                  {
-                    type: 'mcp',
-                    server_label: 'inventory',
-                    server_url: 'https://inventory.example.com/mcp',
-                    defer_loading: true,
-                    require_approval: 'never',
-                  },
-                ],
+          execution: execution,
+          tools: isNamespace
+            ? [
+                {
+                  type: 'namespace',
+                  name: 'mcp_inventory',
+                  tools: [{ type: 'function', name: 'lookup' }],
+                },
+              ]
+            : [
+                {
+                  type: 'mcp',
+                  server_label: 'inventory',
+                  server_url: 'https://inventory.example.com/mcp',
+                  defer_loading: true,
+                  require_approval: 'never',
+                },
+              ],
           providerData: {
             call_id: 'call-tool-search-hosted-mcp',
-            execution: shape === 'namespace' ? 'server' : 'client',
+            execution: execution,
           },
         },
-        TEST_AGENT,
+        agent,
       );
       const hostedMcpCall = new ToolCallItem(
         {
@@ -569,7 +597,7 @@ describe('selectRunItemsForBlockedOutput', () => {
             server_label: 'inventory',
           },
         },
-        TEST_AGENT,
+        agent,
       );
 
       expect(
@@ -578,7 +606,11 @@ describe('selectRunItemsForBlockedOutput', () => {
           searchOutput,
           hostedMcpCall,
         ]),
-      ).toEqual([searchCall, searchOutput, hostedMcpCall]);
+      ).toEqual(
+        shape === 'namespace collision' || shape === 'client namespace'
+          ? [hostedMcpCall]
+          : [searchCall, searchOutput, hostedMcpCall],
+      );
     },
   );
 
