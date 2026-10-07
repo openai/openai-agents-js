@@ -1,5 +1,26 @@
 # @openai/agents-extensions
 
+## 0.20.0
+
+### Minor Changes
+
+- edfa410: fix: Use current Vercel authentication configuration for restored sessions and disable legacy authentication fallback when current authentication is configured; retain per-create authentication choices for live sessions. Keep restoration credentials runtime-only and honor per-run resume overrides.
+
+### Patch Changes
+
+- 2f3591b: fix: preserve sticky permission bits through manifest normalization and local and remote materialization, and reapply manifest sticky intent to restored Unix-local and Docker snapshot directories
+- Updated dependencies [40f7de2]
+- Updated dependencies [836cb50]
+- Updated dependencies [05241c7]
+- Updated dependencies [4137680]
+- Updated dependencies [8ee5055]
+- Updated dependencies [b89905c]
+- Updated dependencies [d8fa6c3]
+- Updated dependencies [9e32e88]
+- Updated dependencies [2f3591b]
+- Updated dependencies [8567e09]
+  - @openai/agents-core@0.20.0
+
 ## 0.19.0
 
 ### Minor Changes
