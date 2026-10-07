@@ -66,6 +66,7 @@ import {
   createBuiltInClientToolSearchOutput,
   executeCustomClientToolSearch,
   getClientToolSearchHelper,
+  isHostedMcpToolLoaded,
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
@@ -184,7 +185,11 @@ function ensureHostedToolCallAllowed<TContext>(
   }
   if (
     mcpTool.providerData.defer_loading !== true ||
-    loadedToolNames.has(serverLabel)
+    isHostedMcpToolLoaded(
+      loadedToolNames,
+      serverLabel,
+      output.providerData?.name,
+    )
   ) {
     return;
   }

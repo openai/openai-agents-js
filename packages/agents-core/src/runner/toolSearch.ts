@@ -463,6 +463,22 @@ export function addLoadedToolNamesFromToolSearchOutput(
   }
 }
 
+/** Matches descriptor discovery or the exact tool in a hosted MCP namespace. */
+export function isHostedMcpToolLoaded(
+  loadedToolNames: ReadonlySet<string>,
+  serverLabel: string,
+  toolName: unknown,
+): boolean {
+  if (loadedToolNames.has(serverLabel)) {
+    return true;
+  }
+  const qualifiedName =
+    typeof toolName === 'string'
+      ? toolQualifiedName(toolName, `mcp_${serverLabel}`)
+      : undefined;
+  return qualifiedName !== undefined && loadedToolNames.has(qualifiedName);
+}
+
 export function addHostedMcpToolsFromToolSearchOutput(
   toolSearchOutput: protocol.ToolSearchOutputItem,
   hostedMcpToolsByServerLabel: Map<string, HostedMCPTool<any>>,
