@@ -119,6 +119,7 @@ import {
   hasPersistedToolOutput,
   hasTerminalToolOutputSource,
   sanitizeBlockedTerminalToolOutput,
+  redactCancelledResponseToolOutputs,
   shouldDeferInterruptedSessionItems,
 } from './runner/blockedOutputPersistence';
 import {
@@ -1408,6 +1409,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       setRunStateUsageRecorder(state, recordUsage);
       let completedResult: RunResult<TContext, TAgent> | undefined;
       let persistenceCheckpoint: RunResult<TContext, TAgent> | undefined;
+      let cancelledOutputRedacted = false;
       const resumedStateHasPersistedToolOutput =
         isResumedState && hasPersistedToolOutput(state);
       let approvedToolCheckpointCompacted =
@@ -2158,7 +2160,23 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               resetTurnPersistence: !isResumedState,
             });
             if (options.signal?.aborted) {
-              persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+              const guardedFinalOutput =
+                turnResult.nextStep.type === 'next_step_final_output' &&
+                this.#agentHasOutputGuardrail(state._currentAgent);
+              if (guardedFinalOutput && !isResumedState) {
+                // Ordinary callers cannot recover the runner-owned state from
+                // the original abort reason. Keep a replay-safe completion
+                // record without publishing the unchecked tool output.
+                redactCancelledResponseToolOutputs(
+                  state,
+                  'Tool output discarded because the run was cancelled before output validation.',
+                );
+                cancelledOutputRedacted = true;
+              }
+              if (!guardedFinalOutput || cancelledOutputRedacted) {
+                persistenceCheckpoint = new RunResult<TContext, TAgent>(state);
+              }
+              // Caller-owned RunState retains the candidate for validation on resume.
             }
             options.signal?.throwIfAborted();
             if (turnResult.nextStep.type !== 'next_step_final_output') {
@@ -2286,7 +2304,12 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           const resultToPersist = completedResult ?? persistenceCheckpoint;
           if (resultToPersist && !completedResultPersisted) {
             try {
-              await persistNonStreamingResult(resultToPersist);
+              await persistNonStreamingResult(
+                resultToPersist,
+                // The current response is already redacted; append the full
+                // suffix so earlier completed turns remain replayable.
+                cancelledOutputRedacted ? { runCompaction: false } : undefined,
+              );
             } catch (error) {
               setRunnerSpanError(
                 taskSpan,
