@@ -537,7 +537,7 @@ describe('Runner.run', () => {
         let state = pending.state;
         if (resume !== 'memory') {
           const json = JSON.parse(state.toString());
-          expect(json.$schemaVersion).toBe('1.21');
+          expect(json.$schemaVersion).toBe('1.22');
           expect(json).not.toHaveProperty('pendingFunctionToolApprovals');
           state = await RunState.fromString(agent, JSON.stringify(json));
         }

@@ -561,6 +561,8 @@ describe('selectRunItemsForBlockedOutput', () => {
           type: 'tool_search_output',
           status: 'completed',
           execution: execution,
+          toolSearchMcpToolNames:
+            shape === 'namespace' ? ['mcp_inventory.lookup'] : [],
           tools: isNamespace
             ? [
                 {

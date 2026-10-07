@@ -583,6 +583,13 @@ export const ToolSearchOutputItem = ItemBase.extend({
    * search; this field does not grant tool execution permissions.
    */
   toolSearchAgentName: z.string().optional(),
+  /**
+   * SDK-only hosted MCP namespace identities established when this output was received.
+   * Excluded from provider requests. Older namespace outputs without this provenance
+   * require a new search; explicit MCP descriptors remain usable. This records discovery,
+   * not permission to execute a tool, and never overrides current caller/approval policy.
+   */
+  toolSearchMcpToolNames: z.array(z.string()).optional(),
   type: z.literal('tool_search_output'),
   call_id: z.string().nullable().optional(),
   callId: z.string().nullable().optional(),

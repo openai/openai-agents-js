@@ -737,7 +737,6 @@ function collectBlockedToolSearchPairs(
 function toolSearchOutputLoadsRetainedCall(
   output: ToolSearchOutputItem,
   call: AgentInputItem,
-  agent: RunToolSearchCallItem['agent'],
 ): boolean {
   const loadedToolNames = new Set<string>();
   addLoadedToolNamesFromToolSearchOutput(output, loadedToolNames);
@@ -773,7 +772,6 @@ function toolSearchOutputLoadsRetainedCall(
       output,
       providerData.server_label,
       providerData.name,
-      agent.tools,
     )
   );
 }
@@ -936,7 +934,7 @@ export function selectRunItemIndexesForBlockedOutput(
         pair.outputIndex < retainedCallIndex,
     );
     const hasMatchingOutput = precedingOccurrences.some((pair) =>
-      toolSearchOutputLoadsRetainedCall(pair.output, rawItem, pair.agent),
+      toolSearchOutputLoadsRetainedCall(pair.output, rawItem),
     );
     if (!hasMatchingOutput) {
       continue;
@@ -958,11 +956,7 @@ export function selectRunItemIndexesForBlockedOutput(
         (occurrence) =>
           occurrence.valid &&
           occurrence.callIndex !== undefined &&
-          toolSearchOutputLoadsRetainedCall(
-            occurrence.output,
-            rawItem,
-            occurrence.agent,
-          ),
+          toolSearchOutputLoadsRetainedCall(occurrence.output, rawItem),
       )
       .sort((left, right) => left.outputIndex - right.outputIndex)
       .at(-1);

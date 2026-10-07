@@ -4,6 +4,7 @@ import {
   Agent,
   MemorySession,
   Runner,
+  RunState,
   OutputGuardrailTripwireTriggered,
   hostedMcpTool,
   tool,
@@ -157,9 +158,11 @@ describe('namespace-shaped hosted MCP discovery', () => {
     ['server', false, true],
     ['server', true, true],
     ['server', false, false],
+    ['server', false, true, true],
+    ['server', true, true, true],
   ] as const)(
-    'keeps %s user namespace discovery out of hosted MCP loading (stream: %s, enabled: %s)',
-    async (execution, stream, enabled) => {
+    'keeps %s user namespace discovery out of hosted MCP loading (stream: %s, enabled: %s, remove local: %s)',
+    async (execution, stream, enabled, removeLocal: boolean = false) => {
       const execute = vi.fn(async () => 'local result');
       const localTools = toolNamespace({
         name: 'mcp_OpenAI_Docs',
@@ -182,6 +185,11 @@ describe('namespace-shaped hosted MCP discovery', () => {
         callId: 'local',
         arguments: '{}',
       };
+      const serverDiscovery = discovery().slice(1);
+      // A provider/model cannot supply the SDK's historical classification.
+      Object.assign(serverDiscovery[1], {
+        toolSearchMcpToolNames: ['mcp_OpenAI_Docs.search_openai_docs'],
+      });
       const model = new ScriptedModel([
         ...(execution === 'client'
           ? [
@@ -195,7 +203,7 @@ describe('namespace-shaped hosted MCP discovery', () => {
               ],
               [localCall],
             ]
-          : [[...discovery().slice(1), ...(enabled ? [localCall] : [])]]),
+          : [[...serverDiscovery, ...(enabled ? [localCall] : [])]]),
         [assistantMessage('Local tool called.')],
         [call(), assistantMessage('Done.')],
       ]);
@@ -211,6 +219,9 @@ describe('namespace-shaped hosted MCP discovery', () => {
       const session = new MemorySession();
       await runner().run(agent, 'Use local docs.', { session });
       expect(execute).toHaveBeenCalledTimes(enabled ? 1 : 0);
+      if (removeLocal) {
+        agent.tools = agent.tools.filter((tool) => tool.type !== 'function');
+      }
       const runHosted = async () => {
         if (stream) {
           const result = await runner().run(agent, 'Use hosted docs.', {
@@ -228,6 +239,168 @@ describe('namespace-shaped hosted MCP discovery', () => {
       model.assertComplete();
     },
   );
+
+  it('keeps deferred top-level self-namespace discovery local after session reuse', async () => {
+    const execute = vi.fn(async () => 'local');
+    const local = tool({
+      name: 'mcp_inventory',
+      description: 'Local inventory',
+      parameters: z.object({}),
+      deferLoading: true,
+      execute,
+    });
+    const model = new ScriptedModel([
+      [
+        {
+          type: 'tool_search_output',
+          execution: 'server',
+          tools: [
+            {
+              type: 'tool_reference',
+              functionName: 'mcp_inventory',
+              namespace: 'mcp_inventory',
+            },
+          ],
+        },
+        {
+          type: 'function_call',
+          name: 'mcp_inventory',
+          namespace: 'mcp_inventory',
+          callId: 'local',
+          arguments: '{}',
+        },
+      ],
+      [assistantMessage('Local completed.')],
+      [
+        {
+          type: 'hosted_tool_call',
+          name: 'mcp_call',
+          providerData: {
+            type: 'mcp_call',
+            server_label: 'inventory',
+            name: 'mcp_inventory',
+            arguments: '{}',
+          },
+        },
+      ],
+    ]);
+    const agent = new Agent({
+      name: 'Inventory',
+      model,
+      tools: [
+        local,
+        searchTool,
+        hostedMcpTool({
+          serverLabel: 'inventory',
+          serverUrl: 'https://example.invalid/mcp',
+          deferLoading: true,
+          requireApproval: 'never',
+        }),
+      ],
+    });
+    const session = new MemorySession();
+    await runner().run(agent, 'Use local inventory.', { session });
+    expect(execute).toHaveBeenCalledOnce();
+    agent.tools = agent.tools.filter((tool) => tool !== local);
+    await expect(
+      runner().run(agent, 'Use hosted inventory.', { session }),
+    ).rejects.toThrow(/before it was loaded via tool_search/);
+    model.assertComplete();
+  });
+
+  it.each(['recorded', 'collision', 'legacy'] as const)(
+    'preserves %s namespace provenance through RunState resume',
+    async (mode) => {
+      const confirm = tool({
+        name: 'confirm',
+        description: 'Confirm continuation',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: async () => 'confirmed',
+      });
+      const localTools =
+        mode === 'collision'
+          ? toolNamespace({
+              name: 'mcp_OpenAI_Docs',
+              description: 'Local documentation',
+              tools: [
+                tool({
+                  name: 'search_openai_docs',
+                  description: 'Local search',
+                  parameters: z.object({}),
+                  deferLoading: true,
+                  execute: async () => 'local',
+                }),
+              ],
+            })
+          : [];
+      const agent = new Agent({
+        name: 'Docs',
+        tools: [server(), searchTool, confirm, ...localTools],
+        model: new ScriptedModel([
+          [
+            ...discovery().slice(1),
+            {
+              type: 'function_call',
+              name: 'confirm',
+              callId: 'confirm',
+              arguments: '{}',
+            },
+          ],
+        ]),
+      });
+      const paused = await runner().run(agent, 'Discover tools and confirm.');
+      const serialized = JSON.parse(await paused.state.toString());
+      if (mode === 'legacy') {
+        serialized.$schemaVersion = '1.21';
+        // Old writers omitted provenance from both generated and processed items.
+        const removeProvenance = (value: any): void => {
+          if (!value || typeof value !== 'object') return;
+          delete value.toolSearchMcpToolNames;
+          for (const child of Object.values(value)) removeProvenance(child);
+        };
+        removeProvenance(serialized);
+      }
+      const replacement = new Agent({
+        name: 'Docs',
+        tools: [server(), searchTool, confirm],
+        model: new ScriptedModel([[call(), assistantMessage('Done.')]]),
+      });
+      const restored = await RunState.fromString(
+        replacement,
+        JSON.stringify(serialized),
+      );
+      restored.approve(restored.getInterruptions()[0]);
+      const result = runner().run(replacement, restored);
+      if (mode === 'recorded') {
+        expect((await result).finalOutput).toBe('Done.');
+      } else {
+        await expect(result).rejects.toThrow(
+          /before it was loaded via tool_search/,
+        );
+      }
+    },
+  );
+
+  it('requires rediscovery for older namespace-only session history', async () => {
+    const model = new ScriptedModel([
+      [...discovery(), assistantMessage('Tools loaded.')],
+      [call(), assistantMessage('Done.')],
+    ]);
+    const agent = new Agent({
+      name: 'Docs',
+      model,
+      tools: [server(), searchTool],
+    });
+    const result = await runner().run(agent, 'Discover tools.');
+    const olderHistory = JSON.parse(JSON.stringify(result.history));
+    for (const item of olderHistory) delete item.toolSearchMcpToolNames;
+    const session = new MemorySession();
+    await session.addItems(olderHistory);
+    await expect(
+      runner().run(agent, 'Use hosted docs.', { session }),
+    ).rejects.toThrow(/before it was loaded via tool_search/);
+  });
 
   it('accepts explicit MCP discovery despite a colliding user namespace', async () => {
     const mcp = server();

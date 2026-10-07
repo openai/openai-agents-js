@@ -19,6 +19,7 @@ import {
   getExplicitFunctionToolNamespace,
   getFunctionToolNamespaceDescription,
   getFunctionToolQualifiedName,
+  isDeferredTopLevelFunctionTool,
   toolQualifiedName,
   type FunctionToolLookupKey,
 } from '../toolIdentity';
@@ -292,6 +293,7 @@ function collectLoadedToolNamesFromSearchResult(
   searchResult: unknown,
   loadedToolNames: Set<string>,
   namespace?: string,
+  includeMcpDescriptors = true,
 ): void {
   if (!searchResult || typeof searchResult !== 'object') {
     return;
@@ -325,7 +327,9 @@ function collectLoadedToolNamesFromSearchResult(
 
   const mcpProviderData = getHostedMcpProviderDataFromSearchResult(candidate);
   if (mcpProviderData) {
-    addLoadedToolName(loadedToolNames, mcpProviderData.server_label);
+    if (includeMcpDescriptors) {
+      addLoadedToolName(loadedToolNames, mcpProviderData.server_label);
+    }
     return;
   }
 
@@ -339,6 +343,7 @@ function collectLoadedToolNamesFromSearchResult(
         nestedTool,
         loadedToolNames,
         nestedNamespace,
+        includeMcpDescriptors,
       );
     }
   }
@@ -466,12 +471,41 @@ export function addLoadedToolNamesFromToolSearchOutput(
   }
 }
 
+/** Snapshots namespace discovery before configuration changes can alter its meaning. */
+export function recordHostedMcpDiscovery(
+  output: protocol.ToolSearchOutputItem,
+  tools: Tool<any>[],
+): protocol.ToolSearchOutputItem {
+  const names = new Set<string>();
+  if (getToolSearchExecution(output) !== 'client') {
+    for (const result of output.tools) {
+      collectLoadedToolNamesFromSearchResult(result, names, undefined, false);
+    }
+  }
+  const functionNames = new Set(
+    tools
+      .filter((tool) => tool.type === 'function')
+      .flatMap((tool) => [
+        getFunctionToolQualifiedName(tool),
+        ...(isDeferredTopLevelFunctionTool(tool)
+          ? [toolQualifiedName(tool.name, tool.name)]
+          : []),
+      ]),
+  );
+  const toolSearchMcpToolNames = [...names].filter(
+    (name) => name.startsWith('mcp_') && !functionNames.has(name),
+  );
+  const { toolSearchMcpToolNames: _suppliedProvenance, ...rawOutput } = output;
+  return toolSearchMcpToolNames.length > 0
+    ? { ...rawOutput, toolSearchMcpToolNames }
+    : rawOutput;
+}
+
 /** Matches explicit MCP discovery or an unambiguous hosted namespace result. */
 export function toolSearchOutputLoadsHostedMcpTool(
   output: protocol.ToolSearchOutputItem,
   serverLabel: string,
   toolName: unknown,
-  tools: Tool<any>[],
 ): boolean {
   if (
     output.tools.some(
@@ -493,14 +527,10 @@ export function toolSearchOutputLoadsHostedMcpTool(
   const qualifiedName = toolQualifiedName(toolName, `mcp_${serverLabel}`);
   if (
     !qualifiedName ||
-    tools.some(
-      (tool) =>
-        tool.type === 'function' &&
-        getFunctionToolQualifiedName(tool) === qualifiedName,
-    )
+    !output.toolSearchMcpToolNames?.includes(qualifiedName)
   ) {
-    // A namespace result cannot distinguish these two configured surfaces.
-    // Keep the user function callable, but require an MCP descriptor for the server.
+    // Missing provenance cannot be reconstructed from today's tool configuration.
+    // Require fresh discovery rather than reinterpreting historical function results.
     return false;
   }
   const loadedToolNames = new Set<string>();

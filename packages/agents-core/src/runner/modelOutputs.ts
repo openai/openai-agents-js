@@ -67,6 +67,7 @@ import {
   executeCustomClientToolSearch,
   getClientToolSearchHelper,
   toolSearchOutputLoadsHostedMcpTool,
+  recordHostedMcpDiscovery,
   registerRuntimeToolSearchTools,
 } from './toolSearch';
 import { ensureToolCallerAllowed } from './toolCaller';
@@ -193,8 +194,6 @@ function ensureHostedToolCallAllowed<TContext>(
         searchOutput,
         serverLabel,
         output.providerData?.name,
-        // Search history outlives per-turn enablement; declared collisions remain ambiguous.
-        [...agent.tools, ...tools],
       ),
     )
   ) {
@@ -814,16 +813,20 @@ export function processModelResponse<TContext>(
         hasGeneratedClientToolSearchOutputs = true;
       }
     } else if (output.type === 'tool_search_output') {
+      const recordedOutput = recordHostedMcpDiscovery(output, [
+        ...agent.tools,
+        ...tools,
+      ]);
       items.push(
         new RunToolSearchOutputItem(
           attributeToolSearchOutput(
-            output,
+            recordedOutput,
             processingOptions.toolSearchAgentName,
           ),
           agent,
         ),
       );
-      recordLoadedToolSearchOutput(loadedDeferredToolState, output);
+      recordLoadedToolSearchOutput(loadedDeferredToolState, recordedOutput);
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,
       });
@@ -1234,16 +1237,20 @@ export async function processModelResponseAsync<TContext>(
         hasGeneratedClientToolSearchOutputs = true;
       }
     } else if (output.type === 'tool_search_output') {
+      const recordedOutput = recordHostedMcpDiscovery(output, [
+        ...agent.tools,
+        ...availableTools,
+      ]);
       items.push(
         new RunToolSearchOutputItem(
           attributeToolSearchOutput(
-            output,
+            recordedOutput,
             processingOptions.toolSearchAgentName,
           ),
           agent,
         ),
       );
-      recordLoadedToolSearchOutput(loadedDeferredToolState, output);
+      recordLoadedToolSearchOutput(loadedDeferredToolState, recordedOutput);
       addHostedMcpToolsFromToolSearchOutput(output, mcpToolMap, {
         preserveExistingServerLabels: originalMcpServerLabels,
       });

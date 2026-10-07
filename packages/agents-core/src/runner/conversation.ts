@@ -1,7 +1,6 @@
 import { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
 import { RunInputItem, RunItem, RunToolSearchOutputItem } from '../items';
-import { attributeToolSearchOutput } from './toolSearchAttribution';
 import { ModelResponse } from '../model';
 import { RunContext } from '../runContext';
 import { AgentInputItem } from '../types';
@@ -356,11 +355,15 @@ function consumeCorrelationCount(
 
 // SDK discovery ownership does not change the item already stored by the provider.
 function getServerItemKey(item: AgentInputItem): string {
-  return getAgentInputItemKey(
-    item.type === 'tool_search_output'
-      ? attributeToolSearchOutput(item, undefined)
-      : item,
-  );
+  if (item.type === 'tool_search_output') {
+    const {
+      toolSearchAgentName: _owner,
+      toolSearchMcpToolNames: _provenance,
+      ...providerItem
+    } = item;
+    return getAgentInputItemKey(providerItem);
+  }
+  return getAgentInputItemKey(item);
 }
 
 /**
