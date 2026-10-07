@@ -82,13 +82,13 @@ describe('UnixLocalSandboxClient process sessions', () => {
   it('fails tty commands clearly when the Python PTY bridge is unavailable', async () => {
     const originalPython = process.env.OPENAI_AGENTS_PYTHON;
     const missingPython = join(rootDir, 'missing-python3');
-    process.env.OPENAI_AGENTS_PYTHON = missingPython;
 
     try {
       const client = new UnixLocalSandboxClient({
         workspaceBaseDir: rootDir,
       });
       const session = await client.create(new Manifest());
+      process.env.OPENAI_AGENTS_PYTHON = missingPython;
 
       await expect(
         session.execCommand({

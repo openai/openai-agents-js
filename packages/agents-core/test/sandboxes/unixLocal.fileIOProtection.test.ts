@@ -66,15 +66,11 @@ describe.skipIf(process.platform === 'win32')(
       expect(probe).toHaveBeenCalledTimes(calls);
     });
 
-    it.each(['auto', 'off'] as const)(
-      'preserves Node file and editor behavior in %s mode without Python',
+    it.each(['auto', 'required'] as const)(
+      'preserves protected file and editor behavior in %s mode',
       async (mode) => {
-        vi.stubEnv('OPENAI_AGENTS_PYTHON', join(root, 'missing-python'));
-        const probe = vi.spyOn(childProcess, 'spawnSync');
         const session = await create(mode);
-        expect(session.fileIOBackend).toBe('node');
-        expect(probe).not.toHaveBeenCalled();
-        vi.unstubAllEnvs();
+        expect(session.fileIOBackend).toBe('python');
         const editor = session.createEditor();
         await editor.createFile({
           type: 'create_file',
@@ -125,46 +121,102 @@ describe.skipIf(process.platform === 'win32')(
         expect(await session.viewImage({ path: 'image.png' })).toMatchObject({
           image: { data: Uint8Array.from(png), mediaType: 'image/png' },
         });
-        expect(session.fileIOBackend).toBe('node');
-        expect(probe).not.toHaveBeenCalled();
+        expect(session.fileIOBackend).toBe('python');
       },
     );
 
-    it('skips interpreter discovery in off mode even with a usable installation', async () => {
+    it('rejects off mode even with a usable installation', async () => {
       const probe = vi.spyOn(childProcess, 'spawnSync');
-      expect((await create('off')).fileIOBackend).toBe('node');
+      await expect(create('off')).rejects.toThrow(/cannot be disabled/);
       expect(probe).not.toHaveBeenCalled();
-    });
-
-    it('rejects required protection before workspace or environment setup', async () => {
-      vi.stubEnv('OPENAI_AGENTS_PYTHON', join(root, 'missing-python'));
-      const manifest = new Manifest();
-      const environment = vi.spyOn(manifest, 'resolveEnvironment');
-      await expect(
-        new UnixLocalSandboxClient({
-          workspaceBaseDir: root,
-          fileIOProtection: 'off',
-        }).create(manifest, { fileIOProtection: 'required' }),
-      ).rejects.toThrow(/Required file I\/O protection/);
-      expect(environment).not.toHaveBeenCalled();
       expect(await readdir(root)).toEqual([]);
     });
 
-    it('uses the capability probe result for auto and required modes', async () => {
-      // Model an installed interpreter that lacks the worker's OS capabilities.
-      vi.spyOn(childProcess, 'spawnSync').mockReturnValue({
-        status: 1,
-        signal: null,
-        pid: 1,
-        output: [],
-        stdout: '',
-        stderr: 'unsupported',
-      });
-      expect((await create()).fileIOBackend).toBe('node');
-      await expect(create('required')).rejects.toThrow(
+    it.each([undefined, 'auto', 'required'] as const)(
+      'rejects missing Python before setup in %s mode',
+      async (mode) => {
+        vi.stubEnv('OPENAI_AGENTS_PYTHON', join(root, 'missing-python'));
+        const manifest = new Manifest();
+        const environment = vi.spyOn(manifest, 'resolveEnvironment');
+        await expect(
+          new UnixLocalSandboxClient({ workspaceBaseDir: root }).create(
+            manifest,
+            { fileIOProtection: mode },
+          ),
+        ).rejects.toThrow(/Required file I\/O protection/);
+        expect(environment).not.toHaveBeenCalled();
+        expect(await readdir(root)).toEqual([]);
+      },
+    );
+
+    it.each([undefined, 'auto', 'required'] as const)(
+      'rejects an unsuccessful capability probe in %s mode',
+      async (mode) => {
+        // Model an installed interpreter without the worker's OS capabilities.
+        vi.spyOn(childProcess, 'spawnSync').mockReturnValue({
+          status: 1,
+          signal: null,
+          pid: 1,
+          output: [],
+          stdout: '',
+          stderr: 'unsupported',
+        });
+        await expect(create(mode)).rejects.toThrow(
+          /descriptor-relative filesystem support/,
+        );
+        expect(await readdir(root)).toEqual([]);
+      },
+    );
+
+    it('rejects a relative host interpreter path', async () => {
+      vi.stubEnv('OPENAI_AGENTS_PYTHON', './python3');
+      await expect(create()).rejects.toThrow(/absolute executable path/);
+      expect(await readdir(root)).toEqual([]);
+    });
+
+    it('rejects Python without search-only directory descriptors before setup', async () => {
+      const spawnSync = childProcess.spawnSync;
+      vi.spyOn(childProcess, 'spawnSync').mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnSyncOptions,
+      ) => {
+        const rewritten = [...args];
+        rewritten[3] = `import os
+for flag in ("O_SEARCH", "O_PATH"):
+    if hasattr(os, flag):
+        delattr(os, flag)
+${rewritten[3]}`;
+        return spawnSync(command, rewritten, options);
+      }) as typeof childProcess.spawnSync);
+      await expect(create()).rejects.toThrow(
         /descriptor-relative filesystem support/,
       );
+      expect(await readdir(root)).toEqual([]);
     });
+
+    it.skipIf(process.platform === 'darwin')(
+      'rejects Python without file metadata preservation before setup',
+      async () => {
+        const spawnSync = childProcess.spawnSync;
+        vi.spyOn(childProcess, 'spawnSync').mockImplementation(((
+          command: string,
+          args: string[],
+          options: childProcess.SpawnSyncOptions,
+        ) => {
+          const rewritten = [...args];
+          rewritten[3] = `import os
+if hasattr(os, "removexattr"):
+    del os.removexattr
+${rewritten[3]}`;
+          return spawnSync(command, rewritten, options);
+        }) as typeof childProcess.spawnSync);
+        await expect(create()).rejects.toThrow(
+          /descriptor-relative filesystem support/,
+        );
+        expect(await readdir(root)).toEqual([]);
+      },
+    );
 
     it('does not retry failed Python writes with Node in auto mode', async () => {
       const session = await create();
@@ -194,7 +246,7 @@ describe.skipIf(process.platform === 'win32')(
     });
 
     it('reselects from current resume options and ignores serialized protection fields', async () => {
-      const original = await create('off');
+      const original = await create();
       const client = new UnixLocalSandboxClient({
         fileIOProtection: 'required',
       });
@@ -209,11 +261,11 @@ describe.skipIf(process.platform === 'win32')(
       const restored = await client.resume(state);
       sessions.push(restored);
       expect(restored.fileIOBackend).toBe('python');
-      const overridden = await client.resume(state, {
-        clientOptions: { fileIOProtection: 'off' },
-      });
-      sessions.push(overridden);
-      expect(overridden.fileIOBackend).toBe('node');
+      await expect(
+        client.resume(state, {
+          clientOptions: { fileIOProtection: 'off' },
+        }),
+      ).rejects.toThrow(/cannot be disabled/);
       const trusted = markRunStateSessionState(state, {
         clientOptions: { fileIOProtection: 'required' },
       });
@@ -225,13 +277,30 @@ describe.skipIf(process.platform === 'win32')(
     });
 
     it('prepares direct session constructors from current options', async () => {
-      const original = await create('off');
+      const original = await create();
       const direct = new UnixLocalSandboxSession({
         state: original.state,
-        fileIOProtection: 'required',
       });
       sessions.push(direct);
       expect(direct.fileIOBackend).toBe('python');
+    });
+    it('rejects missing Python on resume and direct construction', async () => {
+      const original = await create();
+      const client = new UnixLocalSandboxClient();
+      vi.stubEnv('OPENAI_AGENTS_PYTHON', join(root, 'missing-python'));
+      await expect(client.resume(original.state)).rejects.toThrow(
+        /Required file I\/O protection/,
+      );
+      expect(
+        () => new UnixLocalSandboxSession({ state: original.state }),
+      ).toThrow(/Required file I\/O protection/);
+      expect(
+        () =>
+          new UnixLocalSandboxSession({
+            state: original.state,
+            fileIOProtection: 'off',
+          }),
+      ).toThrow(/cannot be disabled/);
     });
   },
 );

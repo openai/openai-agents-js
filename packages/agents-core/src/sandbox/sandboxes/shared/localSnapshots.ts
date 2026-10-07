@@ -81,30 +81,12 @@ export async function createLocalSnapshot(
   };
 }
 
-export async function createRemoteSnapshot(
-  state: LocalSnapshotState,
-  spec: RemoteSnapshotSpec,
-): Promise<RemoteSnapshot> {
-  const data = await createWorkspaceArchive(
-    state.workspaceRootPath,
-    localSnapshotExcludedPaths(state),
-  );
-  const saved = await spec.store.save({
-    id: spec.id,
-    data,
-    metadata: spec.metadata,
-  });
-  return {
-    id: saved.id,
-    type: 'remote',
-    ...(saved.metadata ? { metadata: saved.metadata } : {}),
-  };
-}
-
 export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
   providerName: string,
   state: TState,
   spec: SnapshotSpec | null,
+  capture: <T>(operation: () => Promise<T>) => Promise<T> = (operation) =>
+    operation(),
 ): Promise<LocalSandboxSnapshot | null> {
   if (isNoopSnapshotSpec(spec)) {
     await replaceLocalSnapshot(state, null);
@@ -112,8 +94,23 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
     return null;
   }
   if (isRemoteSnapshotSpec(spec)) {
-    const fingerprint = await computeLocalSnapshotFingerprint(state);
-    const snapshot = await createRemoteSnapshot(state, spec);
+    const { fingerprint, data } = await capture(async () => ({
+      fingerprint: await computeLocalSnapshotFingerprint(state),
+      data: await createWorkspaceArchive(
+        state.workspaceRootPath,
+        localSnapshotExcludedPaths(state),
+      ),
+    }));
+    const saved = await spec.store.save({
+      id: spec.id,
+      data,
+      metadata: spec.metadata,
+    });
+    const snapshot: RemoteSnapshot = {
+      id: saved.id,
+      type: 'remote',
+      ...(saved.metadata ? { metadata: saved.metadata } : {}),
+    };
     await replaceLocalSnapshot(state, snapshot);
     replaceLocalSnapshotFingerprint(state, fingerprint);
     return snapshot;
@@ -124,11 +121,13 @@ export async function persistLocalSnapshot<TState extends LocalSnapshotState>(
     );
   }
 
-  const fingerprint = await computeLocalSnapshotFingerprint(state);
-  const snapshot = await createLocalSnapshot(
-    state,
-    (spec as LocalSnapshotSpec | null) ?? undefined,
-  );
+  const { fingerprint, snapshot } = await capture(async () => ({
+    fingerprint: await computeLocalSnapshotFingerprint(state),
+    snapshot: await createLocalSnapshot(
+      state,
+      (spec as LocalSnapshotSpec | null) ?? undefined,
+    ),
+  }));
   await replaceLocalSnapshot(state, snapshot);
   replaceLocalSnapshotFingerprint(state, fingerprint);
   return snapshot;
