@@ -1,5 +1,22 @@
 # @openai/agents-realtime
 
+## 0.20.0
+
+### Patch Changes
+
+- df20529: fix: Preserve audio interruption after generation with transport-appropriate buffer clearing and response-specific playback duration.
+- Updated dependencies [40f7de2]
+- Updated dependencies [836cb50]
+- Updated dependencies [05241c7]
+- Updated dependencies [4137680]
+- Updated dependencies [8ee5055]
+- Updated dependencies [b89905c]
+- Updated dependencies [d8fa6c3]
+- Updated dependencies [9e32e88]
+- Updated dependencies [2f3591b]
+- Updated dependencies [8567e09]
+  - @openai/agents-core@0.20.0
+
 ## 0.19.0
 
 ### Minor Changes

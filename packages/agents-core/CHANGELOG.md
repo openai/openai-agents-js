@@ -1,5 +1,23 @@
 # @openai/agents-core
 
+## 0.20.0
+
+### Minor Changes
+
+- 836cb50: fix: default automatic MCP tool discovery to 64 pages; set maxListPages explicitly for larger listings
+- 8ee5055: fix: Require trusted Python 3 for UnixLocal file operations and reject disabled protection. Honor `runAs` for file tools and replace edited files without modifying other hardlinks. Updates now require writable parent directories and preserve ordinary permissions and ownership.
+- 8567e09: fix: count model calls after approval resumes toward maxTurns; callers needing a follow-up model response at the limit must increase maxTurns.
+
+### Patch Changes
+
+- 40f7de2: fix: redact unchecked terminal tool output in cancelled session checkpoints while preserving completion history; defer validation for caller-owned RunState resumes
+- 05241c7: fix: preserve hosted MCP discovery provenance across tool identity collisions and session reuse; older namespace-only history requires rediscovery.
+- 4137680: fix: recognize namespace-shaped tool search discovery for deferred hosted MCP calls (#2044).
+- b89905c: fix: Preserve computer tool initializers and serialize each run's resolved computer across overlapping runs.
+- d8fa6c3: fix: Warn when computer calls have pending safety checks without an onSafetyCheck handler, and clarify the callback's opt-in behavior.
+- 9e32e88: fix: Bound streamable HTTP session termination by the client session timeout and cancel stalled cleanup requests.
+- 2f3591b: fix: preserve sticky permission bits through manifest normalization and local and remote materialization, and reapply manifest sticky intent to restored Unix-local and Docker snapshot directories
+
 ## 0.19.0
 
 ### Minor Changes
