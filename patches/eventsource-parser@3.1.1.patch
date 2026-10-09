@@ -1,0 +1,16 @@
+diff --git a/package.json b/package.json
+index a5380e81d36c671c0cdca442b6f7f4ce2dd5fdcd..3edf421614b8d73250c5c0abffcc62ebf9c0cfa8 100644
+--- a/package.json
++++ b/package.json
+@@ -29,6 +29,11 @@
+   "main": "./dist/index.cjs",
+   "module": "./dist/index.js",
+   "types": "./dist/index.d.ts",
++  "typesVersions": {
++    "*": {
++      "stream": ["./dist/stream.d.ts"]
++    }
++  },
+   "exports": {
+     ".": {
+       "source": "./src/index.ts",
