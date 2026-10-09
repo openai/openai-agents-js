@@ -40,7 +40,7 @@ describe('Node.js', () => {
       expect(stdout).toContain('codex thread started:');
       expect(stdout).toContain('codex turn completed, usage:');
       expect(stdout).toMatch(
-        /\[CODEX_TOOL_RESPONSE\].*\^0\.147\.0.*\[\/CODEX_TOOL_RESPONSE\]/s,
+        /\[CODEX_TOOL_RESPONSE\].*\^0\.160\.0.*\[\/CODEX_TOOL_RESPONSE\]/s,
       );
       expect(stdout).toContain('[CODEX_RESPONSE]');
     },

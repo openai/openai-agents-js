@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Refresh this digest when updating the Python 3.14 sandbox test image.
+  DOCKER_TEST_IMAGE: public.ecr.aws/docker/library/python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+
 jobs:
   changes:
     permissions:
@@ -126,6 +130,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Prepare Docker test image
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: |
+          docker pull "$DOCKER_TEST_IMAGE"
+          docker tag "$DOCKER_TEST_IMAGE" python:3.14-slim
       - name: Install pnpm
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
@@ -257,6 +267,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Prepare Docker test image
+        if: ${{ needs.changes.outputs.run_ci == 'true' }}
+        shell: bash
+        run: |
+          docker pull "$DOCKER_TEST_IMAGE"
+          docker tag "$DOCKER_TEST_IMAGE" python:3.14-slim
       - name: Install pnpm
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413

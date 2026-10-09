@@ -11,12 +11,17 @@ export async function main() {
     execute: async ({ city }) => `The weather in ${city} is sunny`,
   });
 
+  const model = openai('gpt-5.2');
+  if (model.specificationVersion !== 'v2') {
+    throw new Error('Expected the AI SDK v2 fixture to use a v2 model.');
+  }
+
   const agent = new Agent({
     name: 'AI SDK v2 Test Agent',
     instructions:
       'You are a helpful assistant. When you need to get the weather, you must use tools.',
     tools: [getWeatherTool],
-    model: aisdk(openai('gpt-5.2')),
+    model: aisdk(model),
     modelSettings: {
       providerData: {
         providerOptions: {

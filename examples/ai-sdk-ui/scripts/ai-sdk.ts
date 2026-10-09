@@ -5,7 +5,7 @@ import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-
 async function main() {
   const result = streamText({
     model: openai('gpt-4.1'),
-    system: 'Respond with three short sentences.',
+    instructions: 'Respond with three short sentences.',
     prompt: 'Tell me about stars.',
   });
 
