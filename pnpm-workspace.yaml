@@ -43,3 +43,5 @@ patchedDependencies:
   # Preserve Prisma 6's BEGIN IMMEDIATE behavior and release on begin failure.
   # Recheck the contention tests before removing this patch on an adapter update.
   '@prisma/adapter-better-sqlite3@7.10.0': patches/@prisma__adapter-better-sqlite3@7.10.0.patch
+  # Restore the stream type mapping for TypeScript node resolution until upstream restores it.
+  eventsource-parser@3.1.1: patches/eventsource-parser@3.1.1.patch

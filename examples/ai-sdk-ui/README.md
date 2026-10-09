@@ -2,6 +2,8 @@
 
 This example shows how to convert an Agents SDK streaming run into responses that are compatible with the AI SDK UI data stream and text stream protocols.
 
+This private example uses AI SDK 7 with `@ai-sdk/react` 4 and `@ai-sdk/openai` 4. The published Agents SDK extension continues to support AI SDK 6 and 7; this example migration does not require existing consumers to upgrade. Applications choosing to upgrade should follow the [AI SDK 7 migration guide](https://ai-sdk.dev/docs/migration-guides/migration-guide-7-0).
+
 ## Run the Next.js chat UI
 
 ```bash
