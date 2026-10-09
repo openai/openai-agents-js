@@ -4,6 +4,8 @@ This project hosts packages to test the different environments that the Agents S
 
 It is intentionally not part of the `pnpm` workspace and instead installs the packages from a local package registry using verdaccio.
 
+Each fixture declares npm in `packageManager` so Dependabot treats its manifest independently instead of adopting the ancestor pnpm workspace. This metadata does not change the Bun or Deno commands used by their runtime tests.
+
 Committed fixture `.npmrc` files use public npm so Dependabot can resolve dependencies without registry credentials. The integration-test global setup temporarily routes `@openai` packages to the local Verdaccio registry and restores each original `.npmrc` during teardown, including after a partial setup failure. Run fixtures through the integration-test commands below to use locally published packages.
 
 ## How to run integration tests

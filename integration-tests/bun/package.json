@@ -3,6 +3,7 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "packageManager": "npm@11.12.1",
   "scripts": {
     "start": "bun run index.ts",
     "start:aisdk": "bun run aisdk.ts",

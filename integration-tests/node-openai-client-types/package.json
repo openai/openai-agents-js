@@ -1,5 +1,6 @@
 {
   "private": true,
+  "packageManager": "npm@11.12.1",
   "type": "module",
   "scripts": {
     "build-check": "npm run build-check:typescript-5-2 && npm run build-check:typescript-6",

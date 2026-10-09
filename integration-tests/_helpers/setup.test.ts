@@ -74,6 +74,24 @@ describe('integration registry setup', () => {
     }
   });
 
+  it('declares standalone npm maintenance for every fixture', async () => {
+    for (const directory of fixtureDirectories) {
+      const manifest = JSON.parse(
+        await fs.readFile(
+          path.join(
+            repositoryRoot,
+            'integration-tests',
+            directory,
+            'package.json',
+          ),
+          'utf8',
+        ),
+      );
+      // Dependabot must not fall back to the ancestor pnpm lockfile/workspace.
+      expect(manifest.packageManager).toMatch(/^npm@\d+\.\d+\.\d+$/);
+    }
+  });
+
   it('routes all fixtures locally for a run, then restores exact original bytes', async () => {
     const teardown = await setup();
     for (const file of originals.keys()) {

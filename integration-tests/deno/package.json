@@ -1,6 +1,7 @@
 {
   "name": "deno",
   "private": true,
+  "packageManager": "npm@11.12.1",
   "scripts": {
     "start": "deno --allow-net --allow-env main.ts"
   },
