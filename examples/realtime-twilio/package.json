@@ -10,7 +10,7 @@
     "fastify": "^5.12.5",
     "twilio": "^6.1.2",
     "ws": "^8.22.0",
-    "zod": "^4.6.5"
+    "zod": "^4.3.5"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

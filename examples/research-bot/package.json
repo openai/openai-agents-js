@@ -3,7 +3,7 @@
   "name": "research-bot",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "zod": "^4.6.5"
+    "zod": "^4.3.5"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

@@ -40,7 +40,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "zod": "^4.6.5"
+    "zod": "^4.3.5"
   },
   "files": [
     "dist"
