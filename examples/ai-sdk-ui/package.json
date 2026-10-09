@@ -25,7 +25,7 @@
     "start:script-ai-sdk": "node scripts/ai-sdk.ts"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "^3.0.109",
+    "@ai-sdk/openai": "^4.0.83",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
