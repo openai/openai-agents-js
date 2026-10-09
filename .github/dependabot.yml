@@ -1,10 +1,4 @@
 version: 2
-registries:
-  public-openai:
-    type: npm-registry
-    url: https://registry.npmjs.org
-    # Hosted updaters cannot use the fixtures' local Verdaccio registry.
-    scope: "@openai"
 updates:
   # The root pnpm workspace includes packages/*, examples/*, and docs.
   - package-ecosystem: "npm"
@@ -28,7 +22,6 @@ updates:
           - "patch"
   # These fixtures install independently from Verdaccio, outside the pnpm workspace.
   - package-ecosystem: "npm"
-    registries: [public-openai]
     directories:
       - "/integration-tests/bun"
       - "/integration-tests/cloudflare-workers/worker"
@@ -61,7 +54,6 @@ updates:
         update-types: ["minor", "patch"]
   - package-ecosystem: "npm"
     directory: "/integration-tests/node-openai-client-types"
-    registries: [public-openai]
     schedule:
       interval: "monthly"
       time: "09:00"
