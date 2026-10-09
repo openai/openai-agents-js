@@ -1,4 +1,10 @@
 version: 2
+registries:
+  public-openai:
+    type: npm-registry
+    url: https://registry.npmjs.org
+    # Hosted updaters cannot use the fixtures' local Verdaccio registry.
+    scope: "@openai"
 updates:
   # The root pnpm workspace includes packages/*, examples/*, and docs.
   - package-ecosystem: "npm"
@@ -20,6 +26,63 @@ updates:
         update-types:
           - "minor"
           - "patch"
+  # These fixtures install independently from Verdaccio, outside the pnpm workspace.
+  - package-ecosystem: "npm"
+    registries: [public-openai]
+    directories:
+      - "/integration-tests/bun"
+      - "/integration-tests/cloudflare-workers/worker"
+      - "/integration-tests/deno"
+      - "/integration-tests/node"
+      - "/integration-tests/node-ai-sdk-v2-ts"
+      - "/integration-tests/node-ai-sdk-v3-ts"
+      - "/integration-tests/node-ai-sdk-v4-ts"
+      - "/integration-tests/node-sdk-behavior"
+      - "/integration-tests/node-zod3"
+      - "/integration-tests/node-zod4"
+      - "/integration-tests/node-zod4-ts"
+      - "/integration-tests/vite-react"
+    schedule:
+      interval: "monthly"
+      time: "09:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 5
+    # Keep compatibility fixtures on their tested dependency majors.
+    # update-types ignores affect ordinary version updates, not security updates.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      integration-minor-patch:
+        applies-to: "version-updates"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "npm"
+    directory: "/integration-tests/node-openai-client-types"
+    registries: [public-openai]
+    schedule:
+      interval: "monthly"
+      time: "09:00"
+      timezone: "UTC"
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 2
+    # Exact compiler/client versions are the compatibility oracle. Security
+    # updates remain eligible; maintainers must review any oracle migration.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "openai"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+      - dependency-name: "typescript*"
+        update-types: ["version-update:semver-minor", "version-update:semver-patch"]
+    groups:
+      integration-minor-patch:
+        applies-to: "version-updates"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
