@@ -115,13 +115,18 @@ const getWeatherTool = tool({
   execute: async ({ city }) => `${city} is sunny.`,
 });
 
+const model = openrouter('openai/gpt-6-astra', {
+  reasoning: { effort: 'low' },
+});
+if (model.specificationVersion !== 'v4') {
+  throw new Error('Expected the AI SDK v4 fixture to use a v4 model.');
+}
+
 const agent = new Agent({
   name: 'AI SDK v4 Test Agent',
   instructions: 'Use get_weather to answer the question.',
   tools: [getWeatherTool],
-  model: aisdk(
-    openrouter('openai/gpt-6-astra', { reasoning: { effort: 'low' } }),
-  ),
+  model: aisdk(model),
 });
 
 try {

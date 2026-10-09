@@ -13,9 +13,9 @@
   "dependencies": {
     "@openai/agents": "latest",
     "@openai/agents-extensions": "latest",
-    "@openai/codex-sdk": "^0.147.0",
+    "@openai/codex-sdk": "^0.160.0",
     "typescript": "^5.9.3",
-    "ws": "^8.18.1",
-    "zod": "^4.0.0"
+    "ws": "^8.22.0",
+    "zod": "^4.6.5"
   }
 }
