@@ -1,6 +1,7 @@
 {
   "name": "vite-react",
   "private": true,
+  "packageManager": "npm@11.12.1",
   "version": "0.0.0",
   "type": "module",
   "scripts": {
