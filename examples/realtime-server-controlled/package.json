@@ -14,8 +14,8 @@
   "dependencies": {
     "@openai/agents-realtime": "workspace:*",
     "dotenv": "^16.5.0",
-    "openai": "^7.2.0",
-    "zod": "^4.3.5"
+    "openai": "^7.27.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

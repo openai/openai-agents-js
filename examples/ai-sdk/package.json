@@ -3,12 +3,12 @@
   "name": "ai-sdk",
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.116",
-    "@ai-sdk/google": "^4.0.79",
+    "@ai-sdk/google": "^4.0.87",
     "@ai-sdk/openai": "^3.0.109",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openrouter/ai-sdk-provider": "^2.9.0",
-    "zod": "4.3.5"
+    "zod": "4.6.5"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
