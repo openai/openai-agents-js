@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@openai/agents-core": "workspace:*",
-    "openai": "^7.2.0"
+    "openai": "^7.27.0"
   },
   "scripts": {
     "prebuild": "node ../../scripts/embedMeta.mts",
@@ -40,7 +40,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "zod": "^4.3.5"
+    "zod": "^4.6.5"
   },
   "files": [
     "dist"
