@@ -14,11 +14,11 @@ env:
 jobs:
   version:
     if: ${{ github.repository == 'openai/openai-agents-js' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' && github.sha == github.event.workflow_run.head_sha }}
+    environment: release
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       id-token: write  # required for trusted publishing
     steps:
       - name: Checkout code repository
@@ -26,6 +26,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
@@ -49,15 +50,26 @@ jobs:
       - name: Build packages
         run: pnpm build:ci
 
+      - name: Create release app token
+        id: release-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.OPENAI_SDKS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OPENAI_SDKS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - name: Create and publish versions
         id: changesets
         uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51
         with:
+          github-token: ${{ steps.release-token.outputs.token }}
           commit-message: 'chore: update versions'
           pr-title: 'chore: update versions'
           version-script: pnpm bump-version
           publish-script: pnpm ci:publish
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: true
           NPM_CONFIG_ACCESS: public

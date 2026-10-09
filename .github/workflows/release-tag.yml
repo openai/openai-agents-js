@@ -28,7 +28,7 @@ jobs:
           echo "Event actor: $event_actor"
           echo "Latest commit message: $commit_message"
           echo "Latest commit author: $commit_author"
-          if [[ "$commit_message" == "chore: update versions"* && "$commit_author" == "github-actions[bot]" ]]; then
+          if [[ "$commit_message" == "chore: update versions"* && ( "$commit_author" == "github-actions[bot]" || "$commit_author" == "openai-sdks[bot]" ) ]]; then
             echo "is_version_bump=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_version_bump=false" >> "$GITHUB_OUTPUT"
