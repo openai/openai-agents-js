@@ -1,5 +1,12 @@
 # @openai/agents-extensions
 
+## 0.20.1
+
+### Patch Changes
+
+- 4521cf5: fix: refresh WebSocket dependencies and development tooling.
+- @openai/agents-core@0.20.1
+
 ## 0.20.0
 
 ### Minor Changes

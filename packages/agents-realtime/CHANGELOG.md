@@ -1,5 +1,13 @@
 # @openai/agents-realtime
 
+## 0.20.1
+
+### Patch Changes
+
+- 4521cf5: fix: refresh WebSocket dependencies and development tooling.
+- 0dd1ef8: fix: update the Realtime browser bundler to Vite 8.
+- @openai/agents-core@0.20.1
+
 ## 0.20.0
 
 ### Patch Changes
