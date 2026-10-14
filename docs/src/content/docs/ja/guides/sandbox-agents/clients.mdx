@@ -194,7 +194,6 @@ Docker では、同じインメモリの `RunState` を再開するとき、SDK 
 | `DaytonaSandboxClient` | `@openai/agents-extensions/sandbox/daytona` | npm ピア依存関係: `@daytonaio/sdk` |
 | `E2BSandboxClient` | `@openai/agents-extensions/sandbox/e2b` | npm ピア依存関係: `e2b` または `@e2b/code-interpreter` |
 | `ModalSandboxClient` | `@openai/agents-extensions/sandbox/modal` | npm ピア依存関係: `modal` |
-| `RunloopSandboxClient` | `@openai/agents-extensions/sandbox/runloop` | npm ピア依存関係: `@runloop/api-client` |
 | `VercelSandboxClient` | `@openai/agents-extensions/sandbox/vercel` | npm ピア依存関係: `@vercel/sandbox` |
 
 `ModalSandboxClient` でサンドボックスを作成する場合、CPU とメモリの予約量を要求するには `cpu` と `memoryMiB` を使用します。上限を設定するには `cpuLimit` と `memoryLimitMiB` を使用します。これらのオプションは、クライアントコンストラクターまたは実行ごとの `sandbox.options` で設定できます。実行ごとの値は、コンストラクターのデフォルト値を上書きします。すべての値は、正の有限数である必要があります。`cpuLimit` を使用するには `cpu` が必要であり、それより小さい値にはできません。同様に、`memoryLimitMiB` を使用するには `memoryMiB` が必要であり、それより小さい値にはできません。
@@ -211,7 +210,7 @@ Docker では、同じインメモリの `RunState` を再開するとき、SDK 
 
 マウントから参照される認証情報ファイルは、直接またはシンボリックリンク経由で、シリアライズ可能なマニフェストエントリーへ解決されてはなりません。動的なマニフェスト変更はセッションごとにシリアライズされます。プロバイダー側の処理が開始した可能性のある段階で、特権マウントへの移行または置換に伴うアンマウントが失敗した場合、SDK は不明確な状態を再利用または永続化せず、そのセッションを無効化して終了します。
 
-シリアライズされたサンドボックス状態では、サンドボックス内のマウントヘルパーが選択した環境内の認証情報を含め、マウント認証情報が省略されます。永続化されたマウントトポロジーを再開するには、現在の信頼済みマニフェストが必要です。再開可能な外部またはプロバイダー固有のマウントでは、認証情報を除いた現在と永続化済みのマウントトポロジーが一致した後にのみ、SDK が認証情報を復元します。明示的な `sessionState` で既存のプロバイダー固有マウントへ再接続できるのは、秘匿されていない稼働中の権限が現在の信頼済みマニフェストと一致する場合のみです。権限が秘匿、ローテーション、または削除されている場合は、新しいサンドボックスが必要です。認証情報を除いたトポロジーと分離できない不透明な設定は、再開できません。ランナーが、サンドボックス内のマウントヘルパーを使用していたシリアライズ済み `RunState` エントリーを復元する場合、保存されたセッションを破棄し、現在の信頼済み設定から新しいサンドボックスを作成します。呼び出し元が提供する明示的な `sessionState` とプロバイダーの直接再開では、コンテナ内のマウント状態が拒否されます。新しいサンドボックスを明示的に開始してください。不透明な `secretRefs` を介して提供された Runloop の認証情報ファイル変数は、コンテナ内マウントでは拒否されます。マウント前に SDK が有効なパスを検証できるよう、現在の信頼済みパスを `managedSecrets` で指定してください。
+シリアライズされたサンドボックス状態では、サンドボックス内のマウントヘルパーが選択した環境内の認証情報を含め、マウント認証情報が省略されます。永続化されたマウントトポロジーを再開するには、現在の信頼済みマニフェストが必要です。再開可能な外部またはプロバイダー固有のマウントでは、認証情報を除いた現在と永続化済みのマウントトポロジーが一致した後にのみ、SDK が認証情報を復元します。明示的な `sessionState` で既存のプロバイダー固有マウントへ再接続できるのは、秘匿されていない稼働中の権限が現在の信頼済みマニフェストと一致する場合のみです。権限が秘匿、ローテーション、または削除されている場合は、新しいサンドボックスが必要です。認証情報を除いたトポロジーと分離できない不透明な設定は、再開できません。ランナーが、サンドボックス内のマウントヘルパーを使用していたシリアライズ済み `RunState` エントリーを復元する場合、保存されたセッションを破棄し、現在の信頼済み設定から新しいサンドボックスを作成します。呼び出し元が提供する明示的な `sessionState` とプロバイダーの直接再開では、コンテナ内のマウント状態が拒否されます。新しいサンドボックスを明示的に開始してください。マウント前に SDK が有効なパスを検証できるよう、現在の信頼済みパスを `managedSecrets` で指定してください。
 
 | バックエンド | マウントに関する備考 |
 | --- | --- |
@@ -221,10 +220,9 @@ Docker では、同じインメモリの `RunState` を再開するとき、SDK 
 | `BlaxelSandboxClient` | S3、R2、GCS のマウントエントリーで、`BlaxelCloudBucketMountStrategy` を使用したクラウドバケットマウントをサポートします。認証情報付きクラウドマウントには SDK 所有のサンドボックスが必要です。再利用される非所有の名前付きサンドボックスでは、認証情報を使用しないクラウドマウント、または `BlaxelDriveMount` と `BlaxelDriveMountStrategy` を使用した永続的な Blaxel Drive を利用できます。 |
 | `DaytonaSandboxClient` | S3、GCS、R2、Azure Blob、Box のマウントエントリーで、`DaytonaCloudBucketMountStrategy` を使用した rclone ベースのマウントをサポートします。 |
 | `E2BSandboxClient` | S3、GCS、R2、Azure Blob、Box のマウントエントリーで、`E2BCloudBucketMountStrategy` を使用した rclone ベースのマウントをサポートします。 |
-| `RunloopSandboxClient` | S3、GCS、R2、Azure Blob、Box のマウントエントリーで、`RunloopCloudBucketMountStrategy` を使用した rclone ベースのマウントをサポートします。 |
 | `VercelSandboxClient` | `VercelCloudBucketMountStrategy` を使用した、作成時の S3 マウントをサポートします。新しいコードでは、完全一致する各マウントパスに対して `withInContainerMountCredentialExposureAcknowledged()` を使用し、インライン認証情報を承認してください。非推奨の `allowS3CredentialExposure: true` オプションは、リリース済みのインライン S3 認証情報設定との互換性のため、引き続き受け入れられます。ただし、環境に存在する認証情報やその他の広範な権限は許可しません。シリアライズされたマウント状態は直接再開できないため、稼働中のマウント済みセッションを再利用してください。 |
 
-E2B と Runloop の rclone ベースのマウントでは、利用可能な場合、SDK は既存の `rclone` バイナリを使用します。それ以外の場合は、SHA-256 チェックサムを検証した後にのみ、SDK で固定された Linux アーカイブをインストールします。サポートされていないアーキテクチャやチェックサム検証の失敗がある場合、マウントを中止します。
+E2B の rclone ベースのマウントでは、利用可能な場合、SDK は既存の `rclone` バイナリを使用します。それ以外の場合は、SHA-256 チェックサムを検証した後にのみ、SDK で固定された Linux アーカイブをインストールします。サポートされていないアーキテクチャやチェックサム検証の失敗がある場合、マウントを中止します。
 
 次の表は、各バックエンドが直接マウントできるリモートストレージエントリーをまとめたものです。
 
@@ -236,10 +234,9 @@ E2B と Runloop の rclone ベースのマウントでは、利用可能な場�
 | `BlaxelSandboxClient` | 対応 | 対応 | 対応 | 非対応 | 非対応 | 非対応 |
 | `DaytonaSandboxClient` | 対応 | 対応 | 対応 | 対応 | 対応 | 非対応 |
 | `E2BSandboxClient` | 対応 | 対応 | 対応 | 対応 | 対応 | 非対応 |
-| `RunloopSandboxClient` | 対応 | 対応 | 対応 | 対応 | 対応 | 非対応 |
 | `VercelSandboxClient` | 対応 | 非対応 | 非対応 | 非対応 | 非対応 | 非対応 |
 
-「対応」は、そのバックエンドで該当する種類のストレージマウントを実行できることを意味します。前述の認証情報境界を回避するものではありません。Docker の `dockerVolumeMountStrategy()`、Modal のクラウドバケットマウント、Cloudflare のバケットマウントでは、マウント認証情報がモデル制御のサンドボックス外部に保持されます。Docker の `inContainerMountStrategy()` と、Daytona、E2B、Runloop の rclone 戦略では、認証情報を受け取る場合、完全一致パスに対する承認が必要です。Box マウントには認証が必要です。Box の権限を型付きマウントフィールドから提供するか、外部の認証情報ファイルまたは設定ファイルから提供するかに応じて、適切な承認を選択してください。Docker の S3 Files マウントでは広範なワークロード ID を使用するため、`withInContainerMountBroadCredentialExposureAcknowledged()` が必要です。
+「対応」は、そのバックエンドで該当する種類のストレージマウントを実行できることを意味します。前述の認証情報境界を回避するものではありません。Docker の `dockerVolumeMountStrategy()`、Modal のクラウドバケットマウント、Cloudflare のバケットマウントでは、マウント認証情報がモデル制御のサンドボックス外部に保持されます。Docker の `inContainerMountStrategy()` と、Daytona と E2B の rclone 戦略では、認証情報を受け取る場合、完全一致パスに対する承認が必要です。Box マウントには認証が必要です。Box の権限を型付きマウントフィールドから提供するか、外部の認証情報ファイルまたは設定ファイルから提供するかに応じて、適切な承認を選択してください。Docker の S3 Files マウントでは広範なワークロード ID を使用するため、`withInContainerMountBroadCredentialExposureAcknowledged()` が必要です。
 
 ### 公開ポート
 

@@ -193,7 +193,6 @@ Docker에서는 SDK가 컨테이너의 ID를 확인하고 현재 매니페스트
 | `DaytonaSandboxClient` | `@openai/agents-extensions/sandbox/daytona` | npm 피어: `@daytonaio/sdk` |
 | `E2BSandboxClient` | `@openai/agents-extensions/sandbox/e2b` | npm 피어: `e2b` 또는 `@e2b/code-interpreter` |
 | `ModalSandboxClient` | `@openai/agents-extensions/sandbox/modal` | npm 피어: `modal` |
-| `RunloopSandboxClient` | `@openai/agents-extensions/sandbox/runloop` | npm 피어: `@runloop/api-client` |
 | `VercelSandboxClient` | `@openai/agents-extensions/sandbox/vercel` | npm 피어: `@vercel/sandbox` |
 
 `ModalSandboxClient`가 샌드박스를 생성할 때 CPU 및 메모리 예약을 요청하려면 `cpu`와 `memoryMiB`를 사용합니다. 상한을 설정하려면 `cpuLimit`과 `memoryLimitMiB`를 사용합니다. 이러한 옵션은 클라이언트 생성자 또는 실행별 `sandbox.options`에서 설정할 수 있으며, 실행별 값이 생성자 기본값을 재정의합니다. 모든 값은 양의 유한 숫자여야 합니다. `cpuLimit`을 사용하려면 `cpu`가 필요하며 그보다 작을 수 없습니다. 마찬가지로 `memoryLimitMiB`를 사용하려면 `memoryMiB`가 필요하며 그보다 작을 수 없습니다.
@@ -210,7 +209,7 @@ Docker에서는 SDK가 컨테이너의 ID를 확인하고 현재 매니페스트
 
 마운트에서 참조하는 자격 증명 파일은 직접 또는 심볼릭 링크를 통해 직렬화 가능한 매니페스트 항목으로 해석될 수 없습니다. 동적 매니페스트 변경은 세션별로 순차 처리됩니다. 프로바이더 작업이 시작되었을 수 있는 시점에 권한이 필요한 마운트 전환 또는 교체 마운트 해제가 실패하면 SDK는 모호한 상태를 재사용하거나 유지하지 않고 해당 세션을 무효화하고 종료합니다.
 
-직렬화된 샌드박스 상태에서는 샌드박스 내부 마운트 헬퍼가 선택한 환경 자격 증명을 포함해 마운트 자격 증명을 생략합니다. 유지된 마운트 토폴로지가 있다면 재개하기 전에 신뢰할 수 있는 현재 매니페스트가 필요합니다. 재개 가능한 외부 또는 프로바이더 네이티브 마운트의 경우 자격 증명이 제거된 현재 마운트 토폴로지와 유지된 마운트 토폴로지가 일치한 후에만 SDK가 자격 증명을 복원합니다. 명시적 `sessionState`를 사용하면 마스킹되지 않은 라이브 권한 정보가 신뢰할 수 있는 현재 매니페스트와 여전히 일치할 때만 기존 프로바이더 네이티브 마운트에 다시 연결할 수 있습니다. 권한 정보가 마스킹되거나 교체 또는 제거되었다면 새 샌드박스가 필요합니다. 자격 증명이 없는 토폴로지와 분리할 수 없는 불투명 구성은 재개할 수 없습니다. 러너가 샌드박스 내부 마운트 헬퍼를 사용한 직렬화된 `RunState` 항목을 복원하면 저장된 해당 세션을 폐기하고 신뢰할 수 있는 현재 구성으로 새 샌드박스를 생성합니다. 호출자가 제공한 명시적 `sessionState`와 직접적인 프로바이더 재개는 컨테이너 내부 마운트 상태를 거부하므로 새 샌드박스를 명시적으로 시작해야 합니다. 불투명한 `secretRefs`를 통해 제공된 Runloop 자격 증명 파일 변수는 컨테이너 내부 마운트에서 거부됩니다. 마운트 전에 SDK가 실제 경로를 검증할 수 있도록 신뢰할 수 있는 현재 경로를 `managedSecrets`를 통해 제공하세요.
+직렬화된 샌드박스 상태에서는 샌드박스 내부 마운트 헬퍼가 선택한 환경 자격 증명을 포함해 마운트 자격 증명을 생략합니다. 유지된 마운트 토폴로지가 있다면 재개하기 전에 신뢰할 수 있는 현재 매니페스트가 필요합니다. 재개 가능한 외부 또는 프로바이더 네이티브 마운트의 경우 자격 증명이 제거된 현재 마운트 토폴로지와 유지된 마운트 토폴로지가 일치한 후에만 SDK가 자격 증명을 복원합니다. 명시적 `sessionState`를 사용하면 마스킹되지 않은 라이브 권한 정보가 신뢰할 수 있는 현재 매니페스트와 여전히 일치할 때만 기존 프로바이더 네이티브 마운트에 다시 연결할 수 있습니다. 권한 정보가 마스킹되거나 교체 또는 제거되었다면 새 샌드박스가 필요합니다. 자격 증명이 없는 토폴로지와 분리할 수 없는 불투명 구성은 재개할 수 없습니다. 러너가 샌드박스 내부 마운트 헬퍼를 사용한 직렬화된 `RunState` 항목을 복원하면 저장된 해당 세션을 폐기하고 신뢰할 수 있는 현재 구성으로 새 샌드박스를 생성합니다. 호출자가 제공한 명시적 `sessionState`와 직접적인 프로바이더 재개는 컨테이너 내부 마운트 상태를 거부하므로 새 샌드박스를 명시적으로 시작해야 합니다.
 
 | 백엔드 | 마운트 참고 사항 |
 | --- | --- |
@@ -220,10 +219,9 @@ Docker에서는 SDK가 컨테이너의 ID를 확인하고 현재 매니페스트
 | `BlaxelSandboxClient` | S3, R2 및 GCS 마운트 항목에서 `BlaxelCloudBucketMountStrategy`를 사용하는 클라우드 버킷 마운트를 지원합니다. 자격 증명이 포함된 클라우드 마운트에는 SDK 소유 샌드박스가 필요합니다. 재사용되는 비소유 명명 샌드박스는 자격 증명이 없는 클라우드 마운트 또는 `BlaxelDriveMount`와 `BlaxelDriveMountStrategy`를 사용하는 영구 Blaxel Drive를 사용할 수 있습니다. |
 | `DaytonaSandboxClient` | S3, GCS, R2, Azure Blob 및 Box 마운트 항목에서 `DaytonaCloudBucketMountStrategy`를 사용하는 rclone 기반 마운트를 지원합니다. |
 | `E2BSandboxClient` | S3, GCS, R2, Azure Blob 및 Box 마운트 항목에서 `E2BCloudBucketMountStrategy`를 사용하는 rclone 기반 마운트를 지원합니다. |
-| `RunloopSandboxClient` | S3, GCS, R2, Azure Blob 및 Box 마운트 항목에서 `RunloopCloudBucketMountStrategy`를 사용하는 rclone 기반 마운트를 지원합니다. |
 | `VercelSandboxClient` | `VercelCloudBucketMountStrategy`를 사용하는 생성 시점 S3 마운트를 지원합니다. 새 코드에서는 정확한 각 마운트 경로에 대해 `withInContainerMountCredentialExposureAcknowledged()`를 사용하여 인라인 자격 증명을 승인하세요. 지원이 중단된 `allowS3CredentialExposure: true` 옵션은 출시된 인라인 S3 자격 증명 구성과의 호환성을 위해 계속 허용되지만, 환경에 존재하는 자격 증명이나 기타 광범위한 권한 정보를 허용하지는 않습니다. 직렬화된 마운트 상태는 직접 재개할 수 없으므로 마운트된 라이브 세션을 재사용하세요. |
 
-E2B 및 Runloop의 rclone 기반 마운트에서는 사용 가능한 기존 `rclone` 바이너리가 있으면 SDK가 이를 사용합니다. 그렇지 않으면 SHA-256 체크섬을 검증한 후에만 SDK에 고정된 Linux 아카이브를 설치합니다. 지원되지 않는 아키텍처와 체크섬 실패는 마운트를 중단합니다.
+E2B의 rclone 기반 마운트에서는 사용 가능한 기존 `rclone` 바이너리가 있으면 SDK가 이를 사용합니다. 그렇지 않으면 SHA-256 체크섬을 검증한 후에만 SDK에 고정된 Linux 아카이브를 설치합니다. 지원되지 않는 아키텍처와 체크섬 실패는 마운트를 중단합니다.
 
 아래 표에는 각 백엔드에서 직접 마운트할 수 있는 원격 스토리지 항목이 요약되어 있습니다.
 
@@ -235,10 +233,9 @@ E2B 및 Runloop의 rclone 기반 마운트에서는 사용 가능한 기존 `rcl
 | `BlaxelSandboxClient` | 예 | 예 | 예 | 아니요 | 아니요 | 아니요 |
 | `DaytonaSandboxClient` | 예 | 예 | 예 | 예 | 예 | 아니요 |
 | `E2BSandboxClient` | 예 | 예 | 예 | 예 | 예 | 아니요 |
-| `RunloopSandboxClient` | 예 | 예 | 예 | 예 | 예 | 아니요 |
 | `VercelSandboxClient` | 예 | 아니요 | 아니요 | 아니요 | 아니요 | 아니요 |
 
-"예"는 백엔드가 해당 스토리지 마운트 유형을 실행할 수 있다는 의미이며, 위에서 설명한 자격 증명 경계를 우회한다는 의미는 아닙니다. Docker의 `dockerVolumeMountStrategy()`, Modal 클라우드 버킷 마운트 및 Cloudflare 버킷 마운트는 마운트 자격 증명을 모델이 제어하는 샌드박스 외부에 유지합니다. Docker의 `inContainerMountStrategy()`와 Daytona, E2B 및 Runloop rclone 전략은 자격 증명을 받을 때마다 정확한 경로 승인이 필요합니다. Box 마운트에는 인증이 필요하므로 Box 권한 정보가 형식이 지정된 마운트 필드를 통해 제공되는지, 외부 자격 증명 또는 구성 파일을 통해 제공되는지에 맞는 승인을 선택하세요. Docker S3 Files 마운트는 광범위한 워크로드 ID를 사용하므로 `withInContainerMountBroadCredentialExposureAcknowledged()`가 필요합니다.
+"예"는 백엔드가 해당 스토리지 마운트 유형을 실행할 수 있다는 의미이며, 위에서 설명한 자격 증명 경계를 우회한다는 의미는 아닙니다. Docker의 `dockerVolumeMountStrategy()`, Modal 클라우드 버킷 마운트 및 Cloudflare 버킷 마운트는 마운트 자격 증명을 모델이 제어하는 샌드박스 외부에 유지합니다. Docker의 `inContainerMountStrategy()`와 Daytona, E2B rclone 전략은 자격 증명을 받을 때마다 정확한 경로 승인이 필요합니다. Box 마운트에는 인증이 필요하므로 Box 권한 정보가 형식이 지정된 마운트 필드를 통해 제공되는지, 외부 자격 증명 또는 구성 파일을 통해 제공되는지에 맞는 승인을 선택하세요. Docker S3 Files 마운트는 광범위한 워크로드 ID를 사용하므로 `withInContainerMountBroadCredentialExposureAcknowledged()`가 필요합니다.
 
 ### 노출 포트
 
