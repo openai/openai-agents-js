@@ -253,27 +253,3 @@ Run:
 ```bash
 pnpm -F sandbox start:daytona -- --stream
 ```
-
-## Runloop
-
-Required environment variables:
-
-```bash
-export OPENAI_API_KEY=...
-export RUNLOOP_API_KEY=...
-```
-
-How to get `RUNLOOP_API_KEY`:
-
-1. Create a Runloop account or sign in at `https://platform.runloop.ai`.
-2. Open the `Settings` page in the Runloop Dashboard.
-3. Create an API key.
-4. Export it in your shell before running the example.
-
-The Runloop SDK quickstart uses the same `RUNLOOP_API_KEY` variable name, and this example also checks it explicitly at startup, so it must already be present in your shell environment when you launch `start:runloop`.
-
-Run:
-
-```bash
-pnpm -F sandbox start:runloop -- --stream
-```

@@ -200,11 +200,6 @@
           "require": "./dist/sandbox/modal/index.js",
           "import": "./dist/sandbox/modal/index.mjs"
         },
-        "./sandbox/runloop": {
-          "types": "./dist/sandbox/runloop/index.d.ts",
-          "require": "./dist/sandbox/runloop/index.js",
-          "import": "./dist/sandbox/runloop/index.mjs"
-        },
         "./sandbox/vercel": {
           "types": "./dist/sandbox/vercel/index.d.ts",
           "require": "./dist/sandbox/vercel/index.js",
@@ -222,7 +217,6 @@
         "@daytonaio/sdk",
         "@e2b/code-interpreter",
         "@openai/codex-sdk",
-        "@runloop/api-client",
         "@vercel/sandbox",
         "ai",
         "e2b",
@@ -262,26 +256,7 @@
       "optionalPeers": []
     }
   },
-  "selectedPublicProperties": [
-    {
-      "package": "@openai/agents-extensions",
-      "subpath": "./sandbox/runloop",
-      "export": "RunloopPlatformClient",
-      "properties": [
-        "blueprints",
-        "benchmarks",
-        "secrets",
-        "networkPolicies",
-        "axons"
-      ]
-    },
-    {
-      "package": "@openai/agents-extensions",
-      "subpath": "./sandbox/runloop",
-      "export": "RunloopSandboxClient",
-      "properties": ["platform"]
-    }
-  ],
+  "selectedPublicProperties": [],
   "selectedPublicTypeAliases": [
     {
       "package": "@openai/agents-core",

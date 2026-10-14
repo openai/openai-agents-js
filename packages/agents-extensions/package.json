@@ -58,11 +58,6 @@
       "require": "./dist/sandbox/modal/index.js",
       "import": "./dist/sandbox/modal/index.mjs"
     },
-    "./sandbox/runloop": {
-      "types": "./dist/sandbox/runloop/index.d.ts",
-      "require": "./dist/sandbox/runloop/index.js",
-      "import": "./dist/sandbox/runloop/index.mjs"
-    },
     "./sandbox/vercel": {
       "types": "./dist/sandbox/vercel/index.d.ts",
       "require": "./dist/sandbox/vercel/index.js",
@@ -81,7 +76,6 @@
     "@e2b/code-interpreter": "^2.3.3",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": ">=0.86.0",
-    "@runloop/api-client": "^1.16.2",
     "@vercel/sandbox": "^1.9.3",
     "ai": "^6.0.0 || ^7.0.0",
     "e2b": "^2.14.1",
@@ -114,9 +108,6 @@
     "modal": {
       "optional": true
     },
-    "@runloop/api-client": {
-      "optional": true
-    },
     "@vercel/sandbox": {
       "optional": true
     }
@@ -135,7 +126,6 @@
     "@e2b/code-interpreter": "2.8.0",
     "@openai/agents": "workspace:>=0.0.0",
     "@openai/codex-sdk": "^0.160.0",
-    "@runloop/api-client": "1.32.0",
     "@vercel/sandbox": "1.9.3",
     "ai": "^6.0.277",
     "e2b": "2.52.0",
@@ -163,9 +153,6 @@
       ],
       "sandbox/modal": [
         "dist/sandbox/modal/index.d.ts"
-      ],
-      "sandbox/runloop": [
-        "dist/sandbox/runloop/index.d.ts"
       ],
       "sandbox/vercel": [
         "dist/sandbox/vercel/index.d.ts"

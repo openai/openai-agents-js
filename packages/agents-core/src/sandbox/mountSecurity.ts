@@ -76,7 +76,6 @@ const INSIDE_SANDBOX_STRATEGIES = new Set([
   'in_container',
   'e2b_cloud_bucket',
   'daytona_cloud_bucket',
-  'runloop_cloud_bucket',
   'vercel_cloud_bucket',
   'blaxel_cloud_bucket',
 ]);
@@ -85,7 +84,6 @@ const ENVIRONMENT_CREDENTIAL_STRATEGIES = new Set([
   'in_container',
   'e2b_cloud_bucket',
   'daytona_cloud_bucket',
-  'runloop_cloud_bucket',
   'vercel_cloud_bucket',
 ]);
 
@@ -110,7 +108,6 @@ const RCLONE_STRATEGY_TYPES = [
   'in_container',
   'e2b_cloud_bucket',
   'daytona_cloud_bucket',
-  'runloop_cloud_bucket',
 ] as const;
 
 const IN_CONTAINER_MOUNT_CREDENTIAL_CAPABILITIES: readonly InContainerMountCredentialCapability[] =
@@ -724,8 +721,7 @@ function resolvedInContainerMountPatternType(
   const strategyType = mountStrategyType(entry);
   if (
     strategyType === 'e2b_cloud_bucket' ||
-    strategyType === 'daytona_cloud_bucket' ||
-    strategyType === 'runloop_cloud_bucket'
+    strategyType === 'daytona_cloud_bucket'
   ) {
     return 'rclone';
   }
@@ -2152,8 +2148,7 @@ function mountUsesRcloneEnvironment(entry: Mount | TypedMount): boolean {
   }
   if (
     strategyType === 'e2b_cloud_bucket' ||
-    strategyType === 'daytona_cloud_bucket' ||
-    strategyType === 'runloop_cloud_bucket'
+    strategyType === 'daytona_cloud_bucket'
   ) {
     return true;
   }

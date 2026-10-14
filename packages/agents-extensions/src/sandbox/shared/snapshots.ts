@@ -2,11 +2,7 @@ import { SandboxSnapshotError } from '@openai/agents-core/sandbox';
 import { toWorkspaceArchiveBytes } from './archive';
 
 export type NativeSnapshotProvider =
-  | 'e2b'
-  | 'modal_snapshot_directory'
-  | 'modal_snapshot_filesystem'
-  | 'runloop'
-  | 'vercel';
+  'e2b' | 'modal_snapshot_directory' | 'modal_snapshot_filesystem' | 'vercel';
 
 export type NativeSnapshotRef = {
   provider: NativeSnapshotProvider;
@@ -18,7 +14,6 @@ const NATIVE_SNAPSHOT_PREFIXES: Record<NativeSnapshotProvider, string> = {
   e2b: 'E2B_SANDBOX_SNAPSHOT_V1\n',
   modal_snapshot_directory: 'MODAL_SANDBOX_DIR_SNAPSHOT_V1\n',
   modal_snapshot_filesystem: 'MODAL_SANDBOX_FS_SNAPSHOT_V1\n',
-  runloop: 'RUNLOOP_SANDBOX_SNAPSHOT_V1\n',
   vercel: 'UC_VERCEL_SNAPSHOT_V1\n',
 };
 
