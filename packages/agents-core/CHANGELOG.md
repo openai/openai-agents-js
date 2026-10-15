@@ -1,5 +1,15 @@
 # @openai/agents-core
 
+## 0.21.0
+
+### Minor Changes
+
+- 7b05470: feat: Remove the Runloop sandbox provider and its public API; see the [migration guide](https://github.com/openai/openai-agents-js/tree/main/examples/sandbox/extensions#migrating-from-runloop) for supported alternatives.
+
+### Patch Changes
+
+- 976579e: fix: recognize GPT-6 Astra, Sol, Luna, and GPT-6.1 Sol in sandbox dynamic compaction thresholds (#2068).
+
 ## 0.20.0
 
 ### Minor Changes
