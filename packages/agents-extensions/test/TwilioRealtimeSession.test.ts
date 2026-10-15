@@ -5,6 +5,7 @@ import {
   OpenAIRealtimeWebSocket,
   RealtimeAgent,
   RealtimeSession,
+  type RealtimeAudioFormat,
   type RealtimeSessionConfig,
 } from '@openai/agents/realtime';
 import { TwilioRealtimeTransportLayer } from '../src/TwilioRealtimeTransport';
@@ -34,7 +35,11 @@ class RecordingSocket extends EventEmitter {
 }
 
 describe('RealtimeSession transport audio defaults', () => {
-  const configs: [string, Partial<RealtimeSessionConfig> | undefined][] = [
+  const configs: [
+    string,
+    Partial<RealtimeSessionConfig> | undefined,
+    RealtimeAudioFormat?,
+  ][] = [
     ['omitted config', undefined],
     ['empty config', {}],
     ['top-level voice', { voice: 'verse' }],
@@ -48,11 +53,16 @@ describe('RealtimeSession transport audio defaults', () => {
         },
       },
     ],
+    [
+      'explicit input format override',
+      { audio: { input: { format: { type: 'audio/pcm', rate: 24000 } } } },
+      { type: 'audio/pcm', rate: 24000 },
+    ],
   ];
 
   it.each(configs)(
     'uses Twilio formats with %s across agent updates',
-    async (_, config) => {
+    async (_, config, expectedInputFormat = { type: 'audio/pcmu' }) => {
       const socket = new RecordingSocket();
       const transport = new TwilioRealtimeTransportLayer({
         twilioWebSocket: new RecordingSocket() as unknown as WebSocket,
@@ -75,7 +85,7 @@ describe('RealtimeSession transport audio defaults', () => {
         const updates = socket.sessionUpdates();
         expect(updates.length).toBeGreaterThan(initialUpdates.length);
         for (const { session: payload } of updates) {
-          expect(payload.audio.input.format).toEqual({ type: 'audio/pcmu' });
+          expect(payload.audio.input.format).toEqual(expectedInputFormat);
           expect(payload.audio.output.format).toEqual({ type: 'audio/pcmu' });
           if (
             config?.voice ||

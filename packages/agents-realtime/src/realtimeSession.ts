@@ -34,6 +34,7 @@ import {
   validateToolInvocationName,
 } from '@openai/agents-core/utils/internal';
 import type {
+  RealtimeAudioFormat,
   RealtimeSessionConfig,
   RealtimeSessionConfigDefinition,
   RealtimeToolDefinition,
@@ -207,19 +208,26 @@ export type RealtimeSessionConnectOptions = {
   callId?: string;
 };
 
-function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
-  const config = JSON.parse(
-    JSON.stringify(DEFAULT_OPENAI_REALTIME_SESSION_CONFIG),
-  ) as Partial<RealtimeSessionConfigDefinition>;
-  // Leave codecs to the transport (for example, Twilio defaults to mu-law),
-  // while retaining session defaults such as input transcription.
-  if (config.audio?.input) {
-    delete config.audio.input.format;
-  }
-  if (config.audio?.output) {
-    delete config.audio.output.format;
-  }
-  return config;
+function cloneDefaultSessionConfig(
+  audioFormat?: RealtimeAudioFormat,
+): Partial<RealtimeSessionConfig> {
+  const defaults = DEFAULT_OPENAI_REALTIME_SESSION_CONFIG;
+  return JSON.parse(
+    JSON.stringify({
+      ...defaults,
+      audio: {
+        ...defaults.audio,
+        input: {
+          ...defaults.audio?.input,
+          format: audioFormat ?? defaults.audio?.input?.format,
+        },
+        output: {
+          ...defaults.audio?.output,
+          format: audioFormat ?? defaults.audio?.output?.format,
+        },
+      },
+    }),
+  ) as Partial<RealtimeSessionConfig>;
 }
 
 function validateRealtimeToolExecutionConfig(
@@ -426,8 +434,7 @@ export class RealtimeSession<
   // modalities, speed, toolChoice, turnDetection, etc.). Without this, updating
   // the agent would drop audio format overrides (e.g. g711_ulaw) and revert to
   // transport defaults causing issues for integrations like Twilio.
-  #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
-    cloneDefaultSessionConfig();
+  #lastSessionConfig: Partial<RealtimeSessionConfig> | null = null;
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
   #toolExecution: RealtimeToolExecutionConfig | undefined;
   #eventListenersAttached = false;
@@ -453,6 +460,10 @@ export class RealtimeSession<
     } else {
       this.#transport = options.transport;
     }
+
+    this.#lastSessionConfig = cloneDefaultSessionConfig(
+      this.#transport.getDefaultAudioFormat?.(),
+    );
 
     this.#currentAgent = initialAgent;
     this.#context = new RunContext<RealtimeContextData<TBaseContext>>({

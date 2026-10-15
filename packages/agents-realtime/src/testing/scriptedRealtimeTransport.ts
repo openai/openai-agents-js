@@ -26,7 +26,8 @@ type FunctionKeys<T> = {
 
 export type RealtimeTransportMethod = Exclude<
   FunctionKeys<RealtimeTransportLayer>,
-  'emit' | 'off' | 'on' | 'once'
+  // Configuration lookup does not produce an outbound transport call.
+  'emit' | 'off' | 'on' | 'once' | 'getDefaultAudioFormat'
 >;
 
 type DeclaredRealtimeTransportCallData = {

@@ -156,6 +156,11 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
     this.#registerEventListeners();
   }
 
+  /** The codec used by Twilio Media Streams for input and output audio. */
+  getDefaultAudioFormat(): 'g711_ulaw' {
+    return 'g711_ulaw';
+  }
+
   _setInputAndOutputAudioFormat(
     partialConfig?: Partial<RealtimeSessionConfig>,
   ): Partial<RealtimeSessionConfig> {

@@ -607,6 +607,33 @@ describe('RealtimeSession', () => {
     );
   });
 
+  it('preserves PCM defaults for custom transports and initial configuration', async () => {
+    const transport = new FakeTransport();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'First' }), {
+      transport,
+    });
+    const initialConfig = await session.getInitialSessionConfig();
+    await session.connect({ apiKey: 'test' });
+    await session.updateAgent(new RealtimeAgent({ name: 'Next' }));
+
+    for (const config of [
+      initialConfig,
+      transport.connectCalls[0].initialSessionConfig!,
+      transport.updateSessionConfigCalls.at(-1)!,
+    ]) {
+      const normalized = toNewSessionConfig(config);
+      expect(normalized.audio?.input?.format).toEqual({
+        type: 'audio/pcm',
+        rate: 24000,
+      });
+      expect(normalized.audio?.output?.format).toEqual({
+        type: 'audio/pcm',
+        rate: 24000,
+      });
+    }
+    session.close();
+  });
+
   it('computes initial session config with tracing metadata and prompt', async () => {
     const agent = new RealtimeAgent({
       name: 'A',
