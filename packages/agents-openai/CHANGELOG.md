@@ -1,5 +1,13 @@
 # @openai/agents-openai
 
+## 0.21.0
+
+### Patch Changes
+
+- Updated dependencies [7b05470]
+- Updated dependencies [976579e]
+  - @openai/agents-core@0.21.0
+
 ## 0.20.0
 
 ### Patch Changes
