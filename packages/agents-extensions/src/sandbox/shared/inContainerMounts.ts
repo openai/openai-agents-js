@@ -99,7 +99,6 @@ type RcloneMountEnvironmentState = SandboxSessionState & {
 const RCLONE_IN_CONTAINER_STRATEGY_TYPES = new Set([
   'e2b_cloud_bucket',
   'daytona_cloud_bucket',
-  'runloop_cloud_bucket',
 ]);
 
 // BEGIN RCLONE RELEASE PIN

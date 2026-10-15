@@ -1641,7 +1641,7 @@ describe('remote sandbox path helpers', () => {
     expect(() =>
       requireNativeSnapshotRef(
         'E2B_SANDBOX_SNAPSHOT_V1\n{"snapshot_id":"snap_123"}',
-        'runloop',
+        'vercel',
       ),
     ).toThrow(SandboxSnapshotError);
   });

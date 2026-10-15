@@ -630,7 +630,7 @@ type Combined = Imported & { value: string };`,
     ).toBe(false);
     for (const specifier of [
       '@openai/agents-extensions',
-      '@openai/agents-extensions/sandbox/runloop',
+      '@openai/agents-extensions/sandbox/e2b',
     ]) {
       expect(
         isUnsupportedOptionalPeerFormat(error, manifest, 'require', specifier),
@@ -1166,10 +1166,7 @@ type Combined = Imported & { value: string };`,
       true,
     );
     expect(
-      isSafeWithoutOptionalPeers(
-        '@openai/agents-extensions',
-        './sandbox/runloop',
-      ),
+      isSafeWithoutOptionalPeers('@openai/agents-extensions', './sandbox/e2b'),
     ).toBe(false);
   });
 

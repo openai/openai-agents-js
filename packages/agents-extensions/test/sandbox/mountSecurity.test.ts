@@ -92,11 +92,11 @@ describe('remote mount credential boundaries', () => {
       entries: {
         first: s3Mount({
           bucket: 'first',
-          mountStrategy: { type: 'runloop_cloud_bucket' },
+          mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
         second: s3Mount({
           bucket: 'second',
-          mountStrategy: { type: 'runloop_cloud_bucket' },
+          mountStrategy: { type: 'e2b_cloud_bucket' },
         }),
       },
     })

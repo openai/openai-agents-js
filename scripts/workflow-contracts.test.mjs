@@ -60,7 +60,6 @@ describe('repository workflow contracts', () => {
     expect([...CODEX_SANDBOX_AUTO_SKIP.keys()].sort()).toEqual([
       'agent-patterns:start:hosted-multi-agent',
       'sandbox:start:e2b',
-      'sandbox:start:runloop',
       'tools:start:computer-use',
       'tools:start:computer-use-hitl',
     ]);

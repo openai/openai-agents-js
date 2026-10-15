@@ -12,6 +12,14 @@ Unlike the first-party Unix-local and Docker examples, these scripts depend on p
 
 Sandbox-specific SDK types such as `SandboxAgent` and `Manifest` now come from `@openai/agents/sandbox`, while generic runtime types such as `Runner` still come from `@openai/agents`.
 
+## Migrating from Runloop
+
+Runloop support has been removed from `@openai/agents-extensions`. Imports from `@openai/agents-extensions/sandbox/runloop`, including `RunloopSandboxClient`, `RunloopPlatformClient`, and `RunloopCloudBucketMountStrategy`, no longer work. Applications that still need Runloop can remain on a previously released compatible version while migrating.
+
+The [Modal example](#modal) uses `ModalSandboxClient` from `@openai/agents-extensions/sandbox/modal` and the optional `modal` peer. Install that peer, configure Modal authentication, and set an app name. Replace the client passed to `Runner` and adapt provider-specific options, mounts, and platform operations. `ModalCloudBucketMountStrategy` provides native cloud bucket mounts; review and test its provider-specific behavior and credentials for your workload.
+
+Before switching, preserve any data you need from existing Runloop sandboxes. Runloop sandbox IDs, snapshots, and session state are provider-specific; do not assume another provider can resume them. Create a new sandbox with the new provider and restore the data through a supported mechanism.
+
 ## Common setup
 
 All scripts require `OPENAI_API_KEY` because they call the model through the normal `Runner` path.
@@ -252,28 +260,4 @@ Run:
 
 ```bash
 pnpm -F sandbox start:daytona -- --stream
-```
-
-## Runloop
-
-Required environment variables:
-
-```bash
-export OPENAI_API_KEY=...
-export RUNLOOP_API_KEY=...
-```
-
-How to get `RUNLOOP_API_KEY`:
-
-1. Create a Runloop account or sign in at `https://platform.runloop.ai`.
-2. Open the `Settings` page in the Runloop Dashboard.
-3. Create an API key.
-4. Export it in your shell before running the example.
-
-The Runloop SDK quickstart uses the same `RUNLOOP_API_KEY` variable name, and this example also checks it explicitly at startup, so it must already be present in your shell environment when you launch `start:runloop`.
-
-Run:
-
-```bash
-pnpm -F sandbox start:runloop -- --stream
 ```

@@ -658,8 +658,8 @@ describe('shared sandbox session helpers', () => {
   test('allows resume recreation only for not-found provider errors', () => {
     expect(() =>
       assertResumeRecreateAllowed(new Error('devbox not found'), {
-        providerName: 'RunloopSandboxClient',
-        provider: 'runloop',
+        providerName: 'E2BSandboxClient',
+        provider: 'e2b',
         details: { devboxId: 'devbox_test' },
       }),
     ).not.toThrow();
@@ -667,8 +667,8 @@ describe('shared sandbox session helpers', () => {
     let thrown: unknown;
     try {
       assertResumeRecreateAllowed(new Error('request timeout'), {
-        providerName: 'RunloopSandboxClient',
-        provider: 'runloop',
+        providerName: 'E2BSandboxClient',
+        provider: 'e2b',
         details: { devboxId: 'devbox_test' },
       });
     } catch (error) {
@@ -677,7 +677,7 @@ describe('shared sandbox session helpers', () => {
 
     expect(thrown).toBeInstanceOf(SandboxProviderError);
     expect((thrown as SandboxProviderError).details).toMatchObject({
-      provider: 'runloop',
+      provider: 'e2b',
       operation: 'resume',
       devboxId: 'devbox_test',
       cause: 'request timeout',

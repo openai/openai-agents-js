@@ -104,10 +104,6 @@ export const CODEX_SANDBOX_AUTO_SKIP = new Map([
     'Codex sandbox blocks this external sandbox provider connection',
   ],
   [
-    'sandbox:start:runloop',
-    'Codex sandbox blocks this external sandbox provider connection',
-  ],
-  [
     'tools:start:computer-use',
     'Codex sandbox blocks the local Playwright browser process',
   ],
