@@ -158,6 +158,10 @@ function getSandboxCompactionModelCandidates(model: string): string[] {
 }
 
 const SANDBOX_CONTEXT_WINDOWS_1M = new Set([
+  'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
+  'gpt-6.1-sol',
   'gpt-5.6',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
