@@ -33,6 +33,7 @@ import {
   validateToolInvocationApproval,
   validateToolInvocationName,
 } from '@openai/agents-core/utils/internal';
+import { toNewSessionConfig } from './clientMessages';
 import type {
   RealtimeAudioFormat,
   RealtimeSessionConfig,
@@ -435,6 +436,7 @@ export class RealtimeSession<
   // the agent would drop audio format overrides (e.g. g711_ulaw) and revert to
   // transport defaults causing issues for integrations like Twilio.
   #lastSessionConfig: Partial<RealtimeSessionConfig> | null = null;
+  #defaultAudioFormat: RealtimeAudioFormat | undefined;
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
   #toolExecution: RealtimeToolExecutionConfig | undefined;
   #eventListenersAttached = false;
@@ -461,8 +463,9 @@ export class RealtimeSession<
       this.#transport = options.transport;
     }
 
+    this.#defaultAudioFormat = this.#transport.getDefaultAudioFormat?.();
     this.#lastSessionConfig = cloneDefaultSessionConfig(
-      this.#transport.getDefaultAudioFormat?.(),
+      this.#defaultAudioFormat,
     );
 
     this.#currentAgent = initialAgent;
@@ -665,11 +668,34 @@ export class RealtimeSession<
     // 3. Additional config passed into this invocation (explicit overrides)
     // Finally we overwrite dynamic fields (instructions, voice, model, tools, tracing)
     // to ensure they always reflect the current agent & runtime state.
-    const base: Partial<RealtimeSessionConfig> = {
+    let base: Partial<RealtimeSessionConfig> = {
       ...(this.#lastSessionConfig ?? {}),
       ...optionsConfig,
       ...overridesConfig,
     };
+
+    // A partial audio override replaces the seeded audio object. Restore only
+    // missing codec defaults for transports that opt in, after caller merging.
+    if (this.#defaultAudioFormat !== undefined) {
+      const normalized = toNewSessionConfig(base);
+      base = {
+        ...normalized,
+        audio: {
+          ...normalized.audio,
+          input: {
+            ...normalized.audio?.input,
+            format: normalized.audio?.input?.format ?? this.#defaultAudioFormat,
+          },
+          output: {
+            ...normalized.audio?.output,
+            // Keep the current resolved voice authoritative over cached values.
+            voice: resolvedVoice,
+            format:
+              normalized.audio?.output?.format ?? this.#defaultAudioFormat,
+          },
+        },
+      };
+    }
 
     // Note: Certain fields cannot be updated after the session begins, such as voice and model
     const fullConfig: Partial<RealtimeSessionConfig> = {

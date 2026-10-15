@@ -70,7 +70,7 @@ describe('RealtimeSession transport audio defaults', () => {
         skipOpenEventListeners: true,
       });
       const session = new RealtimeSession(
-        new RealtimeAgent({ name: 'First' }),
+        new RealtimeAgent({ name: 'First', voice: 'alloy' }),
         {
           transport,
           config,
@@ -78,12 +78,23 @@ describe('RealtimeSession transport audio defaults', () => {
       );
 
       try {
+        if (!config) {
+          expect(
+            await session.getInitialSessionConfig({ voice: 'alloy' }),
+          ).toMatchObject({ audio: { output: { voice: 'alloy' } } });
+          expect(
+            await session.getInitialSessionConfig({ voice: 'verse' }),
+          ).toMatchObject({ audio: { output: { voice: 'verse' } } });
+        }
         await session.connect({ apiKey: 'ek_test' });
         const initialUpdates = socket.sessionUpdates();
         expect(initialUpdates.length).toBeGreaterThan(0);
-        await session.updateAgent(new RealtimeAgent({ name: 'Next' }));
+        await session.updateAgent(
+          new RealtimeAgent({ name: 'Next', voice: 'verse' }),
+        );
         const updates = socket.sessionUpdates();
         expect(updates.length).toBeGreaterThan(initialUpdates.length);
+        expect(updates.at(-1).session.audio.output.voice).toBe('verse');
         for (const { session: payload } of updates) {
           expect(payload.audio.input.format).toEqual(expectedInputFormat);
           expect(payload.audio.output.format).toEqual({ type: 'audio/pcmu' });

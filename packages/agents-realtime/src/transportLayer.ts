@@ -58,7 +58,8 @@ export interface RealtimeTransportLayer extends EventEmitter<RealtimeTransportEv
    * The default format for both input and output audio. RealtimeSession calls this
    * when constructed, before applying caller configuration. Transports that omit
    * this hook retain the session's PCM 24 kHz defaults. Explicit caller formats
-   * take precedence over this default.
+   * take precedence over this default; partial audio settings retain it for
+   * directions without an explicit format.
    */
   getDefaultAudioFormat?(): RealtimeAudioFormat;
 
