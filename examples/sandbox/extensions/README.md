@@ -12,6 +12,14 @@ Unlike the first-party Unix-local and Docker examples, these scripts depend on p
 
 Sandbox-specific SDK types such as `SandboxAgent` and `Manifest` now come from `@openai/agents/sandbox`, while generic runtime types such as `Runner` still come from `@openai/agents`.
 
+## Migrating from Runloop
+
+Runloop support has been removed from `@openai/agents-extensions`. Imports from `@openai/agents-extensions/sandbox/runloop`, including `RunloopSandboxClient`, `RunloopPlatformClient`, and `RunloopCloudBucketMountStrategy`, no longer work. Applications that still need Runloop can remain on a previously released compatible version while migrating.
+
+Choose a supported provider that meets your application's needs. For example, the E2B example below uses `E2BSandboxClient` from `@openai/agents-extensions/sandbox/e2b`, an E2B optional peer, and `E2B_API_KEY`. Replace the client passed to `Runner`, configure the new provider's options and credentials, and adapt any provider-specific mounts or platform operations. E2B's `E2BCloudBucketMountStrategy` supports rclone-backed cloud mounts, but provider-specific behavior and credentials must be reviewed and tested for your workload.
+
+Before switching, preserve any data you need from existing Runloop sandboxes. Runloop sandbox IDs, snapshots, and session state are provider-specific; do not assume another provider can resume them. Create a new sandbox with the new provider and restore the data through a supported mechanism.
+
 ## Common setup
 
 All scripts require `OPENAI_API_KEY` because they call the model through the normal `Runner` path.
