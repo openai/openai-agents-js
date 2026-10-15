@@ -208,9 +208,18 @@ export type RealtimeSessionConnectOptions = {
 };
 
 function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
-  return JSON.parse(
+  const config = JSON.parse(
     JSON.stringify(DEFAULT_OPENAI_REALTIME_SESSION_CONFIG),
-  ) as Partial<RealtimeSessionConfig>;
+  ) as Partial<RealtimeSessionConfigDefinition>;
+  // Leave codecs to the transport (for example, Twilio defaults to mu-law),
+  // while retaining session defaults such as input transcription.
+  if (config.audio?.input) {
+    delete config.audio.input.format;
+  }
+  if (config.audio?.output) {
+    delete config.audio.output.format;
+  }
+  return config;
 }
 
 function validateRealtimeToolExecutionConfig(
