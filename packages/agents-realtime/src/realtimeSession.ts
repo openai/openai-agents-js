@@ -33,7 +33,9 @@ import {
   validateToolInvocationApproval,
   validateToolInvocationName,
 } from '@openai/agents-core/utils/internal';
+import { toNewSessionConfig } from './clientMessages';
 import type {
+  RealtimeAudioFormat,
   RealtimeSessionConfig,
   RealtimeSessionConfigDefinition,
   RealtimeToolDefinition,
@@ -207,9 +209,25 @@ export type RealtimeSessionConnectOptions = {
   callId?: string;
 };
 
-function cloneDefaultSessionConfig(): Partial<RealtimeSessionConfig> {
+function cloneDefaultSessionConfig(
+  audioFormat?: RealtimeAudioFormat,
+): Partial<RealtimeSessionConfig> {
+  const defaults = DEFAULT_OPENAI_REALTIME_SESSION_CONFIG;
   return JSON.parse(
-    JSON.stringify(DEFAULT_OPENAI_REALTIME_SESSION_CONFIG),
+    JSON.stringify({
+      ...defaults,
+      audio: {
+        ...defaults.audio,
+        input: {
+          ...defaults.audio?.input,
+          format: audioFormat ?? defaults.audio?.input?.format,
+        },
+        output: {
+          ...defaults.audio?.output,
+          format: audioFormat ?? defaults.audio?.output?.format,
+        },
+      },
+    }),
   ) as Partial<RealtimeSessionConfig>;
 }
 
@@ -417,8 +435,8 @@ export class RealtimeSession<
   // modalities, speed, toolChoice, turnDetection, etc.). Without this, updating
   // the agent would drop audio format overrides (e.g. g711_ulaw) and revert to
   // transport defaults causing issues for integrations like Twilio.
-  #lastSessionConfig: Partial<RealtimeSessionConfig> | null =
-    cloneDefaultSessionConfig();
+  #lastSessionConfig: Partial<RealtimeSessionConfig> | null = null;
+  #defaultAudioFormat: RealtimeAudioFormat | undefined;
   #automaticallyTriggerResponseForMcpToolCalls: boolean = true;
   #toolExecution: RealtimeToolExecutionConfig | undefined;
   #eventListenersAttached = false;
@@ -444,6 +462,11 @@ export class RealtimeSession<
     } else {
       this.#transport = options.transport;
     }
+
+    this.#defaultAudioFormat = this.#transport.getDefaultAudioFormat?.();
+    this.#lastSessionConfig = cloneDefaultSessionConfig(
+      this.#defaultAudioFormat,
+    );
 
     this.#currentAgent = initialAgent;
     this.#context = new RunContext<RealtimeContextData<TBaseContext>>({
@@ -645,11 +668,34 @@ export class RealtimeSession<
     // 3. Additional config passed into this invocation (explicit overrides)
     // Finally we overwrite dynamic fields (instructions, voice, model, tools, tracing)
     // to ensure they always reflect the current agent & runtime state.
-    const base: Partial<RealtimeSessionConfig> = {
+    let base: Partial<RealtimeSessionConfig> = {
       ...(this.#lastSessionConfig ?? {}),
       ...optionsConfig,
       ...overridesConfig,
     };
+
+    // A partial audio override replaces the seeded audio object. Restore only
+    // missing codec defaults for transports that opt in, after caller merging.
+    if (this.#defaultAudioFormat !== undefined) {
+      const normalized = toNewSessionConfig(base);
+      base = {
+        ...normalized,
+        audio: {
+          ...normalized.audio,
+          input: {
+            ...normalized.audio?.input,
+            format: normalized.audio?.input?.format ?? this.#defaultAudioFormat,
+          },
+          output: {
+            ...normalized.audio?.output,
+            // Keep the current resolved voice authoritative over cached values.
+            voice: resolvedVoice,
+            format:
+              normalized.audio?.output?.format ?? this.#defaultAudioFormat,
+          },
+        },
+      };
+    }
 
     // Note: Certain fields cannot be updated after the session begins, such as voice and model
     const fullConfig: Partial<RealtimeSessionConfig> = {
