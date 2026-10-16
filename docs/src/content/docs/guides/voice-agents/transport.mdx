@@ -47,6 +47,20 @@ For lower-level customization, `OpenAIRealtimeWebRTC` also accepts `changePeerCo
 
 The built-in browser transport creates a data channel because the browser-side `RealtimeSession` uses Realtime events to configure and control the session. If your application must keep those events and controls on an application server, use the server-side controls pattern below instead of treating browser-side peer connection customization as an access-control boundary.
 
+### Azure OpenAI uses the GA protocol
+
+The built-in Realtime transports send the GA protocol. Setting a custom URL does not translate session updates into Azure's legacy preview format. The deprecated regional `realtimertc` endpoint can reject GA fields such as `session.type` and `output_modalities`, preventing the server from applying the instructions and tools in the same update.
+
+For Azure WebRTC, follow Microsoft's [GA WebRTC setup guide](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-webrtc):
+
+1. Have your application server obtain an ephemeral client token from your Azure resource's `/openai/v1/realtime/client_secrets` endpoint. Keep the Azure resource credential on the server.
+2. Set the `RealtimeSession` constructor's `model` option to your Azure deployment name. Define instructions and executable tools on the `RealtimeAgent`.
+3. Pass the ephemeral token as `apiKey` and your resource's `https://<resource>.openai.azure.com/openai/v1/realtime/calls` URL to `session.connect()`. The SDK forwards the agent configuration to the transport; `initialSessionConfig` is a transport-level option, not a `RealtimeSession.connect()` option.
+
+If an Azure-issued ephemeral token does not start with `ek_`, the browser transport's key-prefix check requires an explicit `OpenAIRealtimeWebRTC` instance with `useInsecureApiKey: true`. This option only disables the prefix check: continue passing an ephemeral token, never a long-lived resource credential, to browser code.
+
+Do not strip `session.type` when using GA: GA requires that field. See Microsoft's [preview-to-GA migration guide](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-preview-api-migration-guide) for endpoint and protocol differences.
+
 ### Browser audio with server-side controls
 
 Some applications need browser microphone capture and audio playback while keeping Realtime events, tools, and business logic on an application server. This architecture combines the Realtime API's [unified WebRTC interface](https://developers.openai.com/api/docs/guides/realtime-webrtc#creating-a-session-via-the-unified-interface) with its [server-side controls](https://developers.openai.com/api/docs/guides/realtime-server-controls#with-webrtc):
