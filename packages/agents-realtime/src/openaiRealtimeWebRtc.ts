@@ -122,7 +122,7 @@ export class OpenAIRealtimeWebRTC
     }
   }
 
-  #cleanupFailedConnection(error: unknown) {
+  #cleanupFailedConnection(error: unknown, reportError = true) {
     let cleanupFailed = false;
     let cleanupError: unknown;
     try {
@@ -132,7 +132,9 @@ export class OpenAIRealtimeWebRTC
       cleanupError = caughtError;
     }
 
-    this.#reportError(error);
+    if (reportError) {
+      this.#reportError(error);
+    }
     if (cleanupFailed) {
       this.#reportError(cleanupError);
     }
@@ -314,7 +316,11 @@ export class OpenAIRealtimeWebRTC
             dataChannel.removeEventListener('message', onConfigAck);
             dataChannel.removeEventListener('close', onClose);
           };
-          const fail = (error: unknown, cleanupTransport = true) => {
+          const fail = (
+            error: unknown,
+            cleanupTransport = true,
+            reportError = true,
+          ) => {
             if (settled) return;
             settled = true;
             removeConfigAckListeners();
@@ -325,8 +331,8 @@ export class OpenAIRealtimeWebRTC
               released &&
               this.#state.dataChannel === dataChannel
             ) {
-              this.#cleanupFailedConnection(error);
-            } else if (cleanupTransport) {
+              this.#cleanupFailedConnection(error, reportError);
+            } else if (cleanupTransport && reportError) {
               this.#reportError(error);
             }
           };
@@ -429,6 +435,14 @@ export class OpenAIRealtimeWebRTC
             ) {
               return;
             }
+            const { data: parsed, isGeneric } = parseRealtimeEvent(event);
+            if (parsed?.type === 'error' && !settled) {
+              // A server rejection during setup must not become a successful
+              // connection through the acknowledgement timeout fallback.
+              fail(parsed, true, false);
+              this._onMessage(event);
+              return;
+            }
             this._onMessage(event);
             if (
               this.#connectAttemptId !== attemptId ||
@@ -436,7 +450,6 @@ export class OpenAIRealtimeWebRTC
             ) {
               return;
             }
-            const { data: parsed, isGeneric } = parseRealtimeEvent(event);
             if (!parsed || isGeneric) {
               return;
             }

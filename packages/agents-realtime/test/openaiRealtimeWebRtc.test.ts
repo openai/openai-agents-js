@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import logger from '../src/logger';
+import { RealtimeAgent } from '../src/realtimeAgent';
+import { RealtimeSession } from '../src/realtimeSession';
 import { OpenAIRealtimeWebRTC } from '../src/openaiRealtimeWebRtc';
 
 class FakeRTCDataChannel extends EventTarget {
@@ -1419,6 +1421,119 @@ describe('OpenAIRealtimeWebRTC session.updated ack', () => {
     // connect() should have resolved via the timeout path
     await connectPromise;
     expect(rtc.status).toBe('connected');
+  });
+
+  it('rejects session.connect() on a server error before acknowledgement and permits retry', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    const session = new RealtimeSession(
+      new RealtimeAgent({
+        name: 'Assistant',
+        instructions: 'Use the configured instructions.',
+      }),
+      { transport: rtc },
+    );
+    const errors = vi.fn();
+    const rawEvents = vi.fn();
+    session.on('error', errors);
+    rtc.on('*', rawEvents);
+    const serverError = {
+      type: 'error',
+      event_id: 'server_error',
+      error: {
+        type: 'invalid_request_error',
+        code: 'unknown_parameter',
+        param: 'session.type',
+        message: "Unknown parameter: 'session.type'",
+      },
+    };
+    const connecting = session.connect({ apiKey: 'ek_test' });
+    const rejection = expect(connecting).rejects.toEqual(serverError);
+    await vi.advanceTimersByTimeAsync(0);
+    const failedChannel = noAckChannel!;
+    const peer = rtc.connectionState.peerConnection!;
+    const closePeer = vi.spyOn(peer, 'close');
+    const stopTrack = vi.fn();
+    vi.spyOn(peer, 'getSenders').mockReturnValue([
+      { track: { stop: stopTrack } },
+    ] as unknown as RTCRtpSender[]);
+    expect(JSON.parse(failedChannel.sent[0]).session.instructions).toBe(
+      'Use the configured instructions.',
+    );
+    failedChannel.dispatchEvent(
+      new MessageEvent('message', { data: JSON.stringify(serverError) }),
+    );
+    await rejection;
+    expect(rtc.status).toBe('disconnected');
+    expect(failedChannel.readyState).toBe('closed');
+    expect(closePeer).toHaveBeenCalledOnce();
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(errors).toHaveBeenCalledOnce();
+    expect(errors).toHaveBeenCalledWith(
+      expect.objectContaining({ error: serverError }),
+    );
+    expect(rawEvents).toHaveBeenCalledWith(serverError);
+
+    const retry = session.connect({ apiKey: 'ek_retry' });
+    await vi.advanceTimersByTimeAsync(0);
+    noAckChannel!.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'session.updated', session: {} }),
+      }),
+    );
+    await retry;
+    // A late acknowledgement and the failed attempt's old timeout cannot affect the retry.
+    failedChannel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'session.updated', session: {} }),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(rtc.status).toBe('connected');
+    expect(noAckChannel!.readyState).toBe('open');
+
+    // Established sessions retain the existing nonfatal server-error behavior.
+    noAckChannel!.dispatchEvent(
+      new MessageEvent('message', { data: JSON.stringify(serverError) }),
+    );
+    expect(rtc.status).toBe('connected');
+    expect(errors).toHaveBeenCalledTimes(2);
+    session.close();
+  });
+
+  it('preserves a retry started by an error listener during acknowledgement wait', async () => {
+    const rtc = new OpenAIRealtimeWebRTC();
+    let retry: Promise<void> | undefined;
+    rtc.on('error', () => {
+      rtc.close();
+      retry = rtc.connect({ apiKey: 'ek_retry' });
+    });
+    const connecting = rtc.connect({ apiKey: 'ek_test' });
+    const rejection = expect(connecting).rejects.toMatchObject({
+      type: 'error',
+      error: { message: 'Invalid session configuration' },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const failedChannel = noAckChannel!;
+    failedChannel.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({
+          type: 'error',
+          error: { message: 'Invalid session configuration' },
+        }),
+      }),
+    );
+    await rejection;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(noAckChannel).not.toBe(failedChannel);
+    noAckChannel!.dispatchEvent(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'session.updated', session: {} }),
+      }),
+    );
+    await retry;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(rtc.status).toBe('connected');
+    rtc.close();
   });
 
   it('ignores malformed messages while waiting for session.updated', async () => {
