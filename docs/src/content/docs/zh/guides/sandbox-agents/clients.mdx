@@ -193,7 +193,6 @@ SDK 会将用户定义的标签复制到序列化的 Docker 会话状态中。�
 | `DaytonaSandboxClient` | `@openai/agents-extensions/sandbox/daytona` | npm 对等依赖：`@daytonaio/sdk` |
 | `E2BSandboxClient` | `@openai/agents-extensions/sandbox/e2b` | npm 对等依赖：`e2b` 或 `@e2b/code-interpreter` |
 | `ModalSandboxClient` | `@openai/agents-extensions/sandbox/modal` | npm 对等依赖：`modal` |
-| `RunloopSandboxClient` | `@openai/agents-extensions/sandbox/runloop` | npm 对等依赖：`@runloop/api-client` |
 | `VercelSandboxClient` | `@openai/agents-extensions/sandbox/vercel` | npm 对等依赖：`@vercel/sandbox` |
 
 当 `ModalSandboxClient` 创建沙盒时，使用 `cpu` 和 `memoryMiB` 请求 CPU 和内存预留。使用 `cpuLimit` 和 `memoryLimitMiB` 设置上限。您可以在客户端构造函数或每次运行的 `sandbox.options` 中设置这些选项；每次运行的值会覆盖构造函数默认值。每个值都必须是有限的正数。`cpuLimit` 要求同时设置 `cpu`，且不能低于后者；`memoryLimitMiB` 要求同时设置 `memoryMiB`，且不能低于后者。
@@ -210,7 +209,7 @@ SDK 会将用户定义的标签复制到序列化的 Docker 会话状态中。�
 
 挂载引用的凭据文件不能直接或通过符号链接解析到可序列化的清单条目。动态清单变更按会话序列化；如果在提供商端的操作可能已经开始后，具有特权的挂载转换或替换卸载失败，SDK 将使该会话失效并终止它，而不会复用或持久化含糊不清的状态。
 
-序列化的沙盒状态会省略挂载凭据，包括沙盒内挂载辅助程序选择的环境凭据。恢复任何已持久化的挂载拓扑之前，都需要当前可信清单。对于可恢复的外部或提供商原生挂载，只有在当前挂载拓扑与已持久化挂载拓扑去除凭据后相匹配时，SDK 才会恢复凭据。仅当未脱敏的实时权限仍与当前可信清单匹配时，显式 `sessionState` 才能重新连接现有的提供商原生挂载；如果权限已脱敏、轮换或移除，则需要新沙盒。无法将无凭据拓扑分离出来的不透明配置不可恢复。当运行器恢复使用过沙盒内挂载辅助程序的序列化 `RunState` 条目时，它会丢弃已存储的会话，并根据当前可信配置创建新沙盒。调用方提供的显式 `sessionState` 和直接提供商恢复操作会改为拒绝容器内挂载状态；请显式启动新沙盒。对于容器内挂载，系统会拒绝通过不透明 `secretRefs` 提供的 Runloop 凭据文件变量；请通过 `managedSecrets` 提供当前可信路径，以便 SDK 在挂载前验证其有效路径。
+序列化的沙盒状态会省略挂载凭据，包括沙盒内挂载辅助程序选用的环境凭据。任何已持久化的挂载拓扑在恢复前都需要当前的可信清单。对于可恢复的外部或提供商原生挂载，SDK 只有在当前挂载拓扑与已持久化的挂载拓扑去除凭据后相互匹配时，才会恢复凭据。显式 `sessionState` 只有在现有提供商原生挂载中未脱敏的当前授权信息仍与当前可信清单匹配时，才能重新连接该挂载；如果授权信息已脱敏、轮换或移除，则需要新建沙盒。无法分离出无凭据拓扑的不透明配置不支持恢复。当 Runner 恢复使用过沙盒内挂载辅助程序的序列化 `RunState` 条目时，会丢弃该已存储会话，并根据当前可信配置创建新沙盒。而调用方显式提供的 `sessionState` 和直接通过提供商恢复的操作会拒绝容器内挂载状态；请显式启动新沙盒。
 
 | 后端 | 挂载说明 |
 | --- | --- |
@@ -220,10 +219,9 @@ SDK 会将用户定义的标签复制到序列化的 Docker 会话状态中。�
 | `BlaxelSandboxClient` | 支持通过 `BlaxelCloudBucketMountStrategy` 挂载 S3、R2 和 GCS 挂载条目。携带凭据的云挂载要求使用 SDK 所有的沙盒；复用的不受 SDK 所有的命名沙盒可以使用无凭据云挂载，或通过 `BlaxelDriveMount` 和 `BlaxelDriveMountStrategy` 使用持久化 Blaxel Drive。 |
 | `DaytonaSandboxClient` | 支持通过 `DaytonaCloudBucketMountStrategy` 挂载由 rclone 支持的 S3、GCS、R2、Azure Blob 和 Box 挂载条目。 |
 | `E2BSandboxClient` | 支持通过 `E2BCloudBucketMountStrategy` 挂载由 rclone 支持的 S3、GCS、R2、Azure Blob 和 Box 挂载条目。 |
-| `RunloopSandboxClient` | 支持通过 `RunloopCloudBucketMountStrategy` 挂载由 rclone 支持的 S3、GCS、R2、Azure Blob 和 Box 挂载条目。 |
 | `VercelSandboxClient` | 支持在创建时通过 `VercelCloudBucketMountStrategy` 挂载 S3。对于新代码，请针对每个精确挂载路径使用 `withInContainerMountCredentialExposureAcknowledged()` 确认内联凭据。为兼容已发布的内联 S3 凭据配置，已弃用的 `allowS3CredentialExposure: true` 选项仍可使用，但它不授权环境凭据或其他广泛权限。请复用已挂载的实时会话，因为序列化的挂载状态无法直接恢复。 |
 
-对于由 E2B 和 Runloop 的 rclone 支持的挂载，如果存在 `rclone` 二进制文件，SDK 会直接使用它。否则，SDK 仅在验证 SHA-256 校验和后，才会安装由 SDK 锁定版本的 Linux 归档文件；不受支持的架构和校验和失败都会中止挂载。
+对于 E2B 中基于 rclone 的挂载，SDK 会在已有 `rclone` 二进制文件可用时使用它。否则，SDK 仅在验证 SHA-256 校验和之后，才会安装由 SDK 固定版本的 Linux 归档包；架构不受支持或校验和验证失败都会中止挂载。
 
 下表汇总了每个后端可以直接挂载的远程存储条目：
 
@@ -235,10 +233,9 @@ SDK 会将用户定义的标签复制到序列化的 Docker 会话状态中。�
 | `BlaxelSandboxClient` | 是 | 是 | 是 | 否 | 否 | 否 |
 | `DaytonaSandboxClient` | 是 | 是 | 是 | 是 | 是 | 否 |
 | `E2BSandboxClient` | 是 | 是 | 是 | 是 | 是 | 否 |
-| `RunloopSandboxClient` | 是 | 是 | 是 | 是 | 是 | 否 |
 | `VercelSandboxClient` | 是 | 否 | 否 | 否 | 否 | 否 |
 
-"是"表示后端可以执行相应类型的存储挂载；它不会绕过上述凭据边界。Docker 的 `dockerVolumeMountStrategy()`、Modal 云存储桶挂载和 Cloudflare 存储桶挂载会将挂载凭据保留在模型控制的沙盒之外。每当 Docker 的 `inContainerMountStrategy()` 以及 Daytona、E2B 和 Runloop 的 rclone 策略接收凭据时，都需要进行精确路径确认。Box 挂载需要身份验证，因此请选择与 Box 权限来源匹配的确认方式：通过类型化挂载字段提供，或通过外部凭据或配置文件提供。Docker S3 Files 挂载使用广泛的工作负载身份，因此需要 `withInContainerMountBroadCredentialExposureAcknowledged()`。
+"是"表示后端能够执行该存储类型的挂载；并不意味着可以绕过上述凭据边界。Docker 的 `dockerVolumeMountStrategy()`、Modal 云存储桶挂载和 Cloudflare 存储桶挂载会将挂载凭据保留在模型控制的沙盒之外。Docker 的 `inContainerMountStrategy()` 以及 Daytona 和 E2B 的 rclone 策略，只要接收凭据，就需要针对精确路径作出确认。Box 挂载需要身份验证，因此应根据 Box 授权信息是通过类型化挂载字段，还是通过外部凭据文件或配置文件提供，选择相应的确认方式。Docker S3 Files 挂载使用范围更广的工作负载身份，因此需要 `withInContainerMountBroadCredentialExposureAcknowledged()`。
 
 ### 公开端口
 
