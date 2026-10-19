@@ -884,6 +884,9 @@ importers:
       openai:
         specifier: ^7.2.0
         version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+      tar:
+        specifier: 7.5.22
+        version: 7.5.22
     devDependencies:
       '@types/debug':
         specifier: ^4.1.13

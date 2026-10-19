@@ -133,7 +133,8 @@
   "dependencies": {
     "@standard-schema/spec": "^1.1.0",
     "debug": "^4.4.3",
-    "openai": "^7.2.0"
+    "openai": "^7.2.0",
+    "tar": "7.5.22"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
