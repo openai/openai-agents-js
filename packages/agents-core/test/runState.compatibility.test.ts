@@ -122,6 +122,7 @@ describe('historical RunState compatibility corpus', () => {
       '1.19',
       '1.20',
       '1.21',
+      '1.22',
     ]);
     expect(
       manifest.schemas
@@ -132,7 +133,7 @@ describe('historical RunState compatibility corpus', () => {
       manifest.schemas
         .filter((entry) => entry.status === 'current_unreleased')
         .map((entry) => entry.schemaVersion),
-    ).toEqual(['1.22']);
+    ).toEqual(['1.23']);
   });
 
   it('pins every fixture to immutable bytes and complete writer provenance', () => {
@@ -196,6 +197,36 @@ describe('historical RunState compatibility corpus', () => {
       expect(JSON.parse(rewritten.toString())).toEqual(firstRewrite);
     },
   );
+
+  it('preserves flat usage when upgrading a schema 1.22 snapshot', async () => {
+    const historical = readJson<any>('historical/v1.22-minimal.json');
+    const entry = {
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      inputTokensDetails: { cached_tokens: 40, cache_write_tokens: 10 },
+      outputTokensDetails: { reasoning_tokens: 5 },
+      endpoint: 'responses.create',
+    };
+    historical.context.usage = {
+      ...entry,
+      requests: 1,
+      inputTokensDetails: [entry.inputTokensDetails],
+      outputTokensDetails: [entry.outputTokensDetails],
+      requestUsageEntries: [entry],
+    };
+    const restored = await RunState.fromString(
+      new Agent({ name: 'HistoricalAgent' }),
+      JSON.stringify(historical),
+    );
+    expect(restored.usage).toMatchObject({
+      requests: 1,
+      totalTokens: 120,
+      inputTokensDetails: [entry.inputTokensDetails],
+      requestUsageEntries: [entry],
+    });
+    expect(restored.toJSON().$schemaVersion).toBe('1.23');
+  });
 
   it('preserves released mid-turn server continuation identifiers', async () => {
     const restored = await RunState.fromString(

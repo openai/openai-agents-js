@@ -1,4 +1,4 @@
-import { Usage } from '../usage';
+import { Usage, cloneTokenDetails } from '../usage';
 
 export type UsageRecorder = (usage: Usage) => void;
 
@@ -17,18 +17,14 @@ function cloneUsage(usage: Usage): Usage {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     totalTokens: usage.totalTokens,
-    inputTokensDetails: usage.inputTokensDetails.map((details) => ({
-      ...details,
-    })),
-    outputTokensDetails: usage.outputTokensDetails.map((details) => ({
-      ...details,
-    })),
+    inputTokensDetails: usage.inputTokensDetails.map(cloneTokenDetails),
+    outputTokensDetails: usage.outputTokensDetails.map(cloneTokenDetails),
     requestUsageEntries: usage.requestUsageEntries?.map((entry) => ({
       inputTokens: entry.inputTokens,
       outputTokens: entry.outputTokens,
       totalTokens: entry.totalTokens,
-      inputTokensDetails: { ...entry.inputTokensDetails },
-      outputTokensDetails: { ...entry.outputTokensDetails },
+      inputTokensDetails: cloneTokenDetails(entry.inputTokensDetails),
+      outputTokensDetails: cloneTokenDetails(entry.outputTokensDetails),
       endpoint: entry.endpoint,
     })),
   });

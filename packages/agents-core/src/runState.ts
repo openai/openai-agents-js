@@ -190,8 +190,9 @@ import {
  *   evidence require a fresh run rather than resuming unvalidated input.
  * - 1.22: Records hosted MCP namespace discovery provenance. Older namespace-only
  *   search outputs require rediscovery; explicit MCP descriptors remain usable.
+ * - 1.23: Preserves nested numeric token usage breakdowns.
  */
-export const CURRENT_SCHEMA_VERSION = '1.22' as const;
+export const CURRENT_SCHEMA_VERSION = '1.23' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -215,6 +216,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.19',
   '1.20',
   '1.21',
+  '1.22',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -242,6 +244,7 @@ function schemaVersionSupportsV120State(
   return (
     schemaVersion === '1.20' ||
     schemaVersion === '1.21' ||
+    schemaVersion === '1.22' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1291,8 +1294,8 @@ const requestUsageSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
   totalTokens: z.number(),
-  inputTokensDetails: z.record(z.string(), z.number()).optional(),
-  outputTokensDetails: z.record(z.string(), z.number()).optional(),
+  inputTokensDetails: protocol.TokenDetails.optional(),
+  outputTokensDetails: protocol.TokenDetails.optional(),
   endpoint: z.string().optional(),
 });
 
@@ -1301,8 +1304,8 @@ const usageSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
   totalTokens: z.number(),
-  inputTokensDetails: z.array(z.record(z.string(), z.number())).optional(),
-  outputTokensDetails: z.array(z.record(z.string(), z.number())).optional(),
+  inputTokensDetails: z.array(protocol.TokenDetails).optional(),
+  outputTokensDetails: z.array(protocol.TokenDetails).optional(),
   requestUsageEntries: z.array(requestUsageSchema).optional(),
 });
 

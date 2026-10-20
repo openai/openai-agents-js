@@ -329,6 +329,7 @@ export type {
   StreamEventGenericItem,
 } from './types';
 export { RequestUsage, Usage } from './usage';
+export type { TokenDetails } from './types/protocol';
 export type { RequestUsageInput, UsageInput } from './usage';
 export type {
   Session,

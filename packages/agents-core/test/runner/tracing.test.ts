@@ -91,7 +91,14 @@ describe('getTracing', () => {
           outputTokens: 2,
           totalTokens: 10,
           inputTokensDetails: [
-            { cached_tokens: 2 },
+            {
+              cached_tokens: 2,
+              cache_write_tokens: 10,
+              cache_write_tokens_details: {
+                ttl_30m_tokens: 6,
+                ttl_12h_tokens: 4,
+              },
+            },
             { cached_input_tokens: 3 },
           ],
         }),
@@ -100,6 +107,7 @@ describe('getTracing', () => {
 
       expect(taskSpan.span.spanData.usage).toMatchObject({
         cached_input_tokens: 5,
+        cache_write_input_tokens: 10,
       });
     });
   });

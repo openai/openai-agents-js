@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import {
+  TokenDetails,
+  UsageData,
+  RequestUsageData,
+} from '../src/types/protocol';
 import { RequestUsage, Usage } from '../src/usage';
 
 describe('Usage', () => {
@@ -386,4 +391,82 @@ describe('Usage', () => {
       },
     ]);
   });
+});
+
+describe('nested token details', () => {
+  it('validates numeric trees and retains legacy flat details', () => {
+    const details = {
+      cached_tokens: 40,
+      cache_write_tokens_details: {
+        ttl_30m_tokens: 6,
+        ttl_12h_tokens: 4,
+        deeper: { count: 1 },
+      },
+    };
+    expect(TokenDetails.parse(details)).toEqual(details);
+    expect(TokenDetails.parse({ cached_tokens: 40 })).toEqual({
+      cached_tokens: 40,
+    });
+    const request = {
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      inputTokensDetails: details,
+      outputTokensDetails: details,
+    };
+    expect(RequestUsageData.parse(request)).toEqual(request);
+    for (const value of [details, [details]]) {
+      expect(
+        UsageData.parse({
+          ...request,
+          inputTokensDetails: value,
+          requestUsageEntries: [request],
+        }).inputTokensDetails,
+      ).toEqual(value);
+    }
+  });
+
+  it.each([null, '10', true, [10]])(
+    'rejects nonnumeric detail leaves: %j',
+    (value) => {
+      expect(
+        TokenDetails.safeParse({ breakdown: { bad: value } }).success,
+      ).toBe(false);
+    },
+  );
+
+  it.each([false, true])(
+    'detaches nested details during accumulation (explicit request entries=%s)',
+    (entries) => {
+      const details = { cache_write_tokens_details: { ttl_12h_tokens: 4 } };
+      const request = {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        inputTokensDetails: details,
+        outputTokensDetails: details,
+      };
+      const usage = new Usage({
+        ...request,
+        ...(entries ? { requestUsageEntries: [request] } : {}),
+      });
+      const total = new Usage();
+      total.add(usage);
+      total.add(usage);
+      details.cache_write_tokens_details.ttl_12h_tokens = 99;
+      expect(total.totalTokens).toBe(240);
+      expect(total.inputTokensDetails).toEqual([
+        { cache_write_tokens_details: { ttl_12h_tokens: 4 } },
+        { cache_write_tokens_details: { ttl_12h_tokens: 4 } },
+      ]);
+      expect(total.outputTokensDetails).toEqual(total.inputTokensDetails);
+      for (const entry of total.requestUsageEntries ?? []) {
+        expect(entry.inputTokensDetails).toEqual({
+          cache_write_tokens_details: { ttl_12h_tokens: 4 },
+        });
+        expect(entry.outputTokensDetails).toEqual(entry.inputTokensDetails);
+      }
+      expect(total.requestUsageEntries).toHaveLength(2);
+    },
+  );
 });

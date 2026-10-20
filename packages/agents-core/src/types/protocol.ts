@@ -930,12 +930,23 @@ export type ModelItem = z.infer<typeof ModelItem>;
 // Meta data types
 // ----------------------------
 
+/**
+ * Token counts and nested breakdowns returned by a model provider.
+ * Narrow individual values to numbers before performing arithmetic.
+ */
+export type TokenDetails = { [key: string]: number | TokenDetails };
+
+export const TokenDetails: z.ZodType<TokenDetails> = z.record(
+  z.string(),
+  z.union([z.number(), z.lazy(() => TokenDetails)]),
+);
+
 export const RequestUsageData = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
   totalTokens: z.number(),
-  inputTokensDetails: z.record(z.string(), z.number()).optional(),
-  outputTokensDetails: z.record(z.string(), z.number()).optional(),
+  inputTokensDetails: TokenDetails.optional(),
+  outputTokensDetails: TokenDetails.optional(),
   endpoint: z.string().optional(),
 });
 
@@ -946,17 +957,9 @@ export const UsageData = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
   totalTokens: z.number(),
-  inputTokensDetails: z
-    .union([
-      z.record(z.string(), z.number()),
-      z.array(z.record(z.string(), z.number())),
-    ])
-    .optional(),
+  inputTokensDetails: z.union([TokenDetails, z.array(TokenDetails)]).optional(),
   outputTokensDetails: z
-    .union([
-      z.record(z.string(), z.number()),
-      z.array(z.record(z.string(), z.number())),
-    ])
+    .union([TokenDetails, z.array(TokenDetails)])
     .optional(),
   requestUsageEntries: z.array(RequestUsageData).optional(),
 });

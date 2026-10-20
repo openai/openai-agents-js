@@ -154,3 +154,36 @@ describe('runner usage tracking', () => {
     expect(Object.getOwnPropertySymbols(error)).toEqual([]);
   });
 });
+
+it('detaches nested failure usage snapshots', () => {
+  const details = { cache_write_tokens_details: { ttl_12h_tokens: 4 } };
+  const usage = new Usage({
+    inputTokens: 10,
+    outputTokens: 2,
+    inputTokensDetails: details,
+    outputTokensDetails: details,
+    requestUsageEntries: [
+      {
+        inputTokens: 10,
+        outputTokens: 2,
+        totalTokens: 12,
+        inputTokensDetails: details,
+        outputTokensDetails: details,
+      },
+    ],
+  });
+  const error = new Error('synthetic');
+  attachModelFailureUsage(error, usage);
+  details.cache_write_tokens_details.ttl_12h_tokens = 99;
+  const snapshot = consumeModelFailureUsage(error)!;
+  expect(snapshot.inputTokensDetails).toEqual([
+    { cache_write_tokens_details: { ttl_12h_tokens: 4 } },
+  ]);
+  expect(snapshot.outputTokensDetails).toEqual(snapshot.inputTokensDetails);
+  expect(snapshot.requestUsageEntries?.[0].inputTokensDetails).toEqual(
+    snapshot.inputTokensDetails[0],
+  );
+  expect(snapshot.requestUsageEntries?.[0].outputTokensDetails).toEqual(
+    snapshot.inputTokensDetails[0],
+  );
+});

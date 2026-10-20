@@ -1,4 +1,4 @@
-import { RequestUsageData, UsageData } from './types/protocol';
+import { RequestUsageData, UsageData, TokenDetails } from './types/protocol';
 
 export type RequestUsageInput = Partial<
   RequestUsageData & {
@@ -16,10 +16,8 @@ export type UsageInput = Partial<
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
-    input_tokens_details:
-      Record<string, number> | Array<Record<string, number>> | object;
-    output_tokens_details:
-      Record<string, number> | Array<Record<string, number>> | object;
+    input_tokens_details: TokenDetails | Array<TokenDetails> | object;
+    output_tokens_details: TokenDetails | Array<TokenDetails> | object;
     request_usage_entries: RequestUsageInput[];
   }
 > & { requests?: number; requestUsageEntries?: RequestUsageInput[] };
@@ -46,12 +44,12 @@ export class RequestUsage {
   /**
    * Details about the input tokens used for this request.
    */
-  public inputTokensDetails: Record<string, number>;
+  public inputTokensDetails: TokenDetails;
 
   /**
    * Details about the output tokens used for this request.
    */
-  public outputTokensDetails: Record<string, number>;
+  public outputTokensDetails: TokenDetails;
 
   /**
    * The endpoint that produced this usage entry (e.g., responses.create, responses.compact).
@@ -68,12 +66,12 @@ export class RequestUsage {
     const inputTokensDetails =
       input?.inputTokensDetails ?? input?.input_tokens_details;
     this.inputTokensDetails = inputTokensDetails
-      ? (inputTokensDetails as Record<string, number>)
+      ? (inputTokensDetails as TokenDetails)
       : {};
     const outputTokensDetails =
       input?.outputTokensDetails ?? input?.output_tokens_details;
     this.outputTokensDetails = outputTokensDetails
-      ? (outputTokensDetails as Record<string, number>)
+      ? (outputTokensDetails as TokenDetails)
       : {};
     if (typeof input?.endpoint !== 'undefined') {
       this.endpoint = input.endpoint;
@@ -88,10 +86,13 @@ export class RequestUsage {
   }
 }
 
-function cloneTokenDetails(
-  details: Record<string, number>,
-): Record<string, number> {
-  return { ...details };
+export function cloneTokenDetails(details: TokenDetails): TokenDetails {
+  return Object.fromEntries(
+    Object.entries(details).map(([key, value]) => [
+      key,
+      typeof value === 'number' ? value : cloneTokenDetails(value),
+    ]),
+  );
 }
 
 function cloneRequestUsage(input: RequestUsageInput): RequestUsage {
@@ -128,12 +129,12 @@ export class Usage {
   /**
    * Details about the input tokens used across all requests.
    */
-  public inputTokensDetails: Array<Record<string, number>> = [];
+  public inputTokensDetails: Array<TokenDetails> = [];
 
   /**
    * Details about the output tokens used across all requests.
    */
-  public outputTokensDetails: Array<Record<string, number>> = [];
+  public outputTokensDetails: Array<TokenDetails> = [];
 
   /**
    * List of per-request usage entries for detailed cost calculations.
@@ -160,23 +161,19 @@ export class Usage {
       const inputTokensDetails =
         input?.inputTokensDetails ?? input?.input_tokens_details;
       if (Array.isArray(inputTokensDetails)) {
-        this.inputTokensDetails = inputTokensDetails as Array<
-          Record<string, number>
-        >;
+        this.inputTokensDetails = inputTokensDetails as Array<TokenDetails>;
       } else {
         this.inputTokensDetails = inputTokensDetails
-          ? [inputTokensDetails as Record<string, number>]
+          ? [inputTokensDetails as TokenDetails]
           : [];
       }
       const outputTokensDetails =
         input?.outputTokensDetails ?? input?.output_tokens_details;
       if (Array.isArray(outputTokensDetails)) {
-        this.outputTokensDetails = outputTokensDetails as Array<
-          Record<string, number>
-        >;
+        this.outputTokensDetails = outputTokensDetails as Array<TokenDetails>;
       } else {
         this.outputTokensDetails = outputTokensDetails
-          ? [outputTokensDetails as Record<string, number>]
+          ? [outputTokensDetails as TokenDetails]
           : [];
       }
 
