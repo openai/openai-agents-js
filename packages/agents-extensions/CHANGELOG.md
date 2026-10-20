@@ -1,5 +1,20 @@
 # @openai/agents-extensions
 
+## 0.21.0
+
+### Minor Changes
+
+- 7b05470: feat: Remove the Runloop sandbox provider and its public API; see the [migration guide](https://github.com/openai/openai-agents-js/tree/main/examples/sandbox/extensions#migrating-from-runloop) for supported alternatives.
+
+### Patch Changes
+
+- 4521cf5: fix: refresh WebSocket dependencies and development tooling.
+- 980423f: fix: preserve Twilio audio format defaults when session audio configuration is omitted (#2072).
+- Updated dependencies [989513a]
+- Updated dependencies [7b05470]
+- Updated dependencies [976579e]
+  - @openai/agents-core@0.21.0
+
 ## 0.20.0
 
 ### Minor Changes
