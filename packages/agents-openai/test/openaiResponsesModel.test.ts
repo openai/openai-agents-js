@@ -11,6 +11,7 @@ import {
   Agent,
   retryPolicies,
   Runner,
+  RunState,
   type AgentInputItem,
   type ModelRequest,
   type Session,
@@ -129,6 +130,95 @@ describe('OpenAIResponsesModel', () => {
     setTracingDisabled(true);
     setTraceProcessors([]);
   });
+
+  it.each([false, true])(
+    'preserves nested cache usage through Runner and saved state (stream=%s)',
+    async (stream) => {
+      const inputDetails = {
+        cached_tokens: 40,
+        cache_write_tokens: 10,
+        cache_write_tokens_details: { ttl_30m_tokens: 6, ttl_12h_tokens: 4 },
+      };
+      const outputDetails = {
+        reasoning_tokens: 5,
+        breakdown: { accepted_tokens: 2 },
+      };
+      const response = {
+        id: 'resp_nested_usage',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            id: 'msg_nested',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'Done', annotations: [] }],
+          },
+        ],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          total_tokens: 120,
+          input_tokens_details: inputDetails,
+          output_tokens_details: outputDetails,
+        },
+      };
+      // Exercise real provider conversion and Runner validation using synthetic HTTP/SSE.
+      const client = new OpenAI({
+        apiKey: 'test-key',
+        fetch: async () =>
+          new Response(
+            stream
+              ? `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', sequence_number: 0, response })}\n\n`
+              : JSON.stringify(response),
+            {
+              headers: {
+                'content-type': stream
+                  ? 'text/event-stream'
+                  : 'application/json',
+              },
+            },
+          ),
+      });
+      const agent = new Agent({
+        name: 'Nested usage',
+        model: new OpenAIResponsesModel(client, 'gpt-test'),
+      });
+      const runner = new Runner({ tracingDisabled: true });
+      const result = stream
+        ? await runner.run(agent, 'Hi', { stream: true })
+        : await runner.run(agent, 'Hi');
+      if ('completed' in result) {
+        for await (const event of result) {
+          void event;
+        }
+        await result.completed;
+      }
+      expect(result.finalOutput).toBe('Done');
+      expect(result.state.toJSON().$schemaVersion).toBe('1.23');
+      const restored = await RunState.fromString(
+        agent,
+        result.state.toString(),
+      );
+      for (const usage of [result.state.usage, restored.usage]) {
+        expect(usage).toMatchObject({
+          requests: 1,
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+        });
+        expect(usage.inputTokensDetails).toEqual([inputDetails]);
+        expect(usage.outputTokensDetails).toEqual([outputDetails]);
+        expect(usage.requestUsageEntries?.[0]).toMatchObject({
+          inputTokensDetails: inputDetails,
+          outputTokensDetails: outputDetails,
+          endpoint: 'responses.create',
+        });
+      }
+      expect(restored.toJSON()).toEqual(result.state.toJSON());
+    },
+  );
 
   describe.each([false, true])(
     'image generation requests (stream=%s)',

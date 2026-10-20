@@ -57,7 +57,7 @@ import {
 import { MemorySession as CoreMemorySession } from '../src/memory/memorySession';
 import { getTurnInput, selectModel } from '../src/run';
 import { RunContext } from '../src/runContext';
-import { RunState } from '../src/runState';
+import { RunState, CURRENT_SCHEMA_VERSION } from '../src/runState';
 import * as protocol from '../src/types/protocol';
 import { Usage } from '../src/usage';
 import {
@@ -537,7 +537,7 @@ describe('Runner.run', () => {
         let state = pending.state;
         if (resume !== 'memory') {
           const json = JSON.parse(state.toString());
-          expect(json.$schemaVersion).toBe('1.22');
+          expect(json.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
           expect(json).not.toHaveProperty('pendingFunctionToolApprovals');
           state = await RunState.fromString(agent, JSON.stringify(json));
         }

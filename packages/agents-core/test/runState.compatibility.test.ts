@@ -122,6 +122,7 @@ describe('historical RunState compatibility corpus', () => {
       '1.19',
       '1.20',
       '1.21',
+      '1.22',
     ]);
     expect(
       manifest.schemas
@@ -132,7 +133,7 @@ describe('historical RunState compatibility corpus', () => {
       manifest.schemas
         .filter((entry) => entry.status === 'current_unreleased')
         .map((entry) => entry.schemaVersion),
-    ).toEqual(['1.22']);
+    ).toEqual(['1.23']);
   });
 
   it('pins every fixture to immutable bytes and complete writer provenance', () => {
@@ -196,6 +197,64 @@ describe('historical RunState compatibility corpus', () => {
       expect(JSON.parse(rewritten.toString())).toEqual(firstRewrite);
     },
   );
+
+  it.each(['aggregate', 'request'] as const)(
+    'rejects excessively nested %s usage in persisted state',
+    async (location) => {
+      const snapshot = readJson<any>('historical/v1.22-minimal.json');
+      snapshot.$schemaVersion = CURRENT_SCHEMA_VERSION;
+      let details: Record<string, unknown> = { count: 1 };
+      for (let i = 1; i < 4_000; i++) details = { nested: details };
+      if (location === 'aggregate') {
+        snapshot.context.usage.inputTokensDetails = [details];
+      } else {
+        snapshot.context.usage.requestUsageEntries = [
+          {
+            inputTokens: 1,
+            outputTokens: 0,
+            totalTokens: 1,
+            outputTokensDetails: details,
+          },
+        ];
+      }
+      await expect(
+        RunState.fromString(
+          new Agent({ name: 'HistoricalAgent' }),
+          JSON.stringify(snapshot),
+        ),
+      ).rejects.toThrow(/32 levels/);
+    },
+  );
+
+  it('preserves flat usage when upgrading a schema 1.22 snapshot', async () => {
+    const historical = readJson<any>('historical/v1.22-minimal.json');
+    const entry = {
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+      inputTokensDetails: { cached_tokens: 40, cache_write_tokens: 10 },
+      outputTokensDetails: { reasoning_tokens: 5 },
+      endpoint: 'responses.create',
+    };
+    historical.context.usage = {
+      ...entry,
+      requests: 1,
+      inputTokensDetails: [entry.inputTokensDetails],
+      outputTokensDetails: [entry.outputTokensDetails],
+      requestUsageEntries: [entry],
+    };
+    const restored = await RunState.fromString(
+      new Agent({ name: 'HistoricalAgent' }),
+      JSON.stringify(historical),
+    );
+    expect(restored.usage).toMatchObject({
+      requests: 1,
+      totalTokens: 120,
+      inputTokensDetails: [entry.inputTokensDetails],
+      requestUsageEntries: [entry],
+    });
+    expect(restored.toJSON().$schemaVersion).toBe('1.23');
+  });
 
   it('preserves released mid-turn server continuation identifiers', async () => {
     const restored = await RunState.fromString(

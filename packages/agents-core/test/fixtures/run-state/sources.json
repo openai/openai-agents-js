@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.22",
+  "currentSchemaAtCreation": "1.23",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -364,15 +364,31 @@
     },
     {
       "schemaVersion": "1.22",
+      "status": "published_writer",
+      "packageVersion": "0.20.0",
+      "tag": "v0.20.0",
+      "commit": "33e2741be9bb52c1d96a8b4dac0c68e46297b607",
+      "npmIntegrity": "sha512-9nJJ3iyQTwO2kmrZJPMqnHI61g3xp2DgtpW4V0cgNtYot5jocDqAMN5+dkjtsBo64U3Wbl7rIAV0q5kvycoIIA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.22-minimal.json",
+          "sha256": "bf3237949550f307b5903947b394e9a54de18717c8e3231bcff3007028c141bd"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.23",
       "status": "current_unreleased",
-      "reason": "Records hosted MCP namespace discovery provenance; older unmarked namespace history requires rediscovery while explicit MCP descriptors remain usable."
+      "reason": "Preserves nested numeric token usage breakdowns."
     }
   ],
   "expectedNormalizedFixtures": [
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "bf3237949550f307b5903947b394e9a54de18717c8e3231bcff3007028c141bd"
+      "sha256": "d786cbafb734a9ed119bf268ccd759c947d1319b65acc55af8435223ca7250ae"
     }
   ],
   "negativeFixtures": [
