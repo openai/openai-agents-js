@@ -933,13 +933,55 @@ export type ModelItem = z.infer<typeof ModelItem>;
 /**
  * Token counts and nested breakdowns returned by a model provider.
  * Narrow individual values to numbers before performing arithmetic.
+ * Each record is limited to 32 object levels and 10,000 total entries.
  */
 export type TokenDetails = { [key: string]: number | TokenDetails };
 
-export const TokenDetails: z.ZodType<TokenDetails> = z.record(
+const TokenDetailsRecord: z.ZodType<TokenDetails> = z.record(
   z.string(),
-  z.union([z.number(), z.lazy(() => TokenDetails)]),
+  z.union([z.number(), z.lazy(() => TokenDetailsRecord)]),
 );
+
+export const TokenDetails: z.ZodType<TokenDetails> = z
+  .unknown()
+  .superRefine((input, ctx) => {
+    // Bound untrusted structure before recursive validation and copying.
+    const pending = [{ value: input, depth: 1 }];
+    let entries = 0;
+    while (pending.length > 0) {
+      const { value, depth } = pending.pop()!;
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        // The record schema reports invalid leaves without traversing them.
+        continue;
+      }
+      if (depth > 32) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Token details exceed 32 levels.',
+        });
+        return;
+      }
+      for (const key in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        if (++entries > 10_000) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Token details exceed 10000 entries.',
+          });
+          return;
+        }
+        const child = (value as Record<string, unknown>)[key];
+        if (
+          typeof child === 'object' &&
+          child !== null &&
+          !Array.isArray(child)
+        ) {
+          pending.push({ value: child, depth: depth + 1 });
+        }
+      }
+    }
+  })
+  .pipe(TokenDetailsRecord);
 
 export const RequestUsageData = z.object({
   inputTokens: z.number(),

@@ -394,6 +394,59 @@ describe('Usage', () => {
 });
 
 describe('nested token details', () => {
+  function deepDetails(depth: number): TokenDetails {
+    let details: TokenDetails = { count: 1 };
+    for (let level = 1; level < depth; level++) details = { nested: details };
+    return details;
+  }
+
+  it('rejects excessive depth before schema parsing or constructor storage', () => {
+    const details = deepDetails(4_000);
+    expect(() => TokenDetails.parse(details)).toThrow(/32 levels/);
+    expect(() => new Usage({ inputTokensDetails: details })).toThrow(
+      /32 levels/,
+    );
+    expect(() => new RequestUsage({ outputTokensDetails: details })).toThrow(
+      /32 levels/,
+    );
+  });
+
+  it('accepts the depth limit and rejects the next level', () => {
+    expect(TokenDetails.parse(deepDetails(32))).toEqual(deepDetails(32));
+    expect(() => TokenDetails.parse(deepDetails(33))).toThrow(/32 levels/);
+  });
+
+  it('bounds total entries across sibling records and rejects cycles', () => {
+    const half = Object.fromEntries(
+      Array.from({ length: 5_000 }, (_, i) => [`n${i}`, i]),
+    );
+    expect(() => TokenDetails.parse({ first: half, second: half })).toThrow(
+      /10000 entries/,
+    );
+    const cyclic: TokenDetails = {};
+    cyclic.self = cyclic;
+    expect(() => TokenDetails.parse(cyclic)).toThrow(/32 levels/);
+  });
+
+  it.each(['input', 'output', 'request'] as const)(
+    'rejects mutated %s details without partially accumulating usage',
+    (kind) => {
+      const total = new Usage({ inputTokens: 3, outputTokens: 2 });
+      const before = JSON.stringify(total);
+      const incoming = new Usage({ inputTokens: 5, outputTokens: 4 });
+      const details = deepDetails(4_000);
+      if (kind === 'input') incoming.inputTokensDetails = [details];
+      if (kind === 'output') incoming.outputTokensDetails = [details];
+      if (kind === 'request') {
+        const entry = new RequestUsage({ inputTokens: 5, outputTokens: 4 });
+        entry.inputTokensDetails = details;
+        incoming.requestUsageEntries = [entry];
+      }
+      expect(() => total.add(incoming)).toThrow(/32 levels/);
+      expect(JSON.stringify(total)).toBe(before);
+    },
+  );
+
   it('validates numeric trees and retains legacy flat details', () => {
     const details = {
       cached_tokens: 40,

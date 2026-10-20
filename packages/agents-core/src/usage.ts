@@ -66,12 +66,12 @@ export class RequestUsage {
     const inputTokensDetails =
       input?.inputTokensDetails ?? input?.input_tokens_details;
     this.inputTokensDetails = inputTokensDetails
-      ? (inputTokensDetails as TokenDetails)
+      ? cloneTokenDetails(inputTokensDetails as TokenDetails)
       : {};
     const outputTokensDetails =
       input?.outputTokensDetails ?? input?.output_tokens_details;
     this.outputTokensDetails = outputTokensDetails
-      ? (outputTokensDetails as TokenDetails)
+      ? cloneTokenDetails(outputTokensDetails as TokenDetails)
       : {};
     if (typeof input?.endpoint !== 'undefined') {
       this.endpoint = input.endpoint;
@@ -87,19 +87,11 @@ export class RequestUsage {
 }
 
 export function cloneTokenDetails(details: TokenDetails): TokenDetails {
-  return Object.fromEntries(
-    Object.entries(details).map(([key, value]) => [
-      key,
-      typeof value === 'number' ? value : cloneTokenDetails(value),
-    ]),
-  );
+  return TokenDetails.parse(details);
 }
 
 function cloneRequestUsage(input: RequestUsageInput): RequestUsage {
-  const cloned = new RequestUsage(input);
-  cloned.inputTokensDetails = cloneTokenDetails(cloned.inputTokensDetails);
-  cloned.outputTokensDetails = cloneTokenDetails(cloned.outputTokensDetails);
-  return cloned;
+  return new RequestUsage(input);
 }
 
 /**
@@ -161,28 +153,26 @@ export class Usage {
       const inputTokensDetails =
         input?.inputTokensDetails ?? input?.input_tokens_details;
       if (Array.isArray(inputTokensDetails)) {
-        this.inputTokensDetails = inputTokensDetails as Array<TokenDetails>;
+        this.inputTokensDetails = inputTokensDetails.map(cloneTokenDetails);
       } else {
         this.inputTokensDetails = inputTokensDetails
-          ? [inputTokensDetails as TokenDetails]
+          ? [cloneTokenDetails(inputTokensDetails as TokenDetails)]
           : [];
       }
       const outputTokensDetails =
         input?.outputTokensDetails ?? input?.output_tokens_details;
       if (Array.isArray(outputTokensDetails)) {
-        this.outputTokensDetails = outputTokensDetails as Array<TokenDetails>;
+        this.outputTokensDetails = outputTokensDetails.map(cloneTokenDetails);
       } else {
         this.outputTokensDetails = outputTokensDetails
-          ? [outputTokensDetails as TokenDetails]
+          ? [cloneTokenDetails(outputTokensDetails as TokenDetails)]
           : [];
       }
 
       const requestUsageEntries =
         input?.requestUsageEntries ?? input?.request_usage_entries;
       const normalizedRequestUsageEntries = Array.isArray(requestUsageEntries)
-        ? requestUsageEntries.map((entry) =>
-            entry instanceof RequestUsage ? entry : new RequestUsage(entry),
-          )
+        ? requestUsageEntries.map(cloneRequestUsage)
         : undefined;
       this.requestUsageEntries =
         normalizedRequestUsageEntries &&
@@ -200,34 +190,19 @@ export class Usage {
   }
 
   add(newUsage: Usage) {
-    this.requests += newUsage.requests ?? 0;
-    this.inputTokens += newUsage.inputTokens ?? 0;
-    this.outputTokens += newUsage.outputTokens ?? 0;
-    this.totalTokens += newUsage.totalTokens ?? 0;
-    if (newUsage.inputTokensDetails) {
-      // The type does not allow undefined, but it could happen runtime
-      this.inputTokensDetails.push(
-        ...newUsage.inputTokensDetails.map(cloneTokenDetails),
-      );
-    }
-    if (newUsage.outputTokensDetails) {
-      // The type does not allow undefined, but it could happen runtime
-      this.outputTokensDetails.push(
-        ...newUsage.outputTokensDetails.map(cloneTokenDetails),
-      );
-    }
-
+    // Validate and copy all incoming details before changing aggregate usage.
+    const inputDetails =
+      newUsage.inputTokensDetails?.map(cloneTokenDetails) ?? [];
+    const outputDetails =
+      newUsage.outputTokensDetails?.map(cloneTokenDetails) ?? [];
+    let requestEntries: RequestUsage[] = [];
     if (
       Array.isArray(newUsage.requestUsageEntries) &&
       newUsage.requestUsageEntries.length > 0
     ) {
-      this.requestUsageEntries ??= [];
-      this.requestUsageEntries.push(
-        ...newUsage.requestUsageEntries.map(cloneRequestUsage),
-      );
+      requestEntries = newUsage.requestUsageEntries.map(cloneRequestUsage);
     } else if (newUsage.requests === 1 && newUsage.totalTokens > 0) {
-      this.requestUsageEntries ??= [];
-      this.requestUsageEntries.push(
+      requestEntries = [
         cloneRequestUsage({
           inputTokens: newUsage.inputTokens,
           outputTokens: newUsage.outputTokens,
@@ -235,7 +210,18 @@ export class Usage {
           inputTokensDetails: newUsage.inputTokensDetails?.[0],
           outputTokensDetails: newUsage.outputTokensDetails?.[0],
         }),
-      );
+      ];
+    }
+
+    this.requests += newUsage.requests ?? 0;
+    this.inputTokens += newUsage.inputTokens ?? 0;
+    this.outputTokens += newUsage.outputTokens ?? 0;
+    this.totalTokens += newUsage.totalTokens ?? 0;
+    this.inputTokensDetails.push(...inputDetails);
+    this.outputTokensDetails.push(...outputDetails);
+    if (requestEntries.length > 0) {
+      this.requestUsageEntries ??= [];
+      this.requestUsageEntries.push(...requestEntries);
     }
   }
 }

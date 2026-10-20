@@ -198,6 +198,34 @@ describe('historical RunState compatibility corpus', () => {
     },
   );
 
+  it.each(['aggregate', 'request'] as const)(
+    'rejects excessively nested %s usage in persisted state',
+    async (location) => {
+      const snapshot = readJson<any>('historical/v1.22-minimal.json');
+      snapshot.$schemaVersion = CURRENT_SCHEMA_VERSION;
+      let details: Record<string, unknown> = { count: 1 };
+      for (let i = 1; i < 4_000; i++) details = { nested: details };
+      if (location === 'aggregate') {
+        snapshot.context.usage.inputTokensDetails = [details];
+      } else {
+        snapshot.context.usage.requestUsageEntries = [
+          {
+            inputTokens: 1,
+            outputTokens: 0,
+            totalTokens: 1,
+            outputTokensDetails: details,
+          },
+        ];
+      }
+      await expect(
+        RunState.fromString(
+          new Agent({ name: 'HistoricalAgent' }),
+          JSON.stringify(snapshot),
+        ),
+      ).rejects.toThrow(/32 levels/);
+    },
+  );
+
   it('preserves flat usage when upgrading a schema 1.22 snapshot', async () => {
     const historical = readJson<any>('historical/v1.22-minimal.json');
     const entry = {
