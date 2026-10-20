@@ -38,6 +38,59 @@ describe('OpenAIConversationsSession', () => {
     getInputItemsMock.mockReset();
   });
 
+  it.each(['low', 'high', 'auto', undefined] as const)(
+    'preserves image detail %s when reading user history',
+    async (detail) => {
+      const metadata = detail === undefined ? {} : { detail };
+      const session = createSession({
+        conversationId: 'conv-images',
+        client: {
+          conversations: {
+            items: {
+              list: vi.fn(() => ({
+                async *[Symbol.asyncIterator]() {
+                  yield {
+                    id: 'user-images',
+                    type: 'message',
+                    role: 'user',
+                    content: [
+                      {
+                        type: 'input_image',
+                        image_url: 'https://example.com/image.png',
+                        ...metadata,
+                      },
+                      {
+                        type: 'input_image',
+                        file_id: 'file-image',
+                        ...metadata,
+                      },
+                    ],
+                  };
+                },
+              })),
+            },
+          },
+        } as any,
+      });
+
+      expect(await session.getItems()).toStrictEqual([
+        {
+          id: 'user-images',
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_image',
+              image: 'https://example.com/image.png',
+              ...metadata,
+            },
+            { type: 'input_image', image: { id: 'file-image' }, ...metadata },
+          ],
+        },
+      ]);
+    },
+  );
+
   it('converts response items using their output payload', async () => {
     const responseOutput = [
       {
