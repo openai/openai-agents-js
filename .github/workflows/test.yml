@@ -10,7 +10,7 @@ permissions:
 
 env:
   # Refresh this digest when updating the Python 3.14 sandbox test image.
-  DOCKER_TEST_IMAGE: public.ecr.aws/docker/library/python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+  DOCKER_TEST_IMAGE: docker.io/library/python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 jobs:
   changes:
