@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.23",
+  "currentSchemaAtCreation": "1.24",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -380,15 +380,31 @@
     },
     {
       "schemaVersion": "1.23",
+      "status": "published_writer",
+      "packageVersion": "0.21.0",
+      "tag": "v0.21.0",
+      "commit": "304e436185ad5d7e54d240896efa728533147cf3",
+      "npmIntegrity": "sha512-P2jJhc85xrKpe9GUOHAVfPHqK52my49fD1CI0LnfYEvBUwZxJXQI6lgSwby9nWhvQECveM9OvBUglAXuArsHXw==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.23-minimal.json",
+          "sha256": "d786cbafb734a9ed119bf268ccd759c947d1319b65acc55af8435223ca7250ae"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.24",
       "status": "current_unreleased",
-      "reason": "Preserves nested numeric token usage breakdowns."
+      "reason": "Adds sandbox envelope version 6 for client-owned environment preparation."
     }
   ],
   "expectedNormalizedFixtures": [
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "d786cbafb734a9ed119bf268ccd759c947d1319b65acc55af8435223ca7250ae"
+      "sha256": "8e8abe425068b6f091361692514bea7cd3777c265b6ea3eee4290cae8c512d0f"
     }
   ],
   "negativeFixtures": [

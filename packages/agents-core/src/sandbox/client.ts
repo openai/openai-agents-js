@@ -58,6 +58,17 @@ export type SandboxClientResumeOptions<
 > = {
   archiveLimits?: SandboxArchiveLimits | null;
   clientOptions?: TOptions;
+  /**
+   * Current trusted manifest for clients that prepare environment values in
+   * their own execution context. Treat this manifest as authoritative for
+   * environment preparation: persisted provider state is untrusted input and
+   * must not override it. The client must not return resolved values through
+   * runner-visible or serialized session state. After a successful resume,
+   * the runtime binds its environment and SDK security policies to the
+   * provider-returned manifest for SDK-side policy and tool preparation while
+   * preserving provider-owned structural fields.
+   */
+  trustedManifest?: Manifest;
 };
 
 export type SandboxSessionResumeValidationInput<
@@ -103,6 +114,13 @@ export type SandboxPreservedSessionReuseOptions<
    * reusing a same-process preserved session.
    */
   revalidateManifestEntries?: boolean;
+  /**
+   * Current trusted manifest for environment preparation. Treat this manifest
+   * as authoritative; the preserved provider state must not override it. Once
+   * reuse is accepted, the runtime binds its environment and SDK security
+   * policies to the provider-returned manifest while preserving provider-owned
+   * structural fields.
+   */
   trustedManifest?: Manifest;
 };
 
@@ -112,6 +130,18 @@ export interface SandboxClient<
 > {
   backendId: string;
   supportsDefaultOptions?: boolean;
+  /**
+   * Delegates manifest environment preparation to the client execution
+   * context. The runner preserves unresolved environment references; the
+   * client must resolve them and validate environment-backed credentials
+   * before provider side effects.
+   *
+   * Resolved values must never be returned through runner-visible session
+   * state or serializeSessionState(). Same-process live reuse with unresolved
+   * references requires canReusePreservedOwnedSession() so the client can
+   * revalidate the session in its execution context.
+   */
+  environmentPreparation?: 'client';
   /**
    * Persisted provider state cannot authenticate enough backend authority to
    * reconnect safely, so only a same-process live session may be reused.
@@ -197,11 +227,19 @@ export function normalizeSandboxClientCreateArgs<
 >(
   args?: SandboxClientCreateArgs<TOptions> | Manifest,
   manifestOptions?: TOptions,
+  validationOptions: { environmentPreparation?: 'client' } = {},
 ): NormalizedSandboxClientCreateArgs<TOptions> {
   if (args instanceof Manifest) {
     const manifest = cloneManifest(args);
     validateMountCredentialBoundaries(manifest);
-    validateMountEnvironmentCredentialBoundaries(manifest, {});
+    validateMountEnvironmentCredentialBoundaries(
+      manifest,
+      {},
+      {
+        preserveDeferredValuePresence:
+          validationOptions.environmentPreparation === 'client',
+      },
+    );
     return {
       manifest,
       options: manifestOptions,
@@ -217,7 +255,14 @@ export function normalizeSandboxClientCreateArgs<
     ? cloneManifest(manifest)
     : new Manifest();
   validateMountCredentialBoundaries(normalizedManifest);
-  validateMountEnvironmentCredentialBoundaries(normalizedManifest, {});
+  validateMountEnvironmentCredentialBoundaries(
+    normalizedManifest,
+    {},
+    {
+      preserveDeferredValuePresence:
+        validationOptions.environmentPreparation === 'client',
+    },
+  );
 
   return {
     manifest: normalizedManifest,

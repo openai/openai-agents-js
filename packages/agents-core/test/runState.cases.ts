@@ -936,11 +936,61 @@ export function registerRunStateCoreTests(): void {
       };
       const serialized = state.toJSON();
       serialized.$schemaVersion = '1.19';
+      serialized.sandbox!.sessionState.version = 5;
 
       await expect(
         RunState.fromString(agent, JSON.stringify(serialized)),
       ).rejects.toThrow(
         'Run state schema version 1.19 does not support sandbox session state version 5.',
+      );
+    });
+
+    it('keeps reading schema 1.23 payloads with sandbox session state version 5', async () => {
+      const agent = new Agent({ name: 'VersionFiveSandboxEnvelopeAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._sandbox = {
+        backendId: 'unix-local',
+        currentAgentKey: 'VersionFiveSandboxEnvelopeAgent',
+        currentAgentName: 'VersionFiveSandboxEnvelopeAgent',
+        sessionState: sandboxSessionStateEnvelope({
+          workspaceId: 'ws_version_five',
+        }),
+        sessionsByAgent: {},
+      };
+      const serialized = state.toJSON();
+      serialized.$schemaVersion = '1.23';
+      serialized.sandbox!.sessionState.version = 5;
+
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(serialized),
+      );
+
+      expect(restored._sandbox?.sessionState.version).toBe(5);
+      expect(() => restored.toString()).toThrow(
+        /must be resumed through the Runner/u,
+      );
+    });
+
+    it('rejects sandbox session state version 6 under released schema 1.23', async () => {
+      const agent = new Agent({ name: 'VersionSixSandboxEnvelopeAgent' });
+      const state = new RunState(new RunContext(), 'input', agent, 1);
+      state._sandbox = {
+        backendId: 'unix-local',
+        currentAgentKey: 'VersionSixSandboxEnvelopeAgent',
+        currentAgentName: 'VersionSixSandboxEnvelopeAgent',
+        sessionState: sandboxSessionStateEnvelope({
+          workspaceId: 'ws_version_six',
+        }),
+        sessionsByAgent: {},
+      };
+      const serialized = state.toJSON();
+      serialized.$schemaVersion = '1.23';
+
+      await expect(
+        RunState.fromString(agent, JSON.stringify(serialized)),
+      ).rejects.toThrow(
+        'Run state schema version 1.23 does not support sandbox session state version 6.',
       );
     });
 

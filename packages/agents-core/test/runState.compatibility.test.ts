@@ -123,6 +123,7 @@ describe('historical RunState compatibility corpus', () => {
       '1.20',
       '1.21',
       '1.22',
+      '1.23',
     ]);
     expect(
       manifest.schemas
@@ -133,7 +134,7 @@ describe('historical RunState compatibility corpus', () => {
       manifest.schemas
         .filter((entry) => entry.status === 'current_unreleased')
         .map((entry) => entry.schemaVersion),
-    ).toEqual(['1.23']);
+    ).toEqual(['1.24']);
   });
 
   it('pins every fixture to immutable bytes and complete writer provenance', () => {
@@ -253,7 +254,7 @@ describe('historical RunState compatibility corpus', () => {
       inputTokensDetails: [entry.inputTokensDetails],
       requestUsageEntries: [entry],
     });
-    expect(restored.toJSON().$schemaVersion).toBe('1.23');
+    expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
   });
 
   it('preserves released mid-turn server continuation identifiers', async () => {

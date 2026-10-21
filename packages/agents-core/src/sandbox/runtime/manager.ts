@@ -18,13 +18,12 @@ import { SandboxLifecycleError, SandboxMountError } from '../errors';
 import {
   cloneManifest,
   isEnvValueReference,
+  manifestAcknowledgesInContainerMountCredentialExposure,
   Manifest,
   replaceManifestMountCredentialExposurePolicy,
 } from '../manifest';
 import {
   captureLiveMountCredentialAuthorityIfAbsent,
-  captureSandboxStateGeneration,
-  assertSandboxStateGenerationUnchanged,
   assertSandboxSessionStateUsable,
   isSandboxSessionStateUnsafe,
   liveMountCredentialAuthorityMatches,
@@ -35,6 +34,7 @@ import {
   resolveAndValidateMountEnvironment,
   validateMountCredentialBoundaries,
   validateMountEnvironmentCredentialBoundaries,
+  withExclusiveSandboxStateInspection,
 } from '../mountSecurity';
 import { type SandboxSessionLike, type SandboxSessionState } from '../session';
 import { isDefaultRemoteMountCommandAllowlist } from '../shared/remoteMountCommandAllowlist';
@@ -70,7 +70,10 @@ import {
   rememberLivePreservedOwnedSessions,
   type LivePreservedOwnedSessionEntry,
 } from './livePreservedSessions';
-import { applyManifestToProvidedSession } from './providedSessionManifest';
+import {
+  applyManifestToProvidedSession,
+  withExclusiveProvidedSessionManifestMutation,
+} from './providedSessionManifest';
 import { serializeSandboxRuntimeState } from './sessionSerialization';
 import {
   assertMountCredentialsRebound,
@@ -85,12 +88,15 @@ import {
   runSandboxSessionPreStopHooks,
 } from './sessionLifecycle';
 import {
+  assertSessionStateEnvelope,
   assertTrustedManifestForDockerRunState,
+  clientPreparedManifestAuthoritiesMatch,
   deserializeSandboxSessionStateEntry,
   getPreviousSerializedSessionsByAgent,
   getSerializedSandboxState,
   getSerializedSessionEntryForAgent,
   hasPreservedOwnedSessions,
+  mergeClientPreparedManifestAuthority,
   resolveTrustedManifestForResume,
   serializedSessionEntryRequiresFreshMountAuthority,
   type SerializedSandboxState,
@@ -602,6 +608,7 @@ export class SandboxRuntimeManager<TContext> {
     const closeErrors: unknown[] = [];
     for (const [session, agentKeys] of sessionAgentKeys) {
       rejectLivePreservedOwnedSessionHandle({ state, session });
+      this.detachSessionAliases(session);
       try {
         await cleanupSandboxSession(session);
         forgetLivePreservedOwnedSessionHandle({ state, session });
@@ -611,6 +618,12 @@ export class SandboxRuntimeManager<TContext> {
       } catch (error) {
         closeErrors.push(error);
       }
+    }
+    const agentKeysWithLiveHandles = new Set(
+      livePreservedOwnedSessionEntries(state).map((entry) => entry.agentKey),
+    );
+    for (const agentKey of agentKeysWithLiveHandles) {
+      closedAgentKeys.delete(agentKey);
     }
     return { closedAgentKeys, closeErrors };
   }
@@ -690,6 +703,12 @@ export class SandboxRuntimeManager<TContext> {
   async adoptPreservedOwnedSessions(
     tracingParent?: Span<any> | Trace,
   ): Promise<boolean> {
+    // An explicit state replaces any preserved RunState entry. Do not inspect
+    // or resume that stale envelope before the replacement is processed. Signal
+    // callers to rehydrate any live tool closures against the explicit state.
+    if (this.sandboxConfig?.sessionState !== undefined) {
+      return true;
+    }
     const sandboxState = getSerializedSandboxState(this.runState);
     if (!hasPreservedOwnedSessions(sandboxState)) {
       return false;
@@ -723,12 +742,36 @@ export class SandboxRuntimeManager<TContext> {
       if (!entry?.preservedOwnedSession) {
         continue;
       }
+      assertSessionStateEnvelope(client, entry.sessionState);
+      const trustedManifest = this.resolveTrustedManifestForAgentKey(agentKey);
+      const clientPreparesEnvironment =
+        client.environmentPreparation === 'client';
+      const resumeTrustedManifest = clientPreparesEnvironment
+        ? resolveTrustedManifestForResume(
+            client,
+            trustedManifest,
+            this.sandboxConfig?.options,
+          )
+        : trustedManifest;
+      if (clientPreparesEnvironment && !resumeTrustedManifest) {
+        throw new UserError(
+          'Client-owned environment preparation requires a current trusted manifest before resuming a preserved sandbox session.',
+        );
+      }
       const liveDecision = await this.inspectLivePreservedOwnedSessionReuse({
         client,
         agentKey,
         serializedEntry: entry,
-        trustedManifest: this.resolveTrustedManifestForAgentKey(agentKey),
+        trustedManifest: resumeTrustedManifest,
+        trustedManifestAlreadyResolved: clientPreparesEnvironment,
       });
+      if (entry.requiresFreshCreation === true) {
+        if (liveDecision) {
+          await this.discardLiveSessionWithChangedMountAuthority(liveDecision);
+          continue;
+        }
+        throw serializedOwnedSessionReplacementError(client);
+      }
       if (liveDecision?.reusable) {
         this.sessionsByAgentKey.set(agentKey, liveDecision.entry.session);
         this.sessionAgentNamesByKey.set(
@@ -742,13 +785,12 @@ export class SandboxRuntimeManager<TContext> {
         await this.discardLiveSessionWithChangedMountAuthority(liveDecision);
         continue;
       }
-      const trustedManifest = this.resolveTrustedManifestForAgentKey(agentKey);
       if (
         client.serializedSessionStateRequiresFreshCreation ||
         serializedSessionEntryRequiresFreshMountAuthority(entry) ||
-        (trustedManifest &&
-          (manifestHasInContainerMounts(trustedManifest) ||
-            manifestHasNonResumableMountAuthority(trustedManifest)))
+        (resumeTrustedManifest &&
+          (manifestHasInContainerMounts(resumeTrustedManifest) ||
+            manifestHasNonResumableMountAuthority(resumeTrustedManifest)))
       ) {
         if (liveDecision) {
           await this.discardLiveSessionWithChangedMountAuthority(liveDecision);
@@ -765,11 +807,12 @@ export class SandboxRuntimeManager<TContext> {
       const serializedState = await deserializeSandboxSessionStateEntry(
         client,
         entry,
-        this.resolveTrustedManifestForAgentKey(agentKey),
+        resumeTrustedManifest,
         {
           clientOptions: this.sandboxConfig?.options,
           snapshot: this.sandboxConfig?.snapshot,
         },
+        { trustedManifestAlreadyResolved: clientPreparesEnvironment },
       );
       if (!serializedState) {
         continue;
@@ -781,6 +824,9 @@ export class SandboxRuntimeManager<TContext> {
           {
             archiveLimits: this.sandboxConfig?.archiveLimits,
             clientOptions: this.sandboxConfig?.options,
+            ...(clientPreparesEnvironment
+              ? { trustedManifest: resumeTrustedManifest }
+              : {}),
           },
         )
       ) {
@@ -803,9 +849,15 @@ export class SandboxRuntimeManager<TContext> {
           await client.resume!(serializedState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
             clientOptions: this.sandboxConfig?.options,
+            ...(clientPreparesEnvironment
+              ? { trustedManifest: resumeTrustedManifest }
+              : {}),
           }),
         tracingParent,
       );
+      if (clientPreparesEnvironment) {
+        bindClientPreparedTrustedManifest(session, resumeTrustedManifest!);
+      }
       session = await this.replaceRejectedLiveSession(
         rejectedLiveEntry,
         session,
@@ -861,6 +913,15 @@ export class SandboxRuntimeManager<TContext> {
       const configuredManifest = this.resolveConfiguredManifest(agent, {
         providedSession: session,
       });
+      if (
+        this.sandboxConfig.client?.environmentPreparation === 'client' &&
+        (manifestHasDeferredEnvironmentValues(configuredManifest.manifest) ||
+          manifestHasDeferredEnvironmentValues(session.state.manifest))
+      ) {
+        throw new UserError(
+          'Client-owned environment preparation cannot revalidate deferred environment values for an already-running provided session. Resume the session through the client instead.',
+        );
+      }
       // Provided sessions are already running, so only a safe additive manifest delta can
       // be applied instead of reprovisioning root, env, users, groups, or mounts.
       await applyManifestToProvidedSession(
@@ -900,9 +961,18 @@ export class SandboxRuntimeManager<TContext> {
         'Sandbox execution requires a sandbox client with create() support.',
       );
     }
-    const createManifest = await resolveAndValidateMountEnvironment(
-      configuredManifest.manifest,
-    );
+    const clientPreparesEnvironment =
+      client.environmentPreparation === 'client';
+    if (clientPreparesEnvironment) {
+      validateMountEnvironmentCredentialBoundaries(
+        configuredManifest.manifest,
+        {},
+        { preserveDeferredValuePresence: true },
+      );
+    }
+    const createManifest = clientPreparesEnvironment
+      ? cloneManifest(configuredManifest.manifest)
+      : await resolveAndValidateMountEnvironment(configuredManifest.manifest);
     const createSession = client.create.bind(client);
     const createArgs: SandboxClientCreateArgs = {
       snapshot: this.resolveSnapshotSpec(client),
@@ -923,7 +993,9 @@ export class SandboxRuntimeManager<TContext> {
       async () => await createSession(createArgs),
       tracingParent,
     );
-    if (configuredManifest.passToCreate) {
+    if (clientPreparesEnvironment) {
+      bindClientPreparedTrustedManifest(session, configuredManifest.manifest);
+    } else if (configuredManifest.passToCreate) {
       session.state.environment = {
         ...(session.state.environment ?? {}),
         ...(await createManifest.resolveEnvironment()),
@@ -1105,29 +1177,79 @@ export class SandboxRuntimeManager<TContext> {
     );
     const explicitSessionStateInput = this.sandboxConfig?.sessionState;
     const hasExplicitSessionState = explicitSessionStateInput !== undefined;
+    if (!hasExplicitSessionState && serializedEntry) {
+      assertSessionStateEnvelope(client, serializedEntry.sessionState);
+    }
+    const clientPreparesEnvironment =
+      client.environmentPreparation === 'client';
+    const resumeTrustedManifest =
+      clientPreparesEnvironment &&
+      (hasExplicitSessionState || serializedEntry !== undefined)
+        ? resolveTrustedManifestForResume(
+            client,
+            trustedManifest,
+            this.sandboxConfig?.options,
+          )!
+        : trustedManifest;
+    const explicitTrustedManifest = explicitSessionStateInput
+      ? resumeTrustedManifest
+      : trustedManifest;
     if (explicitSessionStateInput) {
       client.validateSessionStateForResume?.(
         { source: 'explicit', state: explicitSessionStateInput },
         {
           archiveLimits: this.sandboxConfig?.archiveLimits,
           clientOptions: this.sandboxConfig?.options,
+          ...(clientPreparesEnvironment
+            ? { trustedManifest: explicitTrustedManifest }
+            : {}),
         },
       );
     }
-    const explicitSessionState = hasExplicitSessionState
-      ? await this.prepareExplicitSessionStateForResume(client, trustedManifest)
+    const explicitResume = hasExplicitSessionState
+      ? await this.prepareExplicitSessionStateForResume(
+          client,
+          trustedManifest,
+          clientPreparesEnvironment ? explicitTrustedManifest : undefined,
+        )
       : undefined;
+    const explicitSessionState = explicitResume?.state;
     if (explicitSessionState && !client.resume) {
       throw new UserError(
         'Sandbox client must implement resume() to restore sandbox session state.',
       );
     }
-    const liveDecision = await this.inspectLivePreservedOwnedSessionReuse({
-      client,
-      agentKey,
-      serializedEntry,
-      trustedManifest,
-    });
+    const explicitClientPreparedLiveEntry =
+      hasExplicitSessionState && clientPreparesEnvironment
+        ? livePreservedOwnedSession({
+            runState: this.runState,
+            client,
+            agentKey,
+            serializedEntry,
+          })
+        : undefined;
+    const liveDecision =
+      hasExplicitSessionState && clientPreparesEnvironment
+        ? explicitClientPreparedLiveEntry
+          ? { entry: explicitClientPreparedLiveEntry, reusable: false }
+          : undefined
+        : await this.inspectLivePreservedOwnedSessionReuse({
+            client,
+            agentKey,
+            serializedEntry,
+            trustedManifest: resumeTrustedManifest,
+            trustedManifestAlreadyResolved: clientPreparesEnvironment,
+          });
+    if (
+      !hasExplicitSessionState &&
+      serializedEntry?.requiresFreshCreation === true
+    ) {
+      if (liveDecision) {
+        await this.discardLiveSessionWithChangedMountAuthority(liveDecision);
+        return undefined;
+      }
+      throw serializedOwnedSessionReplacementError(client);
+    }
     if (!hasExplicitSessionState && liveDecision?.reusable) {
       return liveDecision.entry.session;
     }
@@ -1138,8 +1260,8 @@ export class SandboxRuntimeManager<TContext> {
     if (
       !hasExplicitSessionState &&
       (client.serializedSessionStateRequiresFreshCreation ||
-        manifestHasInContainerMounts(trustedManifest) ||
-        manifestHasNonResumableMountAuthority(trustedManifest) ||
+        manifestHasInContainerMounts(resumeTrustedManifest) ||
+        manifestHasNonResumableMountAuthority(resumeTrustedManifest) ||
         serializedSessionEntryRequiresFreshMountAuthority(serializedEntry))
     ) {
       if (liveDecision) {
@@ -1173,20 +1295,30 @@ export class SandboxRuntimeManager<TContext> {
           await client.resume!(explicitSessionState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
             clientOptions: this.sandboxConfig?.options,
+            ...(clientPreparesEnvironment
+              ? { trustedManifest: explicitResume?.trustedManifest }
+              : {}),
           }),
         tracingParent,
       );
+      if (clientPreparesEnvironment) {
+        bindClientPreparedTrustedManifest(
+          session,
+          explicitResume!.trustedManifest,
+        );
+      }
       return await this.replaceRejectedLiveSession(rejectedLiveEntry, session);
     }
 
     const serializedState = await deserializeSandboxSessionStateEntry(
       client,
       serializedEntry,
-      trustedManifest,
+      resumeTrustedManifest,
       {
         clientOptions: this.sandboxConfig?.options,
         snapshot: this.sandboxConfig?.snapshot,
       },
+      { trustedManifestAlreadyResolved: clientPreparesEnvironment },
     );
     if (!serializedState) {
       return undefined;
@@ -1199,6 +1331,9 @@ export class SandboxRuntimeManager<TContext> {
         {
           archiveLimits: this.sandboxConfig?.archiveLimits,
           clientOptions: this.sandboxConfig?.options,
+          ...(clientPreparesEnvironment
+            ? { trustedManifest: resumeTrustedManifest }
+            : {}),
         },
       )
     ) {
@@ -1224,21 +1359,30 @@ export class SandboxRuntimeManager<TContext> {
         await client.resume!(serializedState, {
           archiveLimits: this.sandboxConfig?.archiveLimits,
           clientOptions: this.sandboxConfig?.options,
+          ...(clientPreparesEnvironment
+            ? { trustedManifest: resumeTrustedManifest }
+            : {}),
         }),
       tracingParent,
     );
+    if (clientPreparesEnvironment) {
+      bindClientPreparedTrustedManifest(session, resumeTrustedManifest);
+    }
     return await this.replaceRejectedLiveSession(rejectedLiveEntry, session);
   }
 
   private async prepareExplicitSessionStateForResume(
     client: SandboxClient,
     trustedManifest: Manifest,
-  ): Promise<SandboxSessionState> {
+    preResolvedTrustedManifest?: Manifest,
+  ): Promise<{ state: SandboxSessionState; trustedManifest: Manifest }> {
     const persistedState = this.sandboxConfig!.sessionState!;
+    const trustedManifestForPolicy =
+      preResolvedTrustedManifest ?? trustedManifest;
     if (
       client.serializedSessionStateRequiresFreshCreation ||
-      manifestHasInContainerMounts(trustedManifest) ||
-      manifestHasNonResumableMountAuthority(trustedManifest) ||
+      manifestHasInContainerMounts(trustedManifestForPolicy) ||
+      manifestHasNonResumableMountAuthority(trustedManifestForPolicy) ||
       manifestHasInContainerMounts(persistedState.manifest) ||
       manifestHasNonResumableMountAuthority(persistedState.manifest)
     ) {
@@ -1248,15 +1392,18 @@ export class SandboxRuntimeManager<TContext> {
           : 'Sandbox session state with in-container mounts cannot be resumed safely. Create a fresh sandbox from the current trusted manifest.',
       );
     }
-    const resolvedTrustedManifest = resolveTrustedManifestForResume(
-      client,
-      trustedManifest,
-      this.sandboxConfig?.options,
-    )!;
+    const resolvedTrustedManifest =
+      preResolvedTrustedManifest ??
+      resolveTrustedManifestForResume(
+        client,
+        trustedManifest,
+        this.sandboxConfig?.options,
+      )!;
     if (
       client.backendId === 'docker' &&
+      client.environmentPreparation !== 'client' &&
       Object.keys(persistedState.manifest.environment).some(
-        (key) => !(key in trustedManifest.environment),
+        (key) => !(key in trustedManifestForPolicy.environment),
       )
     ) {
       throw new UserError(
@@ -1279,6 +1426,27 @@ export class SandboxRuntimeManager<TContext> {
         undefined,
         'mount_config_invalid',
       );
+    }
+    if (client.environmentPreparation === 'client') {
+      validateMountCredentialBoundaries(resolvedTrustedManifest);
+      validateMountEnvironmentCredentialBoundaries(
+        resolvedTrustedManifest,
+        {},
+        { preserveDeferredValuePresence: true },
+      );
+      const pathReboundState = rebindPersistedPathGrants(
+        topologyReboundState,
+        resolvedTrustedManifest,
+        {
+          replaceWithTrustedManifest: client.backendId === 'docker',
+        },
+      );
+      assertMountCredentialsRebound(pathReboundState);
+      assertHostPathGrantsRebound(pathReboundState);
+      return {
+        state: persistedState,
+        trustedManifest: resolvedTrustedManifest,
+      };
     }
     const materializedTrustedManifest =
       await resolveAndValidateMountEnvironment(resolvedTrustedManifest);
@@ -1306,7 +1474,10 @@ export class SandboxRuntimeManager<TContext> {
       sessionState.environment ?? {},
     );
     assertHostPathGrantsRebound(sessionState);
-    return sessionState;
+    return {
+      state: sessionState,
+      trustedManifest: materializedTrustedManifest,
+    };
   }
 
   private async inspectLivePreservedOwnedSessionReuse(args: {
@@ -1314,6 +1485,7 @@ export class SandboxRuntimeManager<TContext> {
     agentKey: string;
     serializedEntry: ReturnType<typeof getSerializedSessionEntryForAgent>;
     trustedManifest?: Manifest;
+    trustedManifestAlreadyResolved?: boolean;
   }): Promise<LivePreservedOwnedSessionReuseDecision | undefined> {
     const liveEntry = livePreservedOwnedSession({
       runState: this.runState,
@@ -1325,192 +1497,320 @@ export class SandboxRuntimeManager<TContext> {
       return undefined;
     }
 
-    assertTrustedManifestForDockerRunState(args.client, args.trustedManifest);
-
-    if (liveEntry.reuseRejected) {
-      await serializedSessionStateRequiresFreshCreationForOptions(
-        args.client,
-        liveEntry.session.state,
-        {
-          archiveLimits: this.sandboxConfig?.archiveLimits,
-          clientOptions: this.sandboxConfig?.options,
-        },
-      );
-      return {
-        entry: liveEntry,
-        reusable: false,
-        ...(args.client
-          .preservedOwnedSessionReuseRejectionRequiresFreshCreation === true
-          ? { mountAuthorityChanged: true }
-          : {}),
-      };
-    }
-
-    if (isSandboxSessionStateUnsafe(liveEntry.session.state)) {
-      rejectLivePreservedOwnedSessionHandle({
-        state: this.runState,
-        session: liveEntry.session,
-      });
-      return {
-        entry: liveEntry,
-        reusable: false,
-        mountAuthorityChanged: true,
-      };
-    }
-    const stateGeneration = captureSandboxStateGeneration(
-      liveEntry.session.state,
-    );
-
-    const trustedManifest = resolveTrustedManifestForResume(
-      args.client,
-      args.trustedManifest,
-      this.sandboxConfig?.options,
-    );
-    if (
-      !trustedManifest ||
-      manifestHasNonResumableMountAuthority(trustedManifest) ||
-      !liveMountCredentialAuthorityMatches(
-        liveEntry.session.state.manifest,
-        trustedManifest,
-      )
-    ) {
-      rejectLivePreservedOwnedSessionHandle({
-        state: this.runState,
-        session: liveEntry.session,
-      });
-      return {
-        entry: liveEntry,
-        reusable: false,
-        mountAuthorityChanged: true,
-      };
-    }
-
-    const canReuse = args.client.canReusePreservedOwnedSession;
-    if (
-      args.client.backendId === 'docker' &&
-      Object.keys(liveEntry.session.state.manifest.environment).some(
-        (key) => !(key in trustedManifest.environment),
-      )
-    ) {
-      rejectLivePreservedOwnedSessionHandle({
-        state: this.runState,
-        session: liveEntry.session,
-      });
-      return { entry: liveEntry, reusable: false };
-    }
-
-    const candidateState = rebindPersistedPathGrants(
-      liveEntry.session.state,
-      trustedManifest,
-      {
-        replaceWithTrustedManifest: args.client.backendId === 'docker',
-      },
-    );
-    replaceManifestMountCredentialExposurePolicy(
-      candidateState.manifest,
-      trustedManifest,
-    );
-    recordLiveMountCredentialAuthority(
-      candidateState.manifest,
-      liveEntry.session.state.manifest,
-    );
-    validateMountCredentialBoundaries(trustedManifest);
-    if (args.client.backendId === 'docker') {
-      candidateState.environment = {
-        ...(liveEntry.session.state.environment ?? {}),
-        ...(await trustedManifest.resolveEnvironment()),
-      };
-    }
-    if (!canReuse) {
-      const trustedEnvironment = await trustedManifest.resolveEnvironment();
-      if (
-        !liveMountEnvironmentAuthorityMatches(
-          liveEntry.session.state.manifest,
-          trustedManifest,
-          trustedEnvironment,
-        )
-      ) {
-        assertSandboxStateGenerationUnchanged(
-          liveEntry.session.state,
-          stateGeneration,
+    const trustedManifest = args.trustedManifestAlreadyResolved
+      ? args.trustedManifest
+      : resolveTrustedManifestForResume(
+          args.client,
+          args.trustedManifest,
+          this.sandboxConfig?.options,
         );
-        rejectLivePreservedOwnedSessionHandle({
-          state: this.runState,
-          session: liveEntry.session,
-        });
-        return {
-          entry: liveEntry,
-          reusable: false,
-          mountAuthorityChanged: true,
-        };
-      }
-      await refreshLiveEnvironmentReferences(
-        candidateState,
-        trustedManifest,
-        trustedEnvironment,
-      );
-    } else {
-      const reusable = await canReuse.call(args.client, candidateState, {
-        clientOptions: this.sandboxConfig?.options,
-        revalidateManifestEntries: true,
-        trustedManifest,
-      });
-      if (!reusable) {
-        const requiresFreshCreation =
-          args.client
-            .preservedOwnedSessionReuseRejectionRequiresFreshCreation === true;
-        assertSandboxStateGenerationUnchanged(
-          liveEntry.session.state,
-          stateGeneration,
-        );
-        rejectLivePreservedOwnedSessionHandle({
-          state: this.runState,
-          session: liveEntry.session,
-        });
-        return {
-          entry: liveEntry,
-          reusable: false,
-          ...(requiresFreshCreation ? { mountAuthorityChanged: true } : {}),
-        };
-      }
 
-      if (args.client.backendId !== 'docker') {
-        await refreshLiveEnvironmentReferences(candidateState, trustedManifest);
-      }
-    }
+    assertTrustedManifestForDockerRunState(args.client, trustedManifest);
 
-    assertSandboxStateGenerationUnchanged(
+    return await withExclusiveProvidedSessionManifestMutation(
       liveEntry.session.state,
-      stateGeneration,
-    );
-    args.client.rebindPreservedOwnedSessionState?.(liveEntry.session.state, {
-      clientOptions: this.sandboxConfig?.options,
-      revalidateManifestEntries: true,
-      trustedManifest,
-    });
+      async () =>
+        await withExclusiveSandboxStateInspection(
+          liveEntry.session.state,
+          async () => {
+            if (liveEntry.reuseRejected) {
+              await serializedSessionStateRequiresFreshCreationForOptions(
+                args.client,
+                liveEntry.session.state,
+                {
+                  archiveLimits: this.sandboxConfig?.archiveLimits,
+                  clientOptions: this.sandboxConfig?.options,
+                  ...(args.client.environmentPreparation === 'client'
+                    ? { trustedManifest }
+                    : {}),
+                },
+              );
+              return {
+                entry: liveEntry,
+                reusable: false,
+                ...(args.client
+                  .preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
+                true
+                  ? { mountAuthorityChanged: true }
+                  : {}),
+              };
+            }
 
-    // Rebind only after the backend has verified that its live authority still
-    // matches the current trusted manifest.
-    const reboundManifest =
-      args.client.backendId === 'docker'
-        ? manifestWithTrustedRuntimePolicies(
-            rebindPersistedPathGrants(
+            if (isSandboxSessionStateUnsafe(liveEntry.session.state)) {
+              rejectLivePreservedOwnedSessionHandle({
+                state: this.runState,
+                session: liveEntry.session,
+              });
+              return {
+                entry: liveEntry,
+                reusable: false,
+                mountAuthorityChanged: true,
+              };
+            }
+            if (
+              !trustedManifest ||
+              manifestHasNonResumableMountAuthority(trustedManifest) ||
+              !liveMountCredentialAuthorityMatches(
+                liveEntry.session.state.manifest,
+                trustedManifest,
+              )
+            ) {
+              rejectLivePreservedOwnedSessionHandle({
+                state: this.runState,
+                session: liveEntry.session,
+              });
+              return {
+                entry: liveEntry,
+                reusable: false,
+                mountAuthorityChanged: true,
+              };
+            }
+
+            const canReuse = args.client.canReusePreservedOwnedSession;
+            const clientPreparesEnvironment =
+              args.client.environmentPreparation === 'client';
+            if (
+              args.client.backendId === 'docker' &&
+              !clientPreparesEnvironment &&
+              Object.keys(liveEntry.session.state.manifest.environment).some(
+                (key) => !(key in trustedManifest.environment),
+              )
+            ) {
+              rejectLivePreservedOwnedSessionHandle({
+                state: this.runState,
+                session: liveEntry.session,
+              });
+              return { entry: liveEntry, reusable: false };
+            }
+
+            const hasDeferredEnvironmentValues =
+              manifestHasDeferredEnvironmentValues(trustedManifest) ||
+              manifestHasDeferredEnvironmentValues(
+                liveEntry.session.state.manifest,
+              );
+            if (clientPreparesEnvironment) {
+              validateMountCredentialBoundaries(trustedManifest);
+              validateMountEnvironmentCredentialBoundaries(
+                trustedManifest,
+                {},
+                {
+                  preserveDeferredValuePresence: true,
+                },
+              );
+              const hasOtherMappedAlias = [...this.sessionsByAgentKey].some(
+                ([mappedAgentKey, mappedSession]) =>
+                  mappedAgentKey !== args.agentKey &&
+                  mappedSession === liveEntry.session,
+              );
+              if (
+                hasOtherMappedAlias &&
+                !clientPreparedManifestAuthoritiesMatch(
+                  liveEntry.session.state.manifest,
+                  liveEntry.session.state.manifest,
+                  trustedManifest,
+                )
+              ) {
+                const requiresFreshCreation =
+                  args.client
+                    .preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
+                  true;
+                rejectLivePreservedOwnedSessionHandle({
+                  state: this.runState,
+                  session: liveEntry.session,
+                });
+                return {
+                  entry: liveEntry,
+                  reusable: false,
+                  ...(requiresFreshCreation
+                    ? { mountAuthorityChanged: true }
+                    : {}),
+                };
+              }
+              if (!canReuse) {
+                const authorityMatches =
+                  !hasDeferredEnvironmentValues &&
+                  clientPreparedManifestAuthoritiesMatch(
+                    liveEntry.session.state.manifest,
+                    liveEntry.session.state.manifest,
+                    trustedManifest,
+                  );
+                if (!authorityMatches) {
+                  const requiresFreshCreation =
+                    args.client
+                      .preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
+                    true;
+                  rejectLivePreservedOwnedSessionHandle({
+                    state: this.runState,
+                    session: liveEntry.session,
+                  });
+                  return {
+                    entry: liveEntry,
+                    reusable: false,
+                    ...(requiresFreshCreation
+                      ? { mountAuthorityChanged: true }
+                      : {}),
+                  };
+                }
+              } else {
+                const reusable = await canReuse.call(
+                  args.client,
+                  liveEntry.session.state,
+                  {
+                    clientOptions: this.sandboxConfig?.options,
+                    revalidateManifestEntries: true,
+                    trustedManifest,
+                  },
+                );
+                if (!reusable) {
+                  const requiresFreshCreation =
+                    args.client
+                      .preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
+                    true;
+                  rejectLivePreservedOwnedSessionHandle({
+                    state: this.runState,
+                    session: liveEntry.session,
+                  });
+                  return {
+                    entry: liveEntry,
+                    reusable: false,
+                    ...(requiresFreshCreation
+                      ? { mountAuthorityChanged: true }
+                      : {}),
+                  };
+                }
+              }
+              args.client.rebindPreservedOwnedSessionState?.(
+                liveEntry.session.state,
+                {
+                  clientOptions: this.sandboxConfig?.options,
+                  revalidateManifestEntries: true,
+                  trustedManifest,
+                },
+              );
+              bindClientPreparedTrustedManifest(
+                liveEntry.session,
+                trustedManifest,
+              );
+              return { entry: liveEntry, reusable: true };
+            }
+
+            const candidateState = rebindPersistedPathGrants(
               liveEntry.session.state,
               trustedManifest,
               {
-                replaceWithTrustedGrantSet: true,
+                replaceWithTrustedManifest: args.client.backendId === 'docker',
               },
-            ).manifest,
-            trustedManifest,
-          )
-        : candidateState.manifest;
-    recordLiveMountCredentialAuthority(
-      reboundManifest,
-      candidateState.manifest,
+            );
+            replaceManifestMountCredentialExposurePolicy(
+              candidateState.manifest,
+              trustedManifest,
+            );
+            recordLiveMountCredentialAuthority(
+              candidateState.manifest,
+              liveEntry.session.state.manifest,
+            );
+            validateMountCredentialBoundaries(trustedManifest);
+            if (args.client.backendId === 'docker') {
+              candidateState.environment = {
+                ...(liveEntry.session.state.environment ?? {}),
+                ...(await trustedManifest.resolveEnvironment()),
+              };
+            }
+            if (!canReuse) {
+              const trustedEnvironment =
+                await trustedManifest.resolveEnvironment();
+              if (
+                !liveMountEnvironmentAuthorityMatches(
+                  liveEntry.session.state.manifest,
+                  trustedManifest,
+                  trustedEnvironment,
+                )
+              ) {
+                rejectLivePreservedOwnedSessionHandle({
+                  state: this.runState,
+                  session: liveEntry.session,
+                });
+                return {
+                  entry: liveEntry,
+                  reusable: false,
+                  mountAuthorityChanged: true,
+                };
+              }
+              await refreshLiveEnvironmentReferences(
+                candidateState,
+                trustedManifest,
+                trustedEnvironment,
+              );
+            } else {
+              const reusable = await canReuse.call(
+                args.client,
+                candidateState,
+                {
+                  clientOptions: this.sandboxConfig?.options,
+                  revalidateManifestEntries: true,
+                  trustedManifest,
+                },
+              );
+              if (!reusable) {
+                const requiresFreshCreation =
+                  args.client
+                    .preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
+                  true;
+                rejectLivePreservedOwnedSessionHandle({
+                  state: this.runState,
+                  session: liveEntry.session,
+                });
+                return {
+                  entry: liveEntry,
+                  reusable: false,
+                  ...(requiresFreshCreation
+                    ? { mountAuthorityChanged: true }
+                    : {}),
+                };
+              }
+
+              if (args.client.backendId !== 'docker') {
+                await refreshLiveEnvironmentReferences(
+                  candidateState,
+                  trustedManifest,
+                );
+              }
+            }
+
+            args.client.rebindPreservedOwnedSessionState?.(
+              liveEntry.session.state,
+              {
+                clientOptions: this.sandboxConfig?.options,
+                revalidateManifestEntries: true,
+                trustedManifest,
+              },
+            );
+
+            // Rebind only after the backend has verified that its live authority still
+            // matches the current trusted manifest.
+            const reboundManifest =
+              args.client.backendId === 'docker'
+                ? manifestWithTrustedRuntimePolicies(
+                    rebindPersistedPathGrants(
+                      liveEntry.session.state,
+                      trustedManifest,
+                      {
+                        replaceWithTrustedGrantSet: true,
+                      },
+                    ).manifest,
+                    trustedManifest,
+                  )
+                : candidateState.manifest;
+            recordLiveMountCredentialAuthority(
+              reboundManifest,
+              candidateState.manifest,
+            );
+            liveEntry.session.state.manifest = reboundManifest;
+            liveEntry.session.state.environment = candidateState.environment;
+            return { entry: liveEntry, reusable: true };
+          },
+        ),
     );
-    liveEntry.session.state.manifest = reboundManifest;
-    liveEntry.session.state.environment = candidateState.environment;
-    return { entry: liveEntry, reusable: true };
   }
 
   private async discardLiveSessionWithChangedMountAuthority(
@@ -1523,14 +1823,33 @@ export class SandboxRuntimeManager<TContext> {
         agentKeys.add(entry.agentKey);
       }
     }
-    for (const [agentKey, mappedSession] of this.sessionsByAgentKey) {
-      if (mappedSession === session) {
-        agentKeys.add(agentKey);
-      }
+    for (const agentKey of this.detachSessionAliases(session)) {
+      agentKeys.add(agentKey);
     }
 
     this.markSerializedSessionsRequireFreshCreation(agentKeys);
     for (const agentKey of agentKeys) {
+      this.sessionsByAgentKey.delete(agentKey);
+      this.sessionAgentNamesByKey.delete(agentKey);
+      this.ownedSessionAgentKeys.delete(agentKey);
+    }
+    await cleanupSandboxSession(decision.entry.session);
+    forgetLivePreservedOwnedSessionHandle({
+      state: this.runState,
+      session,
+    });
+    this.invalidateSerializedSessions(agentKeys);
+  }
+
+  private detachSessionAliases(
+    session: SandboxSessionLike<SandboxSessionState>,
+  ): Set<string> {
+    const detachedAgentKeys = new Set<string>();
+    for (const [agentKey, mappedSession] of this.sessionsByAgentKey) {
+      if (mappedSession !== session) {
+        continue;
+      }
+      detachedAgentKeys.add(agentKey);
       this.sessionsByAgentKey.delete(agentKey);
       this.sessionAgentNamesByKey.delete(agentKey);
       this.ownedSessionAgentKeys.delete(agentKey);
@@ -1555,13 +1874,7 @@ export class SandboxRuntimeManager<TContext> {
     if (this.activeMemory?.session === session) {
       this.activeMemory = undefined;
     }
-
-    await cleanupSandboxSession(decision.entry.session);
-    this.invalidateSerializedSessions(agentKeys);
-    forgetLivePreservedOwnedSessionHandle({
-      state: this.runState,
-      session,
-    });
+    return detachedAgentKeys;
   }
 
   private invalidateSerializedSession(agentKey: string): void {
@@ -1588,9 +1901,22 @@ export class SandboxRuntimeManager<TContext> {
 
   private invalidateSerializedSessions(agentKeys: ReadonlySet<string>): void {
     const sandboxState = getSerializedSandboxState(this.runState);
+    const agentKeysWithLiveHandles = new Set(
+      this.runState
+        ? livePreservedOwnedSessionEntries(this.runState).map(
+            (entry) => entry.agentKey,
+          )
+        : [],
+    );
+    const removableAgentKeys = new Set(
+      [...agentKeys].filter(
+        (agentKey) => !agentKeysWithLiveHandles.has(agentKey),
+      ),
+    );
     if (
       sandboxState &&
-      !removeClosedSerializedSessions(sandboxState, agentKeys)
+      removableAgentKeys.size > 0 &&
+      !removeClosedSerializedSessions(sandboxState, removableAgentKeys)
     ) {
       this.runState!._sandbox = undefined;
     }
@@ -1603,9 +1929,14 @@ export class SandboxRuntimeManager<TContext> {
     if (!decision || decision.reusable) {
       return undefined;
     }
+    rejectLivePreservedOwnedSessionHandle({
+      state: this.runState,
+      session: decision.entry.session,
+    });
     if (client.backendId === 'docker') {
       return decision.entry;
     }
+    this.detachSessionAliases(decision.entry.session);
     await cleanupSandboxSession(decision.entry.session);
     forgetLivePreservedOwnedSessionHandle({
       state: this.runState,
@@ -1627,6 +1958,7 @@ export class SandboxRuntimeManager<TContext> {
       source: rejectedEntry,
       session: replacement,
     });
+    this.detachSessionAliases(rejectedEntry.session);
     try {
       await cleanupSandboxSession(rejectedEntry.session);
     } catch (rejectedCleanupError) {
@@ -1650,6 +1982,46 @@ export class SandboxRuntimeManager<TContext> {
       state: this.runState,
       session: rejectedEntry.session,
     });
+    const siblingRejectedSessions = new Set(
+      this.runState
+        ? livePreservedOwnedSessionEntries(this.runState)
+            .filter(
+              (entry) =>
+                entry.reuseRejected &&
+                entry.agentKey === rejectedEntry.agentKey &&
+                entry.session !== replacement,
+            )
+            .map((entry) => entry.session)
+        : [],
+    );
+    const siblingCleanupErrors: unknown[] = [];
+    for (const siblingSession of siblingRejectedSessions) {
+      this.detachSessionAliases(siblingSession);
+      try {
+        await cleanupSandboxSession(siblingSession);
+        forgetLivePreservedOwnedSessionHandle({
+          state: this.runState,
+          session: siblingSession,
+        });
+      } catch (error) {
+        siblingCleanupErrors.push(error);
+      }
+    }
+    if (siblingCleanupErrors.length > 0) {
+      try {
+        await cleanupSandboxSession(replacement);
+        forgetLivePreservedOwnedSessionHandle({
+          state: this.runState,
+          session: replacement,
+        });
+      } catch (replacementCleanupError) {
+        siblingCleanupErrors.push(replacementCleanupError);
+      }
+      throw lifecycleErrorForCloseErrors(
+        'Failed to close rejected live sandbox session handles and their replacement.',
+        siblingCleanupErrors,
+      );
+    }
     forgetLivePreservedOwnedSessionHandle({
       state: this.runState,
       session: replacement,
@@ -1669,6 +2041,13 @@ export class SandboxRuntimeManager<TContext> {
     const preferredCurrentAgentKey = currentAgent
       ? this.agentKey(currentAgent)
       : sandboxState?.currentAgentKey;
+    const retainedRejectedAgentKeys = new Set(
+      this.runState
+        ? livePreservedOwnedSessionEntries(this.runState)
+            .filter((entry) => entry.reuseRejected)
+            .map((entry) => entry.agentKey)
+        : [],
+    );
     return await serializeSandboxRuntimeState({
       client: this.sandboxConfig?.client,
       sandboxState,
@@ -1678,12 +2057,18 @@ export class SandboxRuntimeManager<TContext> {
       trustedManifestForAgentKey: (agentKey) =>
         resolveTrustedManifestForResume(
           this.sandboxConfig!.client!,
-          this.resolveTrustedManifestForAgentKey(agentKey),
+          this.resolveTrustedManifestForAgentKey(
+            agentKey,
+            this.ownedSessionAgentKeys.has(agentKey)
+              ? undefined
+              : this.sessionsByAgentKey.get(agentKey),
+          ),
           this.sandboxConfig?.options,
         ),
       clientOptions: this.sandboxConfig?.options,
       includeOwnedSessions: args.includeOwnedSessions,
       preferredCurrentAgentKey,
+      retainedPreservedOwnedSessionAgentKeys: retainedRejectedAgentKeys,
     });
   }
 
@@ -1766,12 +2151,13 @@ export class SandboxRuntimeManager<TContext> {
 
   private resolveTrustedManifestForAgentKey(
     agentKey: string,
+    providedSession?: SandboxSessionLike<SandboxSessionState>,
   ): Manifest | undefined {
     const agent = this.agentsByKey.get(agentKey);
     if (!agent || !isSandboxAgent(agent)) {
       return undefined;
     }
-    return this.resolveConfiguredManifest(agent).manifest;
+    return this.resolveConfiguredManifest(agent, { providedSession }).manifest;
   }
 
   private async closeOwnedSessions(
@@ -1901,6 +2287,19 @@ function getManifestSignature(manifest: Manifest): string {
     groups: manifest.groups,
     extraPathGrants: manifest.extraPathGrants,
     remoteMountCommandAllowlist: manifest.remoteMountCommandAllowlist,
+    mountCredentialExposure: manifest.mountTargets().map(({ mountPath }) => ({
+      mountPath,
+      mountScoped: manifestAcknowledgesInContainerMountCredentialExposure(
+        manifest,
+        mountPath,
+        'mount_scoped',
+      ),
+      broad: manifestAcknowledgesInContainerMountCredentialExposure(
+        manifest,
+        mountPath,
+        'broad',
+      ),
+    })),
   });
 }
 
@@ -1941,6 +2340,24 @@ function manifestWithTrustedRuntimePolicies(
   });
   replaceManifestMountCredentialExposurePolicy(merged, trustedManifest);
   return merged;
+}
+
+function manifestHasDeferredEnvironmentValues(manifest: Manifest): boolean {
+  return Object.values(manifest.environment).some(
+    (value) => isEnvValueReference(value) || value.resolver !== undefined,
+  );
+}
+
+function bindClientPreparedTrustedManifest(
+  session: SandboxSessionLike<SandboxSessionState>,
+  trustedManifest: Manifest,
+): void {
+  const runnerManifest = mergeClientPreparedManifestAuthority(
+    session.state.manifest,
+    trustedManifest,
+  );
+  recordLiveMountCredentialAuthority(runnerManifest, trustedManifest);
+  session.state.manifest = runnerManifest;
 }
 
 async function refreshLiveEnvironmentReferences(

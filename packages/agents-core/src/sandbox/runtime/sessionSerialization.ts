@@ -10,12 +10,24 @@ import {
   type SandboxSessionState,
 } from '../session';
 import {
+  clientPreparedManifestAuthoritiesMatch,
   getPreviousSerializedSessionsByAgent,
   toSessionStateEnvelope,
   type SerializedSandboxSessionEntry,
   type SerializedSandboxState,
 } from './sessionState';
 import { withExclusiveProvidedSessionManifestMutation } from './providedSessionManifest';
+
+type SessionSerializationPlan = {
+  currentAgentKey: string;
+  currentAgentName: string;
+  session: SandboxSessionLike<SandboxSessionState>;
+  isOwnedSession: boolean;
+  needsTrustedManifest: boolean;
+  trustedManifest: Manifest | undefined;
+  reuseLiveSession: boolean;
+  skipSerialization: boolean;
+};
 
 export async function serializeSandboxRuntimeState(args: {
   client: SandboxClient | undefined;
@@ -30,6 +42,7 @@ export async function serializeSandboxRuntimeState(args: {
   clientOptions?: SandboxClientOptions;
   includeOwnedSessions?: boolean;
   preferredCurrentAgentKey?: string;
+  retainedPreservedOwnedSessionAgentKeys?: ReadonlySet<string>;
 }): Promise<SerializedSandboxState | undefined> {
   const {
     client,
@@ -41,9 +54,10 @@ export async function serializeSandboxRuntimeState(args: {
     clientOptions,
     includeOwnedSessions,
     preferredCurrentAgentKey,
+    retainedPreservedOwnedSessionAgentKeys,
   } = args;
   const serializeSessionState = client?.serializeSessionState;
-  if (!client || !serializeSessionState || sessionsByAgentKey.size === 0) {
+  if (!client || !serializeSessionState) {
     return undefined;
   }
 
@@ -53,79 +67,165 @@ export async function serializeSandboxRuntimeState(args: {
   );
   dropLegacySessionEntries(sessionsByAgent);
   if (!includeOwnedSessions) {
-    dropPreservedOwnedSessionEntries(sessionsByAgent);
+    dropPreservedOwnedSessionEntries(
+      sessionsByAgent,
+      retainedPreservedOwnedSessionAgentKeys,
+    );
   }
-  for (const [currentAgentKey, session] of sessionsByAgentKey.entries()) {
-    const currentAgentName =
-      sessionAgentNamesByKey.get(currentAgentKey) ?? currentAgentKey;
-    delete sessionsByAgent[currentAgentKey];
+  const plansBySession = new Map<
+    SandboxSessionLike<SandboxSessionState>,
+    SessionSerializationPlan[]
+  >();
+  for (const [currentAgentKey, session] of sessionsByAgentKey) {
     const isOwnedSession = ownedSessionAgentKeys.has(currentAgentKey);
-    const serializedEntry = await withExclusiveProvidedSessionManifestMutation(
+    const needsTrustedManifest =
+      client.environmentPreparation === 'client' ||
+      (isOwnedSession &&
+        !!includeOwnedSessions &&
+        client.canReusePreservedOwnedSession !== undefined);
+    const plan: SessionSerializationPlan = {
+      currentAgentKey,
+      currentAgentName:
+        sessionAgentNamesByKey.get(currentAgentKey) ?? currentAgentKey,
+      session,
+      isOwnedSession,
+      needsTrustedManifest,
+      trustedManifest: undefined,
+      reuseLiveSession: true,
+      skipSerialization: false,
+    };
+    const plans = plansBySession.get(plan.session) ?? [];
+    plans.push(plan);
+    plansBySession.set(plan.session, plans);
+    delete sessionsByAgent[currentAgentKey];
+  }
+
+  for (const plans of plansBySession.values()) {
+    const session = plans[0]!.session;
+    await withExclusiveProvidedSessionManifestMutation(
       session.state,
       async () =>
         await withExclusiveSandboxStateInspection(session.state, async () => {
           assertSandboxSessionStateUsable(session.state);
-          if (
-            isOwnedSession &&
-            !includeOwnedSessions &&
-            client.canPersistOwnedSessionState &&
-            !(await client.canPersistOwnedSessionState(session.state))
-          ) {
-            return undefined;
-          }
-          const reuseLiveSession =
-            isOwnedSession &&
-            includeOwnedSessions &&
-            client.canReusePreservedOwnedSession
-              ? await client.canReusePreservedOwnedSession(session.state, {
+          for (const plan of plans) {
+            if (
+              plan.isOwnedSession &&
+              !includeOwnedSessions &&
+              client.canPersistOwnedSessionState &&
+              !(await client.canPersistOwnedSessionState(session.state))
+            ) {
+              plan.skipSerialization = true;
+              continue;
+            }
+            if (plan.needsTrustedManifest) {
+              plan.trustedManifest = trustedManifestForAgentKey?.(
+                plan.currentAgentKey,
+              );
+            }
+            if (
+              plan.isOwnedSession &&
+              includeOwnedSessions &&
+              client.canReusePreservedOwnedSession
+            ) {
+              plan.reuseLiveSession =
+                await client.canReusePreservedOwnedSession(session.state, {
                   clientOptions,
-                  trustedManifest:
-                    trustedManifestForAgentKey?.(currentAgentKey),
-                })
-              : true;
-          const requiresFreshCreation =
-            isOwnedSession &&
-            includeOwnedSessions &&
-            !reuseLiveSession &&
-            client.preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
-              true;
-          const providerState = await serializeSessionState.call(
-            client,
-            session.state,
-            {
-              preserveOwnedSession: isOwnedSession && !!includeOwnedSessions,
-              reuseLiveSession,
-              willCloseAfterSerialize:
-                isOwnedSession && (!includeOwnedSessions || !reuseLiveSession),
-            },
+                  trustedManifest: plan.trustedManifest,
+                });
+            }
+          }
+
+          const ownedPlans = plans.filter(
+            (plan) =>
+              plan.isOwnedSession &&
+              includeOwnedSessions &&
+              !plan.skipSerialization,
           );
-          return {
-            backendId: client.backendId,
-            currentAgentKey,
-            currentAgentName,
-            sessionState: toSessionStateEnvelope(
-              client.backendId,
+          const firstTrustedManifest = ownedPlans[0]?.trustedManifest;
+          const authorityDiffers =
+            client.environmentPreparation === 'client' &&
+            firstTrustedManifest !== undefined &&
+            ownedPlans.some(
+              (plan) =>
+                plan.trustedManifest !== undefined &&
+                !clientPreparedManifestAuthoritiesMatch(
+                  session.state.manifest,
+                  firstTrustedManifest,
+                  plan.trustedManifest,
+                ),
+            );
+          if (
+            authorityDiffers ||
+            ownedPlans.some((plan) => !plan.reuseLiveSession)
+          ) {
+            for (const plan of ownedPlans) {
+              plan.reuseLiveSession = false;
+            }
+          }
+
+          for (const plan of plans) {
+            if (plan.skipSerialization) {
+              continue;
+            }
+            const requiresFreshCreation =
+              plan.isOwnedSession &&
+              includeOwnedSessions &&
+              !plan.reuseLiveSession &&
+              client.preservedOwnedSessionReuseRejectionRequiresFreshCreation ===
+                true;
+            const providerState = await serializeSessionState.call(
+              client,
               session.state,
-              providerState,
-            ),
-            ...(isOwnedSession && includeOwnedSessions
-              ? {
-                  preservedOwnedSession: true,
-                  ...(reuseLiveSession ? {} : { reuseLiveSession: false }),
-                  ...(requiresFreshCreation
-                    ? { requiresFreshCreation: true }
+              {
+                preserveOwnedSession:
+                  plan.isOwnedSession && !!includeOwnedSessions,
+                reuseLiveSession: plan.reuseLiveSession,
+                willCloseAfterSerialize:
+                  plan.isOwnedSession &&
+                  (!includeOwnedSessions || !plan.reuseLiveSession),
+              },
+            );
+            // Start from previous entries so handoff agents that were not
+            // touched this turn keep their sandbox sessions in the RunState.
+            sessionsByAgent[plan.currentAgentKey] = {
+              backendId: client.backendId,
+              currentAgentKey: plan.currentAgentKey,
+              currentAgentName: plan.currentAgentName,
+              sessionState: toSessionStateEnvelope(
+                client.backendId,
+                session.state,
+                providerState,
+                {
+                  environmentPreparation: client.environmentPreparation,
+                  ...(client.environmentPreparation === 'client'
+                    ? { trustedManifest: plan.trustedManifest }
                     : {}),
-                }
-              : {}),
-          };
+                },
+              ),
+              ...(plan.isOwnedSession && includeOwnedSessions
+                ? {
+                    preservedOwnedSession: true,
+                    ...(plan.reuseLiveSession
+                      ? {}
+                      : { reuseLiveSession: false }),
+                    ...(requiresFreshCreation
+                      ? { requiresFreshCreation: true }
+                      : {}),
+                  }
+                : {}),
+            };
+          }
         }),
     );
-    if (!serializedEntry) {
+  }
+
+  for (const agentKey of retainedPreservedOwnedSessionAgentKeys ?? []) {
+    const entry = sessionsByAgent[agentKey];
+    if (!entry) {
       continue;
     }
-    // Start from previous entries so handoff agents that were not touched this turn
-    // keep their sandbox sessions in the RunState.
-    sessionsByAgent[currentAgentKey] = serializedEntry;
+    entry.preservedOwnedSession = true;
+    entry.reuseLiveSession = false;
   }
 
   normalizeSharedOwnedSessionFreshCreation({
@@ -214,9 +314,10 @@ function dropLegacySessionEntries(
 
 function dropPreservedOwnedSessionEntries(
   sessionsByAgent: Record<string, SerializedSandboxSessionEntry>,
+  retainedAgentKeys: ReadonlySet<string> | undefined,
 ): void {
   for (const [agentKey, entry] of Object.entries(sessionsByAgent)) {
-    if (entry.preservedOwnedSession) {
+    if (entry.preservedOwnedSession && !retainedAgentKeys?.has(agentKey)) {
       delete sessionsByAgent[agentKey];
     }
   }
