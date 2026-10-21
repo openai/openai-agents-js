@@ -931,16 +931,12 @@ export type ModelItem = z.infer<typeof ModelItem>;
 // ----------------------------
 
 /**
- * Token counts and nested breakdowns returned by a model provider.
+ * JSON metadata returned by a model provider about token usage.
  * Narrow individual values to numbers before performing arithmetic.
- * Each record is limited to 32 object levels and 10,000 total entries.
+ * Each record is limited to 32 container levels and 10,000 total entries.
  */
-export type TokenDetails = { [key: string]: number | TokenDetails };
-
-const TokenDetailsRecord: z.ZodType<TokenDetails> = z.record(
-  z.string(),
-  z.union([z.number(), z.lazy(() => TokenDetailsRecord)]),
-);
+const TokenDetailsRecord = z.record(z.string(), z.json());
+export type TokenDetails = z.infer<typeof TokenDetailsRecord>;
 
 export const TokenDetails: z.ZodType<TokenDetails> = z
   .unknown()
@@ -950,8 +946,8 @@ export const TokenDetails: z.ZodType<TokenDetails> = z
     let entries = 0;
     while (pending.length > 0) {
       const { value, depth } = pending.pop()!;
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        // The record schema reports invalid leaves without traversing them.
+      if (typeof value !== 'object' || value === null) {
+        // The JSON schema reports invalid leaves without traversing them.
         continue;
       }
       if (depth > 32) {
@@ -961,9 +957,19 @@ export const TokenDetails: z.ZodType<TokenDetails> = z
         });
         return;
       }
+      // Count array slots, including holes, before the JSON parser traverses them.
+      if (Array.isArray(value)) entries += value.length;
+      if (entries > 10_000) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Token details exceed 10000 entries.',
+        });
+        return;
+      }
       for (const key in value) {
         if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
-        if (++entries > 10_000) {
+        if (!Array.isArray(value)) entries++;
+        if (entries > 10_000) {
           ctx.addIssue({
             code: 'custom',
             message: 'Token details exceed 10000 entries.',
@@ -971,11 +977,7 @@ export const TokenDetails: z.ZodType<TokenDetails> = z
           return;
         }
         const child = (value as Record<string, unknown>)[key];
-        if (
-          typeof child === 'object' &&
-          child !== null &&
-          !Array.isArray(child)
-        ) {
+        if (typeof child === 'object' && child !== null) {
           pending.push({ value: child, depth: depth + 1 });
         }
       }

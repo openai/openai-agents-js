@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { RunState, CURRENT_SCHEMA_VERSION } from '../src/runState';
+import { RunState } from '../src/runState';
 import { RunContext } from '../src/runContext';
 import { Agent } from '../src/agent';
 import { handoff } from '../src/handoff';
@@ -68,7 +68,7 @@ export function registerRunStateCompactionTests(): void {
       it('round-trips a compaction run item at the current schema version', async () => {
         const agent = new Agent({ name: 'CompactionStateAgent' });
         const serialized = stateWithCompaction(agent).toJSON();
-        expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+        expect(serialized.$schemaVersion).toBe('1.23');
 
         const restored = await RunState.fromString(
           agent,

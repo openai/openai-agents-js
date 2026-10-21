@@ -21,13 +21,24 @@ export const realtimeMessageItemSchema = z.discriminatedUnion('role', [
     role: z.literal('user'),
     status: z.enum(['in_progress', 'completed', 'incomplete']),
     content: z.array(
-      z.object({ type: z.literal('input_text'), text: z.string() }).or(
-        z.object({
-          type: z.literal('input_audio'),
-          audio: z.string().nullable().optional(),
-          transcript: z.string().nullable(),
-        }),
-      ),
+      z
+        .object({ type: z.literal('input_text'), text: z.string() })
+        .or(
+          z.object({
+            type: z.literal('input_audio'),
+            audio: z.string().nullable().optional(),
+            transcript: z.string().nullable(),
+          }),
+        )
+        .or(
+          z
+            .object({
+              type: z.literal('input_image'),
+              image_url: z.string().optional(),
+              detail: z.string().optional(),
+            })
+            .passthrough(),
+        ),
     ),
   }),
   z.object({

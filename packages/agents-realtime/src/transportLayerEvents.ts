@@ -1,3 +1,4 @@
+import type OpenAI from 'openai';
 import { protocol, Usage } from '@openai/agents-core';
 import {
   RealtimeBaseItem,
@@ -42,26 +43,16 @@ export type TransportLayerAudio = {
  * Event representing the completion of user audio transcription.
  * Contains the finalized transcript string and the ID of the associated item.
  */
-export type InputAudioTranscriptionCompletedEvent = {
-  type: 'conversation.item.input_audio_transcription.completed';
-  item_id: string;
-  transcript: string;
-  usage?:
-    | {
-        type: 'tokens';
-        total_tokens: number;
-        input_tokens: number;
-        input_token_details: {
-          text_tokens: number;
-          audio_tokens: number;
-        };
-        output_tokens: number;
-      }
-    | {
-        type: 'duration';
-        seconds: number;
-      };
-};
+export type InputAudioTranscriptionCompletedEvent = Pick<
+  OpenAI.Realtime.ConversationItemInputAudioTranscriptionCompletedEvent,
+  'type' | 'item_id' | 'transcript'
+> &
+  Partial<
+    Pick<
+      OpenAI.Realtime.ConversationItemInputAudioTranscriptionCompletedEvent,
+      'usage'
+    >
+  >;
 
 export type TransportLayerTranscriptDelta = {
   type: 'transcript_delta';

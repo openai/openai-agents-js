@@ -3,12 +3,6 @@ import type { ModelRequest } from '@openai/agents-core';
 import type OpenAI from 'openai';
 import logger from './logger';
 import {
-  CodeInterpreterStatus,
-  FileSearchStatus,
-  ImageGenerationStatus,
-  WebSearchStatus,
-} from './tools';
-import {
   camelOrSnakeToSnakeCase,
   getSnakeCasedProviderDataWithoutReservedKeys,
 } from './utils/providerData';
@@ -1326,7 +1320,8 @@ function getInputItems(
           ...providerData, // place here to prioritize the below fields
           type: 'web_search_call',
           id: item.id!,
-          status: WebSearchStatus.parse(item.status ?? 'failed'),
+          status: (item.status ??
+            'failed') as OpenAI.Responses.ResponseFunctionWebSearch['status'],
         } as OpenAI.Responses.ResponseInputItem;
         if (hasValidAction) {
           (entry as OpenAI.Responses.ResponseFunctionWebSearch).action =
@@ -1344,7 +1339,8 @@ function getInputItems(
           ...camelOrSnakeToSnakeCase(item.providerData), // place here to prioritize the below fields
           type: 'file_search_call',
           id: item.id!,
-          status: FileSearchStatus.parse(item.status ?? 'failed'),
+          status: (item.status ??
+            'failed') as OpenAI.Responses.ResponseFileSearchToolCall['status'],
           queries: item.providerData?.queries ?? [],
           results: item.providerData?.results,
         };
@@ -1367,7 +1363,8 @@ function getInputItems(
           // That said, this property cannot be passed from a user, so it's just API's internal data.
           outputs:
             item.providerData?.outputs ?? item.providerData?.results ?? [],
-          status: CodeInterpreterStatus.parse(item.status ?? 'failed'),
+          status: (item.status ??
+            'failed') as OpenAI.Responses.ResponseCodeInterpreterToolCall['status'],
           container_id: item.providerData?.container_id,
           ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
@@ -1384,7 +1381,8 @@ function getInputItems(
           type: 'image_generation_call',
           id: item.id!,
           result: item.providerData?.result ?? null,
-          status: ImageGenerationStatus.parse(item.status ?? 'failed'),
+          status: (item.status ??
+            'failed') as OpenAI.Responses.ResponseInputItem.ImageGenerationCall['status'],
         };
 
         return entry;

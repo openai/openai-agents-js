@@ -1,3 +1,4 @@
+import type OpenAI from 'openai';
 import { describe, it, expect, vi } from 'vitest';
 import { Buffer } from 'node:buffer';
 import {
@@ -639,6 +640,38 @@ describe('convertTool', () => {
 });
 
 describe('getInputItems', () => {
+  it.each(['failed', 'incomplete'] as const)(
+    'round-trips SDK-typed code interpreter results with status %s',
+    (status) => {
+      const item = {
+        type: 'code_interpreter_call',
+        id: 'ci_contract',
+        status,
+        code: 'print(1)',
+        container_id: 'container_contract',
+        outputs: [],
+      } satisfies OpenAI.Responses.ResponseCodeInterpreterToolCall;
+      expect(getInputItems(convertToOutputItem([item]))).toEqual([item]);
+    },
+  );
+
+  it.each(['incomplete', 'future_status'])(
+    'preserves web-search status %s even when the installed SDK union is older',
+    (status) => {
+      const item = {
+        type: 'web_search_call',
+        id: 'ws_contract',
+        action: { type: 'search', query: 'test' },
+        status,
+      };
+      // Synthetic wire data can precede the installed SDK's generated types.
+      const output = convertToOutputItem([
+        item as OpenAI.Responses.ResponseFunctionWebSearch,
+      ]);
+      expect(getInputItems(output)).toEqual([item]);
+    },
+  );
+
   it('keeps SDK tool-search ownership out of provider input and output conversion', () => {
     const raw = {
       type: 'tool_search_output' as const,

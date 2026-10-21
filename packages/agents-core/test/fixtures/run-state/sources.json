@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.23",
+  "currentSchemaAtCreation": "1.24",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -380,8 +380,24 @@
     },
     {
       "schemaVersion": "1.23",
+      "status": "published_writer",
+      "packageVersion": "0.21.0",
+      "tag": "v0.21.0",
+      "commit": "304e436185ad5d7e54d240896efa728533147cf3",
+      "npmIntegrity": "sha512-P2jJhc85xrKpe9GUOHAVfPHqK52my49fD1CI0LnfYEvBUwZxJXQI6lgSwby9nWhvQECveM9OvBUglAXuArsHXw==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.23-minimal.json",
+          "sha256": "a353188d411d534266b6c76992e7ff208ec8879c35eaac1a7f105be782789870"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.24",
       "status": "current_unreleased",
-      "reason": "Preserves nested numeric token usage breakdowns."
+      "reason": "Preserves bounded JSON token usage metadata."
     }
   ],
   "expectedNormalizedFixtures": [

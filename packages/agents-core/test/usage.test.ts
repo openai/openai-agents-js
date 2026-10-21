@@ -480,13 +480,44 @@ describe('nested token details', () => {
   });
 
   it.each([null, '10', true, [10]])(
-    'rejects nonnumeric detail leaves: %j',
+    'preserves JSON detail leaves: %j',
     (value) => {
-      expect(
-        TokenDetails.safeParse({ breakdown: { bad: value } }).success,
-      ).toBe(false);
+      expect(TokenDetails.parse({ breakdown: { value } })).toEqual({
+        breakdown: { value },
+      });
     },
   );
+
+  it.each([undefined, NaN, Infinity, 1n, () => 1])(
+    'rejects non-JSON detail leaves',
+    (value) => {
+      expect(TokenDetails.safeParse({ value }).success).toBe(false);
+    },
+  );
+
+  it('bounds array depth and slots and detaches mixed metadata', () => {
+    expect(() => TokenDetails.parse({ slots: new Array(10_000) })).toThrow(
+      /10000 entries/,
+    );
+    let nested: unknown = 1;
+    for (let i = 0; i < 32; i++) nested = [nested];
+    expect(() => TokenDetails.parse({ nested })).toThrow(/32 levels/);
+    const metadata = { buckets: [{ name: 'cached', enabled: true }, null] };
+    const incoming = new Usage({
+      inputTokens: 2,
+      inputTokensDetails: metadata,
+    });
+    const total = new Usage();
+    total.add(incoming);
+    metadata.buckets[0]!.name = 'changed';
+    expect(total.inputTokensDetails).toEqual([
+      { buckets: [{ name: 'cached', enabled: true }, null] },
+    ]);
+    expect(total.requestUsageEntries?.[0].inputTokensDetails).toEqual(
+      total.inputTokensDetails[0],
+    );
+    expect(total.inputTokens).toBe(2);
+  });
 
   it.each([false, true])(
     'detaches nested details during accumulation (explicit request entries=%s)',
