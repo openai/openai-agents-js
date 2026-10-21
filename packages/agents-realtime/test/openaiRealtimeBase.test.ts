@@ -1,3 +1,4 @@
+import type OpenAI from 'openai';
 import {
   describe,
   it,
@@ -89,6 +90,58 @@ describe('OpenAIRealtimeBase helpers', () => {
     expectTypeOf(transport).toMatchTypeOf<OpenAIRealtimeBase>();
   });
 
+  it.each([
+    'function_call',
+    'item_update',
+    'item_deleted',
+    'usage_update',
+    'turn_started',
+    'turn_done',
+    'mcp_tools_listed',
+    'mcp_approval_request',
+    'mcp_tool_call_completed',
+    'connected',
+    'disconnected',
+    'connection_change',
+    'audio',
+    'audio_done',
+    'audio_interrupted',
+    'audio_transcript_delta',
+    'output_text_delta',
+  ])('does not dispatch provider frames into the local %s channel', (type) => {
+    const base = new TestBase();
+    const raw = vi.fn();
+    const local = vi.fn();
+    base.on('*', raw);
+    base.on(type, local);
+    const payload = {
+      type,
+      id: 'i',
+      itemId: 'i',
+      responseId: 'r',
+      callId: 'c',
+      name: 'tool',
+      arguments: '{}',
+    };
+    (base as any)._onMessage({ data: JSON.stringify(payload) });
+    expect(raw).toHaveBeenCalledExactlyOnceWith(payload);
+    expect(local).not.toHaveBeenCalled();
+    expect(base.events).toEqual([]);
+  });
+
+  it('delivers future provider notifications without duplicating wildcard events', () => {
+    const base = new TestBase();
+    const raw = vi.fn();
+    const future = vi.fn();
+    base.on('*', raw);
+    base.on('future.notification', future);
+    const payload = { type: 'future.notification', extra: true };
+    (base as any)._onMessage({ data: JSON.stringify(payload) });
+    expect(future).toHaveBeenCalledExactlyOnceWith(payload);
+    (base as any)._onMessage({ data: JSON.stringify({ type: '*' }) });
+    expect(raw).toHaveBeenCalledTimes(2);
+  });
+
   it('isolates typed events from mutations to raw wildcard events', () => {
     const base = new TestBase();
     const typedEvents: any[] = [];
@@ -113,17 +166,7 @@ describe('OpenAIRealtimeBase helpers', () => {
     (base as any)._onMessage({ data: JSON.stringify(payload) });
 
     expect(rawListener).toHaveBeenCalledOnce();
-    expect(typedEvents).toEqual([
-      {
-        type: 'session.updated',
-        event_id: 'evt_1',
-        session: {
-          id: 'session_1',
-          instructions: 'original instructions',
-          provider_nested: { value: 'original value' },
-        },
-      },
-    ]);
+    expect(typedEvents).toEqual([payload]);
     expect((base as any)._rawSessionConfig).toEqual(payload.session);
   });
 
@@ -1380,6 +1423,144 @@ describe('OpenAIRealtimeBase helpers', () => {
     expect(session.history[0]).toMatchObject({ status: 'in_progress' });
     expect(historyEvents.at(-1)?.map((item) => item.itemId)).toEqual(['u1']);
   });
+
+  it('retains input audio without a transcript in session history', async () => {
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    (transport as any)._onMessage({
+      data: JSON.stringify({
+        type: 'conversation.item.added',
+        event_id: 'audio_contract',
+        previous_item_id: null,
+        item: {
+          id: 'audio1',
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_audio' }],
+        },
+      }),
+    });
+    expect(session.history).toMatchObject([
+      {
+        itemId: 'audio1',
+        role: 'user',
+        content: [{ type: 'input_audio', transcript: null }],
+      },
+    ]);
+  });
+
+  it('preserves SDK image content through session history and replay', async () => {
+    const transport = new TestBase();
+    const session = new RealtimeSession(new RealtimeAgent({ name: 'a' }), {
+      transport,
+    });
+    await session.connect({ apiKey: 'test' });
+    const content = [
+      {
+        type: 'input_image' as const,
+        image_url: 'data:image/png;base64,abc',
+        detail: 'high' as const,
+      },
+    ];
+    const event = {
+      type: 'conversation.item.added',
+      event_id: 'image_event',
+      previous_item_id: null,
+      item: { id: 'image1', type: 'message', role: 'user', content },
+    } satisfies OpenAI.Realtime.ConversationItemAdded;
+    (transport as any)._onMessage({ data: JSON.stringify(event) });
+    expect(session.history).toMatchObject([{ itemId: 'image1', content }]);
+    transport.resetHistory([], session.history);
+    expect(transport.events.at(-1)).toMatchObject({
+      type: 'conversation.item.create',
+      item: { id: 'image1', content },
+    });
+    session.close();
+  });
+
+  it('preserves optional and nullable SDK MCP descriptions in discovery', async () => {
+    const transport = new TestBase();
+    const session = new RealtimeSession(
+      new RealtimeAgent({
+        name: 'a',
+        tools: [
+          hostedMcpTool({
+            serverLabel: 'server',
+            serverUrl: 'https://example.invalid/mcp',
+          }),
+        ],
+      }),
+      { transport },
+    );
+    await session.connect({ apiKey: 'test' });
+    const tools = [
+      { name: 'no_description', input_schema: {} },
+      {
+        name: 'null_description',
+        description: null,
+        input_schema: {},
+        annotations: { future: true },
+      },
+    ] satisfies OpenAI.Realtime.RealtimeMcpListTools.Tool[];
+    const event = {
+      type: 'conversation.item.done',
+      event_id: 'mcp_event',
+      item: { type: 'mcp_list_tools', server_label: 'server', tools },
+    } satisfies OpenAI.Realtime.ConversationItemDone;
+    (transport as any)._onMessage({ data: JSON.stringify(event) });
+    expect(session.availableMcpTools).toEqual(tools);
+    session.close();
+  });
+
+  it.each([
+    {
+      type: 'message',
+      id: 'bad',
+      role: 'user',
+      content: [{ type: 'future_content' }],
+    },
+    {
+      type: 'function_call',
+      id: 'bad',
+      status: 'completed',
+      name: 'run',
+      arguments: {},
+      call_id: 'call',
+    },
+    {
+      type: 'function_call',
+      id: 'bad',
+      status: 'completed',
+      name: 'run',
+      arguments: '{}',
+      call_id: 1,
+    },
+  ])(
+    'retains unsupported items as provider events without local actions: $type',
+    (item) => {
+      const base = new TestBase();
+      const raw = vi.fn();
+      const update = vi.fn();
+      const execute = vi.fn();
+      base.on('*', raw);
+      base.on('item_update', update);
+      base.on('function_call', execute);
+      const payload = {
+        type: 'response.output_item.done',
+        response_id: 'r',
+        item,
+      };
+      expect(() =>
+        (base as any)._onMessage({ data: JSON.stringify(payload) }),
+      ).not.toThrow();
+      expect(raw).toHaveBeenCalledWith(payload);
+      expect(update).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
 
   it('normalizes missing statuses and preserves explicit statuses', () => {
     const base = new TestBase();

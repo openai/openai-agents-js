@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { parseRealtimeEvent } from '../src/openaiRealtimeEvents';
+import { describe, it, expect, expectTypeOf } from 'vitest';
+import {
+  parseRealtimeEvent,
+  type RealtimeServerEvent,
+} from '../src/openaiRealtimeEvents';
 
 function createEvent(payload: any): MessageEvent {
   return new MessageEvent('message', { data: JSON.stringify(payload) });
@@ -10,6 +13,12 @@ function createRawEvent(data: any): MessageEvent {
 }
 
 describe('parseRealtimeEvent', () => {
+  it('keeps SDK wire names separate from local action channels', () => {
+    expectTypeOf<
+      Exclude<RealtimeServerEvent['type'], 'error' | `${string}.${string}`>
+    >().toEqualTypeOf<never>();
+  });
+
   it('parses known conversation.item.added event', () => {
     const payload = {
       type: 'conversation.item.added',
@@ -19,16 +28,14 @@ describe('parseRealtimeEvent', () => {
     };
     const result = parseRealtimeEvent(createEvent(payload));
 
-    expect(result.isGeneric).toBe(false);
     expect(result.data).toEqual(payload);
     expect(result.raw).toEqual(payload);
   });
 
-  it('returns generic result for unknown event type', () => {
+  it('preserves unknown event types', () => {
     const payload = { type: 'unknown.event', event_id: 'evt_x', foo: 'bar' };
     const result = parseRealtimeEvent(createEvent(payload));
 
-    expect(result.isGeneric).toBe(true);
     expect(result.data).toEqual(payload);
     expect(result.raw).toEqual(payload);
   });
@@ -41,7 +48,6 @@ describe('parseRealtimeEvent', () => {
     };
     const result = parseRealtimeEvent(createEvent(payload));
 
-    expect(result.isGeneric).toBe(true);
     expect(result.data).toEqual(payload);
     expect(result.raw).toEqual(payload);
   });
@@ -65,29 +71,45 @@ describe('parseRealtimeEvent', () => {
     };
     const result = parseRealtimeEvent(createEvent(payload));
 
-    expect(result.isGeneric).toBe(false);
     expect(result.raw).toEqual(payload);
-    expect(result.data).toEqual({
-      type: 'conversation.item.added',
-      event_id: 'evt_2',
-      item: {
-        type: 'message',
-        content: [{ type: 'input_text', text: 'hello' }],
-      },
-      previous_item_id: 'evt_prev2',
-    });
+    expect(result.data).toEqual(payload);
   });
+
+  it.each(['toString', '__proto__', 'constructor'])(
+    'preserves unknown event %s without inherited handlers',
+    (type) => {
+      const payload = { type, extra: true };
+      expect(parseRealtimeEvent(createEvent(payload)).data).toEqual(payload);
+    },
+  );
+
+  it.each([
+    { type: 'response.created', response: null },
+    { type: 'conversation.item.done', item: [] },
+    {
+      type: 'response.output_text.delta',
+      delta: 123,
+      item_id: 'i',
+      response_id: 'r',
+    },
+  ])(
+    'retains malformed handler inputs only as raw events: $type',
+    (payload) => {
+      expect(parseRealtimeEvent(createEvent(payload))).toEqual({
+        raw: payload,
+        data: null,
+      });
+    },
+  );
 
   it('returns null data for invalid payload', () => {
     const result = parseRealtimeEvent(createEvent({ notype: true }));
-    expect(result.isGeneric).toBe(true);
     expect(result.data).toBeNull();
     expect(result.raw).toBeNull();
   });
 
   it('returns null data for malformed JSON', () => {
     const result = parseRealtimeEvent(createRawEvent('{'));
-    expect(result.isGeneric).toBe(true);
     expect(result.data).toBeNull();
     expect(result.raw).toBeNull();
   });
@@ -96,7 +118,6 @@ describe('parseRealtimeEvent', () => {
     const result = parseRealtimeEvent(
       createRawEvent(new Uint8Array([0, 1, 2])),
     );
-    expect(result.isGeneric).toBe(true);
     expect(result.data).toBeNull();
     expect(result.raw).toBeNull();
   });
@@ -118,7 +139,6 @@ describe('parseRealtimeEvent', () => {
     };
     const result = parseRealtimeEvent(createEvent(payload));
 
-    expect(result.isGeneric).toBe(false);
     expect(result.data).toEqual(payload);
   });
 
@@ -133,7 +153,6 @@ describe('parseRealtimeEvent', () => {
     };
     const result = parseRealtimeEvent(createEvent(payload));
 
-    expect(result.isGeneric).toBe(false);
     expect(result.data).toEqual(payload);
   });
 });

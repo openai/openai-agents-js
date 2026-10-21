@@ -1,3 +1,4 @@
+import type OpenAI from 'openai';
 import {
   JsonObjectSchema,
   ModelSettingsToolChoice,
@@ -47,13 +48,7 @@ export type RealtimeAudioFormatLegacy =
 export type RealtimeAudioFormat =
   RealtimeAudioFormatLegacy | RealtimeAudioFormatDefinition;
 
-export type RealtimeTracingConfig =
-  | {
-      workflow_name?: string;
-      group_id?: string;
-      metadata?: Record<string, any>;
-    }
-  | 'auto';
+export type RealtimeTracingConfig = OpenAI.Realtime.RealtimeTracingConfig;
 
 export type RealtimeInputAudioNoiseReductionConfig = {
   type: 'near_field' | 'far_field' | (string & {});
@@ -343,9 +338,10 @@ export type RealtimeToolDefinition =
 
 // Describes a tool as returned by an MCP server (via mcp_list_tools).
 // Shape mirrors the realtime event payload (with room for extensions).
-export type RealtimeMcpToolInfo = {
-  name: string;
-  description?: string;
-  input_schema?: Record<string, any>;
-  [key: string]: any;
-};
+// Custom transports historically permit omitted input schemas and extra fields.
+export type RealtimeMcpToolInfo = Omit<
+  OpenAI.Realtime.RealtimeMcpListTools.Tool,
+  'input_schema'
+> &
+  Partial<Pick<OpenAI.Realtime.RealtimeMcpListTools.Tool, 'input_schema'>> &
+  Record<string, any>;

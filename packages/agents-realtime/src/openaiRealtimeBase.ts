@@ -128,7 +128,7 @@ function normalizeRealtimeMessageContent(
   role: string | undefined,
   content: unknown,
 ): unknown {
-  if (role !== 'assistant' || !Array.isArray(content)) {
+  if (!Array.isArray(content)) {
     return content;
   }
   return content.map((part) => {
@@ -136,12 +136,21 @@ function normalizeRealtimeMessageContent(
       part &&
       typeof part === 'object' &&
       'type' in part &&
+      role === 'assistant' &&
       part.type === 'audio'
     ) {
       return {
         ...part,
         type: 'output_audio',
       };
+    }
+    if (
+      role === 'user' &&
+      part &&
+      typeof part === 'object' &&
+      part.type === 'input_audio'
+    ) {
+      return { ...part, transcript: part.transcript ?? null };
     }
     return part;
   });
@@ -242,15 +251,10 @@ export abstract class OpenAIRealtimeBase
 
   protected _onMessage(event: MessageEvent | WebSocketMessageEvent): void {
     const result = parseRealtimeEvent(event);
-    if (result.data === null) {
-      return;
-    }
-    const { data: parsed, raw, isGeneric } = result;
-
+    const { data: parsed, raw } = result;
+    if (raw === null) return;
     this.emit('*', cloneRealtimeEvent(raw));
-    if (isGeneric) {
-      return;
-    }
+    if (parsed === null) return;
 
     if (parsed.type === 'conversation.item.added' && parsed.item.id) {
       this.#settleHistoryRequest(parsed.item.id, 'create');
@@ -264,7 +268,9 @@ export abstract class OpenAIRealtimeBase
         this.#pendingHistoryRequests.delete(causedBy);
       }
       this.emit('error', { type: 'error', error: parsed });
-    } else {
+    } else if (parsed.type.includes('.')) {
+      // Wire notifications use dotted names. Undotted names belong to SDK
+      // action/lifecycle channels; unknown ones remain observable through '*'.
       this.emit(parsed.type, parsed);
     }
 
@@ -387,7 +393,14 @@ export abstract class OpenAIRealtimeBase
         parsed.type === 'conversation.item.done'
       ) {
         const serverLabel = parsed.item.server_label ?? '';
-        const tools = (parsed.item.tools ?? []) as any[];
+        const tools = parsed.item.tools ?? [];
+        if (
+          typeof serverLabel !== 'string' ||
+          !Array.isArray(tools) ||
+          tools.some((tool) => !tool || typeof tool.name !== 'string')
+        ) {
+          return;
+        }
         try {
           this.emit('mcp_tools_listed', {
             serverLabel,
@@ -414,7 +427,7 @@ export abstract class OpenAIRealtimeBase
           parsed.type === 'conversation.item.done'
             ? parsed.previous_item_id
             : undefined;
-        const item = realtimeMessageItemSchema.parse({
+        const item = realtimeMessageItemSchema.safeParse({
           itemId: parsed.item.id,
           previousItemId,
           type: parsed.item.type,
@@ -429,7 +442,9 @@ export abstract class OpenAIRealtimeBase
               ? 'in_progress'
               : 'completed'),
         });
-        this.emit('item_update', item);
+        if (item.success) {
+          this.emit('item_update', item.data);
+        }
         return;
       }
 
@@ -438,16 +453,26 @@ export abstract class OpenAIRealtimeBase
         parsed.type === 'conversation.item.done'
       ) {
         const item = parsed.item;
-        const mcpApprovalRequest = realtimeMcpCallApprovalRequestItem.parse({
-          itemId: item.id,
-          type: item.type,
-          serverLabel: item.server_label,
-          name: item.name,
-          arguments: JSON.parse(item.arguments || '{}'),
-          approved: item.approved,
-        });
-        this.emit('item_update', mcpApprovalRequest);
-        this.emit('mcp_approval_request', mcpApprovalRequest);
+        if (
+          item.arguments !== undefined &&
+          typeof item.arguments !== 'string'
+        ) {
+          return;
+        }
+        const mcpApprovalRequest = realtimeMcpCallApprovalRequestItem.safeParse(
+          {
+            itemId: item.id,
+            type: item.type,
+            serverLabel: item.server_label,
+            name: item.name,
+            arguments: JSON.parse(item.arguments || '{}'),
+            approved: item.approved,
+          },
+        );
+        if (mcpApprovalRequest.success) {
+          this.emit('item_update', mcpApprovalRequest.data);
+          this.emit('mcp_approval_request', mcpApprovalRequest.data);
+        }
         return;
       }
 
@@ -459,18 +484,21 @@ export abstract class OpenAIRealtimeBase
           parsed.type === 'conversation.item.done'
             ? 'completed'
             : 'in_progress';
-        const mcpCall = realtimeMcpCallItem.parse({
+        const mcpCall = realtimeMcpCallItem.safeParse({
           itemId: parsed.item.id,
           type: parsed.item.type,
           status,
           arguments: parsed.item.arguments,
           name: parsed.item.name,
-          output: parsed.item.output,
+          output: parsed.item.output ?? null,
         });
 
-        this.emit('item_update', mcpCall);
+        if (!mcpCall.success) {
+          return;
+        }
+        this.emit('item_update', mcpCall.data);
         if (parsed.type === 'conversation.item.done') {
-          this.emit('mcp_tool_call_completed', mcpCall);
+          this.emit('mcp_tool_call_completed', mcpCall.data);
         }
         return;
       }
@@ -501,7 +529,7 @@ export abstract class OpenAIRealtimeBase
     ) {
       const item = parsed.item;
       if (item.type === 'function_call' && item.status === 'completed') {
-        const toolCall = realtimeToolCallItem.parse({
+        const toolCall = realtimeToolCallItem.safeParse({
           itemId: item.id,
           type: item.type,
           status: 'in_progress', // we set it to in_progress for the UI as it will only be completed with the output
@@ -509,7 +537,13 @@ export abstract class OpenAIRealtimeBase
           name: item.name,
           output: null,
         });
-        this.emit('item_update', toolCall);
+        if (
+          !toolCall.success ||
+          (item.call_id !== undefined && typeof item.call_id !== 'string')
+        ) {
+          return;
+        }
+        this.emit('item_update', toolCall.data);
         this.emit('function_call', {
           id: item.id,
           type: 'function_call',
@@ -522,7 +556,7 @@ export abstract class OpenAIRealtimeBase
       }
 
       if (item.type === 'mcp_tool_call' || item.type === 'mcp_call') {
-        const mcpCall = realtimeMcpCallItem.parse({
+        const mcpCall = realtimeMcpCallItem.safeParse({
           itemId: item.id,
           type: item.type,
           status:
@@ -531,27 +565,29 @@ export abstract class OpenAIRealtimeBase
               : 'in_progress', // we set it to in_progress for the UI as it will only be completed with the output
           arguments: item.arguments,
           name: item.name,
-          output: item.output,
+          output: item.output ?? null,
         });
-        this.emit('item_update', mcpCall);
+        if (!mcpCall.success) {
+          return;
+        }
+        this.emit('item_update', mcpCall.data);
         return;
       }
 
       if (item.type === 'message') {
-        const realtimeItem = realtimeMessageItemSchema.parse({
-          itemId: parsed.item.id,
-          type: parsed.item.type,
-          role: parsed.item.role,
-          content: normalizeRealtimeMessageContent(
-            parsed.item.role,
-            parsed.item.content,
-          ),
+        const realtimeItem = realtimeMessageItemSchema.safeParse({
+          itemId: item.id,
+          type: item.type,
+          role: item.role,
+          content: normalizeRealtimeMessageContent(item.role, item.content),
           status:
             parsed.type === 'response.output_item.done'
               ? (item.status ?? 'completed')
               : (item.status ?? 'in_progress'),
         });
-        this.emit('item_update', realtimeItem);
+        if (realtimeItem.success) {
+          this.emit('item_update', realtimeItem.data);
+        }
         return;
       }
     }

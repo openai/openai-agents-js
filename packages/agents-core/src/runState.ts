@@ -191,8 +191,9 @@ import {
  * - 1.22: Records hosted MCP namespace discovery provenance. Older namespace-only
  *   search outputs require rediscovery; explicit MCP descriptors remain usable.
  * - 1.23: Preserves nested numeric token usage breakdowns.
+ * - 1.24: Preserves arbitrary JSON token usage metadata.
  */
-export const CURRENT_SCHEMA_VERSION = '1.23' as const;
+export const CURRENT_SCHEMA_VERSION = '1.24' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -217,6 +218,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.20',
   '1.21',
   '1.22',
+  '1.23',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -245,6 +247,7 @@ function schemaVersionSupportsV120State(
     schemaVersion === '1.20' ||
     schemaVersion === '1.21' ||
     schemaVersion === '1.22' ||
+    schemaVersion === '1.23' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1308,6 +1311,30 @@ const usageSchema = z.object({
   outputTokensDetails: z.array(protocol.TokenDetails).optional(),
   requestUsageEntries: z.array(requestUsageSchema).optional(),
 });
+
+// Called only after SerializedRunState validates and bounds every details tree.
+// Arrays and nonnumeric leaves need the JSON metadata format introduced in 1.24.
+function isNumericTokenDetails(value: unknown): boolean {
+  return (
+    typeof value === 'number' ||
+    (value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.values(value).every(isNumericTokenDetails))
+  );
+}
+
+function usageSupportsV123(usage: z.infer<typeof usageSchema>): boolean {
+  return (
+    (usage.inputTokensDetails ?? []).every(isNumericTokenDetails) &&
+    (usage.outputTokensDetails ?? []).every(isNumericTokenDetails) &&
+    (usage.requestUsageEntries ?? []).every(
+      (entry) =>
+        isNumericTokenDetails(entry.inputTokensDetails ?? {}) &&
+        isNumericTokenDetails(entry.outputTokensDetails ?? {}),
+    )
+  );
+}
 
 const modelResponseSchema = z.object({
   usage: usageSchema,
@@ -3475,7 +3502,35 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       );
     }
 
-    return parsed.data;
+    // Keep ordinary snapshots readable by 0.21.0. Rich metadata is preserved,
+    // never filtered to force an older format. Each nested writer selects its
+    // own version; do not downgrade an envelope containing a newer child.
+    const state = parsed.data;
+    const usages = [
+      state.context.usage,
+      ...state.modelResponses.map((response) => response.usage),
+      ...(state.lastModelResponse ? [state.lastModelResponse.usage] : []),
+    ];
+    const nestedRunsSupportV123 = Object.values(
+      state.pendingAgentToolRuns,
+    ).every((serialized) => {
+      try {
+        const nested: unknown = JSON.parse(serialized);
+        return (
+          nested !== null &&
+          typeof nested === 'object' &&
+          '$schemaVersion' in nested &&
+          nested.$schemaVersion !== CURRENT_SCHEMA_VERSION &&
+          $schemaVersion.safeParse(nested.$schemaVersion).success
+        );
+      } catch {
+        return false;
+      }
+    });
+    if (usages.every(usageSupportsV123) && nestedRunsSupportV123) {
+      state.$schemaVersion = '1.23';
+    }
+    return state;
   }
 
   /**
