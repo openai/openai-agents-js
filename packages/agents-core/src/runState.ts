@@ -191,8 +191,11 @@ import {
  * - 1.22: Records hosted MCP namespace discovery provenance. Older namespace-only
  *   search outputs require rediscovery; explicit MCP descriptors remain usable.
  * - 1.23: Preserves nested numeric token usage breakdowns.
+ * - 1.24: Adds sandbox session-state envelope version 6 so client-owned
+ *   unresolved environment references cannot be consumed by older SDKs that
+ *   would resolve them in the runner process.
  */
-export const CURRENT_SCHEMA_VERSION = '1.23' as const;
+export const CURRENT_SCHEMA_VERSION = '1.24' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -217,6 +220,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.20',
   '1.21',
   '1.22',
+  '1.23',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -245,6 +249,7 @@ function schemaVersionSupportsV120State(
     schemaVersion === '1.20' ||
     schemaVersion === '1.21' ||
     schemaVersion === '1.22' ||
+    schemaVersion === '1.23' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -1645,27 +1650,42 @@ const serializedTraceSchema = z.object({
   tracing_api_key: z.string().optional().nullable(),
 });
 
-const sandboxSessionStateEnvelopeSchema = z.object({
-  version: z.union(
-    SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS.map((version) =>
-      z.literal(version),
-    ) as [
-      z.ZodLiteral<1>,
-      z.ZodLiteral<2>,
-      z.ZodLiteral<3>,
-      z.ZodLiteral<4>,
-      z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>,
-    ],
-  ),
-  backendId: z.string(),
-  manifest: z.record(z.string(), z.any()),
-  snapshot: z.record(z.string(), z.any()).nullable().optional(),
-  snapshotFingerprint: z.string().nullable().optional(),
-  snapshotFingerprintVersion: z.string().nullable().optional(),
-  workspaceReady: z.boolean(),
-  exposedPorts: z.record(z.string(), z.any()).optional(),
-  providerState: z.record(z.string(), z.any()),
-});
+const sandboxSessionStateEnvelopeSchema = z
+  .object({
+    version: z.union(
+      SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS.map((version) =>
+        z.literal(version),
+      ) as [
+        z.ZodLiteral<1>,
+        z.ZodLiteral<2>,
+        z.ZodLiteral<3>,
+        z.ZodLiteral<4>,
+        z.ZodLiteral<5>,
+        z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>,
+      ],
+    ),
+    backendId: z.string(),
+    environmentPreparation: z.literal('client').optional(),
+    manifest: z.record(z.string(), z.any()),
+    snapshot: z.record(z.string(), z.any()).nullable().optional(),
+    snapshotFingerprint: z.string().nullable().optional(),
+    snapshotFingerprintVersion: z.string().nullable().optional(),
+    workspaceReady: z.boolean(),
+    exposedPorts: z.record(z.string(), z.any()).optional(),
+    providerState: z.record(z.string(), z.any()),
+  })
+  .superRefine((envelope, context) => {
+    if (
+      envelope.environmentPreparation === 'client' &&
+      envelope.version !== SANDBOX_SESSION_STATE_VERSION
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Client-owned environment preparation requires the current sandbox session envelope version.',
+      });
+    }
+  });
 
 const sandboxSessionEntrySchema = z.object({
   backendId: z.string(),
@@ -3797,6 +3817,7 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
     schemaVersionSupportsV118State(schemaVersion);
   const supportsVersion3 = schemaVersionSupportsV118State(schemaVersion);
   const supportsVersion4 = schemaVersionSupportsV119State(schemaVersion);
+  const supportsVersion5 = schemaVersionSupportsV120State(schemaVersion);
   if (
     envelopes.every(
       (envelope) =>
@@ -3804,8 +3825,9 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
         (envelope.version === 2 && supportsVersion2) ||
         (envelope.version === 3 && supportsVersion3) ||
         (envelope.version === 4 && supportsVersion4) ||
+        (envelope.version === 5 && supportsVersion5) ||
         (envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-          schemaVersionSupportsV120State(schemaVersion)),
+          schemaVersion === CURRENT_SCHEMA_VERSION),
     )
   ) {
     return;
@@ -3817,9 +3839,10 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
       !(envelope.version === 2 && supportsVersion2) &&
       !(envelope.version === 3 && supportsVersion3) &&
       !(envelope.version === 4 && supportsVersion4) &&
+      !(envelope.version === 5 && supportsVersion5) &&
       !(
         envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-        schemaVersionSupportsV120State(schemaVersion)
+        schemaVersion === CURRENT_SCHEMA_VERSION
       ),
   )?.version;
   throw new UserError(

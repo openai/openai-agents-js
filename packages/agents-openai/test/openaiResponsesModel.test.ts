@@ -196,7 +196,7 @@ describe('OpenAIResponsesModel', () => {
         await result.completed;
       }
       expect(result.finalOutput).toBe('Done');
-      expect(result.state.toJSON().$schemaVersion).toBe('1.23');
+      expect(result.state.toJSON().$schemaVersion).toBe('1.24');
       const restored = await RunState.fromString(
         agent,
         result.state.toString(),
