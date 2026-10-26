@@ -368,6 +368,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   private async copyEntryIntoContainer(
     logicalPath: string,
     entry: Entry,
+    localSourceGrants = this.state.manifest.extraPathGrants,
   ): Promise<void> {
     const destination = this.resolveContainerFilesystemPath(logicalPath, {
       forWrite: true,
@@ -393,11 +394,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       : undefined;
     const archive = this.readContainerCopyArchive(
       destination,
-      readLocalWorkspaceEntry(
-        entry,
-        this.state.manifest.extraPathGrants,
-        gitSourceRoot,
-      ),
+      readLocalWorkspaceEntry(entry, localSourceGrants, gitSourceRoot),
       execArgs,
       permissions,
     );
@@ -728,7 +725,16 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       providerEffectsMayHaveStarted = true;
       await provisionDockerAccounts(this.state.containerId, manifest);
       const materializedManifest = stripDockerIdentityMetadata(manifest);
-      await materializeLocalWorkspaceManifest(
+      for (const [path, entry] of Object.entries(
+        withoutDockerMountEntries(materializedManifest.entries),
+      )) {
+        await this.copyEntryIntoContainer(
+          this.resolveLogicalPath(path),
+          entry,
+          nextManifest.extraPathGrants,
+        );
+      }
+      await materializeLocalWorkspaceManifestMounts(
         materializedManifest,
         this.state.workspaceRootPath,
         {
@@ -2942,6 +2948,25 @@ function stripDockerIdentityMetadata(manifest: Manifest): Manifest {
   });
   copyManifestMountCredentialExposurePolicy(stripped, manifest);
   return stripped;
+}
+
+// Mounts keep their dedicated setup path; only resource bytes use the writer.
+function withoutDockerMountEntries(
+  entries: Record<string, Entry>,
+): Record<string, Entry> {
+  return Object.fromEntries(
+    Object.entries(entries)
+      .filter(([, entry]) => !isMount(entry))
+      .map(([path, entry]) => [
+        path,
+        entry.type === 'dir'
+          ? {
+              ...entry,
+              children: withoutDockerMountEntries(entry.children ?? {}),
+            }
+          : entry,
+      ]),
+  );
 }
 
 function mergeDockerIdentityMetadata(

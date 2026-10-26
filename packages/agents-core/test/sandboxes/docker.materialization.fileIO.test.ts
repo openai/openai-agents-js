@@ -10,7 +10,8 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DockerSandboxSession } from '../../src/sandbox/local';
+import { Manifest, type DockerSandboxSession } from '../../src/sandbox/local';
+import { applyManifestToProvidedSession } from '../../src/sandbox/runtime/providedSessionManifest';
 import * as localWorkspace from '../../src/sandbox/sandboxes/shared/localWorkspace';
 import { createDockerFileIOFixture } from './fixtures/dockerFileIO';
 
@@ -44,6 +45,46 @@ describe.skipIf(process.platform === 'win32')(
       vi.restoreAllMocks();
       await rm(root, { recursive: true, force: true });
     });
+
+    it.each(['applyManifest', 'provided session'] as const)(
+      'writes %s resources in the container, including nested local sources',
+      async (route) => {
+        const source = join(root, 'source');
+        await mkdir(source);
+        await writeFile(join(source, 'value.txt'), 'Configured bytes');
+        session.state.manifest.extraPathGrants.push({
+          path: source,
+          readOnly: true,
+        });
+        const manifest = new Manifest({
+          root: workspace,
+          extraPathGrants: session.state.manifest.extraPathGrants,
+          entries: {
+            added: {
+              type: 'dir',
+              children: {
+                local: { type: 'local_dir', src: source },
+                inline: { type: 'file', content: 'Inline bytes' },
+              },
+            },
+          },
+        });
+        if (route === 'applyManifest') await session.applyManifest(manifest);
+        else await applyManifestToProvidedSession(session, manifest);
+        expect(
+          await readFile(join(workspace, 'added/local/value.txt'), 'utf8'),
+        ).toBe('Configured bytes');
+        expect(await readFile(join(workspace, 'added/inline'), 'utf8')).toBe(
+          'Inline bytes',
+        );
+        await expect(lstat(join(host, 'added'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect(session.state.manifest.entries.added).toEqual(
+          manifest.entries.added,
+        );
+      },
+    );
 
     it('sends file bytes to Docker before reading the remaining source files', async () => {
       let writtenBytes = 0;

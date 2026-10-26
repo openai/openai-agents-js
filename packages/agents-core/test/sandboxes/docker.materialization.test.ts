@@ -153,15 +153,17 @@ describe('Docker resource materialization', () => {
   );
 
   itIfDocker.each([
-    ['local_dir', false],
-    ['local_dir', true],
-    ['dir', false],
-    ['dir', true],
-    ['git_repo', false],
-    ['git_repo', true],
+    ['local_dir', false, 'skill'],
+    ['local_dir', true, 'skill'],
+    ['dir', false, 'skill'],
+    ['dir', true, 'skill'],
+    ['git_repo', false, 'skill'],
+    ['git_repo', true, 'skill'],
+    ['local_dir', false, 'manifest'],
+    ['local_dir', true, 'manifest'],
   ] as const)(
-    'loads a %s skill inside Docker (path swaps: %s)',
-    async (sourceType, race) => {
+    'loads a %s resource inside Docker (path swaps: %s, route: %s)',
+    async (sourceType, race, route) => {
       rootDir = await mkdtemp(join(process.cwd(), '.docker-skill-source-'));
       const source = join(rootDir, 'skills');
       await mkdir(join(source, 'demo', 'empty'), { recursive: true });
@@ -279,10 +281,28 @@ open('/workspace/swaps-done', 'w').write(str(count))
         });
       }
       for (let attempt = 0; attempt < (race ? 20 : 1); attempt++) {
-        const result = await tool.invoke(
-          new RunContext(),
-          JSON.stringify({ skill_name: 'demo' }),
-        );
+        const result =
+          route === 'skill'
+            ? await tool.invoke(
+                new RunContext(),
+                JSON.stringify({ skill_name: 'demo' }),
+              )
+            : await session
+                .applyManifest(
+                  new Manifest({
+                    entries: {
+                      '.agents/demo': {
+                        type: 'local_dir',
+                        src: join(source, 'demo'),
+                      },
+                    },
+                  }),
+                )
+                .then(() => ({ status: 'loaded', skill_name: 'demo' }))
+                .catch((error) => {
+                  if (!race) throw error;
+                  return String(error);
+                });
         if (!race) {
           if (typeof result === 'string')
             await materialization.mock.results.at(-1)?.value;
