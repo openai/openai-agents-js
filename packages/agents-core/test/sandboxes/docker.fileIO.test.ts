@@ -5,21 +5,20 @@ import {
   lstat,
   mkdir,
   open,
-  mkdtemp,
   readFile,
-  realpath,
   rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DockerSandboxSession,
   Manifest,
   dockerVolumeMountStrategy,
 } from '../../src/sandbox/local';
+
+import { createDockerFileIOFixture, success } from './fixtures/dockerFileIO';
 
 const dockerProcess = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../../src/sandbox/sandboxes/shared/runProcess', () => ({
@@ -34,14 +33,6 @@ const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
   'base64',
 );
-const success = {
-  status: 0,
-  stdout: '',
-  stderr: '',
-  signal: null,
-  timedOut: false,
-};
-
 // Execute Docker's shell payloads against a distinct local filesystem. Only the
 // Docker transport/user boundary and GNU utility spelling are adapted. Path
 // resolution, symlinks, permissions, shell redirection and byte I/O remain real.
@@ -55,409 +46,17 @@ describe.skipIf(process.platform === 'win32')(
     let outside: string;
     let session: DockerSandboxSession;
     let commands: string[][];
-    let beforeCommand: ((command: string) => void) | undefined;
+    let fixture: Awaited<ReturnType<typeof createDockerFileIOFixture>>;
 
     beforeEach(async () => {
-      root = await realpath(await mkdtemp(join(tmpdir(), 'docker-file-io-')));
-      workspace = join(root, 'container');
-      host = join(root, 'host');
-      outside = join(root, 'outside');
-      await Promise.all([mkdir(workspace), mkdir(host), mkdir(outside)]);
-      await writeFile(join(workspace, 'note.txt'), 'before\n');
-      await writeFile(join(host, 'note.txt'), 'host sentinel\n');
-      await writeFile(join(outside, 'secret.txt'), 'outside sentinel\n');
-      commands = [];
-      beforeCommand = undefined;
-      dockerProcess.run.mockReset().mockResolvedValue(success);
-      const native =
-        await vi.importActual<typeof import('node:child_process')>(
-          'node:child_process',
-        );
-      vi.spyOn(childProcess, 'spawn').mockImplementation(((
-        command: string,
-        args: string[],
-        options: childProcess.SpawnOptions,
-      ) => {
-        expect(command).toBe('docker');
-        commands.push(args);
-        if (args.includes('/usr/bin/tar')) {
-          // Real archive extraction; the native Docker test covers containment.
-          return native.spawn(
-            'tar',
-            [
-              '-xpf',
-              '-',
-              '--no-same-owner',
-              '-C',
-              args
-                .find((arg) => arg.startsWith('--directory='))!
-                .slice('--directory='.length),
-            ],
-            options,
-          );
-        }
-        if (args.includes('/usr/bin/realpath')) {
-          // Use real OS path resolution, including missing tails, on macOS too.
-          return native.spawn(
-            process.execPath,
-            [
-              '-e',
-              `
-const fs = require('node:fs');
-const path = require('node:path');
-let current = process.argv[1];
-const tail = [];
-while (true) {
-  try { process.stdout.write(path.resolve(fs.realpathSync(current), ...tail) + '\\n'); break; }
-  catch (error) {
-    if (error.code !== 'ENOENT' || path.dirname(current) === current) throw error;
-    tail.unshift(path.basename(current)); current = path.dirname(current);
-  }
-}
-`,
-              args.at(-1)!,
-            ],
-            { ...options, env: { PATH: '/usr/bin:/bin' } },
-          );
-        }
-        if (args.includes('stat') && args.includes('%f')) {
-          return native.spawn(
-            process.execPath,
-            [
-              '-e',
-              `
-const fs = require('node:fs');
-try {
-  const info = fs.lstatSync(process.argv[1]);
-  process.stdout.write(info.mode.toString(16) + '\\n');
-} catch (error) {
-  process.stderr.write(error.code === 'ENOENT' ? 'stat: No such file or directory\\n' : String(error));
-  process.exit(1);
-}
-`,
-              args.at(-1)!,
-            ],
-            options,
-          );
-        }
-        let script = args.at(-1)!;
-        beforeCommand?.(script);
-        if (process.platform === 'darwin') {
-          // Preserve base64's exit status instead of using shell redirection.
-          script = script.replace(/base64 -- /gu, 'base64 -i ');
-          // Preserve GNU find's type/name records using portable host utilities.
-          script = script.replace(
-            "-printf '%y\\0%f\\0'",
-            `-exec /bin/sh -c 'for file do kind=o; if [ -L "$file" ]; then kind=l; elif [ -d "$file" ]; then kind=d; elif [ -f "$file" ]; then kind=f; fi; printf "%s\\0%s\\0" "$kind" "\${file##*/}"; done' sh {} +`,
-          );
-        }
-        const environment: Record<string, string> = {
-          PATH: '/usr/bin:/bin',
-          ...session.state.environment,
-        };
-        for (let index = 0; index < args.length; index += 1) {
-          if (args[index] !== '-e') continue;
-          const assignment = args[++index]!;
-          const separator = assignment.indexOf('=');
-          environment[assignment.slice(0, separator)] = assignment.slice(
-            separator + 1,
-          );
-        }
-        const launcher = args.indexOf('/usr/bin/env');
-        return native.spawn(
-          launcher >= 0 ? '/usr/bin/env' : '/bin/sh',
-          // Keep container commands away from the host's login profile.
-          launcher >= 0
-            ? [...args.slice(launcher + 1, -1), script]
-            : ['-c', script],
-          {
-            ...options,
-            cwd: '/',
-            env: environment,
-          },
-        );
-      }) as typeof childProcess.spawn);
-      session = new DockerSandboxSession({
-        state: {
-          manifest: new Manifest({ root: workspace }),
-          workspaceRootPath: host,
-          workspaceRootOwned: false,
-          environment: {},
-          containerId: 'test-container',
-          image: 'test:image',
-          defaultUser: 'container-user',
-        },
-      });
+      fixture = await createDockerFileIOFixture(dockerProcess.run);
+      ({ root, workspace, host, outside, session, commands } = fixture);
     });
 
     afterEach(async () => {
       await session.close();
       vi.restoreAllMocks();
       await rm(root, { recursive: true, force: true });
-    });
-
-    it('copies local-directory skill bytes and modes only through Docker', async () => {
-      const source = join(root, 'skill');
-      await mkdir(join(source, 'empty'), { recursive: true });
-      await writeFile(join(source, 'SKILL.md'), 'Configured skill');
-      await writeFile(join(source, 'SKILL.md '), 'Trailing space');
-      await writeFile(
-        join(source, "quote'; $(touch INJECTED); `touch INJECTED`"),
-        'Literal shell syntax',
-      );
-      await mkdir(join(source, ' '));
-      await writeFile(join(source, ' ', ' leading\\name\n'), 'Literal name');
-      const bytes = Buffer.from([0, 255, 128, 10]);
-      await writeFile(join(source, 'asset.bin'), bytes);
-      session.state.manifest.extraPathGrants.push({
-        path: source,
-        readOnly: true,
-      });
-      await mkdir(join(workspace, '.agents', 'demo'), { recursive: true });
-      await writeFile(join(workspace, '.agents', 'demo', 'asset.bin'), 'old');
-      await chmod(join(workspace, '.agents', 'demo', 'asset.bin'), 0o600);
-      await symlink(outside, join(host, '.agents'));
-      const applicationMask = vi.spyOn(process, 'umask').mockReturnValue(0o027);
-      try {
-        await session.materializeEntry({
-          path: '.agents/demo',
-          entry: { type: 'local_dir', src: source, permissions: 0o700 },
-        });
-      } finally {
-        applicationMask.mockRestore();
-      }
-      expect(
-        await readFile(join(workspace, '.agents/demo/SKILL.md'), 'utf8'),
-      ).toBe('Configured skill');
-      expect(
-        await readFile(join(workspace, '.agents/demo/SKILL.md '), 'utf8'),
-      ).toBe('Trailing space');
-      expect(
-        await readFile(
-          join(
-            workspace,
-            '.agents/demo',
-            "quote'; $(touch INJECTED); `touch INJECTED`",
-          ),
-          'utf8',
-        ),
-      ).toBe('Literal shell syntax');
-      expect(commands.some((args) => args.includes('/bin/sh'))).toBe(false);
-      expect(
-        commands.filter((args) => args.includes('/usr/bin/tar')),
-      ).toHaveLength(1);
-      expect(commands.every((args) => args[0] === 'exec')).toBe(true);
-      expect(
-        await readFile(
-          join(workspace, '.agents/demo', ' ', ' leading\\name\n'),
-          'utf8',
-        ),
-      ).toBe('Literal name');
-      expect(await readFile(join(workspace, '.agents/demo/asset.bin'))).toEqual(
-        bytes,
-      );
-      expect(
-        (await lstat(join(workspace, '.agents/demo/asset.bin'))).mode & 0o777,
-      ).toBe(0o600);
-      expect(
-        (await lstat(join(workspace, '.agents/demo/SKILL.md'))).mode & 0o777,
-      ).toBe(0o640);
-      expect(
-        (await lstat(join(workspace, '.agents/demo/empty'))).mode & 0o777,
-      ).toBe(0o750);
-      expect((await lstat(join(workspace, '.agents/demo'))).mode & 0o777).toBe(
-        0o700,
-      );
-      await expect(lstat(join(outside, 'demo'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
-      expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe(
-        'outside sentinel\n',
-      );
-    });
-
-    it('loads nested inline and local resources through the same container writer', async () => {
-      const source = join(root, 'source');
-      await mkdir(source);
-      await writeFile(join(source, 'local.txt'), 'Local bytes');
-      session.state.manifest.extraPathGrants.push({
-        path: source,
-        readOnly: true,
-      });
-      const mask = vi.spyOn(process, 'umask').mockReturnValue(0o027);
-      try {
-        await session.materializeEntry({
-          path: 'skill',
-          entry: {
-            type: 'dir',
-            permissions: 0o750,
-            children: {
-              'nested/config.txt': {
-                type: 'file',
-                content: 'Inline bytes',
-                permissions: 0o600,
-              },
-              local: {
-                type: 'local_file',
-                src: join(source, 'local.txt'),
-                permissions: 0o640,
-              },
-              assets: { type: 'local_dir', src: source, permissions: 0o700 },
-            },
-          },
-        });
-      } finally {
-        mask.mockRestore();
-      }
-      expect(
-        await readFile(join(workspace, 'skill/nested/config.txt'), 'utf8'),
-      ).toBe('Inline bytes');
-      expect(await readFile(join(workspace, 'skill/local'), 'utf8')).toBe(
-        'Local bytes',
-      );
-      expect(
-        await readFile(join(workspace, 'skill/assets/local.txt'), 'utf8'),
-      ).toBe('Local bytes');
-      expect((await lstat(join(workspace, 'skill/nested'))).mode & 0o777).toBe(
-        0o750,
-      );
-      expect(
-        (await lstat(join(workspace, 'skill/nested/config.txt'))).mode & 0o777,
-      ).toBe(0o600);
-      expect((await lstat(join(workspace, 'skill/assets'))).mode & 0o777).toBe(
-        0o700,
-      );
-      await expect(lstat(join(host, 'skill'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
-      expect(commands.some((args) => args.includes('/bin/sh'))).toBe(false);
-    });
-
-    it('checks the actual destination of a literal skill filename', async () => {
-      const source = join(root, 'skill');
-      await mkdir(source);
-      await writeFile(join(source, 'SKILL.md '), 'Configured skill');
-      session.state.manifest.extraPathGrants.push({
-        path: source,
-        readOnly: true,
-      });
-      await mkdir(join(workspace, '.agents', 'demo'), { recursive: true });
-      await symlink(
-        join(outside, 'secret.txt'),
-        join(workspace, '.agents', 'demo', 'SKILL.md '),
-      );
-      await expect(
-        session.materializeEntry({
-          path: '.agents/demo',
-          entry: { type: 'local_dir', src: source },
-        }),
-      ).rejects.toThrow(/escapes the workspace/);
-      expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe(
-        'outside sentinel\n',
-      );
-    });
-
-    it('retains source grants and symlink rejection for local-directory skills', async () => {
-      const source = join(root, 'skill');
-      await mkdir(source);
-      await writeFile(join(source, 'SKILL.md'), 'Configured skill');
-      const load = () =>
-        session.materializeEntry({
-          path: '.agents/demo',
-          entry: { type: 'local_dir', src: source },
-        });
-      await expect(load()).rejects.toThrow(
-        /local source base directory or manifest.extraPathGrants/,
-      );
-      expect(commands).toEqual([]);
-      session.state.manifest.extraPathGrants.push({
-        path: source,
-        readOnly: true,
-      });
-      await symlink(join(outside, 'secret.txt'), join(source, 'secret'));
-      await expect(load()).rejects.toThrow(/symbolic links/);
-      await expect(
-        lstat(join(workspace, '.agents/demo/secret')),
-      ).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(await readFile(join(outside, 'secret.txt'), 'utf8')).toBe(
-        'outside sentinel\n',
-      );
-    });
-
-    it('leaves the manifest unchanged when Docker rejects the copy', async () => {
-      const source = join(root, 'skill');
-      await mkdir(source);
-      await writeFile(join(source, 'SKILL.md'), 'Configured skill');
-      session.state.manifest.extraPathGrants.push({
-        path: source,
-        readOnly: true,
-      });
-      const manifest = session.state.manifest;
-      const currentSpawn = childProcess.spawn;
-      const native =
-        await vi.importActual<typeof import('node:child_process')>(
-          'node:child_process',
-        );
-      const implementation = vi.mocked(currentSpawn).getMockImplementation()!;
-      vi.mocked(currentSpawn).mockImplementation(((
-        command: string,
-        args: string[],
-        options: childProcess.SpawnOptions,
-      ) => {
-        if (args.includes('/usr/bin/tar'))
-          return native.spawn(
-            process.execPath,
-            [
-              '-e',
-              'process.stdin.resume(); process.stdin.on("end", () => process.exit(1));',
-            ],
-            options,
-          );
-        return implementation(command, args, options);
-      }) as typeof childProcess.spawn);
-      await expect(
-        session.materializeEntry({
-          path: '.agents/demo',
-          entry: { type: 'local_dir', src: source },
-        }),
-      ).rejects.toThrow(/failed to copy entry/);
-      expect(session.state.manifest).toBe(manifest);
-      await expect(lstat(join(workspace, '.agents'))).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
-    });
-
-    it('rejects nested mount declarations before starting a resource copy', async () => {
-      const manifest = session.state.manifest;
-      await expect(
-        session.materializeEntry({
-          path: 'skill',
-          entry: {
-            type: 'dir',
-            children: {
-              data: {
-                type: 'mount',
-                source: outside,
-                readOnly: false,
-                mountStrategy: { type: 'local_bind' },
-              },
-            },
-          },
-        }),
-      ).rejects.toThrow(/does not support this mount entry/);
-      expect(session.state.manifest).toBe(manifest);
-      await expect(
-        session.materializeEntry({
-          path: 'skill',
-          entry: {
-            type: 'mount',
-            source: outside,
-            readOnly: false,
-            mountStrategy: { type: 'local_bind' },
-          },
-        }),
-      ).rejects.toThrow(/must be configured when creating the sandbox/);
-      expect(commands).toEqual([]);
     });
 
     it('isolates file helpers from application environment and retains mount environment', async () => {
@@ -655,7 +254,7 @@ try {
         await mkdir(directory);
         await writeFile(join(directory, 'image.png'), png);
         // The real container resolver runs as root; restrict access after that step.
-        beforeCommand = (command) => {
+        fixture.beforeCommand = (command) => {
           if (command.includes('base64')) chmodSync(directory, 0);
         };
         try {
@@ -663,7 +262,7 @@ try {
             session.viewImage({ path: 'private/image.png', runAs: 'reader' }),
           ).rejects.toThrow(/permission denied/iu);
         } finally {
-          beforeCommand = undefined;
+          fixture.beforeCommand = undefined;
           await chmod(directory, 0o700);
         }
         expect(
@@ -769,7 +368,7 @@ try {
 
     it('does not overwrite files created after validation or existing symlink targets', async () => {
       const editor = session.createEditor();
-      beforeCommand = (script) => {
+      fixture.beforeCommand = (script) => {
         if (script.includes('set -C'))
           writeFileSync(join(workspace, 'new.txt'), 'concurrent');
       };
@@ -783,7 +382,7 @@ try {
       expect(await readFile(join(workspace, 'new.txt'), 'utf8')).toBe(
         'concurrent',
       );
-      beforeCommand = undefined;
+      fixture.beforeCommand = undefined;
       await symlink('note.txt', join(workspace, 'alias.txt'));
       await expect(
         editor.createFile({
