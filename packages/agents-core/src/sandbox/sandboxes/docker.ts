@@ -16,6 +16,8 @@ import {
 import { chmod, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   basename,
   dirname,
@@ -370,24 +372,6 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     const destination = this.resolveContainerFilesystemPath(logicalPath, {
       forWrite: true,
     });
-    const items = [];
-    const gitSourceRoot = containsGitRepo(entry)
-      ? await this.createPrivateGitSourceRoot()
-      : undefined;
-    try {
-      for await (const item of readLocalWorkspaceEntry(
-        entry,
-        this.state.manifest.extraPathGrants,
-        gitSourceRoot,
-      )) {
-        items.push({ ...item, path: posix.join(destination, item.path) });
-      }
-    } finally {
-      if (gitSourceRoot !== undefined) {
-        await rm(gitSourceRoot, { recursive: true, force: true });
-      }
-    }
-    const creationMask = process.umask();
     const execArgs = [
       'exec',
       '-i',
@@ -403,9 +387,87 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       'PATH=/usr/bin:/bin',
       'LC_ALL=C',
     );
-    const archive: Buffer[] = [];
+    const permissions: { path: string; mode: number }[] = [];
+    const gitSourceRoot = containsGitRepo(entry)
+      ? await this.createPrivateGitSourceRoot()
+      : undefined;
+    const archive = this.readContainerCopyArchive(
+      destination,
+      readLocalWorkspaceEntry(
+        entry,
+        this.state.manifest.extraPathGrants,
+        gitSourceRoot,
+      ),
+      execArgs,
+      permissions,
+    );
+    try {
+      // Validate the first source and destination before starting the writer.
+      const first = await archive.next();
+      const input = Readable.from(
+        (async function* () {
+          if (!first.done) yield first.value;
+          yield* archive;
+        })(),
+      );
+      // Extraction runs as the sandbox user. Archive ownership cannot grant access.
+      const result = await runDockerProcess(
+        [
+          ...execArgs,
+          '/usr/bin/tar',
+          '--extract',
+          '--file=-',
+          `--directory=${this.state.manifest.root}`,
+          '--no-same-owner',
+          '--same-permissions',
+          '--overwrite',
+          '--touch',
+        ],
+        input,
+      );
+      if (result.status !== 0) {
+        throw new UserError(
+          `DockerSandboxClient failed to copy entry: ${formatSandboxProcessError(result)}`,
+        );
+      }
+      // Apply configured modes after children, so read-only directories can be loaded.
+      for (const item of permissions.reverse()) {
+        await this.validateContainerCopyPath(item.path);
+        const mode = await runDockerProcess([
+          ...execArgs,
+          'chmod',
+          item.mode.toString(8),
+          '--',
+          item.path,
+        ]);
+        if (mode.status !== 0) {
+          throw new UserError(
+            `DockerSandboxClient failed to set entry permissions: ${formatSandboxProcessError(mode)}`,
+          );
+        }
+      }
+    } finally {
+      // Stop the producer before removing a Git checkout it may still be reading.
+      try {
+        await archive.return();
+      } finally {
+        if (gitSourceRoot !== undefined) {
+          await rm(gitSourceRoot, { recursive: true, force: true });
+        }
+      }
+    }
+  }
+
+  private async *readContainerCopyArchive(
+    destination: string,
+    contents: AsyncIterable<LocalWorkspaceContent>,
+    execArgs: string[],
+    permissions: { path: string; mode: number }[],
+  ): AsyncGenerator<Uint8Array, void> {
+    const creationMask = process.umask();
     const appendedPaths = new Set<string>();
-    for (const item of items) {
+    for await (const content of contents) {
+      const item = { ...content, path: posix.join(destination, content.path) };
       const parents: string[] = [];
       for (
         let parent = posix.dirname(item.path);
@@ -416,60 +478,20 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         parents.unshift(parent);
       for (const path of parents) {
         if (appendedPaths.has(path)) continue;
-        await this.appendContainerCopyEntry(
-          archive,
+        yield* this.readContainerCopyEntry(
           execArgs,
           { type: 'dir', path },
           creationMask,
         );
         appendedPaths.add(path);
       }
-      await this.appendContainerCopyEntry(
-        archive,
-        execArgs,
-        item,
-        creationMask,
-      );
+      yield* this.readContainerCopyEntry(execArgs, item, creationMask);
       appendedPaths.add(item.path);
-    }
-    archive.push(Buffer.alloc(1024));
-    // Extraction runs as the sandbox user. Archive ownership cannot grant access.
-    const result = await runDockerProcess(
-      [
-        ...execArgs,
-        '/usr/bin/tar',
-        '--extract',
-        '--file=-',
-        `--directory=${this.state.manifest.root}`,
-        '--no-same-owner',
-        '--same-permissions',
-        '--overwrite',
-        '--touch',
-      ],
-      Buffer.concat(archive),
-    );
-    if (result.status !== 0) {
-      throw new UserError(
-        `DockerSandboxClient failed to copy entry: ${formatSandboxProcessError(result)}`,
-      );
-    }
-    // Apply configured modes after children, so read-only directories can be loaded.
-    for (const item of items.reverse()) {
-      if (item.permissions === undefined || item.type === 'symlink') continue;
-      await this.validateContainerCopyPath(item.path);
-      const mode = await runDockerProcess([
-        ...execArgs,
-        'chmod',
-        item.permissions.toString(8),
-        '--',
-        item.path,
-      ]);
-      if (mode.status !== 0) {
-        throw new UserError(
-          `DockerSandboxClient failed to set entry permissions: ${formatSandboxProcessError(mode)}`,
-        );
+      if (item.permissions !== undefined && item.type !== 'symlink') {
+        permissions.push({ path: item.path, mode: item.permissions });
       }
     }
+    yield Buffer.alloc(1024);
   }
 
   private async createPrivateGitSourceRoot(): Promise<string> {
@@ -486,12 +508,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     return await mkdtemp(join(parent, 'openai-agents-git-source-'));
   }
 
-  private async appendContainerCopyEntry(
-    archive: Buffer[],
+  private async *readContainerCopyEntry(
     execArgs: string[],
     item: LocalWorkspaceContent,
     creationMask: number,
-  ): Promise<void> {
+  ): AsyncGenerator<Uint8Array, void> {
     await this.validateContainerCopyPath(item.path);
     const result = await runDockerProcess([
       ...execArgs,
@@ -565,11 +586,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       size: content?.byteLength ?? 0,
       mtime: new Date(),
     });
-    if (header.encode()) archive.push(new Pax(header).encode());
-    archive.push(header.block!);
+    if (header.encode()) yield new Pax(header).encode();
+    yield header.block!;
     if (content) {
-      archive.push(Buffer.from(content));
-      archive.push(Buffer.alloc((512 - (content.byteLength % 512)) % 512));
+      yield content;
+      yield Buffer.alloc((512 - (content.byteLength % 512)) % 512);
     }
   }
 
@@ -2986,7 +3007,7 @@ async function inspectContainerRunning(containerId: string): Promise<boolean> {
 
 async function runDockerProcess(
   args: string[],
-  input?: string | Uint8Array,
+  input?: string | Uint8Array | Readable,
   maxOutputBytes?: number,
 ): Promise<SandboxProcessResult> {
   const child = spawn('docker', args, {
@@ -3030,10 +3051,19 @@ async function runDockerProcess(
       stderrChunks.push(Buffer.from(error.message));
     });
   });
-  if (input !== undefined) {
-    child.stdin.write(input);
+  if (input instanceof Readable) {
+    try {
+      await pipeline(input, child.stdin);
+    } catch (error) {
+      stdinError = error as Error;
+      stderrChunks.push(Buffer.from(stdinError.message));
+      // Closing stdin ends the archive. Keep the client attached until the
+      // container writer exits; killing only the client can leave it running.
+    }
+  } else {
+    if (input !== undefined) child.stdin.write(input);
+    child.stdin.end();
   }
-  child.stdin.end();
 
   let status = await closed;
   if (outputLimitError) {

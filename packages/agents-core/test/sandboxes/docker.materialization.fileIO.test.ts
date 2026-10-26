@@ -11,6 +11,7 @@ import {
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DockerSandboxSession } from '../../src/sandbox/local';
+import * as localWorkspace from '../../src/sandbox/sandboxes/shared/localWorkspace';
 import { createDockerFileIOFixture } from './fixtures/dockerFileIO';
 
 const dockerProcess = vi.hoisted(() => ({ run: vi.fn() }));
@@ -42,6 +43,123 @@ describe.skipIf(process.platform === 'win32')(
       await session.close();
       vi.restoreAllMocks();
       await rm(root, { recursive: true, force: true });
+    });
+
+    it('sends file bytes to Docker before reading the remaining source files', async () => {
+      let writtenBytes = 0;
+      const spawn = vi.mocked(childProcess.spawn);
+      const implementation = spawn.getMockImplementation()!;
+      spawn.mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnOptions,
+      ) => {
+        const child = implementation(
+          command,
+          args,
+          options,
+        ) as childProcess.ChildProcessWithoutNullStreams;
+        if (args.includes('/usr/bin/tar')) {
+          const write = child.stdin.write.bind(child.stdin);
+          vi.spyOn(child.stdin, 'write').mockImplementation(((
+            chunk: Uint8Array,
+            ...rest: unknown[]
+          ) => {
+            writtenBytes += chunk.byteLength;
+            return Reflect.apply(write, child.stdin, [chunk, ...rest]);
+          }) as typeof child.stdin.write);
+        }
+        return child;
+      }) as typeof childProcess.spawn);
+      vi.spyOn(localWorkspace, 'readLocalWorkspaceEntry').mockImplementation(
+        async function* () {
+          yield { type: 'dir', path: '' };
+          yield {
+            type: 'file',
+            path: 'first',
+            content: new Uint8Array(1024 * 1024).fill(65),
+          };
+          expect(writtenBytes).toBeGreaterThanOrEqual(1024 * 1024);
+          yield {
+            type: 'file',
+            path: 'second',
+            content: Buffer.from('second file'),
+          };
+        },
+      );
+      await session.materializeEntry({
+        path: 'streamed',
+        entry: { type: 'dir' },
+      });
+      expect((await readFile(join(workspace, 'streamed/first'))).length).toBe(
+        1024 * 1024,
+      );
+      expect(await readFile(join(workspace, 'streamed/second'), 'utf8')).toBe(
+        'second file',
+      );
+    });
+
+    it('reports a mid-stream source failure without publishing the manifest', async () => {
+      const manifest = session.state.manifest;
+      vi.spyOn(localWorkspace, 'readLocalWorkspaceEntry').mockImplementation(
+        async function* () {
+          yield { type: 'dir', path: '' };
+          yield {
+            type: 'file',
+            path: 'first',
+            content: new Uint8Array(1024 * 1024),
+          };
+          throw new Error('source read failed');
+        },
+      );
+      await expect(
+        session.materializeEntry({ path: 'partial', entry: { type: 'dir' } }),
+      ).rejects.toThrow('source read failed');
+      expect(session.state.manifest).toBe(manifest);
+    });
+
+    it('closes the source when Docker exits before consuming the archive', async () => {
+      let sourceClosed = false;
+      vi.spyOn(localWorkspace, 'readLocalWorkspaceEntry').mockImplementation(
+        async function* () {
+          try {
+            yield { type: 'dir', path: '' };
+            for (let index = 0; index < 10; index++) {
+              yield {
+                type: 'file',
+                path: String(index),
+                content: new Uint8Array(1024 * 1024),
+              };
+            }
+          } finally {
+            sourceClosed = true;
+          }
+        },
+      );
+      const native =
+        await vi.importActual<typeof import('node:child_process')>(
+          'node:child_process',
+        );
+      const spawn = vi.mocked(childProcess.spawn);
+      const implementation = spawn.getMockImplementation()!;
+      spawn.mockImplementation(((
+        command: string,
+        args: string[],
+        options: childProcess.SpawnOptions,
+      ) =>
+        args.includes('/usr/bin/tar')
+          ? native.spawn(process.execPath, ['-e', 'process.exit(1)'], options)
+          : implementation(
+              command,
+              args,
+              options,
+            )) as typeof childProcess.spawn);
+      const manifest = session.state.manifest;
+      await expect(
+        session.materializeEntry({ path: 'rejected', entry: { type: 'dir' } }),
+      ).rejects.toThrow(/failed to copy entry/);
+      expect(sourceClosed).toBe(true);
+      expect(session.state.manifest).toBe(manifest);
     });
 
     it('copies local-directory skill bytes and modes only through Docker', async () => {

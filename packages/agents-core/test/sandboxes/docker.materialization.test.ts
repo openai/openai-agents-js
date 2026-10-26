@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { skills, type Entry } from '../../src/sandbox';
 import { RunContext } from '../../src/runContext';
 import { shellQuote } from '../../src/sandbox/shared/shell';
+import * as localWorkspace from '../../src/sandbox/sandboxes/shared/localWorkspace';
 import {
   DockerSandboxClient,
   Manifest,
@@ -35,6 +36,7 @@ describe('Docker resource materialization', () => {
   const cleanupContainerIds = new Set<string>();
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     for (const containerId of cleanupContainerIds) {
       removeDockerContainer(containerId);
     }
@@ -44,6 +46,111 @@ describe('Docker resource materialization', () => {
       await rm(rootDir, { recursive: true, force: true });
     }
   });
+
+  itIfDocker(
+    'waits for the container writer before reporting a source failure or starting the next copy',
+    async () => {
+      const session = await new DockerSandboxClient({
+        image: DOCKER_TEST_IMAGE,
+        snapshot: new NoopSnapshotSpec(),
+      }).create(new Manifest());
+      const cid = session.state.containerId;
+      cleanupContainerIds.add(cid);
+      const command = (...args: string[]) =>
+        spawnSync('docker', ['exec', cid, ...args], {
+          encoding: 'utf8',
+          timeout: DOCKER_CLI_TIMEOUT_MS,
+        });
+      let pid = '';
+      let signalFailure!: () => void;
+      const failureReady = new Promise<void>((resolve) => {
+        signalFailure = resolve;
+      });
+      const reader = vi.spyOn(localWorkspace, 'readLocalWorkspaceEntry');
+      reader.mockImplementationOnce(async function* () {
+        yield { type: 'dir', path: '' };
+        await expect
+          .poll(
+            () => {
+              pid = command(
+                'python3',
+                '-c',
+                "import os;print(' '.join(p for p in os.listdir('/proc') if p.isdigit() and open('/proc/'+p+'/comm').read().strip()=='tar'))",
+              ).stdout.trim();
+              return pid;
+            },
+            { timeout: 10000 },
+          )
+          .toMatch(/^\d+$/);
+        expect(
+          command(
+            'python3',
+            '-c',
+            `import os,signal;os.kill(${pid},signal.SIGSTOP)`,
+          ).status,
+        ).toBe(0);
+        yield { type: 'file', path: 'value', content: Buffer.from('old copy') };
+        signalFailure();
+        throw new Error('source failed during copy');
+      });
+      let finished = false;
+      const copy = session
+        .materializeEntry({ path: 'resource', entry: { type: 'dir' } })
+        .then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+        .finally(() => {
+          finished = true;
+        });
+      let successor: Promise<void> | undefined;
+      try {
+        await Promise.race([
+          failureReady,
+          copy.then(() => {
+            throw new Error('Copy finished before the controlled failure');
+          }),
+        ]);
+        successor = session.materializeEntry({
+          path: 'resource/value',
+          entry: { type: 'file', content: 'new copy' },
+        });
+        // Observe the queue while the actual container writer is paused.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(finished).toBe(false);
+        expect(
+          command(
+            'python3',
+            '-c',
+            "import os;print(os.path.exists('/workspace/resource/value'))",
+          ).stdout.trim(),
+        ).toBe('False');
+      } finally {
+        if (pid)
+          command(
+            'python3',
+            '-c',
+            `import os,signal;os.kill(${pid},signal.SIGCONT)`,
+          );
+        const error = await copy;
+        await successor;
+        reader.mockRestore();
+        try {
+          expect(error).toBeInstanceOf(Error);
+          expect(String(error)).toContain('source failed during copy');
+          expect(
+            Buffer.from(
+              await session.readFile({ path: 'resource/value' }),
+            ).toString(),
+          ).toBe('new copy');
+        } finally {
+          await session.close();
+          cleanupContainerIds.delete(cid);
+        }
+      }
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
 
   itIfDocker.each([
     ['local_dir', false],
