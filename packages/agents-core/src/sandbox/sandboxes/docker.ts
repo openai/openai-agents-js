@@ -349,7 +349,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         );
         assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
         validateMountCredentialBoundaries(nextManifest);
-        await this.copyEntryIntoContainer(logicalPath, entry);
+        const permissions = await this.copyEntryIntoContainer(
+          logicalPath,
+          entry,
+        );
+        await this.applyContainerCopyPermissions(permissions);
         recordLiveMountCredentialAuthority(nextManifest, this.state.manifest);
         this.state.manifest = nextManifest;
       });
@@ -369,25 +373,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     logicalPath: string,
     entry: Entry,
     localSourceGrants = this.state.manifest.extraPathGrants,
-  ): Promise<void> {
+  ): Promise<{ path: string; mode: number }[]> {
     const destination = this.resolveContainerFilesystemPath(logicalPath, {
       forWrite: true,
     });
-    const execArgs = [
-      'exec',
-      '-i',
-      '-w',
-      '/',
-      ...dockerFileEnvironmentArgs(this.state.environment),
-    ];
-    if (this.state.defaultUser) execArgs.push('-u', this.state.defaultUser);
-    execArgs.push(
-      this.state.containerId,
-      '/usr/bin/env',
-      '-i',
-      'PATH=/usr/bin:/bin',
-      'LC_ALL=C',
-    );
+    const execArgs = dockerResourceExecArgs(this);
     const permissions: { path: string; mode: number }[] = [];
     const gitSourceRoot = containsGitRepo(entry)
       ? await this.createPrivateGitSourceRoot()
@@ -427,22 +417,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
           `DockerSandboxClient failed to copy entry: ${formatSandboxProcessError(result)}`,
         );
       }
-      // Apply configured modes after children, so read-only directories can be loaded.
-      for (const item of permissions.reverse()) {
-        await this.validateContainerCopyPath(item.path);
-        const mode = await runDockerProcess([
-          ...execArgs,
-          'chmod',
-          item.mode.toString(8),
-          '--',
-          item.path,
-        ]);
-        if (mode.status !== 0) {
-          throw new UserError(
-            `DockerSandboxClient failed to set entry permissions: ${formatSandboxProcessError(mode)}`,
-          );
-        }
-      }
+      return permissions;
     } finally {
       // Stop the producer before removing a Git checkout it may still be reading.
       try {
@@ -451,6 +426,28 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         if (gitSourceRoot !== undefined) {
           await rm(gitSourceRoot, { recursive: true, force: true });
         }
+      }
+    }
+  }
+
+  private async applyContainerCopyPermissions(
+    permissions: { path: string; mode: number }[],
+  ): Promise<void> {
+    const execArgs = dockerResourceExecArgs(this);
+    // Apply configured modes after children, including mount directories.
+    for (const item of permissions.reverse()) {
+      await this.validateContainerCopyPath(item.path);
+      const mode = await runDockerProcess([
+        ...execArgs,
+        'chmod',
+        item.mode.toString(8),
+        '--',
+        item.path,
+      ]);
+      if (mode.status !== 0) {
+        throw new UserError(
+          `DockerSandboxClient failed to set entry permissions: ${formatSandboxProcessError(mode)}`,
+        );
       }
     }
   }
@@ -731,13 +728,16 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       providerEffectsMayHaveStarted = true;
       await provisionDockerAccounts(this.state.containerId, manifest);
       const materializedManifest = stripDockerIdentityMetadata(manifest);
+      const permissions: { path: string; mode: number }[][] = [];
       for (const [path, entry] of Object.entries(
         withoutDockerMountEntries(materializedManifest.entries),
       )) {
-        await this.copyEntryIntoContainer(
-          this.resolveLogicalPath(path),
-          entry,
-          nextManifest.extraPathGrants,
+        permissions.push(
+          await this.copyEntryIntoContainer(
+            this.resolveLogicalPath(path),
+            entry,
+            nextManifest.extraPathGrants,
+          ),
         );
       }
       await materializeLocalWorkspaceManifestMounts(
@@ -757,6 +757,9 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
           },
         },
       );
+      for (const entryPermissions of permissions) {
+        await this.applyContainerCopyPermissions(entryPermissions);
+      }
       if (runAs) {
         for (const [path, entry] of Object.entries(manifest.entries)) {
           if (isMount(entry)) {
@@ -3621,6 +3624,25 @@ async function prepareDockerMountCredentialFiles(
     entry: preparedEntry as Mount | TypedMount,
     environment: preparedEnvironment,
   };
+}
+
+function dockerResourceExecArgs(session: DockerSandboxSession): string[] {
+  const args = [
+    'exec',
+    '-i',
+    '-w',
+    '/',
+    ...dockerFileEnvironmentArgs(session.state.environment),
+  ];
+  if (session.state.defaultUser) args.push('-u', session.state.defaultUser);
+  args.push(
+    session.state.containerId,
+    '/usr/bin/env',
+    '-i',
+    'PATH=/usr/bin:/bin',
+    'LC_ALL=C',
+  );
+  return args;
 }
 
 function dockerFileEnvironmentArgs(

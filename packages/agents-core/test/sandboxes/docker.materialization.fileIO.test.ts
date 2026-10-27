@@ -5,12 +5,17 @@ import {
   mkdir,
   readFile,
   rm,
+  stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Manifest, type DockerSandboxSession } from '../../src/sandbox/local';
+import {
+  DockerSandboxSession,
+  inContainerMountStrategy,
+  Manifest,
+} from '../../src/sandbox/local';
 import { applyManifestToProvidedSession } from '../../src/sandbox/runtime/providedSessionManifest';
 import * as localWorkspace from '../../src/sandbox/sandboxes/shared/localWorkspace';
 import { createDockerFileIOFixture } from './fixtures/dockerFileIO';
@@ -85,6 +90,57 @@ describe.skipIf(process.platform === 'win32')(
         );
       },
     );
+
+    it('creates nested mount directories before applying restrictive parent permissions', async () => {
+      const mount = {
+        type: 's3_mount' as const,
+        bucket: 'public-test-bucket',
+        mountStrategy: inContainerMountStrategy(),
+      };
+      // The host and container see the same bind-mounted workspace.
+      session = new DockerSandboxSession({
+        state: {
+          ...session.state,
+          workspaceRootPath: workspace,
+          manifest: new Manifest({ root: workspace, entries: { seed: mount } }),
+        },
+      });
+      // Only the cloud mount is simulated; directory and mode changes are real.
+      const mountCommand = vi
+        .spyOn(session, 'runDockerMountCommand')
+        .mockResolvedValue('');
+      const parent = join(workspace, 'locked');
+      try {
+        await session.applyManifest(
+          new Manifest({
+            root: workspace,
+            entries: {
+              locked: {
+                type: 'dir',
+                permissions: 0o400,
+                children: {
+                  remote: mount,
+                  note: {
+                    type: 'file',
+                    content: 'configured',
+                    permissions: 0o600,
+                  },
+                },
+              },
+            },
+          }),
+        );
+        expect(mountCommand).toHaveBeenCalledOnce();
+        expect((await stat(parent)).mode & 0o777).toBe(0o400);
+        await chmod(parent, 0o700);
+        expect((await stat(join(parent, 'remote'))).isDirectory()).toBe(true);
+        expect(await readFile(join(parent, 'note'), 'utf8')).toBe('configured');
+        expect((await stat(join(parent, 'note'))).mode & 0o777).toBe(0o600);
+        expect(session.state.manifest.entries.locked).toBeDefined();
+      } finally {
+        await chmod(parent, 0o700).catch(() => {});
+      }
+    });
 
     it('sends file bytes to Docker before reading the remaining source files', async () => {
       let writtenBytes = 0;
