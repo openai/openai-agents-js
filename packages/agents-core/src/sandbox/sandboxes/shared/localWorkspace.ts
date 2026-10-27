@@ -733,6 +733,12 @@ type LocalDirectoryContent =
 export type LocalWorkspaceContent = (
   | { type: 'dir'; path: string; mustBeEmpty?: boolean }
   | { type: 'file'; path: string; content: Uint8Array }
+  | {
+      type: 'file';
+      path: string;
+      size: number;
+      chunks: AsyncIterable<Uint8Array>;
+    }
   | { type: 'symlink'; path: string; target: string }
 ) & { permissions?: number };
 
@@ -881,12 +887,42 @@ async function* readClonedGitContent(
   if (info.isSymbolicLink()) {
     yield { type: 'symlink', path, target: await readlink(source) };
   } else if (info.isFile()) {
-    yield { type: 'file', path, permissions, content: await readFile(source) };
+    const handle = await open(source, LOCAL_SOURCE_FILE_READ_FLAGS);
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || !sameFilesystemEntry(opened, info)) {
+        throw new UserError('git_repo file changed while materializing.');
+      }
+      yield {
+        type: 'file',
+        path,
+        permissions,
+        size: opened.size,
+        chunks: readClonedGitFileChunks(handle, opened.size),
+      };
+    } finally {
+      await handle.close();
+    }
   } else if (info.isDirectory()) {
     yield { type: 'dir', path, permissions };
     for (const child of await readdir(source)) {
       yield* readClonedGitContent(join(source, child), posix.join(path, child));
     }
+  }
+}
+
+async function* readClonedGitFileChunks(
+  handle: Awaited<ReturnType<typeof open>>,
+  remaining: number,
+): AsyncGenerator<Uint8Array> {
+  while (remaining > 0) {
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+    if (bytesRead === 0) {
+      throw new UserError('git_repo file changed while materializing.');
+    }
+    remaining -= bytesRead;
+    yield buffer.subarray(0, bytesRead);
   }
 }
 

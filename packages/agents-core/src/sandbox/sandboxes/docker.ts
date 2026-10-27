@@ -565,7 +565,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         `DockerSandboxClient failed to inspect entry destination: ${formatSandboxProcessError(result)}`,
       );
     }
-    const content = item.type === 'file' ? item.content : undefined;
+    const size =
+      item.type === 'file'
+        ? 'chunks' in item
+          ? item.size
+          : item.content.byteLength
+        : 0;
     const header = new Header({
       path: posix.relative(this.state.manifest.root, item.path) || '.',
       type:
@@ -580,14 +585,15 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         item.type === 'dir' && item.permissions !== undefined
           ? mode | 0o700
           : (item.permissions ?? mode),
-      size: content?.byteLength ?? 0,
+      size,
       mtime: new Date(),
     });
     if (header.encode()) yield new Pax(header).encode();
     yield header.block!;
-    if (content) {
-      yield content;
-      yield Buffer.alloc((512 - (content.byteLength % 512)) % 512);
+    if (item.type === 'file') {
+      if ('chunks' in item) yield* item.chunks;
+      else yield item.content;
+      yield Buffer.alloc((512 - (size % 512)) % 512);
     }
   }
 

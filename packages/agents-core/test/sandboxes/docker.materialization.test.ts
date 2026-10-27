@@ -11,6 +11,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import * as fs from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,11 @@ import {
   Manifest,
   NoopSnapshotSpec,
 } from '../../src/sandbox/local';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
 
 // Match the client's default image, including its GNU filesystem utilities.
 const DOCKER_TEST_IMAGE = 'python:3.14-slim';
@@ -467,6 +473,8 @@ open('/workspace/swaps-done', 'w').write(str(count))
     'materializes a nested Git repository with executable files and links',
     async () => {
       rootDir = await mkdtemp(join(process.cwd(), '.docker-git-source-'));
+      const largeFile = Buffer.alloc(2 * 1024 * 1024 + 17, 0x5a);
+      await writeFile(join(rootDir, 'large.bin'), largeFile);
       await writeFile(join(rootDir, 'run.sh'), 'echo configured script\n');
       await chmod(join(rootDir, 'run.sh'), 0o755);
       await symlink('run.sh', join(rootDir, 'run-link'));
@@ -494,8 +502,20 @@ open('/workspace/swaps-done', 'w').write(str(count))
           app: { type: 'git_repo', repo: `file://${rootDir}` },
         },
       };
-      await session.materializeEntry({ path: 'skill', entry });
+      const wholeFileReads = vi.mocked(fs.readFile);
+      wholeFileReads.mockClear();
+      try {
+        await session.materializeEntry({ path: 'skill', entry });
+        expect(
+          wholeFileReads.mock.calls.filter(([path]) =>
+            String(path).endsWith('/large.bin'),
+          ),
+        ).toEqual([]);
+      } finally {
+        wholeFileReads.mockClear();
+      }
       const copied = join(session.state.workspaceRootPath, 'skill/app');
+      expect(await readFile(join(copied, 'large.bin'))).toEqual(largeFile);
       expect(await readFile(join(copied, 'run.sh'), 'utf8')).toBe(
         'echo configured script\n',
       );
