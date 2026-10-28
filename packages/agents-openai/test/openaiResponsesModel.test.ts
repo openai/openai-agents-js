@@ -132,12 +132,17 @@ describe('OpenAIResponsesModel', () => {
   });
 
   it.each([false, true])(
-    'preserves nested cache usage through Runner and saved state (stream=%s)',
+    'preserves JSON usage metadata through Runner and saved state (stream=%s)',
     async (stream) => {
       const inputDetails = {
         cached_tokens: 40,
         cache_write_tokens: 10,
         cache_write_tokens_details: { ttl_30m_tokens: 6, ttl_12h_tokens: 4 },
+        metadata: {
+          tier: 'extended',
+          enabled: true,
+          buckets: [1, null, { ttl: '12h' }],
+        },
       };
       const outputDetails = {
         reasoning_tokens: 5,

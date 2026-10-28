@@ -5361,6 +5361,65 @@ describe('sandbox runner integration', () => {
     ]);
   });
 
+  it.each([false, true])(
+    'restores trusted path grants before client-owned resume (failure: %s)',
+    async (fails) => {
+      const trusted = new Manifest({
+        extraPathGrants: [
+          { path: '/mnt/shared-data', hostPath: process.cwd(), readOnly: true },
+        ],
+      });
+      const persisted = new BrandedClientPreparedFakeSandboxState(
+        'explicit-session',
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              hostPath: '/untrusted',
+              readOnly: false,
+            },
+          ],
+        }),
+      );
+      const original = persisted.manifest;
+      class InspectingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+        override async resume(
+          state: FakeSandboxSessionState,
+          options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+        ) {
+          expect(state).toBe(persisted);
+          expect(state).toBeInstanceOf(BrandedClientPreparedFakeSandboxState);
+          expect(state.manifest.extraPathGrants).toEqual(
+            trusted.extraPathGrants,
+          );
+          if (fails) throw new Error('synthetic resume failure');
+          return await super.resume(state, options);
+        }
+      }
+      const client = new InspectingClient();
+      const agent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: trusted,
+      });
+      const state = new RunState(new RunContext(), 'Hello', agent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: agent,
+        sandboxConfig: { client, sessionState: persisted },
+        runState: state,
+      });
+      if (fails) {
+        await expect(
+          manager.prepareAgent({ currentAgent: agent, turnInput: [] }),
+        ).rejects.toThrow('synthetic resume failure');
+        expect(persisted.manifest).toBe(original);
+      } else {
+        await manager.prepareAgent({ currentAgent: agent, turnInput: [] });
+      }
+      await manager.cleanup(state);
+    },
+  );
+
   it('rebinds explicit session state path grants without consuming their redaction metadata', async () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
@@ -10041,6 +10100,64 @@ describe('sandbox runner integration', () => {
         willCloseAfterSerialize: true,
       },
     ]);
+  });
+
+  it('retains untouched released v5 sessions across RunState reserialization and later resume', async () => {
+    const client = new FakeSandboxClient();
+    const agent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const other = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'OtherWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState(new RunContext(), 'Hello', agent, 1);
+    const entry = (name: string, sessionId: string) => ({
+      backendId: client.backendId,
+      currentAgentKey: name,
+      currentAgentName: name,
+      sessionState: fakeSandboxSessionStateEnvelope(
+        { sessionId },
+        { version: 5 },
+      ),
+    });
+    const current = entry('SandboxWorker', 'current-v5');
+    state._sandbox = {
+      ...current,
+      sessionsByAgent: {
+        SandboxWorker: current,
+        OtherWorker: entry('OtherWorker', 'untouched-v5'),
+      },
+    };
+    expect(state.toJSON().$schemaVersion).toBe('1.23');
+    const restored = await RunState.fromString(agent, state.toString());
+    const manager = new SandboxRuntimeManager({
+      startingAgent: agent,
+      sandboxConfig: { client },
+      runState: restored,
+    });
+    await manager.prepareAgent({ currentAgent: agent, turnInput: [] });
+    await manager.cleanup(restored, { preserveOwnedSessions: true });
+    expect(
+      restored._sandbox?.sessionsByAgent.OtherWorker?.sessionState,
+    ).toMatchObject({
+      version: 5,
+      providerState: { sessionId: 'untouched-v5' },
+    });
+    expect(restored.toJSON().$schemaVersion).toBe('1.24');
+    const resumed = await RunState.fromString(agent, restored.toString());
+    const later = new SandboxRuntimeManager({
+      startingAgent: agent,
+      sandboxConfig: { client },
+      runState: resumed,
+    });
+    await later.prepareAgent({ currentAgent: other, turnInput: [] });
+    expect(client.resumeCalls.map((call) => call.state.sessionId)).toContain(
+      'untouched-v5',
+    );
+    expect(client.createCalls).toHaveLength(0);
+    await later.cleanup(resumed);
   });
 
   it('drops untouched legacy session envelopes when serializing current runtime state', async () => {

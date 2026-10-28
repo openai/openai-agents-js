@@ -846,7 +846,7 @@ export class SandboxRuntimeManager<TContext> {
           backend_id: client.backendId,
         },
         async () =>
-          await client.resume!(serializedState, {
+          await resumeSandboxSession(client, serializedState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
             clientOptions: this.sandboxConfig?.options,
             ...(clientPreparesEnvironment
@@ -1292,7 +1292,7 @@ export class SandboxRuntimeManager<TContext> {
           backend_id: client.backendId,
         },
         async () =>
-          await client.resume!(explicitSessionState, {
+          await resumeSandboxSession(client, explicitSessionState, {
             archiveLimits: this.sandboxConfig?.archiveLimits,
             clientOptions: this.sandboxConfig?.options,
             ...(clientPreparesEnvironment
@@ -1356,7 +1356,7 @@ export class SandboxRuntimeManager<TContext> {
         backend_id: client.backendId,
       },
       async () =>
-        await client.resume!(serializedState, {
+        await resumeSandboxSession(client, serializedState, {
           archiveLimits: this.sandboxConfig?.archiveLimits,
           clientOptions: this.sandboxConfig?.options,
           ...(clientPreparesEnvironment
@@ -2346,6 +2346,35 @@ function manifestHasDeferredEnvironmentValues(manifest: Manifest): boolean {
   return Object.values(manifest.environment).some(
     (value) => isEnvValueReference(value) || value.resolver !== undefined,
   );
+}
+
+async function resumeSandboxSession(
+  client: SandboxClient,
+  state: SandboxSessionState,
+  options: SandboxClientResumeOptions<SandboxClientOptions>,
+): Promise<SandboxSessionLike<SandboxSessionState>> {
+  if (client.environmentPreparation !== 'client') {
+    return await client.resume!(state, options);
+  }
+  return await withExclusiveSandboxStateInspection(state, async () => {
+    const previousManifest = state.manifest;
+    const rebound = rebindPersistedPathGrants(
+      rebindPersistedMountCredentials(state, options.trustedManifest),
+      options.trustedManifest,
+      { replaceWithTrustedManifest: client.backendId === 'docker' },
+    );
+    assertMountCredentialsRebound(rebound);
+    assertHostPathGrantsRebound(rebound);
+    // Preserve branded provider state while restoring SDK-owned authority before
+    // the provider can use it. A failed resume must leave the input retryable.
+    state.manifest = rebound.manifest;
+    try {
+      return await client.resume!(state, options);
+    } catch (error) {
+      state.manifest = previousManifest;
+      throw error;
+    }
+  });
 }
 
 function bindClientPreparedTrustedManifest(

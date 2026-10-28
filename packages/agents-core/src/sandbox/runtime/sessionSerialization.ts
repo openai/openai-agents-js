@@ -306,7 +306,12 @@ function dropLegacySessionEntries(
   sessionsByAgent: Record<string, SerializedSandboxSessionEntry>,
 ): void {
   for (const [agentKey, entry] of Object.entries(sessionsByAgent)) {
-    if (entry.sessionState.version !== SANDBOX_SESSION_STATE_VERSION) {
+    // Version 5 is the released, credential-redacted runner-owned format.
+    // Untouched agents must retain their remote session until they are resumed.
+    if (
+      entry.sessionState.version !== 5 &&
+      entry.sessionState.version !== SANDBOX_SESSION_STATE_VERSION
+    ) {
       delete sessionsByAgent[agentKey];
     }
   }

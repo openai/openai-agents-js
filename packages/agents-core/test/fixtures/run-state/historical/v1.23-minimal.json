@@ -1,9 +1,7 @@
 {
   "$schemaVersion": "1.23",
   "currentTurn": 0,
-  "currentAgent": {
-    "name": "HistoricalAgent"
-  },
+  "currentAgent": { "name": "HistoricalAgent" },
   "originalInput": "hello",
   "modelResponses": [],
   "context": {
@@ -17,9 +15,7 @@
     },
     "approvals": {},
     "approvalInvocations": [],
-    "context": {
-      "fixture": "minimal"
-    }
+    "context": { "fixture": "minimal" }
   },
   "toolUseTracker": {},
   "maxTurns": 3,

@@ -188,7 +188,7 @@ describe('historical RunState compatibility corpus', () => {
           readJson('expected/v1.0-normalized-current.json'),
         );
       }
-      expect(firstRewrite.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(firstRewrite.$schemaVersion).toBe('1.23');
       expectJsonScalars(firstRewrite);
 
       const rewritten = await RunState.fromString(
@@ -227,6 +227,105 @@ describe('historical RunState compatibility corpus', () => {
     },
   );
 
+  it.each(['context', 'modelResponse', 'lastModelResponse'] as const)(
+    'chooses the writer version from all %s usage locations',
+    async (location) => {
+      const agent = new Agent({ name: 'HistoricalAgent' });
+      for (const requestEntry of [false, true]) {
+        for (const direction of [
+          'inputTokensDetails',
+          'outputTokensDetails',
+        ] as const) {
+          for (const value of [
+            42,
+            { nested: 42 },
+            'new',
+            true,
+            null,
+            [],
+            [42],
+          ]) {
+            const snapshot = readJson<any>('historical/v1.23-minimal.json');
+            const usage = { ...snapshot.context.usage };
+            const details = { provider: value };
+            if (requestEntry) {
+              usage.requestUsageEntries = [
+                {
+                  inputTokens: 1,
+                  outputTokens: 0,
+                  totalTokens: 1,
+                  [direction]: details,
+                },
+              ];
+            } else {
+              usage[direction] = [details];
+            }
+            if (location === 'context') snapshot.context.usage = usage;
+            else if (location === 'modelResponse')
+              snapshot.modelResponses = [{ usage, output: [] }];
+            else snapshot.lastModelResponse = { usage, output: [] };
+            const restored = await RunState.fromString(
+              agent,
+              JSON.stringify(snapshot),
+            );
+            const written = restored.toJSON();
+            const numeric =
+              typeof value === 'number' ||
+              (value !== null &&
+                !Array.isArray(value) &&
+                typeof value === 'object');
+            expect(written.$schemaVersion).toBe(numeric ? '1.23' : '1.24');
+            const rewritten = await RunState.fromString(
+              agent,
+              JSON.stringify(written),
+            );
+            expect(rewritten.toJSON()).toEqual(written);
+            const savedUsage =
+              location === 'context'
+                ? written.context.usage
+                : location === 'modelResponse'
+                  ? written.modelResponses[0].usage
+                  : written.lastModelResponse!.usage;
+            expect(
+              requestEntry
+                ? savedUsage.requestUsageEntries![0][direction]
+                : savedUsage[direction]![0],
+            ).toEqual(details);
+          }
+        }
+      }
+    },
+  );
+
+  it('propagates newer nested formats without rewriting nested snapshots', async () => {
+    const agent = new Agent({ name: 'HistoricalAgent' });
+    const makeState = () =>
+      RunState.fromString(agent, readFixture('historical/v1.23-minimal.json'));
+    const child = await makeState();
+    const parent = await makeState();
+    child.usage.inputTokensDetails = [{ cached: { tokens: 1 } }];
+    parent._pendingAgentToolRuns.set('child', child.toString());
+    expect(parent.toJSON().$schemaVersion).toBe('1.23');
+    child.usage.inputTokensDetails = [{ provider: 'rich' }];
+    const childBytes = child.toString();
+    parent._pendingAgentToolRuns.set('child', childBytes);
+    expect(parent.toJSON().$schemaVersion).toBe('1.24');
+    expect(parent.toJSON().pendingAgentToolRuns.child).toBe(childBytes);
+    const grandparent = await makeState();
+    grandparent._pendingAgentToolRuns.set('parent', parent.toString());
+    expect(grandparent.toJSON().$schemaVersion).toBe('1.24');
+    for (const opaque of [
+      'invalid',
+      'null',
+      '{}',
+      '{"$schemaVersion":"9.0"}',
+    ]) {
+      parent._pendingAgentToolRuns.set('child', opaque);
+      expect(parent.toJSON().$schemaVersion).toBe('1.24');
+      expect(parent.toJSON().pendingAgentToolRuns.child).toBe(opaque);
+    }
+  });
+
   it('preserves flat usage when upgrading a schema 1.22 snapshot', async () => {
     const historical = readJson<any>('historical/v1.22-minimal.json');
     const entry = {
@@ -254,7 +353,7 @@ describe('historical RunState compatibility corpus', () => {
       inputTokensDetails: [entry.inputTokensDetails],
       requestUsageEntries: [entry],
     });
-    expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(restored.toJSON().$schemaVersion).toBe('1.23');
   });
 
   it('preserves released mid-turn server continuation identifiers', async () => {
@@ -409,7 +508,7 @@ describe('historical RunState compatibility corpus', () => {
         buildCall('other-call'),
       ),
     ).toBe(true);
-    expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(restored.toJSON().$schemaVersion).toBe('1.23');
   });
 
   it.each(manifest.negativeFixtures.filter((fixture) => fixture.expectedError))(

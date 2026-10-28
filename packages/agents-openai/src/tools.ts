@@ -6,29 +6,8 @@ import {
   UserError,
 } from '@openai/agents-core';
 import type OpenAI from 'openai';
-import { z } from 'zod';
 import { normalizeToolAllowedCallers } from '@openai/agents-core/utils/internal';
 import * as ProviderData from './types/providerData';
-
-// -----------------------------------------------------
-// Status enums
-// -----------------------------------------------------
-
-export const WebSearchStatus = z
-  .enum(['in_progress', 'completed', 'searching', 'failed'])
-  .default('failed');
-
-export const FileSearchStatus = z
-  .enum(['in_progress', 'completed', 'searching', 'failed', 'incomplete'])
-  .default('failed');
-
-export const CodeInterpreterStatus = z
-  .enum(['in_progress', 'completed', 'interpreting'])
-  .default('in_progress');
-
-export const ImageGenerationStatus = z
-  .enum(['in_progress', 'completed', 'generating', 'failed'])
-  .default('failed');
 
 // -----------------------------------------------------
 // The tools below are OpenAI specific tools

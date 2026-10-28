@@ -191,7 +191,8 @@ import {
  * - 1.22: Records hosted MCP namespace discovery provenance. Older namespace-only
  *   search outputs require rediscovery; explicit MCP descriptors remain usable.
  * - 1.23: Preserves nested numeric token usage breakdowns.
- * - 1.24: Adds sandbox session-state envelope version 6 so client-owned
+ * - 1.24: Preserves arbitrary JSON token usage metadata.
+ *   Adds sandbox session-state envelope version 6 so client-owned
  *   unresolved environment references cannot be consumed by older SDKs that
  *   would resolve them in the runner process.
  */
@@ -1313,6 +1314,30 @@ const usageSchema = z.object({
   outputTokensDetails: z.array(protocol.TokenDetails).optional(),
   requestUsageEntries: z.array(requestUsageSchema).optional(),
 });
+
+// Called only after SerializedRunState validates and bounds every details tree.
+// Arrays and nonnumeric leaves need the JSON metadata format introduced in 1.24.
+function isNumericTokenDetails(value: unknown): boolean {
+  return (
+    typeof value === 'number' ||
+    (value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.values(value).every(isNumericTokenDetails))
+  );
+}
+
+function usageSupportsV123(usage: z.infer<typeof usageSchema>): boolean {
+  return (
+    (usage.inputTokensDetails ?? []).every(isNumericTokenDetails) &&
+    (usage.outputTokensDetails ?? []).every(isNumericTokenDetails) &&
+    (usage.requestUsageEntries ?? []).every(
+      (entry) =>
+        isNumericTokenDetails(entry.inputTokensDetails ?? {}) &&
+        isNumericTokenDetails(entry.outputTokensDetails ?? {}),
+    )
+  );
+}
 
 const modelResponseSchema = z.object({
   usage: usageSchema,
@@ -3495,7 +3520,47 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       );
     }
 
-    return parsed.data;
+    // Keep ordinary snapshots readable by 0.21.0. Rich metadata is preserved,
+    // never filtered to force an older format. Each nested writer selects its
+    // own version; do not downgrade an envelope containing a newer child.
+    const state = parsed.data;
+    const usages = [
+      state.context.usage,
+      ...state.modelResponses.map((response) => response.usage),
+      ...(state.lastModelResponse ? [state.lastModelResponse.usage] : []),
+    ];
+    const nestedRunsSupportV123 = Object.values(
+      state.pendingAgentToolRuns,
+    ).every((serialized) => {
+      try {
+        const nested: unknown = JSON.parse(serialized);
+        return (
+          nested !== null &&
+          typeof nested === 'object' &&
+          '$schemaVersion' in nested &&
+          nested.$schemaVersion !== CURRENT_SCHEMA_VERSION &&
+          $schemaVersion.safeParse(nested.$schemaVersion).success
+        );
+      } catch {
+        return false;
+      }
+    });
+    const sandboxSupportsV123 =
+      !state.sandbox ||
+      [
+        state.sandbox.sessionState,
+        ...Object.values(state.sandbox.sessionsByAgent).map(
+          (entry) => entry.sessionState,
+        ),
+      ].every((envelope) => envelope.version <= 5);
+    if (
+      usages.every(usageSupportsV123) &&
+      nestedRunsSupportV123 &&
+      sandboxSupportsV123
+    ) {
+      state.$schemaVersion = '1.23';
+    }
+    return state;
   }
 
   /**
@@ -3861,7 +3926,9 @@ function assertSandboxStateUsesCurrentSessionEnvelope(
     ...Object.values(sandbox.sessionsByAgent).map(
       (entry) => entry.sessionState.version,
     ),
-  ].filter((version) => version !== SANDBOX_SESSION_STATE_VERSION);
+  ].filter(
+    (version) => version !== 5 && version !== SANDBOX_SESSION_STATE_VERSION,
+  );
   if (legacyVersions.length === 0) {
     return;
   }

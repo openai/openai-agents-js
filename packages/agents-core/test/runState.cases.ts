@@ -443,7 +443,7 @@ export function registerRunStateCoreTests(): void {
         expect(restored.history[1]).toMatchObject({ phase });
         expect(restored._generatedItems[0]?.rawItem).toMatchObject({ phase });
         expect(restored._modelResponses[0]?.output[0]).toMatchObject({ phase });
-        expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+        expect(restored.toJSON().$schemaVersion).toBe('1.23');
       },
     );
 
@@ -967,9 +967,7 @@ export function registerRunStateCoreTests(): void {
       );
 
       expect(restored._sandbox?.sessionState.version).toBe(5);
-      expect(() => restored.toString()).toThrow(
-        /must be resumed through the Runner/u,
-      );
+      expect(JSON.parse(restored.toString()).$schemaVersion).toBe('1.23');
     });
 
     it('rejects sandbox session state version 6 under released schema 1.23', async () => {
@@ -1533,7 +1531,7 @@ export function registerRunStateCoreTests(): void {
       const agent = new Agent({ name: 'Agent1' });
       const state = new RunState(context, 'input1', agent, 2);
       const json = state.toJSON();
-      expect(json.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(json.$schemaVersion).toBe('1.23');
       expect(json.currentTurn).toBe(0);
       expect(json.currentAgent).toEqual({ name: 'Agent1' });
       expect(json.originalInput).toEqual('input1');
@@ -2170,7 +2168,7 @@ export function registerRunStateCoreTests(): void {
       );
 
       const serialized = state.toJSON();
-      expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(serialized.$schemaVersion).toBe('1.23');
       const restored = await RunState.fromString(
         agent,
         JSON.stringify(serialized),
@@ -3186,7 +3184,7 @@ export function registerRunStateMigrationTests(): void {
       );
 
       const jsonVersion = state.toJSON() as any;
-      expect(jsonVersion.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(jsonVersion.$schemaVersion).toBe('1.23');
       jsonVersion.$schemaVersion = '1.12';
 
       await expect(() =>
@@ -3230,7 +3228,7 @@ export function registerRunStateMigrationTests(): void {
           callId: 'legacy-call',
         }),
       ).toBe(false);
-      expect(restored.toJSON().$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(restored.toJSON().$schemaVersion).toBe('1.23');
     });
 
     it('rehydrates schema 1.15 approval identity from enabled prepared tools', async () => {
@@ -8391,7 +8389,7 @@ export function registerRunStateApprovalTests(): void {
         'server-a',
         'lookup_account',
       ]);
-      expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(serialized.$schemaVersion).toBe('1.23');
       expect(serialized.context.hostedMcpApprovals).toEqual({
         [approvalKey]: { approved: true, rejected: [] },
       });

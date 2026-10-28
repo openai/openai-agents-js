@@ -390,21 +390,21 @@
           "scenario": "minimal",
           "kind": "minimal",
           "path": "historical/v1.23-minimal.json",
-          "sha256": "d786cbafb734a9ed119bf268ccd759c947d1319b65acc55af8435223ca7250ae"
+          "sha256": "a353188d411d534266b6c76992e7ff208ec8879c35eaac1a7f105be782789870"
         }
       ]
     },
     {
       "schemaVersion": "1.24",
       "status": "current_unreleased",
-      "reason": "Adds sandbox envelope version 6 for client-owned environment preparation."
+      "reason": "Preserves bounded JSON token usage metadata and adds sandbox envelope version 6 for client-owned environment preparation."
     }
   ],
   "expectedNormalizedFixtures": [
     {
       "sourceSchemaVersion": "1.0",
       "path": "expected/v1.0-normalized-current.json",
-      "sha256": "8e8abe425068b6f091361692514bea7cd3777c265b6ea3eee4290cae8c512d0f"
+      "sha256": "d786cbafb734a9ed119bf268ccd759c947d1319b65acc55af8435223ca7250ae"
     }
   ],
   "negativeFixtures": [
