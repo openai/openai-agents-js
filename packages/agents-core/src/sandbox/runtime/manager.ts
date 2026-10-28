@@ -2339,7 +2339,7 @@ function manifestHasDeferredEnvironmentValues(manifest: Manifest): boolean {
 async function resumeSandboxSession(
   client: SandboxClient,
   state: SandboxSessionState,
-  options: SandboxClientResumeOptions<SandboxClientOptions>,
+  options: SandboxClientResumeOptions,
 ): Promise<SandboxSessionLike<SandboxSessionState>> {
   if (client.environmentPreparation !== 'client') {
     return await client.resume!(state, options);
