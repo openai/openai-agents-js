@@ -58,6 +58,7 @@ import {
   serializeManifestRecord,
   mergeManifestDelta,
   withExclusiveSandboxManifestMutation,
+  withExclusiveSandboxStateInspection,
 } from '../src/sandbox/internal';
 import {
   finalizeSandboxRuntime,
@@ -5417,6 +5418,91 @@ describe('sandbox runner integration', () => {
         await manager.prepareAgent({ currentAgent: agent, turnInput: [] });
       }
       await manager.cleanup(state);
+    },
+  );
+
+  it.each([false, true])(
+    'keeps resume authority binding outside active inspections (distinct state: %s)',
+    async (distinctState) => {
+      const trusted = new Manifest({
+        remoteMountCommandAllowlist: ['trusted-command'],
+      });
+      const input = new BrandedClientPreparedFakeSandboxState(
+        'input',
+        new Manifest(),
+      );
+      const returned = distinctState
+        ? new BrandedClientPreparedFakeSandboxState('returned', new Manifest())
+        : input;
+      let resumeStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        resumeStarted = resolve;
+      });
+      let releaseResume!: () => void;
+      const resumeGate = new Promise<void>((resolve) => {
+        releaseResume = resolve;
+      });
+      class PausingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+        override async resume() {
+          resumeStarted();
+          await resumeGate;
+          return this.makeSession(returned);
+        }
+      }
+      const client = new PausingClient();
+      const agent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: trusted,
+      });
+      const state = new RunState(new RunContext(), 'Hello', agent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: agent,
+        sandboxConfig: { client, sessionState: input },
+        runState: state,
+      });
+      const preparing = manager.prepareAgent({
+        currentAgent: agent,
+        turnInput: [],
+      });
+      await started;
+      let inspectionStarted!: () => void;
+      const inspecting = new Promise<void>((resolve) => {
+        inspectionStarted = resolve;
+      });
+      let releaseInspection!: () => void;
+      const inspectionGate = new Promise<void>((resolve) => {
+        releaseInspection = resolve;
+      });
+      let observedManifest!: Manifest;
+      const inspection = withExclusiveSandboxStateInspection(
+        returned,
+        async () => {
+          observedManifest = returned.manifest;
+          inspectionStarted();
+          await inspectionGate;
+        },
+      );
+      releaseResume();
+      await inspecting;
+      try {
+        // Drain the provider and tracing continuations while inspection stays held.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(returned.manifest).toBe(observedManifest);
+        if (!distinctState) {
+          expect(observedManifest.remoteMountCommandAllowlist).toEqual([
+            'trusted-command',
+          ]);
+        }
+      } finally {
+        releaseInspection();
+        await inspection;
+        await preparing;
+        await manager.cleanup(state);
+      }
+      expect(returned.manifest.remoteMountCommandAllowlist).toEqual([
+        'trusted-command',
+      ]);
     },
   );
 

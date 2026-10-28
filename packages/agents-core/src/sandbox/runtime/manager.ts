@@ -855,9 +855,6 @@ export class SandboxRuntimeManager<TContext> {
           }),
         tracingParent,
       );
-      if (clientPreparesEnvironment) {
-        bindClientPreparedTrustedManifest(session, resumeTrustedManifest!);
-      }
       session = await this.replaceRejectedLiveSession(
         rejectedLiveEntry,
         session,
@@ -1301,12 +1298,6 @@ export class SandboxRuntimeManager<TContext> {
           }),
         tracingParent,
       );
-      if (clientPreparesEnvironment) {
-        bindClientPreparedTrustedManifest(
-          session,
-          explicitResume!.trustedManifest,
-        );
-      }
       return await this.replaceRejectedLiveSession(rejectedLiveEntry, session);
     }
 
@@ -1365,9 +1356,6 @@ export class SandboxRuntimeManager<TContext> {
         }),
       tracingParent,
     );
-    if (clientPreparesEnvironment) {
-      bindClientPreparedTrustedManifest(session, resumeTrustedManifest);
-    }
     return await this.replaceRejectedLiveSession(rejectedLiveEntry, session);
   }
 
@@ -2356,25 +2344,45 @@ async function resumeSandboxSession(
   if (client.environmentPreparation !== 'client') {
     return await client.resume!(state, options);
   }
-  return await withExclusiveSandboxStateInspection(state, async () => {
-    const previousManifest = state.manifest;
-    const rebound = rebindPersistedPathGrants(
-      rebindPersistedMountCredentials(state, options.trustedManifest),
-      options.trustedManifest,
-      { replaceWithTrustedManifest: client.backendId === 'docker' },
+  const session = await withExclusiveProvidedSessionManifestMutation(
+    state,
+    () =>
+      withExclusiveSandboxStateInspection(state, async () => {
+        const previousManifest = state.manifest;
+        const rebound = rebindPersistedPathGrants(
+          rebindPersistedMountCredentials(state, options.trustedManifest),
+          options.trustedManifest,
+          { replaceWithTrustedManifest: client.backendId === 'docker' },
+        );
+        assertMountCredentialsRebound(rebound);
+        assertHostPathGrantsRebound(rebound);
+        // Preserve branded provider state while restoring SDK-owned authority before
+        // the provider can use it. A failed resume must leave the input retryable.
+        state.manifest = rebound.manifest;
+        try {
+          const resumed = await client.resume!(state, options);
+          if (resumed.state === state) {
+            bindClientPreparedTrustedManifest(
+              resumed,
+              options.trustedManifest!,
+            );
+          }
+          return resumed;
+        } catch (error) {
+          state.manifest = previousManifest;
+          throw error;
+        }
+      }),
+  );
+  if (session.state !== state) {
+    // Do not hold the input lock while acquiring a distinct returned-state lock.
+    await withExclusiveProvidedSessionManifestMutation(session.state, () =>
+      withExclusiveSandboxStateInspection(session.state, async () => {
+        bindClientPreparedTrustedManifest(session, options.trustedManifest!);
+      }),
     );
-    assertMountCredentialsRebound(rebound);
-    assertHostPathGrantsRebound(rebound);
-    // Preserve branded provider state while restoring SDK-owned authority before
-    // the provider can use it. A failed resume must leave the input retryable.
-    state.manifest = rebound.manifest;
-    try {
-      return await client.resume!(state, options);
-    } catch (error) {
-      state.manifest = previousManifest;
-      throw error;
-    }
-  });
+  }
+  return session;
 }
 
 function bindClientPreparedTrustedManifest(
