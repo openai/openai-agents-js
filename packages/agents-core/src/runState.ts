@@ -192,6 +192,9 @@ import {
  *   search outputs require rediscovery; explicit MCP descriptors remain usable.
  * - 1.23: Preserves nested numeric token usage breakdowns.
  * - 1.24: Preserves arbitrary JSON token usage metadata.
+ *   Adds sandbox session-state envelope version 6 so client-owned
+ *   unresolved environment references cannot be consumed by older SDKs that
+ *   would resolve them in the runner process.
  */
 export const CURRENT_SCHEMA_VERSION = '1.24' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
@@ -1672,27 +1675,42 @@ const serializedTraceSchema = z.object({
   tracing_api_key: z.string().optional().nullable(),
 });
 
-const sandboxSessionStateEnvelopeSchema = z.object({
-  version: z.union(
-    SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS.map((version) =>
-      z.literal(version),
-    ) as [
-      z.ZodLiteral<1>,
-      z.ZodLiteral<2>,
-      z.ZodLiteral<3>,
-      z.ZodLiteral<4>,
-      z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>,
-    ],
-  ),
-  backendId: z.string(),
-  manifest: z.record(z.string(), z.any()),
-  snapshot: z.record(z.string(), z.any()).nullable().optional(),
-  snapshotFingerprint: z.string().nullable().optional(),
-  snapshotFingerprintVersion: z.string().nullable().optional(),
-  workspaceReady: z.boolean(),
-  exposedPorts: z.record(z.string(), z.any()).optional(),
-  providerState: z.record(z.string(), z.any()),
-});
+const sandboxSessionStateEnvelopeSchema = z
+  .object({
+    version: z.union(
+      SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS.map((version) =>
+        z.literal(version),
+      ) as [
+        z.ZodLiteral<1>,
+        z.ZodLiteral<2>,
+        z.ZodLiteral<3>,
+        z.ZodLiteral<4>,
+        z.ZodLiteral<5>,
+        z.ZodLiteral<typeof SANDBOX_SESSION_STATE_VERSION>,
+      ],
+    ),
+    backendId: z.string(),
+    environmentPreparation: z.literal('client').optional(),
+    manifest: z.record(z.string(), z.any()),
+    snapshot: z.record(z.string(), z.any()).nullable().optional(),
+    snapshotFingerprint: z.string().nullable().optional(),
+    snapshotFingerprintVersion: z.string().nullable().optional(),
+    workspaceReady: z.boolean(),
+    exposedPorts: z.record(z.string(), z.any()).optional(),
+    providerState: z.record(z.string(), z.any()),
+  })
+  .superRefine((envelope, context) => {
+    if (
+      envelope.environmentPreparation === 'client' &&
+      envelope.version !== SANDBOX_SESSION_STATE_VERSION
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Client-owned environment preparation requires the current sandbox session envelope version.',
+      });
+    }
+  });
 
 const sandboxSessionEntrySchema = z.object({
   backendId: z.string(),
@@ -3527,7 +3545,19 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         return false;
       }
     });
-    if (usages.every(usageSupportsV123) && nestedRunsSupportV123) {
+    const sandboxSupportsV123 =
+      !state.sandbox ||
+      [
+        state.sandbox.sessionState,
+        ...Object.values(state.sandbox.sessionsByAgent).map(
+          (entry) => entry.sessionState,
+        ),
+      ].every((envelope) => envelope.version <= 5);
+    if (
+      usages.every(usageSupportsV123) &&
+      nestedRunsSupportV123 &&
+      sandboxSupportsV123
+    ) {
       state.$schemaVersion = '1.23';
     }
     return state;
@@ -3852,6 +3882,7 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
     schemaVersionSupportsV118State(schemaVersion);
   const supportsVersion3 = schemaVersionSupportsV118State(schemaVersion);
   const supportsVersion4 = schemaVersionSupportsV119State(schemaVersion);
+  const supportsVersion5 = schemaVersionSupportsV120State(schemaVersion);
   if (
     envelopes.every(
       (envelope) =>
@@ -3859,8 +3890,9 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
         (envelope.version === 2 && supportsVersion2) ||
         (envelope.version === 3 && supportsVersion3) ||
         (envelope.version === 4 && supportsVersion4) ||
+        (envelope.version === 5 && supportsVersion5) ||
         (envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-          schemaVersionSupportsV120State(schemaVersion)),
+          schemaVersion === CURRENT_SCHEMA_VERSION),
     )
   ) {
     return;
@@ -3872,9 +3904,10 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
       !(envelope.version === 2 && supportsVersion2) &&
       !(envelope.version === 3 && supportsVersion3) &&
       !(envelope.version === 4 && supportsVersion4) &&
+      !(envelope.version === 5 && supportsVersion5) &&
       !(
         envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-        schemaVersionSupportsV120State(schemaVersion)
+        schemaVersion === CURRENT_SCHEMA_VERSION
       ),
   )?.version;
   throw new UserError(
@@ -3893,7 +3926,9 @@ function assertSandboxStateUsesCurrentSessionEnvelope(
     ...Object.values(sandbox.sessionsByAgent).map(
       (entry) => entry.sessionState.version,
     ),
-  ].filter((version) => version !== SANDBOX_SESSION_STATE_VERSION);
+  ].filter(
+    (version) => version !== 5 && version !== SANDBOX_SESSION_STATE_VERSION,
+  );
   if (legacyVersions.length === 0) {
     return;
   }

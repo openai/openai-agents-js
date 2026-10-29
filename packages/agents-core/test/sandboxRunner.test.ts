@@ -58,6 +58,7 @@ import {
   serializeManifestRecord,
   mergeManifestDelta,
   withExclusiveSandboxManifestMutation,
+  withExclusiveSandboxStateInspection,
 } from '../src/sandbox/internal';
 import {
   finalizeSandboxRuntime,
@@ -109,6 +110,7 @@ import type {
   SandboxClientOptions,
   SandboxPreservedSessionReuseOptions,
   SandboxClientResumeOptions,
+  SandboxSessionResumeValidationInput,
   SandboxSessionLike,
   SandboxSessionSerializationOptions,
   SandboxSessionState,
@@ -398,6 +400,7 @@ class FakeSandboxClient implements SandboxClient<
   FakeSandboxSessionState
 > {
   readonly backendId: string = 'fake-sandbox';
+  readonly environmentPreparation?: 'client';
   readonly createCalls: Array<{
     manifest: Manifest;
     options?: SandboxClientOptions;
@@ -413,6 +416,9 @@ class FakeSandboxClient implements SandboxClient<
     archiveLimits?: SandboxClientCreateArgs['archiveLimits'];
     clientOptions?: SandboxClientOptions;
   }> = [];
+  readonly rawResumeOptions: Array<
+    SandboxClientResumeOptions<SandboxClientOptions>
+  > = [];
   readonly serializedStates: Array<FakeSandboxSessionState> = [];
   readonly serializedOptions: SandboxSessionSerializationOptions[] = [];
   readonly closeCalls: string[] = [];
@@ -440,7 +446,9 @@ class FakeSandboxClient implements SandboxClient<
   ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
     this.rawCreateCalls.push(args);
     const { manifest, options, snapshot, concurrencyLimits, archiveLimits } =
-      normalizeSandboxClientCreateArgs(args, manifestOptions);
+      normalizeSandboxClientCreateArgs(args, manifestOptions, {
+        environmentPreparation: this.environmentPreparation,
+      });
     this.createCalls.push({
       manifest,
       options,
@@ -458,11 +466,9 @@ class FakeSandboxClient implements SandboxClient<
 
   async resume(
     state: FakeSandboxSessionState,
-    options: {
-      archiveLimits?: SandboxClientCreateArgs['archiveLimits'];
-      clientOptions?: SandboxClientOptions;
-    } = {},
+    options: SandboxClientResumeOptions<SandboxClientOptions> = {},
   ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
+    this.rawResumeOptions.push(options);
     this.resumeCalls.push({
       state,
       archiveLimits: options.archiveLimits,
@@ -986,6 +992,34 @@ class DockerFailingEachHandleCleanupFakeSandboxClient extends RevalidatingLivePr
   }
 }
 
+class DockerAsymmetricHandleCleanupFakeSandboxClient extends RevalidatingLiveProcessFakeSandboxClient {
+  override readonly backendId = 'docker';
+  readonly closeAttempts: string[] = [];
+  private nextHandleId = 1;
+
+  override makeSession(
+    state: FakeSandboxSessionState,
+  ): SandboxSessionLike<FakeSandboxSessionState> {
+    const session = super.makeSession(state);
+    const close = session.close!.bind(session);
+    const handleId = `handle-${this.nextHandleId++}`;
+    let closeAttempt = 0;
+    return {
+      ...session,
+      close: async () => {
+        closeAttempt += 1;
+        this.closeAttempts.push(handleId);
+        const failuresBeforeSuccess =
+          handleId === 'handle-1' ? 1 : handleId === 'handle-2' ? 2 : 0;
+        if (closeAttempt <= failuresBeforeSuccess) {
+          throw new Error(`cleanup failed for ${handleId}`);
+        }
+        await close();
+      },
+    };
+  }
+}
+
 class ManifestSerializingFakeSandboxClient extends FakeSandboxClient {
   override async serializeSessionState(
     state: FakeSandboxSessionState,
@@ -995,6 +1029,83 @@ class ManifestSerializingFakeSandboxClient extends FakeSandboxClient {
       ...(await super.serializeSessionState(state, options)),
       manifest: state.manifest,
     };
+  }
+}
+
+class BrandedClientPreparedFakeSandboxState implements SandboxSessionState {
+  [key: string]: unknown;
+
+  readonly providerBrand = Symbol('client-prepared-provider-state');
+
+  constructor(
+    readonly sessionId: string,
+    public manifest: Manifest,
+  ) {}
+}
+
+class ClientEnvironmentPreparingFakeSandboxClient extends ManifestSerializingFakeSandboxClient {
+  override readonly environmentPreparation = 'client' as const;
+  readonly resumeOptions: Array<
+    SandboxClientResumeOptions<SandboxClientOptions>
+  > = [];
+  readonly deserializeInputs: Record<string, unknown>[] = [];
+  readonly deserializedStates: BrandedClientPreparedFakeSandboxState[] = [];
+
+  override async deserializeSessionState(
+    state: Record<string, unknown>,
+  ): Promise<FakeSandboxSessionState> {
+    this.deserializeInputs.push(state);
+    const deserialized = await super.deserializeSessionState(state);
+    const branded = new BrandedClientPreparedFakeSandboxState(
+      deserialized.sessionId,
+      deserialized.manifest,
+    );
+    this.deserializedStates.push(branded);
+    return branded;
+  }
+
+  override async resume(
+    state: FakeSandboxSessionState,
+    options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+  ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
+    this.resumeOptions.push(options);
+    return await super.resume(state, options);
+  }
+}
+
+class ReusingClientEnvironmentPreparingFakeSandboxClient extends ClientEnvironmentPreparingFakeSandboxClient {
+  readonly reuseStates: FakeSandboxSessionState[] = [];
+  readonly reuseOptions: SandboxPreservedSessionReuseOptions[] = [];
+
+  canReusePreservedOwnedSession(
+    state: FakeSandboxSessionState,
+    options: SandboxPreservedSessionReuseOptions = {},
+  ): boolean {
+    this.reuseStates.push(state);
+    this.reuseOptions.push(options);
+    return true;
+  }
+}
+
+class DurableOnCloseClientEnvironmentPreparingFakeSandboxClient extends ReusingClientEnvironmentPreparingFakeSandboxClient {
+  override async serializeSessionState(
+    state: FakeSandboxSessionState,
+    options: SandboxSessionSerializationOptions = {},
+  ): Promise<Record<string, unknown>> {
+    const serialized = await super.serializeSessionState(state, options);
+    if (!options.willCloseAfterSerialize) {
+      delete serialized.sessionId;
+    }
+    return serialized;
+  }
+
+  override async deserializeSessionState(
+    state: Record<string, unknown>,
+  ): Promise<FakeSandboxSessionState> {
+    if (typeof state.sessionId !== 'string') {
+      throw new Error('durable session snapshot was not captured');
+    }
+    return await super.deserializeSessionState(state);
   }
 }
 
@@ -1189,6 +1300,1817 @@ describe('sandbox runner integration', () => {
       ReturnType<NonNullable<SandboxClient['canReusePreservedOwnedSession']>>
     >().toEqualTypeOf<boolean | Promise<boolean>>();
   });
+
+  it('delegates fresh manifest environment preparation to an opted-in client', async () => {
+    let resolveCalls = 0;
+    const secret = {
+      value: '',
+      ephemeral: true,
+      resolve: async () => {
+        resolveCalls += 1;
+        throw new Error('the runner must not resolve this reference');
+      },
+    };
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'private',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+      environment: {
+        AWS_ACCESS_KEY_ID: 'static-access-key',
+        AWS_SECRET_ACCESS_KEY: secret,
+      },
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
+    const client = new ClientEnvironmentPreparingFakeSandboxClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: manifest,
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+
+    await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+
+    expect(resolveCalls).toBe(0);
+    expect(client.createCalls).toHaveLength(1);
+    expect(
+      client.createCalls[0]!.manifest.environment.AWS_SECRET_ACCESS_KEY,
+    ).toMatchObject({ ephemeral: true });
+    await manager.cleanup(state);
+  });
+
+  it('binds current SDK authority after client-prepared creation with an implicit manifest', async () => {
+    class ProviderPolicyClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      override async create(
+        args?: SandboxClientCreateArgs<SandboxClientOptions> | Manifest,
+        manifestOptions?: SandboxClientOptions,
+      ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
+        const session = await super.create(args, manifestOptions);
+        session.state.manifest = new Manifest({
+          root: '/provider-runtime',
+          entries: {
+            'provider.txt': file({ content: 'provider\n' }),
+          },
+          environment: { STALE: 'provider' },
+          extraPathGrants: [
+            {
+              path: '/provider-only',
+              hostPath: '/private/provider-only',
+            },
+          ],
+          remoteMountCommandAllowlist: ['provider-helper'],
+        });
+        return session;
+      }
+    }
+
+    const client = new ProviderPolicyClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+
+    await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+
+    const activeManifest = client.createdSessions[0]!.state.manifest;
+    expect(activeManifest.root).toBe('/provider-runtime');
+    expect(activeManifest.entries).toHaveProperty('provider.txt');
+    expect(activeManifest.environment).toEqual({});
+    expect(activeManifest.extraPathGrants).toEqual([]);
+    expect(activeManifest.remoteMountCommandAllowlist).toEqual(
+      new Manifest().remoteMountCommandAllowlist,
+    );
+    await manager.cleanup(state);
+  });
+
+  it('rejects deferred values retained by a mountless provided live session', async () => {
+    let resolveCalls = 0;
+    const manifest = new Manifest({
+      environment: {
+        TOKEN: {
+          value: '',
+          ephemeral: true,
+          resolve: async () => {
+            resolveCalls += 1;
+            return 'secret';
+          },
+        },
+      },
+    });
+    const client = new ClientEnvironmentPreparingFakeSandboxClient();
+    const session = client.makeSession({
+      manifest,
+      sessionId: 'provided-session',
+    });
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client, session, manifest: new Manifest() },
+      runState: state,
+    });
+
+    await expect(
+      manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] }),
+    ).rejects.toThrow(/already-running provided session/u);
+    expect(resolveCalls).toBe(0);
+    await manager.cleanup(state);
+  });
+
+  it('preserves client-owned environment preparation across serialized resume', async () => {
+    let resolveCalls = 0;
+    class ClientSecretReference extends EnvValueReference {
+      static readonly type = 'test.client_prepared_resume_secret';
+
+      constructor(readonly key: string) {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return { key: this.key };
+      }
+
+      override async resolve(): Promise<string> {
+        resolveCalls += 1;
+        throw new Error('the runner must not resolve this reference');
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      ClientSecretReference,
+      (payload) => new ClientSecretReference(String(payload.key)),
+    );
+    try {
+      const persistedManifest = new Manifest({
+        environment: {
+          TOKEN: new ClientSecretReference('persisted-token'),
+        },
+      });
+      const currentManifest = new Manifest({
+        environment: {
+          TOKEN: new ClientSecretReference('current-token'),
+        },
+      });
+      class NormalizingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+        override async create(
+          args?: SandboxClientCreateArgs<SandboxClientOptions> | Manifest,
+          manifestOptions?: SandboxClientOptions,
+        ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
+          const session = await super.create(args, manifestOptions);
+          session.state.manifest = new Manifest({
+            root: '/provider-workspace',
+            environment: session.state.manifest.environment,
+          });
+          return session;
+        }
+
+        resolveTrustedManifestForResume(manifest: Manifest): Manifest {
+          return new Manifest({
+            root: '/provider-workspace',
+            environment: manifest.environment,
+          });
+        }
+      }
+      const client = new NormalizingClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: persistedManifest,
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      expect(state._sandbox?.sessionState).toMatchObject({
+        version: SANDBOX_SESSION_STATE_VERSION,
+        environmentPreparation: 'client',
+      });
+      expect(state.toString()).not.toContain('the runner must not resolve');
+
+      const restoredState = await RunState.fromString(
+        sandboxAgent,
+        state.toString(),
+      );
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client, manifest: currentManifest },
+        runState: restoredState,
+      });
+      await secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+
+      expect(resolveCalls).toBe(0);
+      expect(client.resumeCalls).toHaveLength(1);
+      expect(client.deserializeInputs).toHaveLength(1);
+      expect(
+        (
+          client.deserializeInputs[0]!.manifest as {
+            environment: Record<string, unknown>;
+          }
+        ).environment.TOKEN,
+      ).toEqual({
+        type: ClientSecretReference.type,
+        key: 'persisted-token',
+      });
+      expect(client.resumeCalls[0]!.state).toBe(client.deserializedStates[0]);
+      expect(client.resumeCalls[0]!.state).toBeInstanceOf(
+        BrandedClientPreparedFakeSandboxState,
+      );
+      expect(client.resumeCalls[0]!.state.manifest.root).toBe(
+        '/provider-workspace',
+      );
+      expect(client.resumeOptions[0]!.trustedManifest!.root).toBe(
+        '/provider-workspace',
+      );
+      const trustedToken =
+        client.resumeOptions[0]!.trustedManifest!.environment.TOKEN;
+      expect(trustedToken).toBeInstanceOf(ClientSecretReference);
+      expect((trustedToken as ClientSecretReference).key).toBe('current-token');
+      await secondManager.cleanup(restoredState);
+    } finally {
+      unregister();
+    }
+  });
+
+  it.each([
+    {
+      label: 'becomes static',
+      currentManifest: new Manifest({ environment: { TOKEN: 'static' } }),
+    },
+    { label: 'is removed', currentManifest: new Manifest() },
+  ])(
+    'resumes an original serialized reference when trusted configuration $label',
+    async ({ currentManifest }) => {
+      class SerializedSecretReference extends EnvValueReference {
+        static readonly type =
+          'test.client_prepared_serialized_transition_secret';
+
+        constructor() {
+          super();
+        }
+
+        override serialize(): Record<string, unknown> {
+          return {};
+        }
+
+        override async resolve(): Promise<string> {
+          throw new Error('the runner must not resolve this reference');
+        }
+      }
+
+      const unregister = registerEnvValueReference(
+        SerializedSecretReference,
+        () => new SerializedSecretReference(),
+      );
+      try {
+        const client = new ClientEnvironmentPreparingFakeSandboxClient();
+        const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+          name: 'SandboxWorker',
+          model: new RecordingModel([]),
+          defaultManifest: new Manifest({
+            environment: { TOKEN: new SerializedSecretReference() },
+          }),
+        });
+        const state = new RunState<
+          unknown,
+          SandboxAgent<unknown, AgentOutputType>
+        >(new RunContext(), 'Hello', sandboxAgent, 1);
+        const firstManager = new SandboxRuntimeManager({
+          startingAgent: sandboxAgent,
+          sandboxConfig: { client },
+          runState: state,
+        });
+        await firstManager.prepareAgent({
+          currentAgent: sandboxAgent,
+          turnInput: [],
+        });
+        await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+        const serialized = state.toString();
+        expect(serialized).toContain(SerializedSecretReference.type);
+        const restoredState = await RunState.fromString(
+          sandboxAgent,
+          serialized,
+        );
+        const secondManager = new SandboxRuntimeManager({
+          startingAgent: sandboxAgent,
+          sandboxConfig: { client, manifest: currentManifest },
+          runState: restoredState,
+        });
+        await secondManager.prepareAgent({
+          currentAgent: sandboxAgent,
+          turnInput: [],
+        });
+
+        expect(client.resumeCalls).toHaveLength(1);
+        expect(client.resumeOptions[0]!.trustedManifest).toStrictEqual(
+          currentManifest,
+        );
+        await secondManager.cleanup(restoredState);
+      } finally {
+        unregister();
+      }
+    },
+  );
+
+  it('lets a client-prepared Docker explicit resume remove a stale environment reference', async () => {
+    class DockerClientEnvironmentPreparingFakeSandboxClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      override readonly backendId = 'docker';
+    }
+
+    class ExplicitSecretReference extends EnvValueReference {
+      static readonly type = 'test.client_prepared_docker_explicit_secret';
+
+      constructor() {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return {};
+      }
+
+      override async resolve(): Promise<string> {
+        throw new Error('the runner must not resolve this reference');
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      ExplicitSecretReference,
+      () => new ExplicitSecretReference(),
+    );
+    try {
+      const client = new DockerClientEnvironmentPreparingFakeSandboxClient();
+      const currentManifest = new Manifest();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: currentManifest,
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: {
+          client,
+          sessionState: {
+            manifest: new Manifest({
+              environment: { TOKEN: new ExplicitSecretReference() },
+            }),
+            sessionId: 'persisted',
+          },
+        },
+        runState: state,
+      });
+
+      await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+
+      expect(client.resumeCalls).toHaveLength(1);
+      expect(client.resumeOptions[0]!.trustedManifest).toStrictEqual(
+        currentManifest,
+      );
+      expect(client.resumeCalls[0]!.state.manifest.environment).toEqual({});
+      await manager.cleanup(state);
+    } finally {
+      unregister();
+    }
+  });
+
+  it('uses the normalized trusted manifest when retrying rejected live reuse', async () => {
+    class NormalizingRetryClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      private reuseResults = [true, false];
+      private resumeFailuresRemaining = 1;
+      readonly policyManifestValues: unknown[] = [];
+
+      resolveTrustedManifestForResume(manifest: Manifest): Manifest {
+        return new Manifest({
+          root: manifest.root,
+          environment: { MODE: 'normalized' },
+        });
+      }
+
+      canReusePreservedOwnedSession(): boolean {
+        return this.reuseResults.shift() ?? false;
+      }
+
+      serializedSessionStateRequiresFreshCreationForOptions(
+        _state: FakeSandboxSessionState,
+        options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+      ): boolean {
+        this.policyManifestValues.push(
+          options.trustedManifest?.environment.MODE,
+        );
+        return false;
+      }
+
+      override async resume(
+        state: FakeSandboxSessionState,
+        options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+      ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
+        if (this.resumeFailuresRemaining > 0) {
+          this.resumeFailuresRemaining -= 1;
+          throw new Error('resume failed');
+        }
+        return await super.resume(state, options);
+      }
+    }
+
+    const client = new NormalizingRetryClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { MODE: 'raw' } }),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      'resume failed',
+    );
+    await expect(secondManager.adoptPreservedOwnedSessions()).resolves.toBe(
+      true,
+    );
+
+    expect(client.policyManifestValues.length).toBeGreaterThanOrEqual(2);
+    expect(
+      client.policyManifestValues.every(
+        (value) =>
+          (value as { value?: unknown } | undefined)?.value === 'normalized',
+      ),
+    ).toBe(true);
+    await secondManager.cleanup(state);
+  });
+
+  it('passes explicit provider state through unchanged with a separate trusted manifest', async () => {
+    const secret = {
+      value: '',
+      ephemeral: true,
+      resolve: async () => {
+        throw new Error('the runner must not resolve this reference');
+      },
+    };
+
+    class BrandedProviderState implements SandboxSessionState {
+      [key: string]: unknown;
+
+      readonly providerBrand = Symbol('provider-brand');
+
+      constructor(
+        readonly sessionId: string,
+        public manifest: Manifest,
+      ) {}
+    }
+
+    const providerTrustedManifest = new Manifest({
+      root: '/provider-workspace',
+      environment: { TOKEN: secret },
+    });
+    class NormalizingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      readonly validationOptions: Array<
+        SandboxClientResumeOptions<SandboxClientOptions>
+      > = [];
+      resolveCalls = 0;
+
+      resolveTrustedManifestForResume(): Manifest {
+        this.resolveCalls += 1;
+        return providerTrustedManifest;
+      }
+
+      validateSessionStateForResume(
+        _input: SandboxSessionResumeValidationInput<FakeSandboxSessionState>,
+        options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+      ): void {
+        this.validationOptions.push(options);
+      }
+    }
+
+    const client = new NormalizingClient();
+    const trustedManifest = new Manifest({
+      environment: { TOKEN: secret },
+    });
+    const explicitState = new BrandedProviderState(
+      'explicit-session',
+      new Manifest({ root: '/provider-workspace' }),
+    );
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: trustedManifest,
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    state._sandbox = {
+      backendId: client.backendId,
+      currentAgentKey: 'SandboxWorker',
+      currentAgentName: 'SandboxWorker',
+      sessionState: fakeSandboxSessionStateEnvelope({
+        sessionId: 'stale-run-state-session',
+      }),
+      sessionsByAgent: {
+        SandboxWorker: {
+          backendId: client.backendId,
+          currentAgentKey: 'SandboxWorker',
+          currentAgentName: 'SandboxWorker',
+          sessionState: fakeSandboxSessionStateEnvelope({
+            sessionId: 'stale-run-state-session',
+          }),
+        },
+      },
+    };
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState: explicitState,
+      },
+      runState: state,
+    });
+
+    await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+
+    expect(client.resumeCalls[0]!.state).toBe(explicitState);
+    expect(client.resumeCalls[0]!.state).toBeInstanceOf(BrandedProviderState);
+    expect(client.resumeCalls[0]!.state.manifest).toStrictEqual(
+      providerTrustedManifest,
+    );
+    expect(client.resolveCalls).toBe(1);
+    expect(client.validationOptions[0]!.trustedManifest).toBe(
+      providerTrustedManifest,
+    );
+    expect(client.resumeOptions[0]!.trustedManifest).toBe(
+      providerTrustedManifest,
+    );
+    expect(
+      client.resumeOptions[0]!.trustedManifest!.environment.TOKEN,
+    ).toMatchObject({ ephemeral: true });
+    await manager.cleanup(state);
+  });
+
+  it('preserves provider-owned manifest structure while binding current client-prepared environment authority', async () => {
+    class ProviderNormalizingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      override async resume(
+        state: FakeSandboxSessionState,
+        options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+      ): Promise<SandboxSessionLike<FakeSandboxSessionState>> {
+        const session = await super.resume(state, options);
+        session.state.manifest = new Manifest({
+          root: '/provider-runtime',
+          entries: {
+            'provider.txt': file({ content: 'provider\n' }),
+          },
+          environment: { TOKEN: 'provider-stale' },
+        });
+        return session;
+      }
+    }
+
+    const client = new ProviderNormalizingClient();
+    const currentManifest = new Manifest({
+      root: '/trusted-input',
+      entries: {
+        'requested.txt': file({ content: 'requested\n' }),
+      },
+      environment: { TOKEN: 'current' },
+    });
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: currentManifest,
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState: {
+          sessionId: 'persisted',
+          manifest: new Manifest({
+            root: '/trusted-input',
+            environment: { TOKEN: 'persisted' },
+          }),
+        },
+      },
+      runState: state,
+    });
+
+    await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+
+    const activeManifest = client.resumedSessions[0]!.state.manifest;
+    expect(activeManifest.root).toBe('/provider-runtime');
+    expect(activeManifest.entries).toHaveProperty('provider.txt');
+    expect(activeManifest.entries).not.toHaveProperty('requested.txt');
+    expect(activeManifest.environment.TOKEN?.value).toBe('current');
+
+    await manager.cleanup(state);
+
+    expect(state._sandbox?.sessionState.manifest).toMatchObject({
+      root: '/provider-runtime',
+      entries: { 'provider.txt': { type: 'file' } },
+      environment: { TOKEN: { value: 'current' } },
+    });
+    expect(state._sandbox?.sessionState.manifest.entries).not.toHaveProperty(
+      'requested.txt',
+    );
+  });
+
+  it('rejects serialized environment preparation ownership mismatches', async () => {
+    const providerState = {
+      manifest: new Manifest(),
+      sessionId: 'persisted',
+    };
+    const clientPreparedClient =
+      new ClientEnvironmentPreparingFakeSandboxClient();
+    const defaultClient = new FakeSandboxClient();
+    const clientPreparedEntry: SerializedSandboxSessionEntry = {
+      backendId: clientPreparedClient.backendId,
+      currentAgentKey: 'SandboxWorker',
+      currentAgentName: 'SandboxWorker',
+      sessionState: toSessionStateEnvelope(
+        clientPreparedClient.backendId,
+        providerState,
+        { sessionId: providerState.sessionId },
+        { environmentPreparation: 'client' },
+      ),
+    };
+    const defaultEntry: SerializedSandboxSessionEntry = {
+      ...clientPreparedEntry,
+      sessionState: toSessionStateEnvelope(
+        defaultClient.backendId,
+        providerState,
+        { sessionId: providerState.sessionId },
+      ),
+    };
+
+    await expect(
+      deserializeSandboxSessionStateEntry(
+        defaultClient,
+        clientPreparedEntry,
+        new Manifest(),
+      ),
+    ).rejects.toThrow(/environment preparation does not match/u);
+    await expect(
+      deserializeSandboxSessionStateEntry(
+        clientPreparedClient,
+        defaultEntry,
+        new Manifest(),
+      ),
+    ).rejects.toThrow(/environment preparation does not match/u);
+  });
+
+  it('does not expose trusted manifests to default-client validation hooks', async () => {
+    class ValidatingDefaultClient extends FakeSandboxClient {
+      readonly validationOptions: Array<
+        SandboxClientResumeOptions<SandboxClientOptions>
+      > = [];
+
+      validateSessionStateForResume(
+        _input: SandboxSessionResumeValidationInput<FakeSandboxSessionState>,
+        options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+      ): void {
+        this.validationOptions.push(options);
+      }
+    }
+
+    const client = new ValidatingDefaultClient();
+    const providerState: FakeSandboxSessionState = {
+      manifest: new Manifest(),
+      sessionId: 'persisted',
+    };
+    const entry: SerializedSandboxSessionEntry = {
+      backendId: client.backendId,
+      currentAgentKey: 'SandboxWorker',
+      currentAgentName: 'SandboxWorker',
+      sessionState: toSessionStateEnvelope(client.backendId, providerState, {
+        sessionId: providerState.sessionId,
+      }),
+    };
+
+    await deserializeSandboxSessionStateEntry(
+      client,
+      entry,
+      new Manifest({ environment: { TOKEN: 'trusted' } }),
+    );
+
+    expect(client.validationOptions).toHaveLength(1);
+    expect(client.validationOptions[0]).not.toHaveProperty('trustedManifest');
+  });
+
+  it('does not normalize manifests during ordinary default-client serialization', async () => {
+    class NonNormalizingDefaultClient extends FakeSandboxClient {
+      resolveCalls = 0;
+
+      resolveTrustedManifestForResume(): Manifest {
+        this.resolveCalls += 1;
+        throw new Error('resume normalization must not run during cleanup');
+      }
+    }
+
+    const client = new NonNormalizingDefaultClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+
+    await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+    await manager.cleanup(state);
+
+    expect(client.resolveCalls).toBe(0);
+  });
+
+  it('does not normalize manifests after default-client persistence is declined', async () => {
+    class NonPersistingDefaultClient extends FakeSandboxClient {
+      resolveCalls = 0;
+
+      canPersistOwnedSessionState(): boolean {
+        return false;
+      }
+
+      resolveTrustedManifestForResume(): Manifest {
+        this.resolveCalls += 1;
+        throw new Error('resume normalization must not run during cleanup');
+      }
+    }
+
+    const client = new NonPersistingDefaultClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+
+    await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+    await manager.cleanup(state);
+
+    expect(client.resolveCalls).toBe(0);
+  });
+
+  it('rejects orphaned client-prepared adoption without a trusted manifest', async () => {
+    const client = new ClientEnvironmentPreparingFakeSandboxClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const orphanedState: FakeSandboxSessionState = {
+      manifest: new Manifest({ environment: { TOKEN: 'stale' } }),
+      sessionId: 'orphaned-session',
+    };
+    const orphanedEntry: SerializedSandboxSessionEntry = {
+      backendId: client.backendId,
+      currentAgentKey: 'OtherWorker',
+      currentAgentName: 'OtherWorker',
+      preservedOwnedSession: true,
+      sessionState: toSessionStateEnvelope(
+        client.backendId,
+        orphanedState,
+        { sessionId: orphanedState.sessionId },
+        { environmentPreparation: 'client' },
+      ),
+    };
+    state._sandbox = {
+      backendId: client.backendId,
+      currentAgentKey: 'OtherWorker',
+      currentAgentName: 'OtherWorker',
+      sessionState: orphanedEntry.sessionState,
+      sessionsByAgent: { OtherWorker: orphanedEntry },
+    };
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+
+    await expect(manager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      /requires a current trusted manifest/u,
+    );
+    expect(client.deserializeInputs).toHaveLength(0);
+    expect(client.resumeCalls).toHaveLength(0);
+  });
+
+  it.each([
+    { label: 'remains deferred', currentManifest: undefined },
+    {
+      label: 'becomes static',
+      currentManifest: new Manifest({ environment: { TOKEN: 'static' } }),
+    },
+    { label: 'is removed', currentManifest: new Manifest() },
+  ])(
+    'resumes instead of reusing when a hookless live deferred environment value $label',
+    async ({ currentManifest }) => {
+      let resolveCalls = 0;
+      const secret = {
+        value: '',
+        ephemeral: true,
+        resolve: async () => {
+          resolveCalls += 1;
+          return 'secret';
+        },
+      };
+
+      const client = new ClientEnvironmentPreparingFakeSandboxClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: new Manifest({
+          environment: { TOKEN: secret },
+        }),
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: {
+          client,
+          ...(currentManifest ? { manifest: currentManifest } : {}),
+        },
+        runState: state,
+      });
+      await secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+
+      expect(client.createdSessions).toHaveLength(1);
+      expect(client.resumeCalls).toHaveLength(1);
+      expect(client.closeCalls).toContain('session-1');
+      expect(resolveCalls).toBe(0);
+      await secondManager.cleanup(state);
+    },
+  );
+
+  it.each([
+    {
+      label: 'is unchanged',
+      initialEnvironment: { TOKEN: 'old' },
+      currentEnvironment: { TOKEN: 'old' },
+      expectedResumeCalls: 0,
+    },
+    {
+      label: 'rotates a static value',
+      initialEnvironment: { TOKEN: 'old' },
+      currentEnvironment: { TOKEN: 'new' },
+      expectedResumeCalls: 1,
+    },
+    {
+      label: 'removes a static value',
+      initialEnvironment: { TOKEN: 'old' },
+      currentEnvironment: {} as Record<string, string>,
+      expectedResumeCalls: 1,
+    },
+    {
+      label: 'adds a static value',
+      initialEnvironment: {} as Record<string, string>,
+      currentEnvironment: { TOKEN: 'new' },
+      expectedResumeCalls: 1,
+    },
+  ])(
+    'keeps hookless client-prepared live environment ownership when configuration $label',
+    async ({ initialEnvironment, currentEnvironment, expectedResumeCalls }) => {
+      const client = new ClientEnvironmentPreparingFakeSandboxClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: new Manifest({ environment: initialEnvironment }),
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+      const originalLiveState = client.createdSessions[0]!.state;
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      const currentManifest = new Manifest({
+        environment: currentEnvironment,
+      });
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client, manifest: currentManifest },
+        runState: state,
+      });
+      await secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+
+      expect(client.createdSessions).toHaveLength(1);
+      expect(client.resumeCalls).toHaveLength(expectedResumeCalls);
+      expect(originalLiveState.environment).toBeUndefined();
+      const activeState =
+        expectedResumeCalls === 0
+          ? originalLiveState
+          : client.resumedSessions[0]!.state;
+      expect(activeState.environment).toBeUndefined();
+      expect(
+        Object.fromEntries(
+          Object.entries(activeState.manifest.environment).map(
+            ([key, value]) => [key, value.value],
+          ),
+        ),
+      ).toEqual(currentEnvironment);
+      await secondManager.cleanup(state);
+    },
+  );
+
+  it.each([
+    {
+      label: 'path grants change',
+      initialManifest: new Manifest(),
+      currentManifest: new Manifest({
+        extraPathGrants: [{ path: '/tmp/new-data', readOnly: true }],
+      }),
+    },
+    {
+      label: 'remote mount command allowlist changes',
+      initialManifest: new Manifest({
+        remoteMountCommandAllowlist: ['old-helper'],
+      }),
+      currentManifest: new Manifest({
+        remoteMountCommandAllowlist: ['new-helper'],
+      }),
+    },
+  ])(
+    'resumes instead of hookless live reuse when client-prepared $label',
+    async ({ initialManifest, currentManifest }) => {
+      const client = new ClientEnvironmentPreparingFakeSandboxClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: initialManifest,
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+      const originalSession = client.createdSessions[0]!;
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client, manifest: currentManifest },
+        runState: state,
+      });
+      await secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+
+      expect(client.createdSessions).toHaveLength(1);
+      expect(client.resumeCalls).toHaveLength(1);
+      expect(client.resumedSessions[0]).not.toBe(originalSession);
+      expect(client.closeCalls).toContain(originalSession.state.sessionId);
+      await secondManager.cleanup(state);
+    },
+  );
+
+  it('resumes every alias after a shared client-prepared live session is replaced', async () => {
+    const client = new ClientEnvironmentPreparingFakeSandboxClient();
+    const firstAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'FirstSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'shared' } }),
+    });
+    const secondAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SecondSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'changed' } }),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      firstAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: firstAgent,
+      turnInput: [],
+    });
+    const sharedLiveSession = client.createdSessions[0]!;
+    const firstManagerInternals = firstManager as unknown as {
+      agentsByKey: Map<string, Agent<unknown, any>>;
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+      sessionAgentNamesByKey: Map<string, string>;
+      ownedSessionAgentKeys: Set<string>;
+    };
+    firstManagerInternals.agentsByKey.set(secondAgent.name, secondAgent);
+    firstManagerInternals.sessionsByAgentKey.set(
+      secondAgent.name,
+      sharedLiveSession,
+    );
+    firstManagerInternals.sessionAgentNamesByKey.set(
+      secondAgent.name,
+      secondAgent.name,
+    );
+    firstManagerInternals.ownedSessionAgentKeys.add(secondAgent.name);
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await secondManager.adoptPreservedOwnedSessions();
+
+    const secondManagerInternals = secondManager as unknown as {
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+    };
+    expect(secondManagerInternals.sessionsByAgentKey.get(firstAgent.name)).toBe(
+      client.resumedSessions[0],
+    );
+    expect(
+      secondManagerInternals.sessionsByAgentKey.get(secondAgent.name),
+    ).toBe(client.resumedSessions[1]);
+    expect(client.resumeCalls).toHaveLength(2);
+    expect(client.closeCalls).toEqual([sharedLiveSession.state.sessionId]);
+    await secondManager.cleanup(state);
+  });
+
+  it('splits shared client-prepared aliases with different trusted authority', async () => {
+    const client =
+      new DurableOnCloseClientEnvironmentPreparingFakeSandboxClient();
+    const firstAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'FirstSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'first' } }),
+    });
+    const secondAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SecondSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'second' } }),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      firstAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: firstAgent,
+      turnInput: [],
+    });
+    const sharedLiveSession = client.createdSessions[0]!;
+    const firstManagerInternals = firstManager as unknown as {
+      agentsByKey: Map<string, Agent<unknown, any>>;
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+      sessionAgentNamesByKey: Map<string, string>;
+      ownedSessionAgentKeys: Set<string>;
+    };
+    firstManagerInternals.agentsByKey.set(secondAgent.name, secondAgent);
+    firstManagerInternals.sessionsByAgentKey.set(
+      secondAgent.name,
+      sharedLiveSession,
+    );
+    firstManagerInternals.sessionAgentNamesByKey.set(
+      secondAgent.name,
+      secondAgent.name,
+    );
+    firstManagerInternals.ownedSessionAgentKeys.add(secondAgent.name);
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+    expect(client.serializedOptions).toEqual([
+      {
+        preserveOwnedSession: true,
+        reuseLiveSession: false,
+        willCloseAfterSerialize: true,
+      },
+      {
+        preserveOwnedSession: true,
+        reuseLiveSession: false,
+        willCloseAfterSerialize: true,
+      },
+    ]);
+    expect(client.closeCalls).toEqual([sharedLiveSession.state.sessionId]);
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await secondManager.adoptPreservedOwnedSessions();
+
+    const secondManagerInternals = secondManager as unknown as {
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+    };
+    expect(secondManagerInternals.sessionsByAgentKey.get(firstAgent.name)).toBe(
+      client.resumedSessions[0],
+    );
+    expect(
+      secondManagerInternals.sessionsByAgentKey.get(secondAgent.name),
+    ).toBe(client.resumedSessions[1]);
+    expect(
+      client.resumedSessions[0]!.state.manifest.environment.TOKEN?.value,
+    ).toBe('first');
+    expect(
+      client.resumedSessions[1]!.state.manifest.environment.TOKEN?.value,
+    ).toBe('second');
+    expect(client.resumeCalls).toHaveLength(2);
+    await secondManager.cleanup(state);
+  });
+
+  it('splits shared client-prepared aliases with different environment resolvers', async () => {
+    const client = new ReusingClientEnvironmentPreparingFakeSandboxClient();
+    const firstResolver = async () => 'first';
+    const secondResolver = async () => 'second';
+    const firstAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'FirstSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({
+        environment: { TOKEN: firstResolver },
+      }),
+    });
+    const secondAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SecondSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({
+        environment: { TOKEN: secondResolver },
+      }),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      firstAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: firstAgent,
+      turnInput: [],
+    });
+    const sharedLiveSession = client.createdSessions[0]!;
+    const firstManagerInternals = firstManager as unknown as {
+      agentsByKey: Map<string, Agent<unknown, any>>;
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+      sessionAgentNamesByKey: Map<string, string>;
+      ownedSessionAgentKeys: Set<string>;
+    };
+    firstManagerInternals.agentsByKey.set(secondAgent.name, secondAgent);
+    firstManagerInternals.sessionsByAgentKey.set(
+      secondAgent.name,
+      sharedLiveSession,
+    );
+    firstManagerInternals.sessionAgentNamesByKey.set(
+      secondAgent.name,
+      secondAgent.name,
+    );
+    firstManagerInternals.ownedSessionAgentKeys.add(secondAgent.name);
+
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    expect(client.serializedOptions).toEqual([
+      {
+        preserveOwnedSession: true,
+        reuseLiveSession: false,
+        willCloseAfterSerialize: true,
+      },
+      {
+        preserveOwnedSession: true,
+        reuseLiveSession: false,
+        willCloseAfterSerialize: true,
+      },
+    ]);
+    expect(client.closeCalls).toEqual([sharedLiveSession.state.sessionId]);
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await secondManager.adoptPreservedOwnedSessions();
+
+    const secondManagerInternals = secondManager as unknown as {
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+    };
+    const firstSession = secondManagerInternals.sessionsByAgentKey.get(
+      firstAgent.name,
+    );
+    const secondSession = secondManagerInternals.sessionsByAgentKey.get(
+      secondAgent.name,
+    );
+    expect(firstSession).toBe(client.resumedSessions[0]);
+    expect(secondSession).toBe(client.resumedSessions[1]);
+    expect(firstSession).not.toBe(secondSession);
+    expect(firstSession!.state.manifest.environment.TOKEN?.resolver).toBe(
+      firstResolver,
+    );
+    expect(secondSession!.state.manifest.environment.TOKEN?.resolver).toBe(
+      secondResolver,
+    );
+    await secondManager.cleanup(state);
+  });
+
+  it('detaches every alias before rejected shared-session cleanup can fail', async () => {
+    class TerminatingThenFailingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      readonly closeAttempts: string[] = [];
+      private cleanupFailuresRemaining = 1;
+
+      override makeSession(
+        sessionState: FakeSandboxSessionState,
+      ): SandboxSessionLike<FakeSandboxSessionState> {
+        const session = super.makeSession(sessionState);
+        const close = session.close!.bind(session);
+        return {
+          ...session,
+          close: async () => {
+            this.closeAttempts.push(sessionState.sessionId);
+            await close();
+            if (this.cleanupFailuresRemaining > 0) {
+              this.cleanupFailuresRemaining -= 1;
+              throw new Error('cleanup failed after termination');
+            }
+          },
+        };
+      }
+    }
+
+    const client = new TerminatingThenFailingClient();
+    const firstAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'FirstSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'shared' } }),
+    });
+    const secondAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SecondSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'shared' } }),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      firstAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: firstAgent,
+      turnInput: [],
+    });
+    const sharedLiveSession = client.createdSessions[0]!;
+    const firstManagerInternals = firstManager as unknown as {
+      agentsByKey: Map<string, Agent<unknown, any>>;
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+      sessionAgentNamesByKey: Map<string, string>;
+      ownedSessionAgentKeys: Set<string>;
+    };
+    firstManagerInternals.agentsByKey.set(secondAgent.name, secondAgent);
+    firstManagerInternals.sessionsByAgentKey.set(
+      secondAgent.name,
+      sharedLiveSession,
+    );
+    firstManagerInternals.sessionAgentNamesByKey.set(
+      secondAgent.name,
+      secondAgent.name,
+    );
+    firstManagerInternals.ownedSessionAgentKeys.add(secondAgent.name);
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+    firstManagerInternals.agentsByKey.set(
+      secondAgent.name,
+      new SandboxAgent<unknown, AgentOutputType>({
+        name: secondAgent.name,
+        model: new RecordingModel([]),
+        defaultManifest: new Manifest({ environment: { TOKEN: 'changed' } }),
+      }),
+    );
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      'cleanup failed after termination',
+    );
+
+    const secondManagerInternals = secondManager as unknown as {
+      sessionsByAgentKey: Map<string, SandboxSessionLike>;
+    };
+    expect(secondManagerInternals.sessionsByAgentKey.size).toBe(0);
+    expect(client.closeAttempts).toEqual([sharedLiveSession.state.sessionId]);
+
+    await secondManager.prepareAgent({
+      currentAgent: firstAgent,
+      turnInput: [],
+    });
+
+    expect(secondManagerInternals.sessionsByAgentKey.get(firstAgent.name)).toBe(
+      client.resumedSessions[0],
+    );
+    expect(
+      secondManagerInternals.sessionsByAgentKey.get(firstAgent.name),
+    ).not.toBe(sharedLiveSession);
+    expect(client.resumeCalls).toHaveLength(1);
+    expect(client.closeAttempts).toEqual([
+      sharedLiveSession.state.sessionId,
+      sharedLiveSession.state.sessionId,
+    ]);
+    await secondManager.cleanup(state);
+  });
+
+  it('creates fresh when hookless client-prepared live environment rejection requires it', async () => {
+    class FreshCreatingClientEnvironmentPreparingFakeSandboxClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      readonly preservedOwnedSessionReuseRejectionRequiresFreshCreation = true;
+    }
+
+    const client =
+      new FreshCreatingClientEnvironmentPreparingFakeSandboxClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'old' } }),
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+    const originalSessionId = client.createdSessions[0]!.state.sessionId;
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        manifest: new Manifest({ environment: { TOKEN: 'new' } }),
+      },
+      runState: state,
+    });
+    await secondManager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+
+    expect(client.createdSessions).toHaveLength(2);
+    expect(client.resumeCalls).toHaveLength(0);
+    expect(client.closeCalls).toContain(originalSessionId);
+    expect(client.createdSessions[1]!.state.environment).toBeUndefined();
+    expect(
+      client.createdSessions[1]!.state.manifest.environment.TOKEN?.value,
+    ).toBe('new');
+    await secondManager.cleanup(state);
+  });
+
+  it('creates fresh for a hookless deferred live environment when rejection requires it', async () => {
+    let resolveCalls = 0;
+    class DeferredFreshCreationReference extends EnvValueReference {
+      static readonly type = 'test.client_prepared_deferred_fresh_creation';
+
+      constructor() {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return {};
+      }
+
+      override async resolve(): Promise<string> {
+        resolveCalls += 1;
+        return 'secret';
+      }
+    }
+
+    class FreshCreatingClientEnvironmentPreparingFakeSandboxClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      readonly preservedOwnedSessionReuseRejectionRequiresFreshCreation = true;
+    }
+
+    const unregister = registerEnvValueReference(
+      DeferredFreshCreationReference,
+      () => new DeferredFreshCreationReference(),
+    );
+    try {
+      const client =
+        new FreshCreatingClientEnvironmentPreparingFakeSandboxClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: new Manifest({
+          environment: { TOKEN: new DeferredFreshCreationReference() },
+        }),
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+      const originalSessionId = client.createdSessions[0]!.state.sessionId;
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+
+      expect(client.createdSessions).toHaveLength(2);
+      expect(client.resumeCalls).toHaveLength(0);
+      expect(client.closeCalls).toContain(originalSessionId);
+      expect(resolveCalls).toBe(0);
+      await secondManager.cleanup(state);
+    } finally {
+      unregister();
+    }
+  });
+
+  it('lets a client-prepared Docker live reuse remove a stale environment reference', async () => {
+    class DockerReusingClientEnvironmentPreparingFakeSandboxClient extends ReusingClientEnvironmentPreparingFakeSandboxClient {
+      override readonly backendId = 'docker';
+    }
+
+    class LiveDockerSecretReference extends EnvValueReference {
+      static readonly type = 'test.client_prepared_docker_live_secret';
+
+      constructor() {
+        super();
+      }
+
+      override serialize(): Record<string, unknown> {
+        return {};
+      }
+
+      override async resolve(): Promise<string> {
+        throw new Error('the runner must not resolve this reference');
+      }
+    }
+
+    const unregister = registerEnvValueReference(
+      LiveDockerSecretReference,
+      () => new LiveDockerSecretReference(),
+    );
+    try {
+      const client =
+        new DockerReusingClientEnvironmentPreparingFakeSandboxClient();
+      const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: new Manifest({
+          environment: { TOKEN: new LiveDockerSecretReference() },
+        }),
+      });
+      const state = new RunState<
+        unknown,
+        SandboxAgent<unknown, AgentOutputType>
+      >(new RunContext(), 'Hello', sandboxAgent, 1);
+      const firstManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client },
+        runState: state,
+      });
+      await firstManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+      await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+      const currentManifest = new Manifest();
+      const secondManager = new SandboxRuntimeManager({
+        startingAgent: sandboxAgent,
+        sandboxConfig: { client, manifest: currentManifest },
+        runState: state,
+      });
+      await secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      });
+
+      expect(client.createdSessions).toHaveLength(1);
+      expect(client.resumeCalls).toHaveLength(0);
+      expect(client.reuseOptions.at(-1)?.trustedManifest).toStrictEqual(
+        currentManifest,
+      );
+      expect(client.createdSessions[0]!.state.manifest.environment).toEqual({});
+      await secondManager.cleanup(state);
+    } finally {
+      unregister();
+    }
+  });
+
+  it('lets the client revalidate the original provider state for live reuse', async () => {
+    let resolveCalls = 0;
+    const secret = {
+      value: '',
+      ephemeral: true,
+      resolve: async () => {
+        resolveCalls += 1;
+        return 'secret';
+      },
+    };
+
+    const trustedManifest = new Manifest({
+      environment: { TOKEN: secret },
+    });
+    const client = new ReusingClientEnvironmentPreparingFakeSandboxClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: trustedManifest,
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+    const originalState = client.createdSessions[0]!.state;
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await secondManager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+
+    expect(resolveCalls).toBe(0);
+    expect(client.createdSessions).toHaveLength(1);
+    expect(client.resumeCalls).toHaveLength(0);
+    expect(client.reuseStates).toHaveLength(2);
+    expect(
+      client.reuseStates.every((reuseState) => reuseState === originalState),
+    ).toBe(true);
+    expect(
+      client.reuseOptions.every(
+        (options) =>
+          options.trustedManifest?.environment.TOKEN.ephemeral === true,
+      ),
+    ).toBe(true);
+    await secondManager.cleanup(state);
+  });
+
+  it.each([
+    {
+      label: 'becomes static',
+      currentManifest: new Manifest({ environment: { TOKEN: 'static' } }),
+      expectedEnvironment: { TOKEN: { value: 'static' } },
+    },
+    {
+      label: 'is removed',
+      currentManifest: new Manifest(),
+      expectedEnvironment: {},
+    },
+  ])(
+    'serializes the current trusted manifest after a live reference $label',
+    async ({ currentManifest, expectedEnvironment }) => {
+      class LiveSecretReference extends EnvValueReference {
+        static readonly type = 'test.client_prepared_live_transition_secret';
+
+        constructor() {
+          super();
+        }
+
+        override serialize(): Record<string, unknown> {
+          return {};
+        }
+
+        override async resolve(): Promise<string> {
+          throw new Error('the runner must not resolve this reference');
+        }
+      }
+
+      const unregister = registerEnvValueReference(
+        LiveSecretReference,
+        () => new LiveSecretReference(),
+      );
+      try {
+        const client = new ReusingClientEnvironmentPreparingFakeSandboxClient();
+        const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+          name: 'SandboxWorker',
+          model: new RecordingModel([]),
+          defaultManifest: new Manifest({
+            environment: { TOKEN: new LiveSecretReference() },
+          }),
+        });
+        const state = new RunState<
+          unknown,
+          SandboxAgent<unknown, AgentOutputType>
+        >(new RunContext(), 'Hello', sandboxAgent, 1);
+        const firstManager = new SandboxRuntimeManager({
+          startingAgent: sandboxAgent,
+          sandboxConfig: { client },
+          runState: state,
+        });
+        await firstManager.prepareAgent({
+          currentAgent: sandboxAgent,
+          turnInput: [],
+        });
+        await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+        const secondManager = new SandboxRuntimeManager({
+          startingAgent: sandboxAgent,
+          sandboxConfig: { client, manifest: currentManifest },
+          runState: state,
+        });
+        await secondManager.prepareAgent({
+          currentAgent: sandboxAgent,
+          turnInput: [],
+        });
+        expect(client.createdSessions[0]!.state.manifest).toStrictEqual(
+          currentManifest,
+        );
+        await secondManager.cleanup(state, { preserveOwnedSessions: true });
+
+        expect(state._sandbox!.sessionState.manifest.environment ?? {}).toEqual(
+          expectedEnvironment,
+        );
+
+        const restoredState = await RunState.fromString(
+          sandboxAgent,
+          state.toString(),
+        );
+        const thirdManager = new SandboxRuntimeManager({
+          startingAgent: sandboxAgent,
+          sandboxConfig: { client, manifest: currentManifest },
+          runState: restoredState,
+        });
+        await thirdManager.prepareAgent({
+          currentAgent: sandboxAgent,
+          turnInput: [],
+        });
+
+        expect(client.resumeCalls).toHaveLength(1);
+        await thirdManager.cleanup(restoredState);
+      } finally {
+        unregister();
+      }
+    },
+  );
 
   it.each([
     { label: 'local non-streaming', stream: false, serverManaged: false },
@@ -2369,6 +4291,22 @@ describe('sandbox runner integration', () => {
     ).toBe('init');
   });
 
+  it('preserves direct-client validation for deferred empty mount credentials', () => {
+    const manifest = new Manifest({
+      entries: {
+        remote: s3Mount({
+          bucket: 'example',
+          mountStrategy: inContainerMountStrategy(),
+        }),
+      },
+      environment: {
+        AWS_ACCESS_KEY_ID: async () => '',
+      },
+    }).withInContainerMountBroadCredentialExposureAcknowledged('remote');
+
+    expect(() => normalizeSandboxClientCreateArgs(manifest)).not.toThrow();
+  });
+
   it('keeps create validation bound to a manifest snapshot across awaits', async () => {
     const manifest = new Manifest({
       entries: {
@@ -3424,6 +5362,150 @@ describe('sandbox runner integration', () => {
     ]);
   });
 
+  it.each([false, true])(
+    'restores trusted path grants before client-owned resume (failure: %s)',
+    async (fails) => {
+      const trusted = new Manifest({
+        extraPathGrants: [
+          { path: '/mnt/shared-data', hostPath: process.cwd(), readOnly: true },
+        ],
+      });
+      const persisted = new BrandedClientPreparedFakeSandboxState(
+        'explicit-session',
+        new Manifest({
+          extraPathGrants: [
+            {
+              path: '/mnt/shared-data',
+              hostPath: '/untrusted',
+              readOnly: false,
+            },
+          ],
+        }),
+      );
+      const original = persisted.manifest;
+      class InspectingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+        override async resume(
+          state: FakeSandboxSessionState,
+          options: SandboxClientResumeOptions<SandboxClientOptions> = {},
+        ) {
+          expect(state).toBe(persisted);
+          expect(state).toBeInstanceOf(BrandedClientPreparedFakeSandboxState);
+          expect(state.manifest.extraPathGrants).toEqual(
+            trusted.extraPathGrants,
+          );
+          if (fails) throw new Error('synthetic resume failure');
+          return await super.resume(state, options);
+        }
+      }
+      const client = new InspectingClient();
+      const agent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: trusted,
+      });
+      const state = new RunState(new RunContext(), 'Hello', agent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: agent,
+        sandboxConfig: { client, sessionState: persisted },
+        runState: state,
+      });
+      if (fails) {
+        await expect(
+          manager.prepareAgent({ currentAgent: agent, turnInput: [] }),
+        ).rejects.toThrow('synthetic resume failure');
+        expect(persisted.manifest).toBe(original);
+      } else {
+        await manager.prepareAgent({ currentAgent: agent, turnInput: [] });
+      }
+      await manager.cleanup(state);
+    },
+  );
+
+  it.each([false, true])(
+    'keeps resume authority binding outside active inspections (distinct state: %s)',
+    async (distinctState) => {
+      const trusted = new Manifest({
+        remoteMountCommandAllowlist: ['trusted-command'],
+      });
+      const input = new BrandedClientPreparedFakeSandboxState(
+        'input',
+        new Manifest(),
+      );
+      const returned = distinctState
+        ? new BrandedClientPreparedFakeSandboxState('returned', new Manifest())
+        : input;
+      let resumeStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        resumeStarted = resolve;
+      });
+      let releaseResume!: () => void;
+      const resumeGate = new Promise<void>((resolve) => {
+        releaseResume = resolve;
+      });
+      class PausingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+        override async resume() {
+          resumeStarted();
+          await resumeGate;
+          return this.makeSession(returned);
+        }
+      }
+      const client = new PausingClient();
+      const agent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+        defaultManifest: trusted,
+      });
+      const state = new RunState(new RunContext(), 'Hello', agent, 1);
+      const manager = new SandboxRuntimeManager({
+        startingAgent: agent,
+        sandboxConfig: { client, sessionState: input },
+        runState: state,
+      });
+      const preparing = manager.prepareAgent({
+        currentAgent: agent,
+        turnInput: [],
+      });
+      await started;
+      let inspectionStarted!: () => void;
+      const inspecting = new Promise<void>((resolve) => {
+        inspectionStarted = resolve;
+      });
+      let releaseInspection!: () => void;
+      const inspectionGate = new Promise<void>((resolve) => {
+        releaseInspection = resolve;
+      });
+      let observedManifest!: Manifest;
+      const inspection = withExclusiveSandboxStateInspection(
+        returned,
+        async () => {
+          observedManifest = returned.manifest;
+          inspectionStarted();
+          await inspectionGate;
+        },
+      );
+      releaseResume();
+      await inspecting;
+      try {
+        // Drain the provider and tracing continuations while inspection stays held.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(returned.manifest).toBe(observedManifest);
+        if (!distinctState) {
+          expect(observedManifest.remoteMountCommandAllowlist).toEqual([
+            'trusted-command',
+          ]);
+        }
+      } finally {
+        releaseInspection();
+        await inspection;
+        await preparing;
+        await manager.cleanup(state);
+      }
+      expect(returned.manifest.remoteMountCommandAllowlist).toEqual([
+        'trusted-command',
+      ]);
+    },
+  );
+
   it('rebinds explicit session state path grants without consuming their redaction metadata', async () => {
     const client = new FakeSandboxClient();
     const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
@@ -3613,6 +5695,111 @@ describe('sandbox runner integration', () => {
     expect(client.createdSessions).toHaveLength(1);
     expect(client.resumeCalls).toHaveLength(0);
     expect(client.closeCalls).toHaveLength(0);
+  });
+
+  it('keeps failed explicit-state replacements rejected until every handle closes', async () => {
+    class RetryableExplicitReplacementClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      override readonly backendId = 'docker';
+      readonly closeAttempts: string[] = [];
+      private nextHandleId = 1;
+
+      override makeSession(
+        state: FakeSandboxSessionState,
+      ): SandboxSessionLike<FakeSandboxSessionState> {
+        const session = super.makeSession(state);
+        const close = session.close!.bind(session);
+        const handleId = `handle-${this.nextHandleId++}`;
+        let closeAttempt = 0;
+        return {
+          ...session,
+          close: async () => {
+            closeAttempt += 1;
+            this.closeAttempts.push(handleId);
+            const failuresBeforeSuccess =
+              handleId === 'handle-1' ? 1 : handleId === 'handle-2' ? 2 : 0;
+            if (closeAttempt <= failuresBeforeSuccess) {
+              throw new Error(`cleanup failed for ${handleId}`);
+            }
+            await close();
+          },
+        };
+      }
+    }
+
+    const client = new RetryableExplicitReplacementClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ environment: { TOKEN: 'current' } }),
+    });
+    const runState = new RunState<
+      unknown,
+      SandboxAgent<unknown, AgentOutputType>
+    >(new RunContext(), 'Hello', sandboxAgent, 1);
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client },
+      runState,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+    await firstManager.cleanup(runState, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: {
+        client,
+        sessionState: {
+          manifest: new Manifest({ environment: { TOKEN: 'persisted' } }),
+          sessionId: 'explicit-session',
+        },
+      },
+      runState,
+    });
+    await expect(
+      secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      }),
+    ).rejects.toThrow(
+      'Failed to close the rejected live sandbox session and its replacement.',
+    );
+    await expect(
+      secondManager.prepareAgent({
+        currentAgent: sandboxAgent,
+        turnInput: [],
+      }),
+    ).rejects.toThrow('cleanup failed for handle-2');
+
+    const secondManagerInternals = secondManager as unknown as {
+      sessionsByAgentKey: Map<
+        string,
+        SandboxSessionLike<FakeSandboxSessionState>
+      >;
+    };
+    expect(secondManagerInternals.sessionsByAgentKey.size).toBe(0);
+    expect(client.resumeCalls).toHaveLength(2);
+
+    await secondManager.prepareAgent({
+      currentAgent: sandboxAgent,
+      turnInput: [],
+    });
+
+    expect(
+      secondManagerInternals.sessionsByAgentKey.get(sandboxAgent.name),
+    ).toBe(client.resumedSessions[2]);
+    expect(client.resumeCalls).toHaveLength(3);
+    expect(client.closeAttempts).toEqual([
+      'handle-1',
+      'handle-2',
+      'handle-1',
+      'handle-2',
+      'handle-3',
+      'handle-2',
+    ]);
+    await secondManager.cleanup(runState);
   });
 
   it.each([
@@ -4604,6 +6791,63 @@ describe('sandbox runner integration', () => {
     await transition;
     await serializing;
     expect(serializeSessionState).toHaveBeenCalledOnce();
+  });
+
+  it('keeps reuse approval and serialization in one state inspection', async () => {
+    const client = new FakeSandboxClient();
+    const session = client.makeSession({
+      manifest: new Manifest(),
+      sessionId: 'live-session',
+    });
+    let signalReuseCheck!: () => void;
+    const reuseCheckStarted = new Promise<void>((resolve) => {
+      signalReuseCheck = resolve;
+    });
+    let releaseReuseCheck!: () => void;
+    const reuseCheckGate = new Promise<void>((resolve) => {
+      releaseReuseCheck = resolve;
+    });
+    Object.defineProperty(client, 'canReusePreservedOwnedSession', {
+      value: async () => {
+        signalReuseCheck();
+        await reuseCheckGate;
+        return true;
+      },
+    });
+    let mutationStarted = false;
+    const mutationStateAtSerialization: boolean[] = [];
+    const serializedPolicies: Array<string | undefined> = [];
+    Object.defineProperty(client, 'serializeSessionState', {
+      value: async (state: FakeSandboxSessionState) => {
+        mutationStateAtSerialization.push(mutationStarted);
+        serializedPolicies.push(state.resourcePolicy);
+        return { sessionId: state.sessionId };
+      },
+    });
+
+    const serializing = serializeSandboxRuntimeState({
+      client,
+      sandboxState: undefined,
+      sessionsByAgentKey: new Map([['SandboxWorker', session]]),
+      sessionAgentNamesByKey: new Map([['SandboxWorker', 'SandboxWorker']]),
+      ownedSessionAgentKeys: new Set(['SandboxWorker']),
+      includeOwnedSessions: true,
+    });
+    await reuseCheckStarted;
+    const mutating = withExclusiveSandboxManifestMutation(
+      session.state,
+      async () => {
+        mutationStarted = true;
+        session.state.resourcePolicy = 'mutated';
+      },
+    );
+    releaseReuseCheck();
+
+    await serializing;
+    expect(mutationStateAtSerialization).toEqual([false]);
+    expect(serializedPolicies).toEqual([undefined]);
+    await mutating;
+    expect(mutationStarted).toBe(true);
   });
 
   it('holds manifest mutations across awaited persistence checks', async () => {
@@ -7033,6 +9277,90 @@ describe('sandbox runner integration', () => {
     expect(client.closeCalls).toEqual(['session-1', 'session-1']);
   });
 
+  it('rebinds an approved shell call to explicit session state', async () => {
+    class SessionRecordingClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      readonly execSessionIds: string[] = [];
+
+      override makeSession(
+        state: FakeSandboxSessionState,
+      ): SandboxSessionLike<FakeSandboxSessionState> {
+        const session = super.makeSession(state);
+        const execCommand = session.execCommand!.bind(session);
+        return {
+          ...session,
+          execCommand: async (args) => {
+            this.execSessionIds.push(state.sessionId);
+            return await execCommand(args);
+          },
+        };
+      }
+    }
+
+    const client = new SessionRecordingClient();
+    const sandboxModel = new RecordingModel([
+      modelResponse({
+        output: [
+          {
+            id: 'explicit-shell-approval-1',
+            type: 'function_call',
+            name: 'exec_command',
+            callId: 'explicit-shell-approval-1',
+            status: 'completed',
+            arguments: '{"cmd":"echo explicit"}',
+          } satisfies protocol.FunctionCallItem,
+        ],
+        usage: new Usage(),
+      }),
+      modelResponse({
+        output: [fakeModelMessage('sandbox done')],
+        usage: new Usage(),
+      }),
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: sandboxModel,
+      capabilities: [
+        shell({
+          configureTools: (tools) =>
+            tools.map((capabilityTool) =>
+              capabilityTool.type === 'function' &&
+              capabilityTool.name === 'exec_command'
+                ? { ...capabilityTool, needsApproval: async () => true }
+                : capabilityTool,
+            ),
+        }),
+      ],
+      defaultManifest: new Manifest({ root: '/workspace' }),
+    });
+    const runner = new Runner();
+
+    const firstResult = await runner.run(sandboxAgent, 'Hello', {
+      sandbox: { client },
+    });
+    const approval = firstResult.interruptions?.[0];
+    if (!approval) {
+      throw new Error('Expected a shell approval interruption');
+    }
+    firstResult.state.approve(approval);
+
+    const resumedResult = await runner.run(sandboxAgent, firstResult.state, {
+      sandbox: {
+        client,
+        sessionState: {
+          manifest: new Manifest({ root: '/workspace' }),
+          sessionId: 'explicit-session',
+        },
+      },
+    });
+
+    expect(resumedResult.finalOutput).toBe('sandbox done');
+    expect(client.resumeCalls.map((call) => call.state.sessionId)).toEqual([
+      'explicit-session',
+    ]);
+    expect(client.execSessionIds).toEqual(['explicit-session']);
+    expect(client.closeCalls).toEqual(['session-1', 'explicit-session']);
+  });
+
   it('rebinds an approved shell call to the current cwd after interruption resume', async () => {
     const client = new CwdAwareClosedHandleSerializedResumeFakeSandboxClient();
     const sandboxModel = new RecordingModel([
@@ -7860,6 +10188,64 @@ describe('sandbox runner integration', () => {
     ]);
   });
 
+  it('retains untouched released v5 sessions across RunState reserialization and later resume', async () => {
+    const client = new FakeSandboxClient();
+    const agent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const other = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'OtherWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState(new RunContext(), 'Hello', agent, 1);
+    const entry = (name: string, sessionId: string) => ({
+      backendId: client.backendId,
+      currentAgentKey: name,
+      currentAgentName: name,
+      sessionState: fakeSandboxSessionStateEnvelope(
+        { sessionId },
+        { version: 5 },
+      ),
+    });
+    const current = entry('SandboxWorker', 'current-v5');
+    state._sandbox = {
+      ...current,
+      sessionsByAgent: {
+        SandboxWorker: current,
+        OtherWorker: entry('OtherWorker', 'untouched-v5'),
+      },
+    };
+    expect(state.toJSON().$schemaVersion).toBe('1.23');
+    const restored = await RunState.fromString(agent, state.toString());
+    const manager = new SandboxRuntimeManager({
+      startingAgent: agent,
+      sandboxConfig: { client },
+      runState: restored,
+    });
+    await manager.prepareAgent({ currentAgent: agent, turnInput: [] });
+    await manager.cleanup(restored, { preserveOwnedSessions: true });
+    expect(
+      restored._sandbox?.sessionsByAgent.OtherWorker?.sessionState,
+    ).toMatchObject({
+      version: 5,
+      providerState: { sessionId: 'untouched-v5' },
+    });
+    expect(restored.toJSON().$schemaVersion).toBe('1.24');
+    const resumed = await RunState.fromString(agent, restored.toString());
+    const later = new SandboxRuntimeManager({
+      startingAgent: agent,
+      sandboxConfig: { client },
+      runState: resumed,
+    });
+    await later.prepareAgent({ currentAgent: other, turnInput: [] });
+    expect(client.resumeCalls.map((call) => call.state.sessionId)).toContain(
+      'untouched-v5',
+    );
+    expect(client.createCalls).toHaveLength(0);
+    await later.cleanup(resumed);
+  });
+
   it('drops untouched legacy session envelopes when serializing current runtime state', async () => {
     const client = new FakeSandboxClient();
     const currentSession = client.makeSession({
@@ -8494,6 +10880,42 @@ describe('sandbox runner integration', () => {
     });
   });
 
+  it('serializes the implicit trusted manifest from a client-prepared provided session', async () => {
+    const client = new ClientEnvironmentPreparingFakeSandboxClient();
+    const sandboxAgent = new SandboxAgent<unknown, AgentOutputType>({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const providedManifest = new Manifest({
+      root: '/app',
+      environment: { MODE: 'provided' },
+    });
+    const providedSession = client.makeSession({
+      sessionId: 'provided-session',
+      manifest: providedManifest,
+      environment: { MODE: 'provided' },
+    });
+    const state = new RunState<unknown, SandboxAgent<unknown, AgentOutputType>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent,
+      1,
+    );
+    const manager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent,
+      sandboxConfig: { client, session: providedSession },
+      runState: state,
+    });
+
+    await manager.prepareAgent({ currentAgent: sandboxAgent, turnInput: [] });
+    await manager.cleanup(state);
+
+    expect(state._sandbox?.sessionState.manifest).toMatchObject({
+      root: '/app',
+      environment: { MODE: { value: 'provided' } },
+    });
+  });
+
   it('applies metadata-only manifest deltas to provided sessions', async () => {
     const sandboxAgent = new SandboxAgent({
       name: 'SandboxWorker',
@@ -9034,6 +11456,7 @@ describe('sandbox runner integration', () => {
       restoredAgent as Agent<unknown, any>,
       state.toString(),
     );
+    const deserializeSessionState = vi.spyOn(client, 'deserializeSessionState');
     const thirdManager = new SandboxRuntimeManager({
       startingAgent: restoredAgent as Agent<unknown, any>,
       sandboxConfig: {
@@ -9056,6 +11479,7 @@ describe('sandbox runner integration', () => {
     expect(client.closeCalls).toEqual([]);
     expect(client.closeAttempts).toEqual([liveSession.state.sessionId]);
     expect(client.resumeCalls).toEqual([]);
+    expect(deserializeSessionState).not.toHaveBeenCalled();
     expect(client.createdSessions).toHaveLength(1);
   });
 
@@ -9416,7 +11840,7 @@ describe('sandbox runner integration', () => {
     await secondManager.cleanup(state);
   });
 
-  it('rejects live reuse inspection while a manifest transition is pending', async () => {
+  it('waits to inspect live reuse while a manifest transition is pending', async () => {
     const client = new RevalidatingLiveProcessFakeSandboxClient();
     const manifest = new Manifest();
     const sandboxAgent = new SandboxAgent({
@@ -9455,14 +11879,93 @@ describe('sandbox runner integration', () => {
       runState: state,
     });
 
-    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
-      /manifest mutation is in progress/u,
-    );
+    const adopting = secondManager.adoptPreservedOwnedSessions();
+    await Promise.resolve();
     expect(client.reuseChecks).toHaveLength(1);
 
     releaseTransition();
     await transition;
-    await secondManager.adoptPreservedOwnedSessions();
+    await adopting;
+    expect(client.reuseChecks).toHaveLength(2);
+    await secondManager.cleanup(state);
+  });
+
+  it('holds live reuse validation and rebinding under the state locks', async () => {
+    let blockReuse = false;
+    let signalReuseCheck!: () => void;
+    const reuseCheckStarted = new Promise<void>((resolve) => {
+      signalReuseCheck = resolve;
+    });
+    let releaseReuseCheck!: () => void;
+    const reuseCheckGate = new Promise<void>((resolve) => {
+      releaseReuseCheck = resolve;
+    });
+    let rebindFinished = false;
+    class LockingReuseClient extends ClientEnvironmentPreparingFakeSandboxClient {
+      async canReusePreservedOwnedSession(): Promise<boolean> {
+        if (blockReuse) {
+          signalReuseCheck();
+          await reuseCheckGate;
+        }
+        return true;
+      }
+
+      rebindPreservedOwnedSessionState(): void {
+        rebindFinished = true;
+      }
+    }
+
+    const client = new LockingReuseClient();
+    const manifest = new Manifest({ environment: { TOKEN: 'current' } });
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client, manifest },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    const liveSession = client.createdSessions[0]!;
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    blockReuse = true;
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client, manifest },
+      runState: state,
+    });
+    const adopting = secondManager.adoptPreservedOwnedSessions();
+    await reuseCheckStarted;
+
+    let mutationStarted = false;
+    let mutationSawCompletedRebind = false;
+    const mutating = withExclusiveSandboxManifestMutation(
+      liveSession.state,
+      async () => {
+        mutationStarted = true;
+        mutationSawCompletedRebind = rebindFinished;
+      },
+    );
+    await Promise.resolve();
+    expect(mutationStarted).toBe(false);
+
+    releaseReuseCheck();
+    await adopting;
+    await mutating;
+
+    expect(rebindFinished).toBe(true);
+    expect(mutationSawCompletedRebind).toBe(true);
     await secondManager.cleanup(state);
   });
 
@@ -10636,6 +13139,260 @@ describe('sandbox runner integration', () => {
     expect(client.closeCalls).toHaveLength(2);
   });
 
+  it('does not activate a replacement while a rejected sibling handle remains', async () => {
+    const client = new DockerAsymmetricHandleCleanupFakeSandboxClient([
+      true,
+      false,
+      true,
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      'Failed to close the rejected live sandbox session and its replacement.',
+    );
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      'cleanup failed for handle-2',
+    );
+
+    const secondManagerInternals = secondManager as unknown as {
+      sessionsByAgentKey: Map<
+        string,
+        SandboxSessionLike<FakeSandboxSessionState>
+      >;
+    };
+    expect(secondManagerInternals.sessionsByAgentKey.size).toBe(0);
+    expect(client.resumeCalls).toHaveLength(2);
+    expect(client.closeAttempts).toEqual([
+      'handle-1',
+      'handle-2',
+      'handle-1',
+      'handle-2',
+      'handle-3',
+    ]);
+
+    await secondManager.adoptPreservedOwnedSessions();
+
+    expect(
+      secondManagerInternals.sessionsByAgentKey.get(sandboxAgent.name),
+    ).toBe(client.resumedSessions[2]);
+    expect(
+      secondManagerInternals.sessionsByAgentKey.get(sandboxAgent.name),
+    ).not.toBe(client.resumedSessions[1]);
+    expect(client.resumeCalls).toHaveLength(3);
+    expect(client.closeAttempts).toEqual([
+      'handle-1',
+      'handle-2',
+      'handle-1',
+      'handle-2',
+      'handle-3',
+      'handle-2',
+    ]);
+    await secondManager.cleanup(state);
+  });
+
+  it('retains serialized retry authority until every rejected handle closes', async () => {
+    const client = new DockerAsymmetricHandleCleanupFakeSandboxClient([
+      true,
+      false,
+      true,
+    ]);
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      'Failed to close the rejected live sandbox session and its replacement.',
+    );
+    expect(client.closeAttempts).toEqual(['handle-1', 'handle-2']);
+
+    await expect(secondManager.cleanup(state)).rejects.toThrow(
+      'cleanup failed for handle-2',
+    );
+    expect(client.closeAttempts).toEqual([
+      'handle-1',
+      'handle-2',
+      'handle-1',
+      'handle-2',
+    ]);
+    expect(state._sandbox?.sessionsByAgent.SandboxWorker).toBeDefined();
+
+    await secondManager.cleanup(state);
+    expect(client.closeAttempts).toEqual([
+      'handle-1',
+      'handle-2',
+      'handle-1',
+      'handle-2',
+      'handle-2',
+    ]);
+    expect(state._sandbox).toBeUndefined();
+  });
+
+  it('keeps failed rejected-session authority while serializing another active session', async () => {
+    class SelectiveRejectedCleanupClient extends RevalidatingLiveProcessFakeSandboxClient {
+      readonly preservedOwnedSessionReuseRejectionRequiresFreshCreation = true;
+      readonly closeAttempts: string[] = [];
+      rejectSelectedManifest = false;
+      private cleanupFailuresRemaining = 2;
+
+      override canReusePreservedOwnedSession(
+        state: FakeSandboxSessionState,
+        options: SandboxPreservedSessionReuseOptions = {},
+      ): boolean {
+        this.reuseChecks.push(state.manifest);
+        this.reuseEnvironments.push(
+          state.environment ? { ...state.environment } : undefined,
+        );
+        this.reuseClientOptions.push(options.clientOptions);
+        this.reuseManifestEntryRevalidations.push(
+          options.revalidateManifestEntries === true,
+        );
+        return !(
+          this.rejectSelectedManifest &&
+          options.trustedManifest?.root === '/rejected'
+        );
+      }
+
+      override makeSession(
+        sessionState: FakeSandboxSessionState,
+      ): SandboxSessionLike<FakeSandboxSessionState> {
+        const session = super.makeSession(sessionState);
+        const close = session.close!.bind(session);
+        return {
+          ...session,
+          close: async () => {
+            this.closeAttempts.push(sessionState.sessionId);
+            if (
+              sessionState.manifest.root === '/rejected' &&
+              this.cleanupFailuresRemaining > 0
+            ) {
+              this.cleanupFailuresRemaining -= 1;
+              throw new Error('rejected cleanup failed');
+            }
+            await close();
+          },
+        };
+      }
+    }
+
+    const client = new SelectiveRejectedCleanupClient();
+    const firstAgent = new SandboxAgent({
+      name: 'RejectedSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ root: '/rejected' }),
+    });
+    const secondAgent = new SandboxAgent({
+      name: 'ActiveSandboxWorker',
+      model: new RecordingModel([]),
+      defaultManifest: new Manifest({ root: '/active' }),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      firstAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: firstAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    await firstManager.prepareAgent({
+      currentAgent: secondAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    const rejectedSessionId = client.createdSessions[0]!.state.sessionId;
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    client.rejectSelectedManifest = true;
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: firstAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await expect(secondManager.adoptPreservedOwnedSessions()).rejects.toThrow(
+      'rejected cleanup failed',
+    );
+    await secondManager.prepareAgent({
+      currentAgent: secondAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+
+    await expect(secondManager.cleanup(state)).rejects.toThrow(
+      'rejected cleanup failed',
+    );
+
+    expect(
+      client.closeAttempts.filter((id) => id === rejectedSessionId),
+    ).toHaveLength(2);
+    expect(
+      state._sandbox?.sessionsByAgent.RejectedSandboxWorker
+        ?.preservedOwnedSession,
+    ).toBe(true);
+    expect(state._sandbox?.sessionsByAgent.ActiveSandboxWorker).toBeDefined();
+    const restoredState = await RunState.fromString(
+      firstAgent as Agent<unknown, any>,
+      state.toString(),
+    );
+    expect(
+      restoredState._sandbox?.sessionsByAgent.RejectedSandboxWorker,
+    ).toBeDefined();
+    expect(
+      restoredState._sandbox?.sessionsByAgent.ActiveSandboxWorker,
+    ).toBeDefined();
+
+    await secondManager.cleanup(state);
+  });
+
   it('does not reuse an adopted live handle after cleanup fails', async () => {
     const client = new FailingLiveCleanupFakeSandboxClient([true, true, true]);
     const sandboxAgent = new SandboxAgent({
@@ -10800,6 +13557,72 @@ describe('sandbox runner integration', () => {
 
     expect(client.closeAttempts).toEqual(['session-1', 'session-1']);
     expect(client.closeCalls).toEqual(['session-1']);
+  });
+
+  it('preserves serialized resume authority after rejected live cleanup succeeds', async () => {
+    const client = new RecoverableCloseFakeSandboxClient();
+    const sandboxAgent = new SandboxAgent({
+      name: 'SandboxWorker',
+      model: new RecordingModel([]),
+    });
+    const state = new RunState<unknown, Agent<unknown, any>>(
+      new RunContext(),
+      'Hello',
+      sandboxAgent as Agent<unknown, any>,
+      1,
+    );
+    const firstManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await firstManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+    const originalSession = client.createdSessions[0]!;
+    await firstManager.cleanup(state, { preserveOwnedSessions: true });
+
+    const secondManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await secondManager.adoptPreservedOwnedSessions();
+    await expect(secondManager.cleanup(state)).rejects.toThrow(
+      `Failed to close ${originalSession.state.sessionId}`,
+    );
+
+    client.shouldFailClose = false;
+    await secondManager.cleanup(state, { preserveOwnedSessions: true });
+    expect(state._sandbox?.sessionsByAgent.SandboxWorker).toBeDefined();
+
+    const thirdManager = new SandboxRuntimeManager({
+      startingAgent: sandboxAgent as Agent<unknown, any>,
+      sandboxConfig: { client },
+      runState: state,
+    });
+    await thirdManager.prepareAgent({
+      currentAgent: sandboxAgent as Agent<unknown, any>,
+      turnInput: [],
+    });
+
+    const thirdManagerSession = (
+      thirdManager as unknown as {
+        sessionsByAgentKey: Map<
+          string,
+          SandboxSessionLike<FakeSandboxSessionState>
+        >;
+      }
+    ).sessionsByAgentKey.get(sandboxAgent.name);
+    expect(thirdManagerSession).toBe(client.resumedSessions[0]);
+    expect(thirdManagerSession).not.toBe(originalSession);
+    expect(client.resumeCalls).toHaveLength(1);
+    expect(client.closeAttempts).toEqual([
+      originalSession.state.sessionId,
+      originalSession.state.sessionId,
+    ]);
+    await thirdManager.cleanup(state);
   });
 
   it('settles every owned session close and retries only failed sessions', async () => {
@@ -11431,7 +14254,6 @@ describe('sandbox runner integration', () => {
           backendId: 'fake-sandbox',
           currentAgentKey: 'SandboxWorker',
           currentAgentName: 'SandboxWorker',
-          requiresFreshCreation: true,
           sessionState,
         },
       },
@@ -11482,7 +14304,6 @@ describe('sandbox runner integration', () => {
           backendId: 'fake-sandbox',
           currentAgentKey: 'SandboxWorker',
           currentAgentName: 'SandboxWorker',
-          requiresFreshCreation: true,
           sessionState,
         },
       },
@@ -11545,6 +14366,7 @@ describe('sandbox runner integration', () => {
     expect(client.resumeCalls[0]?.state.sessionId).toBe(
       'explicit-selected-sandbox',
     );
+    expect(client.rawResumeOptions[0]).not.toHaveProperty('trustedManifest');
     expect(client.createCalls).toHaveLength(0);
     await manager.cleanup(state);
   });

@@ -397,7 +397,7 @@
     {
       "schemaVersion": "1.24",
       "status": "current_unreleased",
-      "reason": "Preserves bounded JSON token usage metadata."
+      "reason": "Preserves bounded JSON token usage metadata and adds sandbox envelope version 6 for client-owned environment preparation."
     }
   ],
   "expectedNormalizedFixtures": [
