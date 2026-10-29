@@ -1,6 +1,6 @@
 ---
 title: 빠른 시작
-description: Create your first sandbox agent with an isolated workspace, filesystem tools, shell commands, and sandbox session state.
+description: Create your first sandbox agent with a managed workspace, filesystem tools, shell commands, and sandbox session state.
 canonicalHeadingIds:
   - depth: 2
     id: 'prerequisites'
@@ -27,33 +27,35 @@ canonicalHeadingIds:
 import { Code } from '@astrojs/starlight/components';
 import basicExample from '../../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 
-최신 에이전트는 파일 시스템의 실제 파일을 다룰 수 있을 때 가장 효과적으로 작동합니다. Agents SDK의 **샌드박스 에이전트**는 모델이 대규모 문서 모음을 검색하고, 파일을 편집하고, 명령을 실행하고, 결과물을 생성하고, 저장된 샌드박스 상태에서 작업을 재개할 수 있는 영구 워크스페이스를 제공합니다.
+최신 에이전트는 파일시스템의 실제 파일을 다룰 수 있을 때 가장 효과적으로 작동합니다. Agents SDK의 **샌드박스 에이전트**는 모델에 영속적인 작업 공간을 제공하여 대규모 문서 모음을 검색하고, 파일을 편집하고, 명령을 실행하고, 산출물을 생성하고, 저장된 샌드박스 상태에서 작업을 재개할 수 있게 합니다.
 
-SDK는 파일 스테이징, 파일 시스템 도구, 셸 액세스, 샌드박스 수명 주기, 스냅샷, 공급자별 연동 코드를 직접 구성하지 않아도 이러한 실행 환경을 제공합니다. 기존의 `Agent` 및 `Runner` 흐름을 유지하면서 워크스페이스용 `Manifest`, 샌드박스 네이티브 도구용 기능, 작업 실행 위치를 지정하는 `sandbox` 실행 옵션을 추가하면 됩니다.
+SDK는 파일 스테이징, 파일시스템 도구, 셸 접근, 샌드박스 수명 주기, 스냅샷, 제공자별 연동 코드를 직접 연결할 필요 없이 이러한 실행 환경을 제공합니다. 기존 `Agent`와 `Runner` 흐름을 그대로 유지하면서 작업 공간을 위한 `Manifest`, 샌드박스 네이티브 도구를 위한 기능, 작업 실행 위치를 지정하는 `sandbox` 실행 옵션을 추가하면 됩니다.
 
 ## 사전 요구 사항
 
 - Node.js 22 이상
 - OpenAI Agents SDK에 대한 기본적인 이해
-- 샌드박스 클라이언트. macOS 또는 Linux에서 로컬로 개발하려면 `UnixLocalSandboxClient`로 시작합니다. Windows에서는 대신 `DockerSandboxClient` 또는 호스티드 샌드박스 클라이언트를 사용합니다
+- 샌드박스 클라이언트. macOS 또는 Linux에서 신뢰할 수 있는 로컬 개발 작업을 할 때는 `UnixLocalSandboxClient`로 시작하세요. Windows에서는 대신 `DockerSandboxClient`나 호스팅 샌드박스 클라이언트를 사용하세요.
 
-이 빠른 시작에서는 Node.js와 npm 명령을 사용하지만, SDK가 Node.js로만 제한되지는 않습니다. 프로젝트에서 호환되는 패키지 해석 방식과 런타임 API를 사용하는 경우 Deno와 Bun에서도 샌드박스 에이전트를 실행할 수 있습니다.
+이 빠른 시작에서는 Node.js와 npm 명령을 사용하지만, SDK가 Node.js에만 한정되는 것은 아닙니다. 프로젝트에서 호환되는 패키지 해석 방식과 런타임 API를 사용한다면 샌드박스 에이전트를 Deno와 Bun에서도 실행할 수 있습니다.
 
 ## 설치
 
-SDK를 아직 설치하지 않았다면 다음을 실행합니다.
+아직 SDK를 설치하지 않았다면 다음 명령을 실행하세요:
 
 ```bash
 npm install @openai/agents
 ```
 
-Docker 기반 샌드박스의 경우 Docker를 로컬에 설치하고 `@openai/agents/sandbox/local`의 `DockerSandboxClient`를 사용합니다.
+Docker 기반 샌드박스를 사용하려면 로컬에 Docker를 설치하고 `@openai/agents/sandbox/local`의 `DockerSandboxClient`를 사용하세요.
 
-`tty: true`로 대화형 로컬 PTY 세션을 사용하는 경우 SDK를 실행하는 프로세스에서 Python 3을 `python3` 명령으로 사용하거나 `OPENAI_AGENTS_PYTHON`을 통해 사용할 수 있어야 합니다. 비 PTY 셸 명령에는 Python이 필요하지 않습니다.
+`tty: true`로 대화형 로컬 PTY 세션을 사용하는 경우, SDK를 실행하는 프로세스에서 `python3` 또는 `OPENAI_AGENTS_PYTHON`을 통해 Python 3를 사용할 수 있어야 합니다. PTY를 사용하지 않는 셸 명령에는 Python이 필요하지 않습니다.
 
 ## 로컬 샌드박스 에이전트 생성
 
-이 예제는 로컬 리포지토리를 `repo/` 아래에 스테이징하고 로컬 스킬을 지연 로드하며, 실행 중에 러너가 Unix 로컬 샌드박스 세션을 생성하도록 합니다. 에이전트 정의에는 매니페스트와 기능이 포함되며, 실행 설정은 이번 실행에 사용할 샌드박스 클라이언트만 선택합니다.
+이 예제는 로컬 저장소를 `repo/` 아래에 스테이징하고, 로컬 스킬을 지연 로드하며, 러너가 이번 실행을 위한 Unix 로컬 샌드박스 세션을 생성하도록 합니다. 에이전트 정의에 매니페스트와 기능을 지정하고, 실행 설정에서는 이번 실행에 사용할 샌드박스 클라이언트만 선택합니다.
+
+`UnixLocalSandboxClient`는 macOS와 Linux 모두에서 명령을 호스트 프로세스로 실행합니다. 이 클라이언트는 OS 수준의 파일시스템 또는 네트워크 격리를 추가하지 않습니다. 이 예제는 신뢰할 수 있는 로컬 개발 작업이나 외부에서 격리된 환경 내에서 사용하세요. 신뢰할 수 없는 입력의 영향을 받는 명령을 비롯하여 신뢰할 수 없는 명령을 실행할 때는 적절히 구성된 Docker 또는 호스팅 백엔드를 선택하거나 외부 격리를 제공하세요. [Unix 로컬 실행 제한](/openai-agents-js/ko/guides/sandbox-agents/clients#local-clients)을 참고하세요.
 
 <Code
   lang="typescript"
@@ -63,20 +65,20 @@ Docker 기반 샌드박스의 경우 Docker를 로컬에 설치하고 `@openai/a
 
 ## 주요 선택 사항
 
-기본 실행이 정상적으로 작동하면 일반적으로 다음 항목을 설정합니다.
+기본 실행이 정상적으로 작동하면 일반적으로 다음 사항을 선택하게 됩니다:
 
-- `defaultManifest`: 새 샌드박스 세션에 사용할 파일, 리포지토리, 디렉터리 및 마운트
-- `instructions`: 여러 프롬프트에 공통으로 적용할 간단한 워크플로 규칙
-- `baseInstructions`: SDK 샌드박스 프롬프트를 대체하기 위한 고급 우회 옵션
-- `capabilities`: 파일 시스템 편집/이미지 검사, 셸, 스킬, 메모리, 압축과 같은 샌드박스 네이티브 도구
-- `runAs`: 모델이 사용하는 도구의 샌드박스 사용자 ID
+- `defaultManifest`: 새 샌드박스 세션에 사용할 파일, 저장소, 디렉터리, 마운트
+- `instructions`: 여러 프롬프트에 걸쳐 적용할 간단한 워크플로 규칙
+- `baseInstructions`: SDK 샌드박스 프롬프트를 대체하기 위한 고급 재정의 수단
+- `capabilities`: 파일시스템 편집/이미지 검사, 셸, 스킬, 메모리, 압축 등의 샌드박스 네이티브 도구
+- `runAs`: 모델에 제공되는 도구에 사용할 샌드박스 사용자 ID
 - `sandbox.client`: 샌드박스 백엔드
-- `sandbox.session`, `sandbox.sessionState` 또는 `sandbox.snapshot`: 후속 실행을 이전 작업에 다시 연결하는 방법
+- `sandbox.session`, `sandbox.sessionState` 또는 `sandbox.snapshot`: 이후 실행에서 이전 작업에 다시 연결하는 방식
 
 ## 다음 단계
 
-- [개념](/openai-agents-js/ko/guides/sandbox-agents/concepts): 매니페스트, 기능, 권한, 스냅샷, 실행 설정 및 구성 패턴 이해
-- [샌드박스 클라이언트](/openai-agents-js/ko/guides/sandbox-agents/clients): Unix 로컬, Docker, 호스티드 공급자 및 마운트 전략 선택
-- [에이전트 메모리](/openai-agents-js/ko/guides/sandbox-agents/memory): 이전 샌드박스 실행에서 얻은 내용을 보존하고 재사용
+- [개념](/openai-agents-js/ko/guides/sandbox-agents/concepts): 매니페스트, 기능, 권한, 스냅샷, 실행 설정, 구성 패턴을 이해합니다.
+- [샌드박스 클라이언트](/openai-agents-js/ko/guides/sandbox-agents/clients): Unix 로컬, Docker, 호스팅 제공자, 마운트 전략을 선택합니다.
+- [에이전트 메모리](/openai-agents-js/ko/guides/sandbox-agents/memory): 이전 샌드박스 실행에서 얻은 교훈을 보존하고 재사용합니다.
 
-셸 액세스가 가끔 사용하는 도구 중 하나일 뿐이라면 [도구](/openai-agents-js/ko/guides/tools)의 호스티드 셸부터 시작합니다. 워크스페이스 격리, 샌드박스 클라이언트 선택 또는 샌드박스 세션 재개 동작이 설계의 일부라면 샌드박스 에이전트를 사용합니다.
+셸 접근이 가끔 사용하는 도구 중 하나일 뿐이라면 [도구](/openai-agents-js/ko/guides/tools) 가이드의 호스팅 셸로 시작하세요. 작업 공간 관리, 샌드박스 클라이언트 선택, 샌드박스 세션 재개 동작이 설계의 일부라면 샌드박스 에이전트를 사용하세요.
