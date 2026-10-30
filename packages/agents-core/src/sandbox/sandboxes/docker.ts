@@ -7,6 +7,7 @@ import type {
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
 import {
+  SandboxArchiveError,
   SandboxConfigurationError,
   SandboxLifecycleError,
   SandboxMountError,
@@ -58,7 +59,10 @@ import type {
   SandboxSessionSerializationOptions,
   SandboxSessionResumeValidationInput,
 } from '../client';
-import { normalizeSandboxClientCreateArgs } from '../client';
+import {
+  normalizeSandboxClientCreateArgs,
+  resolveSandboxArchiveLimits,
+} from '../client';
 import {
   cloneManifest,
   copyManifestMountCredentialExposurePolicy,
@@ -373,6 +377,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     logicalPath: string,
     entry: Entry,
     localSourceGrants = this.state.manifest.extraPathGrants,
+    budget = new DockerResourceCopyBudget(this.archiveLimits),
   ): Promise<{ path: string; mode: number }[]> {
     const destination = this.resolveContainerFilesystemPath(logicalPath, {
       forWrite: true,
@@ -387,6 +392,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       readLocalWorkspaceEntry(entry, localSourceGrants, gitSourceRoot),
       execArgs,
       permissions,
+      budget,
     );
     try {
       // Validate the first source and destination before starting the writer.
@@ -457,9 +463,10 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     contents: AsyncIterable<LocalWorkspaceContent>,
     execArgs: string[],
     permissions: { path: string; mode: number }[],
+    budget: DockerResourceCopyBudget,
   ): AsyncGenerator<Uint8Array, void> {
     const creationMask = process.umask();
-    const appendedPaths = new Set<string>();
+    const appendedDirectories = new Set<string>();
     for await (const content of contents) {
       const item = { ...content, path: posix.join(destination, content.path) };
       const parents: string[] = [];
@@ -471,20 +478,30 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       )
         parents.unshift(parent);
       for (const path of parents) {
-        if (appendedPaths.has(path)) continue;
+        if (appendedDirectories.has(path)) continue;
+        budget.addMember(path, 0);
         yield* this.readContainerCopyEntry(
           execArgs,
           { type: 'dir', path },
           creationMask,
+          budget,
         );
-        appendedPaths.add(path);
+        appendedDirectories.add(path);
       }
-      yield* this.readContainerCopyEntry(execArgs, item, creationMask);
-      appendedPaths.add(item.path);
+      const size =
+        item.type === 'file'
+          ? 'chunks' in item
+            ? item.size
+            : item.content.byteLength
+          : 0;
+      budget.addMember(item.path, size);
+      yield* this.readContainerCopyEntry(execArgs, item, creationMask, budget);
+      if (item.type === 'dir') appendedDirectories.add(item.path);
       if (item.permissions !== undefined && item.type !== 'symlink') {
         permissions.push({ path: item.path, mode: item.permissions });
       }
     }
+    budget.addInputBytes(1024);
     yield Buffer.alloc(1024);
   }
 
@@ -506,6 +523,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     execArgs: string[],
     item: LocalWorkspaceContent,
     creationMask: number,
+    budget: DockerResourceCopyBudget,
   ): AsyncGenerator<Uint8Array, void> {
     await this.validateContainerCopyPath(item.path);
     const result = await runDockerProcess([
@@ -585,12 +603,26 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       size,
       mtime: new Date(),
     });
-    if (header.encode()) yield new Pax(header).encode();
+    if (header.encode()) {
+      const pax = new Pax(header).encode();
+      budget.addInputBytes(pax.byteLength);
+      yield pax;
+    }
+    budget.addInputBytes(512);
     yield header.block!;
     if (item.type === 'file') {
-      if ('chunks' in item) yield* item.chunks;
-      else yield item.content;
-      yield Buffer.alloc((512 - (size % 512)) % 512);
+      if ('chunks' in item) {
+        for await (const chunk of item.chunks) {
+          budget.addInputBytes(chunk.byteLength);
+          yield chunk;
+        }
+      } else {
+        budget.addInputBytes(item.content.byteLength);
+        yield item.content;
+      }
+      const padding = (512 - (size % 512)) % 512;
+      budget.addInputBytes(padding);
+      yield Buffer.alloc(padding);
     }
   }
 
@@ -729,6 +761,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       await provisionDockerAccounts(this.state.containerId, manifest);
       const materializedManifest = stripDockerIdentityMetadata(manifest);
       const permissions: { path: string; mode: number }[][] = [];
+      const budget = new DockerResourceCopyBudget(this.archiveLimits);
       for (const [path, entry] of Object.entries(
         withoutDockerMountEntries(materializedManifest.entries),
       )) {
@@ -737,6 +770,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
             this.resolveLogicalPath(path),
             entry,
             nextManifest.extraPathGrants,
+            budget,
           ),
         );
       }
@@ -3039,6 +3073,52 @@ async function inspectContainerRunning(containerId: string): Promise<boolean> {
   );
 }
 
+// One budget covers every resource and generated parent in a manifest update.
+class DockerResourceCopyBudget {
+  private readonly limits;
+  private members = 0;
+  private extractedBytes = 0;
+  private inputBytes = 0;
+
+  constructor(limits?: SandboxArchiveLimits | null) {
+    this.limits = resolveSandboxArchiveLimits(
+      limits === undefined ? {} : limits,
+    );
+  }
+
+  addMember(path: string, size: number): void {
+    this.check('member count', ++this.members, this.limits?.maxMembers, path);
+    this.extractedBytes += size;
+    this.check(
+      'extracted size',
+      this.extractedBytes,
+      this.limits?.maxExtractedBytes,
+      path,
+    );
+  }
+
+  addInputBytes(size: number): void {
+    this.inputBytes += size;
+    this.check('input size', this.inputBytes, this.limits?.maxInputBytes);
+  }
+
+  private check(
+    kind: string,
+    actual: number,
+    limit: number | null | undefined,
+    member?: string,
+  ): void {
+    if (limit != null && actual > limit) {
+      throw new SandboxArchiveError(`Docker resource ${kind} exceeds limit.`, {
+        reason: `archive ${kind} exceeds limit`,
+        limit,
+        actual,
+        ...(member === undefined ? {} : { member }),
+      });
+    }
+  }
+}
+
 async function runDockerProcess(
   args: string[],
   input?: string | Uint8Array | Readable,
@@ -3109,6 +3189,9 @@ async function runDockerProcess(
       stderr: outputLimitError.message,
       error: outputLimitError,
     };
+  }
+  if (stdinError instanceof SandboxArchiveError) {
+    throw stdinError;
   }
   // Preserve command diagnostics, but never report success for failed input.
   if (status === 0 && stdinError) {

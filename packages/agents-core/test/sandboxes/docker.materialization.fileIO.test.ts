@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SandboxArchiveError } from '../../src/sandbox/errors';
 import {
   DockerSandboxSession,
   inContainerMountStrategy,
@@ -50,6 +51,146 @@ describe.skipIf(process.platform === 'win32')(
       vi.restoreAllMocks();
       await rm(root, { recursive: true, force: true });
     });
+
+    it('stops a large directory before probing members beyond the limit', async () => {
+      const source = join(root, 'many-files');
+      await mkdir(source);
+      for (let index = 0; index < 20; index++) {
+        await writeFile(join(source, `file-${index}`), 'content');
+      }
+      session.state.manifest.extraPathGrants.push({
+        path: source,
+        readOnly: true,
+      });
+      session.setArchiveLimits({ maxMembers: 4 });
+      const manifest = session.state.manifest;
+      const entry = { type: 'local_dir' as const, src: source };
+      await expect(
+        session.materializeEntry({ path: 'bounded', entry }),
+      ).rejects.toThrow('member count exceeds limit');
+      expect(session.state.manifest).toBe(manifest);
+      expect(commands.filter((args) => args.includes('stat'))).toHaveLength(4);
+      // A failed copy closes its reader and leaves the session usable.
+      session.setArchiveLimits(null);
+      await session.materializeEntry({ path: 'trusted', entry });
+      expect(await readFile(join(workspace, 'trusted/file-19'), 'utf8')).toBe(
+        'content',
+      );
+    });
+
+    it('rejects special source files instead of traversing them without a limit', async () => {
+      const source = join(root, 'special-files');
+      await mkdir(source);
+      for (let index = 0; index < 6; index++) {
+        expect(
+          childProcess.spawnSync('mkfifo', [join(source, `fifo-${index}`)])
+            .status,
+        ).toBe(0);
+      }
+      session.state.manifest.extraPathGrants.push({
+        path: source,
+        readOnly: true,
+      });
+      session.setArchiveLimits({ maxMembers: 1 });
+      const manifest = session.state.manifest;
+      await expect(
+        session.materializeEntry({
+          path: 'special',
+          entry: { type: 'local_dir', src: source },
+        }),
+      ).rejects.toThrow('local_dir entries do not support this file type');
+      expect(session.state.manifest).toBe(manifest);
+      expect(commands.filter((args) => args.includes('stat'))).toHaveLength(1);
+      await session.materializeEntry({
+        path: 'after-special',
+        entry: { type: 'file', content: 'still usable' },
+      });
+    });
+
+    it.each([
+      [{ maxMembers: 1 }, 'member count', 1, 2],
+      [{ maxExtractedBytes: 2 }, 'extracted size', 2, 1024],
+      [{ maxInputBytes: 600 }, 'input size', 600, 1024],
+    ] as const)(
+      'preserves structured errors for %j after extraction starts',
+      async (limits, reason, limit, actual) => {
+        session.setArchiveLimits(limits);
+        const manifest = session.state.manifest;
+        const error = await session
+          .materializeEntry({
+            path: 'bounded',
+            entry: {
+              type: 'dir',
+              children: { file: { type: 'file', content: 'a'.repeat(1024) } },
+            },
+          })
+          .catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(SandboxArchiveError);
+        expect(error).toMatchObject({
+          code: 'archive_error',
+          details: { reason: `archive ${reason} exceeds limit`, limit, actual },
+        });
+        expect(commands.some((args) => args.includes('/usr/bin/tar'))).toBe(
+          true,
+        );
+        expect(session.state.manifest).toBe(manifest);
+      },
+    );
+
+    it('shares the member limit across all resources in one manifest update', async () => {
+      session.setArchiveLimits({ maxMembers: 1 });
+      const previous = session.state.manifest;
+      await expect(
+        session.applyManifest(
+          new Manifest({
+            entries: {
+              first: { type: 'file', content: 'first' },
+              second: { type: 'file', content: 'second' },
+            },
+          }),
+        ),
+      ).rejects.toThrow('member count exceeds limit');
+      expect(session.state.manifest).toBe(previous);
+      expect(await readFile(join(workspace, 'first'), 'utf8')).toBe('first');
+      await expect(lstat(join(workspace, 'second'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(
+        commands.some((args) => args.at(-1) === join(workspace, 'second')),
+      ).toBe(false);
+    });
+
+    it('counts generated parent directories before processing the file', async () => {
+      session.setArchiveLimits({ maxMembers: 2 });
+      await expect(
+        session.materializeEntry({
+          path: 'parent/child/file',
+          entry: { type: 'file', content: 'content' },
+        }),
+      ).rejects.toThrow('member count exceeds limit');
+      expect(commands.filter((args) => args.includes('stat'))).toHaveLength(2);
+      expect(session.state.manifest.entries).toEqual({});
+    });
+
+    it.each([
+      [{ maxExtractedBytes: 2 }, 'extracted size'],
+      [{ maxInputBytes: 511 }, 'input size'],
+    ] as const)(
+      'rejects a resource exceeding %j before starting extraction',
+      async (limits, reason) => {
+        session.setArchiveLimits(limits);
+        await expect(
+          session.materializeEntry({
+            path: 'too-large',
+            entry: { type: 'file', content: 'abc' },
+          }),
+        ).rejects.toThrow(`${reason} exceeds limit`);
+        expect(commands.some((args) => args.includes('/usr/bin/tar'))).toBe(
+          false,
+        );
+        expect(session.state.manifest.entries).toEqual({});
+      },
+    );
 
     it.each(['applyManifest', 'provided session'] as const)(
       'writes %s resources in the container, including nested local sources',

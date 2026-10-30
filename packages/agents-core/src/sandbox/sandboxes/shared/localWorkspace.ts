@@ -26,6 +26,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  opendir,
   readdir,
   readFile,
   readlink,
@@ -905,8 +906,11 @@ async function* readClonedGitContent(
     }
   } else if (info.isDirectory()) {
     yield { type: 'dir', path, permissions };
-    for (const child of await readdir(source)) {
-      yield* readClonedGitContent(join(source, child), posix.join(path, child));
+    for await (const child of await opendir(source)) {
+      yield* readClonedGitContent(
+        join(source, child.name),
+        posix.join(path, child.name),
+      );
     }
   }
 }
@@ -935,9 +939,9 @@ async function* readLocalDirectoryContents(
     sourceDir,
     expectedSourceStat,
   );
-  const children = await readStableLocalDirEntries(sourceDir, source.stat);
   yield { type: 'dir', path: relativePath };
-  for (const child of children) {
+  for await (const child of await opendir(sourceDir)) {
+    await assertStableLocalDirPath(sourceDir, source.stat);
     const sourcePath = join(sourceDir, child.name);
     const path = relativePath ? `${relativePath}/${child.name}` : child.name;
     if (child.isDirectory()) {
@@ -956,8 +960,13 @@ async function* readLocalDirectoryContents(
       throw new UserError(
         `local_dir entries do not support symbolic links: ${sourcePath}`,
       );
+    } else {
+      throw new UserError(
+        `local_dir entries do not support this file type: ${sourcePath}`,
+      );
     }
   }
+  await assertStableLocalDirPath(sourceDir, source.stat);
 }
 
 async function copyLocalDirectory(

@@ -536,6 +536,62 @@ open('/workspace/swaps-done', 'w').write(str(count))
   );
 
   itIfDocker(
+    'bounds Git resource members and removes the private checkout on failure',
+    async () => {
+      rootDir = await mkdtemp(join(process.cwd(), '.docker-git-limit-'));
+      for (let index = 0; index < 20; index++) {
+        await writeFile(join(rootDir, `file-${index}`), 'configured content');
+      }
+      for (const args of [
+        ['init'],
+        ['add', '.'],
+        [
+          '-c',
+          'user.name=Test',
+          '-c',
+          'user.email=test@example.invalid',
+          'commit',
+          '-m',
+          'source',
+        ],
+      ])
+        expect(spawnSync('git', ['-C', rootDir, ...args]).status).toBe(0);
+      const session = await new DockerSandboxClient({
+        image: DOCKER_TEST_IMAGE,
+        archiveLimits: { maxMembers: 3 },
+      }).create(new Manifest());
+      cleanupContainerIds.add(session.state.containerId);
+      const reader = vi.spyOn(localWorkspace, 'readLocalWorkspaceEntry');
+      const previous = session.state.manifest;
+      await expect(
+        session.materializeEntry({
+          path: 'repo',
+          entry: { type: 'git_repo', repo: `file://${rootDir}` },
+        }),
+      ).rejects.toThrow('member count exceeds limit');
+      expect(session.state.manifest).toBe(previous);
+      const privateRoot = reader.mock.calls[0]![2]!;
+      expect(privateRoot).toBeTruthy();
+      await expect(lstat(privateRoot)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await session.materializeEntry({
+        path: 'after-failure',
+        entry: { type: 'file', content: 'still usable' },
+      });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'after-failure'),
+          'utf8',
+        ),
+      ).toBe('still usable');
+      await session.close();
+      cleanupContainerIds.delete(session.state.containerId);
+    },
+    DOCKER_TEST_TIMEOUT_MS,
+  );
+
+  itIfDocker(
     'updates a writable skill file without needing to delete it',
     async () => {
       const uid = process.getuid?.();
