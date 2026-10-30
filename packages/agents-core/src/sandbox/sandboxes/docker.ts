@@ -7,6 +7,7 @@ import type {
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
 import {
+  SandboxArchiveError,
   SandboxConfigurationError,
   SandboxLifecycleError,
   SandboxMountError,
@@ -16,16 +17,20 @@ import {
 import { chmod, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   basename,
   dirname,
   isAbsolute,
   join,
+  posix,
   relative,
   resolve,
   sep,
 } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Header, Pax } from 'tar';
 import {
   type AzureBlobMount,
   type BoxMount,
@@ -54,7 +59,10 @@ import type {
   SandboxSessionSerializationOptions,
   SandboxSessionResumeValidationInput,
 } from '../client';
-import { normalizeSandboxClientCreateArgs } from '../client';
+import {
+  normalizeSandboxClientCreateArgs,
+  resolveSandboxArchiveLimits,
+} from '../client';
 import {
   cloneManifest,
   copyManifestMountCredentialExposurePolicy,
@@ -89,6 +97,8 @@ import {
   materializeLocalWorkspaceManifestMounts,
   restoreLocalWorkspaceManifestStickyPermissions,
   pathExists,
+  readLocalWorkspaceEntry,
+  type LocalWorkspaceContent,
 } from './shared/localWorkspace';
 import {
   assertHostPathGrantsRebound,
@@ -154,7 +164,10 @@ import {
   readStringArray,
 } from '../shared/typeGuards';
 import { validateCredentialPair as validateSandboxCredentialPair } from '../shared/credentials';
-import { sandboxPathGrantHostPath } from '../shared/hostPath';
+import {
+  isHostPathWithinRoot,
+  sandboxPathGrantHostPath,
+} from '../shared/hostPath';
 import {
   getRunStateSessionTrustedConfig,
   isRunStateSessionState,
@@ -328,13 +341,307 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
 
   override async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
     const entry = structuredClone(args.entry);
-    if (!isMount(entry) || !isDockerInContainerMount(entry)) {
-      await super.materializeEntry({ ...args, entry });
+    if (!isMount(entry)) {
+      await withExclusiveSandboxManifestMutation(this.state, async () => {
+        this.assertSessionUsable();
+        await this.resolveFilesystemRunAs(args.runAs);
+        const logicalPath = this.resolveLogicalPath(args.path);
+        const nextManifest = mergeManifestEntryDelta(
+          this.state.manifest,
+          logicalPath,
+          entry,
+        );
+        assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
+        validateMountCredentialBoundaries(nextManifest);
+        const permissions = await this.copyEntryIntoContainer(
+          logicalPath,
+          entry,
+        );
+        await this.applyContainerCopyPermissions(permissions);
+        recordLiveMountCredentialAuthority(nextManifest, this.state.manifest);
+        this.state.manifest = nextManifest;
+      });
       return;
+    }
+    if (!isDockerInContainerMount(entry)) {
+      throw new SandboxUnsupportedFeatureError(
+        'Docker bind and volume mounts must be configured when creating the sandbox.',
+      );
     }
     await withExclusiveSandboxManifestMutation(this.state, async () => {
       await this.materializeDockerInContainerEntry({ ...args, entry });
     });
+  }
+
+  private async copyEntryIntoContainer(
+    logicalPath: string,
+    entry: Entry,
+    localSourceGrants = this.state.manifest.extraPathGrants,
+    budget = new DockerResourceCopyBudget(this.archiveLimits),
+  ): Promise<{ path: string; mode: number }[]> {
+    const destination = this.resolveContainerFilesystemPath(logicalPath, {
+      forWrite: true,
+    });
+    const execArgs = dockerResourceExecArgs(this);
+    const permissions: { path: string; mode: number }[] = [];
+    const gitSourceRoot = containsGitRepo(entry)
+      ? await this.createPrivateGitSourceRoot()
+      : undefined;
+    const archive = this.readContainerCopyArchive(
+      destination,
+      readLocalWorkspaceEntry(entry, localSourceGrants, gitSourceRoot),
+      execArgs,
+      permissions,
+      budget,
+    );
+    try {
+      // Validate the first source and destination before starting the writer.
+      const first = await archive.next();
+      const input = Readable.from(
+        (async function* () {
+          if (!first.done) yield first.value;
+          yield* archive;
+        })(),
+      );
+      // Extraction runs as the sandbox user. Archive ownership cannot grant access.
+      const result = await runDockerProcess(
+        [
+          ...execArgs,
+          '/usr/bin/tar',
+          '--extract',
+          '--file=-',
+          `--directory=${this.state.manifest.root}`,
+          '--no-same-owner',
+          '--same-permissions',
+          '--overwrite',
+          '--touch',
+        ],
+        input,
+      );
+      if (result.status !== 0) {
+        throw new UserError(
+          `DockerSandboxClient failed to copy entry: ${formatSandboxProcessError(result)}`,
+        );
+      }
+      return permissions;
+    } finally {
+      // Stop the producer before removing a Git checkout it may still be reading.
+      try {
+        await archive.return();
+      } finally {
+        if (gitSourceRoot !== undefined) {
+          await rm(gitSourceRoot, { recursive: true, force: true });
+        }
+      }
+    }
+  }
+
+  private async applyContainerCopyPermissions(
+    permissions: { path: string; mode: number }[],
+  ): Promise<void> {
+    const execArgs = dockerResourceExecArgs(this);
+    // Apply configured modes after children, including mount directories.
+    for (const item of permissions.reverse()) {
+      await this.validateContainerCopyPath(item.path);
+      const mode = await runDockerProcess([
+        ...execArgs,
+        'chmod',
+        item.mode.toString(8),
+        '--',
+        item.path,
+      ]);
+      if (mode.status !== 0) {
+        throw new UserError(
+          `DockerSandboxClient failed to set entry permissions: ${formatSandboxProcessError(mode)}`,
+        );
+      }
+    }
+  }
+
+  private async *readContainerCopyArchive(
+    destination: string,
+    contents: AsyncIterable<LocalWorkspaceContent>,
+    execArgs: string[],
+    permissions: { path: string; mode: number }[],
+    budget: DockerResourceCopyBudget,
+  ): AsyncGenerator<Uint8Array, void> {
+    const creationMask = process.umask();
+    const appendedDirectories = new Set<string>();
+    for await (const content of contents) {
+      const item = { ...content, path: posix.join(destination, content.path) };
+      const parents: string[] = [];
+      for (
+        let parent = posix.dirname(item.path);
+        parent !== this.state.manifest.root &&
+        pathWithinDockerMount(parent, this.state.manifest.root);
+        parent = posix.dirname(parent)
+      )
+        parents.unshift(parent);
+      for (const path of parents) {
+        if (appendedDirectories.has(path)) continue;
+        budget.addMember(path, 0);
+        yield* this.readContainerCopyEntry(
+          execArgs,
+          { type: 'dir', path },
+          creationMask,
+          budget,
+        );
+        appendedDirectories.add(path);
+      }
+      const size =
+        item.type === 'file'
+          ? 'chunks' in item
+            ? item.size
+            : item.content.byteLength
+          : 0;
+      budget.addMember(item.path, size);
+      yield* this.readContainerCopyEntry(execArgs, item, creationMask, budget);
+      if (item.type === 'dir') appendedDirectories.add(item.path);
+      if (item.permissions !== undefined && item.type !== 'symlink') {
+        permissions.push({ path: item.path, mode: item.permissions });
+      }
+    }
+    budget.addInputBytes(1024);
+    yield Buffer.alloc(1024);
+  }
+
+  private async createPrivateGitSourceRoot(): Promise<string> {
+    const mounts = await inspectDockerBindMounts(this.state.containerId);
+    if (mounts === undefined) {
+      throw new UserError('Cannot verify a private Git temporary directory.');
+    }
+    const parent = await realpath(tmpdir());
+    if (mounts.some((mount) => isHostPathWithinRoot(mount.source, parent))) {
+      throw new SandboxUnsupportedFeatureError(
+        'Git resources require a host temporary directory outside the sandbox mounts. Configure TMPDIR to an unshared directory.',
+      );
+    }
+    return await mkdtemp(join(parent, 'openai-agents-git-source-'));
+  }
+
+  private async *readContainerCopyEntry(
+    execArgs: string[],
+    item: LocalWorkspaceContent,
+    creationMask: number,
+    budget: DockerResourceCopyBudget,
+  ): AsyncGenerator<Uint8Array, void> {
+    await this.validateContainerCopyPath(item.path);
+    const result = await runDockerProcess([
+      ...execArgs,
+      'stat',
+      '-c',
+      '%f',
+      '--',
+      item.path,
+    ]);
+    let mode = (item.type === 'dir' ? 0o777 : 0o666) & ~creationMask;
+    if (result.status === 0) {
+      const existingMode = Number.parseInt(result.stdout.trim(), 16);
+      if (
+        (existingMode & 0o170000) !==
+        (item.type === 'dir'
+          ? 0o040000
+          : item.type === 'file'
+            ? 0o100000
+            : 0o120000)
+      ) {
+        throw new UserError(
+          `Entry destination has a conflicting file type: ${item.path}`,
+        );
+      }
+      if (item.type === 'dir') {
+        if (item.mustBeEmpty) {
+          const contents = await runDockerProcess([
+            ...execArgs,
+            'find',
+            item.path,
+            '-mindepth',
+            '1',
+            '-maxdepth',
+            '1',
+            '-print',
+            '-quit',
+          ]);
+          if (contents.status !== 0 || contents.stdout !== '') {
+            throw new UserError(
+              'git_repo destination must be an empty directory.',
+            );
+          }
+        }
+        // Do not ask tar to change an existing parent's mode or ownership.
+        return;
+      }
+      mode = existingMode & 0o7777;
+    } else if (
+      result.status !== 1 ||
+      !/: No such file or directory\n$/.test(result.stderr)
+    ) {
+      throw new UserError(
+        `DockerSandboxClient failed to inspect entry destination: ${formatSandboxProcessError(result)}`,
+      );
+    }
+    const size =
+      item.type === 'file'
+        ? 'chunks' in item
+          ? item.size
+          : item.content.byteLength
+        : 0;
+    const header = new Header({
+      path: posix.relative(this.state.manifest.root, item.path) || '.',
+      type:
+        item.type === 'dir'
+          ? 'Directory'
+          : item.type === 'file'
+            ? 'File'
+            : 'SymbolicLink',
+      ...(item.type === 'symlink' ? { linkpath: item.target } : {}),
+      // Final directory modes are applied after all descendant chmod calls.
+      mode:
+        item.type === 'dir' && item.permissions !== undefined
+          ? mode | 0o700
+          : (item.permissions ?? mode),
+      size,
+      mtime: new Date(),
+    });
+    if (header.encode()) {
+      const pax = new Pax(header).encode();
+      budget.addInputBytes(pax.byteLength);
+      yield pax;
+    }
+    budget.addInputBytes(512);
+    yield header.block!;
+    if (item.type === 'file') {
+      if ('chunks' in item) {
+        for await (const chunk of item.chunks) {
+          budget.addInputBytes(chunk.byteLength);
+          yield chunk;
+        }
+      } else {
+        budget.addInputBytes(item.content.byteLength);
+        yield item.content;
+      }
+      const padding = (512 - (size % 512)) % 512;
+      budget.addInputBytes(padding);
+      yield Buffer.alloc(padding);
+    }
+  }
+
+  private async validateContainerCopyPath(path: string): Promise<void> {
+    const output = await resolveTrustedDockerPath(
+      this,
+      path,
+      'resolve an entry destination',
+    );
+    const resolved = output.endsWith('\n') ? output.slice(0, -1) : output;
+    if (
+      !resolved.startsWith('/') ||
+      !pathWithinDockerMount(resolved, this.state.manifest.root)
+    ) {
+      throw new UserError('Entry destination escapes the workspace.');
+    }
+    // Source filenames are literal filesystem names, not normalized tool paths.
+    this.assertContainerPathWritable(path);
+    this.assertContainerPathWritable(resolved);
   }
 
   private async materializeDockerInContainerEntry(
@@ -453,7 +760,21 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       providerEffectsMayHaveStarted = true;
       await provisionDockerAccounts(this.state.containerId, manifest);
       const materializedManifest = stripDockerIdentityMetadata(manifest);
-      await materializeLocalWorkspaceManifest(
+      const permissions: { path: string; mode: number }[][] = [];
+      const budget = new DockerResourceCopyBudget(this.archiveLimits);
+      for (const [path, entry] of Object.entries(
+        withoutDockerMountEntries(materializedManifest.entries),
+      )) {
+        permissions.push(
+          await this.copyEntryIntoContainer(
+            this.resolveLogicalPath(path),
+            entry,
+            nextManifest.extraPathGrants,
+            budget,
+          ),
+        );
+      }
+      await materializeLocalWorkspaceManifestMounts(
         materializedManifest,
         this.state.workspaceRootPath,
         {
@@ -470,6 +791,9 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
           },
         },
       );
+      for (const entryPermissions of permissions) {
+        await this.applyContainerCopyPermissions(entryPermissions);
+      }
       if (runAs) {
         for (const [path, entry] of Object.entries(manifest.entries)) {
           if (isMount(entry)) {
@@ -703,25 +1027,27 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       );
     }
     if (options.forWrite) {
-      const mount = this.state.manifest
-        .mountTargets()
-        .map(({ logicalPath, entry }) => ({
-          path: resolveDockerMountPath(
-            this.state.manifest.root,
-            logicalPath,
-            entry,
-          ),
-          entry,
-        }))
-        .sort((left, right) => right.path.length - left.path.length)
-        .find((mount) => pathWithinDockerMount(resolved.path, mount.path));
-      if (mount && (mount.entry.readOnly ?? true)) {
-        throw new UserError(
-          `Docker path "${resolved.path}" is inside a read-only mount.`,
-        );
-      }
+      this.assertContainerPathWritable(resolved.path);
     }
     return resolved.path;
+  }
+
+  private assertContainerPathWritable(path: string): void {
+    const mount = this.state.manifest
+      .mountTargets()
+      .map(({ logicalPath, entry }) => ({
+        path: resolveDockerMountPath(
+          this.state.manifest.root,
+          logicalPath,
+          entry,
+        ),
+        entry,
+      }))
+      .sort((left, right) => right.path.length - left.path.length)
+      .find((mount) => pathWithinDockerMount(path, mount.path));
+    if (mount && (mount.entry.readOnly ?? true)) {
+      throw new UserError(`Docker path "${path}" is inside a read-only mount.`);
+    }
   }
 
   async validateContainerFilesystemPath(
@@ -1100,6 +1426,7 @@ class DockerSandboxEditor implements Editor {
 /**
  * Docker file APIs run inside a running container using its default user or runAs.
  * They require /bin/sh and standard GNU filesystem utilities, including realpath.
+ * Resource materialization also requires GNU tar inside the container.
  * Editor updates reject source files larger than 10 MB before applying changes.
  * File helpers use an isolated environment; application and mount commands retain
  * their configured environment.
@@ -2666,6 +2993,25 @@ function stripDockerIdentityMetadata(manifest: Manifest): Manifest {
   return stripped;
 }
 
+// Mounts keep their dedicated setup path; only resource bytes use the writer.
+function withoutDockerMountEntries(
+  entries: Record<string, Entry>,
+): Record<string, Entry> {
+  return Object.fromEntries(
+    Object.entries(entries)
+      .filter(([, entry]) => !isMount(entry))
+      .map(([path, entry]) => [
+        path,
+        entry.type === 'dir'
+          ? {
+              ...entry,
+              children: withoutDockerMountEntries(entry.children ?? {}),
+            }
+          : entry,
+      ]),
+  );
+}
+
 function mergeDockerIdentityMetadata(
   current: Manifest,
   delta: Manifest,
@@ -2727,9 +3073,55 @@ async function inspectContainerRunning(containerId: string): Promise<boolean> {
   );
 }
 
+// One budget covers every resource and generated parent in a manifest update.
+class DockerResourceCopyBudget {
+  private readonly limits;
+  private members = 0;
+  private extractedBytes = 0;
+  private inputBytes = 0;
+
+  constructor(limits?: SandboxArchiveLimits | null) {
+    this.limits = resolveSandboxArchiveLimits(
+      limits === undefined ? {} : limits,
+    );
+  }
+
+  addMember(path: string, size: number): void {
+    this.check('member count', ++this.members, this.limits?.maxMembers, path);
+    this.extractedBytes += size;
+    this.check(
+      'extracted size',
+      this.extractedBytes,
+      this.limits?.maxExtractedBytes,
+      path,
+    );
+  }
+
+  addInputBytes(size: number): void {
+    this.inputBytes += size;
+    this.check('input size', this.inputBytes, this.limits?.maxInputBytes);
+  }
+
+  private check(
+    kind: string,
+    actual: number,
+    limit: number | null | undefined,
+    member?: string,
+  ): void {
+    if (limit != null && actual > limit) {
+      throw new SandboxArchiveError(`Docker resource ${kind} exceeds limit.`, {
+        reason: `archive ${kind} exceeds limit`,
+        limit,
+        actual,
+        ...(member === undefined ? {} : { member }),
+      });
+    }
+  }
+}
+
 async function runDockerProcess(
   args: string[],
-  input?: string | Uint8Array,
+  input?: string | Uint8Array | Readable,
   maxOutputBytes?: number,
 ): Promise<SandboxProcessResult> {
   const child = spawn('docker', args, {
@@ -2773,10 +3165,19 @@ async function runDockerProcess(
       stderrChunks.push(Buffer.from(error.message));
     });
   });
-  if (input !== undefined) {
-    child.stdin.write(input);
+  if (input instanceof Readable) {
+    try {
+      await pipeline(input, child.stdin);
+    } catch (error) {
+      stdinError = error as Error;
+      stderrChunks.push(Buffer.from(stdinError.message));
+      // Closing stdin ends the archive. Keep the client attached until the
+      // container writer exits; killing only the client can leave it running.
+    }
+  } else {
+    if (input !== undefined) child.stdin.write(input);
+    child.stdin.end();
   }
-  child.stdin.end();
 
   let status = await closed;
   if (outputLimitError) {
@@ -2788,6 +3189,9 @@ async function runDockerProcess(
       stderr: outputLimitError.message,
       error: outputLimitError,
     };
+  }
+  if (stdinError instanceof SandboxArchiveError) {
+    throw stdinError;
   }
   // Preserve command diagnostics, but never report success for failed input.
   if (status === 0 && stdinError) {
@@ -3059,6 +3463,14 @@ function dockerMountContainingPath(
   return undefined;
 }
 
+function containsGitRepo(entry: Entry): boolean {
+  return (
+    entry.type === 'git_repo' ||
+    (entry.type === 'dir' &&
+      Object.values(entry.children ?? {}).some(containsGitRepo))
+  );
+}
+
 function pathWithinDockerMount(path: string, mountPath: string): boolean {
   if (mountPath === '/') {
     return true;
@@ -3295,6 +3707,25 @@ async function prepareDockerMountCredentialFiles(
     entry: preparedEntry as Mount | TypedMount,
     environment: preparedEnvironment,
   };
+}
+
+function dockerResourceExecArgs(session: DockerSandboxSession): string[] {
+  const args = [
+    'exec',
+    '-i',
+    '-w',
+    '/',
+    ...dockerFileEnvironmentArgs(session.state.environment),
+  ];
+  if (session.state.defaultUser) args.push('-u', session.state.defaultUser);
+  args.push(
+    session.state.containerId,
+    '/usr/bin/env',
+    '-i',
+    'PATH=/usr/bin:/bin',
+    'LC_ALL=C',
+  );
+  return args;
 }
 
 function dockerFileEnvironmentArgs(

@@ -183,7 +183,7 @@ export class UnixLocalSandboxSession<
 > implements SandboxSession<TState> {
   readonly state: TState;
   protected readonly defaultShell?: string;
-  private archiveLimits?: SandboxArchiveLimits | null;
+  protected archiveLimits?: SandboxArchiveLimits | null;
   private readonly activeProcesses = new Map<number, ActiveProcess>();
   private nextSessionId = 1;
   private closePromise?: Promise<void>;
