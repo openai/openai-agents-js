@@ -6,11 +6,11 @@
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
-    "@openai/codex-sdk": "^0.160.0",
+    "@openai/codex-sdk": "^0.164.0",
     "chalk": "^5.6.2",
-    "openai": "^7.2.0",
-    "playwright": "^1.63.0",
-    "zod": "^4.3.5"
+    "openai": "^7.43.0",
+    "playwright": "^1.64.1",
+    "zod": "^4.6.7"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
