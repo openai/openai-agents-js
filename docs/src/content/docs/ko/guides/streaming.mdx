@@ -35,10 +35,12 @@ canonicalHeadingIds:
     id: 'human-in-the-loop-while-streaming'
     aliases:
       - '스트리밍-중-휴먼인더루프-hitl'
+      - '스트리밍-중-휴먼-인-더-루프-hitl'
   - depth: 2
     id: 'stop-a-stream-and-continue-the-same-turn'
     aliases:
       - '스트림-중지-및-동일-턴-계속-진행'
+      - '스트림-중지-및-동일-턴-계속-실행'
   - depth: 2
     id: 'tips'
     aliases:
@@ -55,7 +57,7 @@ import openaiResponsesRawModelStreamEventExample from '../../../../../../example
 import runItemStreamEventExample from '../../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
 import runAgentUpdatedStreamEventExample from '../../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
-Agents SDK는 모델과 기타 실행 단계의 출력을 점진적으로 전달할 수 있습니다. 스트리밍은 UI의 응답성을 유지하고, 전체 최종 결과를 기다리지 않고도 사용자에게 업데이트할 수 있게 해 줍니다.
+Agents SDK는 모델과 다른 실행 단계의 출력을 점진적으로 전달할 수 있습니다. 스트리밍을 사용하면 UI의 응답성을 유지하고, 전체 최종 결과가 나올 때까지 기다리지 않고도 사용자에게 업데이트를 제공할 수 있습니다.
 
 ## 스트리밍 활성화
 
@@ -63,11 +65,11 @@ Agents SDK는 모델과 기타 실행 단계의 출력을 점진적으로 전달
 
 <Code lang="typescript" code={basicStreamingExample} title="스트리밍 활성화" />
 
-스트리밍이 활성화되면 반환되는 `stream`은 `AsyncIterable` 인터페이스를 구현합니다. yield되는 각 이벤트는 실행 내에서 발생한 일을 설명하는 객체입니다. 스트림은 세 가지 이벤트 유형 중 하나를 yield하며, 각각은 에이전트 실행의 서로 다른 부분을 설명합니다. 다만 대부분의 애플리케이션은 모델의 텍스트만 필요하므로, 스트림은 이를 위한 헬퍼를 제공합니다.
+스트리밍을 활성화하면 반환된 `stream`은 `AsyncIterable` 인터페이스를 구현합니다. 각 이벤트는 실행 중 발생한 일을 설명하는 객체입니다. 스트림은 세 가지 이벤트 유형 중 하나를 내보내며, 각 유형은 에이전트 실행의 서로 다른 부분을 설명합니다. 다만 대부분의 애플리케이션은 모델의 텍스트만 필요하므로, 스트림은 이를 위한 헬퍼를 제공합니다.
 
 ### 텍스트 출력 가져오기
 
-방출된 텍스트 스트림을 얻으려면 `stream.toTextStream()`을 호출합니다. `compatibleWithNodeStreams`가 `true`이면 반환값은 일반 Node.js `Readable`입니다. 이를 `process.stdout`이나 다른 대상으로 직접 pipe할 수 있습니다.
+`stream.toTextStream()`을 호출하면 생성된 텍스트의 스트림을 얻을 수 있습니다. `compatibleWithNodeStreams`가 `true`이면 반환값은 일반적인 Node.js `Readable`입니다. 이를 `process.stdout`이나 다른 대상으로 직접 파이프할 수 있습니다.
 
 <Code
   lang="typescript"
@@ -76,13 +78,13 @@ Agents SDK는 모델과 기타 실행 단계의 출력을 점진적으로 전달
   meta={`{13-17}`}
 />
 
-Promise인 `stream.completed`는 실행과 대기 중인 모든 콜백이 완료되면 resolve됩니다. 더 이상 출력이 없음을 보장하려면 항상 이를 await 하세요. 여기에는 마지막 텍스트 토큰이 도착한 뒤 완료되는 세션 영속성 또는 히스토리 압축 훅 같은 후처리 작업도 포함됩니다.
+`stream.completed` 프로미스는 실행과 대기 중인 모든 콜백이 완료되면 이행됩니다. 더 이상 출력이 없음을 확인하려면 항상 이를 기다리세요. 여기에는 마지막 텍스트 토큰이 도착한 후 완료되는 세션 영속화나 히스토리 압축 훅 같은 후처리 작업도 포함됩니다.
 
-`toTextStream()`은 어시스턴트 텍스트만 내보냅니다. 도구 호출, 핸드오프, 승인 및 기타 런타임 이벤트는 전체 이벤트 스트림에서 사용할 수 있습니다.
+`toTextStream()`은 어시스턴트 텍스트만 내보냅니다. 도구 호출, 핸드오프, 승인 및 기타 런타임 이벤트는 전체 이벤트 스트림에서 확인할 수 있습니다.
 
 ### 모든 이벤트 수신
 
-`for await` 루프를 사용해 각 이벤트가 도착하는 대로 검사할 수 있습니다. 유용한 정보에는 저수준 모델 이벤트, 에이전트 전환 및 SDK별 실행 정보가 포함됩니다:
+`for await` 루프를 사용하면 각 이벤트가 도착할 때마다 확인할 수 있습니다. 하위 수준 모델 이벤트, 에이전트 전환, SDK 전용 실행 정보 등 유용한 정보를 얻을 수 있습니다:
 
 <Code
   lang="typescript"
@@ -90,27 +92,27 @@ Promise인 `stream.completed`는 실행과 대기 중인 모든 콜백이 완료
   title="모든 이벤트 수신"
 />
 
-일반 텍스트 스트림과 원문 이벤트 스트림을 모두 출력하는 완성된 스크립트는 [스트리밍 예제](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)를 참고하세요.
+일반 텍스트 스트림과 원문 이벤트 스트림을 모두 출력하는 완전한 스크립트는 [스트리밍 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)를 참고하세요.
 
 ### Responses WebSocket 전송 방식(선택 사항)
 
 이 페이지의 스트리밍 API는 OpenAI Responses WebSocket 전송 방식에서도 작동합니다.
 
-전역으로 활성화하려면 `setOpenAIResponsesTransport('websocket')`를 사용하거나, `useResponsesWebSocket: true`를 설정한 자체 `OpenAIProvider`를 사용하세요.
+`setOpenAIResponsesTransport('websocket')`으로 전역 활성화하거나, `useResponsesWebSocket: true`를 설정한 자체 `OpenAIProvider`를 사용하세요.
 
-WebSocket으로 스트리밍하기 위해 `withResponsesWebSocketSession(...)`나 사용자 지정 `OpenAIProvider`가 꼭 필요하지는 않습니다. 실행 사이에 재연결해도 괜찮다면, 전송 방식을 활성화한 뒤에도 `run()` / `Runner.run(..., { stream: true })`가 계속 작동합니다.
+단순히 WebSocket을 통해 스트리밍하기 위해 `withResponsesWebSocketSession(...)`이나 사용자 정의 `OpenAIProvider`가 필요한 것은 아닙니다. 실행 사이에 다시 연결해도 괜찮다면, 전송 방식을 활성화한 후에도 `run()` / `Runner.run(..., { stream: true })`를 그대로 사용할 수 있습니다.
 
-연결 재사용과 더 명시적인 프로바이더 생명주기 제어가 필요할 때는 `withResponsesWebSocketSession(...)` 또는 사용자 지정 `OpenAIProvider` / `Runner`를 사용하세요.
+연결을 재사용하고 제공자의 수명 주기를 더 명시적으로 제어하려면 `withResponsesWebSocketSession(...)`이나 사용자 정의 `OpenAIProvider` / `Runner`를 사용하세요.
 
-`previousResponseId`를 사용한 이어가기는 HTTP 전송 방식과 동일한 의미 체계를 사용합니다. 차이는 전송 방식과 연결 생명주기뿐입니다.
+`previousResponseId`를 사용한 이어서 실행은 HTTP 전송 방식과 동일한 의미로 동작합니다. 차이는 전송 방식과 연결 수명 주기뿐입니다.
 
-프로바이더를 직접 빌드하는 경우 종료 시 `await provider.close()`를 호출해야 합니다. WebSocket 기반 모델 래퍼는 기본적으로 재사용을 위해 캐시되며, 프로바이더를 닫으면 해당 연결이 해제됩니다. `withResponsesWebSocketSession(...)`은 동일한 재사용을 제공하지만 정리를 단일 콜백 범위로 자동 제한합니다.
+제공자를 직접 구성한다면 종료할 때 `await provider.close()`를 호출하는 것을 잊지 마세요. WebSocket 기반 모델 래퍼는 기본적으로 재사용을 위해 캐시되며, 제공자를 닫으면 해당 연결이 해제됩니다. `withResponsesWebSocketSession(...)`도 동일하게 연결을 재사용하지만, 단일 콜백 범위에서 자동으로 정리합니다.
 
-스트리밍, 도구 호출, 승인, `previousResponseId`를 포함한 전체 예제는 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)를 참고하세요.
+스트리밍, 도구 호출, 승인 및 `previousResponseId`를 사용하는 전체 코드 예제는 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)를 참고하세요.
 
 ## 이벤트 유형
 
-스트림은 세 가지 이벤트 유형을 yield합니다:
+스트림은 세 가지 유형의 이벤트를 내보냅니다:
 
 ### raw_model_stream_event
 
@@ -120,7 +122,7 @@ WebSocket으로 스트리밍하기 위해 `withResponsesWebSocketSession(...)`�
   title="RunRawModelStreamEvent"
 />
 
-예:
+예시:
 
 ```json
 {
@@ -132,26 +134,26 @@ WebSocket으로 스트리밍하기 위해 `withResponsesWebSocketSession(...)`�
 }
 ```
 
-OpenAI provider를 사용하는 경우, `@openai/agents-openai`와 `@openai/agents`는 모두 `agents-core`의 제네릭 `RunRawModelStreamEvent` 계약을 변경하지 않고 원문 OpenAI 페이로드의 타입을 좁히는 헬퍼를 내보냅니다.
+OpenAI 제공자를 사용하는 경우, `@openai/agents-openai`와 `@openai/agents`는 모두 `agents-core`의 범용 `RunRawModelStreamEvent` 계약을 변경하지 않고도 원문 OpenAI 페이로드의 타입을 좁힐 수 있는 헬퍼를 내보냅니다.
 
 <Code
   lang="typescript"
   code={openaiResponsesRawModelStreamEventExample}
-  title="OpenAI 원문 모델 이벤트 타입 좁히기"
+  title="OpenAI 원문 모델 이벤트의 타입 좁히기"
 />
 
 전송 방식에 구애받지 않는 스트리밍 코드만 필요하다면, `event.type === 'raw_model_stream_event'`를 확인하는 것만으로도 충분합니다.
 
-OpenAI 모델을 사용하며 직접 캐스팅하지 않고 provider별 페이로드를 검사하려면, SDK는 타입 좁히기 헬퍼도 내보냅니다:
+OpenAI 모델을 사용하면서 수동 타입 단언 없이 제공자별 페이로드를 확인하려는 경우를 위해, SDK는 타입을 좁히는 헬퍼도 내보냅니다:
 
 - Responses 원문 이벤트용 `isOpenAIResponsesRawModelStreamEvent(event)`
 - Chat Completions 청크용 `isOpenAIChatCompletionsRawModelStreamEvent(event)`
 
-이러한 OpenAI 모델 이벤트의 경우, `RunRawModelStreamEvent.source`에도 `'openai-responses'` 또는 `'openai-chat-completions'` 중 하나가 채워집니다.
+이러한 OpenAI 모델 이벤트에서는 `RunRawModelStreamEvent.source`도 `'openai-responses'` 또는 `'openai-chat-completions'`로 설정됩니다.
 
-이는 `response.reasoning_summary_text.delta`, `response.output_item.done` 또는 MCP 인수 델타 같은 Responses 전용 이벤트를 검사하면서도 TypeScript가 기본 이벤트 형태를 알 수 있게 유지하고 싶을 때 특히 유용합니다.
+이는 TypeScript가 기반 이벤트 구조를 인식하도록 유지하면서 `response.reasoning_summary_text.delta`, `response.output_item.done` 또는 MCP 인수 델타와 같은 Responses 전용 이벤트를 확인하려는 경우에 특히 유용합니다.
 
-보다 자세한 OpenAI 전용 스트리밍 패턴은 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts), [`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts), [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)를 참고하세요.
+더 상세한 OpenAI 전용 스트리밍 패턴은 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts), [`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts), [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)를 참고하세요.
 
 ### run_item_stream_event
 
@@ -161,23 +163,23 @@ OpenAI 모델을 사용하며 직접 캐스팅하지 않고 provider별 페이�
   title="RunItemStreamEvent"
 />
 
-`name`은 어떤 종류의 항목이 생성되었는지 식별합니다:
+`name`은 생성된 항목의 종류를 나타냅니다:
 
 | `name` | 의미 |
 | --- | --- |
 | `message_output_created` | 메시지 출력 항목이 생성되었습니다. |
 | `handoff_requested` | 모델이 핸드오프를 요청했습니다. |
 | `handoff_occurred` | 런타임이 다른 에이전트로의 핸드오프를 완료했습니다. |
-| `tool_search_called` | `tool_search_call` 항목이 내보내졌습니다. |
-| `tool_search_output_created` | 로드된 도구 정의가 포함된 `tool_search_output` 항목이 내보내졌습니다. |
-| `tool_called` | 도구 호출 항목이 내보내졌습니다. |
-| `tool_output` | 도구 결과 항목이 내보내졌습니다. |
-| `reasoning_item_created` | 추론 항목이 내보내졌습니다. |
-| `tool_approval_requested` | 도구 호출이 사람의 승인을 위해 일시 중지되었습니다. |
+| `tool_search_called` | `tool_search_call` 항목이 출력되었습니다. |
+| `tool_search_output_created` | 로드된 도구 정의가 포함된 `tool_search_output` 항목이 출력되었습니다. |
+| `tool_called` | 도구 호출 항목이 출력되었습니다. |
+| `tool_output` | 도구 결과 항목이 출력되었습니다. |
+| `reasoning_item_created` | 추론 항목이 출력되었습니다. |
+| `tool_approval_requested` | 사람의 승인을 기다리기 위해 도구 호출이 일시 중지되었습니다. |
 
-`tool_search_*` 이벤트는 실행 중 지연된 도구를 로드하기 위해 `toolSearchTool()`을 사용하는 Responses 실행에만 나타납니다.
+`tool_search_*` 이벤트는 `toolSearchTool()`을 사용하여 실행 중에 지연 로딩 도구를 로드하는 Responses 실행에서만 나타납니다.
 
-핸드오프 페이로드 예:
+핸드오프 페이로드 예시:
 
 ```json
 {
@@ -200,7 +202,7 @@ OpenAI 모델을 사용하며 직접 캐스팅하지 않고 provider별 페이�
   title="RunAgentUpdatedStreamEvent"
 />
 
-예:
+예시:
 
 ```json
 {
@@ -211,32 +213,32 @@ OpenAI 모델을 사용하며 직접 캐스팅하지 않고 provider별 페이�
 }
 ```
 
-## 스트리밍 중 휴먼인더루프 (HITL)
+## 스트리밍 중 휴먼 인 더 루프 (HITL)
 
-스트리밍은 실행을 일시 중지하는 핸드오프(예: 도구에 승인이 필요한 경우)와 호환됩니다. 스트림 객체의 `interruptions` 필드는 대기 중인 승인들을 노출하며, 각각에 대해 `state.approve()` 또는 `state.reject()`를 호출해 실행을 계속할 수 있습니다. 스트림이 일시 중지되면 `stream.completed`가 resolve되고 `stream.interruptions`에는 처리할 승인들이 포함됩니다. `{ stream: true }`로 다시 실행하면 스트리밍 출력이 재개됩니다.
+스트리밍은 실행을 일시 중지하는 핸드오프와도 호환됩니다(예: 도구에 승인이 필요한 경우). 스트림 객체의 `interruptions` 필드는 대기 중인 승인 요청을 제공하며, 각 요청에 대해 `state.approve()` 또는 `state.reject()`를 호출하여 실행을 계속할 수 있습니다. 스트림이 일시 중지되면 `stream.completed`가 이행되고, `stream.interruptions`에 처리할 승인 요청이 포함됩니다. `{ stream: true }`로 다시 실행하면 출력 스트리밍이 재개됩니다.
 
 <Code
   lang="typescript"
   code={streamedHITLExample}
-  title="스트리밍 중 사람 승인 처리"
+  title="스트리밍 중 사람의 승인 처리"
 />
 
-사용자와 상호작용하는 더 완전한 예제는 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)입니다.
+사용자와 상호작용하는 더 상세한 코드 예제는 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)입니다.
 
-## 스트림 중지 및 동일 턴 계속 진행
+## 스트림 중지 및 동일 턴 계속 실행
 
-스트리밍 실행을 조기에 중지하려면 `run()`에 전달한 `signal`을 abort하거나 `stream.toStream()`에서 생성된 reader를 취소하세요. 어느 방법이든 실행이 정리된 것으로 간주하기 전에 여전히 `stream.completed`를 await 하세요. 코드가 이벤트 소비를 중단한 뒤에도 SDK가 현재 턴 입력을 영속화하거나 다른 정리 작업을 완료하고 있을 수 있습니다.
+스트리밍 실행을 조기에 중지하려면 `run()`에 전달한 `signal`을 중단하거나 `stream.toStream()`으로 생성한 리더를 취소하세요. 어느 방법을 사용하든 실행이 완전히 정리된 것으로 간주하기 전에 `stream.completed`를 기다려야 합니다. 코드에서 이벤트 소비를 중지한 후에도 SDK는 현재 턴의 입력을 영속화하거나 다른 정리 작업을 마무리하고 있을 수 있습니다.
 
-스트림이 취소되면 `stream.cancelled`가 `true`가 되고, 현재 턴이 완료되지 않았기 때문에 `stream.finalOutput`은 종종 `undefined`로 남습니다. 나중에 해당 미완료 턴을 계속하려면 새 사용자 메시지를 추가하는 대신 동일한 에이전트를 `stream.state`로 다시 실행하세요. 이렇게 하면 턴 카운팅이 올바르게 유지되고 `RunState`에 이미 저장된 `conversationId` 또는 `previousResponseId`가 재사용됩니다.
+스트림이 취소되면 `stream.cancelled`가 `true`가 되며, 현재 턴이 완료되지 않았기 때문에 `stream.finalOutput`은 `undefined`로 남는 경우가 많습니다. 나중에 완료되지 않은 턴을 계속 실행하려면 새 사용자 메시지를 추가하는 대신 `stream.state`로 동일한 에이전트를 다시 실행하세요. 이렇게 하면 턴 수를 올바르게 유지하고 `RunState`에 이미 저장된 `conversationId` 또는 `previousResponseId`를 재사용할 수 있습니다.
 
-세션 영속성도 사용 중이라면, 대화가 동일한 백킹 스토어에 계속 기록되도록 재개된 `run()` 호출에 동일한 `session`을 다시 전달하세요.
+세션 영속화도 사용 중이라면, 재개하는 `run()` 호출에 동일한 `session`을 다시 전달하여 대화가 동일한 저장소에 계속 기록되도록 하세요.
 
-승인으로 인한 일시 중지도 같은 규칙을 따릅니다. `stream.interruptions`를 처리한 다음, 새 턴을 시작하지 말고 `stream.state`에서 재개하세요.
+승인을 위한 일시 중지에도 같은 규칙이 적용됩니다. `stream.interruptions`를 처리한 다음 새 턴을 시작하는 대신 `stream.state`에서 재개하세요.
 
 ## 팁
 
-- 종료하기 전에 모든 출력이 flush되었는지 확인하려면 `stream.completed`를 기다리세요.
-- 초기 `{ stream: true }` 옵션은 제공된 호출에만 적용됩니다. `RunState`로 다시 실행하는 경우 이 옵션을 다시 지정해야 합니다.
-- 애플리케이션이 텍스트 결과에만 관심이 있다면 개별 이벤트 객체를 다루지 않도록 `toTextStream()`을 사용하는 것이 좋습니다.
+- 모든 출력이 완전히 전달되도록 종료 전에 반드시 `stream.completed`를 기다리세요.
+- 최초의 `{ stream: true }` 옵션은 해당 옵션을 전달한 호출에만 적용됩니다. `RunState`로 다시 실행하는 경우에는 이 옵션을 다시 지정해야 합니다.
+- 애플리케이션에 텍스트 결과만 필요하다면 개별 이벤트 객체를 처리하지 않아도 되는 `toTextStream()`을 사용하는 것이 좋습니다.
 
-스트리밍과 이벤트 시스템을 사용하면 에이전트를 채팅 인터페이스, 터미널 애플리케이션 또는 사용자가 점진적 업데이트의 이점을 얻는 모든 곳에 통합할 수 있습니다.
+스트리밍과 이벤트 시스템을 사용하면 채팅 인터페이스, 터미널 애플리케이션 등 점진적 업데이트가 사용자에게 유용한 모든 환경에 에이전트를 통합할 수 있습니다.
