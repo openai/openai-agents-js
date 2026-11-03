@@ -12,21 +12,33 @@ The command prints `Web starter: http://127.0.0.1:PORT`. Open that address. Choo
 
 The identity selector is synthetic. It is not production authentication. Any local caller can choose either identity. The service binds only `127.0.0.1`, checks its Host and Origin, and accepts only the two fixed identities.
 
-A request key belongs to one identity. Retrying the same key and task recovers its receipt. Changing the task under that key fails. Disconnecting, reloading, or switching users detaches a reader; execution continues. Reconnect fetches a complete authorized snapshot. Stop sends a command to the exact Turn owner. The snapshot stays `stopping` until native and application cleanup joins.
+A request key belongs to one identity. Retrying the same key and task recovers its receipt. Changing the task under that key fails.
+
+Disconnecting, reloading, or switching users detaches a reader. Execution continues. Reconnect fetches a complete authorized snapshot. Stop sends a command to the exact Turn owner. The snapshot stays `stopping` until native and application cleanup finishes.
 
 The application keeps one active worker and at most three queued tasks. Its 30-second deadline starts at admission, including queue and approval time. Cleanup may take longer. The slot remains held through cleanup. Each HTTP body, reader count, connection count, model-visible result, and stored record is bounded.
 
-The service creates the state directory with mode `0700`. Choose an application-trusted parent and use a persistent path if receipts must survive restart. The private POSIX directory must be owned by the current user with mode `0700`. State files must be private regular files with a single link. A SQLite writer lock permits one application process to own the directory. Restart marks unfinished receipts `unknown`; it never retries their effects automatically. An artifact committed before a later failure remains available to its owner. Receipts, artifacts, and checkpoint metadata expire after one hour. Report references expire with the MCP credential that created them. Expiry denies access but does not delete bytes. At 128 receipts or reports the store refuses more writes. Stop the application before explicitly deleting or retiring its directory. Do not share the directory between processes or users.
+The service creates the state directory with mode `0700`. Choose an application-trusted parent and use a persistent path if receipts must survive restart. The private POSIX directory must be owned by the current user with mode `0700`. State files must be private regular files with a single link. A SQLite writer lock permits one application process to own the directory.
+
+Restart marks unfinished receipts `unknown`. It never retries their effects automatically. An artifact committed before a later failure remains available to its owner.
+
+Receipts, artifacts, and checkpoint metadata expire after one hour. Report references expire with the MCP credential that created them. Expiry denies access but does not delete bytes. The store refuses more writes when it reaches 128 receipts or reports.
+
+Stop the application before explicitly deleting or retiring its directory. Do not share the directory between processes or users.
 
 Approval tokens stay in worker memory and identify the exact issued manual request. They are scoped to one owner and receipt, expire at the deadline, and are consumed when a decision is enqueued. The worker awaits native acceptance of that request's reply before committing publication. Browser JSON cannot create native reply authority. Pending requests and tokens are never saved.
 
-Only settled Session checkpoints are saved. The programmatic `worker.restore(owner, receipt)` demonstration opens a new Session with current context, current tools, and newly issued MCP credentials. It does not restore live requests or expose a generic restore endpoint. MCP credentials are server-side and are revoked after joined cleanup. The peer separately enforces scope, rotation, expiry, and revocation. Approval cannot undo an earlier remote report effect or prevent prior tool discovery. Full synthetic reports stay in SQLite; the model sees only a bounded summary and opaque reference. This uses ordinary MCP, without the experimental Tasks adapter.
+Only settled Session checkpoints are saved. The programmatic `worker.restore(owner, receipt)` demonstration opens a new Session with current context, current tools, and newly issued MCP credentials. It does not restore live requests or expose a generic restore endpoint.
+
+MCP credentials are server-side and are revoked after joined cleanup. The peer separately enforces scope, rotation, expiry, and revocation. Approval cannot undo an earlier remote report effect or prevent prior tool discovery.
+
+Full synthetic reports stay in SQLite; the model sees only a bounded summary and opaque reference. This uses ordinary MCP, without the experimental Tasks adapter.
 
 ## Recover and control work over HTTP
 
 The page saves only the selected user's receipt and request key in local storage. It keeps approval tokens, artifacts, and results in memory. After a reload, the page fetches a fresh snapshot for the saved receipt. If a submission lost its reply before saving a receipt, re-enter the exact original task and retry the same key. The page resets the task field to its default on reload, so it cannot reconstruct a custom request for you. A new key starts new work.
 
-Every application route below requires `?owner=alice` or `?owner=bob`. This parameter selects a synthetic identity; it is not an access credential.
+Every application route below requires `?owner=alice` or `?owner=bob`. This parameter selects a synthetic identity. It is not an access credential.
 
 | Request | Result |
 | --- | --- |
@@ -37,7 +49,7 @@ Every application route below requires `?owner=alice` or `?owner=bob`. This para
 | `POST /tasks/:receipt/stop` with `{}` | Request cancellation and return 202. Active work remains `stopping` until cleanup joins. |
 | `GET /artifacts/:handle` | Download the owner's validated `presentation.json` bytes. |
 
-Foreign approval and Stop requests return 404. Spent, expired, or wrong-request approval tokens return 409. After an uncertain approval response, refresh the snapshot instead of automatically replaying the decision. A full queue returns 429. Deadlines include queue and approval time; they are cooperative and do not enforce a hard token or cost ceiling.
+Foreign approval and Stop requests return 404. Spent, expired, or wrong-request approval tokens return 409. After an uncertain approval response, refresh the snapshot instead of automatically replaying the decision. A full queue returns 429. Deadlines include queue and approval time. They are cooperative and do not enforce a hard token or cost ceiling.
 
 ## Run a local service or separate worker
 
@@ -63,4 +75,8 @@ CHROMIUM_PATH=/path/to/chromium node packages/agents/examples/web-starter/browse
 CHROMIUM_PATH=/path/to/chromium node packages/agents/examples/web-starter/browser-check.mjs http://127.0.0.1:PORT
 ```
 
-A successful probe prints a JSON record for `sandboxed Chromium launch and CDP control`. Run the full witness against a fresh service started with a new state directory; it exercises Send, disconnect, reload, identity isolation, approval, exact download bytes, denial, and Stop. If the probe reports `No usable sandbox`, use a host that supports Chromium's normal sandbox. API tests do not prove browser behavior. Do not disable Chromium's sandbox as a workaround. Live model mode, distributed workers, automatic replay, production login, and durable restoration of pending approvals are outside this example.
+A successful probe prints a JSON record for `sandboxed Chromium launch and CDP control`. Run the full witness against a fresh service started with a new state directory. It exercises Send, disconnect, reload, identity isolation, approval, exact download bytes, denial, and Stop.
+
+If the probe reports `No usable sandbox`, use a host that supports Chromium's normal sandbox. API tests do not prove browser behavior. Do not disable Chromium's sandbox as a workaround.
+
+Live model mode, distributed workers, automatic replay, production login, and durable restoration of pending approvals are outside this example.

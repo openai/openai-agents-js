@@ -1,6 +1,6 @@
 # Realtime Next.js Demo
 
-This example shows how to combine Next.js with the OpenAI Agents SDK to create a realtime voice agent.
+This example combines Next.js with the OpenAI Agents SDK to create a realtime voice agent.
 
 ## Run the example
 
@@ -14,6 +14,6 @@ Open [http://localhost:3000](http://localhost:3000) in your browser and start ta
 
 ## Endpoints
 
-- **`/`** – WebRTC voice demo using the `RealtimeSession` class. Code in `src/app/page.tsx`.
-- **`/websocket`** – Same agent over WebSockets. Code in `src/app/websocket/page.tsx`.
-- **`/raw-client`** – Low-level WebRTC example using `OpenAIRealtimeWebRTC`. Code in `src/app/raw-client/page.tsx`.
+- **`/`**. WebRTC voice demo with the `RealtimeSession` class. See `src/app/page.tsx`.
+- **`/websocket`**. The same agent over WebSockets. See `src/app/websocket/page.tsx`.
+- **`/raw-client`**. Low-level WebRTC example with `OpenAIRealtimeWebRTC`. See `src/app/raw-client/page.tsx`.

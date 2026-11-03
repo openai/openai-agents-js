@@ -1,11 +1,11 @@
 # Model Context Protocol Example
 
-This example demonstrates how to use the [Model Context Protocol](https://modelcontextprotocol.io/) with the OpenAI Agents SDK.
+This example uses the [Model Context Protocol](https://modelcontextprotocol.io/) with the OpenAI Agents SDK.
 
-`filesystem-example.ts` starts a local MCP server exposing the files inside `sample_files/`. The agent reads those files through the protocol and can answer questions about them. The directory includes:
+`filesystem-example.ts` starts a local MCP server that exposes the files in `sample_files/`. The agent reads those files through the protocol and can answer questions about them. The directory includes:
 
-- `books.txt` – A list of favorite books.
-- `favorite_songs.txt` – A list of favorite songs.
+- `books.txt`. A list of favorite books.
+- `favorite_songs.txt`. A list of favorite songs.
 
 Run the example from the repository root:
 
@@ -19,7 +19,7 @@ pnpm -F mcp start:stdio
 pnpm -F mcp start:tool-filter
 ```
 
-`get-all-mcp-tools-example.ts` demonstrates how to use the `getAllMcpTools` function to fetch tools from multiple MCP servers:
+`get-all-mcp-tools-example.ts` uses `getAllMcpTools` to fetch tools from multiple MCP servers:
 
 ```bash
 pnpm -F mcp start:get-all-tools

@@ -23,6 +23,6 @@ The chooser receives the completed answer from the original `Turn.wait()`. Retur
 
 Each Turn has its own `beforeStep` counter, which starts at zero. The separate `maxTurns` limit bounds this example's outer loop. This example does not configure `beforeStep`.
 
-A pending native approval goes to `approve` before the chooser runs. The example replies through that original request and waits on its Turn again. Partial text, tool results and pending requests do not count as a completed answer. Applications using manual tools or MCP forms need their own request handlers; this example handles native approvals only.
+A pending native approval goes to `approve` before the chooser runs. The example replies through that original request and waits on its Turn again. Partial text, tool results and pending requests do not count as a completed answer. Applications using manual tools or MCP forms need their own request handlers. This example handles native approvals only.
 
-Errors or cancellation stop the loop and wait for the current Turn's cleanup. Both application callbacks must respect their supplied AbortSignal. The example also checks cancellation after the chooser returns and immediately before submitting another Turn. The application owns and closes the Session, its provider and any approval UI resources.
+Errors or cancellation stop the loop and wait for the current Turn's cleanup. Both application callbacks must respect the AbortSignal they receive. The example also checks cancellation after the chooser returns and immediately before submitting another Turn. The application owns and closes the Session, its provider and any approval UI resources.

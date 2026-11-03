@@ -9,9 +9,9 @@ import { Aside, LinkCard } from '@astrojs/starlight/components';
 
 ![Voice Agents](https://cdn.openai.com/API/docs/images/diagram-speech-to-speech.png)
 
-Voice Agents let you build low-latency spoken interfaces on top of OpenAI speech-to-speech models. The SDK keeps the Realtime API mental model intact, but wraps the raw event flow in `RealtimeAgent`, `RealtimeSession`, and transport helpers that make tools, guardrails, handoffs, and session history easier to work with.
+Voice Agents let you build low-latency spoken interfaces with OpenAI speech-to-speech models. The SDK uses the Realtime API concepts through `RealtimeAgent`, `RealtimeSession`, and transport helpers. These classes and helpers manage tools, guardrails, handoffs, and session history.
 
-Under the hood, the same Realtime concepts from the official [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/), and [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) guides still apply. The Agents SDK adds a TypeScript-first layer on top of that API so you can stay focused on product logic instead of rebuilding transport and event handling from scratch.
+The Realtime concepts in the official [Realtime API with WebRTC](https://developers.openai.com/api/docs/guides/realtime-webrtc/), [Realtime conversations](https://developers.openai.com/api/docs/guides/realtime-conversations/), and [voice activity detection](https://developers.openai.com/api/docs/guides/realtime-vad/) guides still apply. The Agents SDK adds TypeScript classes and helpers that handle transport and events so you can focus on product logic.
 
 <Aside type="note">
   Start with the Quickstart if you are connecting a browser client with WebRTC.
@@ -60,6 +60,6 @@ Under the hood, the same Realtime concepts from the official [Realtime API with 
 
 ## Why speech-to-speech
 
-Speech-to-speech models process user audio directly, so you do not have to build a separate speech-to-text, text reasoning, and text-to-speech chain for every turn. That keeps latency down and makes interruptions, mixed text and voice input, and tool calls feel much more natural in realtime applications.
+Speech-to-speech models process user audio directly, so you do not have to build a separate speech-to-text, text reasoning, and text-to-speech chain for every turn. This reduces latency and supports natural interruptions, mixed text and voice input, and tool calls in realtime applications.
 
 ![Speech-to-speech model](https://cdn.openai.com/API/docs/images/diagram-chained-agent.png)

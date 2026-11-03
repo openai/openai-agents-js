@@ -10,9 +10,9 @@ import toolApprovalDefinition from '../../../../../examples/docs/human-in-the-lo
 
 This guide covers the SDK's approval-based human-in-the-loop flow. When a tool call requires approval, the SDK pauses the run, returns `interruptions`, and lets you resume later from the same `RunState`.
 
-That approval surface is run-wide, not limited to the current top-level agent. The same pattern applies when the tool belongs to the current agent, to an agent reached through a handoff, or to a nested `agent.asTool()` execution. In the nested `agent.asTool()` case, the interruption still surfaces on the outer run, so you approve or reject it on the outer `result.state` and resume the original root run.
+Approvals apply across the entire run. The same pattern applies when the tool belongs to the current agent, to an agent reached through a handoff, or to a nested `agent.asTool()` execution. For nested `agent.asTool()` execution, the outer run returns the interruption. Approve or reject it on the outer `result.state`, then resume the original root run.
 
-With `agent.asTool()`, approvals can happen at two different layers: the agent tool itself can require approval via `asTool({ needsApproval })`, and tools inside the nested agent can later raise their own approvals after the nested run starts. Both are handled through the same outer-run interruption flow.
+With `agent.asTool()`, approvals can happen at two different layers: the agent tool itself can require approval via `asTool({ needsApproval })`, and tools inside the nested agent can later raise their own approvals after the nested run starts. The outer run handles both through the same interruption flow.
 
 This page focuses on the manual approval flow via `interruptions`. If your app can decide in code, some tool types also support programmatic approval callbacks so the run can continue without pausing. If you are setting up `agent.asTool()` itself, see the [tools guide](/openai-agents-js/guides/tools#4-agents-as-tools); this page covers what happens once any tool in that run hierarchy needs approval.
 
@@ -20,7 +20,7 @@ For `computerTool()`, use `onSafetyCheck` to accept or reject safety checks retu
 
 ## Approval flow
 
-You can define a tool that requires approval by setting the `needsApproval` option to `true` or to an async function that returns a boolean.
+To require approval for a tool, set `needsApproval` to `true` or to an async function that returns a boolean.
 
 <Code
   lang="typescript"
@@ -41,7 +41,7 @@ By default, function-tool input guardrails run only after approval, immediately 
 
 When `needsApproval` is a function, the SDK calls it only after the tool arguments have parsed into an inspectable object. Malformed JSON and non-object values fail closed: the SDK requests approval without invoking the callback or executing the tool. Approving that call still does not execute the tool; it continues through the normal argument parse-error path. Realtime function tools follow the same rule and emit `tool_approval_requested` for the invalid call.
 
-Sticky decisions created with `{ alwaysApprove: true }` or `{ alwaysReject: true }` are stored in the run state, so they survive `toString()` / `fromString()` when you resume the same paused run later.
+The run state stores sticky decisions created with `{ alwaysApprove: true }` or `{ alwaysReject: true }`. These decisions survive `toString()` and `fromString()` when you resume the same paused run later.
 
 Computer tool interruptions can represent a batch of actions in one `computer_call` on GA models. The SDK evaluates `needsApproval` per action before execution, so one pending approval can cover a sequence such as move + click. If you inspect `interruption.rawItem` to render a UI, handle both the GA `actions` array and the legacy single `action` field.
 
@@ -79,7 +79,7 @@ If you are also using a `session`, keep passing the same `session` when you resu
 
 ## Example
 
-Below is a more complete example of a human-in-the-loop flow that prompts for approval in the terminal and temporarily stores the state in a file.
+This more complete example prompts for approval in the terminal and temporarily stores the run state in a file.
 
 <Code
   lang="typescript"
@@ -91,9 +91,9 @@ See [the full example script](https://github.com/openai/openai-agents-js/tree/ma
 
 ## Dealing with longer approval times
 
-The human-in-the-loop flow is designed to be interruptible for longer periods of time without keeping your server running. If you need to shut down the request and continue later on you can serialize the state and resume later.
+The human-in-the-loop flow can pause for long periods without keeping your server running. To end the request and resume later, serialize the run state.
 
-You can serialize the state using `result.state.toString()` (or `JSON.stringify(result.state)`) and resume later on by passing the serialized state into `RunState.fromString(agent, serializedState)` where `agent` is the instance of the agent that triggered the overall run.
+Serialize the state with `result.state.toString()` or `JSON.stringify(result.state)`. To restore it later, pass the serialized state to `RunState.fromString(agent, serializedState)`, where `agent` is the instance that started the overall run.
 
 Output guardrails impose a stricter resume boundary when an approved function-tool result can become the run's final output. The current `RunState` schema records exact current-response generated-item ownership when the SDK can prove it, so supported output-bearing partial approval checkpoints can round-trip through serialized state. The SDK validates that ownership before further model, tool, or session side effects. Older snapshots and checkpoints with missing, invalid, or ambiguous ownership still fail closed with a `UserError`. Start a new run from safe input when this happens. Rebuild the same agent graph and preserve the original `toolUseBehavior`; do not work around an ownership error by replaying raw items.
 
@@ -101,7 +101,7 @@ When `RunState` is serialized, the SDK records stable agent identities for the h
 
 The `agent` passed to `RunState.fromString(agent, serializedState)` is the root of that rebuilt graph. During deserialization, the SDK traverses that agent's handoffs and `Agent.asTool()` references, then resolves every serialized agent reference in the state against the rebuilt graph. This includes the current agent and nested references held by generated items, processed model responses, and queued next steps.
 
-If you need to resume with a substituted graph, for example agents whose models or tools were wrapped by another runtime, deserialize the state with the original graph, serialize it again, then deserialize that string with the substituted root agent. Calling `state.setCurrentAgent(agent)` only changes the active agent and does not rewrite nested references that were already resolved during deserialization.
+To resume with a substituted graph, first deserialize the state with the original graph. Serialize the state again. Then deserialize that string with the substituted root agent. Follow this sequence, for example, when another runtime wraps the agents' models or tools. Calling `state.setCurrentAgent(agent)` only changes the active agent. It does not rewrite nested references that deserialization already resolved.
 
 If the resumed process needs to inject a fresh context object, use `RunState.fromStringWithContext(agent, serializedState, context, { contextStrategy })` instead.
 
@@ -110,7 +110,7 @@ If the resumed process needs to inject a fresh context object, use `RunState.fro
 
 Serialized run state includes your app context plus SDK-managed runtime metadata such as approvals, usage, nested `toolInput`, and pending nested agent-tool resumptions. If you plan to store or transmit serialized state, treat `runContext.context` as persisted data and avoid placing secrets there unless you intentionally want them to travel with the state.
 
-By default tracing API keys are omitted from serialized state so you do not accidentally persist secrets. Pass `result.state.toString({ includeTracingApiKey: true })` only when you intentionally need to move tracing credentials with the state.
+By default, the SDK omits tracing API keys from serialized state to avoid persisting secrets. Pass `result.state.toString({ includeTracingApiKey: true })` only when you intentionally need to move tracing credentials with the state.
 
 Store serialized state in application-controlled storage, such as a server-side database.
 
@@ -143,10 +143,10 @@ See the [CLI client/server simulation](https://github.com/openai/openai-agents-j
 ### Versioning pending tasks
 
 <Aside>
-  This primarily applies if you are trying to store your serialized state for a
-  longer time while doing changes to your agents.
+  This mainly applies when you store serialized state for a long time while
+  changing your agents.
 </Aside>
 
-If your approval requests take a longer time and you intend to version your agent definitions in a meaningful way or bump your Agents SDK version, we currently recommend for you to implement your own branching logic by installing two versions of the Agents SDK in parallel using package aliases.
+If approval requests take a long time and you plan to version your agent definitions or upgrade the Agents SDK, we currently recommend installing two SDK versions in parallel with package aliases. Use your own branching logic to select the version.
 
-In practice this means assigning your own code a version number and storing it along with the serialized state and guiding the deserialization to the correct version of your code.
+Assign your code a version number and store it with the serialized state. Use that number to select the correct code version during deserialization.

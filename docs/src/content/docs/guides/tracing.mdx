@@ -7,7 +7,7 @@ import { Aside, Code } from '@astrojs/starlight/components';
 import customTraceExample from '../../../../../examples/docs/custom-trace.ts?raw';
 import cloudflareWorkers from '../../../../../examples/docs/tracing/cloudflareWorkers.ts?raw';
 
-The Agents SDK includes built-in tracing, collecting a comprehensive record of events during an agent run: LLM generations, tool calls, handoffs, guardrails, and even custom events that occur. Using the [Traces dashboard](https://platform.openai.com/traces), you can debug, visualize, and monitor your workflows during development and in production.
+The Agents SDK traces events during agent runs, including LLM generations, tool calls, handoffs, guardrails, and custom events. Use the [Traces dashboard](https://platform.openai.com/traces) to debug, visualize, and monitor workflows during development and in production.
 
 <Aside type="note">
 
@@ -15,8 +15,8 @@ Tracing is enabled by default in server runtimes (Node.js, Deno, Bun). It is dis
 
 There are two ways to disable tracing in server environments:
 
-1. You can globally disable tracing by setting the env var `OPENAI_AGENTS_DISABLE_TRACING=1`
-2. You can disable tracing on a runner by setting [`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) to `true` in `new Runner(...)`
+1. Disable tracing globally with the environment variable `OPENAI_AGENTS_DISABLE_TRACING=1`
+2. Disable tracing on a runner by setting [`RunConfig.tracingDisabled`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#tracingdisabled) to `true` in `new Runner(...)`
 
 **_For organizations operating under a Zero Data Retention (ZDR) policy using OpenAI's APIs, tracing is unavailable._**
 
@@ -24,11 +24,11 @@ There are two ways to disable tracing in server environments:
 
 ## Export loop lifecycle
 
-In supported server runtimes, traces are exported on a regular interval. In some runtimes, including Cloudflare Workers, the automatic export loop is unavailable even though tracing itself is still enabled. In those environments you should call `getGlobalTraceProvider().forceFlush()` as part of your request lifecycle to export queued traces before the runtime is torn down.
+In supported server runtimes, the SDK exports traces at regular intervals. In some runtimes, including Cloudflare Workers, the automatic export loop is unavailable even though tracing itself is still enabled. In those environments, call `getGlobalTraceProvider().forceFlush()` during the request lifecycle to export queued traces before the runtime shuts down.
 
 This guidance does not apply to browsers because tracing is disabled there by default.
 
-For example, in a Cloudflare Worker, you should wrap your code into a `try/catch/finally` block and use `forceFlush()` with `waitUntil` to ensure that traces are exported before the worker exits.
+For example, in a Cloudflare Worker, wrap your code in a `try/catch/finally` block. Use `forceFlush()` with `waitUntil` to export traces before the worker exits.
 
 <Code
   lang="typescript"
@@ -38,7 +38,7 @@ For example, in a Cloudflare Worker, you should wrap your code into a `try/catch
 
 ## Traces and spans
 
-- **Traces** represent a single end-to-end operation of a "workflow". They're composed of Spans. Traces have the following properties:
+- **Traces** represent a single end-to-end workflow operation. They contain spans. Traces have the following properties:
   - `workflow_name`: This is the logical workflow or app. For example "Code generation" or "Customer service".
   - `trace_id`: A unique ID for the trace. Automatically generated if you don't pass one. Must have the format `trace_<32_alphanumeric>`.
   - `group_id`: Optional group ID, to link multiple traces from the same conversation. For example, you might use a chat thread ID.
@@ -69,31 +69,31 @@ Task and turn spans are enabled by default. Set `tracing: { includeTaskAndTurnSp
 
 By default, the trace is named "Agent workflow". You can set this name if you use `withTrace`, or you can configure the name and other properties with the [`RunConfig.workflowName`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#workflowname).
 
-In addition, you can set up [custom trace processors](#custom-tracing-processors) to push traces to other destinations (as a replacement, or secondary destination).
+Use [custom trace processors](#custom-tracing-processors) to send traces to other destinations instead of, or in addition to, OpenAI.
 
 ### Voice agent tracing
 
-If you are using `RealtimeAgent` and `RealtimeSession` with the default OpenAI Realtime API, tracing will automatically happen on the Realtime API side unless you disable it on the `RealtimeSession` using `tracingDisabled: true` or using the `OPENAI_AGENTS_DISABLE_TRACING` environment variable.
+With `RealtimeAgent`, `RealtimeSession`, and the default OpenAI Realtime API, the Realtime API traces automatically. To disable tracing, set `tracingDisabled: true` on the `RealtimeSession` or use the `OPENAI_AGENTS_DISABLE_TRACING` environment variable.
 
-Check out the [Voice agents guide](/openai-agents-js/guides/voice-agents) for more details.
+See the [Voice agents guide](/openai-agents-js/guides/voice-agents) for details.
 
 ## Higher level traces
 
-Sometimes, you might want multiple calls to `run()` to be part of a single trace. You can do this by wrapping the entire code in a `withTrace()`.
+To include multiple `run()` calls in one trace, wrap the calls in `withTrace()`.
 
 <Code lang="typescript" code={customTraceExample} />
 
-1. Because the two calls to `run` are wrapped in a `withTrace()`, the individual runs will be part of the overall trace rather than creating two traces.
+1. `withTrace()` groups the two `run` calls in one trace rather than creating two traces.
 
 ## Creating traces
 
 You can use the [`withTrace()`](/openai-agents-js/openai/agents-core/functions/withtrace/) function to create a trace. Alternatively, you can use `getGlobalTraceProvider().createTrace()` to create a new trace manually and pass it into `withTrace()`.
 
-The current trace is tracked via a [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) or the respective environment polyfills. This means that it works with concurrency automatically.
+The SDK tracks the current trace with [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) or environment-specific polyfills. This tracking handles concurrency automatically.
 
 ## Creating spans
 
-You can use the various `create*Span()` methods, such as `createTaskSpan()`, `createTurnSpan()`, `createGenerationSpan()`, and `createFunctionSpan()`, to create a span. Matching helpers such as `withTaskSpan()` and `withTurnSpan()` create and manage the span lifecycle around a callback. In general, you don't need to manually create spans. A [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) function is available for tracking custom span information.
+You can use the various `create*Span()` methods, such as `createTaskSpan()`, `createTurnSpan()`, `createGenerationSpan()`, and `createFunctionSpan()`, to create a span. Matching helpers such as `withTaskSpan()` and `withTurnSpan()` create and manage the span lifecycle around a callback. In general, you do not need to create spans manually. A [`createCustomSpan()`](/openai-agents-js/openai/agents-core/functions/createcustomspan/) function is available for tracking custom span information.
 
 Spans are automatically part of the current trace, and are nested under the nearest current span, which is tracked via a [Node.js `AsyncLocalStorage`](https://nodejs.org/api/async_context.html#class-asynclocalstorage) or the respective environment polyfills.
 
@@ -101,7 +101,7 @@ Spans are automatically part of the current trace, and are nested under the near
 
 Certain spans may capture potentially sensitive data.
 
-The `createGenerationSpan()` stores the inputs/outputs of the LLM generation, and `createFunctionSpan()` stores the inputs/outputs of function calls. These may contain sensitive data, so you can disable capturing that data via [`RunConfig.traceIncludeSensitiveData`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata).
+`createGenerationSpan()` stores LLM generation inputs and outputs. `createFunctionSpan()` stores function call inputs and outputs. These may contain sensitive data. To disable capture, use [`RunConfig.traceIncludeSensitiveData`](/openai-agents-js/openai/agents-core/type-aliases/runconfig/#traceincludesensitivedata).
 
 ## OpenAI tracing exporter
 
@@ -113,12 +113,12 @@ If you replace the default processors and later want to restore the default Open
 
 ## Custom tracing processors
 
-The high level architecture for tracing is:
+Tracing uses the following components:
 
-- At initialization, we create a global [`TraceProvider`](/openai-agents-js/openai/agents-core/classes/traceprovider), which is responsible for creating traces and can be accessed through [`getGlobalTraceProvider()`](/openai-agents-js/openai/agents-core/functions/getglobaltraceprovider/).
-- We configure the `TraceProvider` with a [`BatchTraceProcessor`](/openai-agents-js/openai/agents-core/classes/batchtraceprocessor/) that sends traces/spans in batches to a [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter/), which exports the spans and traces to the OpenAI backend in batches.
+- At initialization, the SDK creates a global [`TraceProvider`](/openai-agents-js/openai/agents-core/classes/traceprovider), which is responsible for creating traces and can be accessed through [`getGlobalTraceProvider()`](/openai-agents-js/openai/agents-core/functions/getglobaltraceprovider/).
+- The SDK configures the `TraceProvider` with a [`BatchTraceProcessor`](/openai-agents-js/openai/agents-core/classes/batchtraceprocessor/) that sends traces/spans in batches to a [`OpenAITracingExporter`](/openai-agents-js/openai/agents-openai/classes/openaitracingexporter/), which exports the spans and traces to the OpenAI backend in batches.
 
-To customize this default setup, to send traces to alternative or additional backends or modifying exporter behavior, you have two options:
+To send traces to other backends or change exporter behavior, use either of these functions:
 
 1. [`addTraceProcessor()`](/openai-agents-js/openai/agents-core/functions/addtraceprocessor) lets you add an **additional** trace processor that will receive traces and spans as they are ready. This lets you do your own processing in addition to sending traces to OpenAI's backend.
 2. [`setTraceProcessors()`](/openai-agents-js/openai/agents-core/functions/settraceprocessors) lets you **replace** the default processors with your own trace processors. This means traces will not be sent to the OpenAI backend unless you include a `TracingProcessor` that does so.

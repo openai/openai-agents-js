@@ -10,8 +10,6 @@ Report suspected security vulnerabilities privately as described in [SECURITY.md
 
 The development and pull request instructions below are for maintainers and repository collaborators.
 
-This guide covers community issue reports and development by repository collaborators.
-
 ## Repository structure
 
 This repository is a pnpm-managed monorepo that contains several packages:
@@ -22,12 +20,12 @@ This repository is a pnpm-managed monorepo that contains several packages:
 - `packages/agents-realtime`: Realtime bindings and implementations.
 - `packages/agents-extensions`: Extensions for additional workflows.
 
-Other important directories:
+The repository also contains these directories:
 
 - `docs/`: Documentation site (Astro).
-- `examples/`: Example projects demonstrating basic usage.
-- `scripts/`: Automation scripts (e.g. embedding metadata).
-- `helpers/`: Shared utilities used across tests and examples.
+- `examples/`: Example projects that show basic usage.
+- `scripts/`: Automation scripts, such as the metadata script.
+- `helpers/`: Shared utilities for tests and examples.
 
 ## Getting started
 
@@ -55,7 +53,7 @@ pnpm -r build-check
 pnpm test
 ```
 
-Optionally, you can run the example app or docs site:
+To run the example app or docs site, use these commands:
 
 - `pnpm examples:basic` to start the basic example
 - `pnpm docs:dev` to serve the documentation locally
@@ -70,7 +68,7 @@ To build the packages, run:
 pnpm build
 ```
 
-This compiles TypeScript into `dist/` directories for each package.
+The build compiles each package's TypeScript into its `dist/` directory.
 
 ### Testing
 
@@ -80,11 +78,11 @@ Run the full test suite with:
 pnpm test
 ```
 
-Tests use Vitest and are located alongside source files in each package under `packages/*/test`.
+Tests use Vitest. Each package keeps its tests under `packages/*/test`.
 
-For provider-neutral agent workflow tests, prefer `ScriptedModel` from the Core testing utilities instead of adding a new mock or fake `Model`. Use `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox session calls. Keep a specialized test double only when the test specifically requires provider-wire conversion, malformed streams, controlled suspension or concurrency, or an exact abort or lifecycle boundary that the scripted utilities cannot preserve; document that boundary in the test.
+For provider-neutral agent workflow tests, prefer `ScriptedModel` from the Core testing utilities over a new mock or fake `Model`. Use `ScriptedRealtimeTransport` for Realtime session tests and `scriptedSandboxSession()` for deterministic Sandbox session calls. Keep a specialized test double only for behavior that the scripted utilities cannot preserve. This includes provider-wire conversion, malformed streams, controlled suspension or concurrency, and exact abort or lifecycle boundaries. Document the required behavior in the test.
 
-`pnpm test:review` omits the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. These remain mandatory in final `pnpm test` verification. This broad subset does not replace focused checks during implementation review or the final suite.
+`pnpm test:review` omits the slow subsystem-specific tests listed in `helpers/vitest/reviewTestProfile.ts`. Those tests remain mandatory in final `pnpm test` verification. The review suite replaces neither focused checks during implementation review nor the final suite.
 
 During iterative implementation review, run focused tests for the changed behavior and relevant subsystem boundaries with `pnpm exec vitest run <path>`, including applicable review-optional cases. Resolve uncertain coverage by tracing affected callers and dependencies and selecting the needed focused checks. Follow [implementation-final-review](.agents/skills/implementation-final-review/SKILL.md) for review sequencing; defer broad tests, builds, and repository-wide type checking until clean review. Then follow [code-change-verification](.agents/skills/code-change-verification/SKILL.md) for the complete final SDK stack. Explicit requests to run a suite outside implementation review remain supported.
 
@@ -172,14 +170,14 @@ These steps are for repository collaborators.
 
 ## Releasing
 
-Releasing happens automatically. After every push to `main` the CI will run. After it passed, the Changeset Action will check if there are any open changeset entries and add them to either an open version bump PR or create a new one.
+CI runs after every push to `main`. When CI passes, the Changeset Action checks for open changeset entries. It adds them to an existing version bump PR or creates a new one.
 
-For a maintainer to release a new version, the PR from Changeset has to be merged.
+To release a new version, a maintainer merges the PR from Changeset.
 
 ## License and code of conduct
 
-By contributing, you agree that your contributions will be licensed under the project’s MIT license.
+By contributing, you agree to license your contributions under the project's MIT license.
 
 ## Questions
 
-If you have questions or need guidance, please open an [issue](https://github.com/openai/openai-agents-js/issues).
+For help, open an [issue](https://github.com/openai/openai-agents-js/issues).

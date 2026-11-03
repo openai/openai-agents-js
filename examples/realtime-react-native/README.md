@@ -1,12 +1,12 @@
 # Realtime React Native
 
-This Expo development-build example uses `@openai/agents-realtime` with an app-owned `react-native-webrtc` transport. It does not call `registerGlobals()` and it never places a standard OpenAI API key in the mobile app.
+This Expo development-build example uses `@openai/agents-realtime` with a `react-native-webrtc` transport owned by the app. It does not call `registerGlobals()` and it never places a standard OpenAI API key in the mobile app.
 
 ## Requirements
 
 - Node.js 22.13 or newer and pnpm
 - Xcode 26.4 or newer for iOS, or Android Studio with Android SDK 36 for Android
-- iOS 16.4 or newer, or Android 7 or newer, on a simulator/emulator or physical device
+- iOS 16.4 or newer, or Android 7 or newer, on a simulator, emulator, or physical device
 - An `OPENAI_API_KEY` available only to the local token server
 
 Expo Go is not supported because `react-native-webrtc` contains native code. Build an Expo development client instead.
@@ -55,15 +55,15 @@ pnpm -F realtime-react-native ios
 # Or: pnpm -F realtime-react-native android
 ```
 
-Expo SDK 57 prebuild clears and regenerates the native directories by default. Preserve any local native edits first, then reapply them after generation. Rebuild the development client after every native dependency or Expo config plugin change; an SDK 55 development client cannot load this upgrade.
+Expo SDK 57 prebuild clears and regenerates the native directories by default. Preserve any local native edits first, then reapply them after generation. Rebuild the development client after every native dependency or Expo config plugin change. An SDK 55 development client cannot load this upgrade.
 
 ## What this example supports
 
 - Microphone input and remote audio through `react-native-webrtc`.
 - Realtime session events, text messages, interruption, and muting through the SDK transport contract.
-- Ephemeral client keys minted by a small server-side helper.
+- Ephemeral client keys created by a small server-side helper.
 
-On Xcode 26.6 with iOS 26.5 Simulator, microphone input and audio output are currently unreliable even when a Mac audio input is selected. As a temporary workaround, the example detects iOS Simulator and creates a text-only WebRTC session without initializing audio. This still exercises signaling, the data channel, text messages, and Realtime session events. The workaround can be removed when the upstream Simulator audio regression is fixed.
+On Xcode 26.6 with iOS 26.5 Simulator, microphone input and audio output are currently unreliable even when a Mac audio input is selected. As a temporary workaround, the example detects iOS Simulator and creates a text-only WebRTC session without initializing audio. The text-only session still exercises signaling, the data channel, text messages, and Realtime session events. The workaround can be removed when the upstream Simulator audio regression is fixed.
 
 For now, use a physical iOS device to test microphone input and spoken responses:
 
@@ -75,7 +75,7 @@ EXPO_PUBLIC_REALTIME_TOKEN_URL=http://192.168.1.20:8787/token pnpm -F realtime-r
 
 ### Default to the iPhone speaker
 
-On a physical iPhone, the WebRTC audio session may initially route spoken responses to the built-in receiver (the earpiece) rather than the built-in speaker. In `react-native-webrtc` 124.0.7, the JavaScript [`RTCAudioSession`](https://github.com/react-native-webrtc/react-native-webrtc/blob/124.0.7/src/RTCAudioSession.ts) API only exposes CallKit activation and deactivation hooks; it does not expose an output-route selector.
+On a physical iPhone, the WebRTC audio session may initially route spoken responses to the built-in receiver (the earpiece) rather than the built-in speaker. In `react-native-webrtc` 124.0.7, the JavaScript [`RTCAudioSession`](https://github.com/react-native-webrtc/react-native-webrtc/blob/124.0.7/src/RTCAudioSession.ts) API exposes only CallKit activation and deactivation hooks. It does not expose an output-route selector.
 
 For a local physical-device test that should default to speakerphone, generate the `ios` directory, then add this import to `ios/AgentsRealtimeReactNative/AgentsRealtimeReactNative-Bridging-Header.h`:
 
@@ -91,9 +91,9 @@ configuration.categoryOptions.insert(.defaultToSpeaker)
 RTCAudioSessionConfiguration.setWebRTC(configuration)
 ```
 
-This preserves the other WebRTC category options and adds Apple's [`defaultToSpeaker`](https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/defaulttospeaker) option to the configuration that WebRTC applies. It changes the default from the receiver to the built-in speaker; it does not provide a user-facing route picker.
+This preserves the other WebRTC category options and adds Apple's [`defaultToSpeaker`](https://developer.apple.com/documentation/avfaudio/avaudiosession/categoryoptions-swift.struct/defaulttospeaker) option to the configuration that WebRTC applies. It changes the default from the receiver to the built-in speaker. It does not provide a user-facing route picker.
 
-The `ios` directory in this example is generated and ignored by Git, and Expo prebuild can replace these edits. Direct edits are suitable for a one-off device test. A production app should make the native change reproducible with an Expo config plugin or manage and commit its native iOS project. This example intentionally leaves that app-specific audio-routing policy outside the SDK transport.
+The `ios` directory in this example is generated and ignored by Git. Expo prebuild can replace these edits. Direct edits are suitable for a one-off device test. A production app should make the native change reproducible with an Expo config plugin or manage and commit its native iOS project. The app owns this audio-routing policy, which remains outside the SDK transport.
 
 The SDK's built-in `OpenAIRealtimeWebRTC` remains a browser transport. React Native applications own their native WebRTC dependency, permissions, audio routing, and lifecycle through a custom transport such as this one.
 

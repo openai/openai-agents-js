@@ -23,7 +23,7 @@ import runOrchestrationExample from '../../../../../examples/docs/quickstart/run
 
 <Steps>
 
-1. Create a project and initialize npm. You'll only need to do this once.
+1. Create a project and initialize npm once.
 
    ```bash
    mkdir my_project
@@ -49,15 +49,15 @@ import runOrchestrationExample from '../../../../../examples/docs/quickstart/run
 
 ## Create your first agent
 
-Agents are defined with instructions and a name.
+Define an agent with instructions and a name.
 
 <Code lang="typescript" code={createAgentExample} title="Create an agent" />
 
 ## Run your first agent
 
-You can use the `run` method to run your agent. You trigger a run by passing both the agent you want to start on and the input you want to pass in.
+Call the `run` method with the starting agent and the input.
 
-This will return a result that contains the final output and any actions that were performed during that run.
+The result contains the final output and any actions performed during the run.
 
 <Code lang="typescript" code={runAgentExample} title="Run an agent" />
 
@@ -65,7 +65,7 @@ For a second turn, you can either pass `result.history` back into `run()`, attac
 
 ## Give your agent tools
 
-You can give an agent tools to use to look up information or perform actions.
+Give an agent tools to look up information or take actions.
 
 <Code lang="typescript" code={agentWithToolsExample} title="Add a tool" />
 
@@ -85,11 +85,11 @@ To orchestrate multiple agents, define an agent's `handoffs`. When a handoff is 
 
 <Code lang="typescript" code={defineHandoffsExample} title="Define handoffs" />
 
-After your run you can see which agent generated the final response by looking at the `lastAgent` property on the result.
+After the run, check the result's `lastAgent` property to see which agent generated the final response.
 
 ## Run the agent orchestration
 
-The runner handles executing individual agents, any handoffs, and any tool calls.
+The runner executes individual agents, handoffs, and tool calls.
 
 <Code
   lang="typescript"
@@ -99,19 +99,19 @@ The runner handles executing individual agents, any handoffs, and any tool calls
 
 ## Putting it all together
 
-Let's put it all together into one full example. Place this into your `index.js` file and run it. If your app is already set up for TypeScript, you can use `index.ts` instead.
+Put the complete example in your `index.js` file and run it. If your app is set up for TypeScript, use `index.ts` instead.
 
 <Code lang="typescript" code={quickstartExample} title="Quickstart" />
 
 ## View your traces
 
-The Agents SDK automatically generates traces. You can use these traces to review how your agents are operating, what tools they called, and which agents received handoffs.
+The Agents SDK generates traces that show how your agents ran, which tools they called, and which agents received handoffs.
 
-To review what happened during your agent run, navigate to the [Trace viewer in the OpenAI Dashboard](https://platform.openai.com/traces).
+To review your agent run, open the [Trace viewer in the OpenAI Dashboard](https://platform.openai.com/traces).
 
 ## Next steps
 
-Learn how to build more complex agentic flows:
+Build more complex agent workflows:
 
 - Learn about configuring [Agents](/openai-agents-js/guides/agents).
 - Learn about [running agents](/openai-agents-js/guides/running-agents) and [sessions](/openai-agents-js/guides/sessions).

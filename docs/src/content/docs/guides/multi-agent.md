@@ -3,24 +3,24 @@ title: Agent Orchestration
 description: Coordinate the flow between several agents
 ---
 
-Orchestration refers to the flow of agents in your app. Which agents run, in what order, and how do they decide what happens next? There are two main ways to orchestrate agents:
+Orchestration determines which agents run in your app, in what order, and how they decide what happens next. There are two main approaches:
 
 > Read this page after the [Quickstart](/openai-agents-js/guides/quickstart) or the [Agents guide](/openai-agents-js/guides/agents#composition-patterns). This page is about workflow design across multiple agents, not the `Agent` constructor itself.
 
-1. Allowing the LLM to make decisions: this uses the intelligence of an LLM to plan, reason, and decide on what steps to take based on that.
-2. Orchestrating via code: determining the flow of agents via your code.
+1. Let the LLM plan, reason, and decide which steps to take.
+2. Use code to determine the order in which agents run.
 
-You can mix and match these patterns. Each has their own tradeoffs, described below.
+You can combine these patterns. Each has tradeoffs, described below.
 
 ## Orchestrating via LLM
 
-An agent is an LLM equipped with instructions, tools and handoffs. This means that given an open-ended task, the LLM can autonomously plan how it will tackle the task, using tools to take actions and acquire data, and using handoffs to delegate tasks to sub-agents. For example, a research agent could be equipped with tools like:
+An agent is an LLM with instructions, tools, and handoffs. Given an open-ended task, the LLM can plan its approach, use tools to take actions and gather data, and delegate tasks to sub-agents through handoffs. For example, a research agent could use:
 
 - Web search to find information online
 - File search and retrieval to search through proprietary data and connections
 - Computer use to take actions on a computer
 - Code execution to do data analysis
-- Handoffs to specialized agents that are great at planning, report writing and more.
+- Handoffs to agents that specialize in tasks such as planning or report writing.
 
 ### Core SDK patterns
 
@@ -37,26 +37,26 @@ Use **handoffs** when routing itself is part of the workflow and you want the se
 
 You can combine the two patterns. A triage agent might hand off to a specialist, and that specialist can still use other agents as tools for bounded subtasks.
 
-This pattern is great when the task is open-ended and you want to rely on the intelligence of an LLM. The most important tactics here are:
+Use LLM orchestration for open-ended tasks where you want the LLM to make decisions. To improve results:
 
-1. Invest in good prompts. Make it clear what tools are available, how to use them, and what parameters it must operate within.
-2. Monitor your app and iterate on it. See where things go wrong, and iterate on your prompts.
-3. Allow the agent to introspect and improve. For example, run it in a loop, and let it critique itself; or, provide error messages and let it improve.
-4. Have specialized agents that excel in one task, rather than having a general purpose agent that is expected to be good at anything.
-5. Invest in [evals](https://platform.openai.com/docs/guides/evals). This lets you train your agents to improve and get better at tasks.
+1. Write clear prompts that explain which tools are available, how to use them, and which limits the agent must follow.
+2. Monitor your app for failures and revise your prompts.
+3. Let the agent review and improve its work. For example, run it in a loop to critique its output, or provide error messages it can use to improve.
+4. Use agents that specialize in one task instead of expecting one general-purpose agent to handle every task well.
+5. Use [evals](https://platform.openai.com/docs/guides/evals) to train your agents to improve at tasks.
 
 If you want the SDK primitives behind this style of orchestration, start with [tools](/openai-agents-js/guides/tools), [handoffs](/openai-agents-js/guides/handoffs), and [running agents](/openai-agents-js/guides/running-agents).
 
 ## Orchestrating via code
 
-While orchestrating via LLM is powerful, orchestrating via code makes tasks more deterministic and predictable, in terms of speed, cost and performance. Common patterns here are:
+Code orchestration makes tasks more deterministic and their speed, cost, and performance more predictable. Common patterns include:
 
-- Using [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) to generate well formed data that you can inspect with your code. For example, you might ask an agent to classify the task into a few categories, and then pick the next agent based on the category.
-- Chaining multiple agents by transforming the output of one into the input of the next. You can decompose a task like writing a blog post into a series of steps - do research, write an outline, write the blog post, critique it, and then improve it.
-- Running the agent that performs the task in a `while` loop with an agent that evaluates and provides feedback, until the evaluator says the output passes certain criteria.
-- Running multiple agents in parallel, e.g. via JavaScript primitives like `Promise.all`. This is useful for speed when you have multiple tasks that don't depend on each other.
+- Use [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) to generate well-formed data that your code can inspect. For example, ask an agent to classify a task, then pick the next agent based on the category.
+- Chain agents by transforming one agent's output into the next agent's input. For example, split blog writing into research, outlining, writing, critique, and revision.
+- Run a task agent in a `while` loop with an evaluator agent that provides feedback. Repeat until the evaluator says the output meets the criteria.
+- Run multiple agents in parallel with JavaScript features such as `Promise.all`. This improves speed when tasks don't depend on each other.
 
-We have a number of examples in [`examples/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns).
+See examples in [`examples/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns).
 
 ## Related guides
 

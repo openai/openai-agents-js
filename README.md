@@ -4,7 +4,7 @@ Build agents with the Codex harness in JavaScript and TypeScript. Define instruc
 
 ## Build agents in TypeScript
 
-Connect your existing functions and application data. The SDK validates tool arguments, calls your functions, and parses structured results into typed values. You can also connect tools from MCP servers.
+Connect your functions and application data. The SDK validates tool arguments, calls your functions, and parses structured results into typed values. You can also connect tools from MCP servers.
 
 Use the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview) when you want OpenAI to run the agent and manage sessions and recovery.
 
@@ -49,7 +49,7 @@ main().catch((error: unknown) => {
 });
 ```
 
-Set `OPENAI_API_KEY` in your environment, then run `npx tsx greeting.ts` from your project directory.
+Set `OPENAI_API_KEY` in your environment. From your project directory, run `npx tsx greeting.ts`.
 
 The example makes a live model request. When the model asks for the greeting tool, the SDK calls your function and sends the result back to the model. The script prints a greeting such as `Hello, Ada!`.
 

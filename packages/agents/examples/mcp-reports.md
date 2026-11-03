@@ -10,7 +10,7 @@ MCP_URL=http://localhost:8000/mcp pnpm exec tsx packages/agents/examples/mcp-rep
 
 This command makes live model calls. Set `OPENAI_API_KEY` in the server environment. The example uses `NativeProvider` and `gpt-5.5`; `OPENAI_BASE_URL` can select a compatible Responses endpoint. The MCP endpoint must advertise a tool named `report` that accepts an empty object and returns a text block plus `structuredContent: { "reportId": "example" }`. The demo's application map resolves that ID to a report. Replace the map lookup with an awaited call to your application's report service. Do not interpret peer results as arbitrary URLs or filesystem paths.
 
-The sequence is:
+The example follows these steps:
 
 1. Connect the application-owned MCP client, discover its declarations, and select only `report` for the native Session.
 2. Await the selected MCP call, then await the application's resolver. A peer error bypasses the resolver and creates no stored reference.
@@ -22,13 +22,13 @@ The example prints the final answer and the number of bytes retrieved from each 
 
 ## Bounds and ownership
 
-For successful results, the example limits the JSON representation of text blocks plus `structuredContent` to 4096 UTF-8 bytes. Excerpts contain at most 32 Unicode code points each and are excerpts, not generated summaries. Existing text slots keep their order and type. Text replacements also include the structured excerpt, since the selected content route consumes those text slots. A structured result without a text slot gets a text fallback.
+For successful results, the example limits the JSON representation of text blocks plus `structuredContent` to 4096 UTF-8 bytes. Excerpts contain at most 32 Unicode code points each. They are not generated summaries. Existing text slots keep their order and type. Text replacements also include the structured excerpt, since the selected content route consumes those text slots. A structured result without a text slot gets a text fallback.
 
-The example accepts up to eight original content blocks. It stores at most four reports, 64 KiB per report and 128 KiB in total, measured as serialized JSON. Capacity exhaustion rejects the new result; it does not evict a reference that the model or application may still hold. These are per-connection bounds, not a network response limit or a session-wide token budget.
+The example accepts up to eight original content blocks. It stores at most four reports, 64 KiB per report and 128 KiB in total, measured as serialized JSON. When storage is full, the example rejects the new result. It does not evict a reference that the model or application may still hold. These are per-connection bounds, not a network response limit or a session-wide token budget.
 
 An application-created symbol represents the authenticated reader. Keep it outside model arguments. Both enumeration and retrieval require that same identity. UUIDs alone do not grant access. References are process-local and expire when this server instance closes. They cannot be restored from saved conversation state. Use one instance per Session.
 
-Non-text blocks pass through unchanged. The selected SDK route retains its existing handling: images become image input, while other blocks are represented as JSON. This recipe does not fetch resource URLs, decode media or qualify audio and video processing. Non-text blocks are outside that 4096-byte bound, including audio or resource blocks represented as text by the selected SDK route. The serialized blocks count toward the storage limit when the example stores an entire report. A large media-only result can pass through without being stored. Use a separate media policy when adapting this example to untrusted or large media results.
+Non-text blocks pass through unchanged. The selected SDK route keeps its existing handling. Images become image input, and other blocks become JSON. This recipe does not fetch resource URLs, decode media or qualify audio and video processing. Non-text blocks are outside that 4096-byte bound, including audio or resource blocks represented as text by the selected SDK route. The serialized blocks count toward the storage limit when the example stores an entire report. A large media-only result can pass through without being stored. Use a separate media policy when adapting this example to untrusted or large media results.
 
 ## Failure and cancellation
 

@@ -11,15 +11,15 @@ import manifestExample from '../../../../../../examples/docs/sandbox-agents/mani
 import pathGrantsExample from '../../../../../../examples/docs/sandbox-agents/path-grants.ts?raw';
 import sdkOwnedLifecycleExample from '../../../../../../examples/docs/sandbox-agents/sdk-owned-lifecycle.ts?raw';
 
-Modern agents work best when they can operate on real files in a filesystem. **Sandbox Agents** can make use of specialized tools and shell commands to search over and manipulate large document sets, edit files, generate artifacts, and run commands. The sandbox provides the model with a persistent workspace that the agent can use to do work on your behalf. Sandbox Agents in the Agents SDK help you run agents paired with a sandbox environment, making it easy to get the right files on the filesystem and orchestrate sandboxes to start, stop, and resume tasks at scale.
+**Sandbox Agents** use specialized tools and shell commands to search and manipulate large document sets, edit files, and generate artifacts. The sandbox gives the model a persistent filesystem workspace. The Agents SDK pairs agents with sandbox environments, stages their files, and manages sandboxes to start, stop, and resume tasks at scale.
 
-You define the workspace around the data the agent needs. A fresh workspace can be populated from GitHub repos, local files and directories, synthetic task files, remote filesystems such as S3 or Azure Blob Storage, and other sandbox inputs you provide.
+Define the workspace with the data the agent needs. You can populate a fresh workspace with GitHub repos, local files and directories, synthetic task files, remote filesystems such as S3 or Azure Blob Storage, and other sandbox inputs.
 
 <figure class="sandbox-harness-image">
   <img src={harnessWithCompute.src} alt="Sandbox agent harness with compute" />
 </figure>
 
-`SandboxAgent` extends `Agent`, so it is still an `Agent`. It keeps the usual agent surface such as `instructions`, `tools`, `handoffs`, `mcpServers`, `modelSettings`, output types, guardrails, and hooks, and it still runs through the normal `run()` and `Runner` APIs. What changes is the execution boundary:
+`SandboxAgent` extends `Agent` and keeps the usual configuration, including `instructions`, `tools`, `handoffs`, `mcpServers`, `modelSettings`, output types, guardrails, and hooks, and it still runs through the normal `run()` and `Runner` APIs. The sandbox-specific pieces are:
 
 - `SandboxAgent` defines the agent itself: the usual agent configuration plus sandbox-specific defaults like `defaultManifest`, `baseInstructions`, `runAs`, and capabilities such as filesystem tools, shell access, skills, memory, or compaction.
 - `Manifest` declares the desired starting contents and layout for a fresh sandbox workspace, including files, repos, mounts, and environment.
@@ -70,11 +70,11 @@ Think about the lifecycle in three phases:
 2. Execute a run by giving `run()` or `Runner` a `sandbox` run option that injects, resumes, or creates the sandbox session.
 3. Continue later from runner-managed `RunState`, explicit sandbox `sessionState`, or a saved workspace snapshot.
 
-If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Reach for sandbox agents when workspace management, sandbox client choice, or sandbox-session resume behavior are part of the design.
+If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Use sandbox agents when your design needs workspace management, a choice of sandbox client, or sandbox-session resume behavior.
 
 ## When to use them
 
-Sandbox agents are a good fit for workspace-centric workflows, for example:
+Use sandbox agents for tasks that need a workspace, for example:
 
 - **Coding and debugging**: orchestrate automated fixes for issue reports in a GitHub repo and run targeted tests.
 - **Document processing and editing**: extract information from a user's financial documents and create a completed tax-form draft.
@@ -82,7 +82,7 @@ Sandbox agents are a good fit for workspace-centric workflows, for example:
 - **Isolated multi-agent patterns**: give each reviewer or coding sub-agent its own workspace.
 - **Multi-step workspace tasks**: fix a bug in one run and add a regression test later, or resume from snapshot or sandbox session state.
 
-If you do not need access to files or a living filesystem, keep using `Agent`. If shell access is just one occasional capability, add hosted shell; if the workspace boundary itself is part of the feature, use sandbox agents.
+If you do not need files or a filesystem, keep using `Agent`. Add hosted shell for occasional shell access. Use sandbox agents when your feature needs a managed workspace.
 
 ## Choose a sandbox client
 
@@ -119,7 +119,7 @@ A practical design order is:
 
 ## How a sandbox run is prepared
 
-At run time, the runner turns that definition into a concrete sandbox-backed run:
+At run time, the runner prepares the sandbox-backed run:
 
 1. It resolves the sandbox session from the `sandbox` run option.
 2. It determines the effective workspace inputs for the run.
@@ -127,7 +127,7 @@ At run time, the runner turns that definition into a concrete sandbox-backed run
 4. It builds the final instructions in a fixed order: the SDK's default sandbox prompt, or `baseInstructions` if you explicitly override it, then `instructions`, then capability instruction fragments, then any remote-mount policy text, then a rendered filesystem tree.
 5. It binds capability tools to the live sandbox session and runs the prepared agent through the normal `run()` and `Runner` APIs.
 
-Sandboxing does not change what a turn means. A turn is still a model step, not a single shell command or sandbox action. There is no fixed 1:1 mapping between sandbox-side operations and turns. As a practical rule, another turn is consumed only when the agent runtime needs another model response after sandbox work has happened.
+Sandboxing does not change what a turn means. A turn is still a model step, not a single shell command or sandbox action. Sandbox operations do not map one-to-one to turns. As a rule, the runtime consumes another turn only when it needs another model response after sandbox work.
 
 ## `SandboxAgent` options
 
@@ -153,7 +153,7 @@ Sandbox client choice, sandbox-session reuse, manifest override, and snapshot se
 
 ### `instructions` and `baseInstructions`
 
-Use `instructions` for short rules that should survive different prompts. In a `SandboxAgent`, these instructions are appended after the SDK's sandbox base prompt, so you keep the built-in sandbox guidance and add your own role, workflow, and success criteria.
+Use `instructions` for short rules that should survive different prompts. In a `SandboxAgent`, the SDK appends these instructions after its sandbox base prompt. This keeps the built-in sandbox guidance and adds your role, workflow, and success criteria.
 
 Use `baseInstructions` only when you want to replace the SDK sandbox base prompt. Most agents should not set it.
 
@@ -194,7 +194,7 @@ When server-side compaction produces a compaction item, the capability keeps tha
 
 A `Manifest` describes the workspace for a fresh sandbox session. It can set the workspace `root`, declare files and directories, copy in local files, clone Git repos, attach remote storage mounts, set environment variables, define users or groups, and grant access to specific absolute paths outside the workspace.
 
-Manifest environment values are persisted by default. Use ephemeral entries such as `{ value: "...", ephemeral: true }` for API keys, access tokens, or other short-lived credentials that should not be saved with sandbox state.
+The SDK persists manifest environment values by default. Use ephemeral entries such as `{ value: "...", ephemeral: true }` for API keys, access tokens, or other short-lived credentials that should not be saved with sandbox state.
 
 For secrets that must be looked up again when a manifest is materialized or resumed, subclass `EnvValueReference` and register it with `registerEnvValueReference()`. A reference persists only non-secret lookup metadata and resolves the current runtime value through `resolve()`. Each subclass must declare its own stable, non-empty static `type`, and `serialize()` must not include the reserved `value` field. Register the parser in every process before reconstructing manifests, and have the parser validate and allowlist lookup keys. Resuming persisted `RunState` environment references requires a current trusted manifest with corresponding reference entries; otherwise the SDK rejects the resume before restoring the session.
 
@@ -228,11 +228,11 @@ For Unix-local sessions, these grants govern access to local sources through the
   title="Grant a shared local source"
 />
 
-Mount entries describe what storage to expose; mount strategies describe how a sandbox backend attaches that storage. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients#mounts-and-remote-storage) for mount options and provider support.
+Mount entries describe what storage to expose. Mount strategies describe how a sandbox backend attaches that storage. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients#mounts-and-remote-storage) for mount options and provider support.
 
 ### Permissions
 
-`Permissions` controls filesystem permissions for manifest entries. It is about the files the sandbox materializes, not model permissions, approval policy, or API credentials.
+`Permissions` controls filesystem permissions for files the sandbox materializes from manifest entries. It does not control model permissions, approval policy, or API credentials.
 
 Users are the sandbox identities that can execute work. Add a user to the manifest when you want that identity to exist in the sandbox, then set `SandboxAgent.runAs` when model-facing sandbox tools such as shell commands, file reads, and patches should run as that user.
 
@@ -326,7 +326,7 @@ Use SDK-owned lifecycle when the sandbox only needs to live for one run. Pass a 
   title="Let the runner manage the sandbox session"
 />
 
-Use developer-owned lifecycle when you want to eagerly create a sandbox, reuse one live sandbox across multiple runs, inspect files after a run, stream over a sandbox you created yourself, or decide exactly when cleanup happens. Passing `session` tells the runner to use that live sandbox, but not to close it for you.
+Use developer-owned lifecycle to create a sandbox in advance, reuse it across runs, inspect files afterward, stream over a sandbox you created, or control cleanup timing. Passing `session` tells the runner to use that live sandbox, but not to close it for you.
 
 <Code
   lang="typescript"
@@ -336,7 +336,7 @@ Use developer-owned lifecycle when you want to eagerly create a sandbox, reuse o
 
 ### Observe sandbox operations
 
-Sandbox operation events provide process-wide observability for runner-managed sandbox work. Register a `SandboxEventSink` with `addSandboxEventSink()` to receive `sandbox_operation` events. Each operation emits a `start` phase followed by either `end` or `error`; terminal events include the duration, and error events include normalized error details such as a code or retryability when the provider exposes them.
+Register a `SandboxEventSink` with `addSandboxEventSink()` to observe runner-managed sandbox work across the process through `sandbox_operation` events. Each operation emits `start`, followed by either `end` or `error`. Both terminal events include the duration. Error events also include normalized details, such as a code or retryability, when the provider exposes them.
 
 When a run configures `sandbox.cwd`, `sandbox.exec` event data reports the effective cwd-anchored `workdir`, and `sandbox.view_image` event data reports the effective cwd-anchored `path`. These values match the paths sent to the sandbox session.
 
@@ -346,7 +346,7 @@ Event sinks are observational. The SDK waits for the registered sinks to settle,
 
 ## `sandbox` run options
 
-The `sandbox` run option holds the per-run options that decide where the sandbox session comes from and how a fresh session should be initialized.
+The `sandbox` run option determines where each run gets its sandbox session and how it initializes a fresh session.
 
 ### Sandbox source
 
@@ -378,7 +378,7 @@ These options only matter when the runner is creating a fresh sandbox session:
 
 ### Materialization controls
 
-Materialization controls are intentionally per-run. Keep them near the `sandbox` run option so the same `SandboxAgent` can use conservative limits for large local directory copies and looser limits for small manifests.
+Set materialization controls per run in the `sandbox` run option. This lets the same `SandboxAgent` use conservative limits for large local directory copies and looser limits for small manifests.
 
 Use `concurrencyLimits.manifestEntries` when a manifest has many independent entries such as files, directories, repos, and mounts. Use `concurrencyLimits.localDirFiles` when `localDir()` entries contain many files and local copy pressure needs to be capped.
 
@@ -438,7 +438,7 @@ See [Agent memory](/openai-agents-js/guides/sandbox-agents/memory) for setup, re
 
 ## Composition patterns
 
-Once the single-agent pattern is clear, the next design question is where the sandbox boundary belongs in a larger system.
+For a larger system, decide which agents need sandbox workspaces.
 
 Sandbox agents still compose with the rest of the SDK:
 
@@ -449,7 +449,7 @@ Sandbox agents still compose with the rest of the SDK:
 
 With a handoff, there is still one top-level run and one top-level turn loop. The active agent changes, but the run does not become nested.
 
-With `asTool(...)`, the relationship is different. The outer orchestrator uses one outer turn to decide to call the tool, and that tool call starts a nested run for the sandbox agent. The nested run has its own turn loop, `maxTurns`, approvals, and usually its own sandbox run config. From the outer orchestrator's point of view, all of that work still sits behind one tool invocation, so the nested turns do not increment the outer run's turn counter.
+With `asTool(...)`, the outer orchestrator uses one outer turn to decide to call the tool. The call starts a nested run for the sandbox agent. The nested run has its own turn loop, `maxTurns`, approvals, and usually its own sandbox run config. The outer orchestrator sees one tool invocation, so nested turns do not increment the outer run's turn counter.
 
 ## Further reading
 

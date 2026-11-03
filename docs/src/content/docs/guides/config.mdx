@@ -13,9 +13,9 @@ import setTracingDisabledExample from '../../../../../examples/docs/config/setTr
 import getLoggerExample from '../../../../../examples/docs/config/getLogger.ts?raw';
 import setSensitiveDataLoggingEnabledExample from '../../../../../examples/docs/config/setSensitiveDataLoggingEnabled.ts?raw';
 
-This page covers **SDK-wide defaults** that you usually set once during app startup, such as the default OpenAI client, transport, tracing export key, and debug logging behavior. These settings apply process-wide by default, so this is the right place for universal configuration rather than per-agent or per-run tuning.
+This page covers **SDK-wide defaults** you usually set once at app startup: the OpenAI client, transport, tracing export key, and debug logging behavior. These settings apply across the process by default.
 
-If you need to configure a specific `Agent`, `Runner`, or `run()` call instead, see:
+To configure a specific `Agent`, `Runner`, or `run()` call, see:
 
 - [Running Agents](/openai-agents-js/guides/running-agents) for `Runner` and per-run options.
 - [Models](/openai-agents-js/guides/models) for agent-level and runner-level model settings.
@@ -25,7 +25,7 @@ If you need to configure a specific `Agent`, `Runner`, or `run()` call instead, 
 
 ### API keys and clients
 
-By default the SDK resolves `OPENAI_API_KEY` lazily when it needs to create an OpenAI client. If setting the environment variable is not possible, call `setDefaultOpenAIKey()` manually.
+The SDK reads `OPENAI_API_KEY` when it needs to create an OpenAI client. If you cannot set the environment variable, call `setDefaultOpenAIKey()`.
 
 <Code
   lang="typescript"
@@ -33,7 +33,7 @@ By default the SDK resolves `OPENAI_API_KEY` lazily when it needs to create an O
   title="Set default OpenAI key"
 />
 
-You may also pass your own `OpenAI` client instance. The SDK will otherwise create one automatically using the default key.
+You can also pass your own `OpenAI` client instance. Otherwise, the SDK creates one with the default key.
 
 <Code
   lang="typescript"
@@ -43,13 +43,13 @@ You may also pass your own `OpenAI` client instance. The SDK will otherwise crea
 
 ### API selection
 
-Finally you can switch between the Responses API and the Chat Completions API.
+You can switch between the Responses API and the Chat Completions API.
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="Set OpenAI API" />
 
 ### Responses transport
 
-If you are using the Responses API, you can also choose the OpenAI provider transport. The default is HTTP.
+With the Responses API, you can choose the OpenAI provider transport. The default is HTTP.
 
 <Code
   lang="typescript"
@@ -69,7 +69,7 @@ Tracing is enabled by default in supported server runtimes. It is disabled by de
 
 By default trace export uses the same OpenAI key from the section above.
 
-A separate key may be set via `setTracingExportApiKey()`:
+To set a separate key, use `setTracingExportApiKey()`:
 
 <Code
   lang="typescript"
@@ -77,7 +77,7 @@ A separate key may be set via `setTracingExportApiKey()`:
   title="Set tracing export API key"
 />
 
-Tracing can also be disabled entirely:
+You can also disable tracing entirely:
 
 <Code
   lang="typescript"
@@ -85,7 +85,7 @@ Tracing can also be disabled entirely:
   title="Disable tracing"
 />
 
-If you’d like to learn more about the tracing feature, please check out [Tracing guide](/openai-agents-js/guides/tracing).
+See the [Tracing guide](/openai-agents-js/guides/tracing) for details.
 
 ### Debug logging
 
@@ -97,13 +97,13 @@ export DEBUG=openai-agents*
 
 To log session persistence activity, set `OPENAI_AGENTS__DEBUG_SAVE_SESSION=1`.
 
-You can obtain a namespaced logger for your own modules using `getLogger(namespace)` from `@openai/agents`.
+Use `getLogger(namespace)` from `@openai/agents` to get a namespaced logger for your modules.
 
 <Code lang="typescript" code={getLoggerExample} title="Get logger" />
 
 #### Sensitive data in logs
 
-Model and tool data, including related error objects and details, is not included in logs by default. If you need those details while debugging, you can explicitly enable sensitive data logging for the process:
+By default, logs exclude model and tool data, including related error objects and details. To include those details while debugging, enable sensitive data logging for the process:
 
 <Code
   lang="typescript"

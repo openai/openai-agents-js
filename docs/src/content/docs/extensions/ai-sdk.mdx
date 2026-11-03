@@ -14,19 +14,19 @@ import aiSdkUiMessageStreamExample from '../../../../../examples/docs/extensions
 import aiSdkUiMessageStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
 import aiSdkTextStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
-Out of the box the Agents SDK works with OpenAI models through the Responses API or Chat Completions API. However, if you would like to use another model, the [Vercel AI SDK](https://sdk.vercel.ai/) offers a range of supported models that can be brought into the Agents SDK through this adapter.
+The Agents SDK uses OpenAI models through the Responses API or Chat Completions API by default. To use another model, connect a model supported by the [Vercel AI SDK](https://sdk.vercel.ai/) through this adapter.
 
 ## Setup
 
 <Steps>
 
-1. Install the AI SDK adapter by installing the extensions package:
+1. Install the extensions package, which includes the AI SDK adapter:
 
    ```bash
    npm install @openai/agents-extensions
    ```
 
-2. Choose your desired model package from the [Vercel's AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) and install it:
+2. Choose a model package from the [Vercel's AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) and install it:
 
    ```bash
    npm install @ai-sdk/openai
@@ -40,7 +40,7 @@ Out of the box the Agents SDK works with OpenAI models through the Responses API
      title="Import the adapter"
    />
 
-4. Initialize an instance of the model to be used by the agent:
+4. Create the model instance for the agent:
 
    <Code lang="typescript" code={aiSdkModelExample} title="Create the model" />
 
@@ -52,7 +52,7 @@ Out of the box the Agents SDK works with OpenAI models through the Responses API
 
 ## Passing provider metadata
 
-If you need to send provider-specific options with a message, pass them through `providerMetadata`. The values are forwarded directly to the underlying AI SDK model. For example, the following `providerData` in the Agents SDK
+If you need to send provider-specific options with a message, pass them through `providerMetadata`. The adapter forwards the values directly to the AI SDK model. For example, the following `providerData` in the Agents SDK
 
 <Code
   lang="typescript"
@@ -72,7 +72,7 @@ when using the AI SDK integration.
 
 ## Prompt cache retention
 
-For AI SDK models whose provider is `openai.responses`, the adapter forwards `modelSettings.promptCacheRetention` on streamed and non-streamed requests when the model uses AI SDK specification version v3 or v4. It maps the Agents SDK value `'in-memory'` to the AI SDK provider value `'in_memory'`; `'24h'` and `null` are forwarded unchanged.
+For AI SDK models whose provider is `openai.responses`, the adapter forwards `modelSettings.promptCacheRetention` on streamed and non-streamed requests when the model uses AI SDK specification version v3 or v4. It maps the Agents SDK value `'in-memory'` to the AI SDK provider value `'in_memory'`. It forwards `'24h'` and `null` unchanged.
 
 AI SDK v2 models do not support this option, so the adapter raises a `UserError` before making a model request when it is set. An explicit `modelSettings.providerData.providerOptions.openai.promptCacheRetention` value takes precedence over `modelSettings.promptCacheRetention`, and the adapter does not forward the setting to other AI SDK providers.
 
@@ -86,7 +86,7 @@ The AI SDK adapter converts Agents SDK `input_file` content into the file-part s
 - Non-empty raw base64 with either a `.pdf` filename or `providerData.mediaType`.
 - A public HTTP(S) URL with either a `.pdf` path or `providerData.mediaType`.
 
-When the filename or URL path ends in `.pdf`, the adapter infers `application/pdf`. Otherwise, set `providerData: { mediaType: 'application/pdf' }` explicitly. The adapter forwards public URLs directly to the AI SDK model without downloading them, so the selected provider and model must support URL-based PDF file parts; use a base64 representation when they do not. OpenAI file IDs are not supported through the AI SDK adapter; pass file data or a public URL, or use an OpenAI Responses model directly.
+When the filename or URL path ends in `.pdf`, the adapter infers `application/pdf`. Otherwise, set `providerData: { mediaType: 'application/pdf' }` explicitly. The adapter forwards public URLs directly to the AI SDK model without downloading them, so the selected provider and model must support URL-based PDF file parts; use a base64 representation when they do not. The AI SDK adapter does not support OpenAI file IDs. Pass file data or a public URL, or use an OpenAI Responses model directly.
 
 ## Normalizing finalized output text
 
@@ -102,13 +102,13 @@ Some providers return structured output as plain text with extra wrapping, such 
 
 ## Retries
 
-`modelSettings.retry` works with AI SDK-backed models too, because retries are implemented by the Agents runtime rather than only by the default OpenAI provider.
+`modelSettings.retry` also works with AI SDK-backed models. The Agents runtime implements retries, so they are not limited to the default OpenAI provider.
 
-That means you can attach the same retry configuration you would use elsewhere:
+Use the same retry configuration as for other models:
 
 - Set `modelSettings.retry` on the `Agent`, `Runner`, or both.
 - Compose `retryPolicies` such as `networkError()`, `httpStatus([...])`, or `providerSuggested()`.
-- Keep in mind that `providerSuggested()` only helps when the wrapped AI SDK model can surface retry advice through the adapter.
+- `providerSuggested()` only helps when the wrapped AI SDK model can provide retry advice through the adapter.
 
 For a complete example using `aisdk(openai(...))`, see [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts). For the retry API itself, including safety boundaries for streaming and stateful follow-up requests, see the [Models guide](/openai-agents-js/guides/models#model-retries).
 
@@ -121,10 +121,10 @@ There are two related integrations in `@openai/agents-extensions`:
 
 ### Notes for AI SDK models
 
-- The `@openai/agents-extensions/ai-sdk` adapter is still in beta, so it is worth testing carefully with your chosen provider, especially smaller ones.
+- The `@openai/agents-extensions/ai-sdk` adapter is still in beta. Test it carefully with your chosen provider, especially smaller providers.
 - If you are using OpenAI models, prefer the default OpenAI model provider instead of this adapter.
 - Supported AI SDK providers must expose `specificationVersion` `v2`, `v3`, or `v4`. The legacy v1 provider example has been retired. See [examples/ai-sdk](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk) for examples that use the supported provider interfaces.
-- Computer tools require display metadata when used through this adapter. Make sure the tool includes both `environment` and `dimensions` metadata.
+- Computer tools require display metadata when used through this adapter. Include both `environment` and `dimensions` metadata on the tool.
 - Deferred Responses tool-loading flows are not supported here. That includes `toolNamespace()`, function tools with `deferLoading: true`, and `toolSearchTool()`. If you need tool search, use an OpenAI Responses model directly. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and [Models guide](/openai-agents-js/guides/models#responses-only-deferred-tool-loading).
 - Programmatic Tool Calling is not supported by the AI SDK model adapter. It rejects `programmaticToolCallingTool()`, tools whose `allowedCallers` includes `'programmatic'`, Programmatic Tool Calling history items, and Responses `outputSchema`. Use an OpenAI Responses model directly for these features.
 
@@ -136,7 +136,7 @@ See [`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-ag
 
 ## AI SDK UI stream helpers
 
-`@openai/agents-extensions/ai-sdk-ui` provides response helpers for wiring Agents SDK streams into AI SDK UI routes:
+`@openai/agents-extensions/ai-sdk-ui` provides response helpers that connect Agents SDK streams to AI SDK UI routes:
 
 - `createAiSdkTextStreamResponse(source, options?)` for plain text streaming responses.
 - `createAiSdkUiMessageStream(source)` for a lower-level `ReadableStream<UIMessageChunk>`.
@@ -146,7 +146,7 @@ These helpers accept a `StreamedRunResult`, stream-like source, or compatible wr
 
 Use `createAiSdkUiMessageStreamResponse(...)` when your route should return the AI SDK response directly. Use `createAiSdkUiMessageStream(...)` when you want to own the response or rendering layer while still using the maintained Agents SDK to AI SDK `UIMessageChunk` translation. Use `createAiSdkTextStreamResponse(...)` when you only want plain text.
 
-The UI stream helpers can wrap a streamed OpenAI Responses run that uses Programmatic Tool Calling even though the AI SDK model adapter cannot originate that flow. Program items are emitted as `programmatic_tool_calling` tool inputs, and matching program results are emitted as `program_output` tool outputs.
+The UI stream helpers can wrap a streamed OpenAI Responses run that uses Programmatic Tool Calling even though the AI SDK model adapter cannot originate that flow. The helpers emit program items as `programmatic_tool_calling` tool inputs and matching program results as `program_output` tool outputs.
 
 The response helpers also accept optional response settings through `options`:
 

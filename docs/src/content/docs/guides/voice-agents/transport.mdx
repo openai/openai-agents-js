@@ -15,7 +15,7 @@ Choose the transport based on where the session runs and how much raw media or e
 
 | Scenario | Recommended transport | Why |
 | --- | --- | --- |
-| Browser speech-to-speech app | `OpenAIRealtimeWebRTC` | Lowest-friction path. The SDK manages microphone capture, playback, and the WebRTC connection for you. |
+| Browser speech-to-speech app | `OpenAIRealtimeWebRTC` | The SDK manages microphone capture, playback, and the WebRTC connection. |
 | Browser audio with server-side Realtime controls | App-owned WebRTC audio plus a server-side `RealtimeSession` | Keeps Realtime events, tools, and business logic on the application server while the browser carries audio. |
 | React Native mobile app | App-owned `RealtimeTransportLayer` backed by native WebRTC | The SDK provides React Native package conditions, while the app owns native WebRTC, permissions, audio routing, and lifecycle. |
 | Server-side voice loop or custom audio pipeline | `OpenAIRealtimeWebSocket` | Works well when you already control audio capture/playback and want direct event access. |
@@ -33,7 +33,7 @@ Choose the transport based on where the session runs and how much raw media or e
 
 ### WebRTC is the default browser choice
 
-The default browser transport uses WebRTC. Audio is captured from the microphone and played back automatically, which is why the [Quickstart](/openai-agents-js/guides/voice-agents/quickstart) can connect with just an ephemeral token and `session.connect(...)`.
+The default browser transport uses WebRTC and handles microphone capture and audio playback automatically. This is why the [Quickstart](/openai-agents-js/guides/voice-agents/quickstart) can connect with just an ephemeral token and `session.connect(...)`.
 
 On this path, `session.connect()` tries to wait until the initial session configuration has been acknowledged with `session.updated` before it resolves, so your instructions and tools are applied before audio starts flowing. There is still a timeout fallback if that acknowledgement never arrives.
 
@@ -41,9 +41,9 @@ To use your own media stream or audio element, provide an `OpenAIRealtimeWebRTC`
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-A `mediaStream` you pass to `OpenAIRealtimeWebRTC` remains owned by your application. Closing the transport does not stop that stream's tracks, so you can keep using it for a level meter, recorder, or reconnect. Call `stop()` on its tracks when your application is actually finished with the stream. When the transport opens the default microphone itself, `close()` still stops those SDK-owned tracks.
+Your application retains ownership of a `mediaStream` it passes to `OpenAIRealtimeWebRTC`. Closing the transport does not stop that stream's tracks, so you can keep using it for a level meter, recorder, or reconnect. Call `stop()` on its tracks when your application is actually finished with the stream. When the transport opens the default microphone itself, `close()` still stops those SDK-owned tracks.
 
-For lower-level customization, `OpenAIRealtimeWebRTC` also accepts `changePeerConnection`, which lets you inspect or replace the freshly created `RTCPeerConnection` before the offer is generated.
+For lower-level customization, pass `changePeerConnection` to `OpenAIRealtimeWebRTC`. It lets you inspect or replace the new `RTCPeerConnection` before the transport generates the offer.
 
 The built-in browser transport creates a data channel because the browser-side `RealtimeSession` uses Realtime events to configure and control the session. If your application must keep those events and controls on an application server, use the server-side controls pattern below instead of treating browser-side peer connection customization as an access-control boundary.
 
@@ -55,7 +55,7 @@ For Azure WebRTC, follow Microsoft's [GA WebRTC setup guide](https://learn.micro
 
 1. Have your application server obtain an ephemeral client token from your Azure resource's `/openai/v1/realtime/client_secrets` endpoint. Keep the Azure resource credential on the server.
 2. Set the `RealtimeSession` constructor's `model` option to your Azure deployment name. Define instructions and executable tools on the `RealtimeAgent`.
-3. Pass the ephemeral token as `apiKey` and your resource's `https://<resource>.openai.azure.com/openai/v1/realtime/calls` URL to `session.connect()`. The SDK forwards the agent configuration to the transport; `initialSessionConfig` is a transport-level option, not a `RealtimeSession.connect()` option.
+3. Pass the ephemeral token as `apiKey` and your resource's `https://<resource>.openai.azure.com/openai/v1/realtime/calls` URL to `session.connect()`. The SDK forwards the agent configuration to the transport. `initialSessionConfig` is a transport-level option, not a `RealtimeSession.connect()` option.
 
 If an Azure-issued ephemeral token does not start with `ek_`, the browser transport's key-prefix check requires an explicit `OpenAIRealtimeWebRTC` instance with `useInsecureApiKey: true`. This option only disables the prefix check: continue passing an ephemeral token, never a long-lived resource credential, to browser code.
 
@@ -70,7 +70,7 @@ Some applications need browser microphone capture and audio playback while keepi
 3. The application server validates the SDP answer and reads the call ID from the response's `Location` header.
 4. The application server creates a server-side `RealtimeSession` with the WebSocket transport, registers its event listeners, passes the call ID to `session.connect(...)`, and waits for the initial `session.updated` event.
 5. The application server returns the SDP answer to the browser. The browser sets the answer as its remote description, and audio flows directly between the browser and the Realtime API.
-6. The application server handles Realtime events and tools. If the browser needs status updates, the application server projects an allowlisted application event instead of forwarding the raw Realtime event stream.
+6. The application server handles Realtime events and tools. If the browser needs status updates, the server sends an application event from an allowlist instead of forwarding raw Realtime events.
 
 <Aside type="caution">
   Omitting `createDataChannel()` in browser code is not an access-control
@@ -97,13 +97,13 @@ On the WebSocket path, `session.connect()` resolves once the socket is open and 
 
 <Code lang="typescript" code={websocketSessionExample} />
 
-Use any recording/playback library to handle the raw PCM16 audio bytes.
+Use a recording and playback library to handle the raw PCM16 audio bytes.
 
 For advanced integrations, `OpenAIRealtimeWebSocket` accepts `createWebSocket()` so you can supply your own socket implementation, and `skipOpenEventListeners` when that custom connector is responsible for transitioning the socket into the connected state. The Cloudflare transport in `@openai/agents-extensions` is built on these hooks.
 
 ### SIP is for call providers and telephony bridges
 
-Use `OpenAIRealtimeSIP` when you want a `RealtimeSession` to attach to an existing SIP-initiated Realtime call. It is a thin SIP-aware transport: audio is handled by the SIP call itself, and you connect the SDK session by `callId`.
+Use `OpenAIRealtimeSIP` when you want a `RealtimeSession` to attach to an existing SIP-initiated Realtime call. The SIP call handles audio, and you connect the SDK session by `callId`.
 
 1. Accept the incoming call by generating an initial session configuration with `OpenAIRealtimeSIP.buildInitialConfig()`. This ensures the SIP invitation and the later SDK session start from the same defaults.
 2. Attach a `RealtimeSession` that uses the `OpenAIRealtimeSIP` transport and connect with the `callId` issued by the provider webhook.
@@ -135,22 +135,22 @@ For the full setup, read [Voice Agents on Twilio](/openai-agents-js/extensions/t
 
 ### Bring your own transport
 
-If you want to use a different speech-to-speech API or have your own custom transport mechanism, you can implement the `RealtimeTransportLayer` interface and emit the `RealtimeTransportEventTypes` events yourself.
+To use a different speech-to-speech API or your own transport, implement `RealtimeTransportLayer` and emit `RealtimeTransportEventTypes` events.
 
 ## Access raw Realtime events when you need them
 
-If you want more direct access to the underlying Realtime API, you have two options.
+There are two ways to access the underlying Realtime API directly.
 
 ### Option 1 - Accessing the transport layer
 
-If you still want to benefit from all of the capabilities of the `RealtimeSession` you can access your transport layer through `session.transport`.
+To keep all `RealtimeSession` capabilities, access the transport through `session.transport`.
 
-The transport layer emits every event it receives under the `*` event and you can send raw events using `sendEvent()`. A `*` listener receives a structured clone of the original parsed JSON payload, including fields the current SDK schema does not know about. Named and derived event listeners continue to receive validated, normalized event objects. This is the escape hatch for low-level operations such as `session.update`, `response.create`, or `response.cancel`.
+The transport emits every received event under `*`. Use `sendEvent()` to send raw events. A `*` listener receives a structured clone of the original parsed JSON payload, including fields the current SDK schema does not know about. Named and derived event listeners continue to receive validated, normalized event objects. Use these methods for low-level operations such as `session.update`, `response.create`, or `response.cancel`.
 
 <Code lang="typescript" code={transportEventsExample} />
 
 ### Option 2 - Only using the transport layer
 
-If you do not need automatic tool execution, guardrails, or local history management, you can also use the transport layer as a "thin" client that just manages connection and interruptions.
+If you do not need automatic tool execution, guardrails, or local history management, use the transport directly to manage the connection and interruptions.
 
 <Code lang="typescript" code={thinClientExample} />

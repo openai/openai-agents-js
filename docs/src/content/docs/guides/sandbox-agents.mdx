@@ -6,9 +6,9 @@ description: Create your first sandbox agent with a managed workspace, filesyste
 import { Code } from '@astrojs/starlight/components';
 import basicExample from '../../../../../examples/docs/sandbox-agents/basic.ts?raw';
 
-Modern agents work best when they can operate on real files in a filesystem. **Sandbox Agents** in the Agents SDK give the model a persistent workspace where it can search large document sets, edit files, run commands, generate artifacts, and pick work back up from saved sandbox state.
+**Sandbox Agents** in the Agents SDK give the model a persistent filesystem workspace. The model can search large document sets, edit files, run commands, generate artifacts, and resume work from saved sandbox state.
 
-The SDK gives you that execution harness without making you wire together file staging, filesystem tools, shell access, sandbox lifecycle, snapshots, and provider-specific glue yourself. You keep the normal `Agent` and `Runner` flow, then add a `Manifest` for the workspace, capabilities for sandbox-native tools, and the `sandbox` run option for where the work runs.
+The SDK manages file staging, filesystem tools, shell access, sandbox lifecycle, snapshots, and provider integration. Use the normal `Agent` and `Runner` flow. Add a `Manifest` for the workspace, capabilities for sandbox-native tools, and the `sandbox` run option to choose where work runs.
 
 ## Prerequisites
 
@@ -32,7 +32,7 @@ If you use interactive local PTY sessions with `tty: true`, the process running 
 
 ## Create a local sandbox agent
 
-This example stages a local repo under `repo/`, loads local skills lazily, and lets the runner create a Unix-local sandbox session for the run. The agent definition owns the manifest and capabilities, while the run config only chooses the sandbox client for this run.
+This example stages a local repo under `repo/`, loads local skills lazily, and lets the runner create a Unix-local sandbox session for the run. The agent definition holds the manifest and capabilities. The run config chooses the sandbox client for this run.
 
 `UnixLocalSandboxClient` runs commands as host processes on both macOS and Linux. The client does not add OS-level filesystem or network isolation. Use this example for trusted local development or within an externally isolated environment. For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured Docker or hosted backend, or provide external isolation. See [Unix-local execution limits](/openai-agents-js/guides/sandbox-agents/clients#local-clients).
 
@@ -44,7 +44,7 @@ This example stages a local repo under `repo/`, loads local skills lazily, and l
 
 ## Key choices
 
-Once the basic run works, the choices most people reach for next are:
+After the basic run works, choose these settings:
 
 - `defaultManifest`: the files, repos, directories, and mounts for fresh sandbox sessions.
 - `instructions`: short workflow rules that should apply across prompts.
@@ -60,4 +60,4 @@ Once the basic run works, the choices most people reach for next are:
 - [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients): choose Unix-local, Docker, hosted providers, and mount strategies.
 - [Agent memory](/openai-agents-js/guides/sandbox-agents/memory): preserve and reuse lessons from previous sandbox runs.
 
-If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Reach for sandbox agents when workspace management, sandbox client choice, or sandbox-session resume behavior are part of the design.
+If shell access is only one occasional tool, start with hosted shell in the [Tools guide](/openai-agents-js/guides/tools). Use sandbox agents when your design needs workspace management, a choice of sandbox client, or sandbox-session resume behavior.

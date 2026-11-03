@@ -2,7 +2,7 @@
 
 These two examples use synthetic data and native execution. They require Node.js 24, the checkout's pinned pnpm version, and matching native products, including the bundled Code Mode host. Scripted mode uses a local Responses peer and needs no model key.
 
-The catalog example lets the application choose `process.execPath`, the exact peer file, its working directory and the raw tool name `lookup`. The model cannot choose a process or grant launch authority through saved state. The peer uses Node's standard library and supports only initialization, ping, listing and a synthetic lookup. Its `readOnlyHint` is metadata; the peer still has the host permissions of its process. Treat choosing a peer as a trust decision.
+The catalog example lets the application choose `process.execPath`, the exact peer file, its working directory and the raw tool name `lookup`. The model cannot choose a process or grant launch authority through saved state. The peer uses Node's standard library and supports only initialization, ping, listing and a synthetic lookup. Its `readOnlyHint` is metadata. The peer still has the host permissions of its process. Treat choosing a peer as a trust decision.
 
 Core starts the peer lazily. Keep its Session alive while calling it, then await Session cleanup before closing the provider or deleting audit files. A model failure also requires joined cleanup. The tests observe the specific peer's PID rather than inspecting or stopping unrelated processes.
 
@@ -17,4 +17,4 @@ pnpm exec tsx packages/agents/examples/stdio-programmatic/local-mcp.ts --mode sc
 pnpm exec tsx packages/agents/examples/stdio-programmatic/programmatic-tools.ts --mode scripted
 ```
 
-Each command validates actual tool output before printing its scripted answer. The catalog prints `It costs 5 dollars.`; sales prints `Paper sales total 50 dollars.` Their 20-second deadlines bound only result waits after submission, so opening and cleanup can take longer. Importing either module defines functions without opening a Session or model connection. The callback-scoped scripted provider owns provider cleanup; each runner closes its Session before returning.
+Each command validates actual tool output before printing its scripted answer. The catalog prints `It costs 5 dollars.` Sales prints `Paper sales total 50 dollars.` Their 20-second deadlines bound only result waits after submission, so opening and cleanup can take longer. Importing either module defines functions without opening a Session or model connection. The callback-scoped scripted provider owns provider cleanup. Each runner closes its Session before returning.

@@ -21,7 +21,7 @@ The [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) is an op
 
 > MCP is an open protocol that standardizes how applications provide context to LLMs. Think of MCP like a USB-C port for AI applications. Just as USB-C provides a standardized way to connect your devices to various peripherals and accessories, MCP provides a standardized way to connect AI models to different data sources and tools.
 
-There are three types of MCP servers this SDK supports:
+The SDK supports three types of MCP servers:
 
 1. **Hosted MCP server tools** – remote MCP servers used as tools by the [OpenAI Responses API](https://platform.openai.com/docs/guides/tools-remote-mcp)
 2. **Streamable HTTP MCP servers** – local or remote servers that implement the [Streamable HTTP transport](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http)
@@ -29,7 +29,7 @@ There are three types of MCP servers this SDK supports:
 
 > Note: The SDK also includes `MCPServerSSE` for legacy Server‑Sent Events transports, but SSE has been deprecated by the MCP project. Prefer Streamable HTTP or stdio for new integrations.
 
-Choose a server type based on your use‑case:
+Choose a server type based on what you need:
 
 | What you need | Recommended option |
 | --- | --- |
@@ -47,13 +47,13 @@ If your application only uses the Agents SDK's `MCPServerStdio`, `MCPServerStrea
 
 ## 1. Hosted MCP server tools
 
-Hosted tools push the entire round‑trip into the model. Instead of your code calling an MCP server, the OpenAI Responses API invokes the remote tool endpoint and streams the result back to the model.
+With hosted tools, the OpenAI Responses API calls the remote MCP tool endpoint and streams the result back to the model. Your code does not call the MCP server.
 
-Here is the simplest example of using hosted MCP tools. You can pass the remote MCP server's label and URL to the `hostedMcpTool` utility function, which is helpful for creating hosted MCP server tools.
+To create a hosted MCP tool, pass the remote server's label and URL to `hostedMcpTool`:
 
 <Code lang="typescript" code={hostedAgentExample} title="hostedAgent.ts" />
 
-Then, you can run the Agent with the `run` function (or your own customized `Runner` instance's `run` method):
+Then run the Agent with `run` or your own `Runner` instance's `run` method:
 
 <Code
   lang="typescript"
@@ -71,9 +71,9 @@ To stream incremental MCP results, pass `stream: true` when you run the `Agent`:
 
 ### Optional approval flow
 
-For sensitive operations you can require human approval of individual tool calls. Pass either `requireApproval: 'always'` or a fine‑grained object mapping tool names to `'never'`/`'always'`.
+For sensitive operations, you can require human approval of individual tool calls. Pass either `requireApproval: 'always'` or a fine‑grained object mapping tool names to `'never'`/`'always'`.
 
-If you can programmatically determine whether a tool call is safe, you can use the [`onApproval` callback](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) to approve or reject the tool call. If you require human approval, you can use the same [human-in-the-loop (HITL) approach](/openai-agents-js/guides/human-in-the-loop/) using `interruptions` as for local function tools.
+If your code can determine whether a tool call is safe, use the [`onApproval` callback](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) to approve or reject the tool call. If you require human approval, you can use the same [human-in-the-loop (HITL) approach](/openai-agents-js/guides/human-in-the-loop/) using `interruptions` as for local function tools.
 
 <Code
   lang="typescript"
@@ -116,11 +116,11 @@ Hosted MCP also supports OpenAI connectors. Instead of providing a `serverUrl`, 
 
 In this example the `GOOGLE_CALENDAR_AUTHORIZATION` environment variable holds an OAuth token obtained from the Google OAuth Playground, which authorizes the connector-backed server to call the Calendar API. For a runnable sample that also demonstrates streaming, see [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors).
 
-Fully working samples (Hosted tools/Streamable HTTP/stdio + Streaming, HITL, onApproval) are [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) in our GitHub repository.
+See [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) for working samples of hosted tools, Streamable HTTP, and stdio with streaming, HITL, and `onApproval`.
 
 ## Agent-level MCP configuration
 
-In addition to choosing a transport, you can tune how local MCP tools are prepared by setting `Agent.mcpConfig`.
+Set `Agent.mcpConfig` to control how the SDK prepares local MCP tools.
 
 <Code
   lang="typescript"
@@ -140,7 +140,7 @@ Notes:
 
 ## 2. Streamable HTTP MCP servers
 
-When your Agent talks directly to a Streamable HTTP MCP server—local or remote—instantiate `MCPServerStreamableHttp` with the server `url`, `name`, and any optional settings:
+To connect your Agent directly to a local or remote Streamable HTTP MCP server, create an `MCPServerStreamableHttp` with the server `url`, `name`, and any optional settings:
 
 <Code
   lang="typescript"
@@ -210,7 +210,7 @@ Constructor options:
 
 ## Managing MCP server lifecycle
 
-When you work with multiple MCP servers, you can use `connectMcpServers` to connect them together, track failures, and close them in one place. The helper returns an `MCPServers` instance with `active`, `failed`, and `errors` collections so you can pass only healthy servers to your agent.
+Use `connectMcpServers` to connect multiple MCP servers, track failures, and close them in one place. The helper returns an `MCPServers` instance with `active`, `failed`, and `errors` collections so you can pass only healthy servers to your agent.
 
 <Code
   lang="typescript"
@@ -224,7 +224,7 @@ Use cases:
 - **Partial failure handling**: inspect `failed` + `errors` and decide whether to continue or retry.
 - **Retry failed servers**: call `mcpServers.reconnect()` (defaults to retrying failed servers only).
 
-If you want a strict “all or nothing” connection or different timeouts, use `connectMcpServers(servers, options)` and tune the options for your environment.
+If you want a strict "all or nothing" connection or different timeouts, use `connectMcpServers(servers, options)` and tune the options for your environment.
 
 `connectMcpServers` options:
 
@@ -267,7 +267,7 @@ Then you can write:
 
 ## Other things to know
 
-For **Streamable HTTP** and **Stdio** servers, each time an `Agent` runs it may call `list_tools()` to discover available tools. Because that round‑trip can add latency—especially to remote servers—you can cache the results in memory by passing `cacheToolsList: true` to `MCPServerStdio` or `MCPServerStreamableHttp`.
+For **Streamable HTTP** and **Stdio** servers, an `Agent` may call `list_tools()` each time it runs to discover available tools. This request can add latency, especially for remote servers. To cache the results in memory, pass `cacheToolsList: true` to `MCPServerStdio` or `MCPServerStreamableHttp`.
 
 Only enable this if you're confident the tool list won't change. To invalidate the cache later, call `invalidateToolsCache()` on the server instance. If you are using shared MCP tool caching via `getAllMcpTools(...)`, you can also invalidate by server name with `invalidateServerToolsCache(serverName)`.
 
@@ -291,7 +291,7 @@ Generated names are ASCII-safe, stay within the name-length limit for `FunctionT
 
 ### Tool filtering
 
-You can restrict which tools are exposed from each server by passing either a static filter via `createMCPToolStaticFilter` or a custom function. Here’s a combined example showing both approaches:
+To restrict the tools exposed by each server, pass a static filter from `createMCPToolStaticFilter` or a custom function. This example shows both:
 
 <Code lang="typescript" code={toolFilterExample} title="Tool filtering" />
 

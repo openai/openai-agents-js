@@ -1,12 +1,12 @@
 # Inspect one synthetic run
 
-Run this lesson from the matching source checkout with built workspace packages and the native runtime. The package archive includes this directory through the recursive examples rule. Use Node.js 24 or later. No external provider credentials, telemetry backend or extra collector package is needed.
+Run this lesson from the matching source checkout with built workspace packages and the native runtime. The package archive includes this directory through the recursive examples rule. Use Node.js 24 or later. You need no external provider credentials, telemetry backend, or extra collector package.
 
 ```sh
 pnpm exec tsx packages/agents/examples/observability/trace-walkthrough.ts --scenario tool-error --output /private/task/tool-error.json
 ```
 
-Create the private output directory first. The command starts a loopback HTTP receiver, configures native OTLP JSON traces and logs, and runs one local synthetic scenario. It closes the Session and scripted provider before flushing telemetry. It then closes the receiver and writes the artifact. Run each scenario in a new process: native telemetry configuration belongs to the process and must precede its first Session attempt.
+Create the private output directory first. The command starts a loopback HTTP receiver, configures native OTLP JSON traces and logs, and runs one local synthetic scenario. It closes the Session and scripted provider before flushing telemetry. It then closes the receiver and writes the artifact. Run each scenario in a new process. Native telemetry configuration belongs to the process and must precede its first Session attempt.
 
 The console prints a synthetic run ID, application outcome and received batch count. Inspect the output file's three separate views:
 
@@ -39,17 +39,19 @@ The native test inspects received `run_turn` spans, `example.run_id`, and `codex
 
 ## Read supported history
 
-[`history-reader.ts`](history-reader.ts) reads `session.turns()` and `session.items()` after settlement while the Session is still open. Each iterator takes its own projection snapshot; reading an active Session can produce views of different moments. The artifact retains those projected records and adds `functionResults`.
+[`history-reader.ts`](history-reader.ts) reads `session.turns()` and `session.items()` after settlement while the Session is still open. Each iterator takes its own projection snapshot. Reading an active Session can produce views of different moments. The artifact retains those projected records and adds `functionResults`.
 
-Only a preceding function call with the same nonempty `(turnId, callId)` can name an output. The latest preceding call wins, and that association is consumed once. A duplicate or unmatched output keeps its output with null name/arguments. Calls displaced by a later occurrence remain in `items`. Records the reader cannot associate remain visible there. The reader cannot reconstruct unknown records omitted by the SDK projection.
+Only a preceding function call with the same nonempty `(turnId, callId)` can name an output. The latest preceding call wins, and that association is consumed once. A duplicate or unmatched output keeps its output with a null name and null arguments. Calls displaced by a later occurrence remain in `items`. Records the reader cannot associate remain visible there. The reader cannot reconstruct unknown records omitted by the SDK projection.
 
-Null timestamps and usage remain null. Unavailable usage does not mean zero tokens. Any bigint counters use decimal strings in this example's JSON artifact to preserve precision. Recorded output and error values are not business-effect receipts. History and telemetry do not reconstruct approvals, all passive events, private reasoning, complete UI state or authoritative citation spans. Keep a separate application ledger for business effects.
+Null timestamps and usage remain null. Unavailable usage does not mean zero tokens. Any bigint counters use decimal strings in this example's JSON artifact to preserve precision. Recorded output and error values are not business-effect receipts.
+
+History and telemetry do not reconstruct approvals, all passive events, private reasoning, complete UI state or authoritative citation spans. Keep a separate application ledger for business effects.
 
 ## Collector and data limits
 
-The standard-library receiver binds only `127.0.0.1` on an ephemeral port. It admits at most 16 requests and 4 MiB per request, then rejects excess input without keeping a partial batch. It accepts only the two demonstration signal paths. It has no authentication, persistent store, viewer or production hardening. Keep the output local: native payloads may contain paths, tool arguments and other details even when prompt and response text switches are off. Use synthetic data only.
+The standard-library receiver binds only `127.0.0.1` on an ephemeral port. It admits at most 16 requests and 4 MiB per request, then rejects excess input without keeping a partial batch. It accepts only the two demonstration signal paths. It has no authentication, persistent store, viewer or production hardening. Keep the output local. Native payloads may contain paths, tool arguments, and other details even when prompt and response text switches are off. Use synthetic data only.
 
-Keep direct loopback routing stable for the scripted peer and exporter. Empty signal receipts fail the command; a successful application result alone is not evidence of delivery. Export flush runs before receiver close. Close also destroys owned sockets and joins body handlers so an incomplete request cannot keep the command alive. This example does not promise reliable telemetry delivery or reconnect/retry behavior.
+Keep direct loopback routing stable for the scripted peer and exporter. Empty signal receipts fail the command. A successful application result alone does not prove delivery. Export flush runs before receiver close. Close also destroys owned sockets and joins body handlers so an incomplete request cannot keep the command alive. This example does not promise reliable telemetry delivery or reconnect/retry behavior.
 
 Focused acceptance, after the matching build and native products are available:
 

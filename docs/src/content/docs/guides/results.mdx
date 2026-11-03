@@ -8,12 +8,12 @@ import handoffFinalOutputTypes from '../../../../../examples/docs/results/handof
 import historyLoop from '../../../../../examples/docs/results/historyLoop.ts?raw';
 import usageExample from '../../../../../examples/docs/results/usage.ts?raw';
 
-When you [run your agent](/openai-agents-js/guides/running-agents), you will either receive a:
+When you [run your agent](/openai-agents-js/guides/running-agents), you receive one of these result types:
 
 - [`RunResult`](/openai-agents-js/openai/agents/classes/runresult) if you call `run` without `stream: true`
 - [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult) if you call `run` with `stream: true`. For details on streaming, also check the [streaming guide](/openai-agents-js/guides/streaming).
 
-Both result types expose the same core result surfaces such as `finalOutput`, `newItems`, `interruptions`, and `state`. `StreamedRunResult` adds streaming controls like `completed`, `toStream()`, `toTextStream()`, and `currentAgent`.
+Both result types expose core properties such as `finalOutput`, `newItems`, `interruptions`, and `state`. `StreamedRunResult` adds streaming controls like `completed`, `toStream()`, `toTextStream()`, and `currentAgent`.
 
 ## Choose the right result surface
 
@@ -34,19 +34,19 @@ Most applications only need a few properties:
 
 ## Final output
 
-The `finalOutput` property contains the final output of the last agent that ran. This result is either:
+The `finalOutput` property contains the final output of the last agent that ran. Its type is one of the following:
 
 - `string` — default for any agent that has no `outputType` defined
-- `unknown` — if the agent has a JSON schema defined as output type. In this case the JSON was parsed but you still have to verify its type manually.
-- `z.infer<outputType>` — if the agent has a Zod schema defined as output type. The output will automatically be parsed against this schema.
+- `unknown` — if the agent uses a JSON schema as its output type. The SDK parses the JSON, but you must verify its type manually.
+- `z.infer<outputType>` — if the agent uses a Zod schema as its output type. The SDK parses the output against this schema.
 - The inferred validation output type — if the agent has a supported Standard Schema value defined as its output type. The output is parsed and validated synchronously against this schema.
 - `undefined` — if the agent did not produce an output (for example stopped before it could produce an output)
 
 `finalOutput` is also `undefined` while a streamed run is still in progress or when the run paused on an approval interruption before reaching a final output.
 
-If you are using handoffs with different output types, you should use the `Agent.create()` method instead of the `new Agent()` constructor to create your agents.
+For handoffs with different output types, create agents with the `Agent.create()` method instead of the `new Agent()` constructor.
 
-This will enable the SDK to infer the output types across all possible handoffs and provide a union type for the `finalOutput` property.
+The SDK can then infer output types across all possible handoffs and provide a union type for the `finalOutput` property.
 
 For example:
 
@@ -80,7 +80,7 @@ In practice:
 
 ## New items
 
-`newItems` gives you the richest view of what happened during the run. Common item types are:
+`newItems` provides detailed records of the run. Common item types are:
 
 - [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) for assistant messages.
 - [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) for input admitted from `RunState.pendingInput` while resuming a run.
@@ -182,7 +182,7 @@ If one guardrail fails to execute, results from sibling guardrails that complete
 
 ### Usage
 
-Token usage is aggregated in `result.state.usage`, which tracks request counts and token totals for the run. The same usage object is also available through `result.runContext.usage`. For streaming runs this data updates as responses arrive.
+The SDK aggregates token usage in `result.state.usage`, which tracks request counts and token totals for the run. The same object is available through `result.runContext.usage`. During streaming runs, usage updates as responses arrive.
 
 A completed streamed or non-streamed Chat Completions call counts as one request even when the provider omits its usage object. In that case, token totals remain zero because the provider did not report them.
 

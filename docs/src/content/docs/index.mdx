@@ -20,22 +20,22 @@ import helloWorldSandboxExample from '../../../../examples/docs/toppage/sandboxA
 
 ## Overview
 
-The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js) enables you to build agentic AI apps in a lightweight, easy-to-use package with very few abstractions. It's a production-ready upgrade of our previous experimentation for agents, [Swarm](https://github.com/openai/swarm/tree/main), that's also [available in Python](https://github.com/openai/openai-agents-python). The Agents SDK has a very small set of primitives:
+The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js) lets you build agentic AI apps with a small set of abstractions. It's a production-ready upgrade of our earlier agent experiment, [Swarm](https://github.com/openai/swarm/tree/main), and is also [available in Python](https://github.com/openai/openai-agents-python). The SDK provides:
 
 - **Agents**, which are LLMs equipped with instructions and tools
 - **Sandbox agents**, which pair agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state
 - **Voice agents**, which support low-latency spoken interactions with tools, guardrails, handoffs, and conversation history
 - **Agents as tools and handoffs**, which allow agents to delegate to other agents for specific tasks
-- **Guardrails**, which enable the inputs to agents to be validated
+- **Guardrails**, which validate agent inputs
 
-In combination with TypeScript, these primitives are powerful enough to express complex relationships between tools and agents, give agents a real workspace when they need one, and allow you to build real-world applications without a steep learning curve. In addition, the SDK comes with built-in **tracing** that lets you visualize and debug your agentic flows, as well as evaluate them and even fine-tune models for your application.
+With TypeScript, these abstractions let you express complex relationships between tools and agents and give agents a workspace when they need one. You can build real-world applications without a steep learning curve. Built-in **tracing** lets you visualize, debug, and evaluate agent workflows, and fine-tune models for your application.
 
 ## Why use the Agents SDK
 
-The SDK has two driving design principles:
+Two principles guide the SDK's design:
 
 1. Enough features to be worth using, but few enough primitives to make it quick to learn.
-2. Works great out of the box, but you can customize exactly what happens.
+2. Works out of the box and lets you customize exactly what happens.
 
 Here are the main features of the SDK:
 
@@ -43,7 +43,7 @@ Here are the main features of the SDK:
 - **Sandbox execution**: Run agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state when the work needs a workspace.
 - **Voice Agents**: Build low-latency spoken interactions with features such as automatic interruption detection, context management, guardrails, and more.
 - **TypeScript-first**: Orchestrate and chain agents using native TypeScript language features, without needing to learn new abstractions.
-- **Agents as tools and handoffs**: A powerful mechanism for coordinating and delegating work across multiple agents.
+- **Agents as tools and handoffs**: Coordinate and delegate work across multiple agents.
 - **Guardrails**: Run input validation and safety checks in parallel with agent execution, and fail fast when checks do not pass.
 - **Function tools**: Turn any TypeScript function into a tool with automatic schema generation and schema-based validation.
 - **MCP server tool calling**: Built-in integration that exposes tools from MCP servers to agents alongside function tools.
@@ -57,11 +57,11 @@ Here are the main features of the SDK:
 npm install @openai/agents zod
 ```
 
-The SDK requires Zod v4; installing `zod` via npm will fetch the latest v4 release.
+The SDK requires Zod v4. Installing `zod` with npm fetches the latest v4 release.
 
 ## Choose your starting point
 
-Most first-time users only need one of these entry points:
+Most new users need only one of these entry points:
 
 | Start with | Use it when | Notes |
 | --- | --- | --- |
@@ -90,7 +90,7 @@ Start with a regular `Agent` for text workflows. Use a sandbox agent when the ag
   </TabItem>
 </Tabs>
 
-(_If running this, ensure you set the `OPENAI_API_KEY` environment variable_)
+To run these examples, set the `OPENAI_API_KEY` environment variable:
 
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -98,7 +98,7 @@ export OPENAI_API_KEY=sk-...
 
 ## Start here
 
-Pick one path first, get it working end to end, then come back for the deeper guides.
+Pick one path, get it working end to end, then read the more detailed guides.
 
 <LinkCard
   title="Quickstart"

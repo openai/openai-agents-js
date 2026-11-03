@@ -11,7 +11,7 @@ import manifestConcurrencyExample from '../../../../../../examples/docs/sandbox-
 import resumeSessionStateExample from '../../../../../../examples/docs/sandbox-agents/resume-session-state.ts?raw';
 import selectLocalClientExample from '../../../../../../examples/docs/sandbox-agents/select-local-client.ts?raw';
 
-Use this page to choose where sandbox work should run. In most cases, the `SandboxAgent` definition stays the same while the sandbox client and client-specific options change in the `sandbox` run option.
+Choose where sandbox work should run. In most cases, the `SandboxAgent` definition stays the same while the sandbox client and client-specific options change in the `sandbox` run option.
 
 ## Decision guide
 
@@ -110,11 +110,11 @@ Manifest entries are prepared before the agent runs. You can tune materializatio
 
 ### Filesystem existence checks
 
-When a session implements `pathExists()`, `false` means the backend confirmed that the path is missing. Permission errors, I/O failures, and provider probe failures reject with a provider error instead of being treated as a missing path. This prevents editor, manifest, and memory flows from overwriting or replacing paths that may exist but are inaccessible.
+When a session implements `pathExists()`, `false` means the backend confirmed that the path is missing. Permission errors, I/O failures, and provider probe failures reject with a provider error. They do not count as a missing path. This prevents editor, manifest, and memory operations from overwriting or replacing paths that may exist but are inaccessible.
 
 ## Mounts and remote storage
 
-Mount entries describe what storage to expose; mount strategies describe how a sandbox backend attaches that storage. Import the built-in mount entries and generic strategies from `@openai/agents/sandbox`.
+Mount entries describe what storage to expose. Mount strategies describe how a sandbox backend attaches that storage. Import the built-in mount entries and generic strategies from `@openai/agents/sandbox`.
 
 Common mount options:
 
@@ -122,7 +122,7 @@ Common mount options:
 - `readOnly`: set this when the sandbox should not write back to the mounted storage.
 - `mountStrategy`: use a strategy that matches both the mount entry and the sandbox backend.
 
-Mounts are treated as ephemeral workspace entries. Snapshot and persistence flows detach or skip mounted paths instead of copying mounted remote storage into the saved workspace.
+The SDK treats mounts as ephemeral workspace entries. When saving snapshots or persisting workspaces, it detaches or skips mounted paths instead of copying mounted remote storage.
 
 Generic local/container strategies:
 
@@ -132,7 +132,7 @@ Generic local/container strategies:
 | `dockerVolumeMountStrategy(...)` | Docker should attach a volume-driver-backed mount before the container starts. | Docker-only. |
 | `localBindMountStrategy()` | A local backend should bind an absolute local path into the workspace. | Supported by local workspace materialization where allowed. |
 
-Backend support is intentionally explicit:
+Mount support depends on the backend:
 
 | Backend | Mount notes |
 | --- | --- |
@@ -161,17 +161,17 @@ Install `@openai/agents-extensions` and satisfy its package-level peers. Each pr
 
 When `ModalSandboxClient` creates a sandbox, use `cpu` and `memoryMiB` to request CPU and memory reservations. Use `cpuLimit` and `memoryLimitMiB` to set upper limits. You can set these options on the client constructor or in per-run `sandbox.options`; per-run values override constructor defaults. Every value must be a positive finite number. `cpuLimit` requires `cpu` and cannot be lower than it, while `memoryLimitMiB` requires `memoryMiB` and cannot be lower than it.
 
-`CloudflareSandboxClient` does not import a Cloudflare npm SDK. It talks to a deployed Cloudflare Sandbox bridge Worker over HTTP instead.
+`CloudflareSandboxClient` connects to a deployed Cloudflare Sandbox bridge Worker over HTTP. It does not import a Cloudflare npm SDK.
 
-`VercelSandboxClient` resolves each PAT credential field with the precedence per-create options, constructor options, then `VERCEL_PROJECT_ID`, `VERCEL_TEAM_ID`, and `VERCEL_TOKEN`. It forwards credentials only when the resulting `projectId`, `teamId`, and `token` are all non-empty. Otherwise it omits all three fields and lets `@vercel/sandbox` resolve authentication, including platform OIDC or local provider credentials. Complete resolved credentials are preserved when sessions are serialized and resumed. Serialized credentials are treated as a complete triple and are not mixed with current options or environment variables; incomplete serialized credentials are discarded before current configuration is resolved as a fallback. Because the token remains present in serialized session state, store that state securely.
+`VercelSandboxClient` resolves each PAT credential field in this order: per-create options, constructor options, then `VERCEL_PROJECT_ID`, `VERCEL_TEAM_ID`, and `VERCEL_TOKEN`. It forwards credentials only when the resulting `projectId`, `teamId`, and `token` are all non-empty. Otherwise it omits all three fields and lets `@vercel/sandbox` resolve authentication, including platform OIDC or local provider credentials. The SDK preserves complete resolved credentials when serializing and resuming sessions. It treats serialized credentials as a complete triple and does not mix them with current options or environment variables. If serialized credentials are incomplete, the SDK discards them and resolves current configuration as a fallback. Because the token remains present in serialized session state, store that state securely.
 
 Hosted sandbox clients expose provider-specific mount strategies. Choose the backend and mount strategy that best fit your storage provider:
 
 Credential-bearing mounts that run a helper inside the sandbox are rejected by default because model-controlled code can access that helper's process credentials. This includes credentials supplied through supported mount fields, ambient AWS or GCP environment variables, `RCLONE_CONFIG_*` values, and workload identity or managed identity discovery. Credentialless rclone and mountpoint helpers disable ambient or metadata authentication and use anonymous access where the backend supports it. Prefer external or provider-native strategies such as Docker volumes, Modal cloud buckets, or Cloudflare bucket mounts.
 
-If an in-sandbox helper is required, acknowledge each trusted effective mount path on the application-created manifest. Use the manifest returned by `manifest.withInContainerMountCredentialExposureAcknowledged('mounted/path')` for mount-scoped credentials supplied directly through typed mount fields. Ambient credentials, workload or managed identity, and external credential or configuration files require the manifest returned by `manifest.withInContainerMountBroadCredentialExposureAcknowledged('mounted/path')`. A mount that uses both kinds of authority requires both acknowledgements. These exact-path acknowledgements are runtime-only and are never accepted from manifest init objects or serialized manifest data. They permit the selected helper to receive credentials; they do not confine those credentials to the mount path, so other model-controlled code in the same sandbox may still recover them. Use sandbox-scoped, short-lived, least-privilege credentials.
+If an in-sandbox helper is required, acknowledge each trusted effective mount path on the application-created manifest. Use the manifest returned by `manifest.withInContainerMountCredentialExposureAcknowledged('mounted/path')` for mount-scoped credentials supplied directly through typed mount fields. Ambient credentials, workload or managed identity, and external credential or configuration files require the manifest returned by `manifest.withInContainerMountBroadCredentialExposureAcknowledged('mounted/path')`. A mount that uses both kinds of authority requires both acknowledgements. These exact-path acknowledgements apply only at runtime. The SDK never accepts them from manifest init objects or serialized manifest data. They permit the selected helper to receive credentials but do not confine credentials to the mount path. Other model-controlled code in the same sandbox may still recover them. Use sandbox-scoped, short-lived, least-privilege credentials.
 
-Credential files referenced by a mount cannot resolve directly or through symlinks to serializable manifest entries. Dynamic manifest mutations are serialized per session; if a privileged mount transition or replacement unmount fails after provider effects may have started, the SDK invalidates and terminates that session instead of reusing or persisting ambiguous state.
+Credential files referenced by a mount cannot resolve directly or through symlinks to serializable manifest entries. The SDK serializes dynamic manifest mutations per session. If a privileged mount transition or replacement unmount fails after provider effects may have started, the SDK invalidates and terminates that session instead of reusing or persisting ambiguous state.
 
 Serialized sandbox state omits mount credentials, including ambient environment credentials selected by an in-sandbox mount helper. Any persisted mount topology requires a current trusted manifest before resume. For resumable external or provider-native mounts, the SDK restores credentials only after the credential-free current and persisted mount topologies match. Explicit `sessionState` can reconnect an existing provider-native mount only when its unredacted live authority still matches the current trusted manifest; redacted, rotated, or removed authority requires a fresh sandbox. Opaque configuration that cannot be separated into credential-free topology is non-resumable. When the Runner restores a serialized `RunState` entry that used an in-sandbox mount helper, it discards that stored session and creates a fresh sandbox from current trusted configuration. Caller-supplied explicit `sessionState` and direct provider resume instead reject in-container mount state; start a fresh sandbox explicitly.
 
@@ -226,6 +226,6 @@ Declare the ports in the client options when you need a backend to enforce an al
 | Local snapshots | Supported | Supported |
 | Local/Docker mounts | Local bind-style support | Bind and Docker volume-style support |
 
-Local PTY support uses a small Python 3 bridge in the SDK process. The bridge is only used for `tty: true` sessions, where Node.js does not provide a built-in PTY API and the SDK needs standard POSIX PTY behavior for interactive stdin, signal handling, and exit status reporting. Install `python3` in the environment that runs your SDK code, or set `OPENAI_AGENTS_PYTHON` to a Python 3 executable. This is separate from the Python version, if any, installed inside a Docker sandbox image.
+Local PTY support uses a small Python 3 bridge in the SDK process. The SDK uses the bridge only for `tty: true` sessions. Node.js has no built-in PTY API, so the bridge provides standard POSIX PTY behavior for interactive stdin, signal handling, and exit status reporting. Install `python3` in the environment that runs your SDK code, or set `OPENAI_AGENTS_PYTHON` to a Python 3 executable. This is separate from the Python version, if any, installed inside a Docker sandbox image.
 
 Hosted provider support varies by provider. Check the provider-specific docs for exact options, environment variables, port behavior, PTY support, snapshot behavior, and cleanup behavior.

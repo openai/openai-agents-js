@@ -1,10 +1,10 @@
 # Docs
 
-The documentation is generated using Astro Starlight.
+Astro Starlight generates the documentation site.
 
 ## Running the docs
 
-To run the docs from the root of the project run:
+From the repository root, run:
 
 ```bash
 pnpm docs:dev
@@ -12,7 +12,7 @@ pnpm docs:dev
 
 ## Translating docs
 
-All of our documentation is available in Japanese. For this we use a script to translate the docs.
+All documentation is available in Japanese. To run the translation script, use:
 
 ```bash
 pnpm docs:translate
@@ -20,7 +20,7 @@ pnpm docs:translate
 
 ## Building the docs
 
-The docs are automatically built and deployed using GitHub Actions. To build them locally run:
+GitHub Actions builds and deploys the docs. To build them locally, run:
 
 ```bash
 pnpm docs:build

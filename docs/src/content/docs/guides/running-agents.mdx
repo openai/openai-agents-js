@@ -12,25 +12,25 @@ import conversationIdExample from '../../../../../examples/docs/running-agents/c
 import previousResponseIdExample from '../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
 import modelInputIdentityExample from '../../../../../examples/docs/running-agents/modelInputIdentity.ts?raw';
 
-Agents do nothing by themselves – you **run** them with the `Runner` class or the `run()` utility.
+**Run** agents with the `Runner` class or the `run()` utility.
 
 > Read this page after [Agents](/openai-agents-js/guides/agents) once you want to execute turns, stream events, or manage conversation state. If you are still deciding how the agent should be defined, start with [Agents](/openai-agents-js/guides/agents) first.
 
 <Code lang="typescript" code={helloWorldExample} title="Simple run" />
 
-When you don't need a custom runner, you can also use the `run()` utility, which runs a singleton default `Runner` instance.
+If you don't need a custom runner, use the `run()` utility. It uses a single shared default `Runner` instance.
 
 Alternatively, you can create your own runner instance:
 
 <Code lang="typescript" code={helloWorldWithRunnerExample} title="Simple run" />
 
-After running your agent, you will receive a [result](/openai-agents-js/guides/results) object that contains the final output and the full history of the run.
+After the run, you receive a [result](/openai-agents-js/guides/results) object with the final output and full run history.
 
 ## Runner lifecycle and configuration
 
 ### The agent loop
 
-When you use the run method in Runner, you pass in a starting agent and input. The input can either be a string (which is considered a user message), or a list of input items, which are the items in the OpenAI Responses API.
+Pass a starting agent and input to the run method in Runner. The input can be a string, treated as a user message, or a list of OpenAI Responses API input items.
 
 The runner then runs a loop:
 
@@ -52,9 +52,9 @@ Create a `Runner` when your app starts and reuse it across requests. The instanc
 
 ### Run arguments
 
-The input to the `run()` method is an initial agent to start the run on, input for the run and a set of options.
+The `run()` method accepts a starting agent, input, and options.
 
-The input can either be a string (which is considered a user message), or a list of [input items](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem), or a [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) object in case you are building a [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop) agent.
+The input can be a string, treated as a user message, or a list of [input items](/openai-agents-js/openai/agents-core/type-aliases/agentinputitem). It can also be a [`RunState`](/openai-agents-js/openai/agents-core/classes/runstate) object for a [human-in-the-loop](/openai-agents-js/guides/human-in-the-loop) agent.
 
 The additional options are:
 
@@ -80,11 +80,11 @@ The additional options are:
 
 ### Streaming
 
-Streaming additionally exposes events while the LLM runs. A `StreamedRunResult` accumulates information as the run proceeds. After the result's `completed` promise resolves, the result's summary properties include all newly produced outputs. You can iterate over the streaming events using a `for await` loop. Read more in the [streaming guide](/openai-agents-js/guides/streaming).
+Streaming exposes events while the LLM runs. A `StreamedRunResult` collects information as the run proceeds. After the result's `completed` promise resolves, the result's summary properties include all newly produced outputs. You can iterate over the streaming events using a `for await` loop. Read more in the [streaming guide](/openai-agents-js/guides/streaming).
 
 ### Run config
 
-If you are creating your own `Runner` instance, you can pass in a `RunConfig` object to configure the runner.
+To configure your own `Runner` instance, pass a `RunConfig` object.
 
 | Field | Type | Purpose |
 | --- | --- | --- |
@@ -162,7 +162,7 @@ You can create a conversation once using [Conversations API](https://platform.op
 
 ##### 2. `previousResponseId` to continue from the last turn
 
-If you want to start only with Responses API anyway, you can chain each request using the ID returned from the previous response. This keeps the context alive across turns without creating a full conversation resource.
+To use only the Responses API, chain each request with the ID from the previous response. This preserves context across turns without creating a conversation resource.
 
 <Code
   lang="typescript"
@@ -184,7 +184,7 @@ The return value must be a `ModelInputData` object: `{ input: AgentInputItem[], 
 
 The SDK clones the prepared turn input before invoking the filter. If you are also using a `session`, the filtered clones are what get persisted, so redaction or truncation applied here is reflected in stored session history as well.
 
-If a filter relies on object identity to memoize work across repeated model calls, set `preserveInputIdentity = true` on the filter. The SDK then preserves each SDK-prepared item's identity while that item remains in the prepared input, although the array passed to each filter invocation is new. This option does not preserve the identity of caller-owned objects originally passed to `run()`.
+If a filter uses object identity to cache work across repeated model calls, set `preserveInputIdentity = true` on the filter. The SDK then preserves each SDK-prepared item's identity while it remains in the prepared input. Each filter invocation still receives a new array. This option does not preserve the identity of caller-owned objects originally passed to `run()`.
 
 <Code
   lang="typescript"
@@ -280,9 +280,9 @@ The SDK throws a small set of errors you can catch:
 - [`ToolCallError`](/openai-agents-js/openai/agents-core/classes/toolcallerror) – function tool execution failed for non-timeout errors.
 - [`UserError`](/openai-agents-js/openai/agents-core/classes/usererror) – any error thrown based on configuration or user input.
 
-All extend the base `AgentsError` class, which could provide the `state` property to access the current run state.
+All extend the base `AgentsError` class, which may expose the current run state through its `state` property.
 
-Here is an example code that handles `GuardrailExecutionError`. Because input guardrails only run on the first user input, the example restarts the run with the original input and context. It also shows reusing the saved state to retry output guardrails without calling the model again:
+This example handles `GuardrailExecutionError`. Because input guardrails only run on the first user input, the example restarts the run with the original input and context. It also shows reusing the saved state to retry output guardrails without calling the model again:
 
 <Code
   lang="typescript"
@@ -292,10 +292,10 @@ Here is an example code that handles `GuardrailExecutionError`. Because input gu
 
 Input vs. output retries:
 
-- Input guardrails run only on the very first user input of a run, so you must start a fresh run with the same input/context to retry them—passing a saved `state` will not re-trigger input guardrails.
+- Input guardrails run only on the first user input of a run. To retry them, start a fresh run with the same input and context. Passing a saved `state` does not re-trigger input guardrails.
 - Output guardrails run after the model response, so you can reuse the saved `state` from a `GuardrailExecutionError` to rerun output guardrails without another model call.
 
-When you run the above example, you will see the following output:
+The example produces this output:
 
 ```
 Guardrail execution failed (input): Error: Input guardrail failed to complete: Error: Something is wrong!

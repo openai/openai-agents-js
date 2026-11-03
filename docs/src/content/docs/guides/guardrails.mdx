@@ -8,7 +8,7 @@ import inputGuardrailExample from '../../../../../examples/docs/guardrails/guard
 import outputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
 import toolGuardrailsExample from '../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
 
-Guardrails can run alongside your agents or block execution until they complete, allowing you to perform checks and validations on user input or agent output. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
+Guardrails check and validate user input or agent output. They can run alongside your agents or block agent execution until they complete. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
 
 There are three guardrail families:
 
@@ -18,7 +18,7 @@ There are three guardrail families:
 
 ## Workflow boundaries
 
-Guardrails are attached to agents, but they do not necessarily run on every agent in a workflow:
+You attach guardrails to agents, but the guardrails do not necessarily run on every agent in a workflow:
 
 - **Input guardrails** run only for the first agent in the chain.
 - **Output guardrails** run only for the agent that produces the final output.
@@ -32,7 +32,7 @@ Input guardrails run in three steps:
 
 1. The guardrail receives the same input passed to the agent.
 2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult).
-3. If `tripwireTriggered` is `true`, an [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) error is thrown.
+3. If `tripwireTriggered` is `true`, the SDK throws an [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) error.
 
 > **Note** Input guardrails are intended for user input, so they only run if the agent is the _first_ agent in the workflow. Guardrails are configured on the agent itself because different agents often require different guardrails.
 
@@ -47,11 +47,11 @@ Output guardrails run in 3 steps:
 
 1. The guardrail receives the output produced by the agent.
 2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult).
-3. If `tripwireTriggered` is `true`, an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) error is thrown.
+3. If `tripwireTriggered` is `true`, the SDK throws an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) error.
 
 > **Note** Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime spoken interactions see [the Voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
 
-Output guardrail functions also receive an optional `details` object with the underlying `modelResponse` and the generated output items for the turn. Use this when the final output alone is not enough to decide whether the response should pass, for example when you want to inspect the full generated item list or provider response metadata before tripping the guardrail.
+Output guardrail functions also receive an optional `details` object with the underlying `modelResponse` and the generated output items for the turn. Use `details` when the final output alone is not enough to decide whether the response should pass. For example, inspect the full generated item list or provider response metadata before tripping the guardrail.
 
 ### Rejected terminal tool outputs
 
@@ -86,11 +86,11 @@ Tool guardrails apply to function tools you define with `tool()` and to tools co
 
 ## Tripwires
 
-When a guardrail fails, it signals this via a tripwire. The runner first waits for sibling guardrails that started in the same batch to settle and records their completed results. The runner then throws the corresponding error and halts further run processing. With parallel input guardrails, model or tool work may already have started as described in [Execution modes](#execution-modes).
+A guardrail signals failure with a tripwire. The runner first waits for sibling guardrails that started in the same batch to settle and records their completed results. The runner then throws the corresponding error and halts further run processing. With parallel input guardrails, model or tool work may already have started as described in [Execution modes](#execution-modes).
 
 ## Implementing a guardrail
 
-A guardrail is simply a function that returns a `GuardrailFunctionOutput`. Below is a minimal example that checks whether the user is asking for math homework help by running another agent under the hood.
+A guardrail is a function that returns a `GuardrailFunctionOutput`. This minimal example runs another agent to check whether the user is asking for math homework help.
 
 <Code
   lang="typescript"
@@ -110,7 +110,7 @@ Tool input guardrails and tool output guardrails look like this:
 
 <Code lang="typescript" code={toolGuardrailsExample} title="Tool guardrails" />
 
-1. `guardrailAgent` is used inside the guardrail functions.
+1. The guardrail functions use `guardrailAgent`.
 2. The guardrail function receives the agent input or output and returns the result.
-3. Extra information can be included in the guardrail result.
-4. `agent` defines the actual workflow where guardrails are applied.
+3. The guardrail result can include extra information.
+4. `agent` defines the workflow that uses the guardrails.

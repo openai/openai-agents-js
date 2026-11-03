@@ -6,14 +6,14 @@ description: Learn how to provide local data via RunContext and expose context t
 import { Aside, Code } from '@astrojs/starlight/components';
 import localContextExample from '../../../../../examples/docs/context/localContext.ts?raw';
 
-Context is an overloaded term. There are two main classes of context you might care about:
+The SDK uses two main types of context:
 
 1. **Local context** that your code can access during a run: dependencies or data needed by tools, callbacks like `onHandoff`, and lifecycle hooks.
 2. **LLM-visible context** that the language model can see when generating a response.
 
 ## Local context
 
-Local context is represented by the `RunContext<T>` type. You create any object to hold your state or dependencies and pass it to `Runner.run()`. All tool calls and hooks receive a `RunContext` wrapper so they can read from or modify that object.
+The `RunContext<T>` type represents local context. Create an object to hold your state or dependencies and pass it to `Runner.run()`. All tool calls and hooks receive a `RunContext` wrapper to read or modify that object.
 
 <Code
   lang="typescript"
@@ -21,9 +21,9 @@ Local context is represented by the `RunContext<T>` type. You create any object 
   title="Local context example"
 />
 
-Every agent, tool and hook participating in a single run must use the same **type** of context.
+Every agent, tool, and hook in a run must use the same **type** of context.
 
-Use local context for things like:
+Use local context for data and dependencies such as:
 
 - Data about the run (user name, IDs, etc.)
 - Dependencies such as loggers or data fetchers
@@ -38,19 +38,19 @@ Within a single run, derived contexts share the same underlying app context, app
 
 ### Use local context for capability visibility
 
-When function tools, local MCP tools, and handoffs depend on the same request policy, keep the policy inputs or helper on your application context. Each SDK surface exposes the current run context through its own callback:
+When function tools, local MCP tools, and handoffs depend on the same request policy, keep the policy inputs or helper on your application context. Each SDK feature exposes the current run context through its own callback:
 
 - A function tool created with `tool()` receives an object whose `runContext` property is the current `RunContext` in its `isEnabled` predicate.
 - A handoff `isEnabled` predicate receives an object whose `runContext` property is the current `RunContext`.
 - A callable MCP [`toolFilter`](/openai-agents-js/guides/mcp#tool-filtering) receives `MCPToolFilterContext`, whose `runContext` property is the current `RunContext`.
 
-Adapt the shared application policy to these callbacks instead of maintaining separate capability lists. The callbacks control which capabilities the SDK includes in the model-visible set for the current turn; they run before the model produces tool or handoff arguments, so they cannot authorize a model-generated argument or resource selection. For function tools, enforce those decisions inside `execute`, or add [tool input guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) and [approvals](/openai-agents-js/guides/human-in-the-loop) when appropriate. MCP servers must authorize their own protected operations. For a handoff with `inputType`, check the parsed input at the start of `onHandoff`, before application side effects, and throw when authorization fails. Returning successfully from `onHandoff` continues the transfer, and tool input guardrails do not run for handoffs. See [Handoff inputs](/openai-agents-js/guides/handoffs#handoff-inputs) for the callback lifecycle.
+Adapt the shared application policy to these callbacks instead of maintaining separate capability lists. The callbacks control which capabilities the model can see for the current turn. They run before the model produces tool or handoff arguments, so they cannot authorize a model-generated argument or resource selection. For function tools, enforce those decisions inside `execute`, or add [tool input guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) and [approvals](/openai-agents-js/guides/human-in-the-loop) when appropriate. MCP servers must authorize their own protected operations. For a handoff with `inputType`, check the parsed input at the start of `onHandoff`, before application side effects, and throw when authorization fails. Returning successfully from `onHandoff` continues the transfer, and tool input guardrails do not run for handoffs. See [Handoff inputs](/openai-agents-js/guides/handoffs#handoff-inputs) for the callback lifecycle.
 
 If a callable MCP `toolFilter` depends on request context, keep `cacheToolsList` disabled for the agent-managed server. Cached entries contain the already-filtered tool list, while the default callable-filter cache key is not request-context-specific. Code that calls `getAllMcpTools(...)` directly can instead provide a `generateMCPToolCacheKey` that includes the relevant policy identity. See the [MCP caching guidance](/openai-agents-js/guides/mcp#other-things-to-know).
 
 ### What `RunContext` exposes
 
-`RunContext<T>` is a wrapper around your app-defined context object. In practice you will most often use:
+`RunContext<T>` wraps your app-defined context object. Most often, you use:
 
 - `runContext.context` for your own mutable app state and dependencies.
 - `runContext.usage` for the aggregated token/request usage of the current run.
@@ -74,7 +74,7 @@ If you subclass `RunContext`, verify that nested or derived runs still preserve 
 
 ## LLM-visible context
 
-When the LLM is called, the only data it can see comes from the conversation history. To make additional information available you have a few options:
+The LLM sees only the data in the conversation history. To provide more information, you can:
 
 1. Add it to the Agent `instructions` – also known as a system or developer message. This can be a static string or a function that receives the context and returns a string.
 2. Include it in the `input` when calling `Runner.run()`. This is similar to the instructions technique but lets you place the message lower in the [chain of command](https://cdn.openai.com/spec/model-spec-2024-05-08.html#follow-the-chain-of-command).

@@ -17,7 +17,7 @@ import agentCloning from '../../../../../examples/docs/agents/agentCloning.ts?ra
 import agentForcingToolUse from '../../../../../examples/docs/agents/agentForcingToolUse.ts?raw';
 import toolUseBehaviorExample from '../../../../../examples/docs/agents/toolUseBehavior.ts?raw';
 
-Agents are the main building‑block of the OpenAI Agents SDK. An **Agent** is a Large Language Model (LLM) that has been configured with:
+Agents are the main building blocks of the OpenAI Agents SDK. An **Agent** is a large language model (LLM) configured with:
 
 - **Instructions** – the system prompt that tells the model _who it is_ and _how it should respond_.
 - **Model** – which OpenAI model to call, plus any optional model tuning parameters.
@@ -29,7 +29,7 @@ Agents are the main building‑block of the OpenAI Agents SDK. An **Agent** is a
 
 ### Choose the next guide
 
-Use this page as the hub for agent definition. Jump out to the adjacent guide that matches the next decision you need to make.
+Use this page to define an agent. Choose a related guide for your next task.
 
 | If you want to... | Read next |
 | --- | --- |
@@ -43,7 +43,7 @@ Use this page as the hub for agent definition. Jump out to the adjacent guide th
 | Test the agent workflow without live services | [Testing](/openai-agents-js/guides/testing) |
 | Inspect final output, run items, or resume | [Results](/openai-agents-js/guides/results) |
 
-The rest of this page walks through every Agent feature in more detail.
+The rest of this page explains each Agent feature.
 
 ---
 
@@ -51,7 +51,7 @@ The rest of this page walks through every Agent feature in more detail.
 
 ### Basic configuration
 
-The `Agent` constructor takes a single configuration object. The most commonly‑used properties are shown below.
+The `Agent` constructor takes a single configuration object. The table lists its most common properties.
 
 | Property | Required | Description |
 | --- | --- | --- |
@@ -78,7 +78,7 @@ The `Agent` constructor takes a single configuration object. The most commonly�
 
 ### Context
 
-Agents are **generic on their context type** – i.e. `Agent<TContext, TOutput>`. The _context_ is a dependency‑injection object that you create and pass to `Runner.run()`. It is forwarded to every tool, guardrail, handoff, etc. and is useful for storing state or providing shared services (database connections, user metadata, feature flags, …).
+Agents are **generic on their context type**: `Agent<TContext, TOutput>`. The _context_ is an object that you create and pass to `Runner.run()` to supply dependencies. The SDK forwards it to every tool, guardrail, and handoff. Use it to store state or provide shared services, such as database connections, user metadata, and feature flags.
 
 <Code lang="typescript" code={agentWithContext} title="Agent with context" />
 
@@ -86,7 +86,7 @@ Agents are **generic on their context type** – i.e. `Agent<TContext, TOutput>`
 
 ### Output types
 
-By default, an Agent returns **plain text** (`string`). If you want the model to return a structured object you can specify the `outputType` property. The SDK accepts:
+By default, an Agent returns **plain text** (`string`). To return a structured object, set the `outputType` property. The SDK accepts:
 
 1. A [Zod](https://github.com/colinhacks/zod) schema (`z.object({...})`).
 2. A supported Standard Schema value with Standard JSON Schema conversion.
@@ -98,7 +98,7 @@ By default, an Agent returns **plain text** (`string`). If you want the model to
   title="Structured output with Zod"
 />
 
-When `outputType` is provided, the SDK automatically uses [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) instead of plain text.
+When you provide `outputType`, the SDK uses [structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs) instead of plain text.
 
 Zod and supported Standard Schema values validate the parsed output locally and preserve their inferred output type. A raw JSON Schema describes the model contract, but the parsed result remains `unknown`. See [Schema validation](/openai-agents-js/guides/schemas) for a Standard Schema example and the supported validation boundary.
 
@@ -120,16 +120,16 @@ Some agent concepts map directly to OpenAI platform concepts, while others are c
 
 ## Composition patterns
 
-Two SDK entry points show up most often when an agent participates in a larger workflow:
+Two SDK patterns are common in larger workflows:
 
-1. **Manager (agents as tools)** – a central agent owns the conversation and invokes specialized agents that are exposed as tools.
-2. **Handoffs** – the initial agent delegates the entire conversation to a specialist once it has identified the user's request.
+1. **Manager (agents as tools)**: A central agent owns the conversation and calls specialized agents through tools.
+2. **Handoffs**: The initial agent delegates the entire conversation to a specialist after identifying the user's request.
 
 These approaches are complementary. Managers give you a single place to enforce guardrails or rate limits, while handoffs let each agent focus on a single task without retaining control of the conversation. For the design tradeoffs and when to choose each pattern, see [Agent orchestration](/openai-agents-js/guides/multi-agent).
 
 #### Manager (agents as tools)
 
-In this pattern the manager never hands over control—the LLM uses the tools and the manager summarizes the final answer. Read more in the [tools guide](/openai-agents-js/guides/tools#4-agents-as-tools).
+The manager keeps control throughout the run. The LLM uses the tools, and the manager summarizes the final answer. Read more in the [tools guide](/openai-agents-js/guides/tools#4-agents-as-tools).
 
 <Code lang="typescript" code={agentsAsTools} title="Agents as tools" />
 
@@ -175,7 +175,7 @@ This is only supported when you use the OpenAI Responses API. Both synchronous a
 
 ### Lifecycle hooks
 
-For advanced use‑cases you can observe the Agent lifecycle by listening on events.
+Listen for events to observe the Agent lifecycle.
 
 `Agent` instances emit lifecycle events for that specific agent instance, while `Runner` emits the same event names as a single stream across the whole run. This is useful for multi-agent workflows where you want one place to observe handoffs and tool calls.
 
@@ -199,13 +199,13 @@ The shared event names are:
 
 ### Guardrails
 
-Guardrails allow you to validate or transform user input and agent output. They are configured via the `inputGuardrails` and `outputGuardrails` arrays. See the [guardrails guide](/openai-agents-js/guides/guardrails) for details.
+Guardrails let you validate or transform user input and agent output. Configure them with the `inputGuardrails` and `outputGuardrails` arrays. See the [guardrails guide](/openai-agents-js/guides/guardrails) for details.
 
 ---
 
 ### Cloning / copying agents
 
-Need a slightly modified version of an existing agent? Use the `clone()` method, which returns an entirely new `Agent` instance.
+To modify a copy of an existing agent, use the `clone()` method. It returns a new `Agent` instance.
 
 <Code lang="typescript" code={agentCloning} title="Cloning Agents" />
 
@@ -215,7 +215,7 @@ Need a slightly modified version of an existing agent? Use the `clone()` method,
 
 ### Forcing tool use
 
-Supplying tools doesn’t guarantee the LLM will call one. You can **force** tool use with `modelSettings.toolChoice`:
+Supplying tools doesn't guarantee that the LLM will call one. You can **force** tool use with `modelSettings.toolChoice`:
 
 1. `'auto'` (default) – the LLM decides whether to use a tool.
 2. `'required'` – the LLM _must_ call a tool (it can choose which one).
@@ -230,7 +230,7 @@ When you use deferred Responses tools such as `toolNamespace()`, function tools 
 
 #### Preventing infinite loops
 
-After a tool call the SDK automatically resets `toolChoice` back to `'auto'`. This prevents the model from entering an infinite loop where it repeatedly tries to call the tool. You can override this behavior via the `resetToolChoice` flag or by configuring `toolUseBehavior`:
+After a tool call, the SDK resets `toolChoice` to `'auto'` to prevent an infinite loop of repeated tool calls. To override this behavior, use the `resetToolChoice` flag or configure `toolUseBehavior`:
 
 - `'run_llm_again'` (default) – run the LLM again with the tool result.
 - `'stop_on_first_tool'` – treat the first tool result as the final answer.
