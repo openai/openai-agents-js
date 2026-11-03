@@ -1,10 +1,6 @@
 # Install the native SDK
 
-Install the preview from a release bundle. You can run the included starter or add the same SDK packages to an existing application.
-
-## Preview availability
-
-**The first release with the Codex harness is not available yet.** When it ships, follow the steps below using files from the matching [GitHub release](https://github.com/openai/openai-agents-js/releases).
+Run the included starter or add the prebuilt SDK packages to an existing application.
 
 ## Requirements
 
@@ -12,16 +8,24 @@ Use Node.js 24 with its bundled npm. Choose a bundle for your operating system a
 
 ## Run the starter bundle
 
-1. Download `agents-starter-<version>-<platform>.tar.gz` for your platform. It includes the prebuilt SDK, the native runtime, a lockfile, and a JavaScript example.
-2. Verify the archive against `SHA256SUMS-<platform>` from the same release, then extract it. The release's `build-<platform>.json` records the package build.
-3. Set `OPENAI_API_KEY` in your environment. Run these commands from the extracted `agents-starter` directory.
+When the `0.22.0-alpha.1` prerelease appears on [GitHub Releases](https://github.com/openai/openai-agents-js/releases), download the starter archive for the machine that will run your application.
 
-   ```sh
-   npm ci --ignore-scripts
-   node hello.mjs
-   ```
+| Platform            | Starter archive                                     |
+| ------------------- | --------------------------------------------------- |
+| Linux x64           | `agents-starter-0.22.0-alpha.1-linux-x64.tar.gz`    |
+| macOS Apple silicon | `agents-starter-0.22.0-alpha.1-darwin-arm64.tar.gz` |
+| Windows x64         | `agents-starter-0.22.0-alpha.1-win32-x64.tar.gz`    |
 
-The example makes a live model request and prints a greeting. npm reads the SDK packages from the bundle and downloads third-party dependencies from your configured registry. Keep the lockfile and bundled packages together.
+Each archive includes the built SDK, the compiled Codex runtime, a lockfile, and a JavaScript example. Verify the archive against `SHA256SUMS-<platform>` from the same release, then extract it. The release's `build-<platform>.json` records the package build.
+
+Set `OPENAI_API_KEY` in your environment and run these commands from the extracted `agents-starter` directory.
+
+```sh
+npm ci --ignore-scripts
+node hello.mjs
+```
+
+The example makes a live model request and prints a greeting. npm installs the SDK packages from the bundle and downloads third-party dependencies from your configured registry. If you use a registry mirror, it must serve the versions in the bundled lockfile. Keep the lockfile and bundled packages together.
 
 ## Add the SDK to an existing application
 

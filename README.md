@@ -10,9 +10,7 @@ Use the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/ov
 
 ## Install
 
-Use Node.js 24. Follow [Install the native SDK](packages/agents/examples/guides/installation.md) to run the release starter or [add the SDK to an existing application](packages/agents/examples/guides/installation.md#add-the-sdk-to-an-existing-application).
-
-**The first release with the Codex harness is not available yet.**
+Use Node.js 24. The `0.22.0-alpha.1` starter bundles include the built SDK, the compiled Codex runtime, and a JavaScript example. Follow the [installation guide](packages/agents/examples/guides/installation.md) to choose a bundle and run the example, or [add the SDK to an existing application](packages/agents/examples/guides/installation.md#add-the-sdk-to-an-existing-application).
 
 ## Example
 
