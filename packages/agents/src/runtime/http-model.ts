@@ -9,7 +9,8 @@ import {
 import type { Duplex } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { WebSocket, WebSocketServer } from 'ws';
+import * as wsModule from 'ws';
+import type { WebSocket, WebSocketServer } from 'ws';
 import { once } from 'node:events';
 import type {
   NativeModelResponse,
@@ -385,7 +386,7 @@ export class NativeProviderRoutes {
   private enableWebsockets(): void {
     const server = this.server;
     if (!server) throw new NativeError('Model carrier is closed');
-    const wss = new WebSocketServer({
+    const wss = new wsModule.WebSocketServer({
       noServer: true,
       perMessageDeflate: false,
       maxPayload: maxWebsocketRequestBytes,

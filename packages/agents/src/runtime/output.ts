@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { jsonObject, type JsonObject, type JsonValue } from './binding';
+import { decode, jsonObject, type JsonObject, type JsonValue } from './binding';
 
 /** A captured Zod contract using native JSON generation or prompted text. */
 export type OutputSpec<Output> =
@@ -75,7 +75,10 @@ export function prepareOutput<Output>(
     return {
       identity: captureOutputIdentity(
         'plain',
-        jsonObject.parse(z.toJSONSchema(z.string(), { io: 'input' })),
+        decode(
+          jsonObject,
+          JSON.stringify(z.toJSONSchema(z.string(), { io: 'input' })),
+        ),
       ),
     };
   const explicit = 'mode' in output;
@@ -108,7 +111,10 @@ export function prepareOutput<Output>(
       }
     };
   if (explicit && output.mode === 'prompted') {
-    const prompted = jsonObject.parse(z.toJSONSchema(schema, { io: 'input' }));
+    const prompted = decode(
+      jsonObject,
+      JSON.stringify(z.toJSONSchema(schema, { io: 'input' })),
+    );
     return {
       identity: captureOutputIdentity('prompted', prompted, budget),
       ...(budget ? { repair: { schema: prompted, maxRetries: budget } } : {}),
@@ -121,7 +127,7 @@ export function prepareOutput<Output>(
       parse: validate((text) => schema.parse(JSON.parse(text))),
     };
   }
-  let native = jsonObject.parse(z.toJSONSchema(schema));
+  let native = decode(jsonObject, JSON.stringify(z.toJSONSchema(schema)));
   if (
     !explicit &&
     native.type === 'string' &&
@@ -134,7 +140,10 @@ export function prepareOutput<Output>(
   const wrapped = native.type !== 'object';
   const identity = captureOutputIdentity('native', { schema: native, wrapped });
   if (wrapped)
-    native = jsonObject.parse(z.toJSONSchema(z.object({ response: schema })));
+    native = decode(
+      jsonObject,
+      JSON.stringify(z.toJSONSchema(z.object({ response: schema }))),
+    );
 
   const close = (node: JsonObject): void => {
     if (!('type' in node || '$ref' in node || 'anyOf' in node))
