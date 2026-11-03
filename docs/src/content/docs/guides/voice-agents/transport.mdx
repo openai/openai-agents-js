@@ -41,7 +41,14 @@ To use your own media stream or audio element, provide an `OpenAIRealtimeWebRTC`
 
 <Code lang="typescript" code={customWebRTCTransportExample} />
 
-Your application retains ownership of a `mediaStream` it passes to `OpenAIRealtimeWebRTC`. Closing the transport does not stop that stream's tracks, so you can keep using it for a level meter, recorder, or reconnect. Call `stop()` on its tracks when your application is actually finished with the stream. When the transport opens the default microphone itself, `close()` still stops those SDK-owned tracks.
+#### Media stream ownership
+
+Microphone cleanup depends on who opened the stream.
+
+- If your application passes a `mediaStream` to `OpenAIRealtimeWebRTC`, the application retains ownership. Closing the transport leaves its tracks running for a level meter, recorder, or reconnect. Call `stop()` on the tracks when your application finishes with the stream.
+- If the transport opens the default microphone, `close()` stops those SDK-owned tracks.
+
+#### Peer connection customization
 
 For lower-level customization, pass `changePeerConnection` to `OpenAIRealtimeWebRTC`. It lets you inspect or replace the new `RTCPeerConnection` before the transport generates the offer.
 
@@ -145,7 +152,11 @@ There are two ways to access the underlying Realtime API directly.
 
 To keep all `RealtimeSession` capabilities, access the transport through `session.transport`.
 
-The transport emits every received event under `*`. Use `sendEvent()` to send raw events. A `*` listener receives a structured clone of the original parsed JSON payload, including fields the current SDK schema does not know about. Named and derived event listeners continue to receive validated, normalized event objects. Use these methods for low-level operations such as `session.update`, `response.create`, or `response.cancel`.
+Use the transport for low-level operations such as `session.update`, `response.create`, or `response.cancel`.
+
+- Listen under `*` for every received event. The listener receives a structured clone of the original parsed JSON payload, including fields the current SDK schema does not know about.
+- Use named and derived event listeners for validated, normalized event objects.
+- Call `sendEvent()` to send raw events.
 
 <Code lang="typescript" code={transportEventsExample} />
 

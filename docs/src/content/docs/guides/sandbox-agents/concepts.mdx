@@ -19,7 +19,7 @@ Define the workspace with the data the agent needs. You can populate a fresh wor
   <img src={harnessWithCompute.src} alt="Sandbox agent harness with compute" />
 </figure>
 
-`SandboxAgent` extends `Agent` and keeps the usual configuration, including `instructions`, `tools`, `handoffs`, `mcpServers`, `modelSettings`, output types, guardrails, and hooks, and it still runs through the normal `run()` and `Runner` APIs. The sandbox-specific pieces are:
+`SandboxAgent` extends `Agent` and keeps the usual configuration, including `instructions`, `tools`, `handoffs`, `mcpServers`, `modelSettings`, output types, guardrails, and hooks. It runs through the normal `run()` and `Runner` APIs.
 
 - `SandboxAgent` defines the agent itself: the usual agent configuration plus sandbox-specific defaults like `defaultManifest`, `baseInstructions`, `runAs`, and capabilities such as filesystem tools, shell access, skills, memory, or compaction.
 - `Manifest` declares the desired starting contents and layout for a fresh sandbox workspace, including files, repos, mounts, and environment.
@@ -86,7 +86,9 @@ If you do not need files or a filesystem, keep using `Agent`. Add hosted shell f
 
 ## Choose a sandbox client
 
-Use `UnixLocalSandboxClient` for trusted local development on macOS or Linux, or within an externally isolated environment. Unix-local workspaces, working directories, and the `HOME` environment variable do not provide OS-level confinement. For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured `DockerSandboxClient` or hosted provider, or supply external isolation. On Windows, use Docker or a hosted provider. See [Unix-local execution limits](/openai-agents-js/guides/sandbox-agents/clients#local-clients).
+Use `UnixLocalSandboxClient` for trusted local development on macOS or Linux, or within an externally isolated environment. Unix-local workspaces, working directories, and the `HOME` environment variable do not provide OS-level confinement.
+
+For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured `DockerSandboxClient` or hosted provider, or supply external isolation. On Windows, use Docker or a hosted provider. See [Unix-local execution limits](/openai-agents-js/guides/sandbox-agents/clients#local-clients).
 
 In most cases, the `SandboxAgent` definition stays the same while the sandbox client and its options change in the `sandbox` run option. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients) for local, Docker, hosted, and remote-mount options.
 
@@ -182,7 +184,11 @@ Built-in capabilities include:
 
 By default, `SandboxAgent.capabilities` uses `Capabilities.default()`, which includes `filesystem()`, `shell()`, and `compaction()`. If you pass `capabilities: [...]`, that list replaces the default, so include any default capabilities you still want.
 
+#### Image formats
+
 `view_image` accepts PNG, JPEG, GIF, WebP, BMP, TIFF, and SVG images up to 10 MB. The SDK detects raster formats from file signatures instead of trusting raster filename extensions, so a raster extension alone does not make unsupported bytes valid. The SDK recognizes SVG from its contents or an `.svg` or `.svgz` filename.
+
+#### Compaction policy
 
 `compaction()` uses `DynamicCompactionPolicy` by default. For a recognized model, the policy asks the Responses API to compact when the rendered context reaches 90% of that model's context window. If the model is missing or unknown, the policy uses a fallback threshold of 240,000 tokens. Pass a different ratio and fallback threshold to `new DynamicCompactionPolicy(thresholdRatio, fallbackThreshold)`, or use `new StaticCompactionPolicy(threshold)` when every supported model should use one fixed token threshold. A dynamic ratio must be a finite number from `0` through `1`.
 
@@ -194,9 +200,15 @@ When server-side compaction produces a compaction item, the capability keeps tha
 
 A `Manifest` describes the workspace for a fresh sandbox session. It can set the workspace `root`, declare files and directories, copy in local files, clone Git repos, attach remote storage mounts, set environment variables, define users or groups, and grant access to specific absolute paths outside the workspace.
 
+#### Environment values
+
 The SDK persists manifest environment values by default. Use ephemeral entries such as `{ value: "...", ephemeral: true }` for API keys, access tokens, or other short-lived credentials that should not be saved with sandbox state.
 
-For secrets that must be looked up again when a manifest is materialized or resumed, subclass `EnvValueReference` and register it with `registerEnvValueReference()`. A reference persists only non-secret lookup metadata and resolves the current runtime value through `resolve()`. Each subclass must declare its own stable, non-empty static `type`, and `serialize()` must not include the reserved `value` field. Register the parser in every process before reconstructing manifests, and have the parser validate and allowlist lookup keys. Resuming persisted `RunState` environment references requires a current trusted manifest with corresponding reference entries; otherwise the SDK rejects the resume before restoring the session.
+For secrets that must be looked up again when a manifest is materialized or resumed, subclass `EnvValueReference` and register it with `registerEnvValueReference()`. A reference persists only non-secret lookup metadata and resolves the current runtime value through `resolve()`.
+
+Each subclass must declare its own stable, non-empty static `type`, and `serialize()` must not include the reserved `value` field. Register the parser in every process before reconstructing manifests, and have the parser validate and allowlist lookup keys. Resuming persisted `RunState` environment references requires a current trusted manifest with corresponding reference entries. Without those entries, the SDK rejects the resume before restoring the session.
+
+#### Workspace entries
 
 Manifest entry paths are workspace-relative. They cannot be absolute paths or escape the workspace with `..`, which keeps the workspace contract portable across local, Docker, and hosted clients.
 
@@ -208,6 +220,8 @@ Use manifest entries for the material the agent needs before work begins:
 | `localFile()`, `localDir()` | Host files or directories that should be materialized into the sandbox. |
 | `gitRepo()` | A repository that should be fetched into the workspace. |
 | mounts such as `s3Mount()`, `gcsMount()`, `r2Mount()`, `azureBlobMount()`, `s3FilesMount()` | External storage that should appear inside the sandbox. |
+
+#### Local sources and path grants
 
 For local materialization, `localFile()` and `localDir()` source paths must stay inside the local source base directory. The default base is the current working directory of your Node process, and local sandbox clients may provide a client-specific base when they materialize entries. If a source must come from another absolute host directory, add the smallest necessary `Manifest.extraPathGrants` entry.
 
@@ -227,6 +241,8 @@ For Unix-local sessions, these grants govern access to local sources through the
   code={pathGrantsExample}
   title="Grant a shared local source"
 />
+
+#### Storage mounts
 
 Mount entries describe what storage to expose. Mount strategies describe how a sandbox backend attaches that storage. See [Sandbox clients](/openai-agents-js/guides/sandbox-agents/clients#mounts-and-remote-storage) for mount options and provider support.
 
@@ -318,6 +334,8 @@ There are two lifecycle modes: **SDK-owned** and **developer-owned**.
   </section>
 </div>
 
+#### SDK-owned lifecycle
+
 Use SDK-owned lifecycle when the sandbox only needs to live for one run. Pass a `client`, optional `manifest`, optional `snapshot`, and client `options`; the runner creates or resumes the sandbox, runs the agent, persists snapshot-backed workspace state, and lets the client clean up runner-owned resources.
 
 <Code
@@ -325,6 +343,8 @@ Use SDK-owned lifecycle when the sandbox only needs to live for one run. Pass a 
   code={sdkOwnedLifecycleExample}
   title="Let the runner manage the sandbox session"
 />
+
+#### Developer-owned lifecycle
 
 Use developer-owned lifecycle to create a sandbox in advance, reuse it across runs, inspect files afterward, stream over a sandbox you created, or control cleanup timing. Passing `session` tells the runner to use that live sandbox, but not to close it for you.
 
@@ -374,11 +394,9 @@ These options only matter when the runner is creating a fresh sandbox session:
 | `snapshot` | A fresh sandbox session should be seeded from a snapshot. | Useful for resume-like flows or remote snapshot clients. |
 | `options` | The sandbox client needs creation-time options. | Common for Docker images, provider timeouts, and similar client-specific settings. |
 
-`concurrencyLimits` controls how much sandbox materialization work can run in parallel. Use `manifestEntries` and `localDirFiles` when large manifests or local directory copies need tighter resource control.
-
 ### Materialization controls
 
-Set materialization controls per run in the `sandbox` run option. This lets the same `SandboxAgent` use conservative limits for large local directory copies and looser limits for small manifests.
+Set `concurrencyLimits` per run in the `sandbox` run option to control parallel materialization work. This lets the same `SandboxAgent` use conservative limits for large local directory copies and looser limits for small manifests.
 
 Use `concurrencyLimits.manifestEntries` when a manifest has many independent entries such as files, directories, repos, and mounts. Use `concurrencyLimits.localDirFiles` when `localDir()` entries contain many files and local copy pressure needs to be capped.
 

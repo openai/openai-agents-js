@@ -2,7 +2,7 @@
 
 This package provides the TypeScript Agents SDK 0.21.0 API through `@openai/agents/classic`. Its classic Runner, custom Model and ModelProvider, tools, sessions, and streaming use the restored classic runtime. The package root, `@openai/agents`, continues to select the current native API.
 
-To use an ordinary classic application with this package, change its import path. Existing classic calls keep their engine. This snippet uses top-level `await`. Run it in an ESM module or place the calls inside an async function:
+Change your classic application's import path to keep its engine. Run this top-level `await` snippet in an ESM module, or place the calls inside an async function.
 
 ```ts
 import { Agent, Runner } from '@openai/agents/classic';
@@ -13,53 +13,77 @@ const result = await runner.run(agent, 'Hello');
 console.log(result.finalOutput);
 ```
 
-The default OpenAI provider requires credentials when it makes a request. Custom Models can run without an OpenAI request or native helpers. See `examples/classic.ts` for an offline custom-Model example.
+The default OpenAI provider requires credentials for requests. Custom Models can run without OpenAI requests or native helpers, as in the offline `examples/classic.ts`.
 
-The other retained public entrypoints are `/classic/testing`, `/classic/utils`, `/classic/sandbox`, `/classic/sandbox/local`, `/classic/realtime` and `/classic/realtime/testing`. The matching classic packages supply their implementations and optional integration requirements. Realtime keeps its existing API. This change does not add a new audio runtime.
+## Use a selected Modal sandbox
 
-For a pre-created Modal sandbox, the [selected sandbox example](examples/selected-modal-sandbox.ts) binds the application-supplied handle through the existing `SandboxClient` and `SandboxSessionLike` contracts. Use a `SandboxAgent` with only `capabilities: [shell()]`, imported from `@openai/agents/classic/sandbox`. The example accepts one blocking `python -V` probe with `login: false`. It suppresses command output and returns the exit code. It does not create or look up a sandbox, change its proxy configuration, or implement a general Modal backend.
+The [selected sandbox example](examples/selected-modal-sandbox.ts) binds an application-supplied, pre-created Modal handle through `SandboxClient` and `SandboxSessionLike`. Use a `SandboxAgent` with only `capabilities: [shell()]`, imported from `@openai/agents/classic/sandbox`. The example accepts one blocking `python -V` probe with `login: false`. It suppresses command output and returns the exit code. It does not create or look up a sandbox, change its proxy configuration, or implement a general Modal backend.
 
-Pass `borrowSelectedModalProbe(selected)` as `sandbox.session` to retain application ownership. Pass `ownSelectedModalProbe(selected, disposeSelected)` as `sandbox.client` only when the SDK should dispose of that selected resource. When the SDK owns the resource, shutdown waits for the admitted probe before calling the supplied disposal action once. No extra credentials or live proxy are needed for the controlled selection tests. A real supplied handle uses its application's existing provider setup. The adapter rejects unsupported provisioning and execution options. It provides no PTY, file tools, snapshots, or resume. Native `Environment` ownership remains unchanged.
+Pass `borrowSelectedModalProbe(selected)` as `sandbox.session` to retain application ownership. Pass `ownSelectedModalProbe(selected, disposeSelected)` as `sandbox.client` only when the SDK should dispose of that selected resource. SDK-owned shutdown waits for the admitted probe, then calls the supplied disposal action once.
 
-This package builds on the classic 0.21.0 implementation. It adds `modelOverride` and an internal runner-factory hook. The hook keeps the ordinary classic Runner as its default and does not choose a different engine globally.
-
-The classic and native runtimes use separate session state. Converting an active classic `RunState` into native `SessionState` is not supported. Neither entrypoint switches runtimes automatically.
+No extra credentials or live proxy are needed for the controlled selection tests. A real supplied handle uses its application's existing provider setup. The adapter rejects unsupported provisioning and execution options. It provides no PTY, file tools, snapshots, or resume. Native `Environment` ownership remains unchanged.
 
 ## Retained classic APIs
 
 For retained sessions, guardrails, tracing, and Realtime, use the [classic SDK guides](https://openai.github.io/openai-agents-js/). Translate their `@openai/agents` imports to `@openai/agents/classic`, and `@openai/agents/realtime` imports to `@openai/agents/classic/realtime`. The native package root has a different API.
 
-See the packaged [testing guide](TESTING.md) for `ScriptedModel`, `ScriptedRealtimeTransport`, and `scriptedSandboxSession`. SDK-backed classic MCP clients require the optional `@modelcontextprotocol/client` dependency (the matched core package declares version `2.4.0`) in your application.
+See the packaged [testing guide](TESTING.md) for `ScriptedModel`, `ScriptedRealtimeTransport`, and `scriptedSandboxSession`. SDK-backed classic MCP clients require your application to install the optional `@modelcontextprotocol/client` dependency. The matched core package declares version `2.4.0`.
 
-Use `@openai/agents/classic` for classic `Agent`, `Runner`, `run`, tools, handoffs, guardrails, tracing, `RunState`, and session stores. Use `/classic/realtime` for `RealtimeAgent`, `RealtimeSession`, and OpenAI audio transports. Use `/classic/testing` and `/classic/realtime/testing` for deterministic model and transport doubles. Sandbox APIs remain under `/classic/sandbox` and `/classic/sandbox/local`.
+Use `@openai/agents/classic` for classic `Agent`, `Runner`, `run`, tools, handoffs, guardrails, tracing, `RunState`, and session stores. Use `/classic/realtime` for `RealtimeAgent`, `RealtimeSession`, and OpenAI audio transports. Use `/classic/testing` and `/classic/realtime/testing` for deterministic model and transport doubles. Sandbox APIs remain under `/classic/sandbox` and `/classic/sandbox/local`, and utilities under `/classic/utils`. The matching classic packages supply these implementations and optional integration requirements. Realtime keeps its existing API without a new audio runtime.
+
+The classic and native runtimes use separate session state. Converting an active classic `RunState` into native `SessionState` is unsupported. Neither entrypoint switches runtimes automatically.
 
 A `tool()` declaration requires a supported parameter schema in its TypeScript options and at runtime. For a tool without arguments, use an empty object schema such as `z.strictObject({})`.
 
 ### Choose a model for a classic run
 
-Classic `Runner` model and model settings supply defaults. An explicit Agent model and explicitly configured Agent settings take precedence.
+Classic `Runner` model and model settings supply defaults. An explicit Agent model and explicitly configured Agent settings take precedence. This package adds `modelOverride` and an internal runner-factory hook to classic 0.21.0. The hook defaults to the ordinary classic Runner and does not select a different engine globally.
 
-To choose the model explicitly for every Agent in a Classic run, including handoff targets, use `new Runner({ modelOverride: yourModel })`. The value can be a model name or an existing `Model` implementation. The Runner resolves names through its `modelProvider` and uses Model objects directly. The override replaces Agent models and the Runner's `model` default without changing the registered Agents. Model settings have separate precedence. Explicit Agent settings still win over Runner settings.
+To choose the model explicitly for every Agent in a Classic run, including handoff targets, use `new Runner({ modelOverride: yourModel })`.
 
-Create a Runner for the selected override, then call its `run()` method. Set `modelOverride` on the Runner constructor. Omit it to retain the existing defaults. This option belongs to the classic Runner. The experimental `/migration` entry point does not accept it.
+The value can be a model name or an existing `Model` implementation. The Runner resolves names through its `modelProvider` and uses Model objects directly. The override replaces Agent models and the Runner's `model` default without changing registered Agents or model-setting precedence. Omit `modelOverride` to retain the existing model defaults. The experimental `/migration` entry point does not accept this classic Runner option.
 
 An `Agent.asTool()` call starts a separate nested Runner. That Runner does not inherit the parent's `modelOverride`. Opt in for that child with `child.asTool({ toolDescription: 'Ask the child', runConfig: { modelOverride: childModel } })`. An explicit child Model keeps its existing protection against inherited parent transport settings.
 
-To edit model-facing instructions, history, or tool declarations, use the application-owned wrapper in the [prepared Model declarations example](examples/prepared-model-declarations/README.md). It clones the request data before editing it. Set the wrapper as the Agent's `model`, as the example does, or pass `new Runner({ modelOverride: wrappedModel })` to select it across a classic run's handoffs. The Runner still uses the original registered tools, schemas, and approval policy for execution. Editing a sampled declaration cannot enable a disabled tool or expand its executable arguments.
+### Prepare model declarations
 
-Classic `toTextStream()` emits text from all responses, including intermediate agents. It can emit text before guardrails finish. Await successful completion and read `finalOutput` when you need the final result after guardrails pass. `result.input` exposes the stored array for array input. Make a detached copy before editing it.
+To edit model-facing instructions, history, or tool declarations, use the application-owned wrapper in the [prepared Model declarations example](examples/prepared-model-declarations/README.md). It clones request data before editing it. Set the wrapper as the Agent's `model`, or pass `new Runner({ modelOverride: wrappedModel })` to select it across a classic run's handoffs.
+
+The Runner still uses the original registered tools, schemas, and approval policy for execution. Editing a sampled declaration cannot enable a disabled tool or expand its executable arguments.
+
+### Read classic results
+
+Classic `toTextStream()` emits text from all responses, including intermediate agents. It can emit text before guardrails finish. Await successful completion and read `finalOutput` when you need the final result after guardrails pass.
+
+`result.input` exposes the stored array for array input. Make a detached copy before editing it.
 
 ## Hosted web search through Responses HTTP
 
 Use the classic `Agent`, `Runner`, `OpenAIProvider`, and `webSearchTool` exports for hosted search. Select Responses HTTP explicitly with `new OpenAIProvider({ apiKey, baseURL, useResponses: true, useResponsesWebSocket: false })` and pass it as the Runner's `modelProvider`. Omit `baseURL` for the default OpenAI endpoint. A custom endpoint must support this Responses route and its tools.
 
-Declare controls with `webSearchTool({ filters: { allowedDomains: ['example.com', 'example.org'] }, userLocation: { type: 'approximate', city: 'San Francisco', country: 'US', region: 'California', timezone: 'America/Los_Angeles' } })`. The typed location supports timezone. The SDK forwards these as `filters.allowed_domains` and `user_location`. Set the outer `modelSettings.toolChoice` to a supported choice such as `'web_search'` or `'auto'`. Omit it to retain the provider default. Explicit Agent settings take precedence over Runner defaults.
+### Configure search controls
 
-Read answer text from `result.finalOutput`. Each `result.rawResponses` entry exposes the actual wire response in `providerData`. Its assistant output content contains URL citations in `annotations`, including the returned `url`, `title`, `start_index`, and `end_index`. Normalized message content retains the same annotations in `content[i].providerData.annotations`. Hosted calls appear as `hosted_tool_call` items with `name: 'web_search_call'`, status, and action/source metadata in `providerData`. Missing passages remain unavailable. An assistant answer is not a retrieved source passage. Pass `result.history` with a follow-up message to the next classic run to replay the returned messages and hosted calls.
+Declare controls with `webSearchTool({ filters: { allowedDomains: ['example.com', 'example.org'] }, userLocation: { type: 'approximate', city: 'San Francisco', country: 'US', region: 'California', timezone: 'America/Los_Angeles' } })`. The typed location supports timezone. The SDK forwards these as `filters.allowed_domains` and `user_location`.
 
-Normalized `usage` counters and `result.runContext.usage` default missing measurements to zero. Check the actual `providerData.usage` to distinguish unknown usage from a measured zero, or enable `modelSettings.preserveRawUsage` to retain a JSON-compatible `rawUsage` snapshot when the provider supplies a usage object. `JSON.stringify(result.rawResponses)` preserves these carriers, including `rawUsage`; `RunState` serialization keeps `providerData` but omits the separate `rawUsage` field. When exporting results, serialize the field that holds the data instead of relying on the result wrapper's getters.
+Set the outer `modelSettings.toolChoice` to a supported choice such as `'web_search'` or `'auto'`. Omit it to retain the provider default. Explicit Agent settings take precedence over Runner defaults.
 
-This route forwards controls and preserves returned metadata. The acceptance tests use a local HTTP fixture. They verify serialization and use of the results by callers and later turns. They do not establish live retrieval, domain enforcement, location or date semantics, index freshness, source quality, or passage availability. This coverage applies to Responses HTTP only.
+### Read citations and continue the conversation
+
+Read answer text from `result.finalOutput`. Each `result.rawResponses` entry exposes the wire response in `providerData`. Assistant output content contains URL citations in `annotations`, including `url`, `title`, `start_index`, and `end_index`. Normalized message content retains the same annotations in `content[i].providerData.annotations`.
+
+Hosted calls appear as `hosted_tool_call` items with `name: 'web_search_call'`, status, and action/source metadata in `providerData`. Missing passages remain unavailable. An assistant answer is not a retrieved source passage.
+
+Pass `result.history` with a follow-up message to the next classic run to replay the returned messages and hosted calls.
+
+### Preserve usage measurements
+
+Normalized `usage` counters and `result.runContext.usage` default missing measurements to zero. Check the actual `providerData.usage` to distinguish unknown usage from a measured zero, or enable `modelSettings.preserveRawUsage` to retain a JSON-compatible `rawUsage` snapshot when the provider supplies a usage object.
+
+`JSON.stringify(result.rawResponses)` preserves these carriers, including `rawUsage`. `RunState` serialization keeps `providerData` but omits the separate `rawUsage` field. When exporting results, serialize the field that holds the data instead of relying on the result wrapper's getters.
+
+### Scope of fixture coverage
+
+Local HTTP acceptance fixtures verify serialization and result use by callers and later turns. They do not establish live retrieval, domain enforcement, location or date semantics, index freshness, source quality, or passage availability. This coverage applies to Responses HTTP only.
 
 ## Current tracing and Realtime limitations
 
@@ -70,7 +94,11 @@ This route forwards controls and preserves returned metadata. The acceptance tes
 
 ## Experimental native Model migration
 
-Import `SDKRunner` from `@openai/agents/migration` to run a supported classic `Agent` through the native turn loop. Supply fresh text or supported completed SDK conversation items, explicit context, and either a classic `Model` object or a model name with an explicit `modelProvider`. User messages can contain ordered text and inline base64 images with default detail. Completed ordinary function-call/result pairs can end the input without an extra user message. The selected Model receives admitted item IDs, order, and content. Imported calls provide context and never execute again. The adapter rejects remote images, files, audio, pending calls, and unsupported provider items before execution. Agent model selection and settings retain classic precedence. The adapter returns settled final output, copies of the Model responses, guardrail results, and native session, turn, and usage information. See `examples/migration.ts`.
+Import `SDKRunner` from `@openai/agents/migration` to run a supported classic `Agent` through the native turn loop. Supply fresh text or supported completed SDK conversation items, explicit context, and either a classic `Model` object or a model name with an explicit `modelProvider`.
+
+User messages can contain ordered text and inline base64 images with default detail. Completed ordinary function-call/result pairs can end the input without an extra user message. The selected Model receives admitted item IDs, order, and content. Imported calls provide context and never execute again. The adapter rejects remote images, files, audio, pending calls, and unsupported provider items before execution.
+
+Agent model selection and settings retain classic precedence. The adapter returns settled final output, copies of the Model responses, guardrail results, and native session, turn, and usage information. See `examples/migration.ts`.
 
 Choose the route that matches your workflow.
 
@@ -87,35 +115,65 @@ Choose the route that matches your workflow.
 
 Each route has its own limits. Handoffs reject Session storage, Agent tools, manual approval, and live `SDKRunner.stream()`. Support for individual features does not guarantee support for every combination.
 
-By default, this experimental API accepts string or synchronous/asynchronous instruction callbacks, text or supported Zod object output, and ordinary strict classic function tools with default error handling and static approval-free policies. The Agent-tool, handoff and held-approval sections below describe separate supported extensions. The adapter validates the whole declaration before resolving a provider or opening native resources. It rejects unsupported settings and declarations before execution. Declaration errors point to the full classic runtime; setting errors identify the unsupported setting. Use `@openai/agents/classic` when a setting is outside this adapter's supported subset. Supported settings are finite temperature, topP and penalties, positive safe-integer maxTokens, boolean store, cooperative `timeoutMs`, classic `retry` settings, and tool choice hints: `auto`, `none`, `required`, or an enabled ordinary function name. `required` needs an enabled function. Names interpreted as hosted selectors by Responses, such as `web_search`, are refused as named-function choices. Agent settings retain precedence over Runner defaults, including nested retry/backoff settings. Explicit `modelSettings: {}` avoids unsupported implicit model defaults when needed.
+### Supported declarations and settings
+
+By default, this experimental API accepts string or synchronous/asynchronous instruction callbacks, text or supported Zod object output, and ordinary strict classic function tools with default error handling and static approval-free policies. The Agent-tool, handoff and held-approval sections below describe separate supported extensions.
+
+The adapter rejects unsupported declarations and settings before resolving a provider or opening native resources. Declaration errors point to the full classic runtime. Setting errors identify the unsupported setting. Use `@openai/agents/classic` when a setting is outside this adapter's supported subset.
+
+Supported settings are finite temperature, topP and penalties, positive safe-integer maxTokens, boolean store, cooperative `timeoutMs`, classic `retry` settings, and tool choice hints: `auto`, `none`, `required`, or an enabled ordinary function name. `required` needs an enabled function. Names interpreted as hosted selectors by Responses, such as `web_search`, are refused as named-function choices.
+
+Agent settings retain precedence over Runner defaults, including nested retry/backoff settings. Explicit `modelSettings: {}` avoids unsupported implicit model defaults when needed.
 
 ### Resolve instructions for each Model request
 
-Instruction callbacks receive the original Agent and the run's trusted `RunContext` when preparing each selected Model request. Their return value becomes that request's system instructions. Retried attempts reuse those instructions. Finishing with a tool result skips the next Model call and its instruction callback. The adapter waits for callbacks that have started to settle, including during cancellation.
+Instruction callbacks receive the original Agent and the run's trusted `RunContext` when preparing each selected Model request. Their return value becomes the request's system instructions, which retries reuse. Finishing with a tool result skips the next Model call and its instruction callback. The adapter waits for callbacks that have started to settle, including during cancellation.
 
 ### Finish with a tool result
 
 The default `toolUseBehavior: 'run_llm_again'` continues with another Model call after tools. `resetToolChoice` uses the existing SDK rule: after an accepted function result, the default `true` clears the next tool-choice hint except `none`; `false` retains it. These settings apply to the selected Model. The admitted declaration still governs native function permissions.
 
-`stop_on_first_tool`, `{ stopAtToolNames: [...] }`, and callable tool-use policies can finish with validated final output. A callable receives the original `RunContext` and standard SDK `FunctionToolResult` records in issued-call order, including the original tool objects and checked JSON callback values. The adapter keeps snapshots of those values separately from accepted wire text. The built-in stop policies use the SDK's `toSmartString` conversion. A callable final decision must provide a string. For a supported object `outputType`, the captured schema validates that string after cleanup, and output guards, `agent_end`, and `finalOutput` receive the checked object.
+`stop_on_first_tool`, `{ stopAtToolNames: [...] }`, and callable tool-use policies can finish with validated final output.
 
-Tool finish waits for the complete batch's output validation and true native acknowledgments. It then force-stops the owned Turn and joins native, callback, producer, carrier, and provider cleanup before the common output guards and `agent_end`. The result's `native.outcome` reports the actual `turn_aborted` event with reason `interrupted`. `modelResponses` contains only actual Model responses, and result items retain the accepted tool history. Caller abort, an unrelated native error, a guardrail tripwire, or a cleanup failure rejects the run.
+A callable receives the original `RunContext` and standard SDK `FunctionToolResult` records in issued-call order, including the original tool objects and checked JSON callback values. The adapter snapshots those values separately from accepted wire text. The built-in stop policies use the SDK's `toSmartString` conversion. A callable final decision must provide a string. For a supported object `outputType`, the captured schema validates that string after cleanup, and output guards, `agent_end`, and `finalOutput` receive the checked object.
+
+#### Completion and cleanup
+
+Tool finish waits for the complete batch's output validation and true native acknowledgments. It then force-stops the owned Turn and joins native, callback, producer, carrier, and provider cleanup before the common output guards and `agent_end`.
+
+The result's `native.outcome` reports the actual `turn_aborted` event with reason `interrupted`. `modelResponses` contains only actual Model responses, and result items retain the accepted tool history. Caller abort, an unrelated native error, a guardrail tripwire, or a cleanup failure rejects the run.
 
 ### Select Models and control attempts
 
 Pass `model`, `modelProvider`, and `modelSettings` through the adapter options to supply run defaults. Explicit Agent models and settings retain precedence. The classic Runner constructor's `modelOverride` setting is unsupported here. To force a different Model, use an Agent configured with that Model or select the classic runtime.
 
-`SDKRunner.run()` returns after completion. Its `modelInvocation: 'stream'` option chooses the Model's streaming method and buffers at most 4 MiB per Model invocation. It waits for the terminal response, the end of the stream, and iterator cleanup. Use the separate `SDKRunner.stream()` entrypoint below to receive live Model events. The adapter re-encodes native tool arguments as JSON and runs the original classic parser once. The function callback receives the parsed result. Parser input does not preserve lexical whitespace, escape spelling, duplicate keys, or negative-zero identity. The adapter converts native developer messages to classic system messages.
+`SDKRunner.run()` returns after completion. Its `modelInvocation: 'stream'` option selects the Model's streaming method and buffers at most 4 MiB per invocation. It waits for the terminal response, the end of the stream, and iterator cleanup. Use the separate `SDKRunner.stream()` entrypoint below to receive live Model events.
 
-The adapter keeps native request, stream, and unbounded connection retries disabled for its owned engine. Selected Model calls use the classic cooperative timeout and opt-in retry rules. The selected provider keeps its transport retry behavior for the first attempt. Later runner attempts disable provider-managed retries. A retry budget alone does not opt into retries without a policy. Visible stream events prevent replay. A timeout aborts the current Model call and waits for its started producer and iterator cleanup. It does not set a deadline for tools or the whole run. Entered retry advice and policy callbacks also finish before cleanup settles. The adapter does not close or dispose of the supplied Model or ModelProvider. Cancellation waits for Model, tool, and guardrail callbacks that have started to finish. A callback that ignores cancellation can keep the run pending.
+#### Argument conversion
 
-When execution alone fails and cleanup succeeds, the Promise rejects with the execution error. Model and provider errors retain their original thrown value. Function-tool errors that stop execution use the existing `ToolCallError`, whose `error` property retains the underlying failure, including typed tool guardrail tripwires. Failed cleanup produces `MigrationCleanupError`. Its `retryCleanup()` method retries only the same unfinished cleanup. Concurrent calls share one cleanup attempt. You can retry if that attempt fails. After cleanup succeeds, later calls reuse that result. Cleanup retries never resolve a Model, open a Session, submit input, or replay a tool. Some native cleanup failures cannot recover and will keep rejecting.
+The adapter re-encodes native tool arguments as JSON and runs the original classic parser once. The function callback receives the parsed result. Parser input does not preserve lexical whitespace, escape spelling, duplicate keys, or negative-zero identity. The adapter converts native developer messages to classic system messages.
+
+#### Retries and cancellation
+
+The adapter keeps native request, stream, and unbounded connection retries disabled for its owned engine. Selected Model calls use the classic cooperative timeout and opt-in retry rules. The selected provider keeps its transport retry behavior for the first attempt. Later runner attempts disable provider-managed retries. A retry budget alone does not opt into retries without a policy. Visible stream events prevent replay.
+
+A timeout aborts the current Model call and waits for its started producer and iterator cleanup. It does not set a deadline for tools or the whole run. Entered retry advice and policy callbacks also finish before cleanup settles.
+
+The adapter does not close or dispose of the supplied Model or ModelProvider. Cancellation waits for Model, tool, and guardrail callbacks that have started to finish. A callback that ignores cancellation can keep the run pending.
+
+#### Execution and cleanup errors
+
+When execution alone fails and cleanup succeeds, the Promise rejects with the execution error. Model and provider errors retain their original thrown value. Function-tool errors that stop execution use the existing `ToolCallError`, whose `error` property retains the underlying failure, including typed tool guardrail tripwires.
+
+Failed cleanup produces `MigrationCleanupError`. Its `retryCleanup()` method retries only the same unfinished cleanup. Concurrent calls share one cleanup attempt. Later calls retry a failed attempt or reuse its successful result. Cleanup retries never resolve a Model, open a Session, submit input, or replay a tool. Some native cleanup failures cannot recover and will keep rejecting.
 
 ### Use an Agent as a native tool
 
-Add a tool returned by a classic Agent's `asTool()` method to a supported parent Agent. `SDKRunner` runs the original child Agent through a separate native invocation, then resumes the same parent with the extracted text. Both Agents must satisfy the migration contract. The adapter requires the registered Agent tool and its original callable. Copying its marker does not make another tool eligible.
+Add a tool returned by a classic Agent's `asTool()` method to a supported parent Agent. `SDKRunner` runs the original child Agent through a separate native invocation, then resumes the same parent with the extracted text. Both Agents must satisfy the migration contract. The adapter requires the registered Agent tool and its original callable. A copied marker does not make another tool eligible.
 
-The child receives the exact resolved `RunContext`, including the application context and SDK usage. The child retains its own Agent configuration. Only the parent's run-level model, provider and model settings supply inherited defaults, following the existing nested run configuration rules. Settings configured on the parent Agent do not become child defaults.
+#### Child configuration
+
+The child receives the exact resolved `RunContext`, including the application context and SDK usage. The child retains its own Agent configuration. It inherits defaults only from the parent's run-level model, provider and model settings, following the existing nested run configuration rules.
 
 For example, given application-supplied `childModel` and `parentModel` objects:
 
@@ -140,9 +198,13 @@ const result = await SDKRunner.run(parent, 'Summarize this text: ...', {
 console.log(result.finalOutput);
 ```
 
+#### Output extraction and cleanup
+
 Default extraction and `customOutputExtractor` run only after the child's output guardrails and cleanup succeed. The custom extractor receives the completed migration result, including the child's actual native session and turn IDs. Its `agentToolInvocation` contains the original SDK call name, ID and argument text. The result has no classic `RunState`. The nested SDK invocation is separate from the native child-actor API.
 
-This route supports approval-free Agent tools with text output. Manual approval still supports only ordinary function tools. The adapter checks each child's declarations before resolving its provider or calling its Model or tools. The adapter does not roll back earlier parent work. Live Agent-tool event handlers, resume state, general handoffs and unsupported nested run settings remain rejected through the tool's existing error policy. No rejected path falls back to the classic Runner.
+This route supports approval-free Agent tools with text output. Manual approval still supports only ordinary function tools.
+
+The adapter checks each child's declarations before resolving its provider or calling its Model or tools. The adapter does not roll back earlier parent work. Live Agent-tool event handlers, resume state, general handoffs and unsupported nested run settings remain rejected through the tool's existing error policy. No rejected path falls back to the classic Runner.
 
 Parent cancellation reaches the child and waits for its started callbacks and producers. Native cleanup can initially fail with `MigrationCleanupError`, retaining the original abort cause and `TurnAborted`. A child cleanup failure also rejects the parent with `MigrationCleanupError`, even when the ordinary tool error policy would return error text. Call `retryCleanup()` on that error to retry unfinished parent and child cleanup. This retry does not rerun either Model or any tools.
 
@@ -152,21 +214,35 @@ Use this route when a target Agent should take over instead of returning a tool 
 
 The target becomes active only after the native runtime accepts the transfer. Its instructions, settings, tools, output guardrails and end listener then apply. If the Model does not choose the handoff, the source remains active. A completed result's `lastAgent` identifies the actual final Agent.
 
-Source tools, target tools and the handoff must have distinct names. This route supports the declared per-handoff `inputFilter`, not general run-level handoff filtering. Filtering does not undo earlier effects. It accepts supported completed caller history as Model context. It rejects Agent tools, held approvals and Session storage. `SDKRunner.stream()` and mixed output schemas remain unsupported for handoffs. The handoff transfers work within the native run. It does not create a native child or transfer classic RunState. Keep broader handoff graphs and unsupported combinations on the classic runtime.
+Source tools, target tools and the handoff must have distinct names.
+
+This route supports the declared per-handoff `inputFilter`, not general run-level handoff filtering. Filtering does not undo earlier effects.
+
+It accepts supported completed caller history as Model context. It rejects Agent tools, held approvals and Session storage. `SDKRunner.stream()` and mixed output schemas remain unsupported for handoffs. The handoff transfers work within the native run. It does not create a native child or transfer classic RunState. Keep broader handoff graphs and unsupported combinations on the classic runtime.
 
 ### Completed Session history
 
-Finish the classic run before migrating. Session items do not prove that the whole run has ended. The adapter checks only completed item snapshots and complete pairs when admitting history. Pass `session` to load completed supported messages and complete function-call/result pairs through the classic `Session` contract. Imported calls provide Model context. The adapter does not execute them again. Standard empty provider envelopes, matching duplicate item identity and output-text annotations/logprobs remain detached data. Provider metadata cannot override item identity or add approval state. The adapter rejects pending approvals, unmatched calls, unknown items, unsupported media, and other provider metadata before provider or tool work. This bounded admission does not support the wire-item normalization used by `OpenAIConversationsSession`. Use the classic Runner for that store or unsupported history.
+Finish the classic run before migrating. The adapter admits only completed item snapshots and complete pairs. Those items do not prove that the whole run has ended.
 
-`sessionInputCallback` selects effective history and fresh input before provider work. The selected delta may contain supported completed items or be empty. Historical objects changed by the callback retain canonical classic classification, so they are not appended again. The completed result's `input`, `history` and `toInputList()` include the captured effective history; `newItems` and `output` contain only this run's actual generated items.
+Pass `session` to load completed supported messages and complete function-call/result pairs through the classic `Session` contract. Imported calls provide Model context. The adapter does not execute them again.
 
-After guards and owned cleanup succeed, the adapter awaits `addItems` with the selected fresh input and validated actual generated items. A failed read or input callback prevents execution. An append can fail after tool effects or a committed write. Caller cancellation does not replace its original rejection. The SDK does not retry or roll back the write. The application owns storage durability and concurrent access. Another application process can reopen the completed storage. This is not a native checkpoint, live migration, or a guarantee that effects happen exactly once.
+Standard empty provider envelopes, matching duplicate item identity and output-text annotations/logprobs remain detached data. Provider metadata cannot override item identity or add approval state. The adapter rejects pending approvals, unmatched calls, unknown items, unsupported media, and other provider metadata before provider or tool work. This bounded admission does not support the wire-item normalization used by `OpenAIConversationsSession`. Use the classic Runner for that store or unsupported history.
+
+#### Select and append history
+
+`sessionInputCallback` selects effective history and fresh input before provider work. The selected delta may contain supported completed items or be empty. Historical objects changed by the callback retain canonical classic classification, so they are not appended again. The completed result's `input`, `history` and `toInputList()` include captured effective history. `newItems` and `output` contain only this run's generated items.
+
+After guards and owned cleanup succeed, the adapter awaits `addItems` with the selected fresh input and validated actual generated items.
+
+A failed read or input callback prevents execution. An append can fail after tool effects or a committed write. Caller cancellation does not replace its original rejection. The SDK does not retry or roll back the write.
+
+The application owns storage durability and concurrent access. Another application process can reopen the completed storage. This is not a native checkpoint, live migration, or a guarantee that effects happen exactly once.
 
 ### Reopen an application-owned file Session
 
 The [file Session example](examples/migration-session.ts) combines this completed-history contract with a selected public `ScriptedModel` and a small application-owned JSON store. It exports `openFileSession(path, sessionId)` and `runMigrationSessionPhase(phase, session, effectsPath)` outside the SDK API. The store loads history into the public `MemorySession` and awaits a file write after each mutation. `MemorySession` supplies cloning and chronological reads.
 
-From the checkout root, use Node.js 24 after building the classic packages and matching native addon/runtime helpers. No model API key is needed. Create a private directory and run the three commands sequentially, once each. Each command starts a separate application process with the same explicit session identity and history path:
+From the checkout root, use Node.js 24 after building the classic packages and matching native addon/runtime helpers. No model API key is needed. Create a private directory and run the three commands sequentially, once each. Each command starts a separate process with the same session identity and history path.
 
 ```sh
 SESSION_DIRECTORY=$(mktemp -d)
@@ -175,17 +251,23 @@ pnpm exec tsx packages/agents/examples/migration-session.ts native "$SESSION_DIR
 pnpm exec tsx packages/agents/examples/migration-session.ts restarted "$SESSION_DIRECTORY/history.json" "$SESSION_DIRECTORY/effects.txt" example-session
 ```
 
-The stored item counts are 4, 8, then 10. The native continuation adds its actual function-call/result pair; the final process restores history without another effect. The effects file contains exactly `old` and `new` on separate lines. The application owns the directory and removes it when finished.
+The stored item counts are 4, 8, then 10. The native continuation adds its function-call/result pair. The final process restores history without another effect. The effects file contains exactly `old` and `new` on separate lines. The application owns the directory and removes it when finished.
 
-Use one writer and await each operation before starting another. A successful awaited write survives an ordinary application restart. This demo does not provide atomic transactions, crash or power-loss durability, encrypted storage, concurrent access, native checkpoints, pending-approval recovery, or exactly-once effects. A failed write can follow an in-memory mutation or a committed effect. Stop and let the application reconcile uncertain state. Do not retry the run automatically. The application owns file validation, access, retention, and cleanup. Only use trusted application-owned history files with this recipe.
+#### Storage ownership and failure recovery
 
-The completed-history admission and unsupported-item refusals above still apply. This recipe does not convert native LocalStorage into a classic Session or add the wire-item normalization used by `OpenAIConversationsSession`. Choose the classic Runner for unsupported history; the migration adapter never falls back to it silently.
+Use one writer and await each operation before starting another. A successful awaited write survives an ordinary application restart. This demo does not provide atomic transactions, crash or power-loss durability, encrypted storage, concurrent access, native checkpoints, pending-approval recovery, or exactly-once effects.
+
+A failed write can follow an in-memory mutation or a committed effect. Stop and let the application reconcile uncertain state. Do not retry the run automatically. The application owns file validation, access, retention, and cleanup. Only use trusted application-owned history files with this recipe.
+
+The completed-history limits above still apply. This recipe does not convert native LocalStorage into a classic Session. The migration adapter never falls back to the classic Runner silently.
 
 ### Structured final output
 
 A Zod object `outputType` can produce a typed object through the native loop. The adapter uses the existing classic output descriptor for the Model request and the existing native schema preparation. It admits only object schemas whose two generation schemas agree. The adapter rejects known unsupported declarations, including open maps and raw JSON-schema declarations, before provider resolution or native execution. The adapter cannot prove during admission that arbitrary user validators are safe or will succeed.
 
-After the native loop finishes, the captured Agent parses and validates the final JSON once. Output guardrails and synchronous `agent_end` listeners receive that checked value. A successful `finalOutput` exposes the same value with its inferred type. Reading result items, history or buffered events does not parse it again. Those views keep actual Model and native records. They do not insert a synthesized parsed object into the conversation.
+After the native loop finishes, the captured Agent parses and validates the final JSON once. Output guardrails and synchronous `agent_end` listeners receive that checked value. A successful `finalOutput` exposes the same value with its inferred type.
+
+Result items, history and buffered events keep actual Model and native records. Reading them neither reparses the JSON nor inserts a synthesized parsed object into the conversation.
 
 Invalid JSON, failed schema validation or an output tripwire prevents a successful result. Raw diagnostic observations can still contain the rejected response. A listener or cleanup failure can also reject after validation. Text output remains the default. This subset does not add schema repair, classic `RunState` conversion or general structured-schema compatibility; the direct native structured-output API and full classic route remain available.
 
@@ -195,29 +277,51 @@ Object output uses `SDKRunner.run()`, including buffered `modelInvocation: 'stre
 
 Call `await SDKRunner.stream(agent, input, options)` with the same supported Agent, input and context. This additional entrypoint selects the Model's streaming method. It rejects an explicit `modelInvocation: 'response'` before execution. Ordinary `SDKRunner.run()` and the separate classic `Runner.run(..., { stream: true })` route keep their behavior. See [the complete streaming example](examples/migration-stream.ts), which runs without model credentials.
 
-The returned handle exposes two event views. `unvalidatedRaw` is a Web ReadableStream of actual SDK `RunRawModelStreamEvent` values as the selected Model emits them. Raw text and even a Model's `response_done` event can precede final guardrails or a later run failure. Treat this content as tentative. These events are not reconstructed from native carrier SSE, and they do not include native diagnostics.
+#### Tentative raw events
+
+The returned handle exposes two event views. `unvalidatedRaw` is a Web ReadableStream of actual SDK `RunRawModelStreamEvent` values as the selected Model emits them. Raw text and even a Model's `response_done` event can precede final guardrails or a later run failure. Treat this content as tentative. These events come from the Model, without native carrier SSE reconstruction or native diagnostics.
+
+#### Accepted semantic replay
 
 Use `for await (const event of live)` or `live.toStream()` for supported SDK semantic events: `tool_called`, `tool_output`, and `message_output_created`. They replay accepted items in Model-batch and tool-call order after guarded completion and physical cleanup. A rejected run emits no accepted semantic items. This route does not promise pre-completion semantic delivery, every classic stream event, or a fabricated RunState.
 
-Completed results also support `for await (const event of result)` and `result.toStream()` for accepted semantic replay. Completed handoff results replay `handoff_requested` and `handoff_occurred` for retained transfer items, then an `agent_updated_stream_event` with the actual target Agent before its items. If a handoff filter removes the transfer items, the accepted target change still appears. Replay does not recreate the removed items. Check `event.type` before reading item-only fields such as `name` or `item`. This is replay after guarded completion; live `SDKRunner.stream()` handoff runs remain unsupported.
+Completed results also support `for await (const event of result)` and `result.toStream()` for accepted semantic replay. Completed handoff results replay `handoff_requested` and `handoff_occurred` for retained transfer items, then an `agent_updated_stream_event` with the actual target Agent before its items. If a handoff filter removes the transfer items, the accepted target change still appears. Replay does not recreate the removed items. Check `event.type` before reading item-only fields such as `name` or `item`. Live `SDKRunner.stream()` handoff runs remain unsupported.
 
-`await live.completed` returns the existing completed result. Read `finalOutput`, `newItems`, `rawResponses`, `lastAgent`, and `runContext`; application context and SDK usage live under `runContext.context` and `runContext.usage`. Native IDs and usage accounting remain separate under `native`. `interruptions` is empty for the current approval-free admission. `history` and `toInputList()` export supported captured input and generated items. Raw Model response records remain diagnostics, rather than a separately guard-certified transcript.
+#### Completed results
 
-The raw channel has a fixed 4 MiB UTF-8 JSON backlog limit, including SDK event wrappers. This native safety policy is separate from the per-Model payload limit and does not bound exact process memory. Completion does not require a reader while the retained data fits this budget. On overflow, the adapter fails explicitly, discards pending raw delivery, requests cancellation, and waits for the producer. It never silently drops content. Consume raw events during execution when you need live progress. Use `run()` for completed-only consumers that do not need this raw channel.
+`await live.completed` returns the existing completed result. Read `finalOutput`, `newItems`, `rawResponses`, `lastAgent`, and `runContext`. Application context and SDK usage live under `runContext.context` and `runContext.usage`.
 
-Cancel through the supplied AbortSignal, a raw reader or iterator, or a pending semantic reader. There is no public `live.cancel()` method. Reader cancellation can close delivery before an outstanding Model `next()`, iterator `return()`, tool or guard callback finishes. Always await `live.completed` on cancellation and error paths to join that work. The native execution owner keeps the actual outcome. A late cancellation request cannot revoke a successful result. Failed cleanup can reject `completed` with `MigrationCleanupError` even when raw delivery already reported an earlier cancellation reason. An uncooperative callback can keep completion pending.
+Native IDs and usage accounting remain separate under `native`. `interruptions` is empty for the current approval-free admission. `history` and `toInputList()` export supported captured input and generated items. Raw Model response records remain diagnostics, rather than a separately guard-certified transcript.
+
+#### Backlog and cancellation
+
+The raw channel has a fixed 4 MiB UTF-8 JSON backlog limit, including SDK event wrappers. This native safety policy is separate from the per-Model payload limit and does not bound exact process memory. Completion does not require a reader while the retained data fits this budget.
+
+On overflow, the adapter fails explicitly, discards pending raw delivery, requests cancellation, and waits for the producer. It never silently drops content. Consume raw events during execution when you need live progress. Use `run()` for completed-only consumers that do not need this raw channel.
+
+Cancel through the supplied AbortSignal, a raw reader or iterator, or a pending semantic reader. There is no public `live.cancel()` method. Reader cancellation can close delivery before an outstanding Model `next()`, iterator `return()`, tool or guard callback finishes. Always await `live.completed` on cancellation and error paths to join that work.
+
+The native execution owner keeps the actual outcome. A late cancellation request cannot revoke a successful result. Failed cleanup can reject `completed` with `MigrationCleanupError` even when raw delivery already reported an earlier cancellation reason. An uncooperative callback can keep completion pending.
 
 ### Guardrails and lifecycle events
 
 Agent input and output guardrails receive the original Agent and the run's `RunContext`. You can also pass `inputGuardrails` and `outputGuardrails` in the run options. The adapter captures guardrail definitions before callbacks begin. A successful result includes `inputGuardrailResults`, `outputGuardrailResults`, `toolInputGuardrailResults`, and `toolOutputGuardrailResults`.
 
-Input guardrails with `runInParallel: false` finish before provider resolution, lifecycle events, or native work. Other input guardrails start alongside the first Model call. The native loop receives that response only after the input checks pass, so a rejected input cannot start a tool. A tripwire cancels the run and waits for its started callbacks to finish. Output guardrails check the parsed final value before `agent_end` or a successful result is published. These rules also apply when `modelInvocation` is `'stream'`.
+#### Guardrail order
+
+Input guardrails with `runInParallel: false` finish before provider resolution, lifecycle events, or native work. Other input guardrails start alongside the first Model call. The native loop receives that response only after the input checks pass, so a rejected input cannot start a tool. A tripwire cancels the run and waits for its started callbacks to finish.
+
+Output guardrails check the parsed final value before `agent_end` or a successful result is published. These rules also apply when `modelInvocation` is `'stream'`.
 
 Registered function tools support their existing input and output guardrails. An input `rejectContent` result returns its message without invoking the function or its output guardrails. An output guardrail receives the original function result before conversion. `rejectContent` replaces that result. A `throwException` result retains the typed tripwire through `ToolCallError.error`. These checks cover the declared SDK function tools; they do not intercept hidden native or hosted operations.
 
+#### Lifecycle listeners
+
 Register Agent listeners as usual, and pass a `RunHooks` instance through the `hooks` option for run listeners. An existing `Runner` also works as the emitter. The adapter does not apply that Runner's run configuration. Listeners run synchronously. The SDK does not wait for promises returned by listeners, so your application owns any asynchronous work they start.
 
-Agent listeners run before run listeners for `agent_start`. Run listeners run first for tool start, tool end, and `agent_end`. Events retain the original Agent, context, and function-tool objects. A function failure attempts one error-end notification, including an input tripwire that prevents tool start. An end listener that throws stops that dispatch. It does not cause a second end notification. `agent_end` signals that final output guardrails passed. A later listener or cleanup error can still reject the run.
+Agent listeners run before run listeners for `agent_start`. Run listeners run first for tool start, tool end, and `agent_end`. Events retain the original Agent, context, and function-tool objects. A function failure attempts one error-end notification, including an input tripwire that prevents tool start. An end listener that throws stops that dispatch. It does not cause a second end notification.
+
+`agent_end` signals that final output guardrails passed. A later listener or cleanup error can still reject the run.
 
 See [the guarded migration example](examples/migration-guardrails.ts) for a scripted Model, function guardrails, and lifecycle listeners without API credentials.
 
@@ -225,12 +329,24 @@ See [the guarded migration example](examples/migration-guardrails.ts) for a scri
 
 Pass `approvals: 'manual'` to `SDKRunner.run()` to opt in to one held function call. This option supports one enabled registered function with static `needsApproval: true` or `false`, and at most one function call in the run. Dynamic approval predicates, batches, repeated calls, child calls and portable paused state remain unsupported. Ordinary runs still reject approval-bearing tools. `SDKRunner.stream()` rejects this opt-in before execution.
 
-Configured text or supported object output retains its existing validator and result type. The run returns its usual completed result or a live carrier with `status: 'paused'`. A paused carrier exposes `interruptions`, the original `lastAgent` and `runContext`, and the actual native session, submission, turn and call IDs. Each interruption is an SDK `RunToolApprovalItem` built from the actual Model call. It has no `finalOutput`, completed history or RunState. The selected Model and native callback owner remain alive while the call is held. The carrier records that pause. Its status tag and retained item metadata do not prove that the native call is still live. Decisions recheck the live owner.
+#### Paused carrier
 
-Call `paused.approve(item)` or `paused.reject(item)` with that exact live item, then `await paused.continue()`. Choosing a decision alone does not execute the tool. `continue()` consumes the choice once. Repeated calls await the same completion promise rather than repeating effects. Approval rechecks the current native call before the SDK invocation. The parser, tool guards and hooks retain their normal invocation path after consent. Rejection executes no SDK tool code and sends the supported refusal text through the existing native response and true acknowledgment path. Copies, foreign items, duplicate choices and expired decisions fail.
+Configured text or supported object output retains its existing validator and result type. The run returns its usual completed result or a live carrier with `status: 'paused'`. A paused carrier exposes `interruptions`, the original `lastAgent` and `runContext`, and the actual native session, submission, turn and call IDs. Each interruption is an SDK `RunToolApprovalItem` built from the actual Model call. It has no `finalOutput`, completed history or RunState.
+
+The selected Model and native callback owner remain alive while the call is held. The carrier records the pause, but its status and retained item metadata do not prove that the native call remains live. Decisions recheck the live owner.
+
+#### Decide and join continuation
+
+Call `paused.approve(item)` or `paused.reject(item)` with that exact live item, then `await paused.continue()`. Choosing a decision alone does not execute the tool. `continue()` consumes the choice once. Repeated calls await the same completion promise rather than repeating effects.
+
+Approval rechecks the current native call before the SDK invocation. The parser, tool guards and hooks retain their normal invocation path after consent. Rejection executes no SDK tool code and sends the supported refusal text through the existing native response and true acknowledgment path. Copies, foreign items, duplicate choices and expired decisions fail.
 
 Pass an AbortSignal when the application may cancel. Cancellation revokes the pending decision and `paused.completed` joins the entered owners. An application callback that has already entered must finish before that join can settle. A late decision cannot restart it. Cleanup failure retains `MigrationCleanupError.retryCleanup()`, which retries cleanup only. Never start a new run to replay an action whose effects are uncertain.
 
+#### Approval scope
+
 This is an in-process SDK function consent boundary over an actual native-held call. It is not a native `ApprovalRequest` or `NativeQuestion`, and it does not change the native approval policy for other tool families. The carrier is neither a portable checkpoint nor legacy RunState. Start this route with fresh native input. Keep pending legacy work on its original runtime until it settles. Agent tools and handoffs cannot use this approval opt-in. See [the complete held-function example](examples/migration-approvals.ts), which demonstrates approval and rejection without model credentials.
+
+### Choose the full classic runtime
 
 Use `@openai/agents/classic` for broader approval workflows, MCP, handoffs or delegation beyond the bounded routes above, other structured-output schemas, full classic streaming and RunState-backed results, unsupported conversation history or stores, other media input, state, resume, richer settings, or full parser compatibility.

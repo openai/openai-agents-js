@@ -109,9 +109,14 @@ To configure your own `Runner` instance, pass a `RunConfig` object.
 | `toolNotFoundBehavior` | `ToolNotFoundBehavior` | Default behavior for unresolved function tool calls. `'raise_error'` raises `ModelBehaviorError`; `'return_error_to_model'` returns a model-visible tool error and lets the run continue. |
 | `toolNameCollisionPolicy` | `ToolNameCollisionPolicy` | Default collision policy for enabled function-tool and handoff names. `'warn'` logs and exposes the current dispatch winner; `'error'` raises `UserError` before the model is called. |
 
+#### Local tool execution
+
 `toolExecution.maxFunctionToolConcurrency` must be an integer greater than or equal to `1`. This setting only limits SDK-side execution of local function tools. It does not change provider-side `modelSettings.parallelToolCalls`.
 
-`toolExecution.preApprovalInputGuardrails` is disabled by default. When set to `true`, local function tools that require approval run their input guardrails before the SDK records a pending approval interruption. If the guardrail returns `rejectContent`, the SDK sends that rejection message back as the tool output instead of asking for approval. If the guardrail allows the call, the approval request is still raised, and the same input guardrails run again immediately before tool execution after the approval is resolved.
+`toolExecution.preApprovalInputGuardrails` is disabled by default. When set to `true`, local function tools that require approval run their input guardrails before the SDK records a pending approval interruption.
+
+- If the guardrail returns `rejectContent`, the SDK sends that rejection message as the tool output instead of asking for approval.
+- If the guardrail allows the call, the SDK raises the approval request. After approval is resolved, the same guardrails run again immediately before execution.
 
 `toolNameCollisionPolicy` only controls collisions between enabled function tools and handoffs. Existing strict validation for namespaced tools, deferred tools, and duplicate local MCP tool names is unchanged.
 
@@ -184,6 +189,8 @@ The return value must be a `ModelInputData` object: `{ input: AgentInputItem[], 
 
 The SDK clones the prepared turn input before invoking the filter. If you are also using a `session`, the filtered clones are what get persisted, so redaction or truncation applied here is reflected in stored session history as well.
 
+#### Preserve prepared item identity
+
 If a filter uses object identity to cache work across repeated model calls, set `preserveInputIdentity = true` on the filter. The SDK then preserves each SDK-prepared item's identity while it remains in the prepared input. Each filter invocation still receives a new array. This option does not preserve the identity of caller-owned objects originally passed to `run()`.
 
 <Code
@@ -193,6 +200,8 @@ If a filter uses object identity to cache work across repeated model calls, set 
 />
 
 This mode is opt-in because the SDK does not freeze the prepared items or their nested values. The filter and every helper that the filter calls must treat the items as immutable and return replacement values instead of mutating them. The model request and session input remain detached copies after the filter returns.
+
+#### Filter input with server-managed state
 
 With `conversationId` or `previousResponseId`, the hook runs on the prepared payload for the next Responses API call. Prior server-managed context is recovered by the API, so the filtered array for that call may already represent only the new turn delta rather than a full replay of earlier history. If you need to change how stored history and the current turn are merged before this final filter step, use `sessionInputCallback`.
 
@@ -223,21 +232,23 @@ Use `reasoningItemIdPolicy` to control whether reasoning items keep their `id` f
 
 This affects places where the SDK replays generated model items as input, such as:
 
-- follow-up model calls inside the same run (for example, after tool execution),
-- subsequent turns that reuse generated items as input/history,
-- resumed runs from a saved `RunState`,
-- derived result views like `result.history` / `result.output` (which are model-input-shaped arrays).
+- Follow-up model calls inside the same run, for example after tool execution.
+- Subsequent turns that reuse generated items as input or history.
+- Resumed runs from a saved `RunState`.
+- Derived result views like `result.history` and `result.output`, which are arrays shaped for model input.
+
+Choose whether to keep reasoning-item IDs.
+
 - `'preserve'` (default) keeps reasoning-item IDs.
-- `'omit'` strips the `id` field from reasoning items before they are sent back as input.
-- Non-reasoning items are unaffected.
+- `'omit'` strips the `id` field from reasoning items before the SDK sends them back as input.
+
+Non-reasoning items are unaffected.
 
 What this does **not** change:
 
 - raw model responses (`result.rawResponses`),
 - run items (`result.newItems`),
 - the model's current-turn output as returned by the provider.
-
-In other words, the policy applies when the SDK builds the **next input** from prior generated items.
 
 You can set the policy per run (`runner.run(..., { reasoningItemIdPolicy: 'omit' })`) or as the runner default (`new Runner({ reasoningItemIdPolicy: 'omit', ... })`). When resuming from a saved `RunState`, the previously resolved policy is reused unless you override it.
 
@@ -263,7 +274,8 @@ Use `errorHandlers` to convert supported runtime errors into a final output inst
 - `errorHandlers.modelRefusal` handles model refusals surfaced as [`ModelRefusalError`](/openai-agents-js/openai/agents-core/classes/modelrefusalerror).
 - `errorHandlers.invalidFinalOutput` handles [`ModelBehaviorError`](/openai-agents-js/openai/agents-core/classes/modelbehaviorerror) instances raised when a structured final output is missing or fails output schema validation. The handler returns a validated fallback without retrying the model or replaying tool side effects.
 - `errorHandlers.default` is used as a fallback for supported kinds.
-- Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`. The returned `finalOutput` must match the current agent's `outputType`. For structured outputs, the SDK validates the fallback before completing the run. Returning `undefined` keeps the default behavior for that error.
+
+Handlers receive `{ error, context, runData }` and can return `{ finalOutput, includeInHistory? }`. The returned `finalOutput` must match the current agent's `outputType`. For structured outputs, the SDK validates the fallback before completing the run. Returning `undefined` keeps the default behavior for that error.
 
 ### Exceptions
 

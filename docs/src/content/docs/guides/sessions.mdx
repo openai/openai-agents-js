@@ -20,7 +20,13 @@ Sessions persist conversation history between Agents SDK runs. Pass an object th
 2. Persists new user input and assistant output after each run completes.
 3. Keeps the session available for future turns, whether you call the runner with new user text or resume from an interrupted `RunState`.
 
-You do not need to call `toInputList()` or combine history between turns yourself. The TypeScript SDK ships with two implementations: `OpenAIConversationsSession` for the Conversations API and `MemorySession`, which is intended for local development. You can also implement `Session` with your own storage backend. For alternatives to the Conversations API, see the sample backends under `examples/memory/`, including Prisma and file storage. When you use an OpenAI Responses model, wrap any session with `OpenAIResponsesCompactionSession` to automatically shrink stored conversation history via [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact).
+You do not need to call `toInputList()` or combine history between turns yourself. Choose a session implementation.
+
+- `OpenAIConversationsSession` uses the Conversations API.
+- `MemorySession` stores history in process memory for local development.
+- A custom `Session` uses your own storage backend. See `examples/memory/` for sample backends, including Prisma and file storage.
+
+With an OpenAI Responses model, `OpenAIResponsesCompactionSession` can automatically shrink stored history via [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact). See the compaction section below for backing-session restrictions.
 
 > Tip: To run the `OpenAIConversationsSession` examples on this page, set the `OPENAI_API_KEY` environment variable (or provide an `apiKey` when constructing the session) so the SDK can call the Conversations API.
 
@@ -123,7 +129,13 @@ For backends that can update history and record an operation identifier atomical
 - `append_items` appends a group of history items.
 - `replace_suffix` replaces an expected history suffix only when the currently stored suffix still matches.
 
-Persist the operation identifier and history mutation in the same backend transaction. Repeating an operation identifier with the same transaction must succeed without applying it twice. Reusing the identifier with different content, or applying `replace_suffix` after its expected suffix changed, must fail without changing history. This lets the runner safely reconcile persisted output across retries and resumable output-guardrail flows.
+Persist the operation identifier and history mutation in the same backend transaction.
+
+- Repeating an operation identifier with the same transaction must succeed without applying it twice.
+- Reusing the identifier with different content must fail without changing history.
+- Applying `replace_suffix` after its expected suffix changed must fail without changing history.
+
+This contract lets the runner reconcile persisted output across retries and resumable output-guardrail flows.
 
 `MemorySession` implements this contract as a reference. Existing `Session` implementations remain valid without it, but they do not opt into transaction-aware persistence paths.
 
@@ -179,7 +191,15 @@ Output guardrails impose a stricter boundary when an approved function-tool resu
 
 ### Compact OpenAI Responses history automatically
 
-`OpenAIResponsesCompactionSession` decorates any `Session` and uses the OpenAI Responses API to replace a long stored history with a shorter equivalent list of conversation items. After each persisted turn the runner passes the latest `responseId` into `runCompaction`, which calls `responses.compact` when your decision hook returns true. Depending on `compactionMode`, the wrapper builds the request from either the latest Responses API chain or the session's current items. By default, compaction starts once at least 10 non-user items have accumulated. Override `shouldTriggerCompaction` to use token counts or custom heuristics instead. After compaction returns, the decorator clears the underlying session and rewrites it with the reduced item list, so avoid pairing it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
+`OpenAIResponsesCompactionSession` wraps a `Session` and uses the OpenAI Responses API to replace long stored history with a shorter equivalent list of conversation items. Do not pair it with `OpenAIConversationsSession`, which uses a different server-managed history flow.
+
+Use this sequence after each persisted turn.
+
+1. The runner passes the latest `responseId` into `runCompaction`.
+2. When your decision hook returns true, the wrapper calls `responses.compact`. Depending on `compactionMode`, it builds the request from the latest Responses API chain or the session's current items.
+3. After compaction returns, the wrapper clears the underlying session and rewrites it with the reduced item list.
+
+By default, compaction starts once at least 10 non-user items have accumulated. Override `shouldTriggerCompaction` to use token counts or custom heuristics.
 
 <Code
   lang="typescript"
@@ -208,7 +228,11 @@ Output guardrails impose a stricter boundary when an approved function-tool resu
 | `store` | `boolean` | Indicates whether the last run stored server state. |
 | `force` | `boolean` | Bypass `shouldTriggerCompaction` and compact immediately. |
 
-`OpenAIResponsesCompactionSession` applies mutations through the same wrapper instance one at a time. Calls to `runCompaction()`, `addItems()`, `popItem()`, and `clearSession()` run in invocation order. The queue continues after a rejected operation. Later wrapper mutations therefore do not interleave with replacement or rollback. A successful replacement or rollback keeps the wrapper's cached history aligned with the underlying session. If both replacement and restoration fail, recover the underlying session before continuing. This ordering guarantee does not coordinate a different wrapper instance or direct mutation of `underlyingSession`; coordinate those access paths in your application.
+#### Mutation ordering and recovery
+
+`OpenAIResponsesCompactionSession` applies mutations through the same wrapper instance one at a time. Calls to `runCompaction()`, `addItems()`, `popItem()`, and `clearSession()` run in invocation order. The queue continues after a rejected operation. Later wrapper mutations therefore do not interleave with replacement or rollback. A successful replacement or rollback keeps the wrapper's cached history aligned with the underlying session.
+
+If both replacement and restoration fail, recover the underlying session before continuing. This ordering guarantee does not coordinate a different wrapper instance or direct mutation of `underlyingSession`. Coordinate those access paths in your application.
 
 Automatic compaction also verifies that the run still owns the history snapshot it read. If another operation changes the wrapper's history before automatic compaction starts, the SDK preserves the newer history and skips that compaction attempt. A later run or an explicit `runCompaction()` call can compact the updated history.
 

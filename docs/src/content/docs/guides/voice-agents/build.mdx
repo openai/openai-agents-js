@@ -41,7 +41,9 @@ Some transports, including the default `OpenAIRealtimeWebRTC`, handle audio inpu
 
 <Code lang="typescript" code={handleAudioExample} />
 
-When the underlying transport supports it, `session.muted` reports the current mute state and `session.mute(true | false)` toggles microphone capture. `OpenAIRealtimeWebSocket` does not implement muting: `session.muted` returns `null` and `session.mute()` throws, so for websocket setups you should pause capture on your side and stop calling `sendAudio()` until the microphone should be live again.
+When the transport supports muting, `session.muted` reports the current mute state and `session.mute(true | false)` toggles microphone capture.
+
+`OpenAIRealtimeWebSocket` does not implement muting. With that transport, `session.muted` returns `null` and `session.mute()` throws. Pause capture in your application and stop calling `sendAudio()` until the microphone should be live again.
 
 ### Session configuration
 
@@ -49,17 +51,25 @@ Configure the session itself when you create [`RealtimeSession`](/openai-agents-
 
 <Code lang="typescript" code={configureSessionExample} />
 
-The SDK normalizes this configuration into the Realtime [`session.update`](https://developers.openai.com/api/reference/resources/realtime/client-events/#session.update) shape. If you need a raw session field that does not have a matching property in [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/), use `providerData` or send a raw `session.update` through `session.transport.sendEvent(...)`.
+The SDK normalizes this configuration into the Realtime [`session.update`](https://developers.openai.com/api/reference/resources/realtime/client-events/#session.update) shape. For a raw field with no matching property in [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/), use `providerData`. The SDK forwards its contents in the raw `session` object. You can also send a raw `session.update` through `session.transport.sendEvent(...)`.
 
 Prefer the newer SDK config shape with `outputModalities`, `audio.input`, and `audio.output`. Older SDK aliases such as `modalities`, `inputAudioFormat`, `outputAudioFormat`, `inputAudioTranscription`, and `turnDetection` are still normalized for backwards compatibility, but new code should use the nested `audio` structure shown here.
 
 For reasoning-capable Realtime models such as `gpt-realtime-2.1`, set `reasoning.effort` on the session config. Higher reasoning effort can increase latency and token usage. You can also set `parallelToolCalls` when you want to control whether the model may call multiple tools in parallel.
 
-For input transcription, `audio.input.transcription` accepts the GA transcription models and their context options. Use `gpt-live-transcribe` for low-latency streaming transcription; its `delay` setting trades faster partial transcripts against final transcript quality. Both `gpt-live-transcribe` and `gpt-transcribe` accept a free-form `prompt`, literal `keywords`, and a `languages` array. These models use `languages`; older transcription models that accept one language hint continue to use the singular `language` field. See the official [transcription context guidance](https://developers.openai.com/api/docs/guides/transcription/#improve-transcription-quality) and [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription/) for model-specific workflows.
+#### Transcription and output modalities
 
-For speech-to-speech sessions, the usual choice is `outputModalities: ['audio']`, which gives you audio output plus transcripts. Switch to `['text']` only when you want text-only responses.
+`audio.input.transcription` accepts the GA transcription models and their context options.
 
-Use `providerData` for new parameters that have no matching property in [RealtimeSessionConfig](/openai-agents-js/openai/agents-realtime/type-aliases/realtimesessionconfig/). The SDK forwards its contents as part of the raw `session` object.
+- Use `gpt-live-transcribe` for low-latency streaming transcription. Its `delay` setting trades faster partial transcripts against final transcript quality.
+- Both `gpt-live-transcribe` and `gpt-transcribe` accept a free-form `prompt`, literal `keywords`, and a `languages` array.
+- Older transcription models that accept one language hint continue to use the singular `language` field.
+
+See the official [transcription context guidance](https://developers.openai.com/api/docs/guides/transcription/#improve-transcription-quality) and [Realtime transcription guide](https://developers.openai.com/api/docs/guides/realtime-transcription/) for model-specific workflows.
+
+For speech-to-speech sessions, use `outputModalities: ['audio']` for audio output plus transcripts. Use `['text']` for text-only responses.
+
+#### Constructor and connection options
 
 Additional `RealtimeSession` options you can set at construction time:
 
@@ -226,11 +236,23 @@ If you define your tool with `needsApproval: true` the agent emits a `tool_appro
 
 Listen for this event to show a UI where the user can approve or reject the tool call.
 
-Resolve the request with `await session.approve(request.approvalItem)` or `await session.reject(request.approvalItem)`. For function tools you can pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` to reuse the same decision for repeated calls during the rest of the session, and `session.reject(request.approvalItem, { message: '...' })` to send a custom rejection message back to the model for that specific call. Hosted MCP approvals do not support sticky approve/reject; restrict those tools with the hosted MCP `allowedTools` configuration instead.
+Resolve the request with `await session.approve(request.approvalItem)` or `await session.reject(request.approvalItem)`. Function tools also support two options.
+
+- Pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` to reuse the decision for repeated calls during the rest of the session.
+- Call `session.reject(request.approvalItem, { message: '...' })` to send a custom rejection message for that call back to the model.
+
+Hosted MCP approvals do not support reusing approval or rejection decisions for repeated calls. Restrict those tools with the hosted MCP `allowedTools` configuration instead.
 
 If you do not pass a per-call rejection `message`, the session falls back to `toolErrorFormatter` (if configured) and then to the SDK default rejection text.
 
-By default, function-tool input guardrails run after approval, immediately before the tool executes. If you pass `toolExecution: { preApprovalInputGuardrails: true }` to `new RealtimeSession(...)`, local function-tool input guardrails also run before the session emits `tool_approval_requested`. A guardrail rejection sends the rejection message back as the tool output and skips the approval event. If the guardrail allows the call, the approval event is still emitted, and the guardrails run again after `session.approve(...)` before execution.
+##### Input guardrail order
+
+By default, function-tool input guardrails run after approval, immediately before the tool executes.
+
+To also run local function-tool input guardrails before `tool_approval_requested`, pass `toolExecution: { preApprovalInputGuardrails: true }` to `new RealtimeSession(...)`.
+
+- If a guardrail rejects the call, the session sends the rejection message as the tool output and skips the approval event.
+- If the guardrail allows the call, the session emits the approval event. The guardrails run again after `session.approve(...)`, before execution.
 
 <Code lang="typescript" code={toolApprovalEventExample} />
 

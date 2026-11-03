@@ -17,15 +17,15 @@ The introductory examples use the public `@openai/agents` API and run without a 
 
 ## Check a native workflow without a model key
 
-After building the SDK, matching native addon and runtime helpers, run:
-
 ```sh
 pnpm exec tsx packages/agents/examples/scripted-effects.ts
 ```
 
 The example uses the public `@openai/agents/testing` helper to script two calls with the same synthetic key. The real native loop executes the application's tool, and the example checks both returned receipts and one entry in its fake ledger. It requires no model API key.
 
-It checks tool execution and the fake effect within this process. It does not test model judgment or durable deduplication. A scripted model still executes registered tools. Inject safe application fakes before testing effects. See the [testing guide](../TESTING.md) for helper ownership and network limits.
+These checks cover tool execution and the fake effect within this process, without testing model judgment or durable deduplication. A scripted model still executes registered tools. Inject safe application fakes before testing effects. See the [testing guide](../TESTING.md) for helper ownership and network limits.
+
+### Run the specialist example
 
 Run [specialist-agent.ts](specialist-agent.ts) to consult a separately owned Agent without a model key:
 
@@ -56,19 +56,19 @@ These maintained lessons provide complete commands, setup, and expected results.
 
 ## Stream a migrated SDK Model without a model key
 
-[migration-stream.ts](migration-stream.ts) uses the public `@openai/agents/migration` entrypoint and an in-process classic ScriptedModel with the real native loop. After building the SDK and matching native products, run:
+[migration-stream.ts](migration-stream.ts) uses the public `@openai/agents/migration` entrypoint and an in-process classic ScriptedModel with the real native loop.
 
 ```sh
 pnpm exec tsx packages/agents/examples/migration-stream.ts
 ```
 
-The example counts live **unvalidated** Model events without printing their content. It waits for final guards and physical cleanup, then reads accepted SDK semantic replay and final output. It needs no API key. See [the packaged migration guide](../CLASSIC.md#live-model-events-and-accepted-semantic-replay) for the 4 MiB raw backlog policy, cancellation and stream ownership.
+The example counts live **unvalidated** Model events without printing their content. It waits for final guards and physical cleanup, then reads accepted SDK semantic replay and final output. See [the packaged migration guide](../CLASSIC.md#live-model-events-and-accepted-semantic-replay) for the 4 MiB raw backlog policy, cancellation and stream ownership.
 
 ## Reopen a migrated file Session without a model key
 
 [migration-session.ts](migration-session.ts) exposes `openFileSession(path, sessionId)` and `runMigrationSessionPhase(phase, session, effectsPath)`. It combines a selected public classic `ScriptedModel` with an application-owned JSON history store and real file effects. See [the complete invocation and storage limits](../CLASSIC.md#reopen-an-application-owned-file-session) for three sequential application processes that retain 4, 8, then 10 items without replaying the old effect.
 
-Use Node.js 24 and built classic packages with the matching native addon and runtime helpers. Keep the files in a private application-owned directory with one sequential writer. Reuse the same explicit session identity and history path after restart. No model API key is needed.
+Use Node.js 24 and built classic packages with the matching native addon and runtime helpers. Keep the files in a private application-owned directory with one sequential writer. Reuse the same session identity and history path after restart.
 
 Successful awaited writes survive ordinary application restarts. After a failed write, the application must reconcile its state before another run. This recipe saves completed classic Session history, with the existing migration admission limits. It does not save pending approvals or native checkpoints, and it makes no crash-durability or exactly-once-effect promise. Importing the module does not start the example.
 
@@ -87,7 +87,7 @@ pnpm exec tsx packages/agents/examples/migration-approvals.ts reject
 
 ## Choose another example
 
-Build the native addon before using these native recipes. Supply model credentials for entries that make live requests. A command entrypoint starts its example when run. An exported function needs a caller in your application; running its file alone does not call it.
+Supply model credentials for entries that make live requests. Run a command entrypoint directly. Call an exported function from your application, because running its file alone does not call it.
 
 | Task | File and entrypoint | What your application supplies |
 | --- | --- | --- |
@@ -129,21 +129,40 @@ Code Mode is optional. Ordinary function calls do not need generated JavaScript.
 
 ## Remote executor
 
-The application must provision a compatible executor before running `remote-executor.ts`. Set `EXECUTOR_URL` to its authenticated `wss://` endpoint, `EXECUTOR_CWD` to the absolute assigned remote workspace, and `EXECUTOR_TOKEN` through the application's normal secret mechanism. Set `EXECUTOR_CAPABILITIES` only when selecting one absolute remote capability directory. Supply model credentials as in the quickstart, then run:
+The application must provision a compatible executor before running `remote-executor.ts`. Configure the selected workspace and credentials.
+
+- Set `EXECUTOR_URL` to its authenticated `wss://` endpoint.
+- Set `EXECUTOR_CWD` to the absolute assigned remote workspace.
+- Supply `EXECUTOR_TOKEN` through the application's normal secret mechanism.
+- Set `EXECUTOR_CAPABILITIES` only when selecting one absolute remote capability directory.
+
+Supply model credentials as in the quickstart before running the example.
 
 ```sh
 pnpm exec tsx packages/agents/examples/remote-executor.ts "Inspect the assigned workspace"
 ```
 
-The recipe selects `exec_command`, `write_stdin` and `apply_patch`, and prints the settled answer and accepted checklist. Choose a workspace and permissions for this task. Do not use an unrelated host directory or an executor shared with an untrusted tenant. The SDK does not provision the executor. It closes the Session and provider before returning. The application owns executor deprovisioning. Capability directories permit discovery reads, not a general filesystem sandbox.
+The recipe selects `exec_command`, `write_stdin` and `apply_patch`, and prints the settled answer and accepted checklist. Choose a workspace and permissions for this task. Do not use an unrelated host directory or an executor shared with an untrusted tenant.
 
-For native children, call the separate `runNativeChildren()` helper with that provisioned `Environment`. It declares one additional `NativeRole` with an explicit model and reasoning effort, `maxChildren: 1`, and `maxDepth: 1`. Roles provide instructions. They do not isolate authority. Children share the Session's admitted tools, context and executor permissions. Asking the reviewer to avoid edits is an instruction, not an operating-system restriction.
+The SDK closes the Session and provider before returning. The application owns executor deprovisioning. Capability directories permit discovery reads, not a general filesystem sandbox.
+
+### Configure native children
+
+For native children, call the separate `runNativeChildren()` helper with that provisioned `Environment`. It declares one additional `NativeRole` with an explicit model and reasoning effort, `maxChildren: 1`, and `maxDepth: 1`.
+
+Roles provide instructions. They do not isolate authority. Children share the Session's admitted tools, context and executor permissions. Asking the reviewer to avoid edits is an instruction, not an operating-system restriction.
+
+### Wait for captured child Turns
 
 The helper waits for the root Turn, captures the current child snapshots, and awaits each captured child's issued `turn` when present. Root completion alone does not prove that every child finished. Each child wait joins that exact Turn. It does not join future child turns or every descendant that may appear later. The returned statuses describe the snapshot, not a live view.
 
 To cancel a child, use the captured child's `tryCancel(turn)` and join that Turn with `turn.wait()`. See [native children](../NATIVE.md#remote-tools-and-children). Before the helper returns, owned Session disposal stops and joins remaining work, then closes the provider. Completed external effects remain.
 
-The application can supply `NativeAgents.approval` when declaring native collaboration policy. That callback receives the chosen context, observed call, and cancellation signal. It can allow or deny collaboration dispatch, but cannot replace arguments or expand executor permissions. Executor approvals belong to `Environment.approval`, and manual-tool decisions use their issued reply flow.
+### Apply collaboration policy
+
+The application can supply `NativeAgents.approval` when declaring native collaboration policy. That callback receives the chosen context, observed call, and cancellation signal. It can allow or deny collaboration dispatch, but cannot replace arguments or expand executor permissions.
+
+Executor approvals belong to `Environment.approval`, and manual-tool decisions use their issued reply flow.
 
 A Session opened with `NativeAgents` keeps its instructions and model/settings fixed, even before a child exists. Open a new Session to change those values. Managed-tool updates remain limited to opening tool names. They do not replace the fixed native-role declaration.
 
@@ -155,9 +174,13 @@ Run the selected-document demo from the repository root after the SDK and native
 pnpm exec tsx packages/agents/examples/selected-documents.ts
 ```
 
-The demo makes model requests through `NativeProvider`. Use your authorized provider setup; you can set `OPENAI_BASE_URL` for its endpoint. The application creates a temporary UTF-8 document, exposes it as `notes`, and asks the agent to revise its status. It prints the final response and reopened status line, then removes the temporary directory. Importing the example does not run the demo.
+The demo makes model requests through `NativeProvider`. Use your authorized provider setup, with optional `OPENAI_BASE_URL` for its endpoint. The application creates a temporary UTF-8 document, exposes it as `notes`, and asks the agent to revise its status. It prints the final response and reopened status line, then removes the temporary directory. Importing the example does not run the demo.
 
-For your own application, import `runSelectedDocuments` from `selected-documents.ts`. Pass the options accepted by `SelectedDocuments.open()`, a task, and optional `NativeProviderOptions`. The application chooses a trusted root, aliases mapped to relative file paths, and writable aliases. Only the application chooses paths. Model tool arguments use aliases. The runner connects the helper's tools to an `Agent` and disposes its provider when the run ends.
+### Select files and connect tools
+
+For your own application, import `runSelectedDocuments` from `selected-documents.ts`. Pass the options accepted by `SelectedDocuments.open()`, a task, and optional `NativeProviderOptions`.
+
+The application chooses a trusted root, aliases mapped to relative file paths, and writable aliases. Only the application chooses paths. Model tool arguments use aliases. The runner connects the helper's tools to an `Agent` and disposes its provider when the run ends.
 
 `document-workspace.ts` supplies three custom function tools:
 
@@ -165,11 +188,17 @@ For your own application, import `runSelectedDocuments` from `selected-documents
 - `search_document` returns up to 16 matches, each with up to 128 code points. Follow its `nextOffset` with the same revision to find phrases across page boundaries.
 - `revise_document` replaces one unique text occurrence in a writable document. Read its current revision first. Each replacement accepts at most one page of old and new text. The helper saves and reopens the file before reporting success.
 
+### Continue reads and handle conflicts
+
 Read only the pages needed for the task. Continue with the returned offset and revision. If the revision changes, read again. These bounds apply to returned content, not to total JSON size or a session-wide token budget. Prior tool results can remain in the model's context.
 
 A revision conflict returns a failed `ToolOutput` to the model with a fresh-read instruction. It does not replay an earlier successful edit. Unexpected filesystem errors still reject the run. The direct application methods such as `documents.read()` continue to reject stale revisions so the application can choose its own recovery policy.
 
+### File and concurrency limits
+
 The helper accepts application-selected decoded UTF-8 text files up to 16 MiB, including text the application already extracted from a PDF. It reads each selected file into application memory before returning a page. It does not parse PDF, Word or Excel binaries or perform hosted retrieval. It rejects unknown aliases, disallowed writes and selected paths that become symlinks. It serializes its own edits. Applications with external writers need a shared lock.
+
+### Scripted coverage
 
 The native test in `../test/native/retained-research.test.ts` drives the exported runner with a scripted model server. It checks three Unicode pages, continuation revisions, a boundary-spanning search and an unchanged unselected decoy. The existing research scenario checks saved citations and a later user-directed revision.
 
@@ -187,6 +216,8 @@ The native test in `../test/native/retained-research.test.ts` drives the exporte
 
 From the checkout root, run `pnpm exec tsx packages/agents/examples/classic.ts`. See [Select the classic API explicitly](../CLASSIC.md) for the runtime choice and the separate selected-Modal sandbox recipe.
 
+### Use voice or migration examples
+
 The [GPT Live browser example](live/README.md) connects voice conversation to a classic order specialist through Responses delegation. It keeps credentials and tools on the server, runs each specialist request with at most five model turns, and waits for active work before closing Live. See its guide for the command, microphone controls, offline checks, and model-access requirements.
 
 The [migration.ts](migration.ts) example also uses a scripted classic Model, but runs it through the native loop. It needs the matching native addon and runtime helpers as well as built classic packages, and needs no model API key. Run `pnpm exec tsx packages/agents/examples/migration.ts` or call its exported `runMigration()` function. Importing it does not start the example.
@@ -195,17 +226,23 @@ The [migration.ts](migration.ts) example also uses a scripted classic Model, but
 
 Run `pnpm exec tsx packages/agents/examples/external-order-recovery.ts /absolute/trusted/job-directory` with Node.js 24 and the built native addon. The command uses a scripted model and a local synthetic provider; it needs no model credentials and places no real order. Run it again with the same directory to recover or read its terminal receipt. The application selects the directory and authorizes the single order in `syntheticOrder`; model arguments cannot select another order, tenant, endpoint or path.
 
+### Journal and recover the effect
+
 The application journal retains the original pending manual checkpoint, the business identity and payload digest. It records `creating` before dispatch. The provider stores one separate effect record with a private receipt and small public result. On recovery, an authoritative lookup finds that effect or permits a create-or-find request with the same business key. An inconclusive lookup records `unknown` and refuses automatic dispatch. Real services need their own idempotency and authoritative lookup guarantees.
 
 After the result is durable, `answerJob` restores with current declarations and answers only the newly issued live request. It never saves a reply grant or treats a stored call ID as authority. `settleJob` saves terminal completion after that answer settles. A crash between those steps can repeat model continuation from the original checkpoint, while the stored business result prevents another effect.
 
 The provider receipt stays in application storage. Only the public result reaches the model.
 
-Use one sequential process owner and trusted local storage outside model-visible workspaces. The temporary-file write, file sync and atomic rename protect the prior record during process crashes. They do not provide distributed locking or guarantee power-loss or network-filesystem durability. The native child-process tests stop at pending, provider-commit, public-result and answered boundaries, then recover with one physical provider effect. This is an application protocol example, not an SDK durable queue or an exactly-once guarantee for arbitrary external APIs.
+### Storage limits and crash coverage
+
+Use one sequential process owner and trusted local storage outside model-visible workspaces. The temporary-file write, file sync and atomic rename protect the prior record during process crashes. They do not provide distributed locking or guarantee power-loss or network-filesystem durability.
+
+The native child-process tests stop at pending, provider-commit, public-result and answered boundaries, then recover with one physical provider effect. This is an application protocol example, not an SDK durable queue or an exactly-once guarantee for arbitrary external APIs.
 
 ## Native telemetry and a small evaluation
 
-These commands need Node.js 24 and a prepared native addon. They use synthetic responses and need no API key:
+These Node.js 24 commands use synthetic responses and need no API key.
 
 ```sh
 pnpm exec tsx packages/agents/examples/native-telemetry.ts
@@ -213,11 +250,23 @@ pnpm exec tsx packages/agents/examples/evaluate-catalog.ts candidate.json
 pnpm exec tsx packages/agents/examples/evaluate-catalog.ts next.json candidate.json
 ```
 
-Run [native-telemetry.ts](native-telemetry.ts) in a fresh process. It configures one local `/v1/traces` JSON receiver before opening Sessions. It records four application outcomes: success, a returned failed tool result that lets the Turn continue, a thrown callback, and invalid structured output. Each receipt includes the Session ID, Turn ID and settled history. The summary also includes available exported span IDs and attributes. Missing native fields stay missing. Application receipts and exported spans can cover different events.
+### Record native telemetry
 
-The command closes each Session and scripted provider before native telemetry shutdown, then closes the receiver. Prompt, response and tool-result logging stay off. This does not prove complete redaction: other fields, including tool arguments, can contain content. Keep real secrets and user data out of this walkthrough. Native telemetry shutdown does not close classic tracing processors.
+Run [native-telemetry.ts](native-telemetry.ts) in a fresh process. It configures one local `/v1/traces` JSON receiver before opening Sessions.
 
-[evaluate-catalog.ts](evaluate-catalog.ts) runs two fixed catalog cases once each. It records executed tool arguments and checks completion, trimmed exact answers and exact call order separately. A duplicate lookup fails even with the expected answer. The JSON artifact contains synthetic answers and calls, fixed case/catalog fingerprints, model and instructions, and safe failure categories. It omits raw errors, headers and keys. A trial failure still produces an artifact and a failing command exit.
+It records four application outcomes: success, a returned failed tool result that lets the Turn continue, a thrown callback, and invalid structured output.
+
+Each receipt includes the Session ID, Turn ID and settled history. The summary also includes available exported span IDs and attributes. Missing native fields stay missing. Application receipts and exported spans can cover different events.
+
+The command closes each Session and scripted provider before native telemetry shutdown, then closes the receiver.
+
+Prompt, response and tool-result logging stay off. This does not prove complete redaction: other fields, including tool arguments, can contain content. Keep real secrets and user data out of this walkthrough. Native telemetry shutdown does not close classic tracing processors.
+
+### Evaluate two scripted cases
+
+[evaluate-catalog.ts](evaluate-catalog.ts) runs two fixed catalog cases once each. It records executed tool arguments and checks completion, trimmed exact answers and exact call order separately. A duplicate lookup fails even with the expected answer.
+
+The JSON artifact contains synthetic answers and calls, fixed case/catalog fingerprints, model and instructions, and safe failure categories. It omits raw errors, headers and keys. A trial failure still produces an artifact and a failing command exit.
 
 An optional baseline must match the artifact format, scripted mode, case/catalog fingerprint and scorer, with both unique case IDs. Model and instruction changes remain visible for review. The command reports case regressions and the change in passed count.
 
@@ -225,9 +274,17 @@ These two scripted cases check the application integration. They do not measure 
 
 ## Persistent application facts
 
-[persistent-memory.ts](persistent-memory.ts) uses Node.js 24's built-in SQLite to save one short fact per authenticated application user. Run `pnpm exec tsx packages/agents/examples/persistent-memory.ts` after building the SDK and matching native addon. Its scripted peer needs no model API key. The demo saves a fact, closes and reopens the store, recalls it in a fresh Session, then deletes the actual row. It removes its temporary database after cleanup. A real application supplies and retains its own private database path.
+[persistent-memory.ts](persistent-memory.ts) uses Node.js 24's built-in SQLite to save one short fact per authenticated application user. Run `pnpm exec tsx packages/agents/examples/persistent-memory.ts` after building the SDK and matching native addon. Its scripted peer needs no model API key.
 
-Authentication chooses `userId` in context. Model arguments contain only the fact. Prepared SQL parameters scope every operation to that user. The caller owns the store and borrowed provider. Keep the store open until callbacks and Session cleanup finish. Unexpected database errors fail the run. A failed or cancelled run may already have committed a save or delete. Do not automatically replay effects.
+The demo saves a fact, closes and reopens the store, recalls it in a fresh Session, then deletes the actual row. It removes its temporary database after cleanup. A real application supplies and retains its own private database path.
+
+### Scope facts to the authenticated user
+
+Authentication chooses `userId` in context. Model arguments contain only the fact. Prepared SQL parameters scope every operation to that user.
+
+The caller owns the store and borrowed provider. Keep the store open until callbacks and Session cleanup finish. Unexpected database errors fail the run. A failed or cancelled run may already have committed a save or delete. Do not automatically replay effects.
+
+### Persistence and deletion limits
 
 This synchronous store demonstrates application data. It is separate from `localStorage`, native memory, checkpoints, reply grants and conversation recovery. It supplies no identity provider, encryption, expiry, retention service or cross-system transaction.
 
@@ -237,7 +294,13 @@ Deleting a row does not erase earlier model context, saved states, history, file
 
 [retrieval.ts](retrieval.ts) searches a fixed synthetic corpus scoped to the application's tenant. Run `pnpm exec tsx packages/agents/examples/retrieval.ts` with authorized model credentials for a live request; `OPENAI_BASE_URL` can select its Responses endpoint. No vector database or embeddings are needed.
 
-The model supplies a bounded query. The tool returns at most two passages, each capped at 240 Unicode code points, and records only those passages in a fresh map for that run. After structured output settles, `checkSources` requires every cited ID to appear in that map and requires `found` to match whether the answer cites any sources. Unknown citations reject as an application error. Provider failures remain failures rather than missing search results. These checks prove source membership. They do not prove that an answer follows from the passages or evaluate answer quality.
+### Bound passages and validate citations
+
+The model supplies a bounded query. The tool returns at most two passages, each capped at 240 Unicode code points, and records only those passages in a fresh map for that run.
+
+After structured output settles, `checkSources` requires every cited ID to appear in that map and requires `found` to match whether the answer cites any sources. Unknown citations reject as an application error.
+
+Provider failures remain failures rather than missing search results. These checks prove source membership. They do not prove that an answer follows from the passages or evaluate answer quality.
 
 ## Trusted project guidance
 

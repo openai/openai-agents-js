@@ -2,7 +2,9 @@
 
 This example keeps the Realtime agent and server-side controls on a trusted Node.js application server. The browser uses WebRTC only for microphone and speaker audio.
 
-The browser does not create an `RTCDataChannel`. It sends an audio-only SDP offer to the application server, which rejects any offer that does not contain exactly one active audio media section. The application server creates the Realtime call with a standard API key, keeps the returned call ID private, and attaches a server-side `RealtimeSession` through a WebSocket sideband connection. The application server returns the SDP answer only after a `session.updated` acknowledgement contains this example's agent instructions and function tool names. A tracing-only acknowledgement does not satisfy this check.
+The browser does not create an `RTCDataChannel`. It sends an audio-only SDP offer to the application server, which rejects any offer that does not contain exactly one active audio media section. The application server creates the Realtime call with a standard API key, keeps the returned call ID private, and attaches a server-side `RealtimeSession` through a WebSocket sideband connection.
+
+The application server returns the SDP answer only after a `session.updated` acknowledgement contains this example's agent instructions and function tool names. A tracing-only acknowledgement does not satisfy this check.
 
 ```mermaid
 flowchart LR
@@ -38,17 +40,37 @@ This is not the Agents SDK's standard browser WebRTC transport with a data-chann
 - Raw Realtime events pass through a deny-by-default projection that constructs a new public application event.
 - The browser assigns a random application session ID before it sends the SDP offer, so cleanup does not depend on receiving the signaling response. An authenticated close records cancellation even when the signaling request has not created its local session record yet, and a delayed request with the same ID is rejected before OpenAI call creation. Session close, initialization failure, sideband disconnect, expiry, and server shutdown all converge on idempotent cleanup that closes the SDK session and calls the Realtime hangup endpoint.
 
+### Demo authentication and production requirements
+
 The included cookie session provides only a runnable localhost authentication example. It does not identify a real user and does not prevent an arbitrary local caller from creating its own demo principal. Before deploying this pattern, replace `DemoAuthStore` with your application's authentication and authorization, apply production rate limits, and derive `OpenAI-Safety-Identifier` from a stable privacy-preserving user identifier.
 
-The browser disables Start until the previous session's cleanup request succeeds or confirms that no session is accessible to the current principal. If that request fails, the browser keeps the application session ID and enables Stop for another attempt. An authentication rejection triggers one authentication refresh and Close retry. The complete cleanup request sequence has a 15-second deadline, so a stalled request also leaves Stop retryable. An expired demo login may renew as a different principal. The browser then accepts a not-found response without transferring ownership of the old call. The server retains failed provider hangups and retries them in the existing one-minute cleanup sweep, including calls rejected during setup and calls owned by expired demo principals. The OpenAI client does not add its own hangup retries. During shutdown, the server makes one additional hangup attempt after a failure and reports any remaining failure without logging provider payloads. Cleanup state is in memory only. This example does not guarantee cleanup after process termination.
+### Cleanup and retry behavior
 
-The browser observes the WebRTC peer connection after signaling completes. A `failed` connection starts the same cleanup path as Stop. A `disconnected` connection gets 10 seconds to recover before cleanup starts. Recovery or Stop cancels that timer. An SSE error also starts cleanup and closes the event stream instead of reconnecting automatically. Start a new session after cleanup completes. The example does not restart ICE or reconnect an existing call automatically.
+The browser disables Start until the previous session's cleanup request succeeds or confirms that no session is accessible to the current principal. If that request fails, the browser keeps the application session ID and enables Stop for another attempt. An authentication rejection triggers one authentication refresh and Close retry. The complete cleanup request sequence has a 15-second deadline, so a stalled request also leaves Stop retryable.
+
+An expired demo login may renew as a different principal. The browser then accepts a not-found response without transferring ownership of the old call.
+
+The server retains failed provider hangups and retries them in the existing one-minute cleanup sweep, including calls rejected during setup and calls owned by expired demo principals. The OpenAI client does not add its own hangup retries.
+
+During shutdown, the server makes one additional hangup attempt after a failure and reports any remaining failure without logging provider payloads. Cleanup state is in memory only. This example does not guarantee cleanup after process termination.
+
+### Connection and media failures
+
+The browser observes the WebRTC peer connection after signaling completes. A `failed` connection starts the same cleanup path as Stop. A `disconnected` connection gets 10 seconds to recover before cleanup starts. Recovery or Stop cancels that timer.
+
+An SSE error also starts cleanup and closes the event stream instead of reconnecting automatically. Start a new session after cleanup completes. The example does not restart ICE or reconnect an existing call automatically.
 
 Each Start creates a new audio helper. A closed helper cannot be reused. A microphone track ending, including after permission revocation, or a rejected audio playback request also triggers cleanup. Restore microphone or playback permission before starting again. Late media acquisition or playback failure from a closed helper cannot stop the replacement session or clear its audio output.
 
+### Public speaking state
+
 The public speaking state follows the Realtime API's [WebRTC output-buffer events](https://developers.openai.com/api/reference/resources/realtime/server-events#output_audio_buffer.started). Model generation completion (`response.done`) does not end the speaking state. Audio can continue until `output_audio_buffer.stopped`. The server retains only the latest public agent state for SSE subscribers.
 
+### Cancellation records
+
 The demo retains cancelled application session IDs in memory until the server stops, so a delayed request cannot recreate a cancelled session after the live-session expiry sweep. A production implementation must account for this storage growth and keep cancellation records for at least as long as it accepts delayed or replayed setup requests.
+
+### Tool authorization and prompt injection
 
 Audio-only transport does not prevent spoken prompt injection and does not make system instructions secret from model behavior. Server-side tools must authorize every privileged operation against `runContext.context`, not against tool arguments supplied by the model.
 
@@ -69,7 +91,11 @@ pnpm -F realtime-server-controlled dev
 
 Open [http://127.0.0.1:5173](http://127.0.0.1:5173). Use this exact origin unless you also change `APP_ORIGIN`.
 
-The Vite development server serves the browser and proxies `/api` to the application server port configured by `PORT` (`3001` by default). If port `5173` is occupied, Vite fails instead of switching to a different origin that the application server would reject. WebRTC media flows directly between the browser and the OpenAI Realtime API. The application server is not an audio proxy.
+### Development server and media routing
+
+The Vite development server serves the browser and proxies `/api` to the application server port configured by `PORT` (`3001` by default). If port `5173` is occupied, Vite fails instead of switching to a different origin that the application server would reject.
+
+WebRTC media flows directly between the browser and the OpenAI Realtime API. The application server is not an audio proxy.
 
 ## Verify without an API call
 

@@ -28,8 +28,6 @@ The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-j
 - **Agents as tools and handoffs**, which allow agents to delegate to other agents for specific tasks
 - **Guardrails**, which validate agent inputs
 
-With TypeScript, these abstractions let you express complex relationships between tools and agents and give agents a workspace when they need one. You can build real-world applications without a steep learning curve. Built-in **tracing** lets you visualize, debug, and evaluate agent workflows, and fine-tune models for your application.
-
 ## Why use the Agents SDK
 
 Two principles guide the SDK's design:
@@ -40,10 +38,8 @@ Two principles guide the SDK's design:
 Here are the main features of the SDK:
 
 - **Agent loop**: A built-in agent loop that handles tool invocation, sends results back to the LLM, and continues until the task is complete.
-- **Sandbox execution**: Run agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state when the work needs a workspace.
-- **Voice Agents**: Build low-latency spoken interactions with features such as automatic interruption detection, context management, guardrails, and more.
+- **Voice agents**: Automatic interruption detection and context management for spoken interactions.
 - **TypeScript-first**: Orchestrate and chain agents using native TypeScript language features, without needing to learn new abstractions.
-- **Agents as tools and handoffs**: Coordinate and delegate work across multiple agents.
 - **Guardrails**: Run input validation and safety checks in parallel with agent execution, and fail fast when checks do not pass.
 - **Function tools**: Turn any TypeScript function into a tool with automatic schema generation and schema-based validation.
 - **MCP server tool calling**: Built-in integration that exposes tools from MCP servers to agents alongside function tools.
