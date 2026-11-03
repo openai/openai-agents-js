@@ -1,128 +1,85 @@
-# OpenAI Agents SDK (JavaScript/TypeScript)
+# OpenAI Agents SDK
 
-> **Experimental Codex harness.** This branch explores running the Codex turn loop inside the JavaScript SDK so applications can supply their own tools and stream or resume a conversation. API shape, supported platforms, and package distribution are open questions. See the [source build and examples](packages/agents/README.md). The installation and API examples below describe the current npm release.
+Build agents that call application tools and keep a conversation going. This branch embeds the Codex harness in the JavaScript and TypeScript SDK. Codex runs model turns and keeps conversation history in your application.
 
-[![npm version](https://badge.fury.io/js/@openai%2Fagents.svg)](https://badge.fury.io/js/@openai%2Fagents) [![CI](https://github.com/openai/openai-agents-js/actions/workflows/test.yml/badge.svg)](https://github.com/openai/openai-agents-js/actions/workflows/test.yml)
+## Build agents in TypeScript
 
-The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows in JavaScript/TypeScript. It is provider-agnostic, supporting OpenAI APIs and more.
+Connect your existing functions and application data. The SDK validates tool arguments, calls your functions, and parses structured results into typed values. You can also connect tools from MCP servers.
 
-<img src="https://cdn.openai.com/API/docs/images/orchestration.png" alt="Image of the Agents Tracing UI" style="max-height: 803px;">
+Use the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview) when you want OpenAI to run the agent and manage sessions and recovery.
 
-## Core concepts
+## Install
 
-1. [**Agents**](https://openai.github.io/openai-agents-js/guides/agents): LLMs configured with instructions, tools, guardrails, and handoffs
-1. [**Sandbox Agents**](https://openai.github.io/openai-agents-js/guides/sandbox-agents): Agents paired with a filesystem workspace and sandbox environment for longer-running work
-1. [**Realtime Agents**](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/): Low-latency agents for spoken interactions, with tools, guardrails, handoffs, and conversation history
-1. **[Agents as tools](https://openai.github.io/openai-agents-js/guides/tools/#4-agents-as-tools) / [Handoffs](https://openai.github.io/openai-agents-js/guides/handoffs/)**: Delegating to other agents for specific tasks
-1. [**Tools**](https://openai.github.io/openai-agents-js/guides/tools/): Various Tools let agents take actions (functions, MCP, hosted tools)
-1. [**Guardrails**](https://openai.github.io/openai-agents-js/guides/guardrails/): Configurable safety checks for input and output validation
-1. [**Human in the loop**](https://openai.github.io/openai-agents-js/guides/human-in-the-loop/): Built-in mechanisms for involving humans across agent runs
-1. [**Sessions**](https://openai.github.io/openai-agents-js/guides/sessions/): Automatic conversation history management across agent runs
-1. [**Tracing**](https://openai.github.io/openai-agents-js/guides/tracing/): Built-in tracking of agent runs, allowing you to view, debug and optimize your workflows
+Use Node.js 24 and follow the [source build instructions](packages/agents/NATIVE.md#build-from-source) from a checkout of `feat/codex-harness`. The build compiles the native addon and helper executables for your machine.
 
-Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
+**The embedded harness is experimental.** The [npm package](https://www.npmjs.com/package/@openai/agents) installs the released SDK. In this checkout, use [`@openai/agents/classic`](packages/agents/CLASSIC.md) for the classic Agent and Runner APIs.
 
-## Get started
+## Example
 
-### Supported environments
+Save this as `packages/agents/examples/greeting.ts` in your checkout:
 
-- Node.js 22 or later
-- Deno
-- Bun
+```ts
+import { Agent, NativeProvider, tool } from '@openai/agents';
+import { z } from 'zod';
 
-#### Experimental support:
+async function main() {
+  await using provider = new NativeProvider();
+  const greeting = tool({
+    name: 'greeting',
+    description: 'Greet someone by name.',
+    parameters: z.strictObject({ name: z.string() }),
+    execute: ({ name }) => `Hello, ${name}!`,
+  });
 
-- Cloudflare Workers with `nodejs_compat` enabled
+  const agent = new Agent({
+    name: 'Assistant',
+    instructions:
+      'Use greeting to greet the user. ' +
+      'After the tool returns, repeat its greeting in your final answer.',
+    tools: [greeting],
+    provider,
+  });
+  const result = await agent.run('Greet Ada.');
+  console.log(result.finalOutput);
+}
 
-[Check out the documentation](https://openai.github.io/openai-agents-js/guides/troubleshooting/) for more detailed information.
-
-### Installation
-
-```bash
-npm install @openai/agents zod
-```
-
-### Build a text agent
-
-Use a regular [Agent](https://openai.github.io/openai-agents-js/guides/agents) for text-based workflows that do not need a sandbox workspace or Realtime session.
-
-```js
-import { Agent, run } from '@openai/agents';
-
-const agent = new Agent({
-  name: 'Assistant',
-  instructions: 'You are a helpful assistant.',
+main().catch((error: unknown) => {
+  console.error(error);
+  process.exitCode = 1;
 });
-const result = await run(
-  agent,
-  'Write a haiku about recursion in programming.',
-);
-console.log(result.finalOutput);
 ```
 
-### Build a sandbox agent
+Set `OPENAI_API_KEY` in your environment, then run `pnpm exec tsx packages/agents/examples/greeting.ts` from the repository root.
 
-Use a [Sandbox Agent](https://openai.github.io/openai-agents-js/guides/sandbox-agents) when the agent should work in a filesystem, run commands, or carry workspace state across longer tasks.
+The example makes a live model request. When the model asks for the greeting tool, the SDK calls your function and sends the result back to the model. The script prints a greeting such as `Hello, Ada!`.
 
-This example uses `UnixLocalSandboxClient`, which is supported on macOS and Linux. On Windows, use `DockerSandboxClient` or a hosted sandbox client instead; see [Sandbox clients](https://openai.github.io/openai-agents-js/guides/sandbox-agents/clients) for setup details.
+## SDK guides
 
-```js
-import { run } from '@openai/agents';
-import { gitRepo, SandboxAgent } from '@openai/agents/sandbox';
-import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
+Start with the [native SDK overview](packages/agents/README.md), or choose a topic below.
 
-const agent = new SandboxAgent({
-  name: 'Workspace Assistant',
-  model: 'gpt-5.5',
-  instructions: 'Inspect the repo before changing files.',
-  defaultManifest: {
-    entries: { repo: gitRepo({ repo: 'openai/openai-agents-js' }) },
-  },
-});
+| Guide | What you can do |
+| --- | --- |
+| [Agent configuration](packages/agents/NATIVE.md#agents-and-sessions) | Set instructions, tools, and a provider. |
+| [Function tools](packages/agents/NATIVE.md#input-tools-and-output) | Make TypeScript functions available with `tool`. |
+| [MCP tools](packages/agents/NATIVE.md#remote-tools-and-children) | Connect an agent to tools from MCP servers. |
+| [Sessions and state](packages/agents/NATIVE.md#history-and-state) | Continue conversations and restore saved state. |
+| [Streaming](packages/agents/NATIVE.md#observations-and-interruption) | Read text and tool events as they arrive. |
+| [Native API guide](packages/agents/NATIVE.md) | Look up runtime behavior and supported options. |
 
-const result = await run(
-  agent,
-  'Inspect the repo README and summarize what this project does.',
-  { sandbox: { client: new UnixLocalSandboxClient() } },
-);
+## More examples
 
-console.log(result.finalOutput);
-```
+After the source build, run an example such as `pnpm exec tsx packages/agents/examples/basic.ts` from the repository root. The examples that call a model need `OPENAI_API_KEY`. Use the [testing guide](packages/agents/TESTING.md) for scripted responses.
 
-### Build a realtime agent
+- [Function tools](packages/agents/examples/basic.ts). Call a greeting function.
+- [Typed application context](packages/agents/examples/typed-context.ts). Use application context and return structured output.
+- [Conversation and streaming](packages/agents/examples/conversation.ts). Stream a conversation and restore saved state.
+- [Validated artifacts](packages/agents/examples/validated-artifact.ts). Validate an artifact before writing it.
+- [All examples](packages/agents/examples/README.md). Find more workflows and their setup requirements.
 
-Use a [Realtime Agent](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/) for low-latency, spoken interactions in the browser.
+## Get help
 
-```js
-import { RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
-
-const agent = new RealtimeAgent({
-  name: 'Assistant',
-  instructions: 'You are a helpful assistant.',
-});
-// Automatically connects your microphone and audio output in the browser via WebRTC.
-const session = new RealtimeSession(agent);
-await session.connect({ apiKey: '<client-api-key>' });
-```
-
-Set `OPENAI_API_KEY` in your server environment for text and sandbox agents. For browser-based realtime agents, use your server to create a short-lived ephemeral client token and pass it to `session.connect(...)`.
-
-Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
+Use [GitHub issues](https://github.com/openai/openai-agents-js/issues) for questions, bug reports, and feedback. For security reports, follow [SECURITY.md](SECURITY.md).
 
 ## Contributing
 
-Please share bug reports and feature requests through [GitHub issues](https://github.com/openai/openai-agents-js/issues). Pull requests are limited to repository collaborators; we do not accept pull requests from non-collaborators. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the contribution policy and development guide. For security vulnerabilities, follow [SECURITY.md](SECURITY.md).
-
-## Acknowledgements
-
-We'd like to acknowledge the excellent work of the open-source community, especially:
-
-- [zod](https://github.com/colinhacks/zod) (schema validation)
-- [Starlight](https://github.com/withastro/starlight)
-- [vite](https://github.com/vitejs/vite) and [vitest](https://github.com/vitest-dev/vitest)
-- [pnpm](https://pnpm.io/)
-- [Next.js](https://github.com/vercel/next.js)
-
-We're committed to building the Agents SDK as an open source framework so others in the community can expand on our approach.
-
-For more details, see the [documentation](https://openai.github.io/openai-agents-js) or explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local development and tests.
