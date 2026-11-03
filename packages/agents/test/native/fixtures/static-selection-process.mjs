@@ -108,12 +108,12 @@ async function main() {
       const outcome = turn.wait().catch((error) => error);
       const saved = await session.suspend();
       assert((await outcome) instanceof InteractionRequired);
-      assert.equal(saved.format_version, 11);
+      assert.equal(saved.kind, 'manual');
       assert.deepEqual(
         saved.manual_continuation.pending_manual.map((call) => call.call_id),
         ['manual-B'],
       );
-      assert.deepEqual(saved.root_code_mode.stored_values, {
+      assert.deepEqual(saved.native.root_code_mode.stored_values, {
         accepted: { output: 'checked-native-text' },
         structured: { n: 7, a: [null, true, '雪'] },
       });

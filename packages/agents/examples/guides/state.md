@@ -18,23 +18,17 @@ History projects a canonical accepted input's Responses record and native user i
 
 ### Restore instructions and tools
 
-Validate the envelope with `parseSessionState(json)`. If you trust the storage, read and reuse the last accepted instructions with `await readSessionInstructions(state)`. Older v2 and manual v3 checkpoints can lack that record. The reader then throws, and you can restore with current trusted instructions.
+Validate the envelope with `parseSessionState(json)`. If you trust the storage, read and reuse the last accepted instructions with `await readSessionInstructions(state)`.
 
 Idle restore requires matching managed declarations, including materialized borrowed MCP tools. The SDK compares names, descriptions, parameter schemas, namespaces, and catalog order. Current callback implementations can differ. Selected checkpoints retain the full admitted catalog, including hidden tools, separately from narrowed defaults.
 
 The destination selects native `HttpMCP` and `StdioMCP` declarations. Restore matching managed declarations first, then use supported idle updates within the opening ceiling.
 
-### Output and checkpoint versions
+### Portable checkpoint shape
 
-For a pending manual checkpoint, instructions and pending tool declarations/result schemas must match. Legacy v3 requires plain-text final output. Idle v4 and pending v5 envelopes also capture the effective output contract; restore requires the same mode, JSON schema and repair budget. Omitted, `undefined`, and zero budgets have the same output identity. Pending v5 can resume plain or prompted output over HTTP or WebSocket. Pending native structured output retains the active turn's schema, including a per-turn override. Supply the matching output contract on the destination Agent before restoring.
+New checkpoints have a `kind` of `idle` or `manual`. The `native` field contains the Codex checkpoint, including its own codec and any settled Code Mode data. Applications should pass the entire SDK checkpoint to restore. To resume a flat numbered checkpoint from an earlier alpha, use the SDK build that wrote it and finish pending work before upgrading.
 
-Idle v6 and pending v7 envelopes also retain settled CodeMode stored JSON, cell counters and terminal observations. Stored JSON object keys are data, including `__proto__`; restoring them does not change an object's prototype. Capture refuses active cells. Snapshots do not serialize JavaScript stacks or arbitrary globals. They do not restore old reply grants. The destination supplies current trusted declarations and callback implementations.
-
-Idle v8 and v10 retain managed defaults. Pending v9 and v11 can also retain the paused operation's static selection. Versions v10 and v11 add settled Code Mode state.
-
-Explicit network policies use v12 and v13 for ordinary idle and manual state, or v14 and v15 with settled Code Mode. These versions retain the same optional selection data and require the current policy identity.
-
-An omitted selection differs from an empty one. Saved defaults control later ordinary roots. Neither defaults nor selections add authority beyond the destination's opening tools. Use a reader that supports the envelope as written.
+Both kinds record the output contract, tool defaults, and network policy identity. Restore requires matching output and network policy. A manual checkpoint also records the pending calls, their instructions and result schemas, and any operation-specific selection or remaining model-step limit. Supply the matching tool declarations. An omitted selection uses the defaults; an empty selection allows no tools.
 
 ### Reconcile external effects
 

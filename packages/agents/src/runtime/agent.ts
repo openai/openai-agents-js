@@ -1,7 +1,6 @@
 import { networkPolicyDigest } from './network-policy';
 import { assertCheckpointNetworkPolicy } from './state';
 import { assertCheckpointSelections } from './selection-state';
-import { readCheckpointSelections } from './state';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
@@ -25,11 +24,7 @@ import {
   type OneShotOptions,
   type Completed,
 } from './session';
-import {
-  sessionStateSchema,
-  isManualSessionState,
-  nativeCheckpoint,
-} from './state';
+import { isManualSessionState } from './state';
 import { environmentConfig } from './environment';
 import { NativeProviderRoutes, type SelectedModelRoute } from './http-model';
 import type { ProviderLease } from './provider';
@@ -64,8 +59,7 @@ export async function openSession(
   // Only native construction defers MCP until the Session owns its reader.
   const initialConfig: NativeConfig = { ...config, mcp_servers: {} };
   const environment = options.environment;
-  const saved =
-    options.state == null ? null : sessionStateSchema.parse(options.state);
+  const saved = options.state ?? null;
   if (oneShot) {
     if (isManualSessionState(saved)) {
       if (oneShot.input != null)
@@ -117,7 +111,7 @@ export async function openSession(
   if (saved) {
     const policy = threadOptions.tool_policy;
     assertCheckpointSelections(
-      readCheckpointSelections(saved),
+      saved,
       catalog,
       policy && typeof policy === 'object' && !Array.isArray(policy)
         ? policy.allowed_tools
@@ -129,18 +123,11 @@ export async function openSession(
   }
   if (saved)
     native._validate_application_instructions(
-      encode(saved.history),
+      encode(saved.native.history),
       instructions,
     );
   const manualTools = catalog.tools.filter((tool) => tool.kind === 'manual');
   if (isManualSessionState(saved)) {
-    if (
-      saved.format_version === 3 &&
-      (options.restoredOutput?.output ?? options.output)?.schema != null
-    )
-      throw new TypeError(
-        'Cannot resume a pending manual checkpoint with a structured output schema',
-      );
     const pending = saved.manual_continuation.pending_manual;
     const schemas = pending.map((call) => {
       const tool = manualTools.find(
@@ -168,7 +155,7 @@ export async function openSession(
       throw new TypeError(
         'Manual checkpoint requires matching current instructions and manual result declarations',
       );
-    const prior = z.array(jsonObject).parse(saved.managed_tool_specs);
+    const prior = z.array(jsonObject).parse(saved.native.managed_tool_specs);
     const current = decode(z.array(jsonObject), catalog.specsJson);
     for (const call of pending) {
       const select = (specs: typeof prior) =>
@@ -185,7 +172,7 @@ export async function openSession(
   } else if (
     saved &&
     !isDeepStrictEqual(
-      saved.managed_tool_specs,
+      saved.native.managed_tool_specs,
       decode(jsonValue, catalog.specsJson),
     )
   ) {
@@ -202,9 +189,7 @@ export async function openSession(
   )
     throw new InteractionRequired();
 
-  const checkpointJson = saved
-    ? encodeReceipt(nativeCheckpoint(saved))
-    : undefined;
+  const checkpointJson = saved ? encodeReceipt(saved.native) : undefined;
   const freshManual = isManualSessionState(saved);
   const carrier = new NativeProviderRoutes(setup.selectedModel);
   let engine: import('./binding').Engine | undefined = undefined;

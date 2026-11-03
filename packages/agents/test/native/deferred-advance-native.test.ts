@@ -309,7 +309,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(isManualSessionState(f.state)).toBe(true);
       if (!isManualSessionState(f.state))
         throw new Error('Expected manual checkpoint');
-      expect(f.state.format_version).toBe(5);
+      expect(f.state.kind).toBe('manual');
       expect(f.bindings.map((binding) => binding.checkpointDigest)).toEqual([
         sha(f.exact),
         sha(f.exact),
@@ -341,7 +341,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       });
       if (!isManualSessionState(f.state))
         throw new Error('Expected manual checkpoint');
-      expect(f.state.format_version).toBe(5);
+      expect(f.state.kind).toBe('manual');
       expect(f.state.manual_context.usage).toMatchObject({
         inputTokens: '9007199254740993',
         cachedInputTokens: 9007199254740990,

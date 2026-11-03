@@ -24,8 +24,8 @@ it('restores retained native goal data using the current session store', async (
     const first = await agent.run('Remember this.', { returnState: true });
     const state = first.state!;
     // Imported native snapshots may retain a paused goal without granting goal tools.
-    state.root_goal = {
-      thread_id: state.source_session_id,
+    state.native.root_goal = {
+      thread_id: state.native.source_session_id,
       objective: 'Retained native objective',
       status: 'paused',
       token_budget: 100,
@@ -38,7 +38,7 @@ it('restores retained native goal data using the current session store', async (
         (await (await restored.submit('Continue.')).wait()).finalOutput,
       ).toBe('continued');
       const saved = await restored.saveState();
-      expect(saved.root_goal).toMatchObject({
+      expect(saved.native.root_goal).toMatchObject({
         objective: 'Retained native objective',
         status: 'paused',
         token_budget: 100,

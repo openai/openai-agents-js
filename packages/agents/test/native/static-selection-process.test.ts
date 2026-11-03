@@ -155,7 +155,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(original.nativeTransforms).toBe(1);
         expect(originalBytes).toContain('checked-native-text');
         expect(originalBytes).not.toContain('raw-native');
-        expect(saved.format_version).toBe(11);
+        expect(saved.kind).toBe('manual');
         expect(saved.operation_tools).toEqual([
           { name: 'lookup', namespace: 'functions' },
           { name: 'exec', namespace: 'functions' },
@@ -199,12 +199,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(recovered.transforms).toBe(1);
         expect(recovered.nativeTransforms).toBe(0);
         expect(recovered.finalOutput).toEqual({ answer: 'done' });
-        expect(recovered.state.root_code_mode.stored_values).toEqual(
-          saved.root_code_mode.stored_values,
+        expect(recovered.state.native.root_code_mode.stored_values).toEqual(
+          saved.native.root_code_mode.stored_values,
         );
         expect(
-          BigInt(recovered.state.root_code_mode.next_cell_id),
-        ).toBeGreaterThan(BigInt(saved.root_code_mode.next_cell_id));
+          BigInt(recovered.state.native.root_code_mode.next_cell_id),
+        ).toBeGreaterThan(BigInt(saved.native.root_code_mode.next_cell_id));
         expect(await readFile(join(executor.cwd, 'effect.txt'), 'utf8')).toBe(
           'effect',
         );

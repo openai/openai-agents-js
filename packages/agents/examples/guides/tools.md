@@ -54,7 +54,7 @@ Omit `tools` to use the current defaults. Pass `tools: []` to select none. To se
 
 Pass `{ maxModelSteps: 4 }` to `agent.run` or to a new Session submission to allow up to four root model preparations. A value of zero blocks the first preparation. When the budget runs out, the run rejects with `NativeError.code === 'max_model_steps_exceeded'` before the next provider request. A preparation can include transport retries. Child agents and structured-output repairs run separately.
 
-A pending manual checkpoint stores the remaining steps. Resume with `agent.run(null, { state, onInteraction })` on an SDK version that supports `maxModelSteps` to enforce that allowance. Earlier alpha versions ignore the saved limit. Each independent submission starts with its own budget. If you also supply a `beforeStep` callback, the usual callback checkpoint restrictions apply.
+A pending manual checkpoint stores the remaining steps. Resume with `agent.run(null, { state, onInteraction })` on an SDK version that supports `maxModelSteps` to enforce that allowance. Earlier alphas cannot open this checkpoint shape. Each independent submission starts with its own budget. If you also supply a `beforeStep` callback, the usual callback checkpoint restrictions apply.
 
 ### Select tools before a model step
 
@@ -77,7 +77,7 @@ A yielded cell keeps its original plan and callback owner. A successor's selecti
 
 Supported manual checkpoints retain static selections, including the difference between default and empty. On restore, the SDK checks saved references and managed defaults against current opening declarations before model or tool execution. Saved names grant no additional tools.
 
-Preparation callbacks remain application-owned and cannot be captured. Keep current tool implementations, credentials and policy callbacks in destination configuration. The [manual-reply example](../manual-replies.ts) saves a static `tools: [lookup]` selection and answers a fresh issued request after restore; it never saves a live reply grant. Use an SDK that recognizes the saved envelope. Do not remove selection fields or change a version number to force an older reader to accept it.
+Preparation callbacks remain application-owned and cannot be captured. Keep current tool implementations, credentials and policy callbacks in destination configuration. The [manual-reply example](../manual-replies.ts) saves a static `tools: [lookup]` selection and answers a fresh issued request after restore; it never saves a live reply grant. Use an SDK that recognizes the saved envelope. Keep the saved selection with its checkpoint.
 
 ## Inspect or change tool values
 

@@ -147,8 +147,10 @@ async function main() {
   assert.equal(old.calls.length, 1);
   assert.ok(JSON.stringify(model.requests[1].input).includes('old-record'));
   const saved = await session.saveState();
-  const accepted = saved.history.filter((row) => row.type === 'response_item');
-  assert.deepEqual(saved.agent_options, {});
+  const accepted = saved.native.history.filter(
+    (row) => row.type === 'response_item',
+  );
+  assert.deepEqual(saved.native.agent_options, {});
   for (const value of [oldToken, old.url, 'AGENTS_MCP_OLD_TEST_TOKEN'])
     assert.ok(!JSON.stringify(saved).includes(value));
   await session.update({ tools: [] });
@@ -177,12 +179,15 @@ async function main() {
   ).session({
     state: {
       ...saved,
-      agent_options: {
-        config: {
-          mcp_servers: {
-            stale: {
-              url: old.url,
-              http_headers: { Authorization: 'Bearer ' + oldToken },
+      native: {
+        ...saved.native,
+        agent_options: {
+          config: {
+            mcp_servers: {
+              stale: {
+                url: old.url,
+                http_headers: { Authorization: 'Bearer ' + oldToken },
+              },
             },
           },
         },
@@ -191,7 +196,7 @@ async function main() {
   });
   sessions.push(restored);
   assert.deepEqual(
-    (await restored.saveState()).history.filter(
+    (await restored.saveState()).native.history.filter(
       (row) => row.type === 'response_item',
     ),
     accepted,
@@ -203,7 +208,7 @@ async function main() {
   assert.ok(
     JSON.stringify(restoredModel.requests[1].input).includes('current-record'),
   );
-  assert.deepEqual((await restored.saveState()).agent_options, {});
+  assert.deepEqual((await restored.saveState()).native.agent_options, {});
   restoredModel.assertExhausted();
   await restored.close();
   const withoutModel = new ModelServer([[message('no server')]]);

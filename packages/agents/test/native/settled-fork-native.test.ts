@@ -63,11 +63,13 @@ describe('settled root fork', () => {
       await (await source.submit('Remember this.')).wait();
       const state = await source.fork();
       const another = await source.fork();
-      expect(state.source_session_id).not.toBe(source.id);
-      expect(another.source_session_id).not.toBe(state.source_session_id);
+      expect(state.native.source_session_id).not.toBe(source.id);
+      expect(another.native.source_session_id).not.toBe(
+        state.native.source_session_id,
+      );
       expect(effects).toBe(1);
       expect(server.requests).toHaveLength(2);
-      expect(state.agent_options).toEqual({});
+      expect(state.native.agent_options).toEqual({});
       await (await source.submit('source-only future')).wait();
       await source.close();
       const current = tool({
@@ -85,7 +87,7 @@ describe('settled root fork', () => {
         provider,
         tools: [current],
       }).session({ state, context: { destination: true } });
-      expect(destination.id).toBe(state.source_session_id);
+      expect(destination.id).toBe(state.native.source_session_id);
       expect(
         (await (await destination.submit('Continue.')).wait()).finalOutput,
       ).toBe('destination finished');
@@ -306,7 +308,9 @@ describe('settled root fork', () => {
         ),
       ).toBe(false);
       await (await source.submit('Finish the process.')).wait();
-      expect((await source.fork()).source_session_id).not.toBe(source.id);
+      expect((await source.fork()).native.source_session_id).not.toBe(
+        source.id,
+      );
       server.assertExhausted();
     } finally {
       await source?.close();
@@ -369,9 +373,9 @@ describe('settled root fork', () => {
         const turn = await initial.submit('Record the work.');
         await turn.wait();
         const saved = await initial.saveState();
-        saved.root_goal = {
-          thread_id: saved.source_session_id,
-          objective: `Keep literal source ${saved.source_session_id}`,
+        saved.native.root_goal = {
+          thread_id: saved.native.source_session_id,
+          objective: `Keep literal source ${saved.native.source_session_id}`,
           status,
           token_budget: 2100,
           tokens_used: 850,
@@ -379,13 +383,13 @@ describe('settled root fork', () => {
           created_at: 1700000000,
           updated_at: 1700000072,
         };
-        saved.root_checklist = {
-          thread_id: saved.source_session_id,
+        saved.native.root_checklist = {
+          thread_id: saved.native.source_session_id,
           turn_id: turn.turnId,
           explanation: 'Preserve recorded order',
           plan: [
             {
-              step: `Literal source ${saved.source_session_id}`,
+              step: `Literal source ${saved.native.source_session_id}`,
               status: 'completed',
             },
             { step: 'Next step', status: 'in_progress' },
@@ -397,19 +401,23 @@ describe('settled root fork', () => {
         const before = await source.saveState();
         const forked = await source.fork();
         const another = await source.fork();
-        expect(forked.source_session_id).not.toBe(source.id);
-        expect(another.source_session_id).not.toBe(forked.source_session_id);
-        expect(forked.root_goal).toEqual({
-          ...before.root_goal,
-          thread_id: forked.source_session_id,
+        expect(forked.native.source_session_id).not.toBe(source.id);
+        expect(another.native.source_session_id).not.toBe(
+          forked.native.source_session_id,
+        );
+        expect(forked.native.root_goal).toEqual({
+          ...before.native.root_goal,
+          thread_id: forked.native.source_session_id,
         });
-        expect(forked.root_checklist).toEqual({
-          ...before.root_checklist,
-          thread_id: forked.source_session_id,
+        expect(forked.native.root_checklist).toEqual({
+          ...before.native.root_checklist,
+          thread_id: forked.native.source_session_id,
         });
         const after = await source.saveState();
-        expect(after.root_goal).toEqual(before.root_goal);
-        expect(after.root_checklist).toEqual(before.root_checklist);
+        expect(after.native.root_goal).toEqual(before.native.root_goal);
+        expect(after.native.root_checklist).toEqual(
+          before.native.root_checklist,
+        );
         expect(sourceEffects).toBe(1);
         expect(server.requests).toHaveLength(2);
         await expect(
@@ -438,8 +446,10 @@ describe('settled root fork', () => {
           context: { value: 'current destination context' },
         });
         const restored = await destination.saveState();
-        expect(restored.root_goal).toEqual(forked.root_goal);
-        expect(restored.root_checklist).toEqual(forked.root_checklist);
+        expect(restored.native.root_goal).toEqual(forked.native.root_goal);
+        expect(restored.native.root_checklist).toEqual(
+          forked.native.root_checklist,
+        );
         expect(
           (
             await (
@@ -484,13 +494,13 @@ describe('settled root fork', () => {
       const turn = await initial.submit('Record the work.');
       await turn.wait();
       const saved = await initial.saveState();
-      saved.root_checklist = {
-        thread_id: saved.source_session_id,
+      saved.native.root_checklist = {
+        thread_id: saved.native.source_session_id,
         turn_id: turn.turnId,
         explanation: 'Keep historical turn',
         plan: [
           {
-            step: `Keep ${saved.source_session_id} literal`,
+            step: `Keep ${saved.native.source_session_id} literal`,
             status: 'pending',
           },
         ],
@@ -499,28 +509,30 @@ describe('settled root fork', () => {
       source = await agent.session({ state: saved });
       await source.compact({ summary: 'Supplied before fork.' });
       const first = await source.fork();
-      expect(first.root_checklist).toEqual({
-        ...saved.root_checklist,
-        thread_id: first.source_session_id,
+      expect(first.native.root_checklist).toEqual({
+        ...saved.native.root_checklist,
+        thread_id: first.native.source_session_id,
       });
       await source.close();
       branch = await agent.session({ state: first });
       await branch.compact({ summary: 'Supplied after fork.' });
-      expect((await branch.saveState()).root_checklist).toEqual(
-        first.root_checklist,
+      expect((await branch.saveState()).native.root_checklist).toEqual(
+        first.native.root_checklist,
       );
-      expect(branch.id).toBe(first.source_session_id);
+      expect(branch.id).toBe(first.native.source_session_id);
       const second = await branch.fork();
-      expect(second.source_session_id).not.toBe(first.source_session_id);
-      expect(second.root_checklist).toEqual({
-        ...saved.root_checklist,
-        thread_id: second.source_session_id,
+      expect(second.native.source_session_id).not.toBe(
+        first.native.source_session_id,
+      );
+      expect(second.native.root_checklist).toEqual({
+        ...saved.native.root_checklist,
+        thread_id: second.native.source_session_id,
       });
       expect(server.requests).toHaveLength(1);
       await branch.close();
       destination = await agent.session({ state: second });
-      expect((await destination.saveState()).root_checklist).toEqual(
-        second.root_checklist,
+      expect((await destination.saveState()).native.root_checklist).toEqual(
+        second.native.root_checklist,
       );
       expect(
         (await (await destination.submit('Continue.')).wait()).finalOutput,
@@ -567,14 +579,14 @@ describe('fork and supplied summary with the current checklist owner', () => {
       expect(await source.checklist()).toEqual(accepted);
       expect(server.requests).toHaveLength(2);
       const state = await source.fork();
-      expect(state.source_session_id).not.toBe(source.id);
-      expect(state.root_checklist).toEqual({
-        thread_id: state.source_session_id,
+      expect(state.native.source_session_id).not.toBe(source.id);
+      expect(state.native.root_checklist).toEqual({
+        thread_id: state.native.source_session_id,
         turn_id: turn.turnId,
         explanation: null,
         plan,
       });
-      expect((await source.saveState()).root_checklist?.thread_id).toBe(
+      expect((await source.saveState()).native.root_checklist?.thread_id).toBe(
         source.id,
       );
       expect(server.requests).toHaveLength(2);

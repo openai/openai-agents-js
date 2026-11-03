@@ -1,3 +1,4 @@
+import { prepareOutput } from '../../src/runtime/output';
 import { access } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -289,16 +290,44 @@ describe('native opening options without loading native code', () => {
     },
   );
 
+  it('rejects flat alpha checkpoints before opening the provider', async () => {
+    const selected = provider();
+    const acquire = vi.spyOn(selected, '_acquire');
+    try {
+      const flat = {
+        format_version: 4,
+        codex_revision: CODEX_REVISION,
+        source_session_id: 'old-root',
+        root_metadata: {},
+        history: [],
+        output_context: prepareOutput(undefined).identity,
+      };
+      await expect(
+        new Agent({ instructions: 'Answer.', provider: selected }).session({
+          state: flat as never,
+        }),
+      ).rejects.toThrow('SDK that saved');
+      expect(acquire).not.toHaveBeenCalled();
+    } finally {
+      await selected.close();
+    }
+  });
+
   it('restores using the selected current provider without adding opening fields to checkpoint state', async () => {
     const state = parseSessionState(
       JSON.stringify({
-        format_version: 2,
-        codex_revision: CODEX_REVISION,
-        source_session_id: 'saved-root',
-        root_metadata: {},
-        history: [],
-        managed_tool_specs: [],
-        agent_options: {},
+        kind: 'idle',
+        network_policy_digest: null,
+        output_context: prepareOutput(undefined).identity,
+        native: {
+          format_version: 2,
+          codex_revision: CODEX_REVISION,
+          source_session_id: 'saved-root',
+          root_metadata: {},
+          history: [],
+          managed_tool_specs: [],
+          agent_options: {},
+        },
       }),
     );
     const original = structuredClone(state);
@@ -314,7 +343,7 @@ describe('native opening options without loading native code', () => {
     expect(selected._acquire).toHaveBeenCalledTimes(1);
     expect(acquire).not.toHaveBeenCalled();
     expect(state).toEqual(original);
-    expect(state.agent_options).toEqual({});
+    expect(state.native.agent_options).toEqual({});
     await session.close();
     await Promise.all([selected.close(), agent.provider.close()]);
   });
@@ -416,13 +445,18 @@ describe('native opening options without loading native code', () => {
   it('forwards NativeAgents portable state to native model admission without requiring an Agent model', async () => {
     const state = parseSessionState(
       JSON.stringify({
-        format_version: 2,
-        codex_revision: CODEX_REVISION,
-        source_session_id: 'saved-root',
-        root_metadata: {},
-        history: [],
-        managed_tool_specs: [],
-        agent_options: {},
+        kind: 'idle',
+        network_policy_digest: null,
+        output_context: prepareOutput(undefined).identity,
+        native: {
+          format_version: 2,
+          codex_revision: CODEX_REVISION,
+          source_session_id: 'saved-root',
+          root_metadata: {},
+          history: [],
+          managed_tool_specs: [],
+          agent_options: {},
+        },
       }),
     );
     const selected = provider();

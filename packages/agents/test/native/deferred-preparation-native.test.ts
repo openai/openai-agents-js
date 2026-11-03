@@ -154,7 +154,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const [exact, bindings, context] = persist.mock.calls[0]!;
         const state = await session.suspend();
         expect(JSON.stringify(state)).toBe(exact);
-        if (!isManualSessionState(state) || state.format_version !== 5)
+        if (!isManualSessionState(state))
           throw new Error('Expected prompted manual state');
         expect(state.output_context.mode).toBe('prompted');
         expect(
@@ -184,7 +184,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(context.signal.aborted).toBe(false);
         for (const reply of stale)
           await expect(session.respond(reply)).rejects.toThrow();
-        state.root_metadata.changed = 'detached';
+        state.native.root_metadata.changed = 'detached';
         expect(JSON.stringify(await session.suspend())).toBe(exact);
         expect(await completion).toBeInstanceOf(InteractionRequired);
         expect(peer.callTool).toHaveBeenCalledTimes(1);

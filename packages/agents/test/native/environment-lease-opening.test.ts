@@ -1,3 +1,4 @@
+import { prepareOutput } from '../../src/runtime/output';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -462,18 +463,17 @@ describe('Environment source public opening and actual Session cleanup', () => {
     expect(fixture.carrierClose).toHaveBeenCalledTimes(1);
   });
 
-  it('disposes a source after validation fails before native construction', async () => {
+  it('rejects invalid checkpoint state before acquiring an environment lease', async () => {
     await using provider = new NativeProvider({ apiKey: 'synthetic-key' });
-    const dispose = vi.fn();
+    const source = vi.fn(async () => Environment.lease(environment(), vi.fn()));
     await expect(
       new Agent({ instructions: 'Test', provider }).session({
         state: {} as never,
-        environment: async () => Environment.lease(environment(), dispose),
+        environment: source,
       }),
     ).rejects.toThrow();
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(source).not.toHaveBeenCalled();
     expect(fixture.createEngine).not.toHaveBeenCalled();
-    await expect(provider.close()).resolves.toBeUndefined();
   });
 
   it('joins a failed native opening before releasing the source', async () => {
@@ -508,13 +508,18 @@ describe('Environment source public opening and actual Session cleanup', () => {
     await using provider = new NativeProvider({ apiKey: 'synthetic-key' });
     const state = parseSessionState(
       JSON.stringify({
-        format_version: 2,
-        codex_revision: CODEX_REVISION,
-        source_session_id: 'saved-root',
-        root_metadata: {},
-        history: [],
-        managed_tool_specs: [],
-        agent_options: {},
+        kind: 'idle',
+        network_policy_digest: null,
+        output_context: prepareOutput(undefined).identity,
+        native: {
+          format_version: 2,
+          codex_revision: CODEX_REVISION,
+          source_session_id: 'saved-root',
+          root_metadata: {},
+          history: [],
+          managed_tool_specs: [],
+          agent_options: {},
+        },
       }),
     );
     const original = new Error('checkpoint restore mismatch');

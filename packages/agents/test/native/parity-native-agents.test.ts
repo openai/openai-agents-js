@@ -294,7 +294,7 @@ it('captures a reloaded child when its row is issued by an open iterator', async
     const iterator = restored.subagents();
     const first = (await iterator.next()).value!;
     expect(first.isLive).toBe(false);
-    const target = state.descendants.find(
+    const target = state.native.descendants.find(
       (child) => child.thread_id !== first.id,
     )!.thread_id;
     rootCalls = [

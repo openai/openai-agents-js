@@ -280,13 +280,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             sourceActor: original.binding.sourceActor,
             closed: true,
           });
-          expect(saved.format_version).toBe(7);
+          expect(saved.kind).toBe('manual');
           expect(saved.manual_continuation).toMatchObject({
             turn_id: original.binding.turnId,
             reply_order: ['external-call'],
             accepted_replies: {},
           });
-          expect(saved.root_code_mode.stored_values).toEqual({
+          expect(saved.native.root_code_mode.stored_values).toEqual({
             value: { n: 7, a: [null, true, '雪'] },
             seed: 'committed-seed-result',
           });
@@ -388,12 +388,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             callId: original.binding.callId,
           });
           expect(terminal.fresh.submissionId).not.toBe(original.submissionId);
-          expect(terminal.state.root_code_mode.stored_values).toEqual(
-            saved.root_code_mode.stored_values,
+          expect(terminal.state.native.root_code_mode.stored_values).toEqual(
+            saved.native.root_code_mode.stored_values,
           );
           expect(
-            BigInt(terminal.state.root_code_mode.next_cell_id),
-          ).toBeGreaterThan(BigInt(saved.root_code_mode.next_cell_id));
+            BigInt(terminal.state.native.root_code_mode.next_cell_id),
+          ).toBeGreaterThan(BigInt(saved.native.root_code_mode.next_cell_id));
           expect(terminal.turns).toEqual(
             expect.arrayContaining([
               expect.objectContaining({
@@ -410,10 +410,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             history
               .filter((item) => item.type === 'response_item')
               .map((item) => item.payload);
-          const prefix = responseHistory(saved.history);
+          const prefix = responseHistory(saved.native.history);
           expect(prefix.length).toBeGreaterThan(0);
           expect(
-            responseHistory(terminal.state.history).slice(0, prefix.length),
+            responseHistory(terminal.state.native.history).slice(
+              0,
+              prefix.length,
+            ),
           ).toEqual(prefix);
           const input = model.requests[4].input as JsonObject[];
           const expected = [

@@ -716,11 +716,11 @@ function assertCheckpointUsageGroups(
   descendantId?: string,
 ): void {
   const descendant = descendantId
-    ? state.descendants.find((entry) => entry.thread_id === descendantId)
+    ? state.native.descendants.find((entry) => entry.thread_id === descendantId)
     : undefined;
   if (descendantId && !descendant)
     throw new Error('Missing retained child checkpoint');
-  const history = descendant ? descendant.history : state.history;
+  const history = descendant ? descendant.history : state.native.history;
   const records = history.filter(
     (item) =>
       item.type === 'token_usage_record' &&
@@ -765,8 +765,8 @@ function assertCheckpointUsageGroups(
       wireUsage(index === 0 ? initial : expected),
     );
   }
-  expect(state.root_metadata.history ?? null).toBeNull();
-  for (const child of state.descendants)
+  expect(state.native.root_metadata.history ?? null).toBeNull();
+  for (const child of state.native.descendants)
     expect(child.metadata.history ?? null).toBeNull();
 }
 
@@ -787,7 +787,7 @@ async function qualifyIdleCheckpoint(
     sessionId: session.id,
   });
   const saved = await session.saveState();
-  expect(saved.format_version).toBe(4);
+  expect(saved.kind).toBe('idle');
   assertCheckpointUsageGroups(saved, turnId, expected, initial, descendantId);
   const stored = parseSessionState(JSON.stringify(saved));
   assertCheckpointUsageGroups(stored, turnId, expected, initial, descendantId);
@@ -820,7 +820,7 @@ async function qualifyIdleCheckpoint(
     expect(child?.isLive).toBe(false);
   }
   const resaved = await restored.saveState();
-  expect(resaved.format_version).toBe(4);
+  expect(resaved.kind).toBe('idle');
   assertCheckpointUsageGroups(resaved, turnId, expected, initial, descendantId);
   expect(await readSessionInstructions(resaved)).toBe(agent.instructions);
   expect(server.requests).toHaveLength(before);
@@ -887,9 +887,9 @@ describe(
         const first = parseSessionState(
           JSON.stringify(await session.saveState()),
         );
-        expect(first.history.slice(0, before.history.length)).toEqual(
-          before.history,
-        );
+        expect(
+          first.native.history.slice(0, before.native.history.length),
+        ).toEqual(before.native.history);
         assertCheckpointUsageGroups(
           first,
           turn.turnId,
@@ -900,10 +900,10 @@ describe(
 
         // Exercise the same transport for retained compaction usage and token_count
         // windows. Use the actual native usage record, not a second counter codec.
-        const record = first.history.findLast(
+        const record = first.native.history.findLast(
           (row) => row.type === 'token_usage_record',
         );
-        const compacted = first.history.findLast(
+        const compacted = first.native.history.findLast(
           (row) => row.type === 'compacted',
         );
         if (
@@ -947,7 +947,7 @@ describe(
             rate_limits: null,
           },
         };
-        first.history.push(window);
+        first.native.history.push(window);
         const stored = parseSessionState(JSON.stringify(first));
         const nextProvider = context.own(
           'provider',
@@ -961,11 +961,11 @@ describe(
         await restored.compact({ summary });
         expect(server.requests).toHaveLength(2);
         const second = await restored.saveState();
-        expect(second.history.slice(0, stored.history.length)).toEqual(
-          stored.history,
-        );
-        expect(second.history).toContainEqual(window);
-        expect(second.history).toContainEqual(compacted);
+        expect(
+          second.native.history.slice(0, stored.native.history.length),
+        ).toEqual(stored.native.history);
+        expect(second.native.history).toContainEqual(window);
+        expect(second.native.history).toContainEqual(compacted);
         assertCheckpointUsageGroups(
           second,
           turn.turnId,
@@ -1417,7 +1417,7 @@ describe(
               }
             };
             const checkpointRecord = (state: SessionState, turnId: string) => {
-              const records = state.history.filter(
+              const records = state.native.history.filter(
                 (item) =>
                   item.type === 'token_usage_record' &&
                   item.payload !== null &&
@@ -1527,8 +1527,8 @@ describe(
               return { provider, session, watching, pending };
             };
             const assertSidecar = (state: SessionState, continued: boolean) => {
-              if (state.format_version !== 5)
-                throw new Error('Expected a real format3 manual receipt');
+              if (state.kind !== 'manual')
+                throw new Error('Expected a manual receipt');
               const expected = usageOf(scenario, continued);
               const wire = Object.fromEntries(
                 Object.entries(expected).map(([key, value]) => [
@@ -1571,7 +1571,7 @@ describe(
               throw new Error('Source manual Turn unexpectedly completed');
             expect(suspended.error).toBeInstanceOf(InteractionRequired);
             const turnId =
-              state1.format_version === 5
+              state1.kind === 'manual'
                 ? state1.manual_continuation.turn_id
                 : '';
             expect(turnId).toBe(sourceTurn.turnId);

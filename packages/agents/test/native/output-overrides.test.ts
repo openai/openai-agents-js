@@ -391,8 +391,8 @@ describe('persistent per-operation output contracts', () => {
     const completed = await turn.wait();
     await session.compact();
     const state = await session.saveState();
-    expect(state.format_version).toBe(4);
-    if (state.format_version !== 4)
+    expect(state.kind).toBe('idle');
+    if (state.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(state.output_context.mode).toBe('plain');
     await expect(session.wait()).rejects.toThrow('returned Turn');
@@ -469,7 +469,7 @@ describe('persistent per-operation output contracts', () => {
       const state = await session.suspend();
       expect(await interrupted).toHaveProperty('state');
       expect(state).toMatchObject({
-        format_version: 5,
+        kind: 'manual',
         manual_continuation: {
           turn_id: turn.turnId,
           pending_manual: [{ call_id: mode }],

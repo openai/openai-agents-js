@@ -108,7 +108,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const interrupted = later.wait().catch((error: unknown) => error);
       const state = parseSessionState(JSON.stringify(await source.suspend()));
       expect(await interrupted).toBeInstanceOf(InteractionRequired);
-      if (state.format_version !== 5)
+      if (state.kind !== 'manual')
         throw new Error('Expected output-aware manual state');
       expect(state.output_context).toMatchObject({
         mode: 'prompted',
@@ -122,8 +122,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         parentTurnId: earlier.turnId,
       });
       // The earlier invalid output is native history; the correction is passive.
-      expect(JSON.stringify(state.history)).toContain('EARLIER_ROOT');
-      expect(JSON.stringify(state.history)).not.toContain(repaired);
+      expect(JSON.stringify(state.native.history)).toContain('EARLIER_ROOT');
+      expect(JSON.stringify(state.native.history)).not.toContain(repaired);
       expect(JSON.stringify(state.repair_items)).toContain(repaired);
       expect(JSON.stringify(state)).not.toContain(
         'synthetic-repair-capture-key',
@@ -169,7 +169,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       );
       expect(JSON.stringify(server.requests[4].input)).not.toContain(repaired);
       const recaptured = await restored.saveState();
-      if (recaptured.format_version !== 4)
+      if (recaptured.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(recaptured.repair_turns).toHaveLength(1);
       expect(recaptured.repair_items).toEqual(
@@ -216,12 +216,14 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(result.repairAttempts).toHaveLength(1);
       const attempt = result.repairAttempts[0];
       const before = await source.saveState();
-      if (before.format_version !== 4)
+      if (before.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(before.repair_turns).toHaveLength(1);
       expect(before.repair_items.length).toBeGreaterThan(0);
-      expect(JSON.stringify(before.history)).toContain('ORIGINAL_SUMMARY_TASK');
-      expect(JSON.stringify(before.history)).not.toContain(repaired);
+      expect(JSON.stringify(before.native.history)).toContain(
+        'ORIGINAL_SUMMARY_TASK',
+      );
+      expect(JSON.stringify(before.native.history)).not.toContain(repaired);
       expect(JSON.stringify(before.repair_items)).toContain(repaired);
       const repairItems = (await collect(source.items())).filter(
         (item) => item.turnId === attempt.id,
@@ -232,21 +234,20 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       );
       await source.compact({ summary: 'Supplied summary before fork.' });
       const fork = parseSessionState(JSON.stringify(await source.fork()));
-      if (fork.format_version !== 4)
-        throw new Error('Expected output-aware fork');
+      if (fork.kind !== 'idle') throw new Error('Expected output-aware fork');
       expect(fork.repair_turns).toEqual(
         before.repair_turns.map((row) => ({
           ...row,
-          parentSessionId: fork.source_session_id,
+          parentSessionId: fork.native.source_session_id,
         })),
       );
       expect(fork.repair_items).toEqual(
         before.repair_items.map((row) => ({
           ...row,
-          parentSessionId: fork.source_session_id,
+          parentSessionId: fork.native.source_session_id,
         })),
       );
-      expect(JSON.stringify(fork.history)).not.toContain(repaired);
+      expect(JSON.stringify(fork.native.history)).not.toContain(repaired);
       expect(server.requests).toHaveLength(3);
       expect(effects).toEqual(['once']);
       await source.close();
@@ -254,7 +255,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       await using branch = await agent.session({ state: fork });
       await branch.compact({ summary: 'Supplied summary after fork.' });
       const final = parseSessionState(JSON.stringify(await branch.saveState()));
-      if (final.format_version !== 4)
+      if (final.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(final.repair_turns).toEqual(fork.repair_turns);
       expect(final.repair_items).toEqual(fork.repair_items);
@@ -263,7 +264,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           (item) => item.turnId === attempt.id,
         ),
       ).toEqual(repairItems);
-      expect(JSON.stringify(final.history)).not.toContain(repaired);
+      expect(JSON.stringify(final.native.history)).not.toContain(repaired);
       expect(restore).toHaveBeenCalled();
       for (const [json] of restore.mock.calls) {
         expect(json).not.toContain(repaired);

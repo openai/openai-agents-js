@@ -162,7 +162,10 @@ describe('Python-aligned Session lifecycle', () => {
       await expect(
         readSessionInstructions({
           ...saved,
-          history: [...saved.history, ...saved.history],
+          native: {
+            ...saved.native,
+            history: [...saved.native.history, ...saved.native.history],
+          },
         }),
       ).rejects.toThrow();
       expect(await session.wait()).toBe(first);
@@ -189,17 +192,20 @@ describe('Python-aligned Session lifecycle', () => {
       const stored = parseSessionState(
         JSON.stringify({
           ...saved,
-          history: [
-            ...saved.history,
-            {
-              type: 'response_item',
-              payload: {
-                type: 'message',
-                role: 'user',
-                content: privateMessage,
+          native: {
+            ...saved.native,
+            history: [
+              ...saved.native.history,
+              {
+                type: 'response_item',
+                payload: {
+                  type: 'message',
+                  role: 'user',
+                  content: privateMessage,
+                },
               },
-            },
-          ],
+            ],
+          },
         }),
       );
       await expect(readSessionInstructions(stored)).rejects.not.toThrow(

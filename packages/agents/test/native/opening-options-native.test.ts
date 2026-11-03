@@ -276,7 +276,7 @@ describe('actual native opening overrides', () => {
         state,
         provider: currentProvider,
       });
-      expect(restored.id).toBe(state.source_session_id);
+      expect(restored.id).toBe(state.native.source_session_id);
       expect(
         (await (await restored.submit('Continue.')).wait()).finalOutput,
       ).toBe('Restored answer');
@@ -462,8 +462,8 @@ describe('actual native opening overrides', () => {
           ? await session.fork()
           : await session.saveState();
       if (checkpointKind === 'fork')
-        expect(state.source_session_id).not.toBe(session.id);
-      else expect(state.source_session_id).toBe(session.id);
+        expect(state.native.source_session_id).not.toBe(session.id);
+      else expect(state.native.source_session_id).toBe(session.id);
       await session.close();
       expect(current.requests).toHaveLength(0);
       await executor.close();
@@ -494,7 +494,7 @@ describe('actual native opening overrides', () => {
         provider: currentProvider,
         environment,
       });
-      expect(restored.id).toBe(state.source_session_id);
+      expect(restored.id).toBe(state.native.source_session_id);
       expect(await restored.checklist()).toEqual({
         ...savedChecklist,
         threadId: restored.id,

@@ -1,3 +1,4 @@
+import { prepareOutput } from '../../src/runtime/output';
 import { mkdtemp, readFile, readdir, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,11 +39,16 @@ afterEach(async () => {
 });
 function pendingCheckpoint() {
   return JSON.stringify({
-    format_version: 3,
-    codex_revision: CODEX_REVISION,
-    source_session_id: 'saved-session',
-    root_metadata: {},
-    history: [],
+    kind: 'manual',
+    network_policy_digest: null,
+    output_context: prepareOutput(undefined).identity,
+    native: {
+      format_version: 2,
+      codex_revision: CODEX_REVISION,
+      source_session_id: 'saved-session',
+      root_metadata: {},
+      history: [],
+    },
     manual_continuation: {
       turn_id: 'turn',
       reply_order: ['original-call'],

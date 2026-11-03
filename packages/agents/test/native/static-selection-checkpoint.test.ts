@@ -12,10 +12,7 @@ import {
   toolRef,
 } from '../../src';
 import type { JsonObject } from '../../src/runtime/binding';
-import {
-  isManualSessionState,
-  readCheckpointSelections,
-} from '../../src/runtime/state';
+import { isManualSessionState } from '../../src/runtime/state';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -150,8 +147,8 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const stopped = turn.wait().catch((error: unknown) => error);
       const state = await source.suspend();
       expect(await stopped).toBeInstanceOf(InteractionRequired);
-      expect(state.format_version).toBe(9);
-      expect(readCheckpointSelections(state).operation_tools).toEqual([
+      expect(state.kind).toBe('manual');
+      expect(state.kind === 'manual' && state.operation_tools).toEqual([
         { name: 'lookup', namespace: 'functions' },
         { name: 'exec_command', namespace: 'functions' },
       ]);
@@ -334,8 +331,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const outcome = turn.wait().catch((error: unknown) => error);
       const saved = await source.suspend();
       expect(await outcome).toBeInstanceOf(InteractionRequired);
-      expect(saved.format_version).toBe(9);
-      expect(readCheckpointSelections(saved)).toEqual({
+      expect(saved.kind).toBe('manual');
+      expect(saved).toMatchObject({
         default_tools: [{ name: 'record', namespace: 'functions' }],
         operation_tools: [
           { name: 'record', namespace: 'functions' },
@@ -382,7 +379,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(effects).toBe(1);
         expect(excludedEffects).toBe(0);
         const idle = await restored.saveState();
-        expect(idle.format_version).toBe(8);
+        expect(idle.kind).toBe('idle');
         await restored.close();
         await using settled = await agent.session({ state: idle });
         expect(

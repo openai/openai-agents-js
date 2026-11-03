@@ -328,7 +328,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           ),
         ).toEqual(repairItems);
         const again = await restored.saveState();
-        if (again.format_version !== 4)
+        if (again.kind !== 'idle')
           throw new Error('Expected output-aware idle state');
         expect(again.repair_turns).toHaveLength(2);
         expect(server.requests).toHaveLength(4);

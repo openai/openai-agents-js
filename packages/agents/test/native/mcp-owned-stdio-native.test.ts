@@ -171,7 +171,7 @@ it('sees original and current peers exit after close and uses only current launc
   expect((await (await session.submit('new')).wait()).finalOutput).toBe('new');
   expect(JSON.stringify(model.requests[3].input)).toContain('current-record');
   const saved = await session.saveState();
-  expect(saved.agent_options).toEqual({});
+  expect(saved.native.agent_options).toEqual({});
   model.assertExhausted();
   await session.close();
   // Source 102f asserts these after Session close, not at replacement time.
@@ -188,13 +188,16 @@ it('sees original and current peers exit after close and uses only current launc
   ).session({
     state: {
       ...saved,
-      agent_options: {
-        config: {
-          mcp_servers: {
-            stale: {
-              command: original.declaration.command,
-              args: [...original.declaration.args],
-              cwd: directory,
+      native: {
+        ...saved.native,
+        agent_options: {
+          config: {
+            mcp_servers: {
+              stale: {
+                command: original.declaration.command,
+                args: [...original.declaration.args],
+                cwd: directory,
+              },
             },
           },
         },
@@ -208,7 +211,7 @@ it('sees original and current peers exit after close and uses only current launc
   expect(JSON.stringify(resumedModel.requests[1].input)).toContain(
     'current-record',
   );
-  expect((await restored.saveState()).agent_options).toEqual({});
+  expect((await restored.saveState()).native.agent_options).toEqual({});
   resumedModel.assertExhausted();
   await restored.close();
   await stopped(current.starts);
