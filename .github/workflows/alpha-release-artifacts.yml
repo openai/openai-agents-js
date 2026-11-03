@@ -3,6 +3,9 @@ name: Alpha release artifacts
 on:
   push:
     branches: [feat/codex-harness]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.mdx'
   pull_request:
     branches: [feat/codex-harness]
 
