@@ -48,7 +48,7 @@ An optional `signal` cancels only that caller's wait with its reason. Native wor
 
 Use `session.submit(input, { tools, beforeStep })` to select tools for one new root from the tools admitted at opening. `enqueue(input, outputType, options)` and `submitWithOutput(input, outputType, options)` accept the same options.
 
-Omit `tools` to use the current defaults. Pass `tools: []` to select none. To select one tool, pass its declaration or an exact `toolRef(name, namespace?)`. An omitted or null namespace means `functions`. For example, select an admitted borrowed MCP tool with `toolRef('lookup', 'crm')`.
+Omit `tools` to use the current defaults. Pass `tools: []` to select none. To select one tool, pass an array containing its declaration, such as `tools: [lookup]`, or its exact reference, such as `tools: [toolRef('lookup', 'crm')]` for an admitted MCP tool. An omitted or null namespace means `functions`.
 
 ### Select tools before a model step
 

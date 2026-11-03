@@ -94,7 +94,7 @@ Example:
 }
 ```
 
-If you are using the OpenAI provider, `@openai/agents-openai` and `@openai/agents` both export helpers that narrow raw OpenAI payloads without changing the generic `RunRawModelStreamEvent` contract in `agents-core`.
+If you are using the OpenAI provider, `@openai/agents-openai` and `@openai/agents/classic` both export helpers that narrow raw OpenAI payloads without changing the generic `RunRawModelStreamEvent` contract in `agents-core`.
 
 <Code
   lang="typescript"
@@ -175,7 +175,9 @@ Example:
 
 ## Human in the loop while streaming
 
-Streaming is compatible with handoffs that pause execution (for example when a tool requires approval). The `interruptions` field on the stream object exposes the pending approvals, and you can continue execution by calling `state.approve()` or `state.reject()` for each of them. After the stream pauses, `stream.completed` resolves and `stream.interruptions` contains the approvals to handle. Executing again with `{ stream: true }` resumes streaming output.
+A tool that requires approval can pause a streaming run. After `stream.completed` resolves, check `stream.interruptions`. Call `state.approve()` or `state.reject()` for each request, then pass the state back to `run()` with `{ stream: true }`.
+
+This Node.js example asks for approval in the terminal before running a sample order lookup. Save it as `streamedHITL.mts` and run `npx tsx streamedHITL.mts` with `OPENAI_API_KEY` set.
 
 <Code
   lang="typescript"

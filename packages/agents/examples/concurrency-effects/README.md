@@ -3,8 +3,8 @@
 These examples use Node.js 24 and the public native SDK testing API. They run a local scripted Responses peer and real native tools without a model API key. Use the matching built workspace packages and native products.
 
 ```sh
-pnpm exec tsx packages/agents/examples/concurrency-effects/concurrent-tools.ts --mode scripted
-pnpm exec tsx packages/agents/examples/concurrency-effects/safe-effects.ts --mode scripted
+pnpm exec tsx packages/agents/examples/concurrency-effects/concurrent-tools.ts
+pnpm exec tsx packages/agents/examples/concurrency-effects/safe-effects.ts
 OPENAI_AGENTS_NATIVE_TESTS=1 pnpm exec vitest run --project @openai/agents packages/agents/test/native/concurrency-effects-example.test.ts
 ```
 
@@ -21,5 +21,5 @@ A committed effect survives later tool failure or cancellation. The fake ledger 
 `memory-lifecycle.ts` adds one explicit fact per tenant through an injected asynchronous store. It accepts 1 to 240 JavaScript string code units and rejects blank facts before storage. Fresh Sessions can recall, replace and delete the fact because the application retains the store. The fake adapter lasts for this process. It has no expiry and does not preserve data across restarts. Total tenant count is not bounded. A real application supplies its own retention and admission policy. Deleting a stored fact does not erase earlier model context, history, checkpoints or traces.
 
 ```sh
-pnpm exec tsx packages/agents/examples/concurrency-effects/memory-lifecycle.ts --mode scripted
+pnpm exec tsx packages/agents/examples/concurrency-effects/memory-lifecycle.ts
 ```

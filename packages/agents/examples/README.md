@@ -3,15 +3,15 @@
 Run these commands from the repository root after [building the native addon](guides/building.md). Each example says when you need model credentials.
 
 - [basic.ts](basic.ts): ask an Agent to use a greeting tool, then print its answer.
-- [image-input.ts](image-input.ts): submit an inline PNG and return a validated dominant color. Its command entrypoint makes a live model request with configured credentials and optional `OPENAI_BASE_URL`. Run `pnpm exec tsx packages/agents/examples/image-input.ts`. Local synthetic tests prove image plumbing and validation, not live visual recognition.
+- [image-input.ts](image-input.ts): submit an inline PNG and return a validated dominant color. Run `pnpm exec tsx packages/agents/examples/image-input.ts` with model credentials. Set `OPENAI_BASE_URL` to use a different Responses endpoint.
 - [typed-context.ts](typed-context.ts): pass application context to a tool and validate a typed final answer.
-- [conversation.ts](conversation.ts): observe a captured Turn through completion, inspect history, and restore a saved conversation. See Conversations, events and state.
-- [manual-replies.ts](manual-replies.ts): answer a typed manual request, then save and restore a pending turn. See Answer a manual tool request.
+- [conversation.ts](conversation.ts): observe a captured Turn through completion, inspect history, and restore a saved conversation. See [Session history and state](guides/state.md).
+- [manual-replies.ts](manual-replies.ts): answer a typed manual request, then save and restore a pending turn. See [Manual tool requests](guides/tools.md#manual-tool-requests).
 - [external-job.ts](external-job.ts): prepare a durable manual job, finish it in another process, and resume from the saved checkpoint. See [Run an external job across processes](../EXTERNAL_JOBS.md).
-- [application-memory.ts](application-memory.ts): read a selected note through an application-owned async API, with tenant identity supplied through context. See Use application memory.
+- [application-memory.ts](application-memory.ts): read a selected note through an application-owned async API, with tenant identity supplied through context.
 - [persistent-memory.ts](persistent-memory.ts): save, reopen, recall and delete one SQLite fact per authenticated user. See [Persistent application facts](#persistent-application-facts).
 - [retrieval.ts](retrieval.ts): search tenant passages and check citations from the current run. See [Retrieve and check sources](#retrieve-and-check-sources).
-- [validated-artifact.ts](validated-artifact.ts): use an audience note, return expected JSON validation failures for correction, and write accepted content to an application-selected file. See Validate an artifact before writing it.
+- [validated-artifact.ts](validated-artifact.ts): use an audience note, return expected JSON validation failures for correction, and write accepted content to an application-selected file.
 
 The introductory examples use the public `@openai/agents` API and run without a remote executor. Examples that create a provider also close it. The conversation example keeps its portable checkpoint in memory. The external-job example uses local application state and its own synthetic services.
 
@@ -41,7 +41,7 @@ This example combines two Agents with independent Sessions. Native children use 
 
 ## Run a focused lesson
 
-These maintained lessons provide complete commands, setup, and expected results. Unless noted, their commands use scripted model responses and need no model API key. Scripted responses still execute the declared tools.
+These lessons use scripted model responses unless noted. Run the commands from the checkout or call the exported helper where indicated. Scripted responses still execute the declared tools.
 
 | Task | Lesson | Expected result |
 | --- | --- | --- |
@@ -91,12 +91,12 @@ Supply model credentials for entries that make live requests. Run a command entr
 
 | Task | File and entrypoint | What your application supplies |
 | --- | --- | --- |
-| Select eligible tools before a root or model step | [operation-selection.ts](operation-selection.ts): command entrypoint or call `runExample()` | Current model credentials. The example uses an in-memory record and checks eligibility again before execution. See tool selection. |
+| Select eligible tools before a root or model step | [operation-selection.ts](operation-selection.ts): command entrypoint or call `runExample()` | Current model credentials. The example uses an in-memory record and checks eligibility again before execution. See [tool selection](guides/tools.md#select-tools-for-one-root). |
 | Validate native or prompted output | [output-modes.ts](output-modes.ts): call `runOutputModes()` | Current model credentials. The example catches validation errors without printing rejected output. |
 | Choose a root Turn's output contract | [output-overrides.ts](output-overrides.ts): call `runOutputOverrides()` | Current model credentials. The example reads each selected output contract through its issued Turn. |
-| Replace a function callback between completed turns | [tool-updates.ts](tool-updates.ts): command entrypoint or call `runToolUpdates()` | Current model credentials. The example awaits each Turn and the idle update; see Change a tool between turns. |
+| Replace a function callback between completed turns | [tool-updates.ts](tool-updates.ts): command entrypoint or call `runToolUpdates()` | Current model credentials. The example awaits each Turn and the idle update; see [Update a session](guides/sessions.md#update-a-session). |
 | Limit calls with an application quota | [callback-quota.ts](callback-quota.ts): command entrypoint | Current model credentials. The example creates a fresh quota in each run's context; the quota grants no native tool permissions. |
-| Configure executor argument and stop decisions | [executor-decisions.ts](executor-decisions.ts): call `executorEnvironment(url, cwd)` | A provisioned executor endpoint and workspace, plus your own Session lifecycle and context. This helper configures callbacks; it does not execute a model or provision an executor. See Executor policy decisions. |
+| Configure executor argument and stop decisions | [executor-decisions.ts](executor-decisions.ts): call `executorEnvironment(url, cwd)` | A provisioned executor endpoint and workspace, plus your own Session lifecycle and context. This helper configures callbacks; it does not execute a model or provision an executor. See [Remote executor tools](guides/executors.md#remote-executor-tools). |
 | Transform MCP arguments and approve a native MCP call | [mcp-policy.ts](mcp-policy.ts): command entrypoint | Current model credentials and access to `gpt-5.5`. Set `MCP_URL` to a trusted Streamable HTTP record server exposing `lookup` with a string `key` argument. Set `OPENAI_BASE_URL` for an alternate Responses endpoint. This example does not set MCP credentials. |
 | Resume one MCP thumbnail task | [mcp-tasks.ts](mcp-tasks.ts): command entrypoint; see [MCP Tasks](../MCP_TASKS.md) | Node.js 24, a private POSIX state directory, and separately started local MCP and model peers. Uses a synthetic local credential; handles one thumbnail call per order and rejects forms. |
 | Inspect tool call metadata | [call-metadata.ts](call-metadata.ts): command entrypoint | Current model credentials and access to its selected `gpt-5.5` model. Call metadata grants no control or reply authority. |
@@ -105,10 +105,10 @@ Supply model credentials for entries that make live requests. Run a command entr
 | Close and reopen a local conversation | [local-storage.ts](local-storage.ts): command entrypoint or call `runLocalConversation(path, options?)` | Current model credentials and a trusted profile directory. The CLI uses a temporary private profile, reopens the same Session ID, prints `Reopened answer:` with the remembered meal preference, and removes the profile. `useLocalStorage(path, resume?, options?)` retains the caller-selected profile for record lookups. |
 | Expose selected text documents | [document-workspace.ts](document-workspace.ts): import `SelectedDocuments` | Selected files, a trusted root and permitted writes. Attach its tools to your Agent; see [Selected documents](#selected-documents). |
 | Bound a result wait and join cleanup | [timeout-cleanup.ts](timeout-cleanup.ts): command entrypoint or call `runWithTimeout()` | Current model credentials. A timeout releases the waiter; owned Session disposal then stops and joins its work. |
-| Answer native questions and forms | [native-questions.ts](native-questions.ts): call `askOnceWithForms(agent, input, collect)` or `answerNextSessionQuestion(session, collect, signal)` | An application-owned Agent or Session and form collector. The helpers deny approvals and decline URLs. The Session reader includes forms without an owning Turn; `askWithQuestions` handles only exact-Turn requests. Manual tools need their own handler. |
-| Reuse completed classic history after approval | [migration-classic-handover.ts](migration-classic-handover.ts): command entrypoint | Built addon, no model credentials. Answer the terminal's approval prompt. The example completes the original classic run, passes its history through a classic Session, and checks that the native continuation does not repeat the effect. See migration guidance. |
+| Answer native questions and forms | [native-questions.ts](native-questions.ts): call `askOnceWithForms(agent, input, collect)` or `answerNextSessionQuestion(session, collect, signal)` | An application-owned Agent or Session and form collector. The helpers deny approvals and decline URLs. The Session reader includes [Session-scoped URL requests](guides/interactions.md#when-requests-are-available). `askWithQuestions` handles requests owned by its Turn. Manual tools need their own handler. |
+| Reuse completed classic history after approval | [migration-classic-handover.ts](migration-classic-handover.ts): command entrypoint | Built addon, no model credentials. Answer the terminal's approval prompt. The example completes the original classic run, passes its history through a classic Session, and checks that the native continuation does not repeat the effect. See [Completed Session history](../CLASSIC.md#completed-session-history). |
 | Aggregate tool results with Code Mode | [code-mode.ts](code-mode.ts): command entrypoint or call `runCodeMode()` | Current model credentials and access to `gpt-5.5`. The bundled JavaScript host aggregates synthetic sales; it grants no executor or workspace access. |
-| List the workspace skill catalog | [workspace-layout.ts](workspace-layout.ts): command entrypoint or call `runWorkspaceCatalog(task, workspace, model, options?)` | Built matching native products, current model credentials, and an authenticated WSS executor with a prepared workspace. Selects its root for skill metadata with no execution tools. See the workspace lesson. |
+| List the workspace skill catalog | [workspace-layout.ts](workspace-layout.ts): command entrypoint or call `runWorkspaceCatalog(task, workspace, model, options?)` | Built matching native products, current model credentials, and an authenticated WSS executor with a prepared workspace. Selects its root for skill metadata with no execution tools. See [Remote skill directories](guides/executors.md#remote-skill-directories). |
 | Inspect a pre-provisioned executor | [remote-executor.ts](remote-executor.ts): command entrypoint or call `runRemoteTask(task, environment, options?)` | Current model credentials, access to `gpt-5.5`, and an authenticated WSS executor with an assigned workspace. See [Remote executor](#remote-executor). |
 | Admit a native child role | [native-children.ts](native-children.ts): call `runNativeChildren(task, environment, options?)` | The same executor prerequisites, with all three execution tools admitted, and current model credentials. The recipe declares a reviewer role and child/depth limits. |
 
@@ -123,7 +123,7 @@ pnpm exec tsx packages/agents/examples/timeout-cleanup.ts
 pnpm exec tsx packages/agents/examples/code-mode.ts
 ```
 
-Follow the quickstart for model credentials. Keep credentials in the server process.
+Set `OPENAI_API_KEY` as in the [quickstart](../README.md#run-an-agent). Keep credentials in the server process.
 
 Code Mode is optional. Ordinary function calls do not need generated JavaScript. The example's expected paper-sales total is 50, but a live answer depends on the model. It does not save a pending code cell. Portable idle history checkpoints do not serialize a live JavaScript VM. See the native guide's [history and state limits](guides/state.md#history-and-state).
 
@@ -136,7 +136,7 @@ The application must provision a compatible executor before running `remote-exec
 - Supply `EXECUTOR_TOKEN` through the application's normal secret mechanism.
 - Set `EXECUTOR_CAPABILITIES` only when selecting one absolute remote capability directory.
 
-Supply model credentials as in the quickstart before running the example.
+Set `OPENAI_API_KEY` before running the example.
 
 ```sh
 pnpm exec tsx packages/agents/examples/remote-executor.ts "Inspect the assigned workspace"
@@ -304,7 +304,7 @@ Provider failures remain failures rather than missing search results. These chec
 
 ## Trusted project guidance
 
-[project-guidance.ts](project-guidance.ts) uses the native SDK with a provisioned remote executor and configured model credentials. The host supplies the trusted executor directory and opts in to its `.claude/rules` tree; the example does not provision the executor. Follow Project guidance for the workspace files, environment variables and command. This setup is separate from the introductory examples that need no remote executor.
+[project-guidance.ts](project-guidance.ts) uses the native SDK with a provisioned remote executor and configured model credentials. The host supplies the trusted executor directory and opts in to its `.claude/rules` tree; the example does not provision the executor. This setup is separate from the introductory examples that need no remote executor.
 
 ## Await MCP call observers
 

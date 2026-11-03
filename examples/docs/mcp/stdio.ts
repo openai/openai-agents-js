@@ -1,11 +1,12 @@
 import { Agent, run, MCPServerStdio } from '@openai/agents/classic';
-import * as path from 'node:path';
+import { resolve } from 'node:path';
 
 async function main() {
-  const samplesDir = path.join(__dirname, 'sample_files');
+  const samplesDir = resolve('sample_files');
   const mcpServer = new MCPServerStdio({
     name: 'Filesystem MCP Server, via local package',
-    fullCommand: `pnpm exec mcp-server-filesystem ${samplesDir}`,
+    command: 'npx',
+    args: ['--no', 'mcp-server-filesystem', samplesDir],
   });
   await mcpServer.connect();
   try {
@@ -22,4 +23,4 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+await main();

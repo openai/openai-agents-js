@@ -56,7 +56,7 @@ Pass a provider override for current credentials. After restore, use `session.up
 
 ### Connection retries and errors
 
-Connection recovery uses the provider's configured retry limits for requests and streams, with the existing backoff. The SDK overrides `features.unbounded_connection_retries=true`; startup rejects a managed requirement that keeps this setting enabled. These limits do not set a total operation timeout or cap server-requested delays.
+Connection recovery uses the provider's configured retry limits for requests and streams, with the existing backoff. The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. These limits do not set a total operation timeout or cap server-requested delays.
 
 When a native request fails, `NativeError.retryable` reports whether Core classifies the error as eligible for retry before applying attempt limits. A terminal error can still have `retryable: true` after the request exhausts its retry budget. This field does not mean that attempts remain or that replaying a whole run is safe. An error without native retry information reports `null`.
 

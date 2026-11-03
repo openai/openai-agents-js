@@ -177,7 +177,15 @@ The constructor also accepts additional MCP TypeScript‑SDK options such as `au
 
 ## 3. Stdio MCP servers
 
-For servers that expose only standard I/O, instantiate `MCPServerStdio` with a `fullCommand`:
+For a local stdio server, pass an executable and its arguments to `MCPServerStdio`. This example runs the filesystem server.
+
+Install the MCP client and filesystem server in your project. Create a `sample_files` directory there and add a text file the agent can read. Use a directory that contains only files you want to expose to the server.
+
+```sh
+npm install @modelcontextprotocol/client@2.4.0 @modelcontextprotocol/server-filesystem
+```
+
+Save the example as `stdio.mts`. Set `OPENAI_API_KEY`, then run `npx tsx stdio.mts` from the project directory.
 
 <Code
   lang="typescript"

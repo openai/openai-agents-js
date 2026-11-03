@@ -88,9 +88,10 @@ To configure your own `Runner` instance, pass a `RunConfig` object.
 
 | Field | Type | Purpose |
 | --- | --- | --- |
-| `model` | `string \| Model` | Force a specific model for **all** agents in the run. |
+| `model` | `string \| Model` | Default model for agents that do not specify one. |
+| `modelOverride` | `string \| Model` | Force a model for all agents in the run, including handoff targets. |
 | `modelProvider` | `ModelProvider` | Resolves model names – defaults to the OpenAI provider. |
-| `modelSettings` | `ModelSettings` | Global tuning parameters that override per‑agent settings. See the [models guide](/openai-agents-js/guides/models#modelsettings) for details, including opt-in retry configuration. |
+| `modelSettings` | `ModelSettings` | Default settings for the run. Explicit Agent settings take precedence. See the [models guide](/openai-agents-js/guides/models#modelsettings) for details, including opt-in retry configuration. |
 | `handoffInputFilter` | `HandoffInputFilter` | Mutates input items when performing handoffs (if the handoff itself doesn’t already define one). |
 | `inputGuardrails` | `InputGuardrail[]` | Guardrails applied to the _initial_ user input. |
 | `outputGuardrails` | `OutputGuardrail[]` | Guardrails applied to the _final_ output. |

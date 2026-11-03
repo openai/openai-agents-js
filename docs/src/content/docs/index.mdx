@@ -49,11 +49,7 @@ Here are the main features of the SDK:
 
 ## Installation
 
-```bash
-npm install @openai/agents zod
-```
-
-The SDK requires Zod v4. Installing `zod` with npm fetches the latest v4 release.
+These guides use the classic API in the alpha release. Follow the [alpha installation guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/examples/guides/installation.md#add-the-sdk-to-an-existing-application), then install Zod 4 with `npm install zod@4`.
 
 ## Choose your starting point
 
@@ -61,7 +57,7 @@ Most new users need only one of these entry points:
 
 | Start with | Use it when | Notes |
 | --- | --- | --- |
-| `@openai/agents` | You are building most text, sandbox, or realtime applications. | Recommended default. It includes the OpenAI provider setup, sandbox agent APIs under `@openai/agents/sandbox`, and realtime APIs under `@openai/agents/realtime`. |
+| `@openai/agents/classic` | You are building most text, sandbox, or realtime applications. | Includes the OpenAI provider setup. Use `@openai/agents/classic/sandbox` for sandbox agents and `@openai/agents/classic/realtime` for voice agents. |
 | `@openai/agents-realtime` | You only need the standalone Realtime package. | Useful for browser-only realtime apps or when you want a narrower package boundary. |
 | Lower-level packages (`@openai/agents-core`, `@openai/agents-openai`, `@openai/agents-extensions`) | You need lower-level composition, custom provider wiring, or specific integrations. | Most new users can ignore these until they have a concrete need. |
 

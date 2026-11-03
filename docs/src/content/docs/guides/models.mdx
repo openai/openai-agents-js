@@ -300,7 +300,7 @@ Attach settings at either level:
 
 <Code lang="typescript" code={modelSettingsExample} title="Model settings" />
 
-`Runner`‑level settings override conflicting per-agent settings. Nested fields in `reasoning`, `text`, `promptCacheOptions`, and `retry` are merged across runner and agent settings unless you explicitly clear an inherited value with `undefined`.
+Explicit Agent settings take precedence over Runner defaults. Nested fields in `reasoning`, `text`, `promptCacheOptions`, and `retry` are merged across runner and agent settings unless you explicitly clear an inherited value with `undefined`.
 
 #### Model request timeouts
 

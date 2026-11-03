@@ -12,7 +12,7 @@ The SDK manages file staging, filesystem tools, shell access, sandbox lifecycle,
 
 ## Prerequisites
 
-- Node.js 22 or higher.
+- Node.js 24 for the alpha SDK.
 - Basic familiarity with the OpenAI Agents SDK.
 - A sandbox client. For trusted local development on macOS or Linux, start with `UnixLocalSandboxClient`. On Windows, use `DockerSandboxClient` or a hosted sandbox client instead.
 
@@ -20,13 +20,9 @@ This quickstart uses Node.js and npm commands, but the SDK is not limited to Nod
 
 ## Installation
 
-If you have not already installed the SDK:
+[Install the alpha SDK](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/examples/guides/installation.md#add-the-sdk-to-an-existing-application) to use the `@openai/agents/classic/sandbox` imports below.
 
-```bash
-npm install @openai/agents
-```
-
-For Docker-backed sandboxes, install Docker locally and use `DockerSandboxClient` from `@openai/agents/sandbox/local`.
+For Docker-backed sandboxes, install Docker locally and use `DockerSandboxClient` from `@openai/agents/classic/sandbox/local`.
 
 If you use interactive local PTY sessions with `tty: true`, the process running the SDK also needs Python 3 available as `python3`, or through `OPENAI_AGENTS_PYTHON`. Non-PTY shell commands do not require Python.
 

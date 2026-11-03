@@ -29,7 +29,7 @@ node hello.mjs
 
 The example makes a live model request and prints a greeting. npm installs the SDK packages from the bundle and downloads third-party dependencies from your configured registry. Keep the lockfile and bundled packages together.
 
-If `npm ci` reports `ETARGET` on a registry mirror, ask your registry administrator to sync the version listed in the error. The [existing application setup](#add-the-sdk-to-an-existing-application) can generate a lockfile using compatible versions that your mirror already serves.
+If `npm ci` reports `ETARGET`, your registry may be missing a version from the lockfile. Ask your registry administrator to sync that version, or follow the [existing application setup](#add-the-sdk-to-an-existing-application) in a new directory to resolve compatible dependencies. Copy `hello.mjs` there and run `node hello.mjs` with `OPENAI_API_KEY` set.
 
 ## Add the SDK to an existing application
 
