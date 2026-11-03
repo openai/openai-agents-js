@@ -147,14 +147,10 @@ export async function verifyAlphaPackage(directory) {
   }
   installEnv.PATH = '';
   try {
-    const archive = join(directory, receipt.starter.archive);
-    // A basename avoids GNU tar treating a Windows drive letter as a host.
-    await run(
-      'tar',
-      ['-xzf', basename(archive), '-C', staging],
-      dirname(archive),
-      env,
-    );
+    const archive = receipt.starter.archive;
+    // Run tar with relative paths so Git Bash tar can extract on Windows.
+    await cp(join(directory, archive), join(staging, archive));
+    await run('tar', ['-xzf', archive], staging, env);
     const consumer = join(staging, 'agents-starter');
     const manifest = JSON.parse(
       await readFile(join(consumer, 'package.json'), 'utf8'),
