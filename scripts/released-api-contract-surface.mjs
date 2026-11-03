@@ -1035,6 +1035,9 @@ function createProgram(rootNames, sourceMode = false) {
     paths['@openai/agents-core/_shims/config'] = [
       'packages/agents-core/src/shims/config-node.ts',
     ];
+    paths['@openai/agents-core/_shims/runtime'] = [
+      'packages/agents-core/src/shims/platform-node.ts',
+    ];
     paths['@openai/agents-realtime/_shims'] = [
       'packages/agents-realtime/src/shims/shims-node.ts',
     ];

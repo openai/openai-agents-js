@@ -10,13 +10,15 @@ import {
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import ts from '@typescript/typescript6';
 import { loadConfig } from 'tsc-multi';
-import { buildPackages } from './build-packages.mjs';
+import { buildPackages, watchPackages } from './build-packages.mjs';
 
 test('builds final conditional declaration graphs before dependents and propagates semantic failures', async () => {
+  let watcher;
   const root = mkdtempSync(join(tmpdir(), 'agents-dual-build-'));
   const json = (file, value) => writeFileSync(file, JSON.stringify(value));
   const exports = {
@@ -140,7 +142,72 @@ test('builds final conditional declaration graphs before dependents and propagat
       readFileSync(join(root, 'b/dist/index.d.mts'), 'utf8'),
       /checked: ['"]esm['"]/,
     );
+    // Watch starts from absent outputs and must keep both declaration graphs
+    // current through dependency edits, compiler errors, and subsequent fixes.
+    writeFileSync(
+      join(root, 'b/src/index.ts'),
+      `import {value} from 'fixture-a'; export const valueFromA = value;`,
+    );
+    for (const name of ['a', 'b'])
+      rmSync(join(root, name, 'dist'), { recursive: true, force: true });
+    const statuses = [];
+    async function nextBuild() {
+      const deadline = Date.now() + 60_000;
+      while (!statuses.length) {
+        assert.ok(Date.now() < deadline, 'Watch build did not finish');
+        await delay(50);
+      }
+      return statuses.shift();
+    }
+    watcher = watchPackages(config, (status) => statuses.push(status));
+    assert.equal(await nextBuild(), 0, 'clean initial watch build');
+    assert.match(readFileSync(join(root, 'b/dist/index.d.mts'), 'utf8'), /esm/);
+    assert.match(
+      readFileSync(join(root, 'b/dist/index.d.ts'), 'utf8'),
+      /commonjs/,
+    );
+
+    // A config change can move the source directory while watch is running.
+    const aConfig = join(root, 'a/tsconfig.json');
+    const aOptions = JSON.parse(readFileSync(aConfig, 'utf8'));
+    const relocatedSource = join(root, 'a/relocated/index.ts');
+    mkdirSync(join(root, 'a/relocated'));
+    writeFileSync(relocatedSource, `export const value = 'relocated';`);
+    aOptions.compilerOptions.rootDir = './relocated';
+    aOptions.include = ['relocated'];
+    json(aConfig, aOptions);
+    assert.equal(await nextBuild(), 0, 'source directory change rebuild');
+    assert.match(
+      readFileSync(join(root, 'b/dist/index.d.mts'), 'utf8'),
+      /relocated/,
+    );
+
+    writeFileSync(relocatedSource, `export const value = 'updated';`);
+    assert.equal(await nextBuild(), 0, 'dependency change rebuild');
+    for (const extension of ['d.mts', 'd.ts']) {
+      assert.match(
+        readFileSync(join(root, `b/dist/index.${extension}`), 'utf8'),
+        /updated/,
+      );
+    }
+    writeFileSync(
+      join(root, 'b/src/index.ts'),
+      `export const broken: number = 'invalid';`,
+    );
+    assert.notEqual(await nextBuild(), 0, 'semantic error is reported');
+    writeFileSync(
+      join(root, 'b/src/index.ts'),
+      `import {value} from 'fixture-a'; export const recovered = value;`,
+    );
+    assert.equal(await nextBuild(), 0, 'watch recovers after semantic error');
+    for (const extension of ['d.mts', 'd.ts']) {
+      assert.match(
+        readFileSync(join(root, `b/dist/index.${extension}`), 'utf8'),
+        /recovered.*updated/,
+      );
+    }
   } finally {
+    await watcher?.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

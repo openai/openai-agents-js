@@ -13,7 +13,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Journal } from '../../examples/external-job-journal';
 import { Busy, ThumbnailStore } from '../../examples/external-job-store';
 import type {
@@ -21,6 +21,26 @@ import type {
   JobClaim,
   JobContext,
 } from '../../src/experimental/deferred';
+
+// Node 22 warns when SQLite is first imported. Expect only that import diagnostic;
+// restore normal warning handling before any test executes.
+const restoreSqliteWarning = vi.hoisted(() => {
+  const emitWarning = process.emitWarning;
+  const warning = vi
+    .spyOn(process, 'emitWarning')
+    .mockImplementation((...args: unknown[]) => {
+      if (
+        args[0] ===
+          'SQLite is an experimental feature and might change at any time' &&
+        args[1] === 'ExperimentalWarning' &&
+        args.slice(2).every((argument) => argument === undefined)
+      )
+        return;
+      Reflect.apply(emitWarning, process, args);
+    });
+  return () => warning.mockRestore();
+});
+restoreSqliteWarning();
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const context = (): JobContext => ({ signal: new AbortController().signal });

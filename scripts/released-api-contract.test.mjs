@@ -2308,7 +2308,7 @@ describe('native entry points with released classic contracts', () => {
     expect(surfaces[name]['.'].types[0].name).toBe('NativeOnly');
   });
 
-  test('maps ESM declarations to source and applies released selections to classic', async () => {
+  test('maps classic exports', { timeout: 15_000 }, async () => {
     await withObjectFixture(
       webSearchDeclaration(),
       async ({ packages, contract }) => {

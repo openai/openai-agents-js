@@ -11,6 +11,9 @@
       "@openai/agents-core/_shims": [
         "../agents-core/dist/shims/shims-node.d.ts"
       ],
+      "@openai/agents-core/_shims/runtime": [
+        "../agents-core/dist/shims/platform-node.d.ts"
+      ],
       "@openai/agents-core": ["../agents-core/dist/index.d.ts"],
       "@openai/agents-core/*": ["../agents-core/dist/*"]
     }

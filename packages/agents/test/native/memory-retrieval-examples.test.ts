@@ -23,6 +23,26 @@ import type { FunctionTool } from '../../src/runtime/tools';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 
+// Node 22 warns when SQLite is first imported. Expect only that import diagnostic;
+// restore normal warning handling before any test executes.
+const restoreSqliteWarning = vi.hoisted(() => {
+  const emitWarning = process.emitWarning;
+  const warning = vi
+    .spyOn(process, 'emitWarning')
+    .mockImplementation((...args: unknown[]) => {
+      if (
+        args[0] ===
+          'SQLite is an experimental feature and might change at any time' &&
+        args[1] === 'ExperimentalWarning' &&
+        args.slice(2).every((argument) => argument === undefined)
+      )
+        return;
+      Reflect.apply(emitWarning, process, args);
+    });
+  return () => warning.mockRestore();
+});
+restoreSqliteWarning();
+
 function invoke<Context>(
   tool: FunctionTool<Context>,
   context: Context,

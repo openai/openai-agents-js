@@ -164,7 +164,6 @@ settings:
 
 overrides:
   '@types/node': 22.19.13
-  '@modelcontextprotocol/core@2.4.0>zod': 4.6.7
   xcode@3.0.1>uuid: ^11.1.1
   express@4.22.2>qs: ^6.16.0
   body-parser@1.20.6>qs: ^6.16.0
@@ -883,13 +882,13 @@ importers:
         version: 5.0.0
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.6.7)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5)
       ws:
         specifier: ^8.22.0
         version: 8.22.0
       zod:
-        specifier: ^4.6.7
-        version: 4.6.7
+        specifier: ^4.3.5
+        version: 4.3.5
       zod-deferred:
         specifier: npm:zod@4.6.7
         version: zod@4.6.7
@@ -12257,7 +12256,7 @@ snapshots:
 
   '@modelcontextprotocol/core@2.4.0':
     dependencies:
-      zod: 4.6.7
+      zod: 4.3.5
     optional: true
 
   '@modelcontextprotocol/sdk@1.26.0(supports-color@10.2.2)(zod@3.25.76)':

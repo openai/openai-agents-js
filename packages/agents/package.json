@@ -169,7 +169,7 @@
     "@openai/agents-realtime": "workspace:*",
     "openai": "^7.2.0",
     "ws": "^8.22.0",
-    "zod": "^4.6.7",
+    "zod": "^4.3.5",
     "email-addresses": "5.0.0",
     "@hyperjump/json-schema": "1.18.0",
     "@hyperjump/browser": "1.6.0",
@@ -184,7 +184,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "zod": "^4.6.7",
+    "zod": "^4.3.5",
     "@types/ws": "^8.18.2"
   },
   "peerDependencies": {

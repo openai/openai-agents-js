@@ -8,7 +8,7 @@
     "build": "pnpm clean && node scripts/build-packages.mjs",
     "build:ci": "pnpm run prebuild && pnpm clean && node scripts/build-packages.mjs && pnpm run postbuild",
     "postbuild": "pnpm -r -F @openai/* bundle",
-    "packages:dev": "tsc-multi --watch",
+    "packages:dev": "node scripts/build-packages.mjs --watch",
     "docs:dev": "pnpm -F docs dev",
     "docs:translate": "pnpm -F docs translate",
     "docs:build": "pnpm -F docs build",
