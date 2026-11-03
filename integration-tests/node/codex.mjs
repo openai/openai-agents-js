@@ -2,7 +2,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Agent, getGlobalTraceProvider, run } from '@openai/agents';
+import { Agent, getGlobalTraceProvider, run } from '@openai/agents/classic';
 import { codexTool } from '@openai/agents-extensions/experimental/codex';
 
 const fixtureDirectory = path.dirname(fileURLToPath(import.meta.url));

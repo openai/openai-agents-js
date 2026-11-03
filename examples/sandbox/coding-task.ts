@@ -1,4 +1,4 @@
-import { run, type RunItem } from '@openai/agents';
+import { run, type RunItem } from '@openai/agents/classic';
 import {
   Capabilities,
   Manifest,

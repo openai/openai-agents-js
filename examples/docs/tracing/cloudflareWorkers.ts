@@ -1,4 +1,4 @@
-import { getGlobalTraceProvider } from '@openai/agents';
+import { getGlobalTraceProvider } from '@openai/agents/classic';
 
 export default {
   // @ts-expect-error - Cloudflare Workers types are not available in this snippet

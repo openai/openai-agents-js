@@ -3,7 +3,7 @@ import {
   MemorySession,
   OpenAIResponsesCompactionSession,
   run,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 const agent = new Agent({
   name: 'Support',

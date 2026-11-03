@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import * as CoreTesting from '../src/testing';
+import * as CoreTesting from '../src/classic/testing';
 import * as RealtimeTesting from '../src/realtime/testing';
 import {
   ScriptedModel as CanonicalScriptedModel,

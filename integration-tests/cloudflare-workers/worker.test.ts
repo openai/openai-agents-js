@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { run } from '@openai/agents';
+import { run } from '@openai/agents/classic';
 import worker from './worker/src/index';
 
 const { forceFlush } = vi.hoisted(() => ({ forceFlush: vi.fn() }));
 
 // Stub the SDK boundary to exercise HTTP handling without external services.
-vi.mock('@openai/agents', () => ({
+vi.mock('@openai/agents/classic', () => ({
   Agent: vi.fn(),
   Runner: vi.fn(),
   run: vi.fn(),

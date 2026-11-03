@@ -1,4 +1,4 @@
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 import { CloudflareSandboxClient } from '@openai/agents-extensions/sandbox/cloudflare';
 import { Manifest, SandboxAgent, shell } from '@openai/agents/sandbox';
 import { finished } from 'node:stream/promises';

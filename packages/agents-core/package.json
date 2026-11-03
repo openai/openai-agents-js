@@ -118,6 +118,31 @@
       "types": "./dist/shims/config-node.d.ts",
       "require": "./dist/shims/config-node.js",
       "import": "./dist/shims/config-node.mjs"
+    },
+    "./_shims/runtime": {
+      "react-native": {
+        "types": "./dist/shims/shims-react-native.d.ts",
+        "require": "./dist/shims/shims-react-native.js",
+        "import": "./dist/shims/shims-react-native.mjs"
+      },
+      "workerd": {
+        "types": "./dist/shims/platform-node.d.ts",
+        "require": "./dist/shims/platform-node.js",
+        "import": "./dist/shims/platform-node.mjs"
+      },
+      "browser": {
+        "types": "./dist/shims/shims-browser.d.ts",
+        "require": "./dist/shims/shims-browser.js",
+        "import": "./dist/shims/shims-browser.mjs"
+      },
+      "node": {
+        "types": "./dist/shims/platform-node.d.ts",
+        "require": "./dist/shims/platform-node.js",
+        "import": "./dist/shims/platform-node.mjs"
+      },
+      "types": "./dist/shims/platform-node.d.ts",
+      "require": "./dist/shims/platform-node.js",
+      "import": "./dist/shims/platform-node.mjs"
     }
   },
   "keywords": [
@@ -181,6 +206,9 @@
       ],
       "_shims/config": [
         "dist/shims/config-node.d.ts"
+      ],
+      "_shims/runtime": [
+        "dist/shims/platform-node.d.ts"
       ]
     }
   },

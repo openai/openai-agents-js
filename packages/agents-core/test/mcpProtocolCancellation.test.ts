@@ -9,16 +9,26 @@ class ProbeTransport {
 
   sentMethods: string[] = [];
   cancelledRequestIds: number[] = [];
-  private responseTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private pendingRequests = new Map<string, number>();
 
   async start(): Promise<void> {}
 
   async close(): Promise<void> {
-    for (const timer of this.responseTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.responseTimers.clear();
+    this.pendingRequests.clear();
     this.onclose?.();
+  }
+
+  respond(method: string): void {
+    const id = this.pendingRequests.get(method);
+    if (id === undefined) {
+      throw new Error(`No pending ${method} request`);
+    }
+    this.pendingRequests.delete(method);
+    this.onmessage?.({
+      jsonrpc: '2.0',
+      id,
+      result: { ok: `${method}-done` },
+    });
   }
 
   async send(message: {
@@ -32,11 +42,6 @@ class ProbeTransport {
       const requestId = message.params?.requestId;
       if (requestId !== undefined) {
         this.cancelledRequestIds.push(requestId);
-        const timer = this.responseTimers.get(requestId);
-        if (timer) {
-          clearTimeout(timer);
-          this.responseTimers.delete(requestId);
-        }
       }
       return;
     }
@@ -46,36 +51,23 @@ class ProbeTransport {
     }
 
     if (message.method === 'initialize' && message.id !== undefined) {
-      const timer = setTimeout(() => {
-        this.onmessage?.({
-          jsonrpc: '2.0',
-          id: message.id,
-          result: {
-            protocolVersion: '2025-06-18',
-            capabilities: {},
-            serverInfo: { name: 'probe-server', version: '1.0.0' },
-          },
-        });
-        this.responseTimers.delete(message.id!);
-      }, 0);
-      this.responseTimers.set(message.id, timer);
-      return;
-    }
-
-    if (message.id === undefined) {
-      return;
-    }
-
-    const responseDelay = message.method === 'slow' ? 40 : 5;
-    const timer = setTimeout(() => {
       this.onmessage?.({
         jsonrpc: '2.0',
         id: message.id,
-        result: { ok: `${message.method}-done` },
+        result: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          serverInfo: { name: 'probe-server', version: '1.0.0' },
+        },
       });
-      this.responseTimers.delete(message.id!);
-    }, responseDelay);
-    this.responseTimers.set(message.id, timer);
+      return;
+    }
+
+    if (message.id === undefined || message.method === undefined) {
+      return;
+    }
+
+    this.pendingRequests.set(message.method, message.id);
   }
 }
 
@@ -223,12 +215,12 @@ describe('upstream MCP request cancellation characterization', () => {
       });
       const fastPromise = client.request({ method: 'fast' }, resultSchema);
 
-      setTimeout(() => slowController.abort('probe abort'), 10);
-
-      const [slowResult, fastResult] = await Promise.allSettled([
-        slowPromise,
-        fastPromise,
-      ]);
+      const results = Promise.allSettled([slowPromise, fastPromise]);
+      slowController.abort('probe abort');
+      // A late reply must not revive the aborted request or cancel its sibling.
+      transport.respond('slow');
+      transport.respond('fast');
+      const [slowResult, fastResult] = await results;
 
       expect(slowResult).toMatchObject({
         status: 'rejected',

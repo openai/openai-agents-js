@@ -1,4 +1,4 @@
-import { Agent, run, withTrace } from '@openai/agents';
+import { Agent, run, withTrace } from '@openai/agents/classic';
 
 const agent = new Agent({
   name: 'Joke generator',

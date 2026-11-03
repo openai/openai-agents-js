@@ -1,4 +1,4 @@
-import type { StreamedRunResult } from '@openai/agents';
+import type { StreamedRunResult } from '@openai/agents/classic';
 
 export type AiSdkTextStreamSource =
   | ReadableStream<string>
@@ -6,9 +6,7 @@ export type AiSdkTextStreamSource =
   | { toTextStream: () => ReadableStream<string> };
 
 export type AiSdkTextStreamHeaders =
-  | Headers
-  | Record<string, string>
-  | Array<[string, string]>;
+  Headers | Record<string, string> | Array<[string, string]>;
 
 export type AiSdkTextStreamResponseOptions = {
   headers?: AiSdkTextStreamHeaders;

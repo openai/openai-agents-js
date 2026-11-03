@@ -1,4 +1,4 @@
-import { Agent, MCPServerStdio } from '@openai/agents';
+import { Agent, MCPServerStdio } from '@openai/agents/classic';
 
 const server = new MCPServerStdio({
   fullCommand: 'pnpm exec mcp-server-filesystem ./sample_files',

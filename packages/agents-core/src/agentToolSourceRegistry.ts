@@ -6,14 +6,14 @@ import type { FunctionTool, Tool } from './tool';
 // without storing hidden metadata on the tool object itself.
 const agentToolSourceRegistry = new WeakMap<
   FunctionTool<any, any, any>,
-  Agent<any, any>
+  { agent: Agent<any, any>; invoke: FunctionTool<any, any, any>['invoke'] }
 >();
 
 export function registerAgentToolSourceAgent(
   tool: FunctionTool<any, any, any>,
   agent: Agent<any, any>,
 ): void {
-  agentToolSourceRegistry.set(tool, agent);
+  agentToolSourceRegistry.set(tool, { agent, invoke: tool.invoke });
 }
 
 export function getAgentToolSourceAgent(
@@ -22,5 +22,11 @@ export function getAgentToolSourceAgent(
   if (tool.type !== 'function') {
     return undefined;
   }
-  return agentToolSourceRegistry.get(tool);
+  return agentToolSourceRegistry.get(tool)?.agent;
+}
+
+export function hasOriginalAgentToolInvocation(
+  tool: FunctionTool<any, any, any>,
+): boolean {
+  return agentToolSourceRegistry.get(tool)?.invoke === tool.invoke;
 }

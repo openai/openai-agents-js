@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agents web starter</title>
+    <style>
+      body {
+        max-width: 48rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        font:
+          1rem/1.5 system-ui,
+          sans-serif;
+        color: #18212b;
+        background: #fafbfc;
+      }
+      section {
+        border: 1px solid #c8cfd7;
+        border-radius: 0.5rem;
+        background: white;
+        margin: 1rem 0;
+        padding: 1rem;
+      }
+      h1,
+      h2 {
+        line-height: 1.2;
+      }
+      h2 {
+        font-size: 1.1rem;
+        margin-top: 0;
+      }
+      label {
+        display: block;
+        margin: 0.5rem 0;
+      }
+      input,
+      textarea,
+      select,
+      button {
+        box-sizing: border-box;
+        font: inherit;
+        padding: 0.5rem;
+      }
+      input,
+      textarea {
+        display: block;
+        width: 100%;
+      }
+      textarea {
+        min-height: 5rem;
+        resize: vertical;
+      }
+      button {
+        margin: 0.3rem 0.3rem 0.3rem 0;
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: default;
+      }
+      :focus-visible {
+        outline: 3px solid #356dd2;
+        outline-offset: 2px;
+      }
+      pre,
+      code {
+        overflow-wrap: anywhere;
+        white-space: pre-wrap;
+      }
+      pre {
+        margin-bottom: 0;
+      }
+      #error {
+        color: #a02020;
+      }
+      .hint {
+        color: #4b5663;
+        font-size: 0.9rem;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 0.25rem 1rem;
+      }
+      dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      [hidden] {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Agents web starter</h1>
+    <p>
+      Send a synthetic report task, decide whether to publish it, then download
+      the validated JSON.
+    </p>
+    <p class="hint">
+      Alice and Bob are synthetic identities for this local example. The
+      selector is not production authentication. Disconnecting or reloading
+      leaves the worker running. Stop asks the worker to cancel and finish
+      cleanup.
+    </p>
+
+    <section aria-labelledby="identity-heading">
+      <h2 id="identity-heading">Synthetic identity</h2>
+      <label for="user">Demo user</label>
+      <select id="user">
+        <option value="alice">alice</option>
+        <option value="bob">bob</option>
+      </select>
+      <button id="login" type="button">
+        Choose user / recover saved receipt
+      </button>
+      <p id="identity"></p>
+      <p id="storage" class="hint" role="status"></p>
+    </section>
+
+    <section aria-labelledby="task-heading">
+      <h2 id="task-heading">Task</h2>
+      <form id="composer">
+        <label for="prompt">Request</label>
+        <textarea id="prompt" maxlength="2000" required>
+Create my synthetic report</textarea>
+        <label for="request-key">Request key</label>
+        <input
+          id="request-key"
+          required
+          maxlength="80"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <p class="hint">
+          Retry with the same key and exactly the same request after a lost
+          response. A different request with the same key is refused. Only the
+          key and receipt are saved, so re-enter the original request after
+          reload if needed.
+        </p>
+        <button id="send" type="submit">Send / retry</button>
+        <button id="new-task" type="button">New task key</button>
+      </form>
+      <form id="receipt-form">
+        <label for="receipt-input"
+          >Recover a receipt for the selected user</label
+        >
+        <input
+          id="receipt-input"
+          required
+          maxlength="200"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="recover" type="submit">Load receipt</button>
+      </form>
+    </section>
+
+    <section aria-labelledby="state-heading">
+      <h2 id="state-heading">Application snapshot</h2>
+      <p id="connection" role="status">Reader disconnected.</p>
+      <p id="status" role="status" aria-live="polite">Choose a demo user.</p>
+      <dl>
+        <dt>Receipt</dt>
+        <dd id="receipt">None</dd>
+        <dt>Revision</dt>
+        <dd id="revision">—</dd>
+        <dt>Deadline</dt>
+        <dd id="deadline">—</dd>
+      </dl>
+      <button id="disconnect" type="button" disabled>Disconnect reader</button>
+      <button id="reconnect" type="button" disabled>
+        Reconnect / refresh snapshot
+      </button>
+      <button id="reload" type="button">Reload page</button>
+      <button id="stop" type="button" disabled>Stop work</button>
+      <p id="error" role="alert"></p>
+    </section>
+
+    <section id="approval" aria-labelledby="approval-heading" hidden>
+      <h2 id="approval-heading">Publication approval</h2>
+      <pre id="approval-details"></pre>
+      <button id="approve" type="button" disabled>Approve publication</button>
+      <button id="deny" type="button" disabled>Deny publication</button>
+    </section>
+
+    <section aria-labelledby="result-heading">
+      <h2 id="result-heading">Settled result</h2>
+      <pre id="final">No settled result yet.</pre>
+      <button id="download" type="button" disabled>
+        Download validated JSON
+      </button>
+      <p id="download-status" role="status"></p>
+    </section>
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>

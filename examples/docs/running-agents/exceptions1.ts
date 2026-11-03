@@ -6,7 +6,7 @@ import {
   OutputGuardrail,
   OutputGuardrailTripwireTriggered,
   run,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 // Shared guardrail agent to avoid re-creating it on every fallback run.

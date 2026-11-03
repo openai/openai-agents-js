@@ -6,7 +6,11 @@ import type {
   LanguageModelV2ToolCallPart,
   LanguageModelV2ToolResultPart,
 } from '@ai-sdk/provider';
-import { UserError, type ModelSettings, type protocol } from '@openai/agents';
+import {
+  UserError,
+  type ModelSettings,
+  type protocol,
+} from '@openai/agents/classic';
 import {
   getToolSearchProviderCallId,
   resolveToolSearchCallId,

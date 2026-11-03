@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentInputItem } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents/classic';
 import { PrismaSession } from './prisma';
 
 type StoredSessionItem = {

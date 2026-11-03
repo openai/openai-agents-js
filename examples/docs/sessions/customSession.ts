@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 import { randomUUID } from '@openai/agents-core/_shims';
 import { getLogger } from '@openai/agents-core';
 import type { AgentInputItem, Session } from '@openai/agents-core';

@@ -1,4 +1,4 @@
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, run, tool } from '@openai/agents/classic';
 import { z } from 'zod';
 
 export const orderRequest = z.strictObject({

@@ -1,5 +1,6 @@
 import { refreshPreparedAgentTools } from '../../agentToolConfiguration';
 import type { Agent, AgentOutputType } from '../../agent';
+import type { Model } from '../../model';
 import logger, { logModelAndToolActionWarning } from '../../logger';
 import { UserError } from '../../errors';
 import type { RunState } from '../../runState';
@@ -212,9 +213,16 @@ export class SandboxRuntimeManager<TContext> {
     currentAgent: Agent<TContext, AgentOutputType>;
     turnInput: AgentInputItem[];
     runConfigModel?: SandboxRuntimeModel;
+    runConfigModelOverride?: string | Model;
     tracingParent?: Span<any> | Trace;
   }): Promise<SandboxPreparedAgent<TContext>> {
-    const { currentAgent, turnInput, runConfigModel, tracingParent } = args;
+    const {
+      currentAgent,
+      turnInput,
+      runConfigModel,
+      runConfigModelOverride,
+      tracingParent,
+    } = args;
     if (!isSandboxAgent(currentAgent)) {
       this.activeMemory = undefined;
       return {
@@ -248,6 +256,7 @@ export class SandboxRuntimeManager<TContext> {
           session,
           runConfigModel,
           tracingParent,
+          runConfigModelOverride,
         );
         const memory = executionAgent.capabilities.find(isMemoryCapability);
         if (memory) {
@@ -1102,6 +1111,7 @@ export class SandboxRuntimeManager<TContext> {
     session: SandboxSessionLike<SandboxSessionState>,
     runConfigModel?: SandboxRuntimeModel,
     tracingParent?: Span<any> | Trace,
+    runConfigModelOverride?: string | Model,
   ): SandboxAgent<TContext, AgentOutputType> {
     const agentId = getObjectId(agent);
     const manifestSignature = getManifestSignature(session.state.manifest);
@@ -1129,6 +1139,7 @@ export class SandboxRuntimeManager<TContext> {
       session,
       capabilities: cloneSandboxCapabilities(agent.capabilities),
       runConfigModel,
+      runConfigModelOverride,
       processManifest: false,
       tracingParent,
       workspaceScope: this.workspaceScope,

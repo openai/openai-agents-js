@@ -4,7 +4,7 @@ import {
   MCPServerStdio,
   createMCPToolStaticFilter,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 

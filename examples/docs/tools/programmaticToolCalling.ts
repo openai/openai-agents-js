@@ -1,4 +1,8 @@
-import { Agent, programmaticToolCallingTool, tool } from '@openai/agents';
+import {
+  Agent,
+  programmaticToolCallingTool,
+  tool,
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 const getInventory = tool({

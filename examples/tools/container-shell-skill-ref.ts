@@ -11,7 +11,7 @@ import {
   shellTool,
   type ShellToolSkillReference,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import OpenAI, { toFile } from 'openai';
 
 async function main() {

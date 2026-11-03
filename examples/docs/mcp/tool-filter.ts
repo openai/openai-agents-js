@@ -3,7 +3,7 @@ import {
   MCPServerStreamableHttp,
   createMCPToolStaticFilter,
   MCPToolFilterContext,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 interface ToolFilterContext {
   allowAll: boolean;

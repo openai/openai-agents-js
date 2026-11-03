@@ -3,7 +3,7 @@ import {
   run,
   OutputGuardrailTripwireTriggered,
   OutputGuardrail,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 // The output by the main agent

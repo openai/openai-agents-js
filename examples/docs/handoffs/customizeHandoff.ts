@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Agent, handoff, RunContext } from '@openai/agents';
+import { Agent, handoff, RunContext } from '@openai/agents/classic';
 
 const FooSchema = z.object({ foo: z.string() });
 

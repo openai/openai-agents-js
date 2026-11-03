@@ -1,4 +1,4 @@
-import { Agent, run, tool, withTrace } from '@openai/agents';
+import { Agent, run, tool, withTrace } from '@openai/agents/classic';
 import { z } from 'zod';
 
 async function main() {

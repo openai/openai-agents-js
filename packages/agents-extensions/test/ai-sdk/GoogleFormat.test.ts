@@ -8,7 +8,7 @@ import {
   Span,
   TracingProcessor,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { ReadableStream } from 'node:stream/web';
 import type { LanguageModelV2 } from '@ai-sdk/provider';
 

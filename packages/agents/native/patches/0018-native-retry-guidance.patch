@@ -1,0 +1,347 @@
+--- a/codex-rs/protocol/src/error.rs
++++ b/codex-rs/protocol/src/error.rs
+@@ -382,11 +382,9 @@
+         &self.details
+     }
+ 
+-    /// Returns the delay before the given retry attempt, or `None` for a terminal error.
+-    ///
+-    /// The first retry is attempt one. Retryable errors use server advice when available and
+-    /// otherwise use exponential backoff with jitter. Callers enforce their own retry budgets.
+-    pub fn retry_delay(&self, retry_count: u64) -> Option<Duration> {
++    /// Returns whether this error permits a native retry before caller budgets.
++    /// This does not authorize replay of a whole turn or uncertain tool effects.
++    pub fn is_retryable(&self) -> bool {
+         match self.details() {
+             CodexErrorDetails::TurnAborted
+             | CodexErrorDetails::SessionBudgetExceeded
+@@ -412,9 +410,9 @@
+             | CodexErrorDetails::FlexUnavailable
+             | CodexErrorDetails::CyberPolicy { .. }
+             | CodexErrorDetails::BioPolicy { .. }
+-            | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
++            | CodexErrorDetails::MisalignmentPolicyViolation { .. } => false,
+             CodexErrorDetails::ServerOverloaded | CodexErrorDetails::RetryLimit(_) => {
+-                self.server_retry_delay()
++                self.retry_after.is_some()
+             }
+             CodexErrorDetails::Stream(..)
+             | CodexErrorDetails::ContentFilter
+@@ -428,13 +426,21 @@
+             | CodexErrorDetails::InternalAgentDied
+             | CodexErrorDetails::Io(_)
+             | CodexErrorDetails::Json(_)
+-            | CodexErrorDetails::TokioJoin(_) => Some(
+-                self.server_retry_delay()
+-                    .unwrap_or_else(|| backoff(retry_count)),
+-            ),
++            | CodexErrorDetails::TokioJoin(_) => true,
+             #[cfg(target_os = "linux")]
+-            CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => None,
+-        }
++            CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => false,
++        }
++    }
++
++    /// Returns the delay before the given retry attempt, or `None` for a terminal error.
++    ///
++    /// The first retry is attempt one. Retryable errors use server advice when available and
++    /// otherwise use exponential backoff with jitter. Callers enforce their own retry budgets.
++    pub fn retry_delay(&self, retry_count: u64) -> Option<Duration> {
++        self.is_retryable().then(|| {
++            self.server_retry_delay()
++                .unwrap_or_else(|| backoff(retry_count))
++        })
+     }
+ 
+     /// Returns the original server-advised instant for callers that pass the error on.
+--- a/codex-rs/protocol/src/error_tests.rs
++++ b/codex-rs/protocol/src/error_tests.rs
+@@ -74,6 +74,11 @@
+ 
+     for (err, expected) in errors {
+         assert_eq!(
++            err.is_retryable(),
++            expected,
++            "unexpected classification for {err:?}"
++        );
++        assert_eq!(
+             err.retry_delay(/*retry_count*/ 1).is_some(),
+             expected,
+             "unexpected retryability for {err:?}"
+@@ -112,6 +117,37 @@
+         ),
+         (None, Some(advice)),
+     );
++}
++
++#[tokio::test(start_paused = true)]
++async fn retry_classification_preserves_missing_zero_and_expired_advice() {
++    for error in [
++        CodexErr::ServerOverloaded,
++        CodexErr::RetryLimit(RetryLimitReachedError {
++            status: StatusCode::TOO_MANY_REQUESTS,
++            request_id: None,
++        }),
++    ] {
++        assert!(!error.is_retryable());
++        assert_eq!(error.server_retry_delay(), None);
++        let deadline = RetryAfter::from_delay(Duration::from_secs(2)).expect("deadline");
++        let error = error.with_retry_after(deadline);
++        assert!(error.is_retryable());
++        assert_eq!(error.server_retry_delay(), Some(Duration::from_secs(2)));
++        tokio::time::advance(Duration::from_secs(3)).await;
++        assert_eq!(error.retry_after(), Some(deadline));
++        assert!(error.is_retryable());
++        assert_eq!(error.retry_delay(1), Some(Duration::ZERO));
++        assert_eq!(error.server_retry_delay(), Some(Duration::ZERO));
++    }
++    let zero = RetryAfter::from_delay(Duration::ZERO).expect("zero deadline");
++    let error = CodexErr::ServerOverloaded.with_retry_after(zero);
++    assert!(error.is_retryable());
++    assert_eq!(error.server_retry_delay(), Some(Duration::ZERO));
++    let terminal = CodexErr::QuotaExceeded.with_retry_after(zero);
++    assert!(!terminal.is_retryable());
++    assert_eq!(terminal.retry_delay(1), None);
++    assert_eq!(terminal.server_retry_delay(), Some(Duration::ZERO));
+ }
+ 
+ fn rate_limit_snapshot() -> RateLimitSnapshot {
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -1,6 +1,7 @@
+ //! Turn lifecycle inputs and scheduling phases for host-owned contributors.
+ 
+ use codex_protocol::config_types::CollaborationMode;
++use codex_protocol::error::CodexErr;
+ use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::TokenUsage;
+@@ -63,6 +64,9 @@
+     pub error: CodexErrorInfo,
+     /// Original error details, including backend metadata omitted from the public category.
+     pub error_details: &'a CodexErrorDetails,
++    /// Original native error, retaining retry classification and the server deadline.
++    /// Eligibility does not grant remaining attempts or permission to replay tool effects.
++    pub original_error: &'a CodexErr,
+     /// Store scoped to the host session runtime.
+     pub session_store: &'a ExtensionData,
+     /// Store scoped to this thread runtime.
+--- a/codex-rs/core/src/tasks/lifecycle.rs
++++ b/codex-rs/core/src/tasks/lifecycle.rs
+@@ -4,7 +4,7 @@
+ use codex_extension_api::ExtensionData;
+ use codex_extension_api::ThreadIdleCause;
+ use codex_extension_api::TurnStartPhase;
+-use codex_protocol::error::CodexErrorDetails;
++use codex_protocol::error::CodexErr;
+ use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::TokenUsage;
+ use codex_protocol::protocol::TurnAbortReason;
+@@ -104,14 +104,15 @@
+         &self,
+         turn_context: &TurnContext,
+         error: CodexErrorInfo,
+-        error_details: &CodexErrorDetails,
++        original_error: &CodexErr,
+     ) {
+         for contributor in self.services.extensions.turn_lifecycle_contributors() {
+             contributor
+                 .on_turn_error(codex_extension_api::TurnErrorInput {
+                     turn_id: turn_context.sub_id.as_str(),
+                     error: error.clone(),
+-                    error_details,
++                    error_details: original_error.details(),
++                    original_error,
+                     session_store: &self.services.session_extension_data,
+                     thread_store: &self.services.thread_extension_data,
+                     turn_store: turn_context.extension_data.as_ref(),
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -646,7 +646,7 @@
+                 self.emit_turn_error_lifecycle(
+                     turn_context.as_ref(),
+                     err.to_codex_protocol_error(),
+-                    err.details(),
++                    &err,
+                 )
+                 .await;
+                 self.track_turn_codex_error(turn_context.as_ref(), &err);
+--- a/codex-rs/core/src/tasks/compact.rs
++++ b/codex-rs/core/src/tasks/compact.rs
+@@ -98,7 +98,7 @@
+             if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
+                 // Compaction already emitted the error; notify extensions without emitting it twice.
+                 session
+-                    .emit_turn_error_lifecycle(ctx.as_ref(), error, err.details())
++                    .emit_turn_error_lifecycle(ctx.as_ref(), error, &err)
+                     .await;
+             }
+         }
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -205,7 +205,7 @@
+             return Err(err);
+         }
+         let error = err.to_codex_protocol_error();
+-        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), err.details())
++        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), &err)
+             .await;
+         // Publish the failure only after prompt hooks finish, so clients cannot react to
+         // an error by steering follow-up input into a turn still preserving its prompt.
+@@ -637,12 +637,8 @@
+                             return Err(err);
+                         }
+                         let error = err.to_codex_protocol_error();
+-                        sess.emit_turn_error_lifecycle(
+-                            turn_context.as_ref(),
+-                            error.clone(),
+-                            err.details(),
+-                        )
+-                        .await;
++                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), &err)
++                            .await;
+                         return Ok(None);
+                     }
+                     if run_pending_session_start_hooks(&sess, &turn_context).await {
+@@ -751,12 +747,8 @@
+                         let error = err.to_codex_protocol_error();
+                         if matches!(error, CodexErrorInfo::UsageLimitExceeded) {
+                             // Preserve the completed answer while stopping automatic work.
+-                            sess.emit_turn_error_lifecycle(
+-                                turn_context.as_ref(),
+-                                error,
+-                                err.details(),
+-                            )
+-                            .await;
++                            sess.emit_turn_error_lifecycle(turn_context.as_ref(), error, &err)
++                                .await;
+                         }
+                         warn!(error = %err, "Post-turn compaction failed; preserving the completed turn");
+                     }
+@@ -806,12 +798,8 @@
+             {
+                 sess.track_turn_codex_error(turn_context.as_ref(), &codex_error);
+                 let error = CodexErrorInfo::BadRequest;
+-                sess.emit_turn_error_lifecycle(
+-                    turn_context.as_ref(),
+-                    error.clone(),
+-                    codex_error.details(),
+-                )
+-                .await;
++                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), &codex_error)
++                    .await;
+                 let event = EventMsg::Error(ErrorEvent {
+                     misalignment: None,
+                     message: "Invalid image in your last message. Please remove it and try again."
+@@ -830,7 +818,7 @@
+                     sess.conversation.retire_handoffs_for_misalignment().await;
+                 }
+                 let error = e.to_codex_protocol_error();
+-                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), e.details())
++                sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), &e)
+                     .await;
+                 sess.track_turn_codex_error(turn_context.as_ref(), &e);
+                 let event = EventMsg::Error(e.to_error_event(/*message_prefix*/ None));
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -3729,8 +3729,9 @@
+     assert_eq!(vec![expected], actual);
+ }
+ 
+-#[tokio::test]
++#[tokio::test(start_paused = true)]
+ async fn turn_error_lifecycle_exposes_error_and_stores() {
++    use codex_protocol::error::CodexErr;
+     use codex_protocol::error::CodexErrKind;
+ 
+     struct SessionTurnErrorMarker;
+@@ -3744,6 +3745,8 @@
+         turn_id: String,
+         error: CodexErrorInfo,
+         error_kind: CodexErrKind,
++        retryable: bool,
++        retry_after: Option<codex_http_client::RetryAfter>,
+         saw_session_store: bool,
+         saw_thread_store: bool,
+     }
+@@ -3758,6 +3761,11 @@
+             input: codex_extension_api::TurnErrorInput<'a>,
+         ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+             Box::pin(async move {
++                assert!(std::ptr::eq(
++                    input.error_details,
++                    input.original_error.details()
++                ));
++                tokio::time::advance(std::time::Duration::from_secs(1)).await;
+                 self.records
+                     .lock()
+                     .expect("turn error records lock")
+@@ -3768,6 +3776,8 @@
+                         turn_id: input.turn_id.to_string(),
+                         error: input.error,
+                         error_kind: input.error_details.into(),
++                        retryable: input.original_error.is_retryable(),
++                        retry_after: input.original_error.retry_after(),
+                         saw_session_store: input
+                             .session_store
+                             .get::<SessionTurnErrorMarker>()
+@@ -3797,6 +3807,9 @@
+         .thread_extension_data
+         .insert(ThreadTurnErrorMarker);
+ 
++    let advice = codex_http_client::RetryAfter::from_delay(std::time::Duration::from_secs(2))
++        .expect("retry deadline");
++    let original = CodexErr::QuotaExceeded.with_retry_after(advice);
+     let expected = RecordedTurnError {
+         session_level_id: session.session_id().to_string(),
+         thread_level_id: session.thread_id.to_string(),
+@@ -3804,28 +3817,32 @@
+         turn_id: turn_context.sub_id.clone(),
+         error: CodexErrorInfo::UsageLimitExceeded,
+         error_kind: CodexErrKind::QuotaExceeded,
++        retryable: false,
++        retry_after: Some(advice),
+         saw_session_store: true,
+         saw_thread_store: true,
+     };
+ 
+     session
+-        .emit_turn_error_lifecycle(
+-            &turn_context,
+-            CodexErrorInfo::UsageLimitExceeded,
+-            &CodexErrorDetails::QuotaExceeded,
+-        )
++        .emit_turn_error_lifecycle(&turn_context, CodexErrorInfo::UsageLimitExceeded, &original)
+         .await;
+ 
++    assert_eq!(original.retry_after(), Some(advice));
++    assert_eq!(
++        original.server_retry_delay(),
++        Some(std::time::Duration::from_secs(1))
++    );
+     let expected_override = RecordedTurnError {
+         error: CodexErrorInfo::BadRequest,
+         error_kind: CodexErrKind::InvalidImageRequest,
++        retry_after: None,
+         ..expected.clone()
+     };
+     session
+         .emit_turn_error_lifecycle(
+             &turn_context,
+             CodexErrorInfo::BadRequest,
+-            &CodexErrorDetails::InvalidImageRequest(),
++            &CodexErr::InvalidImageRequest(),
+         )
+         .await;
+ 
+--- a/codex-rs/ext/goal/tests/goal_extension_backend.rs
++++ b/codex-rs/ext/goal/tests/goal_extension_backend.rs
+@@ -1932,6 +1932,7 @@
+                     turn_id,
+                     error: error.to_codex_protocol_error(),
+                     error_details: error.details(),
++                    original_error: &error,
+                     session_store: &self.session_store,
+                     thread_store: &self.thread_store,
+                     turn_store: &turn_store,

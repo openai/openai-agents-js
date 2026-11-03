@@ -6,7 +6,7 @@ import {
   ResponseStreamEvent,
 } from '@openai/agents-core';
 
-import { Agent, Runner } from '@openai/agents';
+import { Agent, Runner } from '@openai/agents/classic';
 
 class EchoModel implements Model {
   name: string;

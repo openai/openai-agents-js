@@ -1,4 +1,4 @@
-import { CallModelInputFilter, Runner } from '@openai/agents';
+import { CallModelInputFilter, Runner } from '@openai/agents/classic';
 
 const inspectedItems = new WeakSet<object>();
 

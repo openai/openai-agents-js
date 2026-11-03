@@ -1,4 +1,4 @@
-import type { GenerationUsageData } from '@openai/agents';
+import type { GenerationUsageData } from '@openai/agents/classic';
 
 function extractTokenCount(usage: any, key: string): number {
   const value = usage?.[key];

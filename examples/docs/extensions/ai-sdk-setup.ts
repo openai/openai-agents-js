@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 
 // Import the model package you installed
 import { openai } from '@ai-sdk/openai';

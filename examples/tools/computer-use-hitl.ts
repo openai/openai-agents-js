@@ -1,7 +1,13 @@
 import { chromium, Browser, Page } from 'playwright';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
-import { Agent, run, withTrace, computerTool, Computer } from '@openai/agents';
+import {
+  Agent,
+  run,
+  withTrace,
+  computerTool,
+  Computer,
+} from '@openai/agents/classic';
 
 const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
 const HEADLESS = process.env.COMPUTER_USE_HEADLESS !== '0';

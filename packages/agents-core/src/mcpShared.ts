@@ -1,3 +1,4 @@
+import { captureMcpObservers, type MCPToolObservers } from './mcp-observation';
 import debug from 'debug';
 import { z } from 'zod';
 import { getLogger, type Logger } from './logger';
@@ -39,6 +40,8 @@ export abstract class BaseMCPServerStdio implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public onToolStart?: MCPToolObservers['onToolStart'];
+  public onToolEnd?: MCPToolObservers['onToolEnd'];
   public toolMetaResolver?: MCPToolMetaResolver;
   public customDataExtractor?: MCPToolCustomDataExtractor;
   public toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
@@ -52,6 +55,9 @@ export abstract class BaseMCPServerStdio implements MCPServer {
       options.logger ?? getLogger(DEFAULT_STDIO_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    const observers = captureMcpObservers(options);
+    this.onToolStart = observers.onToolStart;
+    this.onToolEnd = observers.onToolEnd;
     this.toolMetaResolver = options.toolMetaResolver;
     this.customDataExtractor = options.customDataExtractor;
     this.toolInputGuardrails = options.toolInputGuardrails;
@@ -99,6 +105,8 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public onToolStart?: MCPToolObservers['onToolStart'];
+  public onToolEnd?: MCPToolObservers['onToolEnd'];
   public toolMetaResolver?: MCPToolMetaResolver;
   public customDataExtractor?: MCPToolCustomDataExtractor;
   public toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
@@ -113,6 +121,9 @@ export abstract class BaseMCPServerStreamableHttp implements MCPServer {
       getLogger(DEFAULT_STREAMABLE_HTTP_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    const observers = captureMcpObservers(options);
+    this.onToolStart = observers.onToolStart;
+    this.onToolEnd = observers.onToolEnd;
     this.toolMetaResolver = options.toolMetaResolver;
     this.customDataExtractor = options.customDataExtractor;
     this.toolInputGuardrails = options.toolInputGuardrails;
@@ -161,6 +172,8 @@ export abstract class BaseMCPServerSSE implements MCPServer {
   public cacheToolsList: boolean;
   protected _cachedTools: any[] | undefined = undefined;
   public toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
+  public onToolStart?: MCPToolObservers['onToolStart'];
+  public onToolEnd?: MCPToolObservers['onToolEnd'];
   public toolMetaResolver?: MCPToolMetaResolver;
   public customDataExtractor?: MCPToolCustomDataExtractor;
   public toolInputGuardrails?: ToolInputGuardrailDefinition<any>[];
@@ -174,6 +187,9 @@ export abstract class BaseMCPServerSSE implements MCPServer {
       options.logger ?? getLogger(DEFAULT_SSE_MCP_CLIENT_LOGGER_NAME);
     this.cacheToolsList = options.cacheToolsList ?? false;
     this.toolFilter = options.toolFilter;
+    const observers = captureMcpObservers(options);
+    this.onToolStart = observers.onToolStart;
+    this.onToolEnd = observers.onToolEnd;
     this.toolMetaResolver = options.toolMetaResolver;
     this.customDataExtractor = options.customDataExtractor;
     this.toolInputGuardrails = options.toolInputGuardrails;

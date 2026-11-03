@@ -5,7 +5,7 @@ import {
   toolNamespace,
   toolSearchTool,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 const customerIdParams = z.object({

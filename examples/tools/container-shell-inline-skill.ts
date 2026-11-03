@@ -11,7 +11,7 @@ import {
   shellTool,
   type ShellToolInlineSkill,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 const SKILL_BUNDLE_NAME = 'csv-workbench';
 const SKILL_DIR = path.join(

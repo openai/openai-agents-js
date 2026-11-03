@@ -13,7 +13,7 @@ import {
   defineToolOutputGuardrail,
   setTracingDisabled,
   tool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 import { createRunner, integrationModel } from '../helpers.mjs';

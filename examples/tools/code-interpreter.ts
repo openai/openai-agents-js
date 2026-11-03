@@ -4,7 +4,7 @@ import {
   isOpenAIResponsesRawModelStreamEvent,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 async function main() {
   const agent = new Agent({

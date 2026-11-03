@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import readline from 'node:readline/promises';
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, run, tool } from '@openai/agents/classic';
 
 const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
 

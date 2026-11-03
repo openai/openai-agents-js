@@ -1,5 +1,5 @@
-import { protocol } from '@openai/agents';
-import type { AgentInputItem, Session } from '@openai/agents';
+import { protocol } from '@openai/agents/classic';
+import type { AgentInputItem, Session } from '@openai/agents/classic';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -125,4 +125,4 @@ function coerceAgentItem(raw: unknown): AgentInputItem | undefined {
   return parsed.data as AgentInputItem;
 }
 
-export type { AgentInputItem } from '@openai/agents';
+export type { AgentInputItem } from '@openai/agents/classic';

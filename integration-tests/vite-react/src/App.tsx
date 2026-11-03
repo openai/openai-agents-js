@@ -5,7 +5,7 @@ import {
   run,
   setDefaultOpenAIClient,
   setTracingDisabled,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import OpenAI from 'openai';
 
 setTracingDisabled(true);

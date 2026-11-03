@@ -1,7 +1,7 @@
 import { addTraceProcessor } from './tracing';
 import { defaultProcessor } from './tracing/processor';
 
-export { RuntimeEventEmitter } from '@openai/agents-core/_shims';
+export { RuntimeEventEmitter } from '@openai/agents-core/_shims/runtime';
 export {
   Agent,
   AgentConfiguration,
@@ -110,7 +110,7 @@ export {
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
 } from './items';
-export { AgentHooks } from './lifecycle';
+export { AgentHooks, RunHooks } from './lifecycle';
 export type { AgentHookEvents, RunHookEvents } from './lifecycle';
 export { getLogger } from './logger';
 export { setSensitiveDataLoggingEnabled } from './config';
@@ -371,3 +371,9 @@ export * as protocol from './types/protocol';
  * 2. calling setTraceProcessors, which sets the processors and discards the default one
  */
 addTraceProcessor(defaultProcessor());
+
+export type {
+  MCPToolObservers,
+  MCPToolStartObservation,
+  MCPToolEndObservation,
+} from './mcp-observation';

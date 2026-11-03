@@ -15,6 +15,8 @@ import type {
   ResponseStreamEvent,
   SerializedOutputType,
   UsageInput,
+  Span,
+  GenerationSpanData,
 } from '@openai/agents-core';
 import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
@@ -26,8 +28,6 @@ import type {
   ResponseFormatJSONSchema,
   ResponseFormatJSONObject,
 } from 'openai/resources/shared';
-import { Span } from '@openai/agents-core/dist/tracing/spans';
-import { GenerationSpanData } from '@openai/agents-core/dist/tracing/spans';
 import { convertChatCompletionsStreamToResponses } from './openaiChatCompletionsStreaming';
 import {
   getCompatibleToolChoice,

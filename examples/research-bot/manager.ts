@@ -1,4 +1,4 @@
-import { withCustomSpan, withTrace } from '@openai/agents';
+import { withCustomSpan, withTrace } from '@openai/agents/classic';
 import {
   plannerAgent,
   webSearchPlan,
@@ -9,7 +9,7 @@ import {
   type WebSearchItem,
   type ReportData,
 } from './agents.ts';
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 
 export class ResearchManager {
   runner: Runner;

@@ -1,4 +1,4 @@
-import { Agent, RunContext, tool } from '@openai/agents';
+import { Agent, RunContext, tool } from '@openai/agents/classic';
 import { WeatherParameters, WeatherReport } from './schemas.ts';
 
 let executedInput: unknown;

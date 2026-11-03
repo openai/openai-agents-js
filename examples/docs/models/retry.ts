@@ -1,4 +1,4 @@
-import { Agent, Runner, retryPolicies } from '@openai/agents';
+import { Agent, Runner, retryPolicies } from '@openai/agents/classic';
 
 const sharedRetry = {
   maxRetries: 4,

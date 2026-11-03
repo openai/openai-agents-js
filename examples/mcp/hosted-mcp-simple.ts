@@ -1,4 +1,4 @@
-import { Agent, run, hostedMcpTool, withTrace } from '@openai/agents';
+import { Agent, run, hostedMcpTool, withTrace } from '@openai/agents/classic';
 
 async function main(verbose: boolean, stream: boolean): Promise<void> {
   await withTrace('Hosted MCP Example', async () => {

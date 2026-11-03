@@ -26,7 +26,7 @@ import {
   getLogger,
   ModelSettingsToolChoice,
   HostedTool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { snapshotRawUsage } from '@openai/agents-core/utils/internal';
 import { isZodObject } from '@openai/agents/utils';
 import { extractUsage, toTracingUsage } from './usage';

@@ -1,4 +1,4 @@
-import { Agent, run, fileSearchTool, withTrace } from '@openai/agents';
+import { Agent, run, fileSearchTool, withTrace } from '@openai/agents/classic';
 import OpenAI, { toFile } from 'openai';
 
 async function main() {

@@ -27,7 +27,7 @@ import {
   tool,
   withResponsesWebSocketSession,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 type OrderRecord = {

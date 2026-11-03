@@ -1,4 +1,4 @@
-import { run } from '@openai/agents';
+import { run } from '@openai/agents/classic';
 import {
   filesystem,
   Manifest,

@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import type { Agent } from '@openai/agents';
+import type { Agent } from '@openai/agents/classic';
 import type {
   ResponseStreamEvent,
   ResponseFunctionToolCall,

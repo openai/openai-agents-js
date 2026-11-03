@@ -3,8 +3,11 @@ import { once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { Interface } from 'node:readline';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Runner, type ShellAction } from '@openai/agents';
-import { ScriptedModel, assistantMessage } from '@openai/agents/testing';
+import { Runner, type ShellAction } from '@openai/agents/classic';
+import {
+  ScriptedModel,
+  assistantMessage,
+} from '@openai/agents/classic/testing';
 import { createShellAgent } from './local-shell';
 
 const mocks = vi.hoisted(() => ({

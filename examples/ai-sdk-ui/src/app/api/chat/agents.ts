@@ -1,4 +1,4 @@
-import { Agent, handoff, tool, webSearchTool } from '@openai/agents';
+import { Agent, handoff, tool, webSearchTool } from '@openai/agents/classic';
 import { z } from 'zod';
 
 export const getWeather = tool({

@@ -12,7 +12,7 @@ import {
   tool,
   withFunctionSpan,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { describe, afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 import { ScriptedModel, functionCall } from '@openai/agents-core/testing';

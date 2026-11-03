@@ -67,10 +67,11 @@ import {
   finalizeOutputGuardrails,
 } from './runner/guardrails';
 import {
-  adjustModelSettingsForLegacyModel,
+  prepareModelSettings,
   mergeModelSettings,
   maybeResetToolChoice,
   selectModel,
+  validateModelOverride,
 } from './runner/modelSettings';
 import {
   getResponseWithRetry,
@@ -208,7 +209,6 @@ import {
   shouldReconcileStreamAbort,
 } from './runner/streamReconciliation';
 import {
-  getImplicitModelSettingsForResolvedModel,
   validateToolExecutionConfig,
   validateToolNameCollisionPolicy,
   type ToolExecutionConfig,
@@ -315,11 +315,18 @@ export type ToolNotFoundBehavior = 'raise_error' | 'return_error_to_model';
  */
 export type RunConfig = {
   /**
-   * The model to use for the entire agent run. If set, will override the model set on every
-   * agent. String model names are resolved with the configured modelProvider, or the default
-   * model provider if no explicit provider is configured.
+   * The default model for agents without an explicit model. An agent's explicit model takes
+   * precedence. String model names are resolved with the configured modelProvider, or the
+   * default model provider if no explicit provider is configured.
    */
   model?: string | Model;
+
+  /**
+   * Explicitly selects the model for every Agent in this Runner, including handoff targets.
+   * Takes precedence over Agent models and the run's model default. String names use
+   * modelProvider. Model settings retain their existing, separate precedence.
+   */
+  modelOverride?: string | Model;
 
   /**
    * The model provider to use when looking up string model names. Defaults to OpenAI.
@@ -327,8 +334,8 @@ export type RunConfig = {
   modelProvider?: ModelProvider;
 
   /**
-   * Configure global model settings. Any non-null values will override the agent-specific model
-   * settings.
+   * Default model settings for the run. These override implicit model defaults; explicitly
+   * configured agent settings take precedence over these values.
    */
   modelSettings?: ModelSettings;
 
@@ -641,9 +648,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
    */
   constructor(config: Partial<RunConfig> = {}) {
     super();
+    const modelOverride = validateModelOverride(config.modelOverride);
     this.config = {
       modelProvider: config.modelProvider ?? new LazyDefaultModelProvider(),
       model: config.model,
+      ...(modelOverride !== undefined ? { modelOverride } : {}),
       modelSettings: config.modelSettings,
       handoffInputFilter: config.handoffInputFilter,
       inputGuardrails: config.inputGuardrails,
@@ -1161,11 +1170,16 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     resolvedModelName?: string;
   }> {
     const explicitlyModelSet =
+      this.config.modelOverride !== undefined ||
       (agent.model !== undefined &&
         agent.model !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
       (this.config.model !== undefined &&
         this.config.model !== Agent.DEFAULT_MODEL_PLACEHOLDER);
-    const selectedModel = selectModel(agent.model, this.config.model);
+    const selectedModel = selectModel(
+      agent.model,
+      this.config.model,
+      this.config.modelOverride,
+    );
     const resolvedModelName =
       typeof selectedModel === 'string' ? selectedModel : undefined;
     const resolvedModel =
@@ -1680,6 +1694,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
+              runConfigModelOverride: this.config.modelOverride,
               toolNameCollisionPolicy: options.toolNameCollisionPolicy,
               tracingParent:
                 getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
@@ -1876,6 +1891,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
                 state._currentAgent,
               ),
+              runConfigModelOverride: this.config.modelOverride,
               tracingParent: currentTurnSpan?.span ?? state._currentAgentSpan,
             });
             sessionTurnInputUpdate?.(
@@ -2754,6 +2770,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
               result.state._currentAgent,
             ),
+            runConfigModelOverride: this.config.modelOverride,
             toolNameCollisionPolicy: options.toolNameCollisionPolicy,
             tracingParent:
               getRunStateTurnSpanParent(result.state) ??
@@ -2937,6 +2954,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             runConfigModel: await this.#resolveSandboxRuntimeModelForAgent(
               result.state._currentAgent,
             ),
+            runConfigModelOverride: this.config.modelOverride,
             tracingParent:
               currentTurnSpan?.span ?? result.state._currentAgentSpan,
           });
@@ -3742,29 +3760,21 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     const { model, explicitlyModelSet, resolvedModelName } =
       await this.#resolveModelForAgent(executionAgent);
 
-    const hasExplicitAgentModelSettings =
-      executionAgent.hasExplicitModelSettings();
-    // Store is caller-owned even when reasoning/text settings are implicit defaults.
-    const agentModelSettings = hasExplicitAgentModelSettings
-      ? executionAgent.modelSettings
-      : Object.prototype.hasOwnProperty.call(
-            executionAgent.modelSettings,
-            'store',
-          )
-        ? { store: executionAgent.modelSettings.store }
-        : undefined;
-    // Only adapters that honor prompt model selection can replace the default model.
     const promptOwnsModel =
       model.supportsPromptModelSelection === true &&
       executionAgent.prompt !== undefined &&
       !explicitlyModelSet;
-    const implicitModelSettings =
-      hasExplicitAgentModelSettings || promptOwnsModel
-        ? undefined
-        : getImplicitModelSettingsForResolvedModel(
-            explicitlyModelSet,
-            resolvedModelName,
-          );
+    const {
+      modelSettings: preparedSettings,
+      agentModelSettings,
+      implicitModelSettings,
+    } = prepareModelSettings(
+      executionAgent,
+      this.config.modelSettings,
+      explicitlyModelSet,
+      resolvedModelName,
+      promptOwnsModel,
+    );
     const modelRequestInternal = {
       reasoningEffortImplicit:
         implicitModelSettings?.reasoning?.effort !== undefined &&
@@ -3775,17 +3785,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       toolNameCollisionPolicy: options.toolNameCollisionPolicy ?? 'warn',
     };
 
-    let modelSettings = mergeModelSettings(
-      implicitModelSettings,
-      this.config.modelSettings,
-    );
-    modelSettings = mergeModelSettings(modelSettings, agentModelSettings);
-    modelSettings = adjustModelSettingsForLegacyModel(
-      explicitlyModelSet,
-      agentModelSettings ?? implicitModelSettings ?? {},
-      modelSettings,
-      resolvedModelName,
-    );
+    let modelSettings = preparedSettings;
     modelSettings = maybeResetToolChoice(
       state._currentAgent,
       state._toolUseTracker,

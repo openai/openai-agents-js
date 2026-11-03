@@ -10,7 +10,7 @@ import {
   type ModelRequest,
   type ModelResponse,
 } from '@openai/agents-core';
-import { OpenAITracingExporter } from '@openai/agents';
+import { OpenAITracingExporter } from '@openai/agents/classic';
 import { AiSdkModel } from '../../src/ai-sdk';
 import { stubModel } from './fixtures';
 

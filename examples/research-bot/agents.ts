@@ -1,4 +1,4 @@
-import { Agent, webSearchTool } from '@openai/agents';
+import { Agent, webSearchTool } from '@openai/agents/classic';
 import { z } from 'zod';
 
 // ---- Planner Agent ----

@@ -1,6 +1,9 @@
 'use client';
 
-import type { AgentInputItem, RunToolApprovalItem } from '@openai/agents';
+import type {
+  AgentInputItem,
+  RunToolApprovalItem,
+} from '@openai/agents/classic';
 import { useState } from 'react';
 import { App } from '@/components/App';
 import { Approvals } from '@/components/Approvals';

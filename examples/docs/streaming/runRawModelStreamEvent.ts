@@ -2,7 +2,7 @@ import {
   isOpenAIChatCompletionsRawModelStreamEvent,
   isOpenAIResponsesRawModelStreamEvent,
   type RunStreamEvent,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 export function logOpenAIRawModelEvent(event: RunStreamEvent) {
   if (isOpenAIResponsesRawModelStreamEvent(event)) {

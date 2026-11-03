@@ -1,7 +1,7 @@
 import type {
   RunAgentUpdatedStreamEvent,
   RunStreamEvent,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 export function isRunAgentUpdatedStreamEvent(
   event: RunStreamEvent,

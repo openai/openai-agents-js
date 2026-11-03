@@ -1,4 +1,4 @@
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, run, tool } from '@openai/agents/classic';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 import { z } from 'zod';
 import { openai } from '@ai-sdk/openai';

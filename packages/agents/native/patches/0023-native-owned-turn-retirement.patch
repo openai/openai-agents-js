@@ -1,0 +1,801 @@
+diff --git a/codex-rs/core-api/src/lib.rs b/codex-rs/core-api/src/lib.rs
+index 3e0392f2ed56bb978c333f05a532ad2be1d26022..4e541dbe436d46b6c140e67abc7886259d8863ba 100644
+--- a/codex-rs/core-api/src/lib.rs
++++ b/codex-rs/core-api/src/lib.rs
+@@ -45,6 +45,8 @@ pub use codex_core::NetworkUnixSocketPermission;
+ pub use codex_core::NetworkUnixSocketPermissions;
+ pub use codex_core::NewThread;
+ pub use codex_core::NotSubmittedReason;
++pub use codex_core::OwnedTurnStop;
++pub use codex_core::OwnedTurnTask;
+ pub use codex_core::RecoverTurnRequest;
+ pub use codex_core::StartIfIdleSubmission;
+ pub use codex_core::StartThreadOptions;
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index e60b6eb6d6d80fad43b48545e398506598dfb91d..14b6caf55a4453bd39c8549406e50025638ddb3e 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -49,6 +49,8 @@ pub use codex_protocol::mcp_policy::EnvironmentMcpPolicy;
+ pub use codex_protocol::protocol::EnvironmentConfig;
+ pub use codex_thread::BackgroundTerminalInfo;
+ pub use codex_thread::CodexThread;
++pub use session::owned_turn_stop::OwnedTurnStop;
++pub use session::owned_turn_stop::OwnedTurnTask;
+ mod owned_question;
+ pub use codex_thread::CodexThreadSettingsOverrides;
+ pub use codex_thread::ConfigRefreshOutcome;
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 964d0dd2dd1bc0352679aa8f472a9761ea34d36f..3d20d44ad0b106dfa86d355e4b1bd2c313e7c7d9 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -237,6 +237,7 @@ pub(crate) mod context_window;
+ mod daemon_recovery;
+ mod environment;
+ mod extension_interruption;
++pub(crate) mod owned_turn_stop;
+ pub(crate) mod extension_metrics;
+ mod guardian_checkpoint;
+ mod handlers;
+diff --git a/codex-rs/core/src/session/owned_turn_stop.rs b/codex-rs/core/src/session/owned_turn_stop.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..985f78214e406e331df2a08ff3499ffa60dba30f
+--- /dev/null
++++ b/codex-rs/core/src/session/owned_turn_stop.rs
+@@ -0,0 +1,247 @@
++//! Host-owned retirement of one captured task, without borrowing a later task.
++use std::future::Future;
++use std::panic::AssertUnwindSafe;
++use std::pin::Pin;
++use std::sync::Arc;
++use std::sync::OnceLock;
++use std::task::Context;
++use std::task::Poll;
++
++use futures::FutureExt;
++use futures::future::BoxFuture;
++use futures::future::Shared;
++use tokio::sync::Mutex;
++use tokio::task::AbortHandle;
++use tokio::task::JoinError;
++use tokio::task::JoinHandle;
++use tokio_util::sync::CancellationToken;
++
++use crate::codex_thread::CodexThread;
++use crate::session::session::Session;
++use codex_protocol::error::CodexErr;
++use codex_protocol::error::Result as CodexResult;
++
++/// Serializes task registration with owned retirement. Task execution does not
++/// hold this gate; ordinary completion can finish while retirement joins it.
++#[derive(Default)]
++pub(crate) struct TaskAdmission(pub(crate) Arc<Mutex<()>>);
++
++type JoinedTask = Shared<BoxFuture<'static, Result<(), Arc<JoinError>>>>;
++
++/// Opaque identity and completion of a single Core task. Hosts capture this
++/// from the original turn's extension store; IDs alone confer no stop authority.
++#[derive(Default)]
++pub struct OwnedTurnTask {
++    identity: OnceLock<(String, String)>,
++    task: OnceLock<TaskJoin>,
++    pub(crate) recording: Mutex<()>,
++    stopping: CancellationToken,
++}
++
++impl OwnedTurnTask {
++    pub(crate) fn new(thread_id: String, turn_id: String) -> Self {
++        let value = Self::default();
++        let _ = value.identity.set((thread_id, turn_id));
++        value
++    }
++
++    /// Fence this captured task's next model request after an admitted stop.
++    /// The host must then call `stop_owned_turn` outside its callback scope.
++    pub fn request_stop(&self) {
++        self.stopping.cancel();
++    }
++
++    pub(crate) fn stopping(&self) -> bool {
++        self.stopping.is_cancelled()
++    }
++
++    /// Probe the captured owner at logical client request admission, after
++    /// caller preparation. A stop observed by this probe prevents polling.
++    /// A request admitted before a concurrent stop may still be polled/sent;
++    /// retirement joins that original task and its cleanup.
++    pub(crate) async fn admit_model<F>(&self, request: F) -> CodexResult<F::Output>
++    where
++        F: Future + Send,
++        F::Output: Send,
++    {
++        tokio::select! {
++            biased;
++            _ = self.stopping.cancelled() => Err(CodexErr::TurnAborted),
++            result = request => Ok(result),
++        }
++    }
++
++    /// Join this original physical task after confirmed cancellation or normal
++    /// terminal delivery. This does not request interruption and must not be
++    /// awaited by the captured task's own callback.
++    pub async fn join(&self) -> CodexResult<()> {
++        let task = self
++            .task
++            .get()
++            .ok_or_else(|| CodexErr::Fatal("Owned turn task was not registered".to_owned()))?;
++        match task.clone().await {
++            Ok(()) => Ok(()),
++            Err(error) if error.is_cancelled() => Ok(()),
++            Err(_) => Err(CodexErr::Fatal(
++                "Owned turn task failed while joining".to_owned(),
++            )),
++        }
++    }
++}
++
++/// Retirement continues even if its host drops this receipt. Joining it proves
++/// task completion, input recording and abort cleanup, not only cancellation.
++pub struct OwnedTurnStop {
++    retirement: JoinHandle<CodexResult<()>>,
++}
++
++impl OwnedTurnStop {
++    pub async fn join(self) -> CodexResult<()> {
++        self.retirement
++            .await
++            .map_err(|_| CodexErr::Fatal("Owned turn retirement task failed".to_owned()))?
++    }
++}
++
++impl CodexThread {
++    /// Seal and retire the captured task. This must be called outside that
++    /// task's callbacks: awaiting one's own retirement would join oneself.
++    /// Pending steering is recorded under the original context. An input hook
++    /// already running must settle before cancellation can preserve its batch.
++    pub async fn stop_owned_turn(
++        &self,
++        expected: &Arc<OwnedTurnTask>,
++    ) -> CodexResult<OwnedTurnStop> {
++        self.session.stop_owned_turn(expected).await
++    }
++}
++
++impl Session {
++    pub(crate) async fn stop_owned_turn(
++        self: &Arc<Self>,
++        expected: &Arc<OwnedTurnTask>,
++    ) -> CodexResult<OwnedTurnStop> {
++        let Some((thread_id, turn_id)) = expected.identity.get() else {
++            return Err(CodexErr::Fatal("Unregistered owned turn task".to_owned()));
++        };
++        if thread_id != &self.thread_id.to_string() {
++            return Err(CodexErr::Fatal(
++                "Owned turn belongs to another thread".to_owned(),
++            ));
++        }
++        expected.request_stop();
++        let admission = self
++            .services
++            .thread_extension_data
++            .get_or_init(TaskAdmission::default);
++        let admission = admission.0.clone().lock_owned().await;
++        let captured = {
++            let mut active = self.active_turn.lock().await;
++            active.as_mut().and_then(|turn| {
++                let task = turn.task.as_ref()?;
++                if task.turn_context.sub_id != *turn_id
++                    || !Arc::ptr_eq(task.handle.owner(), expected)
++                {
++                    return None;
++                }
++                expected.request_stop();
++                // Leave the original frame in place. New starts cannot enter
++                // while this task's history and cleanup are still being joined.
++                Some((
++                    turn.task.take().expect("matched task"),
++                    turn.turn_state.clone(),
++                ))
++            })
++        };
++        let session = self.clone();
++        let owner = expected.clone();
++        let retirement = if let Some((task, state)) = captured {
++            tokio::spawn(async move {
++                let result = AssertUnwindSafe(session.finish_owned_turn(task, state, &owner))
++                    .catch_unwind()
++                    .await;
++                // Even a recording/cleanup panic must not release successor
++                // admission until abort-on-drop has physically joined the task.
++                let joined = owner.join().await;
++                drop(admission);
++                match result {
++                    Ok(result) => result.and(joined),
++                    Err(_) => Err(CodexErr::Fatal("Owned turn retirement failed".to_owned())),
++                }
++            })
++        } else {
++            // Normal completion queues follow-up admission outside its task,
++            // after physical completion. Keep successors fenced while joining
++            // even when on_task_finished already detached the original handle.
++            tokio::spawn(async move {
++                let result = owner.join().await;
++                drop(admission);
++                result
++            })
++        };
++        Ok(OwnedTurnStop { retirement })
++    }
++}
++
++#[derive(Clone)]
++pub(crate) struct TaskJoin {
++    abort: AbortHandle,
++    joined: JoinedTask,
++}
++
++impl TaskJoin {
++    pub(crate) fn abort(&self) {
++        self.abort.abort();
++    }
++}
++
++impl Future for TaskJoin {
++    type Output = Result<(), Arc<JoinError>>;
++
++    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
++        Pin::new(&mut self.joined).poll(cx)
++    }
++}
++
++/// Preserve the existing abort-on-drop contract while retaining a shareable
++/// *actual JoinHandle* future, including after normal completion detaches it.
++pub(crate) struct TaskHandle {
++    owner: Arc<OwnedTurnTask>,
++    abort_on_drop: bool,
++}
++
++impl TaskHandle {
++    pub(crate) fn new(handle: JoinHandle<()>, owner: Arc<OwnedTurnTask>) -> Self {
++        let abort = handle.abort_handle();
++        let joined = handle
++            .map(|result| result.map_err(Arc::new))
++            .boxed()
++            .shared();
++        assert!(owner.task.set(TaskJoin { abort, joined }).is_ok());
++        Self {
++            owner,
++            abort_on_drop: true,
++        }
++    }
++
++    pub(crate) fn owner(&self) -> &Arc<OwnedTurnTask> {
++        &self.owner
++    }
++
++    pub(crate) fn abort(&self) {
++        self.owner.task.get().expect("registered task").abort();
++    }
++
++    pub(crate) fn detach(mut self) -> TaskJoin {
++        self.abort_on_drop = false;
++        self.owner.task.get().expect("registered task").clone()
++    }
++}
++
++impl Drop for TaskHandle {
++    fn drop(&mut self) {
++        if self.abort_on_drop {
++            self.abort();
++        }
++    }
++}
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 8ab6616c4519d660a8590f89a8fe1de70def8c11..0013a15d3244970ac2a6c063a0d63c1f08e3c801 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -428,6 +428,10 @@ pub(crate) async fn run_turn(
+         // Note that pending_input would be something like a message the user
+         // submitted through the UI while the model was running. Though the UI
+         // may support this, the model might not.
++        let input_owner = turn_context
++            .extension_data
++            .get_or_init(super::owned_turn_stop::OwnedTurnTask::default);
++        let recording = input_owner.recording.lock().await;
+         let pending_input = if can_drain_pending_input {
+             sess.input_queue
+                 .get_pending_input(&sess.active_turn)
+@@ -451,6 +455,10 @@ pub(crate) async fn run_turn(
+ 
+         // Input and turn-start injections are recorded before recovery can continue this turn.
+         turn_context.extension_data.insert(RecordedTurnInput);
++        drop(recording);
++        if input_owner.stopping() {
++            return Err(CodexErr::TurnAborted);
++        }
+         let window_id = sess.current_window_id().await;
+         super::rollout_budget::maybe_record_reminder(
+             sess.as_ref(),
+@@ -2561,7 +2569,7 @@ async fn try_run_sampling_request(
+     let effort = sess
+         .reasoning_effort_for_request(&step_context.settings, super::RequestEffortUsage::Sampling)
+         .await;
+-    let mut stream = client_session
++    let request = client_session
+         .stream(
+             prompt,
+             &step_context.settings.model_info,
+@@ -2572,9 +2580,12 @@ async fn try_run_sampling_request(
+             responses_metadata,
+             &inference_trace,
+         )
+-        .instrument(trace_span!("stream_request"))
++        .instrument(trace_span!("stream_request"));
++    let input_owner = turn_store.get_or_init(super::owned_turn_stop::OwnedTurnTask::default);
++    let mut stream = input_owner
++        .admit_model(request)
+         .or_cancel(&cancellation_token)
+-        .await??;
++        .await???;
+     if cancellation_token.is_cancelled() {
+         return Err(CodexErr::TurnAborted);
+     }
+diff --git a/codex-rs/core/src/state/turn.rs b/codex-rs/core/src/state/turn.rs
+index d2dd42b0237f24b7c0acfc8f90a9635aed1faf19..a3077d130c5e1bcc17efecf78a164be1a58c31f3 100644
+--- a/codex-rs/core/src/state/turn.rs
++++ b/codex-rs/core/src/state/turn.rs
+@@ -1,11 +1,11 @@
+ //! Turn-scoped state, input waiters, and active turn metadata.
+ 
++use crate::session::owned_turn_stop::TaskHandle;
+ use std::collections::HashMap;
+ use std::sync::Arc;
+ use tokio::sync::Mutex;
+ use tokio::sync::Notify;
+ use tokio_util::sync::CancellationToken;
+-use tokio_util::task::AbortOnDropHandle;
+ 
+ use codex_diagnostics::GaugeGuard;
+ use codex_protocol::dynamic_tools::DynamicToolResponse;
+@@ -74,7 +74,7 @@ pub(crate) struct RunningTask {
+     pub(crate) kind: TaskKind,
+     pub(crate) task: Arc<dyn AnySessionTask>,
+     pub(crate) cancellation_token: CancellationToken,
+-    pub(crate) handle: AbortOnDropHandle<()>,
++    pub(crate) handle: TaskHandle,
+     pub(crate) turn_context: Arc<TurnContext>,
+     pub(crate) _agent_execution_guard: Option<AgentExecutionGuard>,
+     pub(crate) _diagnostics_guard: GaugeGuard,
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 0e8f8417f89daaed238eb6f1f79b7f0c5d06ae41..c2575979c395d88ee9105694a4dced32c09d0f4f 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -8,6 +8,9 @@ use std::sync::Arc;
+ use std::time::Duration;
+ use std::time::Instant;
+ 
++use crate::session::owned_turn_stop::OwnedTurnTask;
++use crate::session::owned_turn_stop::TaskAdmission;
++use crate::session::owned_turn_stop::TaskHandle;
+ use codex_diagnostics::Gauge;
+ use codex_extension_api::ThreadIdleCause;
+ use futures::future::BoxFuture;
+@@ -15,7 +18,6 @@ use tokio::select;
+ use tokio::sync::Mutex;
+ use tokio::sync::Notify;
+ use tokio_util::sync::CancellationToken;
+-use tokio_util::task::AbortOnDropHandle;
+ use tracing::Instrument;
+ use tracing::Span;
+ use tracing::field;
+@@ -290,6 +292,13 @@ impl Session {
+         input: Vec<TurnInput>,
+         task: T,
+     ) {
++        // Stop retirement holds this gate through input recording and physical
++        // task cleanup. Never enter a successor while those are still pending.
++        let admission = self
++            .services
++            .thread_extension_data
++            .get_or_init(TaskAdmission::default);
++        let _admission = admission.0.lock().await;
+         self.activate_plugin_selection(&turn_context).await;
+         // Inherited or recovered roots are applied before task start. Otherwise this
+         // task owns its turn, including background work. Later mail cannot change it.
+@@ -324,6 +333,14 @@ impl Session {
+         self.input_queue
+             .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
+             .await;
++        turn_context.extension_data.insert(OwnedTurnTask::new(
++            self.thread_id.to_string(),
++            turn_context.sub_id.clone(),
++        ));
++        let owned_task = turn_context
++            .extension_data
++            .get::<OwnedTurnTask>()
++            .expect("registered owned task");
+         self.emit_turn_start_lifecycle(
+             turn_context.as_ref(),
+             Some(&token_usage_at_turn_start),
+@@ -411,7 +428,7 @@ impl Session {
+             .ok();
+         let running_task = RunningTask {
+             done,
+-            handle: AbortOnDropHandle::new(handle),
++            handle: TaskHandle::new(handle, owned_task),
+             kind: task_kind,
+             task,
+             cancellation_token,
+@@ -549,6 +566,7 @@ impl Session {
+                     reason.clone(),
+                     &active_turn.turn_state,
+                     /*error*/ None,
++                    None,
+                 )
+                 .await;
+             }
+@@ -607,7 +625,7 @@ impl Session {
+     ) {
+         let task = active_turn.task.take();
+         if let Some(task) = task {
+-            self.handle_task_abort(task, reason.clone(), &active_turn.turn_state, error)
++            self.handle_task_abort(task, reason.clone(), &active_turn.turn_state, error, None)
+                 .await;
+         }
+         // Let interrupted tasks observe cancellation before dropping pending approvals, or an
+@@ -619,6 +637,76 @@ impl Session {
+         }
+     }
+ 
++    pub(crate) async fn finish_owned_turn(
++        self: &Arc<Self>,
++        task: RunningTask,
++        state: Arc<Mutex<TurnState>>,
++        owner: &Arc<OwnedTurnTask>,
++    ) -> CodexResult<()> {
++        let context = task.turn_context.clone();
++        let mut errors = Vec::new();
++        // No active_turn lock is held. An already-drained batch finishes once
++        // under its original context before we drain the remaining accepted input.
++        {
++            let recording = owner.recording.lock().await;
++            let pending = self
++                .input_queue
++                .take_pending_input_for_turn_state(&state)
++                .await;
++            run_hooks_and_record_inputs(
++                self,
++                &context,
++                &context.capture_current_model_info(),
++                &pending,
++                PersistContext::Standard,
++            )
++            .await;
++            if let Err(error) = self
++                .try_ensure_rollout_materialized(PersistContext::Standard)
++                .await
++            {
++                errors.push(error.to_string());
++            }
++            if let Err(error) = self.flush_rollout().await {
++                errors.push(error.to_string());
++            }
++            drop(recording);
++        }
++        // Neither task cleanup nor the physical join borrows the recording
++        // guard. The original task can therefore finish its own recording path.
++        self.handle_task_abort(
++            task,
++            TurnAbortReason::Interrupted,
++            &state,
++            None,
++            Some(&mut errors),
++        )
++        .await;
++        if let Err(error) = owner.join().await {
++            errors.push(error.to_string());
++        }
++        if let Err(error) = self.flush_rollout().await {
++            errors.push(error.to_string());
++        }
++        {
++            let mut active = self.active_turn.lock().await;
++            if active
++                .as_ref()
++                .is_some_and(|turn| turn.task.is_none() && Arc::ptr_eq(&turn.turn_state, &state))
++            {
++                *active = None;
++            }
++        }
++        if errors.is_empty() {
++            Ok(())
++        } else {
++            Err(codex_protocol::error::CodexErr::Fatal(format!(
++                "Owned turn cleanup failed: {}",
++                errors.join("; ")
++            )))
++        }
++    }
++
+     pub async fn on_task_finished(
+         self: &Arc<Self>,
+         turn_context: Arc<TurnContext>,
+@@ -662,11 +750,15 @@ impl Session {
+             .turn_metadata_state
+             .cancel_git_enrichment_task();
+ 
++        let input_owner = turn_context
++            .extension_data
++            .get_or_init(OwnedTurnTask::default);
++        let recording = input_owner.recording.lock().await;
+         let turn_state = {
+             let mut active = self.active_turn.lock().await;
+             active.as_mut().and_then(|active_turn| {
+                 let task = active_turn.task.take()?;
+-                task.handle.detach();
++                drop(task.handle.detach());
+                 Some(Arc::clone(&active_turn.turn_state))
+             })
+         };
+@@ -699,6 +791,7 @@ impl Session {
+             PersistContext::Standard,
+         )
+         .await;
++        drop(recording);
+         let turn_telemetry = &turn_context.session_telemetry;
+         // Emit token usage metrics.
+         {
+@@ -887,7 +980,14 @@ impl Session {
+             warn!("failed to flush rollout after emitting terminal turn event: {err}");
+         }
+         if cleared_active_turn {
+-            self.maybe_start_turn_for_pending_work().await;
++            let session = self.clone();
++            // Registration cannot be part of the task being physically joined:
++            // owned retirement holds TaskAdmission until that task has finished.
++            tokio::spawn(async move {
++                if input_owner.join().await.is_ok() && !input_owner.stopping() {
++                    session.maybe_start_turn_for_pending_work().await;
++                }
++            });
+         }
+     }
+ 
+@@ -929,11 +1029,15 @@ impl Session {
+         reason: TurnAbortReason,
+         turn_state: &Mutex<TurnState>,
+         error: Option<ErrorEvent>,
++        mut cleanup_errors: Option<&mut Vec<String>>,
+     ) {
+         let sub_id = task.turn_context.sub_id.clone();
+         if task.cancellation_token.is_cancelled() {
+             if let Err(cleanup_error) = self.end_owned_sdk_stdio(&task.turn_context).await {
+                 warn!("Child stdio cleanup failed while aborting: {cleanup_error}");
++                if let Some(errors) = cleanup_errors.as_deref_mut() {
++                    errors.push(cleanup_error.to_string());
++                }
+             }
+             self.emit_turn_abort_lifecycle(reason, task.turn_context.extension_data.as_ref())
+                 .await;
+@@ -970,6 +1074,9 @@ impl Session {
+         task.handle.abort();
+         if let Err(cleanup_error) = self.end_owned_sdk_stdio(&task.turn_context).await {
+             warn!("Child stdio cleanup failed while aborting: {cleanup_error}");
++            if let Some(errors) = cleanup_errors.as_deref_mut() {
++                errors.push(cleanup_error.to_string());
++            }
+         }
+ 
+         session_task
+@@ -994,6 +1101,9 @@ impl Session {
+             // synchronously re-read the rollout on receipt of the abort event.
+             if let Err(err) = self.flush_rollout().await {
+                 warn!("failed to flush interrupted-turn marker before emitting TurnAborted: {err}");
++                if let Some(errors) = cleanup_errors.as_deref_mut() {
++                    errors.push(err.to_string());
++                }
+             }
+         }
+ 
+@@ -1032,6 +1142,9 @@ impl Session {
+         // thread writers may not flush it without another explicit barrier.
+         if let Err(err) = self.flush_rollout().await {
+             warn!("failed to flush rollout after emitting terminal turn event: {err}");
++            if let Some(errors) = cleanup_errors.as_deref_mut() {
++                errors.push(err.to_string());
++            }
+         }
+     }
+ }
+diff --git a/codex-rs/core/src/tasks/mod_tests.rs b/codex-rs/core/src/tasks/mod_tests.rs
+index 94c2373519e906c000525bd705d44e36230f5966..ddf363da88e5cad176b6e0f278ca94c5c5271932 100644
+--- a/codex-rs/core/src/tasks/mod_tests.rs
++++ b/codex-rs/core/src/tasks/mod_tests.rs
+@@ -479,3 +479,6 @@ fn emit_compact_metric_records_auto_local() {
+         ])
+     );
+ }
++
++#[path = "owned_turn_stop_tests.rs"]
++mod owned_turn_stop;
+diff --git a/codex-rs/core/src/tasks/owned_turn_stop_tests.rs b/codex-rs/core/src/tasks/owned_turn_stop_tests.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e22651549da4fa06f9b92752f2b16e49a86937ce
+--- /dev/null
++++ b/codex-rs/core/src/tasks/owned_turn_stop_tests.rs
+@@ -0,0 +1,176 @@
++use std::sync::Arc;
++use std::sync::atomic::AtomicBool;
++use std::sync::atomic::AtomicUsize;
++use std::sync::atomic::Ordering;
++use std::time::Duration;
++
++use tokio::sync::Notify;
++use tokio_util::sync::CancellationToken;
++
++use crate::session::owned_turn_stop::OwnedTurnTask;
++use crate::session::session::Session;
++use crate::session::tests::make_session_and_context_with_rx;
++use crate::session::turn_context::TurnContext;
++use crate::state::TaskKind;
++use crate::tasks::SessionTask;
++use crate::tasks::SessionTaskResult;
++
++struct Dropped(Arc<AtomicBool>);
++impl Drop for Dropped {
++    fn drop(&mut self) {
++        self.0.store(true, Ordering::Release);
++    }
++}
++
++struct FinishingTask {
++    entered: Arc<Notify>,
++    release: Arc<Notify>,
++    dropped: Arc<AtomicBool>,
++}
++impl SessionTask for FinishingTask {
++    fn kind(&self) -> TaskKind {
++        TaskKind::Regular
++    }
++    fn span_name(&self) -> &'static str {
++        "session_task.owned_retirement_test"
++    }
++    async fn run(
++        self: Arc<Self>,
++        _session: Arc<Session>,
++        _context: Arc<TurnContext>,
++        _input: Vec<crate::session::TurnInput>,
++        _cancelled: CancellationToken,
++    ) -> SessionTaskResult {
++        let _dropped = Dropped(self.dropped.clone());
++        self.entered.notify_one();
++        self.release.notified().await;
++        Ok(None)
++    }
++}
++
++#[tokio::test]
++async fn detached_finishing_task_keeps_successor_out_until_physical_join() {
++    let (session, context, _events) = make_session_and_context_with_rx().await;
++    let entered = Arc::new(Notify::new());
++    let release = Arc::new(Notify::new());
++    let dropped = Arc::new(AtomicBool::new(false));
++    session
++        .spawn_task(
++            context.clone(),
++            Vec::new(),
++            FinishingTask {
++                entered: entered.clone(),
++                release: release.clone(),
++                dropped: dropped.clone(),
++            },
++        )
++        .await;
++    entered.notified().await;
++    let original = context.extension_data.get::<OwnedTurnTask>().unwrap();
++    // Reproduce normal completion's taken/detached-handle window while the
++    // original task is still physically running, rather than merely idle.
++    {
++        let mut active = session.active_turn.lock().await;
++        let task = active.as_mut().unwrap().task.take().unwrap();
++        drop(task.handle.detach());
++    }
++    let retirement = session.stop_owned_turn(&original).await.unwrap();
++    let successor_entered = Arc::new(Notify::new());
++    let successor_release = Arc::new(Notify::new());
++    let successor_context = session
++        .new_turn_with_default_settings("successor".to_owned(), Default::default())
++        .await;
++    let successor_receipt_context = successor_context.clone();
++    let attempted = Arc::new(Notify::new());
++    let successor = tokio::spawn({
++        let session = session.clone();
++        let entered = successor_entered.clone();
++        let release = successor_release.clone();
++        let attempted = attempted.clone();
++        async move {
++            attempted.notify_one();
++            session
++                .spawn_task(
++                    successor_context,
++                    Vec::new(),
++                    FinishingTask {
++                        entered,
++                        release,
++                        dropped: Arc::new(AtomicBool::new(false)),
++                    },
++                )
++                .await;
++        }
++    });
++    attempted.notified().await;
++    assert!(
++        tokio::time::timeout(Duration::from_millis(20), successor_entered.notified())
++            .await
++            .is_err()
++    );
++    assert!(!dropped.load(Ordering::Acquire));
++    release.notify_one();
++    tokio::time::timeout(Duration::from_secs(2), retirement.join())
++        .await
++        .unwrap()
++        .unwrap();
++    assert!(dropped.load(Ordering::Acquire));
++    tokio::time::timeout(Duration::from_secs(2), successor_entered.notified())
++        .await
++        .unwrap();
++    successor_release.notify_one();
++    successor.await.unwrap();
++    successor_receipt_context
++        .extension_data
++        .get::<OwnedTurnTask>()
++        .unwrap()
++        .join()
++        .await
++        .unwrap();
++}
++
++#[tokio::test]
++async fn stopped_owner_does_not_poll_an_already_ready_model_request() {
++    let owner = OwnedTurnTask::default();
++    let effects = AtomicUsize::new(0);
++    owner.request_stop();
++    let result = owner
++        .admit_model(async { effects.fetch_add(1, Ordering::Relaxed) })
++        .await;
++    assert!(
++        matches!(result, Err(error) if matches!(error.details(), codex_protocol::error::CodexErrorDetails::TurnAborted))
++    );
++    assert_eq!(effects.load(Ordering::Relaxed), 0);
++}
++
++#[tokio::test]
++async fn model_admission_stays_cancelled_across_pending_request_preparation() {
++    let owner = Arc::new(OwnedTurnTask::default());
++    let entered = Arc::new(Notify::new());
++    let release = Arc::new(Notify::new());
++    let effects = Arc::new(AtomicUsize::new(0));
++    let request = tokio::spawn({
++        let owner = owner.clone();
++        let entered = entered.clone();
++        let release = release.clone();
++        let effects = effects.clone();
++        async move {
++            owner
++                .admit_model(async {
++                    entered.notify_one();
++                    release.notified().await;
++                    effects.fetch_add(1, Ordering::Relaxed)
++                })
++                .await
++        }
++    });
++    entered.notified().await;
++    owner.request_stop();
++    release.notify_one();
++    let error = request.await.unwrap().unwrap_err();
++    assert!(matches!(
++        error.details(),
++        codex_protocol::error::CodexErrorDetails::TurnAborted
++    ));
++    assert_eq!(effects.load(Ordering::Relaxed), 0);
++}

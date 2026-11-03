@@ -1,4 +1,4 @@
-import { tool } from '@openai/agents';
+import { tool } from '@openai/agents/classic';
 
 interface LooseToolInput {
   text: string;

@@ -16,6 +16,7 @@ import {
   loadPackageSet,
   inspectPackageSet,
   comparePackageSets,
+  classicContractView,
   inspectAndComparePackageSets,
   assertAllTargetsExist,
   normalizeSelectedPublicTypeAliases,
@@ -104,6 +105,7 @@ async function validateSource(contract) {
       'source',
       selectedPublicTypeAliases,
       contract.selectedPublicObjectProperties ?? [],
+      { classicCompatibility: true },
     );
     const errors = comparePackageSets(
       contract,
@@ -111,6 +113,7 @@ async function validateSource(contract) {
       packages,
       surfaces,
       false,
+      { classicCompatibility: true },
     );
     if (errors.length > 0) throw new Error(errors.join('\n'));
     console.log(
@@ -134,6 +137,7 @@ async function validateDist(contract) {
         contract,
         baselinePackages,
         candidatePackages,
+        { classicCompatibility: true },
       );
     const errors = [
       ...(await assertAllTargetsExist(candidatePackages)),
@@ -159,10 +163,12 @@ async function validatePackage(contract, registry) {
         'dist',
         contract.selectedPublicTypeAliases ?? [],
         contract.selectedPublicObjectProperties ?? [],
+        { classicCompatibility: true },
       );
+      const compatibility = classicContractView(packages, surfaces);
       const errors = [
         ...validateSelectedPublicObjectProperties(
-          surfaces,
+          compatibility.surfaces,
           contract.selectedPublicObjectProperties ?? [],
         ),
         ...(await validateRuntime(
@@ -198,6 +204,7 @@ async function validatePackage(contract, registry) {
           contract,
           baselinePackages,
           candidatePackages,
+          { classicCompatibility: true },
         );
       const errors = [
         ...(await assertAllTargetsExist(candidatePackages)),

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Agent, run, tool, ToolCallError } from '@openai/agents';
+import { Agent, run, tool, ToolCallError } from '@openai/agents/classic';
 
 const unstableTool = tool({
   name: 'get_weather (unstable)',

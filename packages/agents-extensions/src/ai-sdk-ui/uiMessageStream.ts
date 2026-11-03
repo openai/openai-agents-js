@@ -8,7 +8,7 @@ import type {
   RunToolApprovalItem,
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import {
   getToolCallDisplayName,
   getToolSearchExecution,

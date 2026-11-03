@@ -9,14 +9,24 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "require": "./dist/index.js",
-      "import": "./dist/index.mjs"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
     },
     "./testing": {
-      "types": "./dist/testing/index.d.ts",
-      "require": "./dist/testing/index.js",
-      "import": "./dist/testing/index.mjs"
+      "import": {
+        "types": "./dist/testing/index.d.mts",
+        "default": "./dist/testing/index.mjs"
+      },
+      "require": {
+        "types": "./dist/testing/index.d.ts",
+        "default": "./dist/testing/index.js"
+      }
     },
     "./sandbox": {
       "types": "./dist/sandbox/index.d.ts",
@@ -52,19 +62,119 @@
       "types": "./dist/utils/index.d.ts",
       "require": "./dist/utils/index.js",
       "import": "./dist/utils/index.mjs"
+    },
+    "./classic": {
+      "types": "./dist/classic/index.d.ts",
+      "require": "./dist/classic/index.js",
+      "import": "./dist/classic/index.mjs"
+    },
+    "./classic/testing": {
+      "types": "./dist/classic/testing/index.d.ts",
+      "require": "./dist/classic/testing/index.js",
+      "import": "./dist/classic/testing/index.mjs"
+    },
+    "./classic/sandbox": {
+      "import": {
+        "types": "./dist/classic/sandbox/index.d.mts",
+        "default": "./dist/classic/sandbox/index.mjs"
+      },
+      "require": {
+        "types": "./dist/classic/sandbox/index.d.ts",
+        "default": "./dist/classic/sandbox/index.js"
+      }
+    },
+    "./classic/sandbox/local": {
+      "import": {
+        "types": "./dist/classic/sandbox/local.d.mts",
+        "default": "./dist/classic/sandbox/local.mjs"
+      },
+      "require": {
+        "types": "./dist/classic/sandbox/local.d.ts",
+        "default": "./dist/classic/sandbox/local.js"
+      }
+    },
+    "./classic/realtime": {
+      "import": {
+        "types": "./dist/classic/realtime/index.d.mts",
+        "default": "./dist/classic/realtime/index.mjs"
+      },
+      "require": {
+        "types": "./dist/classic/realtime/index.d.ts",
+        "default": "./dist/classic/realtime/index.js"
+      }
+    },
+    "./classic/realtime/testing": {
+      "import": {
+        "types": "./dist/classic/realtime/testing/index.d.mts",
+        "default": "./dist/classic/realtime/testing/index.mjs"
+      },
+      "require": {
+        "types": "./dist/classic/realtime/testing/index.d.ts",
+        "default": "./dist/classic/realtime/testing/index.js"
+      }
+    },
+    "./classic/utils": {
+      "import": {
+        "types": "./dist/classic/utils/index.d.mts",
+        "default": "./dist/classic/utils/index.mjs"
+      },
+      "require": {
+        "types": "./dist/classic/utils/index.d.ts",
+        "default": "./dist/classic/utils/index.js"
+      }
+    },
+    "./migration": {
+      "import": {
+        "types": "./dist/migration/index.d.mts",
+        "default": "./dist/migration/index.mjs"
+      },
+      "require": {
+        "types": "./dist/migration/index.d.ts",
+        "default": "./dist/migration/index.js"
+      }
+    },
+    "./experimental/deferred": {
+      "import": {
+        "types": "./dist/experimental/deferred.d.mts",
+        "default": "./dist/experimental/deferred.mjs"
+      },
+      "require": {
+        "types": "./dist/experimental/deferred.d.ts",
+        "default": "./dist/experimental/deferred.js"
+      }
+    },
+    "./experimental/mcp-tasks": {
+      "import": {
+        "types": "./dist/experimental/mcp-tasks/index.d.mts",
+        "default": "./experimental/mcp-tasks.mjs"
+      },
+      "require": {
+        "types": "./dist/experimental/mcp-tasks/index.d.ts",
+        "default": "./experimental/mcp-tasks.cjs"
+      }
     }
   },
   "scripts": {
     "prebuild": "node ../../scripts/embedMeta.mts",
     "build": "tsc",
     "build-check": "tsc --noEmit -p ./tsconfig.test.json",
-    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json"
+    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json",
+    "native:prepare": "node scripts/native.mjs prepare",
+    "native:build": "node scripts/native.mjs build",
+    "native:audit": "node scripts/native.mjs audit"
   },
   "dependencies": {
     "@openai/agents-core": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "openai": "^7.2.0"
+    "openai": "^7.2.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7",
+    "email-addresses": "5.0.0",
+    "@hyperjump/json-schema": "1.18.0",
+    "@hyperjump/browser": "1.6.0",
+    "@hyperjump/uri": "1.3.9",
+    "zod-deferred": "npm:zod@4.6.7"
   },
   "keywords": [
     "openai",
@@ -74,13 +184,29 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "zod": "^4.3.5"
+    "zod": "^4.6.7",
+    "@types/ws": "^8.18.2"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
   },
   "files": [
-    "dist"
+    "dist",
+    "native/index.js",
+    "native/index.d.ts",
+    "native/codex.node",
+    "native/CODEX_REVISION",
+    "native/build-receipt.json",
+    "bin",
+    "NATIVE.md",
+    "examples/**/*.{ts,js,mjs,md,html}",
+    "!examples/**/node_modules/**",
+    "licenses",
+    "CLASSIC.md",
+    "TESTING.md",
+    "EXTERNAL_JOBS.md",
+    "MCP_TASKS.md",
+    "experimental"
   ],
   "typesVersions": {
     "*": {
@@ -101,7 +227,41 @@
       ],
       "utils": [
         "dist/utils/index.d.ts"
+      ],
+      "classic": [
+        "dist/classic/index.d.ts"
+      ],
+      "classic/testing": [
+        "dist/classic/testing/index.d.ts"
+      ],
+      "classic/sandbox": [
+        "dist/classic/sandbox/index.d.ts"
+      ],
+      "classic/sandbox/local": [
+        "dist/classic/sandbox/local.d.ts"
+      ],
+      "classic/realtime": [
+        "dist/classic/realtime/index.d.ts"
+      ],
+      "classic/realtime/testing": [
+        "dist/classic/realtime/testing/index.d.ts"
+      ],
+      "classic/utils": [
+        "dist/classic/utils/index.d.ts"
+      ],
+      "migration": [
+        "dist/migration/index.d.ts"
+      ],
+      "experimental/deferred": [
+        "dist/experimental/deferred.d.ts"
+      ],
+      "experimental/mcp-tasks": [
+        "dist/experimental/mcp-tasks/index.d.ts"
       ]
     }
+  },
+  "optionalDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@modelcontextprotocol/core": "2.4.0"
   }
 }

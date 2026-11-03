@@ -5,8 +5,8 @@
   "scripts": {
     "clean": "node scripts/clean-package-dists.mjs && tsc-multi --clean",
     "prebuild": "pnpm -F @openai/* -r prebuild",
-    "build": "pnpm clean && tsc-multi --maxWorkers 1",
-    "build:ci": "pnpm run prebuild && pnpm clean && tsc-multi --maxWorkers 1 && pnpm run postbuild",
+    "build": "pnpm clean && node scripts/build-packages.mjs",
+    "build:ci": "pnpm run prebuild && pnpm clean && node scripts/build-packages.mjs && pnpm run postbuild",
     "postbuild": "pnpm -r -F @openai/* bundle",
     "packages:dev": "tsc-multi --watch",
     "docs:dev": "pnpm -F docs dev",
@@ -101,7 +101,12 @@
     "verify:dist": "pnpm -r -F \"@openai/*\" dist:check",
     "verify:lint": "pnpm lint",
     "verify:test": "pnpm test",
-    "verify:format": "pnpm format:check:changed"
+    "verify:format": "pnpm format:check:changed",
+    "test:native": "OPENAI_AGENTS_NATIVE_TESTS=1 vitest run --project @openai/agents",
+    "native:prepare": "pnpm -C packages/agents native:prepare",
+    "native:build": "pnpm -C packages/agents native:build",
+    "native:audit": "pnpm -C packages/agents native:audit",
+    "test:build-tooling": "node --test scripts/build-packages.test.mjs scripts/build-esm-declarations.test.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^3.0.3",
@@ -119,7 +124,8 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.0",
     "verdaccio": "^6.10.4",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "@typescript/typescript6": "6.0.2"
   },
   "packageManager": "pnpm@12.6.0+sha512.3ef68f951cb111ac204b4a5a16f0b2ddf0da56a96e0413e81d855d9f0b55ef926714709028e1cd00c405c2c5fb7b9e8ec4dc46777c805d0373c2f2ff00fd20ec"
 }

@@ -1,0 +1,24 @@
+--- a/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs
+@@ -270,6 +270,8 @@
+     pub payload: &'a ToolPayload,
+     pub source: ToolCallSource,
+     pub result: &'a serde_json::Value,
++    /// Synchronous cancellation of the same invocation, safe to retain in a reservation.
++    pub is_cancelled: Arc<dyn Fn() -> bool + Send + Sync + 'static>,
+     /// Cancellation of this exact native invocation, including yielded cells.
+     pub cancelled: crate::ExtensionFuture<'a, ()>,
+ }
+--- a/codex-rs/core/src/tools/builtin_result_policy.rs
++++ b/codex-rs/core/src/tools/builtin_result_policy.rs
+@@ -171,6 +171,10 @@
+             payload: &invocation.payload,
+             source,
+             result: &value,
++            is_cancelled: {
++                let cancellation = invocation.cancellation_token.clone();
++                Arc::new(move || cancellation.is_cancelled())
++            },
+             cancelled: Box::pin(invocation.cancellation_token.cancelled()),
+         })
+         .await

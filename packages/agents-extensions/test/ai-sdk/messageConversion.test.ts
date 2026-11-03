@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { protocol, UserError } from '@openai/agents';
+import { protocol, UserError } from '@openai/agents/classic';
 import { itemsToLanguageV2Messages } from '../../src/ai-sdk/index';
 import { stubModel } from './fixtures';
 

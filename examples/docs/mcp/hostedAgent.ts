@@ -1,4 +1,4 @@
-import { Agent, hostedMcpTool } from '@openai/agents';
+import { Agent, hostedMcpTool } from '@openai/agents/classic';
 
 export const agent = new Agent({
   name: 'MCP Assistant',

@@ -14,6 +14,7 @@ export { normalizeToolAllowedCallers } from './toolCallers';
 export { snapshotRawUsage } from './rawUsage';
 export { snapshotTestingValue } from './testingSnapshot';
 export {
+  AGENT_TOOL_RUNNER_FACTORY,
   prepareFunctionToolInput,
   setFunctionToolPreparedInput,
   type FunctionToolPreparedInput,
@@ -40,3 +41,26 @@ export {
   validateToolInvocationName,
 } from '../toolInvocation';
 export { getAgentToolParentRunConfigFromDetails } from '../agentToolRunConfig';
+
+export { inspectFunctionToolForMigration } from '../tool';
+export {
+  selectModel,
+  prepareModelSettings,
+  maybeResetToolChoice,
+} from '../runner/modelSettings';
+export { AgentToolUseTracker } from '../runner/toolUseTracker';
+export { defineInputGuardrail } from '../guardrail';
+export { getToolCallOutputItem } from '../runner/toolExecution';
+export {
+  runToolInputGuardrails,
+  runToolOutputGuardrails,
+} from './toolGuardrails';
+
+export { prepareInputItemsWithSession } from '../runner/sessionPersistence';
+export { convertAgentOutputTypeToSerializable } from './tools';
+
+export {
+  getResponseWithRetry,
+  getStreamedResponseWithRetry,
+  validateModelTimeoutMs,
+} from '../runner/modelRetry';

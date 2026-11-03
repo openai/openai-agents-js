@@ -1,4 +1,4 @@
-import type { AgentInputItem } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents/classic';
 import { TextMessage } from './messages/TextMessage';
 import {
   FunctionCallMessage,

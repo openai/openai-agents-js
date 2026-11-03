@@ -1,5 +1,5 @@
-import type { AgentInputItem, Session } from '@openai/agents';
-import { protocol } from '@openai/agents';
+import type { AgentInputItem, Session } from '@openai/agents/classic';
+import { protocol } from '@openai/agents/classic';
 import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 // This example requires the workspace's version-pinned adapter patch, which

@@ -1,124 +1,39 @@
-# OpenAI Agents SDK (JavaScript/TypeScript)
+# Native Agents SDK for TypeScript
 
-[![npm version](https://badge.fury.io/js/@openai%2Fagents.svg)](https://badge.fury.io/js/@openai%2Fagents) [![CI](https://github.com/openai/openai-agents-js/actions/workflows/test.yml/badge.svg)](https://github.com/openai/openai-agents-js/actions/workflows/test.yml)
+`@openai/agents` runs agents through an embedded Codex runtime. Give an Agent instructions and tools, then run it to get an answer. Use a Session when you need follow-up messages, streamed output, or a saved conversation.
 
-The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows in JavaScript/TypeScript. It is provider-agnostic, supporting OpenAI APIs and more.
+```ts
+import { Agent, NativeProvider } from '@openai/agents';
 
-<img src="https://cdn.openai.com/API/docs/images/orchestration.png" alt="Image of the Agents Tracing UI" style="max-height: 803px;">
+async function main() {
+  await using provider = new NativeProvider();
+  const agent = new Agent({ instructions: 'Answer clearly.', provider });
+  const result = await agent.run('Hello');
+  console.log(result.finalOutput);
+}
 
-> [!NOTE] Looking for the Python version? Check out [OpenAI Agents SDK Python](https://github.com/openai/openai-agents-python).
-
-## Core concepts
-
-1. [**Agents**](https://openai.github.io/openai-agents-js/guides/agents): LLMs configured with instructions, tools, guardrails, and handoffs
-1. [**Sandbox Agents**](https://openai.github.io/openai-agents-js/guides/sandbox-agents): Agents paired with a filesystem workspace and sandbox environment for longer-running work
-1. [**Realtime Agents**](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/): Low-latency agents for spoken interactions, with tools, guardrails, handoffs, and conversation history
-1. **[Agents as tools](https://openai.github.io/openai-agents-js/guides/tools/#4-agents-as-tools) / [Handoffs](https://openai.github.io/openai-agents-js/guides/handoffs/)**: Delegating to other agents for specific tasks
-1. [**Tools**](https://openai.github.io/openai-agents-js/guides/tools/): Various Tools let agents take actions (functions, MCP, hosted tools)
-1. [**Guardrails**](https://openai.github.io/openai-agents-js/guides/guardrails/): Configurable safety checks for input and output validation
-1. [**Human in the loop**](https://openai.github.io/openai-agents-js/guides/human-in-the-loop/): Built-in mechanisms for involving humans across agent runs
-1. [**Sessions**](https://openai.github.io/openai-agents-js/guides/sessions/): Automatic conversation history management across agent runs
-1. [**Tracing**](https://openai.github.io/openai-agents-js/guides/tracing/): Built-in tracking of agent runs, allowing you to view, debug and optimize your workflows
-
-Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
-
-## Get started
-
-### Supported environments
-
-- Node.js 22 or later
-- Deno
-- Bun
-
-#### Experimental support:
-
-- Cloudflare Workers with `nodejs_compat` enabled
-
-[Check out the documentation](https://openai.github.io/openai-agents-js/guides/troubleshooting/) for more detailed information.
-
-### Installation
-
-```bash
-npm install @openai/agents zod
-```
-
-### Build a text agent
-
-Use a regular [Agent](https://openai.github.io/openai-agents-js/guides/agents) for text-based workflows that do not need a sandbox workspace or Realtime session.
-
-```js
-import { Agent, run } from '@openai/agents';
-
-const agent = new Agent({
-  name: 'Assistant',
-  instructions: 'You are a helpful assistant.',
+main().catch((error: unknown) => {
+  console.error(error);
+  process.exitCode = 1;
 });
-const result = await run(
-  agent,
-  'Write a haiku about recursion in programming.',
-);
-console.log(result.finalOutput);
 ```
 
-### Build a sandbox agent
+The example requires the native addon and model credentials, such as `OPENAI_API_KEY`. `agent.run()` creates and closes its own Session; `await using` also closes this example's provider. Save it as a TypeScript file and run it with `tsx`. Use `agent.session()` for multiple turns and close it in `finally`.
 
-Use a [Sandbox Agent](https://openai.github.io/openai-agents-js/guides/sandbox-agents) when the agent should work in a filesystem, run commands, or carry workspace state across longer tasks.
+Use the included [greeting](examples/basic.ts) and [typed-context](examples/typed-context.ts) examples with this build. The [native guide](NATIVE.md) and [testing guide](TESTING.md) are also included.
 
-This example uses `UnixLocalSandboxClient`, which is supported on macOS and Linux. On Windows, use `DockerSandboxClient` or a hosted sandbox client instead; see [Sandbox clients](https://openai.github.io/openai-agents-js/guides/sandbox-agents/clients) for setup details.
+## Build from source
 
-```js
-import { run } from '@openai/agents';
-import { gitRepo, SandboxAgent } from '@openai/agents/sandbox';
-import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
+Use Node.js 24. Follow the [native build instructions](NATIVE.md#build-from-source) to build the addon and helper executables. For the classic API, use [the classic guide](CLASSIC.md).
 
-const agent = new SandboxAgent({
-  name: 'Workspace Assistant',
-  model: 'gpt-5.5',
-  instructions: 'Inspect the repo before changing files.',
-  defaultManifest: {
-    entries: { repo: gitRepo({ repo: 'openai/openai-agents-js' }) },
-  },
-});
+## Sessions
 
-const result = await run(
-  agent,
-  'Inspect the repo README and summarize what this project does.',
-  { sandbox: { client: new UnixLocalSandboxClient() } },
-);
+Open a Session with `agent.session({ tools })` to replace that Session's opening tool declarations, as with Python's `agent.session(tools=...)`. Omit `tools` to inherit `agent.tools`; pass `[]` to open without those declarations. The SDK captures each opening before its first await, so concurrent Sessions can use the same tool names with different callbacks or MCP connections. It keeps the original Agent for application hooks and does not change `agent.tools`.
 
-console.log(result.finalOutput);
-```
+Opening overrides do not remove a separately supplied Environment or programmatic execution capabilities. MCP declarations still connect eagerly during opening. `agent.run()` does not accept `tools`; use a Session for opening overrides. Restore also uses the current opening declarations and bindings, subject to the existing checkpoint matching checks.
 
-### Build a realtime agent
+See [the tenant tools example](examples/opening-tools.ts) for two Sessions with separate callbacks.
 
-Use a [Realtime Agent](https://openai.github.io/openai-agents-js/guides/voice-agents/quickstart/) for low-latency, spoken interactions in the browser.
+Use `localStorage(path)` with an explicit Session to keep a supported root conversation in a trusted application directory. Retain `session.id` and reopen with `{ storage, resume: id }`, supplying current tools, context and provider. Always await Session close. Local profiles support managed function/manual tools and can admit native children through a current Environment and NativeAgents declaration. They cannot export portable state or use MCP, Apps/Plugins or Code Mode. Settled descendant history remains readable through the original root Session ID; reading it does not restart historical child runtimes. An open descendant with an unfinished turn, or an unknown tool effect, blocks reopening rather than replaying a callback.
 
-```js
-import { RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
-
-const agent = new RealtimeAgent({
-  name: 'Assistant',
-  instructions: 'You are a helpful assistant.',
-});
-// Automatically connects your microphone and audio output in the browser via WebRTC.
-const session = new RealtimeSession(agent);
-await session.connect({ apiKey: '<client-api-key>' });
-```
-
-Set `OPENAI_API_KEY` in your server environment for text and sandbox agents. For browser-based realtime agents, use your server to create a short-lived ephemeral client token and pass it to `session.connect(...)`.
-
-Explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory to see the SDK in action.
-
-## Acknowledgements
-
-We'd like to acknowledge the excellent work of the open-source community, especially:
-
-- [zod](https://github.com/colinhacks/zod) (schema validation)
-- [Starlight](https://github.com/withastro/starlight)
-- [vite](https://github.com/vitejs/vite) and [vitest](https://github.com/vitest-dev/vitest)
-- [pnpm](https://pnpm.io/)
-- [Next.js](https://github.com/vercel/next.js)
-
-We're committed to building the Agents SDK as an open source framework so others in the community can expand on our approach.
-
-For more details, see the [documentation](https://openai.github.io/openai-agents-js) or explore the [`examples/`](https://github.com/openai/openai-agents-js/tree/main/examples) directory.
+See [the local-storage example](examples/local-storage.ts) and the [profile lifetime and cleanup contract](NATIVE.md#local-native-profiles).

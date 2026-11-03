@@ -6,7 +6,7 @@ import {
   handoff,
   withTrace,
   isGpt5Default,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { removeAllTools } from '@openai/agents-core/extensions';
 import { z } from 'zod';
 

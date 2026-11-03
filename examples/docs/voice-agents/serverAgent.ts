@@ -1,7 +1,7 @@
 // This runs on the server
 import 'server-only';
 
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 import type { RealtimeItem } from '@openai/agents/realtime';
 import z from 'zod';
 

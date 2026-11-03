@@ -5,7 +5,7 @@ import {
   withTrace,
   OpenAIChatCompletionsModel,
   tool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { OpenAI } from 'openai';
 
 const getWeatherTool = tool({

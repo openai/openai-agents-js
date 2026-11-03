@@ -1,4 +1,4 @@
-import { Agent, handoff, tool } from '@openai/agents';
+import { Agent, handoff, tool } from '@openai/agents/classic';
 import { toStandardJsonSchema } from '@valibot/to-json-schema';
 import * as v from 'valibot';
 

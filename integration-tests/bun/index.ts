@@ -1,6 +1,6 @@
 // @ts-check
 
-import { Agent, getGlobalTraceProvider, run } from '@openai/agents';
+import { Agent, getGlobalTraceProvider, run } from '@openai/agents/classic';
 
 const agent = new Agent({
   name: 'Test Agent',

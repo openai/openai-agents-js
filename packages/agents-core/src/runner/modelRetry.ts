@@ -26,7 +26,7 @@ const DEFAULT_BACKOFF_MULTIPLIER = 2;
 const DEFAULT_BACKOFF_JITTER = true;
 const RETRY_AFTER_MS_HEADER = 'retry-after-ms';
 const RETRY_AFTER_HEADER = 'retry-after';
-const MAX_MODEL_TIMEOUT_MS = 2_147_483_647;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type ResolvedRetryDecision = {
   retry: boolean;
@@ -73,6 +73,12 @@ type EvaluateRetryParams = {
 };
 
 type ModelRetryHandlers = {
+  /** Let an invocation owner reject a stale capture before a Model attempt. */
+  beforeAttempt?: () => void;
+  /** Internal invocation owners join callbacks that outlive parent-abort races. */
+  onRetryCallback?: (pending: Promise<unknown>) => void;
+  /** Opt into explicit per-attempt stream closure, including after EOF. */
+  onStreamCleanupFailure?: (error: unknown) => void;
   onModelFailureUsage?: (usage: Usage) => void;
   onModelTimeout?: () => void;
   onPossiblyAcceptedRequestFailure?: () => void;
@@ -246,10 +252,10 @@ export function validateModelTimeoutMs(
   if (
     !Number.isFinite(timeoutMs) ||
     timeoutMs <= 0 ||
-    timeoutMs > MAX_MODEL_TIMEOUT_MS
+    timeoutMs > MAX_TIMER_DELAY_MS
   ) {
     throw new UserError(
-      `modelSettings.timeoutMs must be a positive finite number less than or equal to ${MAX_MODEL_TIMEOUT_MS} when provided.`,
+      `modelSettings.timeoutMs must be a positive finite number less than or equal to ${MAX_TIMER_DELAY_MS} when provided.`,
     );
   }
   return timeoutMs;
@@ -866,33 +872,38 @@ async function waitForRetryDelay(
     return;
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, delayMs);
+  while (delayMs > 0) {
+    // Larger delays overflow to a short timer instead of waiting as requested.
+    const chunkMs = Math.min(delayMs, MAX_TIMER_DELAY_MS);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, chunkMs);
 
-    const onAbort = () => {
-      cleanup();
-      try {
-        throwAbortError(signal);
-      } catch (error) {
-        reject(error);
+      const onAbort = () => {
+        cleanup();
+        try {
+          throwAbortError(signal);
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal?.removeEventListener('abort', onAbort);
+      };
+
+      if (signal?.aborted) {
+        onAbort();
+        return;
       }
-    };
 
-    const cleanup = () => {
-      clearTimeout(timeout);
-      signal?.removeEventListener('abort', onAbort);
-    };
-
-    if (signal?.aborted) {
-      onAbort();
-      return;
-    }
-
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+    delayMs -= chunkMs;
+  }
 }
 
 async function getRetryAdvice(
@@ -991,12 +1002,18 @@ async function evaluateRetry({
     };
   }
 
+  const delayMs =
+    decision.delayMs ??
+    normalized.retryAfterMs ??
+    getDefaultDelayMs(attempt, retryBackoff);
+  if (!Number.isFinite(delayMs)) {
+    // Decline an unrepresentable wait rather than retrying before the hint.
+    return { retry: false, reason: decision.reason ?? providerAdvice?.reason };
+  }
+
   return {
     retry: true,
-    delayMs:
-      decision.delayMs ??
-      normalized.retryAfterMs ??
-      getDefaultDelayMs(attempt, retryBackoff),
+    delayMs,
     reason: decision.reason ?? providerAdvice?.reason,
     approveUnsafeReplay: decision.approveUnsafeReplay,
   };
@@ -1150,6 +1167,41 @@ export const retryPolicies = {
   },
 } as const;
 
+function observeRetryCallback<T>(
+  handlers: ModelRetryHandlers,
+  callback: () => Promise<T>,
+): Promise<T> {
+  if (!handlers.onRetryCallback) return callback();
+  const pending = Promise.resolve().then(callback);
+  handlers.onRetryCallback(pending);
+  return pending;
+}
+
+async function* joinedModelStream(
+  source: AsyncIterable<StreamEvent>,
+  onCleanupFailure: (error: unknown) => void,
+): AsyncIterable<StreamEvent> {
+  const iterator = source[Symbol.asyncIterator]();
+  let failed = false;
+  try {
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) return;
+      yield next.value;
+    }
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    await Promise.resolve()
+      .then(() => iterator.return?.())
+      .catch((error) => {
+        onCleanupFailure(error);
+        if (!failed) throw error;
+      });
+  }
+}
+
 export async function getResponseWithRetry(
   model: Model,
   request: ModelRequest,
@@ -1166,6 +1218,7 @@ export async function getResponseWithRetry(
   let attempt = 1;
   try {
     while (true) {
+      handlers.beforeAttempt?.();
       const requestForAttempt = shouldDisableProviderManagedRetry(
         request,
         attempt,
@@ -1202,12 +1255,14 @@ export async function getResponseWithRetry(
         let providerAdvice: ModelRetryAdvice | undefined;
         try {
           providerAdvice = await awaitWithTimedModelCallParentAbort(
-            getRetryAdvice(model, {
-              request,
-              error: caughtError,
-              stream: false,
-              attempt,
-            }),
+            observeRetryCallback(handlers, () =>
+              getRetryAdvice(model, {
+                request,
+                error: caughtError,
+                stream: false,
+                attempt,
+              }),
+            ),
             request.signal,
             timeoutMs,
           );
@@ -1243,19 +1298,21 @@ export async function getResponseWithRetry(
         let decision: ResolvedRetryDecision;
         try {
           decision = await awaitWithTimedModelCallParentAbort(
-            evaluateRetry({
-              error,
-              attempt,
-              maxRetries,
-              retryPolicy,
-              retryBackoff,
-              signal: request.signal,
-              stream: false,
-              request,
-              emittedVisibleEvent: false,
-              emittedRawModelEvent: false,
-              providerAdvice,
-            }),
+            observeRetryCallback(handlers, () =>
+              evaluateRetry({
+                error,
+                attempt,
+                maxRetries,
+                retryPolicy,
+                retryBackoff,
+                signal: request.signal,
+                stream: false,
+                request,
+                emittedVisibleEvent: false,
+                emittedRawModelEvent: false,
+                providerAdvice,
+              }),
+            ),
             request.signal,
             timeoutMs,
           );
@@ -1307,8 +1364,10 @@ export async function* getStreamedResponseWithRetry(
   let attempt = 1;
   try {
     while (true) {
+      handlers.beforeAttempt?.();
       let emittedVisibleEvent = false;
       let emittedRawModelEvent = false;
+      let cleanupFailed = false;
       const requestForAttempt = shouldDisableProviderManagedRetry(
         request,
         attempt,
@@ -1324,9 +1383,14 @@ export async function* getStreamedResponseWithRetry(
         failedAttemptUsage.report,
       );
       try {
-        for await (const event of model.getStreamedResponse(
-          usageScope.request,
-        )) {
+        const source = model.getStreamedResponse(usageScope.request);
+        const events = handlers.onStreamCleanupFailure
+          ? joinedModelStream(source, (error) => {
+              cleanupFailed = true;
+              handlers.onStreamCleanupFailure!(error);
+            })
+          : source;
+        for await (const event of events) {
           throwIfTimedModelCallParentAborted(request.signal, timeoutMs);
           if (attemptScope.timedOut()) {
             throw (
@@ -1368,6 +1432,7 @@ export async function* getStreamedResponseWithRetry(
         failedAttemptUsage.record(caughtError);
         attemptScope.cleanup();
         const error = attemptScope.normalizeError(caughtError);
+        if (cleanupFailed) throw error;
         const markTimedOutFailure = () => {
           if (attemptScope.timedOut()) {
             handlers.onModelTimeout?.();
@@ -1376,12 +1441,14 @@ export async function* getStreamedResponseWithRetry(
         let providerAdvice: ModelRetryAdvice | undefined;
         try {
           providerAdvice = await awaitWithTimedModelCallParentAbort(
-            getRetryAdvice(model, {
-              request,
-              error: caughtError,
-              stream: true,
-              attempt,
-            }),
+            observeRetryCallback(handlers, () =>
+              getRetryAdvice(model, {
+                request,
+                error: caughtError,
+                stream: true,
+                attempt,
+              }),
+            ),
             request.signal,
             timeoutMs,
           );
@@ -1418,20 +1485,22 @@ export async function* getStreamedResponseWithRetry(
         let decision: ResolvedRetryDecision;
         try {
           decision = await awaitWithTimedModelCallParentAbort(
-            evaluateRetry({
-              error,
-              attempt,
-              maxRetries,
-              retryPolicy,
-              retryBackoff,
-              signal: request.signal,
-              stream: true,
-              request,
-              emittedVisibleEvent,
-              emittedRawModelEvent,
-              providerAdvice,
-              allowUnsafeStreamReplayApproval: attemptScope.timedOut(),
-            }),
+            observeRetryCallback(handlers, () =>
+              evaluateRetry({
+                error,
+                attempt,
+                maxRetries,
+                retryPolicy,
+                retryBackoff,
+                signal: request.signal,
+                stream: true,
+                request,
+                emittedVisibleEvent,
+                emittedRawModelEvent,
+                providerAdvice,
+                allowUnsafeStreamReplayApproval: attemptScope.timedOut(),
+              }),
+            ),
             request.signal,
             timeoutMs,
           );

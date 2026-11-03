@@ -1,7 +1,7 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { Agent, run, MCPServerSSE, withTrace } from '@openai/agents';
+import { Agent, run, MCPServerSSE, withTrace } from '@openai/agents/classic';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 

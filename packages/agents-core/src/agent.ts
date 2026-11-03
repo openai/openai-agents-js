@@ -19,6 +19,7 @@ import {
   type Tool,
   type ToolApprovalFunction,
   type ToolCallDetails,
+  AGENT_TOOL_RUNNER_FACTORY,
   type ToolExecuteArgument,
   type ToolEnabledFunction,
   type ToolInputParametersStrict,
@@ -220,6 +221,7 @@ export type AgentTool<
   TAgent extends Agent<TContext, any>,
   TParameters extends AgentToolInputParameters,
 > = FunctionTool<TContext, TParameters> & {
+  [AGENT_TOOL_RUNNER_FACTORY]?: true;
   on: (
     name: AgentToolEventName,
     handler: AgentToolEventHandler<TAgent>,
@@ -897,13 +899,18 @@ export class Agent<
         const inheritedRunConfig = getInheritedAgentToolRunConfig(
           getAgentToolParentRunConfigFromDetails(details),
           runConfig,
-          selectModel(this.model, runConfig?.model),
+          selectModel(this.model, runConfig?.model, runConfig?.modelOverride),
         );
         const nestedRunConfig = mergeAgentToolRunConfig(
           inheritedRunConfig,
           runConfig,
         );
-        const runner = new Runner(nestedRunConfig);
+        const runnerFactory = details?.[AGENT_TOOL_RUNNER_FACTORY];
+        const runner = runnerFactory
+          ? runnerFactory(nestedRunConfig, {
+              maxPendingEvents: onStreamMaxPendingEvents,
+            })
+          : new Runner(nestedRunConfig);
         setRunnerParentUsageRecorder(runner, getToolUsageRecorder(details));
         setRunnerInvocationSpanParent(
           runner,
@@ -1094,6 +1101,7 @@ export class Agent<
 
     const agentTool: AgentTool<TContext, TAgent, TParameters> = {
       ...baseTool,
+      [AGENT_TOOL_RUNNER_FACTORY]: true,
       on: (name, handler) => {
         const set =
           eventHandlers.get(name) ?? new Set<AgentToolEventHandler<TAgent>>();

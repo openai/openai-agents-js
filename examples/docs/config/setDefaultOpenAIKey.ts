@@ -1,3 +1,3 @@
-import { setDefaultOpenAIKey } from '@openai/agents';
+import { setDefaultOpenAIKey } from '@openai/agents/classic';
 
 setDefaultOpenAIKey(process.env.OPENAI_API_KEY!); // sk-...

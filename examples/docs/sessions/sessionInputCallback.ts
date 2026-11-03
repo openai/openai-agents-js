@@ -1,4 +1,4 @@
-import { Agent, OpenAIConversationsSession, run } from '@openai/agents';
+import { Agent, OpenAIConversationsSession, run } from '@openai/agents/classic';
 import type { AgentInputItem } from '@openai/agents-core';
 
 const agent = new Agent({

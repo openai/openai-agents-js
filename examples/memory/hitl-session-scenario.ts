@@ -9,7 +9,7 @@ import {
   OpenAIConversationsSession,
   run,
   tool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 import { FileSession } from './sessions/index.ts';

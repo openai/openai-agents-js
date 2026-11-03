@@ -14,10 +14,9 @@ import {
   readJson,
   sortedUnique,
   packageKey,
-  collectConditionTargets,
+  collectRuntimeTargets,
   collectRuntimeConditionSets,
   resolveConditionalTarget,
-  primarySurface,
   selectDeclarationSurface,
 } from './released-api-contract-surface.mjs';
 
@@ -70,6 +69,25 @@ const CONVENIENCE_IDENTITY_PAIRS = [
     requireOwnerSurface: true,
   },
 ];
+
+function convenienceIdentityPairs(packages) {
+  const exports = packages['@openai/agents']?.manifest.exports ?? {};
+  return CONVENIENCE_IDENTITY_PAIRS.flatMap((pair) => {
+    if (!pair.bundle.startsWith('@openai/agents')) return [pair];
+    const subpath = pair.bundle.slice('@openai/agents'.length);
+    const classicSubpath = `./classic${subpath}`;
+    if (!exports[classicSubpath]) return [pair];
+    const classic = {
+      ...pair,
+      bundle: `@openai/agents/classic${subpath}`,
+      bundleLabel: pair.bundleLabel.replace(
+        '@openai/agents',
+        '@openai/agents/classic',
+      ),
+    };
+    return subpath === '' ? [classic] : [pair, classic];
+  });
+}
 
 const OPTIONAL_PEER_FORMAT_EXCEPTIONS = new Map([
   ['@openai/agents-extensions/experimental/codex', '@openai/codex-sdk'],
@@ -205,6 +223,7 @@ async function loadPublicSpecifiers(
   specifiers,
   format,
   conditions = [],
+  identityPairs = CONVENIENCE_IDENTITY_PAIRS,
 ) {
   const describeLoaded = `const describeLoaded = (loaded) => {
   const keys = Object.keys(loaded);
@@ -269,7 +288,7 @@ console.log(JSON.stringify({
     '--eval',
     loader,
     JSON.stringify(specifiers),
-    JSON.stringify(CONVENIENCE_IDENTITY_PAIRS),
+    JSON.stringify(identityPairs),
     format,
     conditionLabel,
   ];
@@ -310,6 +329,7 @@ export async function validatePublicSpecifiers(
         specifiers,
         format,
         conditions,
+        convenienceIdentityPairs(packages),
       );
       errors.push(...results.identityErrors);
       for (const specifier of specifiers) {
@@ -382,27 +402,32 @@ export async function validateRuntime(
   entryFilter = () => true,
 ) {
   const errors = [];
+  const loadedModules = { import: {}, require: {} };
   for (const [name, packageInfo] of Object.entries(packages)) {
     for (const [subpath, entry] of Object.entries(packageInfo.entries)) {
       if (!entryFilter(name, subpath)) continue;
       for (const format of ['import', 'require']) {
-        for (const { condition, target } of collectConditionTargets(
+        for (const { condition, target } of collectRuntimeTargets(
           entry.exportNode,
           format,
         )) {
-          const typeCondition = condition.replace(
-            new RegExp(`${format}$`, 'u'),
-            'types',
+          const expected = selectDeclarationSurface(
+            surfaces[name]?.[subpath],
+            condition,
+            format,
           );
-          const expected =
-            surfaces[name]?.[subpath]?.[typeCondition] ??
-            primarySurface(surfaces[name]?.[subpath]);
           try {
             const loaded = await loadRuntimeTarget(
               packageInfo.packageRoot,
               target,
               format,
             );
+            if (
+              resolveConditionalTarget(entry.exportNode, format)?.target ===
+              target
+            ) {
+              loadedModules[format][packageKey(name, subpath)] = loaded;
+            }
             errors.push(
               ...compareRuntimeBindings(
                 expected,
@@ -430,6 +455,15 @@ export async function validateRuntime(
     }
   }
 
+  for (const format of ['import', 'require']) {
+    errors.push(
+      ...compareConvenienceBindingIdentity(
+        loadedModules[format],
+        convenienceIdentityPairs(packages),
+        format,
+      ),
+    );
+  }
   return sortedUnique(errors);
 }
 

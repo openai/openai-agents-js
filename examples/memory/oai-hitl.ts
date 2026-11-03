@@ -7,7 +7,7 @@ import {
   RunToolApprovalItem,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
 import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';

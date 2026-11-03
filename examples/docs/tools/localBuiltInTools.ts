@@ -6,7 +6,7 @@ import {
   Computer,
   Editor,
   Shell,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 const computer: Computer = {
   environment: 'browser',

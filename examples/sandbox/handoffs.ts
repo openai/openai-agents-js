@@ -1,4 +1,4 @@
-import { Agent, run, type RunItem } from '@openai/agents';
+import { Agent, run, type RunItem } from '@openai/agents/classic';
 import { Manifest, SandboxAgent, shell } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import {

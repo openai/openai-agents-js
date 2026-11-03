@@ -5,7 +5,7 @@ import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
 import { RealtimeAgent, RealtimeSession, tool } from '@openai/agents/realtime';
 import { TwilioRealtimeTransportLayer } from '@openai/agents-extensions';
-import { hostedMcpTool } from '@openai/agents';
+import { hostedMcpTool } from '@openai/agents/classic';
 import { z } from 'zod';
 import process from 'node:process';
 

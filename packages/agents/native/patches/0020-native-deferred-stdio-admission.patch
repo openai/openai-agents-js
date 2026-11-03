@@ -1,0 +1,32 @@
+--- a/codex-rs/codex-mcp/src/runtime.rs
++++ b/codex-rs/codex-mcp/src/runtime.rs
+@@ -1004,6 +1004,15 @@
+         Ok(())
+     }
+ 
++    /// Observes the actual runtime admission without starting or assigning a process.
++    pub fn has_live_stdio_admission(&self) -> bool {
++        self.stdio_owner
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .as_ref()
++            .is_some_and(codex_rmcp_client::ElicitationOwner::is_live)
++    }
++
+     pub fn owns_stdio_admission(&self, expected: &codex_rmcp_client::ElicitationOwner) -> bool {
+         self.stdio_owner
+             .lock()
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -1020,6 +1020,11 @@
+         self.session.get_config().await
+     }
+ 
++    /// Reports whether the MCP runtime still holds a live original stdio admission.
++    pub fn has_live_mcp_stdio_admission(&self) -> bool {
++        self.session.services.mcp_runtime.has_live_stdio_admission()
++    }
++
+     /// Observes this thread's published MCP connections that match the requested config.
+     pub async fn mcp_connection_statuses(
+         &self,

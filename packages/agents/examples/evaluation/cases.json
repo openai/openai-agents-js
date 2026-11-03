@@ -1,0 +1,14 @@
+[
+  {
+    "id": "known",
+    "prompt": "Look up code A.",
+    "expectedAnswer": "violet",
+    "expectedLookups": ["A"]
+  },
+  {
+    "id": "absent",
+    "prompt": "Look up code Z.",
+    "expectedAnswer": "UNKNOWN",
+    "expectedLookups": ["Z"]
+  }
+]

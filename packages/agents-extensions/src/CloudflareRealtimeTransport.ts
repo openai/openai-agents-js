@@ -45,7 +45,9 @@ export class CloudflareRealtimeTransportLayer
   }: {
     url: string;
     apiKey: string;
-  }): Promise<WebSocket> {
+  }): ReturnType<
+    NonNullable<OpenAIRealtimeWebSocketOptions['createWebSocket']>
+  > {
     const transformedUrl = url.replace(/^ws/i, 'http');
     if (!transformedUrl) {
       throw new Error('Realtime URL is not defined');
@@ -71,6 +73,6 @@ export class CloudflareRealtimeTransportLayer
     }
 
     upgradedSocket.accept();
-    return upgradedSocket as unknown as WebSocket;
+    return upgradedSocket;
   }
 }

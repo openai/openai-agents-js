@@ -1,11 +1,11 @@
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 import { SandboxAgent, shell } from '@openai/agents/sandbox';
 import {
   ScriptedModel,
   assistantMessage,
   functionCall,
   scriptedSandboxSession,
-} from '@openai/agents/testing';
+} from '@openai/agents/classic/testing';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

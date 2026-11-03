@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 import { codexTool } from '@openai/agents-extensions/experimental/codex';
 
 // Derived from codexTool({ name: 'engineer' }) when runContextThreadIdKey is omitted.

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import type { AgentInputItem } from '@openai/agents';
+import type { AgentInputItem } from '@openai/agents/classic';
 import { FileSession } from './file';
 
 const userItem = (content: string) =>

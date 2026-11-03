@@ -1,4 +1,4 @@
-import { Agent, run, MCPServerStdio, withTrace } from '@openai/agents';
+import { Agent, run, MCPServerStdio, withTrace } from '@openai/agents/classic';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 

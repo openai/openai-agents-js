@@ -1,4 +1,9 @@
-import { assistant, system, user, type AgentInputItem } from '@openai/agents';
+import {
+  assistant,
+  system,
+  user,
+  type AgentInputItem,
+} from '@openai/agents/classic';
 import type { UIMessage } from 'ai';
 
 type MessageRole = 'system' | 'user' | 'assistant';

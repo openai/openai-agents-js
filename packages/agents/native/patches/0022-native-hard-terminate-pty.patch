@@ -1,0 +1,100 @@
+--- a/codex-rs/utils/pty/src/process.rs
++++ b/codex-rs/utils/pty/src/process.rs
+@@ -260,6 +260,16 @@
+             && let Some(handle) = h.take()
+         {
+             handle.abort();
++        }
++        #[cfg(unix)]
++        {
++            // Closing the owned master also releases terminal readers outside the child group.
++            let handles = self
++                ._pty_handles
++                .lock()
++                .ok()
++                .and_then(|mut handles| handles.take());
++            drop(handles);
+         }
+         if let Ok(mut h) = self.wait_handle.lock()
+             && let Some(handle) = h.take()
+@@ -479,3 +489,80 @@
+         exit_rx: exit_rx_out,
+     }
+ }
++
++#[cfg(all(test, target_os = "linux"))]
++mod terminal_teardown_regression {
++    use std::collections::HashMap;
++    use std::os::fd::AsRawFd;
++    use std::time::Duration;
++
++    async fn lock_is_released(path: &std::path::Path, duration: Duration) -> bool {
++        let file = std::fs::OpenOptions::new()
++            .read(true)
++            .write(true)
++            .open(path)
++            .unwrap();
++        let deadline = tokio::time::Instant::now() + duration;
++        loop {
++            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
++                unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
++                return true;
++            }
++            if tokio::time::Instant::now() >= deadline {
++                return false;
++            }
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++    }
++
++    #[tokio::test]
++    async fn hard_terminate_closes_retained_terminal_for_detached_reader() -> anyhow::Result<()> {
++        let directory = tempfile::tempdir()?;
++        let lock = directory.path().join("terminal.lock");
++        let ready = directory.path().join("ready");
++        let env = HashMap::from([
++            ("SHELL".to_owned(), "/bin/bash".to_owned()),
++            ("LOCK_PATH".to_owned(), lock.to_string_lossy().into_owned()),
++            (
++                "READY_PATH".to_owned(),
++                ready.to_string_lossy().into_owned(),
++            ),
++        ]);
++        let command = r#"/usr/bin/setsid /usr/bin/timeout --signal=KILL 8s /bin/bash -c 'set -e; exec 3>"$LOCK_PATH"; /usr/bin/flock -n 3; printf ready > "$READY_PATH"; read -r line' <&0 & wait"#;
++        let spawned = crate::spawn_pty_process(
++            "/bin/bash",
++            &["-c".to_owned(), command.to_owned()],
++            directory.path(),
++            &env,
++            &None,
++            crate::TerminalSize::default(),
++            crate::ChildFds::Attached(&[]),
++        )
++        .await?;
++        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
++        while !ready.exists() && tokio::time::Instant::now() < deadline {
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++        let entered = ready.exists();
++        let held = entered && !lock_is_released(&lock, Duration::from_millis(20)).await;
++        spawned.session.terminate();
++        let released = entered && lock_is_released(&lock, Duration::from_secs(1)).await;
++        // Keep the ProcessHandle alive for the regression. Cleanup owns only this PTY;
++        // the child also has an independent bounded lifetime if terminal hangup fails.
++        drop(spawned.session);
++        let cleaned = !entered || lock_is_released(&lock, Duration::from_secs(9)).await;
++        let exit = tokio::time::timeout(Duration::from_secs(2), spawned.exit_rx).await;
++        assert!(entered, "reader did not enter");
++        assert!(
++            held,
++            "fixture reader did not hold its lock before termination"
++        );
++        exit??;
++        assert!(cleaned, "fixture reader retained its lock after cleanup");
++        assert!(
++            released,
++            "hard termination retained the owned PTY master and blocked the reader"
++        );
++        Ok(())
++    }
++}

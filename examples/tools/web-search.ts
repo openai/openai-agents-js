@@ -1,4 +1,4 @@
-import { Agent, run, webSearchTool, withTrace } from '@openai/agents';
+import { Agent, run, webSearchTool, withTrace } from '@openai/agents/classic';
 
 async function main() {
   const agent = new Agent({

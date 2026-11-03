@@ -3,7 +3,7 @@ import {
   type ModelRetrySettings,
   Runner,
   retryPolicies,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { openai } from '@ai-sdk/openai';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 

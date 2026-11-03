@@ -1,4 +1,4 @@
-import { Agent, MemorySession, Runner } from '@openai/agents';
+import { Agent, MemorySession, Runner } from '@openai/agents/classic';
 
 const agent = new Agent({
   name: 'Trip Planner',

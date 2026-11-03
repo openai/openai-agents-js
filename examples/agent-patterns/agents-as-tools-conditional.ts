@@ -1,4 +1,4 @@
-import { Agent, RunContext, run, withTrace } from '@openai/agents';
+import { Agent, RunContext, run, withTrace } from '@openai/agents/classic';
 import { createInterface } from 'node:readline/promises';
 
 const introduction =

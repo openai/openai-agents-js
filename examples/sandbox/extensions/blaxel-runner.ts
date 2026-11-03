@@ -1,4 +1,4 @@
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 import { Manifest, SandboxAgent, shell } from '@openai/agents/sandbox';
 import { BlaxelSandboxClient } from '@openai/agents-extensions/sandbox/blaxel';
 import { finished } from 'node:stream/promises';

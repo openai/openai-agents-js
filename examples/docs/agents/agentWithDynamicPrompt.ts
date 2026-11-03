@@ -1,4 +1,4 @@
-import { Agent, RunContext } from '@openai/agents';
+import { Agent, RunContext } from '@openai/agents/classic';
 
 interface PromptContext {
   customerTier: 'free' | 'pro';

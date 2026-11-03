@@ -1,4 +1,7 @@
-import { isOpenAIResponsesRawModelStreamEvent, run } from '@openai/agents';
+import {
+  isOpenAIResponsesRawModelStreamEvent,
+  run,
+} from '@openai/agents/classic';
 import { agent } from './hostedAgent';
 
 async function main() {

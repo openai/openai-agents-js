@@ -3,7 +3,7 @@ import {
   MCPServerStreamableHttp,
   connectMcpServers,
   run,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 async function main() {
   const servers = [

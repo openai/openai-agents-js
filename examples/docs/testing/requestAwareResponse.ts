@@ -1,9 +1,9 @@
-import { Agent, Runner } from '@openai/agents';
+import { Agent, Runner } from '@openai/agents/classic';
 import {
   ScriptedModel,
   assistantMessage,
   modelResponder,
-} from '@openai/agents/testing';
+} from '@openai/agents/classic/testing';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

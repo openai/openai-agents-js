@@ -1,0 +1,215 @@
+import { encode } from './binding';
+
+/** Observed native failure details. Missing values do not imply safe replay. */
+export interface NativeErrorOptions extends ErrorOptions {
+  statusCode?: number | null;
+  code?: string | null;
+  requestId?: string | null;
+  category?: string | null;
+  retryable?: boolean | null;
+  retryAfterMs?: number | null;
+}
+
+type Metadata = {
+  readonly effects: 'unknown' | 'notStarted' | 'recorded';
+  readonly statusCode: number | null;
+  readonly code: string | null;
+  readonly requestId: string | null;
+  readonly category: string | null;
+  readonly retryable: boolean | null;
+  readonly retryAfterMs: number | null;
+};
+
+// One snapshot permits terminal enrichment without replacing the original Error.
+const metadata = new WeakMap<NativeError, Metadata>();
+
+export class NativeError extends Error {
+  constructor(message: string, options?: NativeErrorOptions) {
+    super(message, options);
+    this.name = new.target.name;
+    metadata.set(this, {
+      effects: 'unknown',
+      statusCode: options?.statusCode ?? null,
+      code: options?.code ?? null,
+      requestId: options?.requestId ?? null,
+      category: options?.category ?? null,
+      retryable: options?.retryable ?? null,
+      retryAfterMs: options?.retryAfterMs ?? null,
+    });
+  }
+
+  /** Effects of this failed operation only; never permission to replay earlier work. */
+  get effects(): 'unknown' | 'notStarted' | 'recorded' {
+    return metadata.get(this)!.effects;
+  }
+
+  get statusCode(): number | null {
+    return metadata.get(this)!.statusCode;
+  }
+  get code(): string | null {
+    return metadata.get(this)!.code;
+  }
+  get requestId(): string | null {
+    return metadata.get(this)!.requestId;
+  }
+  get category(): string | null {
+    return metadata.get(this)!.category;
+  }
+
+  /**
+   * Native error eligibility before attempt limits. This does not mean that
+   * attempts remain or that replaying a whole run is safe. Null means unknown.
+   */
+  get retryable(): boolean | null {
+    return metadata.get(this)!.retryable;
+  }
+
+  /**
+   * Server-advised delay remaining when native code reported the error, in
+   * milliseconds. Null means no advice; zero includes expired advice. This is
+   * a snapshot, not a countdown, and does not grant permission to retry.
+   */
+  get retryAfterMs(): number | null {
+    return metadata.get(this)!.retryAfterMs;
+  }
+}
+
+/** Mark only an SDK-validated native not_submitted receipt, preserving identity. */
+export function markNativeErrorNotStarted<T extends NativeError>(error: T): T {
+  metadata.set(error, { ...metadata.get(error)!, effects: 'notStarted' });
+  return error;
+}
+
+function object(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function category(value: unknown): string | null {
+  let info = object(value)?.codex_error_info;
+  let details: unknown;
+  const tagged = object(info);
+  if (tagged) {
+    const keys = Object.keys(tagged);
+    if (keys.length !== 1) return null;
+    info = keys[0];
+    details = tagged[keys[0]];
+  }
+  if (typeof info !== 'string') return null;
+  const code = info.replace(
+    /[A-Z]/g,
+    (letter, offset) => (offset ? '_' : '') + letter.toLowerCase(),
+  );
+  if (
+    [
+      'http_connection_failed',
+      'response_stream_connection_failed',
+      'response_stream_disconnected',
+      'response_too_many_failed_attempts',
+    ].includes(code)
+  ) {
+    const status = object(details)?.http_status_code;
+    if (typeof status === 'number' && Number.isInteger(status)) {
+      const mapped: Record<number, string> = {
+        401: 'authentication_error',
+        403: 'authentication_error',
+        402: 'usage_limit_exceeded',
+        404: 'resource_not_found',
+        408: 'request_timeout',
+        504: 'request_timeout',
+        429: 'rate_limit_exceeded',
+        503: 'server_overloaded',
+        529: 'server_overloaded',
+      };
+      if (mapped[status]) return mapped[status];
+      if (status >= 400 && status < 500) return 'invalid_request';
+      if (status >= 500 && status < 600) return 'server_error';
+    }
+    return code === 'response_too_many_failed_attempts'
+      ? 'server_error'
+      : 'connection_failed';
+  }
+  const aliases: Record<string, string> = {
+    context_window_exceeded: 'context_length_exceeded',
+    unauthorized: 'authentication_error',
+    bad_request: 'invalid_request',
+    internal_server_error: 'server_error',
+    thread_rollback_failed: 'server_error',
+    other: 'internal_error',
+  };
+  if (Object.hasOwn(aliases, code)) return aliases[code];
+  return [
+    'session_budget_exceeded',
+    'usage_limit_exceeded',
+    'project_spend_limit_exceeded',
+    'organization_spend_limit_exceeded',
+    'organization_usage_limit_exceeded',
+    'billing_not_active',
+    'credit_balance_exhausted',
+    'rate_limit_exceeded',
+    'flex_unavailable',
+    'server_overloaded',
+    'cyber_policy',
+    'misalignment_policy_violation',
+    'sandbox_error',
+    'active_turn_not_steerable',
+  ].includes(code)
+    ? code
+    : null;
+}
+
+/** Replace observed provider fields while retaining independently proved operation effects. */
+export function enrichNativeError(error: NativeError, value: unknown): void {
+  const provider = object(object(value)?._sdk_provider_error);
+  const status = provider?.status_code;
+  const code = provider?.code;
+  const requestId = provider?.request_id;
+  const retryable = provider?.retryable;
+  const retryAfterMs = provider?.retry_after_ms;
+  metadata.set(error, {
+    effects: metadata.get(error)!.effects,
+    statusCode:
+      typeof status === 'number' &&
+      Number.isInteger(status) &&
+      status >= 100 &&
+      status <= 999
+        ? status
+        : null,
+    code:
+      typeof code === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(code)
+        ? code
+        : null,
+    requestId:
+      typeof requestId === 'string' && /^[\x21-\x7e]{1,256}$/.test(requestId)
+        ? requestId
+        : null,
+    category: category(value),
+    retryable: typeof retryable === 'boolean' ? retryable : null,
+    retryAfterMs:
+      typeof retryAfterMs === 'number' &&
+      Number.isSafeInteger(retryAfterMs) &&
+      retryAfterMs >= 0
+        ? retryAfterMs
+        : null,
+  });
+}
+
+/** Convert native data without interpreting provider bodies or display messages. */
+export function nativeError(
+  value: unknown,
+  message?: string,
+  options?: ErrorOptions,
+): NativeError {
+  const publicError = object(value);
+  const fallback = publicError
+    ? Object.fromEntries(
+        Object.entries(publicError).filter(
+          ([key]) => key !== '_sdk_provider_error',
+        ),
+      )
+    : value;
+  const error = new NativeError(message ?? encode(fallback), options);
+  enrichNativeError(error, value);
+  return error;
+}

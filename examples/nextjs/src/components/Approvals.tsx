@@ -1,4 +1,4 @@
-import type { RunToolApprovalItem } from '@openai/agents';
+import type { RunToolApprovalItem } from '@openai/agents/classic';
 import {
   Dialog,
   DialogClose,

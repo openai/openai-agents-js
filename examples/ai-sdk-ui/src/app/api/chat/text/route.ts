@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 import type { UIMessage } from 'ai';
 

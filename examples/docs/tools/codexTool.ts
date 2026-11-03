@@ -1,4 +1,4 @@
-import { Agent } from '@openai/agents';
+import { Agent } from '@openai/agents/classic';
 import { codexTool } from '@openai/agents-extensions/experimental/codex';
 
 export const codexAgent = new Agent({

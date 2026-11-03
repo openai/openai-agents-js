@@ -1,5 +1,10 @@
 import { createOpenRouter } from '@openrouter/ai-sdk-provider';
-import { Agent, getGlobalTraceProvider, run, tool } from '@openai/agents';
+import {
+  Agent,
+  getGlobalTraceProvider,
+  run,
+  tool,
+} from '@openai/agents/classic';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 import { z } from 'zod';
 

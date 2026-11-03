@@ -1,4 +1,4 @@
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, run, tool } from '@openai/agents/classic';
 import { z } from 'zod';
 
 // Tool that returns a random integer between 1 and 10
