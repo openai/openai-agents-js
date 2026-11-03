@@ -54,7 +54,7 @@ Omit `tools` to use the current defaults. Pass `tools: []` to select none. To se
 
 Pass `{ maxModelSteps: 4 }` to `agent.run` or to a new Session submission to allow up to four root model preparations. A value of zero blocks the first preparation. When the budget runs out, the run rejects with `NativeError.code === 'max_model_steps_exceeded'` before the next provider request. A preparation can include transport retries. Child agents and structured-output repairs run separately.
 
-A pending manual checkpoint stores the remaining steps. Resume with `agent.run(null, { state, onInteraction })` to use that allowance. Each independent submission starts with its own budget. If you also supply a `beforeStep` callback, the usual callback checkpoint restrictions apply.
+A pending manual checkpoint stores the remaining steps. Resume with `agent.run(null, { state, onInteraction })` on an SDK version that supports `maxModelSteps` to enforce that allowance. Earlier alpha versions ignore the saved limit. Each independent submission starts with its own budget. If you also supply a `beforeStep` callback, the usual callback checkpoint restrictions apply.
 
 ### Select tools before a model step
 

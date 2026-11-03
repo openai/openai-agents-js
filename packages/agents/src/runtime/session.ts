@@ -5157,14 +5157,14 @@ export class Session<OutputT = string, Context = unknown> {
           this.restored,
           { turns: this.repairTurns, items: this.repairItems },
           {
-            ...(run.selection?.maxModelSteps === undefined
-              ? {}
-              : {
-                  remaining_model_steps:
-                    run.selection.maxModelSteps - run.selection.stepIndex,
-                }),
             manual_continuation: result.manual_continuation,
             manual_context: {
+              ...(run.selection?.maxModelSteps === undefined
+                ? {}
+                : {
+                    remaining_model_steps:
+                      run.selection.maxModelSteps - run.selection.stepIndex,
+                  }),
               instructions: this.threadOptions._managed_instructions
                 ? this.#native._application_instructions()
                 : (this.threadOptions.instructions ?? null),
@@ -5218,10 +5218,7 @@ export class Session<OutputT = string, Context = unknown> {
 
     run.id = state.manual_continuation.turn_id;
     const operation = readCheckpointSelections(state).operation_tools;
-    const remaining =
-      state.format_version === 16 || state.format_version === 17
-        ? state.remaining_model_steps
-        : undefined;
+    const remaining = state.manual_context.remaining_model_steps;
     if (operation !== undefined || remaining !== undefined)
       run.selection = {
         names:

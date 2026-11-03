@@ -62,8 +62,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const options = await providerOptions(server);
       const json = await savePendingLookup(options);
       const state = parseSessionState(json);
-      expect(state.format_version).toBe(16);
-      if (state.format_version !== 16)
+      expect(state.format_version).toBe(9);
+      if (state.format_version !== 9)
         throw new Error('Expected pending lookup state');
       expect(state.manual_continuation.pending_manual).toEqual([
         expect.objectContaining({

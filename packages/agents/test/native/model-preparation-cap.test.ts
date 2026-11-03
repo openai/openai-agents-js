@@ -260,7 +260,9 @@ it.each([1, 2])(
     expect(batch).toHaveProperty('requests');
     const state = parseSessionState(JSON.stringify(await session.suspend()));
     await session.close();
-    expect(state).toMatchObject({ remaining_model_steps: maxModelSteps - 1 });
+    expect(state).toMatchObject({
+      manual_context: { remaining_model_steps: maxModelSteps - 1 },
+    });
     await expect(agent.run(null, { state, maxModelSteps: 5 })).rejects.toThrow(
       'Cannot replace',
     );

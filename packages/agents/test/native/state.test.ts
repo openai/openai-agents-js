@@ -183,52 +183,6 @@ describe('static selection checkpoint envelope', () => {
   const lookup = { name: 'lookup', namespace: 'functions' };
 
   it.each([2, 4] as const)(
-    'preserves a zero budget and native codec %i',
-    (codec) => {
-      const digest = 'sha256:v1:' + '0'.repeat(64);
-      const saved = fromNativeCheckpoint(
-        native(codec),
-        identity,
-        undefined,
-        undefined,
-        { ...manual, remaining_model_steps: 0 },
-        { operation_tools: [lookup] },
-        digest,
-      );
-      expect(saved).toMatchObject({
-        format_version: codec === 2 ? 16 : 17,
-        remaining_model_steps: 0,
-        network_policy_digest: digest,
-      });
-      const decoded = parseSessionState(JSON.stringify(saved));
-      expect(readCheckpointSelections(decoded).operation_tools).toEqual([
-        lookup,
-      ]);
-      const payload = nativeCheckpoint(decoded);
-      expect(payload.format_version).toBe(codec);
-      expect(payload).not.toHaveProperty('remaining_model_steps');
-      for (const value of [
-        undefined,
-        -1,
-        1.5,
-        '0',
-        Number.MAX_SAFE_INTEGER + 1,
-      ]) {
-        expect(() =>
-          parseSessionState(
-            JSON.stringify({ ...saved, remaining_model_steps: value }),
-          ),
-        ).toThrow();
-      }
-      expect(() =>
-        parseSessionState(
-          JSON.stringify({ ...saved, format_version: codec === 2 ? 13 : 15 }),
-        ),
-      ).toThrow();
-    },
-  );
-
-  it.each([2, 4] as const)(
     'keeps native codec %i and rejects downgrade to an old reader',
     (codec) => {
       const saved = fromNativeCheckpoint(

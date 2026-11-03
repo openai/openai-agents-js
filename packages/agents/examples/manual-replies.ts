@@ -55,9 +55,7 @@ export async function resumeLookup(
     state.format_version !== 9 &&
     state.format_version !== 11 &&
     state.format_version !== 13 &&
-    state.format_version !== 15 &&
-    state.format_version !== 16 &&
-    state.format_version !== 17
+    state.format_version !== 15
   )
     throw new TypeError('Expected a pending manual checkpoint.');
   await using provider = new NativeProvider(options);
