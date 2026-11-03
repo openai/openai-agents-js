@@ -50,6 +50,12 @@ Use `session.submit(input, { tools, beforeStep })` to select tools for one new r
 
 Omit `tools` to use the current defaults. Pass `tools: []` to select none. To select one tool, pass an array containing its declaration, such as `tools: [lookup]`, or its exact reference, such as `tools: [toolRef('lookup', 'crm')]` for an admitted MCP tool. An omitted or null namespace means `functions`.
 
+### Limit model steps
+
+Pass `{ maxModelSteps: 4 }` to `agent.run` or to a new Session submission to allow up to four root model preparations. A value of zero blocks the first preparation. When the budget runs out, the run rejects with `NativeError.code === 'max_model_steps_exceeded'` before the next provider request. A preparation can include transport retries. Child agents and structured-output repairs run separately.
+
+A pending manual checkpoint stores the remaining steps. Resume with `agent.run(null, { state, onInteraction })` to use that allowance. Each independent submission starts with its own budget. If you also supply a `beforeStep` callback, the usual callback checkpoint restrictions apply.
+
 ### Select tools before a model step
 
 `beforeStep` receives the issued Turn, application context, zero-based `stepIndex`, and an AbortSignal. Return a subset of the tools selected for the root. Return `undefined` to allow that full set for the step. Selection limits eligibility and leaves tool choice to the model.

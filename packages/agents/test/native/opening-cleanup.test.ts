@@ -50,7 +50,8 @@ vi.mock('../../src/runtime/http-model', () => ({
     close = fixture.carrierClose;
   },
 }));
-vi.mock('../../src/runtime/session', () => ({
+vi.mock('../../src/runtime/session', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/runtime/session')>()),
   InteractionRequired: class extends Error {},
   Session: class {
     constructor(

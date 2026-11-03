@@ -29,6 +29,7 @@ export async function savePendingLookup(
   // Capture a static operation selection, not a preparation callback.
   const turn = await session.submit('Find the label for record-a.', {
     tools: [lookup],
+    maxModelSteps: 4,
   });
   const outcome = await turn.wait({ until: 'request' });
   if (!('requests' in outcome))
@@ -54,7 +55,9 @@ export async function resumeLookup(
     state.format_version !== 9 &&
     state.format_version !== 11 &&
     state.format_version !== 13 &&
-    state.format_version !== 15
+    state.format_version !== 15 &&
+    state.format_version !== 16 &&
+    state.format_version !== 17
   )
     throw new TypeError('Expected a pending manual checkpoint.');
   await using provider = new NativeProvider(options);

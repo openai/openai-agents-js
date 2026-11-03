@@ -2785,14 +2785,8 @@ impl NativeThread {
                     .map_err(native_error)
             })
             .transpose()?;
-        if selection
-            .as_ref()
-            .is_some_and(|selection| selection.before_step)
-        {
-            return Err(native_error(
-                "manual continuation recovery requires static selection",
-            ));
-        }
+        // A restored root can use step preparation to enforce its remaining
+        // SDK budget. The SDK never serializes an application callback.
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         inner

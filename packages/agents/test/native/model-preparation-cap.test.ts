@@ -1,6 +1,13 @@
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
-import { Agent, NativeProvider, manualTool, tool, type Turn } from '../../src';
+import {
+  Agent,
+  NativeProvider,
+  manualTool,
+  parseSessionState,
+  tool,
+  type Turn,
+} from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
@@ -227,3 +234,78 @@ it('keeps preparation indices through live steering and its original manual repl
     release.resolve();
   }
 }, 30_000);
+
+it.each([1, 2])(
+  'restores the remaining model steps after manual suspension (limit %i)',
+  async (maxModelSteps) => {
+    const decision = manualTool({
+      name: 'decision',
+      description: 'Request approval',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const server = new ModelServer([
+      [call('decision', {}, { callId: 'approval' })],
+      [message('finished')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Request approval and finish.',
+      tools: [decision],
+      provider,
+    });
+    await using session = await agent.session();
+    const turn = await session.submit('go', { maxModelSteps });
+    const batch = await turn.wait({ until: 'request' });
+    expect(batch).toHaveProperty('requests');
+    const state = parseSessionState(JSON.stringify(await session.suspend()));
+    await session.close();
+    expect(state).toMatchObject({ remaining_model_steps: maxModelSteps - 1 });
+    await expect(agent.run(null, { state, maxModelSteps: 5 })).rejects.toThrow(
+      'Cannot replace',
+    );
+    const resumed = agent.run(null, {
+      state,
+      onInteraction(action) {
+        return decision.match(action)!.reply('approved');
+      },
+    });
+    if (maxModelSteps === 1) {
+      await expect(resumed).rejects.toMatchObject({
+        code: 'max_model_steps_exceeded',
+        retryable: false,
+      });
+    } else {
+      await expect(resumed).resolves.toMatchObject({ finalOutput: 'finished' });
+      expect(JSON.stringify(server.requests[1]!.input)).toContain('approved');
+    }
+    expect(server.requests).toHaveLength(maxModelSteps);
+  },
+  30_000,
+);
+
+it('enforces one-shot limits before sampling and gives a new run its own budget', async () => {
+  const server = new ModelServer([[message('one')]]);
+  await using provider = await providerFor(server);
+  // A session factory may rebuild its opening options. The limit belongs
+  // to the subsequent submission even when that factory forwards no options.
+  class CustomAgent extends Agent {
+    override session() {
+      return super.session();
+    }
+  }
+  const agent = new CustomAgent({ instructions: 'Answer.', provider });
+  for (const maxModelSteps of [-1, 1.5, NaN, Infinity, 2 ** 53]) {
+    await expect(agent.run('invalid', { maxModelSteps })).rejects.toThrow(
+      'nonnegative safe integer',
+    );
+  }
+  await expect(agent.run('zero', { maxModelSteps: 0 })).rejects.toMatchObject({
+    code: 'max_model_steps_exceeded',
+  });
+  expect(server.requests).toHaveLength(0);
+  await expect(agent.run('one', { maxModelSteps: 1 })).resolves.toMatchObject({
+    finalOutput: 'one',
+  });
+  server.assertExhausted();
+});

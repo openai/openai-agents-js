@@ -302,6 +302,7 @@ const nativeCheckpointSchema = checkpointTreeSchema
         'repair_items',
         'manual_continuation',
         'manual_context',
+        'remaining_model_steps',
         'operation_tools',
         'default_tools',
         'network_policy_digest',
@@ -332,6 +333,24 @@ export function parseNativeCheckpoint(source: unknown): NativeCheckpoint {
 
 export const sessionStateSchema = z
   .discriminatedUnion('format_version', [
+    z
+      .object({
+        // Budgeted manual roots. Older readers reject these versions instead
+        // of silently granting a fresh budget; 17 retains the native VM codec.
+        format_version: z.union([z.literal(16), z.literal(17)]),
+        ...rootState,
+        ...treeState,
+        ...sdkOutputState,
+        ...checkpointSelectionFields,
+        network_policy_digest: z
+          .string()
+          .regex(/^sha256:v1:[a-f0-9]{64}$/)
+          .optional(),
+        manual_continuation: manualContinuationSchema,
+        manual_context: manualContextSchema,
+        remaining_model_steps: z.number().int().nonnegative().safe(),
+      })
+      .catchall(jsonValue),
     z
       .object({
         format_version: z.literal(12),
@@ -473,6 +492,11 @@ export const sessionStateSchema = z
     const aware = state.format_version !== 2 && state.format_version !== 3;
     const network = state.format_version >= 12;
     const selected = state.format_version >= 8 && state.format_version <= 11;
+    if (state.format_version < 16 && 'remaining_model_steps' in state)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Model step budget requires a budgeted manual checkpoint',
+      });
     const hasSelection = 'operation_tools' in state || 'default_tools' in state;
     if (!network && selected !== hasSelection)
       ctx.addIssue({
@@ -502,6 +526,7 @@ export const sessionStateSchema = z
       state.format_version !== 11 &&
       state.format_version !== 14 &&
       state.format_version !== 15 &&
+      state.format_version !== 17 &&
       (state.root_code_mode != null ||
         state.descendants.some((child) => child.code_mode != null))
     )
@@ -561,6 +586,8 @@ export const sessionStateSchema = z
       state.format_version !== 11 &&
       state.format_version !== 13 &&
       state.format_version !== 15 &&
+      state.format_version !== 16 &&
+      state.format_version !== 17 &&
       ('manual_continuation' in state || 'manual_context' in state)
     ) {
       ctx.addIssue({
@@ -575,7 +602,9 @@ export const sessionStateSchema = z
       state.format_version === 9 ||
       state.format_version === 11 ||
       state.format_version === 13 ||
-      state.format_version === 15
+      state.format_version === 15 ||
+      state.format_version === 16 ||
+      state.format_version === 17
     ) {
       const continuation = state.manual_continuation;
       const pending = continuation.pending_manual.map((call) => call.call_id);
@@ -685,7 +714,7 @@ export type SessionState = z.infer<typeof sessionStateSchema>;
 /** Existing manual owner, with or without an SDK output envelope. */
 export type ManualSessionState = Extract<
   SessionState,
-  { format_version: 3 | 5 | 7 | 9 | 11 | 13 | 15 }
+  { format_version: 3 | 5 | 7 | 9 | 11 | 13 | 15 | 16 | 17 }
 >;
 export function isManualSessionState(
   state: SessionState | null | undefined,
@@ -697,14 +726,19 @@ export function isManualSessionState(
     state?.format_version === 9 ||
     state?.format_version === 11 ||
     state?.format_version === 13 ||
-    state?.format_version === 15
+    state?.format_version === 15 ||
+    state?.format_version === 16 ||
+    state?.format_version === 17
   );
 }
 export function isOutputAwareState(
   state: SessionState | null | undefined,
 ): state is Extract<
   SessionState,
-  { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 }
+  {
+    format_version:
+      4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17;
+  }
 > {
   return (
     state?.format_version === 4 ||
@@ -718,7 +752,9 @@ export function isOutputAwareState(
     state?.format_version === 12 ||
     state?.format_version === 13 ||
     state?.format_version === 14 ||
-    state?.format_version === 15
+    state?.format_version === 15 ||
+    state?.format_version === 16 ||
+    state?.format_version === 17
   );
 }
 /** @internal Read static SDK overlays only after the versioned state validator. */
@@ -733,7 +769,9 @@ export function readCheckpointSelections(
     state?.format_version === 12 ||
     state?.format_version === 13 ||
     state?.format_version === 14 ||
-    state?.format_version === 15
+    state?.format_version === 15 ||
+    state?.format_version === 16 ||
+    state?.format_version === 17
   )
     return {
       ...(state.default_tools === undefined
@@ -802,7 +840,10 @@ function outputStateFields(
   receipts:
     | Extract<
         SessionState,
-        { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 }
+        {
+          format_version:
+            4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17;
+        }
       >
     | undefined,
   repairs: OutputRepairs | undefined,
@@ -824,7 +865,11 @@ export function fromNativeCheckpoint(
   identity: OutputIdentity,
   prior?: SessionState | null,
   repairs?: OutputRepairs,
-  manual?: { manual_continuation: unknown; manual_context: unknown },
+  manual?: {
+    manual_continuation: unknown;
+    manual_context: unknown;
+    remaining_model_steps?: number;
+  },
   selection: CheckpointSelections = {},
   networkPolicy: string | undefined = undefined,
 ): SessionState {
@@ -833,14 +878,18 @@ export function fromNativeCheckpoint(
     ...manual,
     ...selection,
     format_version:
-      networkPolicy === undefined
-        ? (state.format_version === 4 ? 6 : 4) +
-          (manual ? 1 : 0) +
-          (selection.operation_tools !== undefined ||
-          selection.default_tools !== undefined
-            ? 4
-            : 0)
-        : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
+      manual?.remaining_model_steps !== undefined
+        ? state.format_version === 4
+          ? 17
+          : 16
+        : networkPolicy === undefined
+          ? (state.format_version === 4 ? 6 : 4) +
+            (manual ? 1 : 0) +
+            (selection.operation_tools !== undefined ||
+            selection.default_tools !== undefined
+              ? 4
+              : 0)
+          : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
     ...(networkPolicy === undefined
       ? {}
       : { network_policy_digest: networkPolicy }),
@@ -858,6 +907,7 @@ export function nativeCheckpoint(state: SessionState) {
     manual_continuation: _continuation,
     manual_context: _context,
     output_context: _output,
+    remaining_model_steps: _remaining,
     operation_tools: _operation,
     default_tools: _defaults,
     network_policy_digest: _network,
@@ -873,7 +923,8 @@ export function nativeCheckpoint(state: SessionState) {
       state.format_version === 10 ||
       state.format_version === 11 ||
       state.format_version === 14 ||
-      state.format_version === 15
+      state.format_version === 15 ||
+      state.format_version === 17
         ? 4
         : 2,
   };
