@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent report service</title>
+    <style>
+      body {
+        font:
+          16px system-ui,
+          sans-serif;
+        max-width: 52rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      label {
+        display: block;
+        margin-top: 1rem;
+      }
+      input,
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 0.5rem;
+        font: inherit;
+      }
+      button {
+        margin: 0.5rem 0.5rem 0.5rem 0;
+        padding: 0.5rem 0.75rem;
+        font: inherit;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        background: #f4f4f4;
+        padding: 1rem;
+      }
+      #message {
+        min-height: 1.5rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Agent report service</h1>
+    <p>
+      A reader can disconnect while the worker continues. Stop cancels the job
+      and waits for cleanup.
+    </p>
+    <label for="token">Local demo token</label>
+    <input id="token" type="password" autocomplete="off" />
+    <p>
+      The token stays in this page's memory. Model credentials stay on the
+      server.
+    </p>
+    <form id="start-form">
+      <label for="prompt">Report request</label>
+      <textarea id="prompt" rows="3" maxlength="2000" required>
+Write a short report about reliable agent applications. Ask me to choose the audience first.</textarea>
+      <button id="start">Start job</button>
+    </form>
+    <p>Job: <code id="job-id">none</code></p>
+    <p>
+      Status: <strong id="status">idle</strong> · Reader:
+      <span id="reader-status">disconnected</span>
+    </p>
+    <button id="connect" disabled>Reconnect reader</button>
+    <button id="disconnect" disabled>Disconnect reader</button>
+    <button id="stop" disabled>Stop job</button>
+    <button id="download" disabled>Download report</button>
+    <p id="message" role="status"></p>
+    <section aria-label="Pending choices" id="choices"></section>
+    <h2>Provisional text (last 16,000 characters)</h2>
+    <pre id="draft">No text received.</pre>
+    <h2>Validated result</h2>
+    <pre id="result">No completed result.</pre>
+    <script type="module">
+      const element = (id) => document.getElementById(id);
+      const terminal = new Set(['completed', 'failed', 'stopped']);
+      let jobId;
+      let snapshot;
+      let connection;
+      let sequence = 0;
+      let draft = '';
+
+      function controls() {
+        element('start').disabled = Boolean(
+          jobId && !terminal.has(snapshot?.status),
+        );
+        element('connect').disabled = !jobId || Boolean(connection);
+        element('disconnect').disabled = !connection;
+        element('stop').disabled = !jobId || terminal.has(snapshot?.status);
+        element('download').disabled = !snapshot?.artifactAvailable;
+      }
+
+      function message(text) {
+        element('message').textContent = text;
+      }
+
+      async function request(path, options = {}) {
+        const response = await fetch(path, {
+          ...options,
+          headers: {
+            Authorization: `Bearer ${element('token').value}`,
+            ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+          },
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw Object.assign(
+            new Error(
+              typeof body.error === 'string'
+                ? body.error
+                : `Request failed (${response.status}).`,
+            ),
+            { status: response.status },
+          );
+        }
+        return response;
+      }
+
+      function showSnapshot(value) {
+        if (value.id !== jobId) return;
+        if (!Number.isSafeInteger(value.revision) || value.revision < 1)
+          throw new Error('Invalid snapshot revision.');
+        if (snapshot && value.revision <= snapshot.revision) return;
+        snapshot = value;
+        element('status').textContent = value.status;
+        element('result').textContent = value.result
+          ? JSON.stringify(value.result, null, 2)
+          : 'No completed result.';
+        element('choices').replaceChildren();
+        for (const choice of value.pending) {
+          const group = document.createElement('div');
+          const prompt = document.createElement('p');
+          prompt.textContent = choice.prompt;
+          group.append(prompt);
+          for (const audience of ['general', 'technical']) {
+            const button = document.createElement('button');
+            button.textContent =
+              audience === 'general'
+                ? 'General audience'
+                : 'Technical audience';
+            button.addEventListener('click', async () => {
+              const selectedJob = jobId;
+              for (const sibling of group.querySelectorAll('button'))
+                sibling.disabled = true;
+              try {
+                const response = await request(
+                  `/jobs/${selectedJob}/replies/${choice.id}`,
+                  {
+                    method: 'POST',
+                    body: JSON.stringify({ audience }),
+                  },
+                );
+                if (jobId === selectedJob) showSnapshot(await response.json());
+              } catch (error) {
+                if (jobId === selectedJob)
+                  message(
+                    `${error.message} Reconnect to check current choices.`,
+                  );
+              }
+            });
+            group.append(button);
+          }
+          element('choices').append(group);
+        }
+        if (value.error) message(`Job failed: ${value.error}`);
+        controls();
+      }
+
+      function disconnect() {
+        connection?.abort();
+        connection = undefined;
+        element('reader-status').textContent = 'disconnected';
+        controls();
+      }
+
+      // This decoder handles the service's single-line JSON data and LF frames.
+      // Bound each frame and unfinished fragment; it is not a general SSE client.
+      function frame(text) {
+        if (text.length > 65536)
+          throw new Error(
+            'Stream frame is too large. Reconnect to get a snapshot.',
+          );
+        const fields = Object.fromEntries(
+          text
+            .split('\n')
+            .filter((line) => line.includes(':'))
+            .map((line) => {
+              const index = line.indexOf(':');
+              return [line.slice(0, index), line.slice(index + 1).trimStart()];
+            }),
+        );
+        if (!fields.data) return;
+        const data = JSON.parse(fields.data);
+        if (fields.event === 'snapshot') showSnapshot(data);
+        if (fields.event === 'reset') {
+          draft = '';
+          element('draft').textContent =
+            'Earlier text is unavailable. Current state is in the snapshot.';
+        }
+        if (fields.event === 'text') {
+          const next = Number(fields.id);
+          if (
+            !Number.isSafeInteger(next) ||
+            next < 0 ||
+            typeof data.text !== 'string'
+          )
+            throw new Error('Invalid text frame.');
+          sequence = next;
+          draft = Array.from(draft + data.text)
+            .slice(-16000)
+            .join('');
+          element('draft').textContent = draft;
+        }
+      }
+
+      async function connect() {
+        disconnect();
+        const selectedJob = jobId;
+        const controller = new AbortController();
+        connection = controller;
+        element('reader-status').textContent = 'connecting';
+        controls();
+        try {
+          const current = await request(`/jobs/${selectedJob}`, {
+            signal: controller.signal,
+          });
+          if (connection !== controller) return;
+          showSnapshot(await current.json());
+          const response = await request(
+            `/jobs/${selectedJob}/events?after=${sequence}`,
+            { signal: controller.signal },
+          );
+          if (connection !== controller) {
+            await response.body.cancel();
+            return;
+          }
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          element('reader-status').textContent = 'connected';
+          try {
+            while (connection === controller) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              let end;
+              while ((end = buffer.indexOf('\n\n')) !== -1) {
+                if (connection !== controller) break;
+                frame(buffer.slice(0, end));
+                buffer = buffer.slice(end + 2);
+              }
+              if (buffer.length > 65536)
+                throw new Error(
+                  'Stream fragment is too large. Reconnect to get a snapshot.',
+                );
+            }
+          } finally {
+            await reader.cancel().catch(() => {});
+            reader.releaseLock();
+          }
+        } catch (error) {
+          if (!controller.signal.aborted && jobId === selectedJob) {
+            message(error.message);
+            if (error.status === 404) {
+              jobId = undefined;
+              snapshot = undefined;
+              element('status').textContent = 'unavailable';
+            }
+          }
+        } finally {
+          if (connection === controller) disconnect();
+        }
+      }
+
+      element('start-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        disconnect();
+        jobId = crypto.randomUUID();
+        snapshot = undefined;
+        sequence = 0;
+        draft = '';
+        element('job-id').textContent = jobId;
+        element('status').textContent = 'starting';
+        element('draft').textContent = 'No text received.';
+        element('result').textContent = 'No completed result.';
+        element('choices').replaceChildren();
+        message('');
+        controls();
+        try {
+          const response = await request(`/jobs/${jobId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ prompt: element('prompt').value }),
+          });
+          showSnapshot(await response.json());
+          await connect();
+        } catch (error) {
+          if ([400, 401, 403, 413, 429].includes(error.status)) {
+            jobId = undefined;
+            element('status').textContent = 'not started';
+            message(error.message);
+            controls();
+          } else {
+            message(
+              `${error.message} Reconnect using this job ID to check whether it started.`,
+            );
+          }
+        }
+      });
+      element('connect').addEventListener('click', connect);
+      element('disconnect').addEventListener('click', () => {
+        disconnect();
+        message('Reader disconnected. The worker continues.');
+      });
+      element('token').addEventListener('input', disconnect);
+      element('stop').addEventListener('click', async () => {
+        const selectedJob = jobId;
+        element('stop').disabled = true;
+        try {
+          const response = await request(`/jobs/${selectedJob}/stop`, {
+            method: 'POST',
+          });
+          if (jobId === selectedJob) showSnapshot(await response.json());
+        } catch (error) {
+          if (jobId === selectedJob) message(error.message);
+        }
+        controls();
+      });
+      element('download').addEventListener('click', async () => {
+        try {
+          const response = await request(`/jobs/${jobId}/artifact`);
+          const url = URL.createObjectURL(await response.blob());
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = 'report.json';
+          link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+        } catch (error) {
+          message(error.message);
+        }
+      });
+      addEventListener('pagehide', disconnect);
+    </script>
+  </body>
+</html>

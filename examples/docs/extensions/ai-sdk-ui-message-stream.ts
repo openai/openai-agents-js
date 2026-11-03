@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 import { createAiSdkUiMessageStream } from '@openai/agents-extensions/ai-sdk-ui';
 
 const agent = new Agent({

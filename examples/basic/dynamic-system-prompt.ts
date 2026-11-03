@@ -1,4 +1,4 @@
-import { Agent, RunContext, run } from '@openai/agents';
+import { Agent, RunContext, run } from '@openai/agents/classic';
 
 type Style = 'haiku' | 'pirate' | 'robot';
 

@@ -4,7 +4,7 @@ import {
   OpenAIResponsesCompactionSession,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { fetchImageData } from './tools.ts';
 
 async function main() {

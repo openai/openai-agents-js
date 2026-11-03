@@ -6,7 +6,7 @@ import {
   RunToolApprovalItem,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
 import { FileSession } from './sessions/index.ts';

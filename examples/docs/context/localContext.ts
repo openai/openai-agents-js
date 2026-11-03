@@ -1,4 +1,4 @@
-import { Agent, run, RunContext, tool } from '@openai/agents';
+import { Agent, run, RunContext, tool } from '@openai/agents/classic';
 import { z } from 'zod';
 
 interface UserInfo {

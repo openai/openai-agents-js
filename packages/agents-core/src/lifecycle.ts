@@ -5,7 +5,7 @@ import {
   RuntimeEventEmitter,
   EventEmitter,
   EventEmitterEvents,
-} from '@openai/agents-core/_shims';
+} from '@openai/agents-core/_shims/runtime';
 import { AgentInputItem, TextOutput, UnknownContext } from './types';
 import * as protocol from './types/protocol';
 
@@ -148,7 +148,7 @@ export type RunHookEvents<
   agent_tool_start: [
     context: RunContext<TContext>,
     agent: Agent<TContext, TOutput>,
-    tool: Tool,
+    tool: Tool<TContext>,
     details: { toolCall: protocol.ToolCallItem },
   ];
   /**
@@ -160,7 +160,7 @@ export type RunHookEvents<
   agent_tool_end: [
     context: RunContext<TContext>,
     agent: Agent<TContext, TOutput>,
-    tool: Tool,
+    tool: Tool<TContext>,
     result: string,
     details: { toolCall: protocol.ToolCallItem },
   ];

@@ -1,4 +1,4 @@
-import { Agent, run, type JsonSchemaDefinition } from '@openai/agents';
+import { Agent, run, type JsonSchemaDefinition } from '@openai/agents/classic';
 
 const WeatherSchema: JsonSchemaDefinition = {
   type: 'json_schema',

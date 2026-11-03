@@ -3,7 +3,7 @@ import {
   OpenAIChatCompletionsModel,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import OpenAI from 'openai';
 import { z } from 'zod';
 

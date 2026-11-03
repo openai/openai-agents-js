@@ -1,4 +1,4 @@
-import { withTrace } from '@openai/agents';
+import { withTrace } from '@openai/agents/classic';
 import { FinancialResearchManager } from './manager.ts';
 
 // Entrypoint for the financial bot example.

@@ -1,3 +1,4 @@
+import { isMcpObserverFailure } from './mcp-observation';
 import type { Agent } from './agent';
 import type { Computer } from './computer';
 import type { Shell, ShellAction } from './shell';
@@ -18,7 +19,7 @@ import {
   isSiblingCancellationSignal,
 } from './utils/abortSignals';
 import { RunContext } from './runContext';
-import type { RunConfig } from './run';
+import type { RunConfig, Runner } from './run';
 import type { RunResult } from './result';
 import { ToolTimeoutError, UserError } from './errors';
 import {
@@ -72,6 +73,10 @@ import {
 } from './toolGuardrail';
 import type { ToolOutputCustomDataExtractor } from './utils/customData';
 import {
+  getAgentToolSourceAgent,
+  hasOriginalAgentToolInvocation,
+} from './agentToolSourceRegistry';
+import {
   normalizeToolAllowedCallers,
   type ToolAllowedCallers,
 } from './utils/toolCallers';
@@ -119,6 +124,10 @@ export const FUNCTION_TOOL_PARSED_INPUT_CALLBACK = Symbol(
 export const FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK = Symbol(
   'openai.agents.functionToolInvalidOutputFailureCallback',
 );
+// Kept on one invocation so importing a runtime cannot change other Agent.asTool calls.
+export const AGENT_TOOL_RUNNER_FACTORY = Symbol(
+  'openai.agents.agentToolRunnerFactory',
+);
 const FUNCTION_TOOL_OUTPUT_VALIDATOR = Symbol(
   'openai.agents.functionToolOutputValidator',
 );
@@ -129,6 +138,10 @@ type FunctionToolInputParserRegistration = {
   parser: (input: string) => any;
   token: object;
   validationMode: 'standard' | 'other';
+  migration?: (
+    tool: FunctionTool<any, any, any>,
+    allowApproval: boolean,
+  ) => { enabled: boolean; approval?: boolean };
 };
 
 type FunctionToolInputParseResult =
@@ -242,6 +255,10 @@ export type ToolCallDetails = {
    * Internal: parent runner config for nested agent-tool runs (Agent.asTool).
    */
   parentRunConfig?: Partial<RunConfig>;
+  [AGENT_TOOL_RUNNER_FACTORY]?: (
+    config: Partial<RunConfig>,
+    options: { maxPendingEvents: number | null },
+  ) => Pick<Runner, 'run'>;
 };
 
 export type FunctionToolCustomDataContext<
@@ -2475,6 +2492,7 @@ export function tool<
     details?: ToolCallDetails,
   ): Promise<string | ToolExecuteResult<TOutputSchema, Result>> {
     return _invoke(runContext, input, details).catch(async (error) => {
+      if (isMcpObserverFailure(error)) throw error.cause;
       if (
         details?.signal?.aborted &&
         (isSiblingCancellationSignal(details.signal) ||
@@ -2638,16 +2656,8 @@ export function tool<
   if (typeof options.needsApproval !== 'function') {
     STATIC_FUNCTION_TOOL_APPROVAL_POLICIES.add(needsApproval);
   }
-  functionToolInputParsers.set(invoke, {
-    parser,
-    token: inputParserToken,
-    validationMode:
-      !isZodObject(options.parameters) &&
-      isStandardSchemaWithJSON(options.parameters)
-        ? 'standard'
-        : 'other',
-  });
 
+  const migrationEnabledDynamic = typeof options.isEnabled === 'function';
   const isEnabled: ToolEnabledFunction<Context> =
     typeof options.isEnabled === 'function'
       ? async (runContext, agent) => {
@@ -2657,6 +2667,66 @@ export function tool<
         }
       : async () =>
           typeof options.isEnabled === 'boolean' ? options.isEnabled : true;
+
+  functionToolInputParsers.set(invoke, {
+    migration(tool, allowApproval) {
+      const literal = (key: string) => {
+        const descriptor = Object.getOwnPropertyDescriptor(options, key);
+        if (descriptor && !('value' in descriptor))
+          throw new TypeError(`Migration cannot inspect tool option ${key}`);
+        return descriptor?.value;
+      };
+      const approval = literal('needsApproval');
+      const enabled = literal('isEnabled');
+      if (
+        migrationEnabledDynamic ||
+        tool.needsApproval !== needsApproval ||
+        tool.isEnabled !== isEnabled ||
+        hasDynamicFunctionToolApprovalPolicy(tool) ||
+        (approval !== undefined &&
+          approval !== false &&
+          !(allowApproval && approval === true)) ||
+        (enabled !== undefined && typeof enabled !== 'boolean')
+      )
+        throw new TypeError(
+          'Migration requires static enabled and approval-free function tools',
+        );
+      if (
+        tool.timeoutMs !== timeoutMs ||
+        tool.timeoutBehavior !== timeoutBehavior ||
+        tool.timeoutErrorFunction !== timeoutErrorFunction ||
+        toolErrorFunction !== defaultToolErrorFunction ||
+        hasOutputSchema ||
+        timeoutMs !== undefined ||
+        literal('timeoutMs') !== undefined ||
+        literal('timeoutErrorFunction') !== undefined ||
+        literal('timeoutBehavior') !== undefined ||
+        literal('errorFunction') !== undefined ||
+        literal('outputSchema') !== undefined ||
+        tool.customDataExtractor !== undefined ||
+        literal('customDataExtractor') !== undefined ||
+        (literal('inputGuardrails') !== undefined &&
+          !Array.isArray(literal('inputGuardrails'))) ||
+        (literal('outputGuardrails') !== undefined &&
+          !Array.isArray(literal('outputGuardrails'))) ||
+        tool[FUNCTION_TOOL_OUTPUT_VALIDATOR] !== undefined
+      )
+        throw new TypeError(
+          'Migration does not support custom function output, error or timeout policies',
+        );
+      return {
+        enabled: enabled !== false,
+        ...(allowApproval ? { approval: approval === true } : {}),
+      };
+    },
+    parser,
+    token: inputParserToken,
+    validationMode:
+      !isZodObject(options.parameters) &&
+      isStandardSchemaWithJSON(options.parameters)
+        ? 'standard'
+        : 'other',
+  });
 
   return {
     type: 'function',
@@ -2788,4 +2858,24 @@ function toMcpAllowedToolsFilter(
     return { tool_names: allowedTools };
   }
   return { tool_names: allowedTools?.toolNames ?? [] };
+}
+
+/** Inspect factory-owned policies without executing application callbacks. */
+export function inspectFunctionToolForMigration(
+  tool: FunctionTool<any, any, any>,
+  options: { allowApproval?: boolean; allowAgentTools?: boolean } = {},
+) {
+  const inspect = functionToolInputParsers.get(tool.invoke)?.migration;
+  const sourceAgent = getAgentToolSourceAgent(tool);
+  if (
+    !inspect ||
+    ((AGENT_TOOL_RUNNER_FACTORY in tool || sourceAgent) &&
+      (!options.allowAgentTools ||
+        !sourceAgent ||
+        !hasOriginalAgentToolInvocation(tool)))
+  )
+    throw new TypeError(
+      'Migration requires an ordinary registered classic function tool',
+    );
+  return { ...inspect(tool, options.allowApproval ?? false), sourceAgent };
 }

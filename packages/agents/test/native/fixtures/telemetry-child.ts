@@ -1,0 +1,247 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { Worker } from 'node:worker_threads';
+import { join } from 'node:path';
+import { z } from 'zod';
+import { Agent, NativeProvider, telemetry, tool } from '../../../src';
+import { binding } from '../../../src/runtime/binding';
+import { ModelServer, call, message } from './model-server';
+
+async function main() {
+  const mode = process.argv[2];
+  const native = await binding();
+  const failedEngine = () =>
+    native.create_engine('{"not_a_native_option":true}', '{}', null);
+  const once = 'Codex telemetry can only be configured once per process';
+  const late = 'Configure telemetry before creating any Codex clients';
+  if (mode === 'lifecycle') {
+    await assert.rejects(
+      telemetry.shutdown(),
+      /Configure telemetry successfully/,
+    );
+    await assert.rejects(
+      telemetry.configure({ logs: { kind: 'otlp-http', endpoint: '' } }),
+      /logs endpoint/,
+    );
+    await telemetry.configure();
+    await assert.rejects(telemetry.configure(), { message: once });
+    await telemetry.shutdown();
+    await telemetry.shutdown();
+    await assert.rejects(failedEngine(), /shut down or failed to initialize/);
+    await assert.rejects(telemetry.configure(), { message: once });
+  } else if (mode === 'preclaim') {
+    await assert.rejects(
+      native.configure_telemetry('{"not_a_native_option":true}'),
+      /Native telemetry operation failed/,
+    );
+    await telemetry.configure();
+    await telemetry.shutdown();
+  } else if (mode === 'late') {
+    await assert.rejects(failedEngine());
+    await assert.rejects(telemetry.configure(), { message: late });
+  } else if (mode === 'postclaim') {
+    const secret = 'synthetic-secret-must-not-escape';
+    await assert.rejects(
+      telemetry.configure({
+        logs: {
+          kind: 'otlp-http',
+          endpoint: 'https://127.0.0.1:9',
+          tls: { caCertificate: `/missing/${secret}` },
+        },
+      }),
+      (error: unknown) => {
+        assert(error instanceof Error);
+        assert(!String(error).includes(secret));
+        assert.equal(error.cause, undefined);
+        return true;
+      },
+    );
+    await assert.rejects(telemetry.configure(), { message: once });
+    await assert.rejects(failedEngine(), /shut down or failed to initialize/);
+    await assert.rejects(
+      telemetry.shutdown(),
+      /Configure telemetry successfully/,
+    );
+  } else if (mode === 'race') {
+    const results = await Promise.allSettled([
+      telemetry.configure(),
+      failedEngine(),
+    ]);
+    assert.equal(results[1].status, 'rejected');
+    if (results[0].status === 'fulfilled') {
+      await telemetry.shutdown();
+    } else {
+      assert.equal(results[0].reason.message, late);
+      await assert.rejects(telemetry.configure(), { message: late });
+    }
+  } else if (
+    mode === 'payload' ||
+    mode === 'default-payload' ||
+    mode === 'failed-export' ||
+    mode === 'workers'
+  ) {
+    const received: unknown[] = [];
+    const headers: unknown[] = [];
+    const collector = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      received.push(JSON.parse(Buffer.concat(chunks).toString()));
+      headers.push(request.headers['x-native-secret']);
+      response
+        .writeHead(mode === 'failed-export' ? 400 : 200, {
+          'content-type': 'application/json',
+        })
+        .end('{}');
+    });
+    await new Promise<void>((resolve) =>
+      collector.listen(0, '127.0.0.1', resolve),
+    );
+    const address = collector.address();
+    assert(address && typeof address !== 'string');
+    const opted = mode !== 'default-payload';
+    const secret = 'synthetic-header-only';
+    await telemetry.configure({
+      logs: {
+        kind: 'otlp-http',
+        endpoint: `http://127.0.0.1:${address.port}/v1/logs`,
+        protocol: 'json',
+        headers: { 'x-native-secret': secret },
+      },
+      logUserPrompt: opted,
+      logAgentResponses: opted,
+      toolResultMaxBytes: opted ? 5 : 0,
+      environment: 'fixture-environment',
+    });
+    if (mode === 'workers') {
+      const workerPath = join(__dirname, 'telemetry-worker.mjs');
+      async function worker() {
+        const value = new Worker(workerPath);
+        const ready = new Promise<void>((resolve, reject) => {
+          value.once('message', () => resolve());
+          value.once('error', reject);
+        });
+        await ready;
+        return value;
+      }
+      // Both isolates load this same addon image while bootstrap remains loaded.
+      const first = await worker();
+      const second = await worker();
+      async function turn(worker: Worker) {
+        const done = new Promise<void>((resolve, reject) => {
+          worker.once('message', (message) =>
+            message.error ? reject(new Error(message.error)) : resolve(),
+          );
+          worker.once('error', reject);
+        });
+        worker.postMessage('turn');
+        await done;
+      }
+      await Promise.all([turn(first), turn(second)]);
+      first.postMessage('close');
+      await new Promise<void>((resolve) => first.once('exit', () => resolve()));
+      await turn(second);
+      second.postMessage('close');
+      await new Promise<void>((resolve) =>
+        second.once('exit', () => resolve()),
+      );
+    } else {
+      const server = new ModelServer([
+        [call('probe', { argument: 'FULL_TOOL_ARGUMENT' }, { callId: 'a' })],
+        [{ ...message('FINAL_RESPONSE_ONE'), phase: 'final_answer' }],
+        [call('probe', { argument: 'FULL_TOOL_ARGUMENT' }, { callId: 'b' })],
+        [{ ...message('FINAL_RESPONSE_TWO'), phase: 'final_answer' }],
+      ]);
+      const config = await server.config();
+      // Raw startup overrides intentionally conflict with the successful process policy.
+      const conflicting = {
+        'otel.exporter': 'none',
+        'otel.log_user_prompt': !opted,
+        'otel.log_agent_responses': !opted,
+        'otel.tool_result': { max_bytes: opted ? 0 : 100 },
+      };
+      class FixtureProvider extends NativeProvider {
+        override _acquire() {
+          const lease = super._acquire();
+          // Keep the real lease, including its opening and cleanup ownership.
+          Object.assign(lease.config, config, conflicting);
+          return lease;
+        }
+      }
+      const provider = new FixtureProvider({ apiKey: 'fixture' });
+      const agent = new Agent({
+        name: 'Telemetry fixture',
+        instructions: 'Use probe.',
+        model: 'gpt-5',
+        provider,
+        tools: [
+          tool({
+            name: 'probe',
+            parameters: z.object({ argument: z.string() }),
+            execute: () => 'éééTOOL_OUTPUT_SUFFIX',
+          }),
+        ],
+      });
+      try {
+        const first = await agent.session();
+        let saved;
+        try {
+          assert.equal(
+            (await (await first.submit('USER_PROMPT_ONE')).wait()).finalOutput,
+            'FINAL_RESPONSE_ONE',
+          );
+          saved = await first.saveState();
+          assert(!JSON.stringify(saved).includes(secret));
+          assert(!JSON.stringify(saved).includes(`:${address.port}/v1/logs`));
+        } finally {
+          await first.close();
+        }
+        const restored = await agent.session({ state: saved });
+        try {
+          assert.equal(
+            (await (await restored.submit('USER_PROMPT_TWO')).wait())
+              .finalOutput,
+            'FINAL_RESPONSE_TWO',
+          );
+        } finally {
+          await restored.close();
+        }
+        server.assertExhausted();
+      } finally {
+        await provider.close();
+        await ModelServer.closeAll();
+      }
+    }
+    // Core discards individual exporter shutdown errors. Even a rejected export
+    // must retire admissions and make repeated shutdown harmless.
+    await telemetry.shutdown();
+    await telemetry.shutdown();
+    await assert.rejects(failedEngine(), /shut down or failed to initialize/);
+    collector.closeAllConnections();
+    await new Promise<void>((resolve) => collector.close(() => resolve()));
+    assert(received.length > 0);
+    assert(headers.every((header) => header === secret));
+    const text = JSON.stringify(received);
+    if (mode === 'workers') {
+      assert(text.includes('WORKER_FINAL_1'));
+      assert(text.includes('WORKER_FINAL_2')); // Export after the first worker exited.
+      assert(text.includes('WORKER_PROMPT'));
+    } else {
+      assert.equal(text.includes('USER_PROMPT_ONE'), opted);
+      assert.equal(text.includes('USER_PROMPT_TWO'), opted);
+      assert.equal(text.includes('FINAL_RESPONSE_ONE'), opted);
+      assert.equal(text.includes('FINAL_RESPONSE_TWO'), opted);
+      assert(text.includes('FULL_TOOL_ARGUMENT'));
+      assert(!text.includes('TOOL_OUTPUT_SUFFIX'));
+      assert(!text.includes('ééé'));
+      if (opted) assert(text.includes('éé'));
+    }
+    console.log(JSON.stringify({ records: received.length, mode }));
+  } else {
+    throw new Error('Unknown telemetry fixture mode');
+  }
+  console.log(`PASS ${mode}`);
+}
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

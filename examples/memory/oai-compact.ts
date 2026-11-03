@@ -3,7 +3,7 @@ import {
   OpenAIResponsesCompactionSession,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { fetchImageData } from './tools.ts';
 import { FileSession } from './sessions/index.ts';
 

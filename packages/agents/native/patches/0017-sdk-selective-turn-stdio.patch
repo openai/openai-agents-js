@@ -1,0 +1,1342 @@
+diff --git a/codex-rs/cli/src/mcp_cmd.rs b/codex-rs/cli/src/mcp_cmd.rs
+index ac4b0154b36ea7db008ce3e47de2d3ac06320b4e..bfa00353c787b8eb191be7013f20061118acef61 100644
+--- a/codex-rs/cli/src/mcp_cmd.rs
++++ b/codex-rs/cli/src/mcp_cmd.rs
+@@ -428,6 +428,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/catalog_tests.rs b/codex-rs/codex-mcp/src/catalog_tests.rs
+index eaf50e79b816a425226475e9f5639cf003d2abf8..5f6e4b15176d4ba910c5c8b0705c0224e5f90e16 100644
+--- a/codex-rs/codex-mcp/src/catalog_tests.rs
++++ b/codex-rs/codex-mcp/src/catalog_tests.rs
+@@ -41,6 +41,7 @@ fn server(url: &str) -> McpServerConfig {
+         enabled: true,
+         required: true,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: true,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/connection_manager.rs b/codex-rs/codex-mcp/src/connection_manager.rs
+index c0add22985def56b2a9dff73233c93578b8afc79..760e1da26e5ad24349fa3b0602f082d097fe4f1a 100644
+--- a/codex-rs/codex-mcp/src/connection_manager.rs
++++ b/codex-rs/codex-mcp/src/connection_manager.rs
+@@ -393,7 +393,8 @@ impl McpConnectionSet {
+                 &configured_config.transport,
+                 McpServerTransportConfig::Stdio { .. }
+             );
+-            let stdio_owner = is_stdio
++            let owned_stdio = runtime_context.owns_stdio(&configured_config);
++            let stdio_owner = owned_stdio
+                 .then(|| runtime_context.stdio_owner.clone())
+                 .flatten();
+             let protocol_mode = if matches!(
+@@ -649,7 +650,7 @@ impl McpConnectionSet {
+             let cancel_token = startup_cancellation_token.child_token();
+             let tool_catalog_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME
+                 || server.requires_read_only_mcp_tools()
+-                || (runtime_context.owned_stdio_mode && is_stdio)
++                || owned_stdio
+             {
+                 None
+             } else if let Ok(environment) = resolved_environment.as_ref() {
+@@ -1024,10 +1025,10 @@ impl McpConnectionSet {
+         }
+     }
+
+-    pub(crate) fn stdio_connections(&self) -> Vec<Arc<McpServerConnection>> {
++    pub(crate) fn owned_stdio_connections(&self) -> Vec<Arc<McpServerConnection>> {
+         self.servers
+             .values()
+-            .filter(|view| view.connection.is_stdio)
++            .filter(|view| view.connection.is_stdio && view.connection.client.owned_stdio)
+             .map(|view| Arc::clone(&view.connection))
+             .collect()
+     }
+diff --git a/codex-rs/codex-mcp/src/connection_manager_tests.rs b/codex-rs/codex-mcp/src/connection_manager_tests.rs
+index 22f49f8a6a6cae730c79504caac15159da19d3a0..99996342c4cdb34c089b5a45de51e64c961f0c85 100644
+--- a/codex-rs/codex-mcp/src/connection_manager_tests.rs
++++ b/codex-rs/codex-mcp/src/connection_manager_tests.rs
+@@ -4713,6 +4713,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -4743,6 +4744,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -4856,6 +4858,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -5018,6 +5021,7 @@ fn mcp_init_error_display_reports_generic_errors() {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -5099,6 +5103,7 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/elicitation.rs b/codex-rs/codex-mcp/src/elicitation.rs
+index 12297c18e0f20605934c36c9db2c0174e7ce726b..84bb4f5a7d50e09976d8c8fd616cb2bf1c39e59f 100644
+--- a/codex-rs/codex-mcp/src/elicitation.rs
++++ b/codex-rs/codex-mcp/src/elicitation.rs
+@@ -1263,6 +1263,7 @@ impl ElicitationRequestManager {
+             .get(OPENAI_ELICITATION_EXTENSION_ID)
+             .and_then(|settings| settings.get("userVerification"))
+             .is_some_and(Value::is_object);
++        let require_original_owner = client_mcp_extensions.contains("openai/sdk-root-prompts");
+         let router = self.router.clone();
+         let authority = self.authority.clone();
+         Box::new(move |id, elicitation| {
+@@ -1285,6 +1286,18 @@ impl ElicitationRequestManager {
+                         meta: None,
+                     });
+                 }
++                // Persistent stdio and unsolicited requests have no operation admission.
++                // Never assign them to whichever root turn happens to be active now.
++                if require_original_owner
++                    && !codex_rmcp_client::elicitation_owner_snapshot()
++                        .is_some_and(|owner| owner.is_live())
++                {
++                    return Ok(ElicitationResponse {
++                        action: ElicitationAction::Cancel,
++                        content: None,
++                        meta: None,
++                    });
++                }
+                 if let Elicitation::UserVerification {
+                     meta,
+                     title,
+diff --git a/codex-rs/codex-mcp/src/elicitation_tests.rs b/codex-rs/codex-mcp/src/elicitation_tests.rs
+index 3e859cd0e19b4efb0ab192e0cdfaa7fe256e4b1c..43756d6641f967fd6019d82bdd6c33dad3a64247 100644
+--- a/codex-rs/codex-mcp/src/elicitation_tests.rs
++++ b/codex-rs/codex-mcp/src/elicitation_tests.rs
+@@ -801,3 +801,32 @@ async fn user_verification_rejects_attached_servers_even_if_they_use_the_plugin_
+         assert!(events.try_recv().is_err());
+     }
+ }
++
++#[tokio::test]
++async fn sdk_root_prompts_require_the_original_live_owner_before_policy() {
++    let (manager, events, _) =
++        elicitation_fixture(AskForApproval::Never, PermissionProfile::Disabled, None);
++    let (tx, root_events) = async_channel::bounded(1);
++    let sender = manager.make_sender(
++        "independent-mcp".to_owned(),
++        Some(tx),
++        &ClientMcpExtensions::new([("openai/sdk-root-prompts".to_owned(), json!({}))]),
++    );
++    let absent = codex_rmcp_client::scope_owner(None, send_elicitation(&sender, None)).await;
++    assert_eq!(absent.action, ElicitationAction::Cancel);
++    let owner = codex_rmcp_client::ElicitationOwner::for_admission(
++        "original-root".to_owned(),
++        Arc::new(()),
++    );
++    let live =
++        codex_rmcp_client::scope_owner(Some(owner.clone()), send_elicitation(&sender, None)).await;
++    // Preserve full-access approval behavior once a real original admission exists.
++    assert_eq!(live.action, ElicitationAction::Accept);
++    owner.revoke();
++    let expired =
++        codex_rmcp_client::scope_owner(Some(owner), send_elicitation(&sender, None)).await;
++    assert_eq!(expired.action, ElicitationAction::Cancel);
++    assert!(root_events.try_recv().is_err());
++    assert!(events.try_recv().is_err());
++    assert!(manager.router.requests.lock().unwrap().is_empty());
++}
+diff --git a/codex-rs/codex-mcp/src/mcp/mod.rs b/codex-rs/codex-mcp/src/mcp/mod.rs
+index 3b1d475d51c682be94b8861ac7e5159bf3742386..489a17ca0654d62712b741b4450ffac252b16db0 100644
+--- a/codex-rs/codex-mcp/src/mcp/mod.rs
++++ b/codex-rs/codex-mcp/src/mcp/mod.rs
+@@ -681,6 +681,7 @@ fn mcp_server_config_for_url(
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/mcp/mod_tests.rs b/codex-rs/codex-mcp/src/mcp/mod_tests.rs
+index 803d142826fe7fdeaa385cfe974cbbda90cf6ceb..d7156ae25067cf511dd11c7e5ce8dd86fc5f68e9 100644
+--- a/codex-rs/codex-mcp/src/mcp/mod_tests.rs
++++ b/codex-rs/codex-mcp/src/mcp/mod_tests.rs
+@@ -652,6 +652,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -682,6 +683,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/owned_stdio_tests.rs b/codex-rs/codex-mcp/src/owned_stdio_tests.rs
+index a26ecbf0cc89e8ea20db69248f7ff64e012d4271..d23688d5a83742e70e3016a2d7042238a64a16a1 100644
+--- a/codex-rs/codex-mcp/src/owned_stdio_tests.rs
++++ b/codex-rs/codex-mcp/src/owned_stdio_tests.rs
+@@ -38,7 +38,13 @@ for line in sys.stdin:
+ record('eof_exit')
+ "#;
+
+-fn input(home: &Path, log: &Path, label: &str, tx: Sender<Event>) -> McpRuntimeInput {
++fn input(
++    home: &Path,
++    log: &Path,
++    label: &str,
++    tx: Sender<Event>,
++    runtime_context: McpRuntimeContext,
++) -> McpRuntimeInput {
+     let server: codex_config::McpServerConfig = serde_json::from_value(serde_json::json!({
+         "command": "python3", "args": ["-u", "-c", SERVER, log, label],
+         "required": true, "enabled_tools": ["search"],
+@@ -54,6 +60,9 @@ fn input(home: &Path, log: &Path, label: &str, tx: Sender<Event>) -> McpRuntimeI
+         server.clone(),
+     ));
+     config.mcp_server_catalog = catalog.build();
++    config
++        .server_permission_profiles
++        .insert("docs".to_owned(), PermissionProfile::Disabled);
+     McpRuntimeInput {
+         startup_policy: McpStartupPolicy::Eager,
+         config: Arc::new(config),
+@@ -66,10 +75,7 @@ fn input(home: &Path, log: &Path, label: &str, tx: Sender<Event>) -> McpRuntimeI
+         submit_id: "admission".to_owned(),
+         tx_event: Some(tx),
+         startup_cancellation_token: CancellationToken::new(),
+-        runtime_context: McpRuntimeContext::new(
+-            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+-            home.to_path_buf(),
+-        ),
++        runtime_context,
+         codex_apps_tools_cache: ConnectorRuntimeManager::new_without_cache(),
+         tool_catalog_cache: McpToolCatalogCache::default(),
+         codex_apps_tools_cache_key: ConnectorRuntimeContextKey::personal(None, None),
+@@ -99,6 +105,10 @@ async fn retirement_joins_old_and_current_stdio_bindings_from_one_admission() ->
+         let log = home.path().join("processes");
+         std::fs::create_dir(&log)?;
+         let (tx, rx) = async_channel::unbounded();
++        let runtime_context = McpRuntimeContext::new(
++            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
++            home.path().to_path_buf(),
++        );
+         let runtime = McpRuntime::empty(true);
+         runtime.enable_full_access_form_input();
+         runtime.begin_owned_prompt_startup();
+@@ -110,7 +120,13 @@ async fn retirement_joins_old_and_current_stdio_bindings_from_one_admission() ->
+         );
+         runtime.set_stdio_admission(owner.clone());
+         runtime
+-            .replace(input(home.path(), &log, "old", tx.clone()))
++            .replace(input(
++                home.path(),
++                &log,
++                "old",
++                tx.clone(),
++                runtime_context.clone(),
++            ))
+             .await;
+         runtime.validate_required_servers().await?;
+         let old_binding = runtime.current_binding().await.expect("old binding");
+@@ -122,7 +138,13 @@ async fn retirement_joins_old_and_current_stdio_bindings_from_one_admission() ->
+         assert_eq!(original.turn_id.as_deref(), Some("one-admission"));
+         // A changed command forces a new connection, while the old request/binding stay alive.
+         runtime
+-            .replace(input(home.path(), &log, "current", tx.clone()))
++            .replace(input(
++                home.path(),
++                &log,
++                "current",
++                tx.clone(),
++                runtime_context.clone(),
++            ))
+             .await;
+         runtime.validate_required_servers().await?;
+         let current_binding = runtime.current_binding().await.expect("current binding");
+@@ -136,7 +158,13 @@ async fn retirement_joins_old_and_current_stdio_bindings_from_one_admission() ->
+         assert_ne!(current.id, original.id);
+         // An unchanged refresh reuses the current connection and must not retain it twice.
+         runtime
+-            .replace(input(home.path(), &log, "current", tx))
++            .replace(input(
++                home.path(),
++                &log,
++                "current",
++                tx,
++                runtime_context.clone(),
++            ))
+             .await;
+         assert_eq!(runtime.stdio_retirement.lock().unwrap().len(), 2);
+         runtime.retire_owned_stdio().await?;
+@@ -180,3 +208,158 @@ async fn retirement_joins_old_and_current_stdio_bindings_from_one_admission() ->
+     })
+     .await?
+ }
++
++fn root_input(
++    home: &Path,
++    log: &Path,
++    include_turn: bool,
++    tx: Sender<Event>,
++    runtime_context: McpRuntimeContext,
++) -> McpRuntimeInput {
++    let mut input = input(home, log, "turn", tx, runtime_context);
++    let mut turn = input.mcp_servers["docs"].config().clone();
++    turn.sdk_turn_scoped_stdio = true;
++    let mut session = turn.clone();
++    session.sdk_turn_scoped_stdio = false;
++    let codex_config::McpServerTransportConfig::Stdio { args, .. } = &mut session.transport else {
++        unreachable!();
++    };
++    *args.last_mut().unwrap() = "session".to_owned();
++    input.mcp_servers.clear();
++    let mut catalog = crate::ResolvedMcpCatalog::builder();
++    if include_turn {
++        catalog.register(crate::McpServerRegistration::from_config(
++            "docs".to_owned(),
++            turn.clone(),
++        ));
++        input.mcp_servers.insert(
++            "docs".to_owned(),
++            EffectiveMcpServer::from_host_config(turn),
++        );
++    }
++    catalog.register(crate::McpServerRegistration::from_config(
++        "session".to_owned(),
++        session.clone(),
++    ));
++    input.mcp_servers.insert(
++        "session".to_owned(),
++        EffectiveMcpServer::from_host_config(session),
++    );
++    let config = Arc::make_mut(&mut input.config);
++    config.mcp_server_catalog = catalog.build();
++    config.set_server_permission_profiles(&input.mcp_servers, std::iter::empty());
++    input.client_mcp_extensions =
++        ClientMcpExtensions::new([("openai/sdk-root-prompts".to_owned(), serde_json::json!({}))]);
++    input
++}
++
++fn process_pids(log: &Path, label: &str) -> anyhow::Result<Vec<u64>> {
++    let mut pids = Vec::new();
++    for file in std::fs::read_dir(log)? {
++        let rows = std::fs::read_to_string(file?.path())?;
++        for line in rows.lines() {
++            let row: serde_json::Value = serde_json::from_str(line)?;
++            if row["event"] == "start" && row["label"] == label {
++                pids.push(row["pid"].as_u64().unwrap());
++            }
++        }
++    }
++    Ok(pids)
++}
++
++fn process_is_alive(pid: u64) -> anyhow::Result<bool> {
++    Ok(std::process::Command::new("kill")
++        .args(["-0", &pid.to_string()])
++        .output()?
++        .status
++        .success())
++}
++
++#[tokio::test]
++async fn sdk_root_turn_retirement_preserves_session_peer_through_roster_replacement()
++-> anyhow::Result<()> {
++    tokio::time::timeout(Duration::from_secs(45), async {
++        let home = tempfile::tempdir()?;
++        let log = home.path().join("processes");
++        std::fs::create_dir(&log)?;
++        let (tx, _rx) = async_channel::unbounded();
++        let runtime_context = McpRuntimeContext::new(
++            Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
++            home.path().to_path_buf(),
++        );
++        let runtime = McpRuntime::empty(true);
++        // No admitted turn: start the session peer, leave the selected server dormant.
++        runtime
++            .replace(root_input(
++                home.path(),
++                &log,
++                true,
++                tx.clone(),
++                runtime_context.clone(),
++            ))
++            .await;
++        runtime.validate_required_servers().await?;
++        let session = process_pids(&log, "session")?;
++        assert_eq!(session.len(), 1);
++        assert!(process_pids(&log, "turn")?.is_empty());
++        let first =
++            codex_rmcp_client::ElicitationOwner::for_admission("first".to_owned(), Arc::new(()));
++        runtime.set_stdio_admission(first.clone());
++        runtime
++            .replace(root_input(
++                home.path(),
++                &log,
++                true,
++                tx.clone(),
++                runtime_context.clone(),
++            ))
++            .await;
++        runtime.validate_required_servers().await?;
++        let retained_binding = runtime.current_binding().await.expect("first binding");
++        let first_pids = process_pids(&log, "turn")?;
++        assert_eq!(first_pids.len(), 1);
++        assert_eq!(process_pids(&log, "session")?, session);
++        assert_eq!(runtime.stdio_retirement.lock().unwrap().len(), 1);
++        // Removing the selected server must not lose its retirement handle.
++        runtime
++            .replace(root_input(
++                home.path(),
++                &log,
++                false,
++                tx.clone(),
++                runtime_context.clone(),
++            ))
++            .await;
++        runtime.retire_owned_stdio().await?;
++        assert!(!first.is_live());
++        assert!(!process_is_alive(first_pids[0])?);
++        assert!(process_is_alive(session[0])?);
++        assert!(
++            retained_binding
++                .prepare_call("docs", "search")
++                .unwrap()
++                .call(None, None, None)
++                .await
++                .is_err()
++        );
++        let second =
++            codex_rmcp_client::ElicitationOwner::for_admission("second".to_owned(), Arc::new(()));
++        runtime.set_stdio_admission(second.clone());
++        runtime
++            .replace(root_input(home.path(), &log, true, tx, runtime_context))
++            .await;
++        runtime.validate_required_servers().await?;
++        assert_eq!(process_pids(&log, "session")?, session);
++        let turns = process_pids(&log, "turn")?;
++        assert_eq!(turns.len(), 2);
++        let successor = *turns.iter().find(|pid| **pid != first_pids[0]).unwrap();
++        assert!(process_is_alive(successor)?);
++        runtime.retire_owned_stdio().await?;
++        assert!(!second.is_live());
++        assert!(!process_is_alive(successor)?);
++        assert!(process_is_alive(session[0])?);
++        runtime.shutdown().await;
++        anyhow::Ok(())
++    })
++    .await?
++}
+diff --git a/codex-rs/codex-mcp/src/plugin_config_tests.rs b/codex-rs/codex-mcp/src/plugin_config_tests.rs
+index 3c572267093239ebaf7023ddcb69a131f0dfe6d7..60d637f3d90d42e7a7867760204e392fbd762c0a 100644
+--- a/codex-rs/codex-mcp/src/plugin_config_tests.rs
++++ b/codex-rs/codex-mcp/src/plugin_config_tests.rs
+@@ -536,6 +536,7 @@ fn stdio_server(
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -574,6 +575,7 @@ fn declared_placement_preserves_local_plugin_normalization() {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -896,6 +898,7 @@ fn local_environment_placement_preserves_http_env_references() {
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/rmcp_client.rs b/codex-rs/codex-mcp/src/rmcp_client.rs
+index ed3cbb1d01fcc08009c3b07ca77b56733ec65424..c4b8f658ff35007d8fbfbb903c07ea054aab5899 100644
+--- a/codex-rs/codex-mcp/src/rmcp_client.rs
++++ b/codex-rs/codex-mcp/src/rmcp_client.rs
+@@ -348,11 +348,7 @@ impl ManagedClientStartup {
+             .startup_timeout_sec
+             .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
+         let cancel_token_for_fut = cancel_token;
+-        let owned_stdio = runtime_context.owned_stdio_mode
+-            && matches!(
+-                &server.config().transport,
+-                codex_config::McpServerTransportConfig::Stdio { .. }
+-            );
++        let owned_stdio = runtime_context.owns_stdio(server.config());
+         let stdio_owner = owned_stdio
+             .then(|| runtime_context.stdio_owner.clone())
+             .flatten();
+@@ -536,11 +532,7 @@ impl AsyncManagedClient {
+         };
+         let startup_complete = Arc::new(AtomicBool::new(false));
+         let server_capabilities = Arc::new(StdMutex::new(None));
+-        let owned_stdio = runtime_context.owned_stdio_mode
+-            && matches!(
+-                &server.config().transport,
+-                codex_config::McpServerTransportConfig::Stdio { .. }
+-            );
++        let owned_stdio = runtime_context.owns_stdio(server.config());
+         let owned_stdio_client = Arc::new(tokio::sync::Mutex::new(None));
+         let startup = Arc::new(ManagedClientStartup {
+             owned_stdio_client: owned_stdio_client.clone(),
+diff --git a/codex-rs/codex-mcp/src/runtime.rs b/codex-rs/codex-mcp/src/runtime.rs
+index 68daf8912d2b6ca2ae741ca2a3f83e53fd99249f..0556b71acd3d9da2c8c92d28744b0d46cdec4116 100644
+--- a/codex-rs/codex-mcp/src/runtime.rs
++++ b/codex-rs/codex-mcp/src/runtime.rs
+@@ -340,29 +340,28 @@ impl McpRuntime {
+
+     async fn publish(&self, mut input: McpRuntimeInput, previous: Option<&McpConnectionSet>) {
+         input.runtime_context.owned_stdio_mode = self.owned_stdio_mode.load(Ordering::Acquire);
++        input.runtime_context.sdk_root_prompts = input
++            .client_mcp_extensions
++            .contains("openai/sdk-root-prompts");
+         input.runtime_context.stdio_owner = self
+             .stdio_owner
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+             .clone();
+-        if input.runtime_context.owned_stdio_mode
+-            && !input
+-                .runtime_context
+-                .stdio_owner
+-                .as_ref()
+-                .is_some_and(codex_rmcp_client::ElicitationOwner::is_live)
++        if !input
++            .runtime_context
++            .stdio_owner
++            .as_ref()
++            .is_some_and(codex_rmcp_client::ElicitationOwner::is_live)
+             && !self
+                 .elicitation_router
+                 .owned_startup
+                 .load(Ordering::Acquire)
+         {
+-            // Idle child runtimes cannot restart an unowned stdio process through prewarm or refresh.
+-            input.mcp_servers.retain(|_, server| {
+-                !matches!(
+-                    server.config().transport,
+-                    codex_config::McpServerTransportConfig::Stdio { .. }
+-                )
+-            });
++            // Prewarm and roster refresh cannot start a turn-scoped process without its admission.
++            input
++                .mcp_servers
++                .retain(|_, server| !input.runtime_context.owns_stdio(server.config()));
+         }
+         let (publish, publication_gate) = McpPublicationGate::pending();
+         let config = Arc::clone(&input.config);
+@@ -387,12 +386,12 @@ impl McpRuntime {
+             )
+             .await,
+         );
+-        if self.owned_stdio_mode.load(Ordering::Acquire) {
++        {
+             let mut retained = self
+                 .stdio_retirement
+                 .lock()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+-            for connection in connections.stdio_connections() {
++            for connection in connections.owned_stdio_connections() {
+                 if !retained
+                     .iter()
+                     .any(|existing| Arc::ptr_eq(existing, &connection))
+@@ -691,6 +690,17 @@ impl McpRuntime {
+         let tools = published.connections.list_all_tools().await;
+         if let Some(config) = &published.config {
+             for (server, settings) in crate::mcp::configured_mcp_servers(config) {
++                // Child startup keeps its existing complete-catalog requirement.
++                // Root opt-in adds that requirement only to selected stdio peers.
++                if !self.owned_stdio_mode.load(Ordering::Acquire)
++                    && !(settings.sdk_turn_scoped_stdio
++                        && matches!(
++                            settings.transport,
++                            codex_config::McpServerTransportConfig::Stdio { .. }
++                        ))
++                {
++                    continue;
++                }
+                 if !settings.required {
+                     continue;
+                 }
+@@ -951,9 +961,6 @@ impl McpRuntime {
+
+     /// Call under the owning session's MCP refresh gate before replacing this admission.
+     pub async fn retire_owned_stdio(&self) -> anyhow::Result<()> {
+-        if !self.owned_stdio_mode.load(Ordering::Acquire) {
+-            return Ok(());
+-        }
+         let owner = self
+             .stdio_owner
+             .lock()
+@@ -967,6 +974,9 @@ impl McpRuntime {
+             .lock()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+             .clone();
++        if owner.is_none() && connections.is_empty() {
++            return Ok(());
++        }
+         // Keep every actual join alive if its requesting turn is interrupted.
+         let cleanup = tokio::spawn(async move {
+             let mut first_error = None;
+@@ -1045,6 +1055,7 @@ pub struct McpRuntimeContext {
+     local_process_cwd: PathBuf,
+     local_http_client: Arc<dyn HttpClient>,
+     pub(crate) owned_stdio_mode: bool,
++    pub(crate) sdk_root_prompts: bool,
+     pub(crate) stdio_owner: Option<codex_rmcp_client::ElicitationOwner>,
+ }
+
+@@ -1080,6 +1091,14 @@ pub fn apply_http_headers_helper(
+ }
+
+ impl McpRuntimeContext {
++    pub(crate) fn owns_stdio(&self, server: &codex_config::McpServerConfig) -> bool {
++        matches!(
++            server.transport,
++            codex_config::McpServerTransportConfig::Stdio { .. }
++        )
++            && (self.owned_stdio_mode || self.sdk_root_prompts && server.sdk_turn_scoped_stdio)
++    }
++
+     pub fn new(environment_manager: Arc<EnvironmentManager>, local_process_cwd: PathBuf) -> Self {
+         let local_http_client = Arc::new(
+             RouteAwareHttpClient::new(environment_manager.http_client_factory().clone())
+@@ -1092,6 +1111,7 @@ impl McpRuntimeContext {
+             local_process_cwd,
+             local_http_client,
+             owned_stdio_mode: false,
++            sdk_root_prompts: false,
+             stdio_owner: None,
+         }
+     }
+@@ -1208,6 +1228,7 @@ mod tests {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1648,3 +1669,41 @@ mod tests {
+ #[cfg(all(test, unix))]
+ #[path = "owned_stdio_tests.rs"]
+ mod owned_stdio_tests;
++
++#[cfg(test)]
++mod sdk_stdio_selection_tests {
++    use super::*;
++
++    #[test]
++    fn root_stdio_lifetime_is_per_server_capability_gated_and_environment_independent() {
++        let mut context = McpRuntimeContext::new(
++            Arc::new(EnvironmentManager::default_for_tests()),
++            PathBuf::from("/tmp"),
++        );
++        for environment_id in [codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID, "remote"] {
++            let mut server: codex_config::McpServerConfig =
++                serde_json::from_value(serde_json::json!({
++                    "command": "server", "environment_id": environment_id,
++                    "sdk_turn_scoped_stdio": true,
++                }))
++                .unwrap();
++            assert!(!context.owns_stdio(&server));
++            context.sdk_root_prompts = true;
++            assert!(context.owns_stdio(&server));
++            server.sdk_turn_scoped_stdio = false;
++            assert!(!context.owns_stdio(&server));
++            context.owned_stdio_mode = true;
++            assert!(context.owns_stdio(&server));
++            server.transport = codex_config::McpServerTransportConfig::StreamableHttp {
++                url: "https://example.com/mcp".to_owned(),
++                bearer_token_env_var: None,
++                http_headers: None,
++                env_http_headers: None,
++                http_headers_helper: None,
++            };
++            assert!(!context.owns_stdio(&server));
++            context.owned_stdio_mode = false;
++            context.sdk_root_prompts = false;
++        }
++    }
++}
+diff --git a/codex-rs/config/src/mcp_requirements_tests.rs b/codex-rs/config/src/mcp_requirements_tests.rs
+index 5ae1c242b413ee710d83c89e158a474cbb07476d..b936124ddebd6aaa482a43835c0963d9114b2051 100644
+--- a/codex-rs/config/src/mcp_requirements_tests.rs
++++ b/codex-rs/config/src/mcp_requirements_tests.rs
+@@ -18,6 +18,7 @@ fn stdio_server(command: &str, args: &[&str]) -> McpServerConfig {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/config/src/mcp_types.rs b/codex-rs/config/src/mcp_types.rs
+index c85e7c99b85f8e0b9bcf2a43d8de0c2a986699bd..7b38d908f763aa4f796343ab1e1c5c792db3730b 100644
+--- a/codex-rs/config/src/mcp_types.rs
++++ b/codex-rs/config/src/mcp_types.rs
+@@ -224,6 +224,10 @@ pub struct McpServerConfig {
+     #[serde(flatten)]
+     pub transport: McpServerTransportConfig,
+
++    /// SDK opt-in to one original-turn stdio process under `openai/sdk-root-prompts`.
++    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
++    pub sdk_turn_scoped_stdio: bool,
++
+     /// Authentication flow, including an explicit no-fallback EMA mode.
+     #[serde(default, skip_serializing_if = "is_default")]
+     pub auth: McpServerAuth,
+@@ -365,6 +369,9 @@ impl McpServerConfig {
+ #[derive(Deserialize, Clone, JsonSchema)]
+ #[schemars(deny_unknown_fields)]
+ pub struct RawMcpServerConfig {
++    /// SDK stdio lifetime opt-in; has no effect without the trusted root capability.
++    #[serde(default)]
++    pub sdk_turn_scoped_stdio: bool,
+     // stdio
+     pub command: Option<String>,
+     #[serde(default)]
+@@ -439,6 +446,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
+
+     fn try_from(raw: RawMcpServerConfig) -> Result<Self, Self::Error> {
+         let RawMcpServerConfig {
++            sdk_turn_scoped_stdio,
+             command,
+             args,
+             env,
+@@ -571,6 +579,7 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
+         }
+
+         Ok(Self {
++            sdk_turn_scoped_stdio,
+             transport,
+             auth,
+             environment_id,
+diff --git a/codex-rs/config/src/mcp_types_tests.rs b/codex-rs/config/src/mcp_types_tests.rs
+index baae2e8549e7e31a2f1113216ca67d711b1d5959..7f6421eed52b0602ff407b002c172120fd0ace9b 100644
+--- a/codex-rs/config/src/mcp_types_tests.rs
++++ b/codex-rs/config/src/mcp_types_tests.rs
+@@ -641,6 +641,7 @@ fn deserialize_ignores_unknown_server_fields() {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -741,3 +742,27 @@ fn deserialize_rejects_inline_bearer_token_field() {
+         "unexpected error: {err}"
+     );
+ }
++
++#[test]
++fn sdk_turn_scoped_stdio_parses_defaults_and_survives_round_trip() {
++    let session: McpServerConfig = serde_json::from_value(serde_json::json!({
++        "command": "server"
++    }))
++    .unwrap();
++    assert!(!session.sdk_turn_scoped_stdio);
++    assert!(
++        serde_json::to_value(&session)
++            .unwrap()
++            .get("sdk_turn_scoped_stdio")
++            .is_none()
++    );
++    let turn: McpServerConfig = serde_json::from_value(serde_json::json!({
++        "command": "server", "sdk_turn_scoped_stdio": true,
++        "environment_id": "remote",
++    }))
++    .unwrap();
++    assert!(turn.sdk_turn_scoped_stdio);
++    let restored: McpServerConfig =
++        serde_json::from_value(serde_json::to_value(&turn).unwrap()).unwrap();
++    assert_eq!(restored, turn);
++}
+diff --git a/codex-rs/core-plugins/src/manager_tests.rs b/codex-rs/core-plugins/src/manager_tests.rs
+index 2ae390470d8d260b51db340d2d2d34b6910ebc52..158970738200c86a0e8e520b50b90f5df7991ba6 100644
+--- a/codex-rs/core-plugins/src/manager_tests.rs
++++ b/codex-rs/core-plugins/src/manager_tests.rs
+@@ -982,6 +982,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -1086,6 +1087,7 @@ enabled = true
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -2193,6 +2195,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -2534,6 +2537,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -2791,6 +2795,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
+index ddd5afc0244b63a6ddced469f5f8581a2ffb023b..8741fab8e1812d3e90d2751d0c79ac5e68a43997 100644
+--- a/codex-rs/core/src/config/config_tests.rs
++++ b/codex-rs/core/src/config/config_tests.rs
+@@ -142,6 +142,7 @@ fn stdio_mcp_with_args(command: &str, args: &[&str]) -> McpServerConfig {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -172,6 +173,7 @@ fn http_mcp(url: &str) -> McpServerConfig {
+         enabled: true,
+         required: false,
+         startup_readiness: Default::default(),
++        sdk_turn_scoped_stdio: false,
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -6873,6 +6875,7 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: std::num::NonZeroUsize::new(8_000),
+             omit_tools_from: None,
+@@ -7314,6 +7317,7 @@ async fn replace_mcp_servers_serializes_env_sorted() -> anyhow::Result<()> {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7394,6 +7398,7 @@ async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7459,6 +7464,7 @@ async fn replace_mcp_servers_serializes_sourced_env_vars() -> anyhow::Result<()>
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7515,6 +7521,7 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7574,6 +7581,7 @@ async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7650,6 +7658,7 @@ async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyh
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7737,6 +7746,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7777,6 +7787,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7853,6 +7864,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers()
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -7883,6 +7895,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers()
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -7975,6 +7988,7 @@ async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
+             enabled: false,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -8029,6 +8043,7 @@ async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
+             enabled: true,
+             required: true,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -8083,6 +8098,7 @@ async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -8142,6 +8158,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/config/edit_tests.rs b/codex-rs/core/src/config/edit_tests.rs
+index 09c5eb0211e3efee954e3f69b66b73eb1a242424..bcc0f1749872cf49222d59924bc837812ef928b0 100644
+--- a/codex-rs/core/src/config/edit_tests.rs
++++ b/codex-rs/core/src/config/edit_tests.rs
+@@ -1081,6 +1081,7 @@ fn blocking_replace_mcp_servers_round_trips() {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: true,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1116,6 +1117,7 @@ fn blocking_replace_mcp_servers_round_trips() {
+             enabled: false,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1210,6 +1212,7 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides(output_token_
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1288,6 +1291,7 @@ foo = { command = "cmd" }
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1342,6 +1346,7 @@ foo = { command = "cmd" } # keep me
+             enabled: false,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1395,6 +1400,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1449,6 +1455,7 @@ foo = { command = "cmd" }
+             enabled: false,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/mcp_skill_dependencies.rs b/codex-rs/core/src/mcp_skill_dependencies.rs
+index 5931da9100e86cae45c5527c876265fbbb258563..c365364a7e097577349cd64a7fb304191b761c86 100644
+--- a/codex-rs/core/src/mcp_skill_dependencies.rs
++++ b/codex-rs/core/src/mcp_skill_dependencies.rs
+@@ -417,6 +417,7 @@ fn mcp_dependency_to_server_config(
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -458,6 +459,7 @@ fn mcp_dependency_to_server_config(
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/session/mcp.rs b/codex-rs/core/src/session/mcp.rs
+index 22819163ce46e17e7c97505382de9a6d8f8cbe88..8ad7125c5d1869fbfadf703f0f47524e111876ee 100644
+--- a/codex-rs/core/src/session/mcp.rs
++++ b/codex-rs/core/src/session/mcp.rs
+@@ -95,20 +95,16 @@ impl ElicitationReviewer for GuardianMcpElicitationReviewer {
+ }
+
+ impl Session {
+-    fn has_owned_child_stdio(&self, turn: &TurnContext) -> bool {
+-        turn.session_source.is_non_root_agent()
+-            && self
+-                .services
+-                .client_mcp_extensions
+-                .contains("openai/sdk-child-prompts")
++    fn has_owned_sdk_stdio(&self, turn: &TurnContext) -> bool {
++        crate::owned_question::sdk_owns_prompts(self, turn)
+     }
+
+-    pub(crate) async fn begin_owned_child_stdio(
++    pub(crate) async fn begin_owned_sdk_stdio(
+         self: &Arc<Self>,
+         turn: &Arc<TurnContext>,
+         cancellation: &tokio_util::sync::CancellationToken,
+     ) -> CodexResult<()> {
+-        if !self.has_owned_child_stdio(turn) {
++        if !self.has_owned_sdk_stdio(turn) {
+             return Ok(());
+         }
+         let _refresh = self
+@@ -122,7 +118,7 @@ impl Session {
+             .await
+             .map_err(|error| {
+                 CodexErr::InvalidRequest(format!(
+-                    "Could not retire preceding child stdio admission: {error}"
++                    "Could not retire preceding SDK stdio admission: {error}"
+                 ))
+             })?;
+         self.services.mcp_runtime.set_stdio_admission(
+@@ -139,23 +135,23 @@ impl Session {
+             .validate_required_servers()
+             .await
+             .map_err(|error| {
+-                CodexErr::InvalidRequest(format!("Child stdio startup failed: {error}"))
++                CodexErr::InvalidRequest(format!("SDK stdio startup failed: {error}"))
+             })?;
+         self.services
+             .mcp_runtime
+             .validate_owned_prompt_catalog()
+             .await
+             .map_err(|error| {
+-                CodexErr::InvalidRequest(format!("Child tool catalog failed: {error}"))
++                CodexErr::InvalidRequest(format!("SDK tool catalog failed: {error}"))
+             })?;
+         Ok(())
+     }
+
+-    pub(crate) async fn end_owned_child_stdio(
++    pub(crate) async fn end_owned_sdk_stdio(
+         self: &Arc<Self>,
+         turn: &Arc<TurnContext>,
+     ) -> CodexResult<()> {
+-        if !self.has_owned_child_stdio(turn) {
++        if !self.has_owned_sdk_stdio(turn) {
+             return Ok(());
+         }
+         let _refresh = self
+@@ -171,7 +167,7 @@ impl Session {
+                 .retire_owned_stdio()
+                 .await
+                 .map_err(|error| {
+-                    CodexErr::InvalidRequest(format!("Child stdio cleanup failed: {error}"))
++                    CodexErr::InvalidRequest(format!("SDK stdio cleanup failed: {error}"))
+                 })?;
+             self.mark_mcp_runtime_dirty();
+         }
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index 8e13dbf102466ef98ce6e04bcd450f1760860c16..3110ddb69b7479a8aa1c9dceccf095de83444624 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -10117,6 +10117,7 @@ async fn step_context_keeps_its_mcp_runtime_for_tools() -> anyhow::Result<()> {
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 55cc888a346638ed01128cb8dbaabe3858a32b33..1ee6f4309d7108a109b757ca5822b64cef55a8a9 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -365,7 +365,7 @@ impl Session {
+         let storage_originator = AuthStorageOriginator::from_client_name(&turn_context.originator);
+         let task_future = async move {
+             let ctx_for_finish = Arc::clone(&ctx);
+-            let task_result = match session.begin_owned_child_stdio(&ctx, &task_cancellation_token).await {
++            let task_result = match session.begin_owned_sdk_stdio(&ctx, &task_cancellation_token).await {
+                 Ok(()) => task_for_run
+                     .run(
+                         Arc::clone(&session),
+@@ -626,7 +626,7 @@ impl Session {
+     ) {
+         // Retire before terminal delivery or automatic follow-up admission. Preserve the
+         // original task error if shutdown also fails, and retain the failed cleanup receipt.
+-        let task_result = match self.end_owned_child_stdio(&turn_context).await {
++        let task_result = match self.end_owned_sdk_stdio(&turn_context).await {
+             Ok(()) => task_result,
+             Err(cleanup_error) => match task_result {
+                 Err(original) => {
+@@ -932,7 +932,7 @@ impl Session {
+     ) {
+         let sub_id = task.turn_context.sub_id.clone();
+         if task.cancellation_token.is_cancelled() {
+-            if let Err(cleanup_error) = self.end_owned_child_stdio(&task.turn_context).await {
++            if let Err(cleanup_error) = self.end_owned_sdk_stdio(&task.turn_context).await {
+                 warn!("Child stdio cleanup failed while aborting: {cleanup_error}");
+             }
+             self.emit_turn_abort_lifecycle(reason, task.turn_context.extension_data.as_ref())
+@@ -968,7 +968,7 @@ impl Session {
+         }
+
+         task.handle.abort();
+-        if let Err(cleanup_error) = self.end_owned_child_stdio(&task.turn_context).await {
++        if let Err(cleanup_error) = self.end_owned_sdk_stdio(&task.turn_context).await {
+             warn!("Child stdio cleanup failed while aborting: {cleanup_error}");
+         }
+
+diff --git a/codex-rs/core/tests/suite/code_mode.rs b/codex-rs/core/tests/suite/code_mode.rs
+index fed86b0c666dc583c26f0f00241c4b6b3347a9ec..0d7e816ab71d97a9f8c8f6e7599b07d55d34dd66 100644
+--- a/codex-rs/core/tests/suite/code_mode.rs
++++ b/codex-rs/core/tests/suite/code_mode.rs
+@@ -734,6 +734,7 @@ async fn run_code_mode_turn_with_rmcp_config(
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/hooks_mcp.rs b/codex-rs/core/tests/suite/hooks_mcp.rs
+index 62056b2bb0fe6428f2d32bbf7bfb2b142f79954a..d0823d44865c64c97d3492c4d14849e7c2e1bb36 100644
+--- a/codex-rs/core/tests/suite/hooks_mcp.rs
++++ b/codex-rs/core/tests/suite/hooks_mcp.rs
+@@ -292,6 +292,7 @@ fn insert_rmcp_test_server(
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs b/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs
+index 9a278f88bea93a26fc661d952b83b9a7cd5f9a9a..06587ae9f43e1f36ff15129e05d1fd369891db01 100644
+--- a/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs
++++ b/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs
+@@ -151,6 +151,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs b/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs
+index 04dfcb48de1d00bacc9ac703105dc372e73a8bc0..3295457c156d2f887c49afa8d0c17169fbd82618 100644
+--- a/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs
++++ b/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs
+@@ -136,6 +136,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/rmcp_client.rs b/codex-rs/core/tests/suite/rmcp_client.rs
+index 598da1df8fa02c8b9fbef87558fede2a29d7eb37..3feebc3ddcebcdc03ac3d54a98144c0bd5140b59 100644
+--- a/codex-rs/core/tests/suite/rmcp_client.rs
++++ b/codex-rs/core/tests/suite/rmcp_client.rs
+@@ -383,6 +383,7 @@ fn insert_mcp_server(
+             enabled: true,
+             required: false,
+             startup_readiness: Default::default(),
++            sdk_turn_scoped_stdio: false,
+             supports_parallel_tool_calls: options.supports_parallel_tool_calls,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/search_tool.rs b/codex-rs/core/tests/suite/search_tool.rs
+index 0d34d1573373a13c2b4d576e0f9507c37769ebbb..50b57fe3d5d11eeb5fdf32f561db9c936b1199fd 100644
+--- a/codex-rs/core/tests/suite/search_tool.rs
++++ b/codex-rs/core/tests/suite/search_tool.rs
+@@ -1336,6 +1336,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
+                     scopes: None,
+                     oauth: None,
+                     oauth_resource: None,
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -1471,6 +1472,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
+                     scopes: None,
+                     oauth: None,
+                     oauth_resource: None,
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -1622,6 +1624,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
+                     scopes: None,
+                     oauth: None,
+                     oauth_resource: None,
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/sqlite_state.rs b/codex-rs/core/tests/suite/sqlite_state.rs
+index c329e2caa855695995674cc33d290e90a7308c3e..cfc7f8d1c8851581a7d2f241f1182ea32b3c1355 100644
+--- a/codex-rs/core/tests/suite/sqlite_state.rs
++++ b/codex-rs/core/tests/suite/sqlite_state.rs
+@@ -883,6 +883,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/token_budget.rs b/codex-rs/core/tests/suite/token_budget.rs
+index a0b23a1db77e15fc593198104696eb5047acfd05..9759d736365e45b325f6b421d59e94757bdb4640 100644
+--- a/codex-rs/core/tests/suite/token_budget.rs
++++ b/codex-rs/core/tests/suite/token_budget.rs
+@@ -773,6 +773,7 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/truncation.rs b/codex-rs/core/tests/suite/truncation.rs
+index 665e49361a626945faaf28c76b581d7f13b17d9a..821d6a02a98d0c8a56346fde084447501fc8e349 100644
+--- a/codex-rs/core/tests/suite/truncation.rs
++++ b/codex-rs/core/tests/suite/truncation.rs
+@@ -414,6 +414,7 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()>
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -519,6 +520,7 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+diff --git a/codex-rs/ext/mcp/src/plugin/provider_tests.rs b/codex-rs/ext/mcp/src/plugin/provider_tests.rs
+index 83f764083e17be404ad98616344d1e77ec368f68..afaa26105f9dd9cbe2b5f5d7723bff567c7b927d 100644
+--- a/codex-rs/ext/mcp/src/plugin/provider_tests.rs
++++ b/codex-rs/ext/mcp/src/plugin/provider_tests.rs
+@@ -196,6 +196,7 @@ async fn reads_declared_config_only_through_executor_file_system() {
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -226,6 +227,7 @@ async fn reads_declared_config_only_through_executor_file_system() {
+                     enabled: true,
+                     required: false,
+                     startup_readiness: Default::default(),
++                    sdk_turn_scoped_stdio: false,
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -286,6 +288,7 @@ async fn reads_manifest_object_config_without_executor_file_system_access() {
+                 enabled: true,
+                 required: false,
+                 startup_readiness: Default::default(),
++                sdk_turn_scoped_stdio: false,
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,

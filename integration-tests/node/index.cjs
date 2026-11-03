@@ -1,6 +1,10 @@
 // @ts-check
 
-const { Agent, getGlobalTraceProvider, run } = require('@openai/agents');
+const {
+  Agent,
+  getGlobalTraceProvider,
+  run,
+} = require('@openai/agents/classic');
 
 const agent = new Agent({
   name: 'Test Agent',

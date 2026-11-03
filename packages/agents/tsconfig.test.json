@@ -1,8 +1,43 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "outDir": "./dist"
+    "noEmit": true,
+    "paths": {
+      "@hyperjump/json-schema/experimental": [
+        "../../node_modules/@hyperjump/json-schema/lib/experimental"
+      ],
+      "@hyperjump/json-schema/instance/experimental": [
+        "../../node_modules/@hyperjump/json-schema/lib/instance"
+      ],
+      "@openai/agents": ["./src/index.ts"],
+      "@openai/agents/testing": ["./src/testing/index.ts"],
+      "@openai/agents/classic": ["./src/classic/index.ts"],
+      "@openai/agents/classic/sandbox": ["./src/classic/sandbox/index.ts"],
+      "@openai/agents/classic/testing": ["./src/classic/testing/index.ts"],
+      "@openai/agents/migration": ["./src/migration/index.ts"],
+      "@openai/agents/experimental/deferred": [
+        "./src/experimental/deferred.ts"
+      ],
+      "@openai/agents/experimental/mcp-tasks": [
+        "./src/experimental/mcp-tasks/index.ts"
+      ],
+      "@openai/agents/sandbox": ["./src/sandbox/index.ts"],
+      "@openai/agents/sandbox/local": ["./src/sandbox/local.ts"],
+      "@openai/agents/realtime": ["./src/realtime/index.ts"],
+      "@openai/agents/realtime/testing": ["./src/realtime/testing/index.ts"],
+      "@openai/agents/utils": ["./src/utils/index.ts"],
+      "@openai/agents/classic/sandbox/local": [
+        "./src/classic/sandbox/local.ts"
+      ],
+      "@openai/agents/classic/realtime": ["./src/classic/realtime/index.ts"],
+      "@openai/agents/classic/realtime/testing": [
+        "./src/classic/realtime/testing/index.ts"
+      ],
+      "@openai/agents/classic/utils": ["./src/classic/utils/index.ts"]
+    },
+    "lib": ["ESNext", "DOM"],
+    "moduleResolution": "bundler"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
-  "exclude": ["dist/**"]
+  "include": ["src/**/*.ts", "examples/**/*.ts", "test/**/*.ts"],
+  "exclude": ["dist/**", "native/**"]
 }

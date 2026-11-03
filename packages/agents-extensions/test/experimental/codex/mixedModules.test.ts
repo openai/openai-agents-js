@@ -16,7 +16,7 @@ test('honors the tracing policy with a CJS Runner and an ESM Codex tool', async 
       '--eval',
       `
 const assert = require('node:assert/strict');
-const { Agent, Runner, setTraceProcessors, setTracingDisabled } = require('@openai/agents');
+const { Agent, Runner, setTraceProcessors, setTracingDisabled } = require('@openai/agents/classic');
 const { ScriptedModel, functionCall } = require('@openai/agents-core/testing');
 
 (async () => {

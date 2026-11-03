@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import OpenAI from 'openai';
-import { Agent, setTracingDisabled, tool } from '@openai/agents';
+import { Agent, setTracingDisabled, tool } from '@openai/agents/classic';
 import {
   OpenAIHostedMultiAgentModel,
   getHostedAgentMetadata,

@@ -1,4 +1,9 @@
-import { Agent, programmaticToolCallingTool, run, tool } from '@openai/agents';
+import {
+  Agent,
+  programmaticToolCallingTool,
+  run,
+  tool,
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 const sku = z.enum(['desk-lamp', 'ergonomic-keyboard', 'usb-c-dock']);

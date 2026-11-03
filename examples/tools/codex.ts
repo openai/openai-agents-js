@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Agent, run, generateTraceId, withTrace } from '@openai/agents';
+import { Agent, run, generateTraceId, withTrace } from '@openai/agents/classic';
 import {
   codexTool,
   type CodexToolStreamEvent,

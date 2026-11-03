@@ -1,4 +1,4 @@
-import * as Agents from '../src/index';
+import * as Agents from '../src/classic';
 import type {
   AgentHookEvents,
   AgentTool,
@@ -9,7 +9,7 @@ import type {
   SessionHistoryTransactionArgs,
   SessionHistoryTransactionAwareSession,
   ToolNameCollisionPolicy,
-} from '../src/index';
+} from '../src/classic';
 import * as Sandbox from '../src/sandbox';
 import * as LocalSandbox from '../src/sandbox/local';
 import { RealtimeAgent } from '../src/realtime';

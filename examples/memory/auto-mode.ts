@@ -1,4 +1,4 @@
-import { Agent, RunResult, run, type Session } from '@openai/agents';
+import { Agent, RunResult, run, type Session } from '@openai/agents/classic';
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
 
 /**

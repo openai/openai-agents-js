@@ -1,4 +1,4 @@
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 import { DaytonaSandboxClient } from '@openai/agents-extensions/sandbox/daytona';
 import { Manifest, SandboxAgent, shell } from '@openai/agents/sandbox';
 import { finished } from 'node:stream/promises';

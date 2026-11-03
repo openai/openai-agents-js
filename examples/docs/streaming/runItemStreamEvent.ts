@@ -1,4 +1,7 @@
-import type { RunItemStreamEvent, RunStreamEvent } from '@openai/agents';
+import type {
+  RunItemStreamEvent,
+  RunStreamEvent,
+} from '@openai/agents/classic';
 
 export function isRunItemStreamEvent(
   event: RunStreamEvent,

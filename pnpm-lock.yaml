@@ -189,6 +189,9 @@ importers:
       '@types/node':
         specifier: 22.19.13
         version: 22.19.13
+      '@typescript/typescript6':
+        specifier: 6.0.2
+        version: 6.0.2
       '@vitest/coverage-v8':
         specifier: ^5.0.3
         version: 5.0.3(vitest@5.0.3)
@@ -498,10 +501,10 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.0
-        version: 1.32.0(supports-color@10.2.2)(zod@4.5.4)
+        version: 1.32.0(supports-color@10.2.2)(zod@4.6.7)
       '@modelcontextprotocol/server-filesystem':
         specifier: ^2026.8.31
-        version: 2026.8.31(supports-color@10.2.2)(zod@4.5.4)
+        version: 2026.8.31(supports-color@10.2.2)(zod@4.6.7)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -856,6 +859,15 @@ importers:
 
   packages/agents:
     dependencies:
+      '@hyperjump/browser':
+        specifier: 1.6.0
+        version: 1.6.0
+      '@hyperjump/json-schema':
+        specifier: 1.18.0
+        version: 1.18.0(@hyperjump/browser@1.6.0)
+      '@hyperjump/uri':
+        specifier: 1.3.9
+        version: 1.3.9
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../agents-core
@@ -865,13 +877,32 @@ importers:
       '@openai/agents-realtime':
         specifier: workspace:*
         version: link:../agents-realtime
+      email-addresses:
+        specifier: 5.0.0
+        version: 5.0.0
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
-    devDependencies:
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5)
+      ws:
+        specifier: ^8.22.0
+        version: 8.22.0
       zod:
         specifier: ^4.3.5
         version: 4.3.5
+      zod-deferred:
+        specifier: npm:zod@4.6.7
+        version: zod@4.6.7
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.18.2
+        version: 8.18.2
+    optionalDependencies:
+      '@modelcontextprotocol/client':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@modelcontextprotocol/core':
+        specifier: 2.4.0
+        version: 2.4.0
 
   packages/agents-core:
     dependencies:
@@ -2391,6 +2422,27 @@ packages:
     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
     engines: {node: '>=18.18'}
 
+  '@hyperjump/browser@1.6.0':
+    resolution: {integrity: sha512-FcD0B9cOTIj8bJCrX7RtsLSnA2CrX43KCdaFOpS2cH9VnNMuKX4EJ3mgSdQFWF6vz/fbXUNYU1LpIYXYn3TTXA==}
+    engines: {node: '>=18.0.0'}
+
+  '@hyperjump/json-pointer@1.1.3':
+    resolution: {integrity: sha512-GVSs+wzefSO5VOEVMuOz118MDJrJtMdm8h+2vlghzMG/5QpboTSQ12gaMKvGQo7S4oPMw9rCyFWNAJ9DUEdA5Q==}
+
+  '@hyperjump/json-schema-formats@1.1.0':
+    resolution: {integrity: sha512-vLMIOwMThlgWgPJBV39Ds7kaTaygK0+UxjvQShTmKB8rRy8HXq472jnHP8/uaik+77HDx2M+W5Bvzhq6zFc2zQ==}
+
+  '@hyperjump/json-schema@1.18.0':
+    resolution: {integrity: sha512-YPLJsCosW6pHhulKrFogUsl1WxQVRy+fY0pROt66FDFygjIWZkMxXyiy8HLRR1JKeAd5OE6NSZs0NVjSBNwb2Q==}
+    peerDependencies:
+      '@hyperjump/browser': ^1.1.0
+
+  '@hyperjump/pact@1.4.0':
+    resolution: {integrity: sha512-01Q7VY6BcAkp9W31Fv+ciiZycxZHGlR2N6ba9BifgyclHYHdbaZgITo0U6QMhYRlem4k8pf8J31/tApxvqAz8A==}
+
+  '@hyperjump/uri@1.3.9':
+    resolution: {integrity: sha512-cxG5vyIdx3gUb/OQD/FDruQQcGNzF2aKTXWJ6LzlAC1kh97YZQSRsF3hL274xlTDJ1nWGJGRtknlW6ZpU3Ch+A==}
+
   '@iarna/toml@2.2.5':
     resolution: {integrity: sha512-trnsAYxU3xnS1gPHPyU961coFyLkh4gAD/0zQ5mymY4yOZ+CYvsPqUbOFSw0aDM4y0tV7tiFxL/1XfXPNC6IPg==}
 
@@ -2785,8 +2837,16 @@ packages:
     resolution: {integrity: sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw==}
     engines: {node: '>=20'}
 
+  '@modelcontextprotocol/client@2.4.0':
+    resolution: {integrity: sha512-LgrD2OphHuG12vfKFKz6SOnq7bKHQmhGJIAYdD+MZBn2npHEyry6uD8zvktodtl5CQM85MO0anUyD9JwmUmxww==}
+    engines: {node: '>=20'}
+
   '@modelcontextprotocol/core@2.0.0':
     resolution: {integrity: sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==}
+    engines: {node: '>=20'}
+
+  '@modelcontextprotocol/core@2.4.0':
+    resolution: {integrity: sha512-z8QBKqdfXLPzkLQuG4xp8hrVEMm1PZ1IgxMN2sMbJiFiAKOWXnAzogXn2W4aqIBlP1ea6U5yiqVquvUNM1Cj6Q==}
     engines: {node: '>=20'}
 
   '@modelcontextprotocol/sdk@1.26.0':
@@ -4338,6 +4398,10 @@ packages:
     resolution: {integrity: sha512-8eQ9R218XORK+KLosnf4bu/QsUXvUyVwTbArg7/0NMB1Pu87OJKvj4nhFblkYE8gQV73mW1dx1ptlPCkwRGa7A==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
 
+  '@typescript/typescript6@6.0.2':
+    resolution: {integrity: sha512-mbCddXd+jm7hfx7w2YU64/Av4/NqqeG3GoRZgxPcgoTxYjhrcfJRw9ULch71SS4G+Q3bOXFhRvPqjguN0Hyp5w==}
+    hasBin: true
+
   '@ungap/structured-clone@1.3.0':
     resolution: {integrity: sha512-WmoN8qaIAo7WTYWbAZuG8PYEhn5fkz7dZrqTBZ7dtt//lL2Gwms1IcnQ5yHqjDfX8Ft5j4YzDM23f87zBfDe9g==}
     deprecated: Potential CWE-502 - Update to 1.3.1 or higher
@@ -5567,6 +5631,9 @@ packages:
   elkjs@0.11.1:
     resolution: {integrity: sha512-zxxR9k+rx5ktMwT/FwyLdPCrq7xN6e4VGGHH8hA01vVYKjTFik7nHOxBnAYtrgYUB1RpAiLvA1/U2YraWxyKKg==}
 
+  email-addresses@5.0.0:
+    resolution: {integrity: sha512-4OIPYlA6JXqtVn8zpHpGiI7vE6EQOAg16aGnDMIAlZVinnoZ8208tW1hAbjWydgN/4PLTT9q+O1K6AH/vALJGw==}
+
   emoji-regex@8.0.0:
     resolution: {integrity: sha512-MSjYzcWNOA0ewAHpz0MxpYFvwg6yjy1NG3xteoqz644VCo/RPgnr1/GGt+ic3iJTzQ8Eu3TdM14SawnVUmGE6A==}
 
@@ -6449,6 +6516,10 @@ packages:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
     engines: {node: '>=0.10.0'}
 
+  idn-hostname@15.1.19:
+    resolution: {integrity: sha512-pRGRbFpQWCptOBWw9Gn5DXtPdern5/XtdkcXdoEavjd+sh72jNm2eVI1eeysp64UisXPfaqoQrnLUKpSN4hJWw==}
+    engines: {node: '>=20.12.0 <21 || >=22.0.0'}
+
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
 
@@ -6730,6 +6801,9 @@ packages:
   jsprim@2.0.2:
     resolution: {integrity: sha512-gqXddjPqQ6G40VdnI6T6yObEC+pDNvyP95wdQhkWkg7crHH3km5qP1FsOXEkzEQwnz6gz5qGTn1c2Y52wP3OyQ==}
     engines: {'0': node >=0.6.0}
+
+  just-curry-it@5.3.0:
+    resolution: {integrity: sha512-silMIRiFjUWlfaDhkgSzpuAyQ6EX/o09Eu8ZBfmFwQMbax7+LQzeIU2CBrICT6Ne4l86ITCGvUCBpCubWYy0Yw==}
 
   jwa@2.0.1:
     resolution: {integrity: sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==}
@@ -9067,6 +9141,11 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
   ua-parser-js@0.7.41:
     resolution: {integrity: sha512-O3oYyCMPYgNNHuO7Jjk3uacJWZF8loBgwrfd/5LE/HyZ3lUIOdniQ7DNXJcIgZbwioZxk0fLfI4EVnetdiX5jg==}
     hasBin: true
@@ -9292,6 +9371,10 @@ packages:
 
   uuid@11.1.1:
     resolution: {integrity: sha512-vIYxrBCC/N/K+Js3qSN88go7kIfNPssr/hHCesKCQNAjmgvYS2oqr69kIufEG+O4+PfezOH4EbIeHCfFov8ZgQ==}
+    hasBin: true
+
+  uuid@14.0.3:
+    resolution: {integrity: sha512-Sc5u1VVln93y1Xnz4R+CunOZc7R9LUcTmhj7Rc7Eg3HVcf7rVn2FOoa812fe0W8p3jD7xeoGSYbfqCGGH2B6xw==}
     hasBin: true
 
   valibot@1.4.2:
@@ -9652,6 +9735,9 @@ packages:
 
   zod@4.5.4:
     resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
+
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -11796,6 +11882,34 @@ snapshots:
 
   '@humanwhocodes/retry@0.4.3': {}
 
+  '@hyperjump/browser@1.6.0':
+    dependencies:
+      '@hyperjump/json-pointer': 1.1.3
+      '@hyperjump/uri': 1.3.9
+      content-type: 1.0.5
+
+  '@hyperjump/json-pointer@1.1.3': {}
+
+  '@hyperjump/json-schema-formats@1.1.0':
+    dependencies:
+      '@hyperjump/uri': 1.3.9
+      idn-hostname: 15.1.19
+
+  '@hyperjump/json-schema@1.18.0(@hyperjump/browser@1.6.0)':
+    dependencies:
+      '@hyperjump/browser': 1.6.0
+      '@hyperjump/json-pointer': 1.1.3
+      '@hyperjump/json-schema-formats': 1.1.0
+      '@hyperjump/pact': 1.4.0
+      '@hyperjump/uri': 1.3.9
+      content-type: 1.0.5
+      just-curry-it: 5.3.0
+      uuid: 14.0.3
+
+  '@hyperjump/pact@1.4.0': {}
+
+  '@hyperjump/uri@1.3.9': {}
+
   '@iarna/toml@2.2.5': {}
 
   '@img/colour@1.1.0': {}
@@ -12124,7 +12238,23 @@ snapshots:
       zod: 4.3.5
     optional: true
 
+  '@modelcontextprotocol/client@2.4.0':
+    dependencies:
+      '@modelcontextprotocol/core': 2.4.0
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.1(patch_hash=a569122b13184e5bf2b9fed8a172a2d518f3534aefc2c9fcec12c9c6b33befef)
+      jose: 6.1.3
+      pkce-challenge: 5.0.1
+      zod: 4.3.5
+    optional: true
+
   '@modelcontextprotocol/core@2.0.0':
+    dependencies:
+      zod: 4.3.5
+    optional: true
+
+  '@modelcontextprotocol/core@2.4.0':
     dependencies:
       zod: 4.3.5
     optional: true
@@ -12173,7 +12303,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.5.4)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 1.19.17(hono@4.13.7)
       ajv: 8.20.0
@@ -12190,12 +12320,12 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.5.4
-      zod-to-json-schema: 3.25.1(zod@4.5.4)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.1(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.32.0(supports-color@10.2.2)(zod@4.5.4)':
+  '@modelcontextprotocol/sdk@1.32.0(supports-color@10.2.2)(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 1.19.17(hono@4.13.7)
       ajv: 8.20.0
@@ -12212,8 +12342,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.5.4
-      zod-to-json-schema: 3.25.1(zod@4.5.4)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.1(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -12228,9 +12358,9 @@ snapshots:
       - supports-color
       - zod
 
-  '@modelcontextprotocol/server-filesystem@2026.8.31(supports-color@10.2.2)(zod@4.5.4)':
+  '@modelcontextprotocol/server-filesystem@2026.8.31(supports-color@10.2.2)(zod@4.6.7)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.30.0(supports-color@10.2.2)(zod@4.5.4)
+      '@modelcontextprotocol/sdk': 1.30.0(supports-color@10.2.2)(zod@4.6.7)
       diff: 8.0.4
       glob: 13.0.6
       minimatch: 10.2.5
@@ -13839,6 +13969,10 @@ snapshots:
       '@typescript-eslint/types': 8.71.0
       eslint-visitor-keys: 5.0.1
 
+  '@typescript/typescript6@6.0.2':
+    dependencies:
+      '@typescript/old': typescript@6.0.3
+
   '@ungap/structured-clone@1.3.0': {}
 
   '@ungap/structured-clone@1.3.2': {}
@@ -15281,6 +15415,8 @@ snapshots:
 
   elkjs@0.11.1: {}
 
+  email-addresses@5.0.0: {}
+
   emoji-regex@8.0.0: {}
 
   emoji-regex@9.2.2: {}
@@ -16488,6 +16624,10 @@ snapshots:
     dependencies:
       safer-buffer: 2.1.2
 
+  idn-hostname@15.1.19:
+    dependencies:
+      punycode: 2.3.1
+
   ieee754@1.2.1: {}
 
   ignore@5.3.2: {}
@@ -16712,6 +16852,8 @@ snapshots:
       extsprintf: 1.3.0
       json-schema: 0.4.0
       verror: 1.10.0
+
+  just-curry-it@5.3.0: {}
 
   jwa@2.0.1:
     dependencies:
@@ -18140,6 +18282,12 @@ snapshots:
       '@aws-sdk/credential-provider-node': 3.972.33
       ws: 8.22.0
       zod: 4.3.5
+
+  openai@7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.6.7):
+    optionalDependencies:
+      '@aws-sdk/credential-provider-node': 3.972.33
+      ws: 8.22.0
+      zod: 4.6.7
 
   openapi-fetch@0.17.0:
     dependencies:
@@ -19758,6 +19906,8 @@ snapshots:
 
   typescript@5.9.3: {}
 
+  typescript@6.0.3: {}
+
   ua-parser-js@0.7.41: {}
 
   uc.micro@2.1.0: {}
@@ -19923,6 +20073,8 @@ snapshots:
   utils-merge@1.0.1: {}
 
   uuid@11.1.1: {}
+
+  uuid@14.0.3: {}
 
   valibot@1.4.2(typescript@5.9.3):
     optionalDependencies:
@@ -20210,9 +20362,9 @@ snapshots:
     dependencies:
       zod: 4.3.5
 
-  zod-to-json-schema@3.25.1(zod@4.5.4):
+  zod-to-json-schema@3.25.1(zod@4.6.7):
     dependencies:
-      zod: 4.5.4
+      zod: 4.6.7
 
   zod@3.24.4: {}
 
@@ -20221,5 +20373,7 @@ snapshots:
   zod@4.3.5: {}
 
   zod@4.5.4: {}
+
+  zod@4.6.7: {}
 
   zwitch@2.0.4: {}

@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 
 /*
 NOTE: This example will not work out of the box, because the default prompt ID will not

@@ -1,5 +1,5 @@
 import { styleText } from 'node:util';
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 
 const ASSISTANT_PREFIX = styleText(['bgGreen', 'black'], 'Assistant');
 const THINKING_PREFIX = styleText(['bgGray', 'black'], 'Thought');

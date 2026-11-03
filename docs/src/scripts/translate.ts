@@ -16,7 +16,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { Agent, Runner, setDefaultOpenAIKey } from '@openai/agents';
+import { Agent, Runner, setDefaultOpenAIKey } from '@openai/agents/classic';
 import {
   preserveCanonicalHeadingIds,
   refreshLocalizedHeadingIds,

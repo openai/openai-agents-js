@@ -1,6 +1,6 @@
 // @ts-check
 
-import { getGlobalTraceProvider, run } from '@openai/agents';
+import { getGlobalTraceProvider, run } from '@openai/agents/classic';
 import { Manifest, SandboxAgent, shell } from '@openai/agents/sandbox';
 import { DockerSandboxClient } from '@openai/agents/sandbox/local';
 

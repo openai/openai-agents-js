@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { Agent, Runner, RunState, type RunResult } from '@openai/agents';
+import {
+  Agent,
+  Runner,
+  RunState,
+  type RunResult,
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 export type PendingApproval = {

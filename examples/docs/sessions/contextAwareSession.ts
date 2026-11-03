@@ -4,7 +4,7 @@ import {
   type AgentInputItem,
   type RunContext,
   type RunContextAwareSession,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 type TenantContext = {
   tenantId: string;

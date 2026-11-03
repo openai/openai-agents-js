@@ -1,4 +1,9 @@
-import { Agent, tool, toolNamespace, toolSearchTool } from '@openai/agents';
+import {
+  Agent,
+  tool,
+  toolNamespace,
+  toolSearchTool,
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 const customerIdParams = z.object({

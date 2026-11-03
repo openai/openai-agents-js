@@ -142,13 +142,25 @@ async function expectInvalidationClearsListedToolMetadata(server: {
     ],
   });
 
-  await server.connect();
-  await server.listTools();
-  await server.invalidateToolsCache();
+  const request = vi.fn(async () => ({ content: [] }));
+  callToolImplementation = request;
+  try {
+    await server.connect();
+    await server.listTools();
+    const pendingCall = server.callTool('task-tool', {});
+    const rejection = expect(pendingCall).rejects.toThrow(
+      'requires task-based execution',
+    );
+    await server.invalidateToolsCache();
+    await rejection;
+    expect(request).not.toHaveBeenCalled();
 
-  await expect(server.callTool('task-tool', {})).resolves.toBeDefined();
-  expect(lastCallToolOptions?.toolDefinition).toBeUndefined();
-  await server.close();
+    await expect(server.callTool('task-tool', {})).resolves.toBeDefined();
+    expect(lastCallToolOptions?.toolDefinition).toBeUndefined();
+    expect(request).toHaveBeenCalledOnce();
+  } finally {
+    await server.close();
+  }
 }
 
 function getErrorGraphText(value: unknown, seen = new Set<object>()): string {
@@ -232,6 +244,44 @@ beforeEach(() => {
 });
 
 describe('NodeMCPServerStdio', () => {
+  test('captures the tool timeout separately from the session timeout', async () => {
+    const params = {
+      command: 'unused',
+      timeout: 17000,
+      clientSessionTimeoutSeconds: 6,
+    };
+    const server = new NodeMCPServerStdio(params);
+    params.timeout = 19000;
+    try {
+      await server.connect();
+      await server.listTools();
+      await server.callTool('mock-tool', {});
+      expect(lastListToolsOptions?.timeout).toBe(6000);
+      expect(lastCallToolOptions?.timeout).toBe(17000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('does not issue a tool request after cancellation during runtime loading', async () => {
+    const server = new NodeMCPServerStdio({ command: 'unused' });
+    const request = vi.fn(async () => ({ content: [] }));
+    callToolImplementation = request;
+    try {
+      await server.connect();
+      const controller = new AbortController();
+      const reason = new Error('cancel before the MCP request');
+      const pending = server.callTool('mock-tool', {}, undefined, {
+        signal: controller.signal,
+      });
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   test('forwards the tool page cap and preserves per-page timeouts', async () => {
     listToolsImplementation = async () => ({
       tools: [createMockTool('tool')],
@@ -804,6 +854,44 @@ class MockSSEClientTransport {
 }
 
 describe('NodeMCPServerSSE', () => {
+  test('captures the tool timeout separately from the session timeout', async () => {
+    const params = {
+      url: 'https://example.com/sse',
+      timeout: 17000,
+      clientSessionTimeoutSeconds: 6,
+    };
+    const server = new NodeMCPServerSSE(params);
+    params.timeout = 19000;
+    try {
+      await server.connect();
+      await server.listTools();
+      await server.callTool('mock-tool', {});
+      expect(lastListToolsOptions?.timeout).toBe(6000);
+      expect(lastCallToolOptions?.timeout).toBe(17000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('does not issue a tool request after cancellation during runtime loading', async () => {
+    const server = new NodeMCPServerSSE({ url: 'https://example.com/sse' });
+    const request = vi.fn(async () => ({ content: [] }));
+    callToolImplementation = request;
+    try {
+      await server.connect();
+      const controller = new AbortController();
+      const reason = new Error('cancel before the MCP request');
+      const pending = server.callTool('mock-tool', {}, undefined, {
+        signal: controller.signal,
+      });
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   test('forwards the tool page cap and preserves per-page timeouts', async () => {
     listToolsImplementation = async () => ({
       tools: [createMockTool('tool')],
@@ -1374,6 +1462,46 @@ class MockStreamableHTTPClientTransport {
 }
 
 describe('NodeMCPServerStreamableHttp', () => {
+  test('captures the tool timeout separately from the session timeout', async () => {
+    const params = {
+      url: 'https://example.com/mcp',
+      timeout: 17000,
+      clientSessionTimeoutSeconds: 6,
+    };
+    const server = new NodeMCPServerStreamableHttp(params);
+    params.timeout = 19000;
+    try {
+      await server.connect();
+      await server.listTools();
+      await server.callTool('mock-tool', {});
+      expect(lastListToolsOptions?.timeout).toBe(6000);
+      expect(lastCallToolOptions?.timeout).toBe(17000);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('does not issue a tool request after cancellation during runtime loading', async () => {
+    const server = new NodeMCPServerStreamableHttp({
+      url: 'https://example.com/mcp',
+    });
+    const request = vi.fn(async () => ({ content: [] }));
+    callToolImplementation = request;
+    try {
+      await server.connect();
+      const controller = new AbortController();
+      const reason = new Error('cancel before the MCP request');
+      const pending = server.callTool('mock-tool', {}, undefined, {
+        signal: controller.signal,
+      });
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+      expect(request).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+    }
+  });
+
   test('forwards the tool page cap and preserves per-page timeouts', async () => {
     listToolsImplementation = async () => ({
       tools: [createMockTool('tool')],

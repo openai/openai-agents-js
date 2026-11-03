@@ -12,7 +12,7 @@ import {
   type ShellResult,
   type ShellOutputResult,
   shellTool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import chalk from 'chalk';
 
 const execAsync = promisify(exec);

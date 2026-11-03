@@ -23,7 +23,7 @@ import {
   Runner,
   setDefaultOpenAIKey,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 
 export default {

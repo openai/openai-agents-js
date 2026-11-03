@@ -1,4 +1,4 @@
-import { Agent, MCPServerStreamableHttp } from '@openai/agents';
+import { Agent, MCPServerStreamableHttp } from '@openai/agents/classic';
 
 const server = new MCPServerStreamableHttp({
   url: 'https://your-own-domain-here/mcp',

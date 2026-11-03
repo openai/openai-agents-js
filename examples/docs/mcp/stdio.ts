@@ -1,4 +1,4 @@
-import { Agent, run, MCPServerStdio } from '@openai/agents';
+import { Agent, run, MCPServerStdio } from '@openai/agents/classic';
 import * as path from 'node:path';
 
 async function main() {

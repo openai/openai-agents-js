@@ -14,8 +14,8 @@ import {
   RunToolCallOutputItem,
   RunToolSearchCallItem,
   RunToolSearchOutputItem,
-} from '@openai/agents';
-import type { RunStreamEvent } from '@openai/agents';
+} from '@openai/agents/classic';
+import type { RunStreamEvent } from '@openai/agents/classic';
 import type { UIMessageChunk } from 'ai';
 import { ScriptedModel, assistantMessage } from '@openai/agents-core/testing';
 import {

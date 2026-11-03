@@ -4,7 +4,7 @@ import {
   isOpenAIResponsesRawModelStreamEvent,
   run,
   tool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import {
   OpenAIHostedMultiAgentModel,
   getHostedAgentMetadata,

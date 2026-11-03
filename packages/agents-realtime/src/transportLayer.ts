@@ -1,4 +1,4 @@
-import { EventEmitter } from '@openai/agents-core/_shims';
+import { EventEmitter } from '@openai/agents-core/_shims/runtime';
 import {
   RealtimeClientMessage,
   RealtimeAudioFormat,

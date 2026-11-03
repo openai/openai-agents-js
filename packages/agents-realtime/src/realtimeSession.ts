@@ -14,7 +14,7 @@ import {
   type ToolErrorFormatterArgs,
   type ToolErrorFormatter,
 } from '@openai/agents-core';
-import { RuntimeEventEmitter } from '@openai/agents-core/_shims';
+import { RuntimeEventEmitter } from '@openai/agents-core/_shims/runtime';
 import { isZodObject, toSmartString } from '@openai/agents-core/utils';
 import {
   getFunctionToolApprovalInput,

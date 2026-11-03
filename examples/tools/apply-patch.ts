@@ -10,8 +10,8 @@ import {
   type Editor,
   type ApplyPatchOperation,
   type ApplyPatchResult,
-} from '@openai/agents';
-import { applyDiff } from '@openai/agents';
+} from '@openai/agents/classic';
+import { applyDiff } from '@openai/agents/classic';
 import chalk from 'chalk';
 
 function printDiff(diff: string) {

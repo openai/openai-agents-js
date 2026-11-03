@@ -1,4 +1,9 @@
-import { Agent, run, hostedMcpTool, RunToolApprovalItem } from '@openai/agents';
+import {
+  Agent,
+  run,
+  hostedMcpTool,
+  RunToolApprovalItem,
+} from '@openai/agents/classic';
 
 async function main(): Promise<void> {
   const agent = new Agent({

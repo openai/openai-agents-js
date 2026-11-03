@@ -4,7 +4,7 @@ import {
   defineToolInputGuardrail,
   defineToolOutputGuardrail,
   tool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 const blockSecrets = defineToolInputGuardrail({

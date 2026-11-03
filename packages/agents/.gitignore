@@ -1,0 +1,9 @@
+native/.upstream/
+native/.cache/
+native/target/
+native/test-bin/
+native/*.node
+bin/
+dist/
+node_modules/
+native/build-receipt.json

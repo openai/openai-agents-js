@@ -6,15 +6,12 @@ import {
   TransportLayerAudio,
   RealtimeSessionConfig,
 } from '@openai/agents/realtime';
-import { getLogger } from '@openai/agents';
+import { getLogger } from '@openai/agents/classic';
 import { logModelActionError } from '@openai/agents-core/utils/internal';
 import type {
   WebSocket as NodeWebSocket,
   MessageEvent as NodeMessageEvent,
-  ErrorEvent as NodeErrorEvent,
 } from 'ws';
-
-import type { ErrorEvent } from 'undici-types';
 
 type LegacyRealtimeAudioConfig = Partial<RealtimeSessionConfig> & {
   inputAudioFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
@@ -260,17 +257,14 @@ export class TwilioRealtimeTransportLayer extends OpenAIRealtimeWebSocket {
         this.close();
       }
     });
-    this.#twilioWebSocket.addEventListener(
-      'error',
-      (error: ErrorEvent | NodeErrorEvent) => {
-        this.#resetTwilioStream();
-        this.emit('error', {
-          type: 'error',
-          error,
-        });
-        this.close();
-      },
-    );
+    this.#twilioWebSocket.addEventListener('error', (error: unknown) => {
+      this.#resetTwilioStream();
+      this.emit('error', {
+        type: 'error',
+        error,
+      });
+      this.close();
+    });
     this.on('response.output_audio.done', (event) => {
       this.#sendDoneMark(event.response_id, event.item_id, event.content_index);
     });

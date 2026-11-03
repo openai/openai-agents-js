@@ -1,4 +1,5 @@
 import type { Agent, AgentOutputType } from '../agent';
+import type { Model } from '../model';
 import { UserError } from '../errors';
 import logger, { logToolActionWarning } from '../logger';
 import { rehydrateProcessedResponseTools, type RunState } from '../runState';
@@ -28,6 +29,7 @@ export async function prepareSandboxInterruptedTurnResume<
   state: RunState<TContext, TAgent>;
   sandboxRuntime: SandboxRuntimeManager<TContext>;
   runConfigModel?: SandboxRuntimeModel;
+  runConfigModelOverride?: string | Model;
   toolNameCollisionPolicy?: ToolNameCollisionPolicy;
   tracingParent?: Span<any> | Trace;
 }): Promise<void> {
@@ -36,6 +38,7 @@ export async function prepareSandboxInterruptedTurnResume<
     state,
     sandboxRuntime,
     runConfigModel,
+    runConfigModelOverride,
     toolNameCollisionPolicy,
     tracingParent,
   } = args;
@@ -63,6 +66,7 @@ export async function prepareSandboxInterruptedTurnResume<
       state,
       sandboxRuntime,
       runConfigModel,
+      runConfigModelOverride,
       toolNameCollisionPolicy,
       force: resumedPreservedSessions,
       tracingParent,
@@ -143,6 +147,7 @@ export async function rehydrateInterruptedTurnExecutionTools<
   state: RunState<TContext, TAgent>;
   sandboxRuntime: SandboxRuntimeManager<TContext>;
   runConfigModel?: SandboxRuntimeModel;
+  runConfigModelOverride?: string | Model;
   toolNameCollisionPolicy?: ToolNameCollisionPolicy;
   force?: boolean;
   tracingParent?: Span<any> | Trace;
@@ -152,6 +157,7 @@ export async function rehydrateInterruptedTurnExecutionTools<
     state,
     sandboxRuntime,
     runConfigModel,
+    runConfigModelOverride,
     toolNameCollisionPolicy,
     force,
     tracingParent,
@@ -169,6 +175,7 @@ export async function rehydrateInterruptedTurnExecutionTools<
     currentAgent: state._currentAgent,
     turnInput: [],
     runConfigModel,
+    runConfigModelOverride,
     tracingParent,
   });
   const artifacts = await prepareAgentArtifacts(

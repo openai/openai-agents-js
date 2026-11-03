@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 
 async function runBasic() {
   const agent = new Agent({

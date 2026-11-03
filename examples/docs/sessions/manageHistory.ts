@@ -1,4 +1,4 @@
-import { OpenAIConversationsSession } from '@openai/agents';
+import { OpenAIConversationsSession } from '@openai/agents/classic';
 import type { AgentInputItem } from '@openai/agents-core';
 
 // Replace OpenAIConversationsSession with any other Session implementation that

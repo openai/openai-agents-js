@@ -1,6 +1,11 @@
 // @ts-check
 
-const { Agent, getGlobalTraceProvider, run, tool } = require('@openai/agents');
+const {
+  Agent,
+  getGlobalTraceProvider,
+  run,
+  tool,
+} = require('@openai/agents/classic');
 
 const { z } = require('zod/v3');
 

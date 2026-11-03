@@ -2,7 +2,7 @@
 //   pnpm --filter memory start:prisma
 // The startup command prepares the database and generates the Prisma client.
 
-import { Agent, run, withTrace } from '@openai/agents';
+import { Agent, run, withTrace } from '@openai/agents/classic';
 import { createPrismaSession } from './sessions';
 import { createLookupCustomerProfileTool, fetchImageData } from './tools';
 

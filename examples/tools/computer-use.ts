@@ -1,5 +1,11 @@
 import { chromium, Browser, Page } from 'playwright';
-import { Agent, run, withTrace, computerTool, Computer } from '@openai/agents';
+import {
+  Agent,
+  run,
+  withTrace,
+  computerTool,
+  Computer,
+} from '@openai/agents/classic';
 
 const HEADLESS = process.env.COMPUTER_USE_HEADLESS !== '0';
 const START_URL = process.env.COMPUTER_USE_START_URL;

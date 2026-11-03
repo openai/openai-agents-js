@@ -4,7 +4,7 @@
  * Production needs trusted authentication, request protections, atomic shared
  * storage, bounded retention, and recovery that reconciles tool side effects.
  */
-import { Agent, tool } from '@openai/agents';
+import { Agent, tool } from '@openai/agents/classic';
 import { z } from 'zod';
 import readline from 'node:readline/promises';
 import { ApprovalServer } from '../docs/human-in-the-loop/server';

@@ -17,7 +17,7 @@ import {
 import { translateFile } from './translate';
 
 const runTranslation = vi.hoisted(() => vi.fn());
-vi.mock('@openai/agents', () => ({
+vi.mock('@openai/agents/classic', () => ({
   Agent: vi.fn(),
   Runner: class {
     run = runTranslation;

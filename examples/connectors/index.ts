@@ -3,7 +3,7 @@ import {
   hostedMcpTool,
   isOpenAIResponsesRawModelStreamEvent,
   run,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 async function main(verbose: boolean, stream: boolean): Promise<void> {
   // 1. Visit https://developers.google.com/oauthplayground/

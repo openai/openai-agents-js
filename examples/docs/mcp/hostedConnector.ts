@@ -1,4 +1,4 @@
-import { Agent, hostedMcpTool } from '@openai/agents';
+import { Agent, hostedMcpTool } from '@openai/agents/classic';
 
 const authorization = process.env.GOOGLE_CALENDAR_AUTHORIZATION!;
 

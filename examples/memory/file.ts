@@ -1,4 +1,4 @@
-import { Agent, run, withTrace } from '@openai/agents';
+import { Agent, run, withTrace } from '@openai/agents/classic';
 import { FileSession } from './sessions/index.ts';
 import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
 

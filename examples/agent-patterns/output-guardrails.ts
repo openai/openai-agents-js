@@ -3,7 +3,7 @@ import {
   OutputGuardrailTripwireTriggered,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 async function main() {

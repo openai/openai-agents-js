@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, run, tool } from '@openai/agents/classic';
 
 const Weather = z.object({
   city: z.string(),

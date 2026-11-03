@@ -4,7 +4,7 @@ import {
   fileSearchTool,
   imageGenerationTool,
   webSearchTool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 const agent = new Agent({
   name: 'Travel assistant',

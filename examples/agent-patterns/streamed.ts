@@ -1,4 +1,4 @@
-import { Agent, Runner, tool } from '@openai/agents';
+import { Agent, Runner, tool } from '@openai/agents/classic';
 import chalk from 'chalk';
 import { z } from 'zod';
 

@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 
 const url =
   'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80';

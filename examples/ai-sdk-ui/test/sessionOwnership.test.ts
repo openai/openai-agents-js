@@ -31,7 +31,7 @@ vi.mock('@openai/agents-openai', () => ({
     }
   },
 }));
-vi.mock('@openai/agents', () => ({
+vi.mock('@openai/agents/classic', () => ({
   Agent: class {},
   run: provider.run,
   user: (text: string) => ({ role: 'user', content: text }),

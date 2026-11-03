@@ -1,4 +1,4 @@
-import { Agent, run, RunResult } from '@openai/agents';
+import { Agent, run, RunResult } from '@openai/agents/classic';
 import { financialsAgent } from './agents.ts';
 import {
   plannerAgent,

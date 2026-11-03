@@ -1,4 +1,12 @@
 import {
+  McpObserverFailure,
+  captureMcpObservers,
+  detachedMcpObservation,
+  normalizeMcpResult,
+  type MCPToolObservers,
+  type MCPToolStartObservation,
+} from './mcp-observation';
+import {
   FunctionTool,
   tool,
   Tool,
@@ -169,7 +177,7 @@ class MCPToolsLifecycleGuard {
  * Interface for MCP server implementations.
  * Provides methods for connecting, listing tools, calling tools, and cleanup.
  */
-export interface MCPServer {
+export interface MCPServer extends MCPToolObservers {
   cacheToolsList: boolean;
   toolFilter?: MCPToolFilterCallable | MCPToolFilterStatic;
   toolMetaResolver?: MCPToolMetaResolver;
@@ -1227,6 +1235,7 @@ export function mcpToFunctionTool(
     RunContext<any>,
     Map<string, MCPToolCustomDataContext<any>>
   >();
+  const observers = captureMcpObservers(server);
   const serverErrorFunction = server.errorFunction;
   const mcpErrorFunction =
     serverErrorFunction !== undefined
@@ -1237,6 +1246,20 @@ export function mcpToFunctionTool(
       ? (context: RunContext, error: Error | unknown) =>
           mcpErrorFunction({ context, error })
       : mcpErrorFunction;
+  async function observe<Event extends MCPToolStartObservation>(
+    callback: ((event: Event) => unknown) | undefined,
+    event: Event,
+  ) {
+    event.signal?.throwIfAborted();
+    if (callback) {
+      try {
+        await callback(detachedMcpObservation(event));
+      } catch (cause) {
+        throw new McpObserverFailure(cause);
+      }
+    }
+    event.signal?.throwIfAborted();
+  }
   async function invoke(
     input: any,
     runContext?: RunContext<any>,
@@ -1248,6 +1271,14 @@ export function mcpToFunctionTool(
     } else if (typeof input === 'object' && input != null) {
       args = input;
     }
+    const observation: MCPToolStartObservation = {
+      serverName: binding.serverName,
+      toolName: rawToolName,
+      callId: details?.toolCall?.callId ?? null,
+      arguments: args,
+      signal: details?.signal,
+    };
+    await observe(observers.onToolStart, observation);
     const currentSpan =
       getToolCallParentSpanFromDetails(details) ?? getCurrentSpan();
     if (currentSpan) {
@@ -1261,6 +1292,7 @@ export function mcpToFunctionTool(
     const callOptions = details?.signal
       ? { signal: details.signal }
       : undefined;
+    details?.signal?.throwIfAborted();
     const useFullResult =
       (server.useStructuredContent === true ||
         server.customDataExtractor !== undefined) &&
@@ -1281,6 +1313,9 @@ export function mcpToFunctionTool(
             : await server.callTool(rawToolName, args, meta),
       };
     }
+    details?.signal?.throwIfAborted();
+    result = normalizeMcpResult(result, true);
+    await observe(observers.onToolEnd, { ...observation, result });
     const content = result.content as CallToolResultContent;
     const resultMeta = result._meta ?? content._meta;
     const structuredContent =
@@ -1425,7 +1460,7 @@ function cloneMcpCustomDataContextValue<T>(value: T): T {
  */
 
 // Params for stdio-based MCP server
-export interface BaseMCPServerStdioOptions {
+export interface BaseMCPServerStdioOptions extends MCPToolObservers {
   env?: Record<string, string>;
   cwd?: string;
   cacheToolsList?: boolean;
@@ -1480,7 +1515,7 @@ export interface FullCommandMCPServerStdioOptions extends BaseMCPServerStdioOpti
 export type MCPServerStdioOptions =
   DefaultMCPServerStdioOptions | FullCommandMCPServerStdioOptions;
 
-export interface MCPServerStreamableHttpOptions {
+export interface MCPServerStreamableHttpOptions extends MCPToolObservers {
   url: string;
   cacheToolsList?: boolean;
   /**
@@ -1537,7 +1572,7 @@ export interface MCPServerStreamableHttpOptions {
   // ----------------------------------------------------
 }
 
-export interface MCPServerSSEOptions {
+export interface MCPServerSSEOptions extends MCPToolObservers {
   url: string;
   cacheToolsList?: boolean;
   /**

@@ -1,5 +1,10 @@
 import { pathToFileURL } from 'node:url';
-import { Agent, run, tool, type ToolOutputFileContent } from '@openai/agents';
+import {
+  Agent,
+  run,
+  tool,
+  type ToolOutputFileContent,
+} from '@openai/agents/classic';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';

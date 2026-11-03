@@ -7,7 +7,7 @@ import {
   hostedMcpTool,
   setTracingDisabled,
   webSearchTool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 import {
   createRunner,

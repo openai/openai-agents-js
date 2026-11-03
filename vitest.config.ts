@@ -7,6 +7,7 @@ import {
   isReviewTestProfile,
   reviewOptionalFilesForRoot,
 } from './helpers/vitest/reviewTestProfile';
+import { nativeAgentTestIncludes } from './helpers/vitest/nativeAgentTestProfile';
 import { recommendedTestWorkers } from './helpers/vitest/testConcurrency';
 import {
   createWorkspacePackageAliases,
@@ -58,6 +59,9 @@ function createProjects(reviewTestProfile: boolean) {
       ...baseTestConfig,
       ...reviewExcludes(root, reviewTestProfile),
       alias: testAliases,
+      ...(name === '@openai/agents'
+        ? { include: nativeAgentTestIncludes }
+        : {}),
       name,
     },
   }));

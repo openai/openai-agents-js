@@ -1,0 +1,138 @@
+--- a/codex-rs/core/src/mcp_tool_call.rs
++++ b/codex-rs/core/src/mcp_tool_call.rs
+@@ -468,12 +468,7 @@
+     let result = async {
+         let result = codex_rmcp_client::with_elicitation_owner(
+             turn_context.sub_id.clone(),
+-            if sess
+-                .services
+-                .client_mcp_extensions
+-                .contains("openai/sdk-child-prompts")
+-                && turn_context.session_source.is_non_root_agent()
+-            {
++            if crate::owned_question::sdk_owns_prompts(sess, turn_context) {
+                 Some(step_context.turn.clone() as Arc<dyn std::any::Any + Send + Sync>)
+             } else {
+                 None
+--- a/codex-rs/core/src/owned_question.rs
++++ b/codex-rs/core/src/owned_question.rs
+@@ -276,6 +276,16 @@
+     }
+ }
+ 
++/// Trusted SDK opt-ins capture authority without changing root approval policy.
++pub(crate) fn sdk_owns_prompts(session: &Session, turn: &TurnContext) -> bool {
++    let extension = if turn.session_source.is_non_root_agent() {
++        "openai/sdk-child-prompts"
++    } else {
++        "openai/sdk-root-prompts"
++    };
++    session.services.client_mcp_extensions.contains(extension)
++}
++
+ /// SDK-only prompt identity. Ordinary clients keep their original event IDs.
+ pub(crate) async fn event_identity(
+     session: &Session,
+@@ -287,11 +297,7 @@
+         EventMsg::ExecApprovalRequest(_)
+             | EventMsg::ApplyPatchApprovalRequest(_)
+             | EventMsg::ElicitationRequest(_)
+-    ) || !turn.session_source.is_non_root_agent()
+-        || !session
+-            .services
+-            .client_mcp_extensions
+-            .contains("openai/sdk-child-prompts")
++    ) || !sdk_owns_prompts(session, turn)
+     {
+         return None;
+     }
+--- a/codex-rs/core/src/session/mcp.rs
++++ b/codex-rs/core/src/session/mcp.rs
+@@ -688,12 +688,8 @@
+             let mut active = self.active_turn.lock().await;
+             match active.as_mut() {
+                 Some(at) => {
+-                    let owned_child = self
+-                        .services
+-                        .client_mcp_extensions
+-                        .contains("openai/sdk-child-prompts")
+-                        && turn_context.session_source.is_non_root_agent();
+-                    if owned_child
++                    let owned_prompt = crate::owned_question::sdk_owns_prompts(self, turn_context);
++                    if owned_prompt
+                         && !at.task.as_ref().is_some_and(|task| {
+                             std::ptr::eq(task.turn_context.as_ref(), turn_context)
+                                 && !task.cancellation_token.is_cancelled()
+@@ -705,7 +701,7 @@
+                         };
+                     }
+                     let mut ts = at.turn_state.lock().await;
+-                    if owned_child && ts.elicitation_identity(&server_name, &request_id).is_some() {
++                    if owned_prompt && ts.elicitation_identity(&server_name, &request_id).is_some() {
+                         return McpServerElicitationOutcome {
+                             response: None,
+                             sent: false,
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -2803,12 +2803,8 @@
+             let mut active = self.active_turn.lock().await;
+             match active.as_mut() {
+                 Some(at) => {
+-                    let owned_child = self
+-                        .services
+-                        .client_mcp_extensions
+-                        .contains("openai/sdk-child-prompts")
+-                        && turn_context.session_source.is_non_root_agent();
+-                    if owned_child
++                    let owned_prompt = crate::owned_question::sdk_owns_prompts(self, turn_context);
++                    if owned_prompt
+                         && !at.task.as_ref().is_some_and(|task| {
+                             std::ptr::eq(task.turn_context.as_ref(), turn_context)
+                                 && !task.cancellation_token.is_cancelled()
+@@ -2817,7 +2813,7 @@
+                         return ReviewDecision::Abort;
+                     }
+                     let mut ts = at.turn_state.lock().await;
+-                    if owned_child && ts.approval_identity(&effective_approval_id).is_some() {
++                    if owned_prompt && ts.approval_identity(&effective_approval_id).is_some() {
+                         return ReviewDecision::Abort;
+                     }
+                     ts.insert_pending_approval(effective_approval_id.clone(), tx_approve)
+@@ -2903,12 +2899,8 @@
+             let mut active = self.active_turn.lock().await;
+             match active.as_mut() {
+                 Some(at) => {
+-                    let owned_child = self
+-                        .services
+-                        .client_mcp_extensions
+-                        .contains("openai/sdk-child-prompts")
+-                        && turn_context.session_source.is_non_root_agent();
+-                    if owned_child
++                    let owned_prompt = crate::owned_question::sdk_owns_prompts(self, turn_context);
++                    if owned_prompt
+                         && !at.task.as_ref().is_some_and(|task| {
+                             std::ptr::eq(task.turn_context.as_ref(), turn_context)
+                                 && !task.cancellation_token.is_cancelled()
+@@ -2917,7 +2909,7 @@
+                         return ReviewDecision::Abort;
+                     }
+                     let mut ts = at.turn_state.lock().await;
+-                    if owned_child && ts.approval_identity(&approval_id).is_some() {
++                    if owned_prompt && ts.approval_identity(&approval_id).is_some() {
+                         return ReviewDecision::Abort;
+                     }
+                     ts.insert_pending_approval(approval_id.clone(), tx_approve)
+--- a/codex-rs/protocol/src/mcp.rs
++++ b/codex-rs/protocol/src/mcp.rs
+@@ -163,9 +163,10 @@
+ }
+ 
+ /// Client extensions that must not be advertised to MCP servers.
+-const MCP_CLIENT_ONLY_EXTENSION_IDS: [&str; 2] = [
++const MCP_CLIENT_ONLY_EXTENSION_IDS: [&str; 3] = [
+     OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID,
+     "openai/sdk-child-prompts",
++    "openai/sdk-root-prompts",
+ ];
+ 
+ /// MCP extensions supplied by the client that created a Codex session.

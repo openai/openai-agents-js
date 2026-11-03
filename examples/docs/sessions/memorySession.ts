@@ -1,4 +1,4 @@
-import { Agent, MemorySession, run } from '@openai/agents';
+import { Agent, MemorySession, run } from '@openai/agents/classic';
 
 const agent = new Agent({
   name: 'TourGuide',

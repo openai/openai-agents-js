@@ -1,0 +1,352 @@
+--- a/codex-rs/codex-mcp/src/elicitation.rs
++++ b/codex-rs/codex-mcp/src/elicitation.rs
+@@ -1244,7 +1244,13 @@
+         tx_event: Option<Sender<Event>>,
+         client_mcp_extensions: &ClientMcpExtensions,
+     ) -> SendElicitation {
+-        self.make_sender_with_connection(server_name, tx_event, client_mcp_extensions, None)
++        self.make_sender_with_connection(
++            server_name,
++            tx_event,
++            client_mcp_extensions,
++            None,
++            /*sdk_root_prompts*/ false,
++        )
+     }
+ 
+     pub(crate) fn make_sender_with_connection(
+@@ -1253,6 +1259,7 @@
+         tx_event: Option<Sender<Event>>,
+         client_mcp_extensions: &ClientMcpExtensions,
+         connection: Option<u64>,
++        sdk_root_prompts: bool,
+     ) -> SendElicitation {
+         if let Some(connection) = connection {
+             self.router.connection_opened(&server_name, connection);
+@@ -1263,7 +1270,6 @@
+             .get(OPENAI_ELICITATION_EXTENSION_ID)
+             .and_then(|settings| settings.get("userVerification"))
+             .is_some_and(Value::is_object);
+-        let require_original_owner = client_mcp_extensions.contains("openai/sdk-root-prompts");
+         let router = self.router.clone();
+         let authority = self.authority.clone();
+         Box::new(move |id, elicitation| {
+@@ -1288,7 +1294,17 @@
+                 }
+                 // Persistent stdio and unsolicited requests have no operation admission.
+                 // Never assign them to whichever root turn happens to be active now.
+-                if require_original_owner
++                // Unowned URLs retain the existing negative-only SDK interaction route.
++                // Their policy, transport and stale-source checks still run below.
++                let is_url = matches!(
++                    &elicitation,
++                    Elicitation::UrlsRequired(_)
++                        | Elicitation::Mcp(
++                            rmcp::model::ElicitRequestParams::UrlElicitationParams { .. }
++                        )
++                );
++                if sdk_root_prompts
++                    && !is_url
+                     && !codex_rmcp_client::elicitation_owner_snapshot()
+                         .is_some_and(|owner| owner.is_live())
+                 {
+--- a/codex-rs/codex-mcp/src/elicitation_tests.rs
++++ b/codex-rs/codex-mcp/src/elicitation_tests.rs
+@@ -807,10 +807,16 @@
+     let (manager, events, _) =
+         elicitation_fixture(AskForApproval::Never, PermissionProfile::Disabled, None);
+     let (tx, root_events) = async_channel::bounded(1);
+-    let sender = manager.make_sender(
++    let wire_extensions =
++        ClientMcpExtensions::new([("openai/sdk-root-prompts".to_owned(), json!({}))])
++            .for_mcp_servers();
++    assert!(!wire_extensions.contains("openai/sdk-root-prompts"));
++    let sender = manager.make_sender_with_connection(
+         "independent-mcp".to_owned(),
+         Some(tx),
+-        &ClientMcpExtensions::new([("openai/sdk-root-prompts".to_owned(), json!({}))]),
++        &wire_extensions,
++        None,
++        /*sdk_root_prompts*/ true,
+     );
+     let absent = codex_rmcp_client::scope_owner(None, send_elicitation(&sender, None)).await;
+     assert_eq!(absent.action, ElicitationAction::Cancel);
+--- a/codex-rs/codex-mcp/src/owned_stdio_tests.rs
++++ b/codex-rs/codex-mcp/src/owned_stdio_tests.rs
+@@ -248,8 +248,11 @@
+     let config = Arc::make_mut(&mut input.config);
+     config.mcp_server_catalog = catalog.build();
+     config.set_server_permission_profiles(&input.mcp_servers, std::iter::empty());
++    input.runtime_context = input.runtime_context.with_sdk_root_prompts(true);
+     input.client_mcp_extensions =
+-        ClientMcpExtensions::new([("openai/sdk-root-prompts".to_owned(), serde_json::json!({}))]);
++        ClientMcpExtensions::new([("openai/sdk-root-prompts".to_owned(), serde_json::json!({}))])
++            .for_mcp_servers();
++    assert!(!input.client_mcp_extensions.contains("openai/sdk-root-prompts"));
+     input
+ }
+ 
+--- a/codex-rs/codex-mcp/src/rmcp_client.rs
++++ b/codex-rs/codex-mcp/src/rmcp_client.rs
+@@ -348,6 +348,7 @@
+             .startup_timeout_sec
+             .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
+         let cancel_token_for_fut = cancel_token;
++        let sdk_root_prompts = runtime_context.sdk_root_prompts;
+         let owned_stdio = runtime_context.owns_stdio(server.config());
+         let stdio_owner = owned_stdio
+             .then(|| runtime_context.stdio_owner.clone())
+@@ -419,6 +420,7 @@
+                     server_name.clone(),
+                     client.clone(),
+                     StartServerTaskParams {
++                        sdk_root_prompts,
+                         stdio_owner,
+                         is_codex_apps_mcp_server,
+                         startup_timeout: Some(startup_timeout),
+@@ -993,6 +995,7 @@
+     params: StartServerTaskParams,
+ ) -> Result<ManagedClient, StartupOutcomeError> {
+     let StartServerTaskParams {
++        sdk_root_prompts,
+         stdio_owner,
+         is_codex_apps_mcp_server,
+         startup_timeout,
+@@ -1017,6 +1020,7 @@
+             sender_events.clone(),
+             &sender_extensions,
+             Some(instance),
++            sdk_root_prompts,
+         );
+         if let Some(owner) = stdio_owner.clone() {
+             let send: Arc<codex_rmcp_client::SendElicitation> = Arc::new(send);
+@@ -1259,6 +1263,7 @@
+ }
+ 
+ struct StartServerTaskParams {
++    sdk_root_prompts: bool,
+     stdio_owner: Option<codex_rmcp_client::ElicitationOwner>,
+     server_capabilities: Arc<StdMutex<Option<serde_json::Value>>>,
+     is_codex_apps_mcp_server: bool,
+--- a/codex-rs/codex-mcp/src/runtime.rs
++++ b/codex-rs/codex-mcp/src/runtime.rs
+@@ -340,9 +340,6 @@
+ 
+     async fn publish(&self, mut input: McpRuntimeInput, previous: Option<&McpConnectionSet>) {
+         input.runtime_context.owned_stdio_mode = self.owned_stdio_mode.load(Ordering::Acquire);
+-        input.runtime_context.sdk_root_prompts = input
+-            .client_mcp_extensions
+-            .contains("openai/sdk-root-prompts");
+         input.runtime_context.stdio_owner = self
+             .stdio_owner
+             .lock()
+@@ -1116,6 +1113,12 @@
+         }
+     }
+ 
++    /// Carries the trusted SDK root opt-in separately from extensions advertised to servers.
++    pub fn with_sdk_root_prompts(mut self, enabled: bool) -> Self {
++        self.sdk_root_prompts = enabled;
++        self
++    }
++
+     /// Pins all captured selections and the concrete handles for environments already ready.
+     pub fn with_selected_environments(
+         mut self,
+@@ -1688,7 +1691,7 @@
+                 }))
+                 .unwrap();
+             assert!(!context.owns_stdio(&server));
+-            context.sdk_root_prompts = true;
++            context = context.with_sdk_root_prompts(true);
+             assert!(context.owns_stdio(&server));
+             server.sdk_turn_scoped_stdio = false;
+             assert!(!context.owns_stdio(&server));
+@@ -1703,7 +1706,7 @@
+             };
+             assert!(!context.owns_stdio(&server));
+             context.owned_stdio_mode = false;
+-            context.sdk_root_prompts = false;
+-        }
+-    }
+-}
++            context = context.with_sdk_root_prompts(false);
++        }
++    }
++}
+--- a/codex-rs/codex-mcp/src/url_completion_tests.rs
++++ b/codex-rs/codex-mcp/src/url_completion_tests.rs
+@@ -819,6 +819,7 @@
+             Some(events),
+             &ClientMcpExtensions::default(),
+             Some(1),
++            /*sdk_root_prompts*/ false,
+         );
+         let mut approval = serde_json::to_value(url("B")).unwrap();
+         approval["_meta"] = serde_json::json!({"codex_request_type":"approval_request"});
+@@ -857,6 +858,7 @@
+             Some(events),
+             &ClientMcpExtensions::default(),
+             Some(1),
++            /*sdk_root_prompts*/ false,
+         );
+         let mut ordinary = serde_json::to_value(url("A")).unwrap();
+         ordinary["_meta"] = serde_json::json!({"codex_strict_auto_review":false,"ordinary":"kept"});
+@@ -1008,6 +1010,7 @@
+                         Some(events.clone()),
+                         &ClientMcpExtensions::default(),
+                         Some(instance),
++                        /*sdk_root_prompts*/ false,
+                     )
+                 }),
+                 Some(Arc::new({
+@@ -1166,3 +1169,86 @@
+         );
+     }
+ }
++
++#[tokio::test]
++async fn sdk_root_unowned_urls_keep_decline_route_without_owned_authority() {
++    tokio::time::timeout(std::time::Duration::from_secs(5), async {
++        for group in [false, true] {
++            let router = ElicitationRequestRouter::default();
++            let authority = batch_authority();
++            let manager = ElicitationRequestManager::new(
++                authority.config.clone(),
++                None,
++                None,
++                router.clone(),
++            );
++            let extensions =
++                ClientMcpExtensions::new([("openai/sdk-root-prompts".to_owned(), json!({}))])
++                    .for_mcp_servers();
++            assert!(!extensions.contains("openai/sdk-root-prompts"));
++            let (events, received) = async_channel::unbounded();
++            let send = manager.make_sender_with_connection(
++                "one".into(),
++                Some(events),
++                &extensions,
++                Some(1),
++                /*sdk_root_prompts*/ true,
++            );
++            let request = if group {
++                Elicitation::UrlsRequired(vec![url("A"), url("B")])
++            } else {
++                Elicitation::Mcp(url("A"))
++            };
++            let task = tokio::spawn(async move {
++                codex_rmcp_client::scope_owner(None, send(RequestId::Number(77), request)).await
++            });
++            let mut tokens = Vec::new();
++            for _ in 0..if group { 2 } else { 1 } {
++                let event = received.recv().await.unwrap();
++                let EventMsg::ElicitationRequest(request) = &event.msg else {
++                    panic!("Expected unowned URL interaction");
++                };
++                assert_eq!(request.turn_id, None);
++                assert!(matches!(request.request, ElicitationRequest::Url { .. }));
++                let token = event_token(event);
++                let id = RequestId::String(token.clone().into());
++                assert!(router.owned_admission("one", &id).is_none());
++                // The SDK cannot capture an OwnedQuestion grant for this URL.
++                assert!(!router.resolve_owned(
++                    "one",
++                    &id,
++                    "successor-root",
++                    ElicitationResponse {
++                        action: ElicitationAction::Accept,
++                        content: None,
++                        meta: None,
++                    }
++                ));
++                tokens.push(token);
++            }
++            // Exercise the existing negative response route, without granting URL consent.
++            router
++                .resolve(
++                    "one".into(),
++                    RequestId::String(tokens[0].clone().into()),
++                    ElicitationResponse {
++                        action: ElicitationAction::Decline,
++                        content: None,
++                        meta: None,
++                    },
++                )
++                .await
++                .unwrap();
++            assert_eq!(
++                task.await.unwrap().unwrap().action,
++                if group {
++                    ElicitationAction::Cancel
++                } else {
++                    ElicitationAction::Decline
++                }
++            );
++        }
++    })
++    .await
++    .expect("Unowned URL routing must settle");
++}
+--- a/codex-rs/core/src/session/mcp.rs
++++ b/codex-rs/core/src/session/mcp.rs
+@@ -228,19 +228,27 @@
+             .project_selected_environment_mcp_servers(config, &environments, mcp_projection)
+             .await
+             .config;
+-        let runtime_context = self.mcp_runtime_context(&environments, &host_fallback_cwd);
++        let runtime_context =
++            self.mcp_runtime_context(&environments, &session_source, &host_fallback_cwd);
+         (mcp_config, runtime_context)
+     }
+ 
+     pub(crate) async fn current_mcp_runtime_context(&self) -> McpRuntimeContext {
+-        let host_fallback_cwd = self.state.lock().await.session_configuration.cwd().clone();
++        let (session_source, host_fallback_cwd) = {
++            let state = self.state.lock().await;
++            (
++                state.session_configuration.session_source.clone(),
++                state.session_configuration.cwd().clone(),
++            )
++        };
+         let environments = self.services.turn_environments.snapshot().await;
+-        self.mcp_runtime_context(&environments, &host_fallback_cwd)
++        self.mcp_runtime_context(&environments, &session_source, &host_fallback_cwd)
+     }
+ 
+     fn mcp_runtime_context(
+         &self,
+         environments: &TurnEnvironmentSnapshot,
++        session_source: &SessionSource,
+         host_fallback_cwd: &std::path::Path,
+     ) -> McpRuntimeContext {
+         let local_process_cwd = environments
+@@ -250,6 +258,13 @@
+         McpRuntimeContext::new(
+             self.services.turn_environments.environment_manager(),
+             local_process_cwd,
++        )
++        .with_sdk_root_prompts(
++            !session_source.is_non_root_agent()
++                && self
++                    .services
++                    .client_mcp_extensions
++                    .contains("openai/sdk-root-prompts"),
+         )
+         .with_selected_environments(
+             environments.all_selections().into(),
+--- a/codex-rs/core/src/session/mcp_runtime.rs
++++ b/codex-rs/core/src/session/mcp_runtime.rs
+@@ -372,6 +372,13 @@
+             self.services.turn_environments.environment_manager(),
+             desired.local_process_cwd.clone(),
+         )
++        .with_sdk_root_prompts(
++            !desired.session_source.is_non_root_agent()
++                && self
++                    .services
++                    .client_mcp_extensions
++                    .contains("openai/sdk-root-prompts"),
++        )
+         .with_selected_environments(
+             desired.environments.all_selections().into(),
+             desired.environments.ready_environment_handles(),

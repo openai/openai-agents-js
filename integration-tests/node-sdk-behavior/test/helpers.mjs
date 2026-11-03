@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 
 export const integrationModel =
   process.env.OPENAI_AGENTS_INTEGRATION_MODEL ?? 'gpt-5.6';
@@ -13,7 +13,7 @@ export const mcpServerUrl =
   'https://mcp.deepwiki.com/mcp';
 
 export function assertInstalledPackageBoundary() {
-  const resolved = import.meta.resolve('@openai/agents');
+  const resolved = import.meta.resolve('@openai/agents/classic');
   assert.match(resolved, /node_modules\/@openai\/agents\/dist\/index\.mjs$/);
   assert.doesNotMatch(resolved, /packages\/agents\/src/);
 }

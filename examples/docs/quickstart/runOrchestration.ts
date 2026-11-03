@@ -1,4 +1,4 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 
 const historyTutorAgent = new Agent({
   name: 'History Tutor',

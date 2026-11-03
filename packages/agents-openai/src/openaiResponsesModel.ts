@@ -628,7 +628,11 @@ function collectProgrammaticToolConfiguration(tools: ResponsesTool[]): {
   const programmaticOnlyTools: ResponsesTool[] = [];
 
   const visit = (tool: ResponsesTool) => {
-    if (tool.type === 'namespace' && Array.isArray(tool.tools)) {
+    if (
+      tool.type === 'namespace' &&
+      'tools' in tool &&
+      Array.isArray(tool.tools)
+    ) {
       for (const nestedTool of tool.tools) {
         visit(nestedTool);
       }

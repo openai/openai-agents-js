@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-import { Agent, run, tool, type ToolOutputImage } from '@openai/agents';
+import { Agent, run, tool, type ToolOutputImage } from '@openai/agents/classic';
 import { z } from 'zod';
 
 const fetchRandomImage = tool({

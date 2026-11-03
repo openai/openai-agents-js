@@ -6,7 +6,8 @@
     "paths": {
       "@openai/agents-core": ["./src/index.ts"],
       "@openai/agents-core/_shims": ["./src/shims/shims-node.ts"],
-      "@openai/agents-core/_shims/config": ["./src/shims/config-node.ts"]
+      "@openai/agents-core/_shims/config": ["./src/shims/config-node.ts"],
+      "@openai/agents-core/_shims/runtime": ["./src/shims/platform-node.ts"]
     }
   },
   "exclude": ["dist/**", "test/**"]

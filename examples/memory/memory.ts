@@ -4,7 +4,7 @@ import {
   MemorySession,
   run,
   withTrace,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
 
 const directory: Record<string, string> = {

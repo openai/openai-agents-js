@@ -1,5 +1,7 @@
 # OpenAI Agents SDK (JavaScript/TypeScript)
 
+> **Experimental Codex harness.** This branch explores running the Codex turn loop inside the JavaScript SDK so applications can supply their own tools and stream or resume a conversation. API shape, supported platforms, and package distribution are open questions. See the [source build and examples](packages/agents/README.md). The installation and API examples below describe the current npm release.
+
 [![npm version](https://badge.fury.io/js/@openai%2Fagents.svg)](https://badge.fury.io/js/@openai%2Fagents) [![CI](https://github.com/openai/openai-agents-js/actions/workflows/test.yml/badge.svg)](https://github.com/openai/openai-agents-js/actions/workflows/test.yml)
 
 The OpenAI Agents SDK is a lightweight yet powerful framework for building multi-agent workflows in JavaScript/TypeScript. It is provider-agnostic, supporting OpenAI APIs and more.

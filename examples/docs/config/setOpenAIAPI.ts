@@ -1,3 +1,3 @@
-import { setOpenAIAPI } from '@openai/agents';
+import { setOpenAIAPI } from '@openai/agents/classic';
 
 setOpenAIAPI('chat_completions');

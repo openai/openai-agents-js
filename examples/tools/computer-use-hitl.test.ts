@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Agent, Runner, type protocol } from '@openai/agents';
-import { ScriptedModel, assistantMessage } from '@openai/agents/testing';
+import { Agent, Runner, type protocol } from '@openai/agents/classic';
+import {
+  ScriptedModel,
+  assistantMessage,
+} from '@openai/agents/classic/testing';
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(),
@@ -16,8 +19,8 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('@openai/agents', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@openai/agents')>()),
+vi.mock('@openai/agents/classic', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@openai/agents/classic')>()),
   run: mocks.run,
   withTrace: async (_name: string, callback: () => Promise<unknown>) =>
     callback(),

@@ -26,6 +26,7 @@ type PrepareSandboxAgentArgs<TContext, TOutput extends AgentOutputType> = {
   session: SandboxSessionLike<SandboxSessionState>;
   capabilities?: Capability[];
   runConfigModel?: SandboxRuntimeModel;
+  runConfigModelOverride?: string | Model;
   processManifest?: boolean;
   tracingParent?: Span<any> | Trace;
   workspaceScope?: SandboxWorkspaceScope;
@@ -49,6 +50,7 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
   session,
   capabilities,
   runConfigModel,
+  runConfigModelOverride,
   processManifest = true,
   tracingParent,
   workspaceScope = new SandboxWorkspaceScope(),
@@ -57,7 +59,7 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
   TOutput
 > {
   const { model: resolvedModel, modelInstance: resolvedModelInstance } =
-    resolveSandboxModel(agent, runConfigModel);
+    resolveSandboxModel(agent, runConfigModel, runConfigModelOverride);
   // Capabilities are cloned before binding because tools, instructions, and model
   // sampling parameters can depend on the live session for this run.
   const boundCapabilities = cloneSandboxCapabilities(
@@ -218,6 +220,7 @@ function resolveManifest<TContext, TOutput extends AgentOutputType>(
 function resolveSandboxModel<TContext, TOutput extends AgentOutputType>(
   agent: SandboxAgent<TContext, TOutput>,
   runConfigModel?: SandboxRuntimeModel,
+  runConfigModelOverride?: string | Model,
 ): { model: string; modelInstance?: Model } {
   let runConfigModelForSelection: string | Model | undefined;
   let runConfigModelInstance: Model | undefined;
@@ -231,7 +234,11 @@ function resolveSandboxModel<TContext, TOutput extends AgentOutputType>(
         ? runConfigModel
         : undefined;
   }
-  const selectedModel = selectModel(agent.model, runConfigModelForSelection);
+  const selectedModel = selectModel(
+    agent.model,
+    runConfigModelForSelection,
+    runConfigModelOverride,
+  );
   if (typeof selectedModel === 'string' && selectedModel.trim().length > 0) {
     return {
       model: selectedModel,

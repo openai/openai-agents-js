@@ -2,7 +2,7 @@ import {
   getDefaultOpenAIClient,
   OpenAIResponsesModel,
   setDefaultOpenAIClient,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { OpenAI } from 'openai';
 
 const client = new OpenAI({ apiKey: 'test' });

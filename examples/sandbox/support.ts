@@ -1,4 +1,4 @@
-import { getGlobalTraceProvider } from '@openai/agents';
+import { getGlobalTraceProvider } from '@openai/agents/classic';
 import { spawnSync } from 'node:child_process';
 
 export const DEFAULT_MODEL =

@@ -3,7 +3,7 @@ import {
   OpenAIChatCompletionsModel,
   run,
   setTracingDisabled,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import OpenAI from 'openai';
 
 setTracingDisabled(true);

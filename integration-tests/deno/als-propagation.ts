@@ -1,6 +1,10 @@
 // @ts-check
 
-import { getCurrentTrace, setTraceProcessors, withTrace } from '@openai/agents';
+import {
+  getCurrentTrace,
+  setTraceProcessors,
+  withTrace,
+} from '@openai/agents/classic';
 
 // Disable default exporters (e.g., OpenAI exporter) to keep this script hermetic.
 setTraceProcessors([]);

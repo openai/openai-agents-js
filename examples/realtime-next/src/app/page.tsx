@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { handleRefundRequest } from './server/backendAgent.action';
 import { getToken } from './server/token.action';
 import { App } from '@/components/App';
-import { hostedMcpTool } from '@openai/agents';
+import { hostedMcpTool } from '@openai/agents/classic';
 import { CameraCapture } from '@/components/CameraCapture';
 
 const params = z.object({

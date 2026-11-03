@@ -9,8 +9,8 @@ import { FinancialResearchManager } from './manager';
 
 const { runMock } = vi.hoisted(() => ({ runMock: vi.fn() }));
 
-vi.mock('@openai/agents', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@openai/agents')>()),
+vi.mock('@openai/agents/classic', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@openai/agents/classic')>()),
   run: runMock,
 }));
 

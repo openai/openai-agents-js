@@ -1,5 +1,8 @@
-import { Agent, Runner } from '@openai/agents';
-import { ScriptedModel, assistantMessage } from '@openai/agents/testing';
+import { Agent, Runner } from '@openai/agents/classic';
+import {
+  ScriptedModel,
+  assistantMessage,
+} from '@openai/agents/classic/testing';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 

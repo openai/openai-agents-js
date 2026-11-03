@@ -1,4 +1,4 @@
-import { Agent } from '@openai/agents';
+import { Agent } from '@openai/agents/classic';
 
 interface Purchase {
   id: string;
@@ -19,7 +19,7 @@ const agent = new Agent<UserContext>({
 });
 
 // Later
-import { run } from '@openai/agents';
+import { run } from '@openai/agents/classic';
 
 const result = await run(agent, 'Find me a new pair of running shoes', {
   context: { uid: 'abc', isProUser: true, fetchPurchases: async () => [] },

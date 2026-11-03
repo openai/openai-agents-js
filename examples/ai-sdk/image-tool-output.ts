@@ -1,4 +1,4 @@
-import { Agent, run, tool, type ToolOutputImage } from '@openai/agents';
+import { Agent, run, tool, type ToolOutputImage } from '@openai/agents/classic';
 import { aisdk, AiSdkModel } from '@openai/agents-extensions/ai-sdk';
 import { z } from 'zod';
 

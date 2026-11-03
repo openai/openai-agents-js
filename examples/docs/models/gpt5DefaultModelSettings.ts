@@ -1,4 +1,4 @@
-import { Agent } from '@openai/agents';
+import { Agent } from '@openai/agents/classic';
 
 const myAgent = new Agent({
   name: 'My Agent',

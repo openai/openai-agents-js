@@ -1,4 +1,4 @@
-import { Agent, run, tool, Usage } from '@openai/agents';
+import { Agent, run, tool, Usage } from '@openai/agents/classic';
 import { z } from 'zod';
 
 const randomNumberTool = tool({

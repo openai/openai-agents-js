@@ -1,4 +1,4 @@
-import { Agent, handoff } from '@openai/agents';
+import { Agent, handoff } from '@openai/agents/classic';
 
 const billingAgent = new Agent({ name: 'Billing agent' });
 const refundAgent = new Agent({ name: 'Refund agent' });

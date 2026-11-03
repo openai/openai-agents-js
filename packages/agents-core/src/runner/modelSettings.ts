@@ -1,10 +1,13 @@
 import { Agent } from '../agent';
+import { UserError } from '../errors';
 import {
   isGpt5OrNewerReasoningModel,
   isGpt5OrNewerDefault,
 } from '../defaultModel';
 import { Model, ModelSettings } from '../model';
 import { AgentToolUseTracker } from './toolUseTracker';
+import { getImplicitModelSettingsForResolvedModel } from './runConfig';
+import { mergeModelSettings } from './modelSettingsMerge';
 export { mergeModelSettings } from './modelSettingsMerge';
 
 const hasReasoningModelSettings = (settings?: ModelSettings): boolean => {
@@ -24,13 +27,14 @@ const hasReasoningModelSettings = (settings?: ModelSettings): boolean => {
 };
 
 /**
- * Resolves the effective model for the next turn by giving precedence to the agent-specific
- * configuration when present, otherwise falling back to the runner-level default.
+ * Resolves an explicit run override first, then the agent-specific model and runner default.
  */
 export function selectModel(
   agentModel: string | Model,
   runConfigModel: string | Model | undefined,
+  modelOverride?: string | Model,
 ): string | Model {
+  if (modelOverride !== undefined) return modelOverride;
   if (
     (typeof agentModel === 'string' &&
       agentModel !== Agent.DEFAULT_MODEL_PLACEHOLDER) ||
@@ -39,6 +43,27 @@ export function selectModel(
     return agentModel;
   }
   return runConfigModel ?? agentModel ?? Agent.DEFAULT_MODEL_PLACEHOLDER;
+}
+
+/** Validate the additive override without changing legacy model-default validation. */
+export function validateModelOverride(
+  value: unknown,
+): string | Model | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string' && value.trim().length > 0) return value;
+  if (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    'getResponse' in value &&
+    typeof value.getResponse === 'function' &&
+    'getStreamedResponse' in value &&
+    typeof value.getStreamedResponse === 'function'
+  ) {
+    return value as Model;
+  }
+  throw new UserError(
+    'modelOverride must be a nonempty model name or a Model implementation.',
+  );
 }
 
 /**
@@ -136,4 +161,37 @@ function stripReasoningModelSettings(
     delete copiedModelSettings.text.verbosity;
   }
   return copiedModelSettings;
+}
+
+/** Shared classic settings precedence, before turn-specific tool-choice reset. */
+export function prepareModelSettings(
+  agent: Agent<any, any>,
+  invocationSettings: ModelSettings | undefined,
+  explicitlyModelSet: boolean,
+  resolvedModelName?: string,
+  promptOwnsModel = false,
+) {
+  const explicit = agent.hasExplicitModelSettings();
+  const agentModelSettings = explicit
+    ? agent.modelSettings
+    : Object.prototype.hasOwnProperty.call(agent.modelSettings, 'store')
+      ? { store: agent.modelSettings.store }
+      : undefined;
+  const implicitModelSettings =
+    explicit || promptOwnsModel
+      ? undefined
+      : getImplicitModelSettingsForResolvedModel(
+          explicitlyModelSet,
+          resolvedModelName,
+        );
+  const modelSettings = adjustModelSettingsForLegacyModel(
+    explicitlyModelSet,
+    agentModelSettings ?? implicitModelSettings ?? {},
+    mergeModelSettings(
+      mergeModelSettings(implicitModelSettings, invocationSettings),
+      agentModelSettings,
+    ),
+    resolvedModelName,
+  );
+  return { modelSettings, agentModelSettings, implicitModelSettings };
 }

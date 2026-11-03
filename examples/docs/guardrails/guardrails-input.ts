@@ -3,7 +3,7 @@ import {
   run,
   InputGuardrailTripwireTriggered,
   InputGuardrail,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 const guardrailAgent = new Agent({

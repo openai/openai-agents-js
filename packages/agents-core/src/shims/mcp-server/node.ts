@@ -1,13 +1,10 @@
-import {
-  DEFAULT_REQUEST_TIMEOUT_MSEC,
-  ProtocolError,
-  ProtocolErrorCode,
-  SdkError,
-  SdkErrorCode,
-  type CacheableRequestOptions,
-  type Client,
-  type RequestOptions,
-  type Transport,
+/// <reference lib="es2022.error" preserve="true" />
+
+import type {
+  CacheableRequestOptions,
+  Client,
+  RequestOptions,
+  Transport,
 } from '@modelcontextprotocol/client';
 
 import {
@@ -168,6 +165,8 @@ async function listMcpTools(
       });
       return { tools: response.tools as MCPTool[] };
     } catch (error) {
+      const { SdkError, SdkErrorCode } =
+        await import('@modelcontextprotocol/client').catch(failedToImport);
       if (
         error instanceof SdkError &&
         error.code === SdkErrorCode.ListPaginationExceeded
@@ -187,7 +186,11 @@ function getNegotiatedModernCapabilities(client: Client) {
     : undefined;
 }
 
-function getListedToolForCall(tools: readonly MCPTool[], toolName: string) {
+function getListedToolForCall(
+  tools: readonly MCPTool[],
+  toolName: string,
+  { ProtocolError, ProtocolErrorCode }: MCPClientModule,
+) {
   const tool = tools.find((tool) => tool.name === toolName) as
     | (MCPTool & {
         execution?: { taskSupport?: 'forbidden' | 'optional' | 'required' };
@@ -240,11 +243,18 @@ function listResourceTemplatesPage(
 
 async function callWithMCPRequestSignal<T>(
   sourceSignal: AbortSignal | undefined,
-  call: (requestSignal: AbortSignal | undefined) => Promise<T>,
+  call: (
+    requestSignal: AbortSignal | undefined,
+    runtime: MCPClientModule,
+  ) => Promise<T>,
 ): Promise<T> {
   const { signal: requestSignal, cleanup } = combineAbortSignals(sourceSignal);
   try {
-    return await call(requestSignal);
+    const runtime = await import('@modelcontextprotocol/client').catch(
+      failedToImport,
+    );
+    requestSignal?.throwIfAborted();
+    return await call(requestSignal, runtime);
   } catch (error) {
     sourceSignal?.throwIfAborted();
     throw error;
@@ -411,7 +421,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
   protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
-  protected timeout: number;
+  protected timeout: number | undefined;
   private readonly maxListPages: number | undefined;
 
   params: DefaultMCPServerStdioOptions;
@@ -422,7 +432,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     super(params);
     this.maxListPages = validateMaxListPages(params.maxListPages);
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
-    this.timeout = params.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+    this.timeout = params.timeout;
     if ('fullCommand' in params) {
       const elements = params.fullCommand.split(' ');
       const command = elements.shift();
@@ -546,6 +556,7 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
       );
     }
     const session = this.session;
+    const listedTools = this._toolsList;
     const params = {
       name: toolName,
       arguments: args ?? {},
@@ -553,13 +564,13 @@ export class NodeMCPServerStdio extends BaseMCPServerStdio {
     };
     const response = await callWithMCPRequestSignal(
       options?.signal,
-      (requestSignal) =>
+      (requestSignal, runtime) =>
         session.callTool(params, {
           ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
-            timeout: this.timeout,
+            timeout: this.timeout ?? runtime.DEFAULT_REQUEST_TIMEOUT_MSEC,
             signal: requestSignal,
           }),
-          toolDefinition: getListedToolForCall(this._toolsList, toolName),
+          toolDefinition: getListedToolForCall(listedTools, toolName, runtime),
         }),
     );
     const result = attachParsedCallToolResultMetadata(
@@ -669,7 +680,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
   protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
-  protected timeout: number;
+  protected timeout: number | undefined;
   private readonly maxListPages: number | undefined;
 
   params: MCPServerSSEOptions;
@@ -682,7 +693,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `sse: ${this.params.url}`;
-    this.timeout = params.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+    this.timeout = params.timeout;
   }
 
   async connect(): Promise<void> {
@@ -789,6 +800,7 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       );
     }
     const session = this.session;
+    const listedTools = this._toolsList;
     const params = {
       name: toolName,
       arguments: args ?? {},
@@ -798,13 +810,17 @@ export class NodeMCPServerSSE extends BaseMCPServerSSE {
       this.params.url,
       'SSE tool call',
       () =>
-        callWithMCPRequestSignal(options?.signal, (requestSignal) =>
+        callWithMCPRequestSignal(options?.signal, (requestSignal, runtime) =>
           session.callTool(params, {
             ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
-              timeout: this.timeout,
+              timeout: this.timeout ?? runtime.DEFAULT_REQUEST_TIMEOUT_MSEC,
               signal: requestSignal,
             }),
-            toolDefinition: getListedToolForCall(this._toolsList, toolName),
+            toolDefinition: getListedToolForCall(
+              listedTools,
+              toolName,
+              runtime,
+            ),
           }),
         ),
       options?.signal,
@@ -929,7 +945,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
   protected _toolsCacheGeneration = 0;
   protected serverInitializeResult: InitializeResult | null = null;
   protected clientSessionTimeoutSeconds?: number;
-  protected timeout: number;
+  protected timeout: number | undefined;
   private readonly maxListPages: number | undefined;
 
   params: MCPServerStreamableHttpOptions;
@@ -949,7 +965,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     this.clientSessionTimeoutSeconds = params.clientSessionTimeoutSeconds ?? 5;
     this.params = params;
     this._name = params.name || `streamable-http: ${this.params.url}`;
-    this.timeout = params.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
+    this.timeout = params.timeout;
   }
 
   private async loadStreamableHttpRuntime(): Promise<{
@@ -1215,6 +1231,7 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     meta?: Record<string, unknown> | null,
     options?: MCPCallToolOptions,
   ): Promise<CallToolResult> {
+    const listedTools = this._toolsList;
     const params = {
       name: toolName,
       arguments: args ?? {},
@@ -1222,13 +1239,13 @@ export class NodeMCPServerStreamableHttp extends BaseMCPServerStreamableHttp {
     };
     const response = await callWithMCPRequestSignal(
       options?.signal,
-      (requestSignal) =>
+      (requestSignal, runtime) =>
         client.callTool(params, {
           ...buildRequestOptions(this.clientSessionTimeoutSeconds, {
-            timeout: this.timeout,
+            timeout: this.timeout ?? runtime.DEFAULT_REQUEST_TIMEOUT_MSEC,
             signal: requestSignal,
           }),
-          toolDefinition: getListedToolForCall(this._toolsList, toolName),
+          toolDefinition: getListedToolForCall(listedTools, toolName, runtime),
         }),
     );
     return attachParsedCallToolResultMetadata(response as CallToolResult);

@@ -133,6 +133,13 @@ export function validateExportTreeTerminals(
   return errors;
 }
 
+export function collectRuntimeTargets(exportNode, format) {
+  return collectExportLeaves(exportNode).filter(({ condition }) => {
+    const conditions = condition.split('.');
+    return conditions.includes(format) && !conditions.includes('types');
+  });
+}
+
 export function collectRuntimeConditionSets(exportNodes) {
   const builtInConditions = new Set([
     'types',
@@ -1028,6 +1035,9 @@ function createProgram(rootNames, sourceMode = false) {
     paths['@openai/agents-core/_shims/config'] = [
       'packages/agents-core/src/shims/config-node.ts',
     ];
+    paths['@openai/agents-core/_shims/runtime'] = [
+      'packages/agents-core/src/shims/platform-node.ts',
+    ];
     paths['@openai/agents-realtime/_shims'] = [
       'packages/agents-realtime/src/shims/shims-node.ts',
     ];
@@ -1123,7 +1133,9 @@ function inspectEntry(
 function sourceTarget(packageRoot, declarationTarget) {
   return path.join(
     packageRoot,
-    declarationTarget.replace(/^\.\/dist\//, 'src/').replace(/\.d\.ts$/, '.ts'),
+    declarationTarget
+      .replace(/^\.\/dist\//, 'src/')
+      .replace(/\.d\.(?:mts|ts)$/, '.ts'),
   );
 }
 
@@ -1164,7 +1176,16 @@ export async function inspectPackageSet(
   mode,
   selectedPublicTypeAliases = [],
   selectedPublicObjectProperties = [],
+  { classicCompatibility = false } = {},
 ) {
+  if (classicCompatibility) {
+    selectedPublicTypeAliases = classicSelectionPolicies(
+      selectedPublicTypeAliases,
+    );
+    selectedPublicObjectProperties = classicSelectionPolicies(
+      selectedPublicObjectProperties,
+    );
+  }
   const roots = Object.values(packages).map((item) => item.packageRoot);
   const entryFiles = Object.values(packages).flatMap((item) =>
     Object.values(item.entries).flatMap((entry) =>
@@ -1596,13 +1617,55 @@ export function compareOptionalPeers(baselinePackage, candidateManifest, name) {
   return errors;
 }
 
+// The experimental native entry points replace only the convenience root and testing path.
+// Compare the released surface against its explicit classic entry points instead.
+function classicSubpath(name, subpath) {
+  return name === '@openai/agents' && ['.', './testing'].includes(subpath)
+    ? subpath === '.'
+      ? './classic'
+      : './classic/testing'
+    : subpath;
+}
+
+function classicSelectionPolicies(policies) {
+  return policies.map((policy) => ({
+    ...policy,
+    subpath: classicSubpath(policy.package, policy.subpath),
+  }));
+}
+
+export function classicContractView(packages, surfaces) {
+  const name = '@openai/agents';
+  const candidate = packages[name];
+  const exports = { ...candidate.manifest.exports };
+  const entries = { ...surfaces[name] };
+  for (const subpath of ['.', './testing']) {
+    const classic = classicSubpath(name, subpath);
+    exports[subpath] = candidate.manifest.exports?.[classic];
+    entries[subpath] = surfaces[name]?.[classic];
+  }
+  return {
+    packages: {
+      ...packages,
+      [name]: { ...candidate, manifest: { ...candidate.manifest, exports } },
+    },
+    surfaces: { ...surfaces, [name]: entries },
+  };
+}
+
 export function comparePackageSets(
   contract,
   baselineSurfaces,
   candidatePackages,
   candidateSurfaces,
   deep,
+  { classicCompatibility = false } = {},
 ) {
+  if (classicCompatibility) {
+    const view = classicContractView(candidatePackages, candidateSurfaces);
+    candidatePackages = view.packages;
+    candidateSurfaces = view.surfaces;
+  }
   const errors = [];
   for (const [name] of PUBLIC_PACKAGES) {
     const baselinePackage = contract.packages[name];
@@ -1671,6 +1734,7 @@ export async function inspectAndComparePackageSets(
   contract,
   baselinePackages,
   candidatePackages,
+  { classicCompatibility = false } = {},
 ) {
   const selectedPublicTypeAliases = contract.selectedPublicTypeAliases ?? [];
   const baselineSurfaces = await inspectPackageSet(
@@ -1684,6 +1748,7 @@ export async function inspectAndComparePackageSets(
     'dist',
     selectedPublicTypeAliases,
     contract.selectedPublicObjectProperties ?? [],
+    { classicCompatibility },
   );
   return {
     errors: comparePackageSets(
@@ -1692,6 +1757,7 @@ export async function inspectAndComparePackageSets(
       candidatePackages,
       candidateSurfaces,
       true,
+      { classicCompatibility },
     ),
     candidateSurfaces,
   };
@@ -1715,7 +1781,10 @@ export async function assertAllTargetsExist(packages) {
         }
       }
       for (const condition of ['types', 'require', 'import']) {
-        const targets = collectTargets(entry.exportNode, condition);
+        const targets =
+          condition === 'types'
+            ? collectTargets(entry.exportNode, condition)
+            : collectRuntimeTargets(entry.exportNode, condition);
         if (targets.length === 0) {
           errors.push(
             `${packageKey(name, subpath)} has no ${condition} target`,

@@ -1,6 +1,6 @@
 'use server';
 
-import { Agent, Runner, user } from '@openai/agents';
+import { Agent, Runner, user } from '@openai/agents/classic';
 import { type RealtimeItem } from '@openai/agents/realtime';
 import { z } from 'zod';
 

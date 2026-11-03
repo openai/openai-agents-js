@@ -25,10 +25,10 @@ import {
   type Span,
   type Trace,
   type TracingProcessor,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { ReadableStream } from 'node:stream/web';
 import { APICallError, type JSONSchema7 } from '@ai-sdk/provider';
-import type { SerializedOutputType } from '@openai/agents';
+import type { SerializedOutputType } from '@openai/agents/classic';
 import { z } from 'zod';
 import { stubModel } from './fixtures';
 

@@ -1,6 +1,11 @@
 import * as readline from 'readline/promises';
 import { stdin, stdout } from 'node:process';
-import { Agent, run, hostedMcpTool, RunToolApprovalItem } from '@openai/agents';
+import {
+  Agent,
+  run,
+  hostedMcpTool,
+  RunToolApprovalItem,
+} from '@openai/agents/classic';
 
 async function promptApproval(item: RunToolApprovalItem): Promise<boolean> {
   if (

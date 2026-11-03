@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
 import { WebSocket } from 'ws';
-import { setTracingDisabled } from '@openai/agents';
+import { setTracingDisabled } from '@openai/agents/classic';
 import {
   ScriptedModel,
   assistantMessage,
@@ -10,7 +10,7 @@ import {
   modelResponse,
   modelResponder,
   modelError,
-} from '@openai/agents/testing';
+} from '@openai/agents/classic/testing';
 import { createOrderAgent } from './agent';
 import { DelegationHandler, type ResponseEnvelope } from './delegation';
 import { handleBrowser, relay } from './server';

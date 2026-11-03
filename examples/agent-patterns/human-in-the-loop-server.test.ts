@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { Agent, RunState, tool } from '@openai/agents';
+import { Agent, RunState, tool } from '@openai/agents/classic';
 import {
   ScriptedModel,
   assistantMessage,
   functionCall,
   modelResponder,
-} from '@openai/agents/testing';
+} from '@openai/agents/classic/testing';
 import { z } from 'zod';
 import {
   ApprovalServer,

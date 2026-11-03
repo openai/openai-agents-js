@@ -2082,6 +2082,13 @@ test('the CLI validates complete selections in package profiles and promotion be
     webSearchDeclaration(),
     async ({ inspect, packages, contract, root }) => {
       const surfaces = await inspect();
+      const agents = packages['@openai/agents'];
+      agents.manifest.exports = {
+        ...agents.manifest.exports,
+        './classic': agents.manifest.exports['.'],
+      };
+      agents.entries['./classic'] = agents.entries['.'];
+      surfaces['@openai/agents']['./classic'] = surfaces['@openai/agents']['.'];
       const brokenPolicy = imagePolicies.map((entry) => ({
         ...entry,
         fields: [entry.fields[0]],
@@ -2250,3 +2257,245 @@ test.each(['source', 'dist', 'package', 'promote'])(
     }
   },
 );
+
+describe('native entry points with released classic contracts', () => {
+  test('compares released root and testing paths to classic without changing promotion defaults', () => {
+    const exportNode = {
+      types: './dist/index.d.ts',
+      require: './dist/index.js',
+      import: './dist/index.mjs',
+    };
+    const record = (name) => ({ name, spaces: ['value'], sdkOwned: false });
+    const contract = { packages: {} };
+    const packages = {};
+    const baseline = {};
+    const surfaces = {};
+    for (const [name] of PUBLIC_PACKAGES) {
+      contract.packages[name] = { exports: {}, optionalPeers: [] };
+      packages[name] = { manifest: { exports: {} }, entries: {} };
+      baseline[name] = {};
+      surfaces[name] = {};
+    }
+    const name = '@openai/agents';
+    for (const [subpath, symbol] of [
+      ['.', 'Agent'],
+      ['./testing', 'ScriptedModel'],
+    ]) {
+      const classic = subpath === '.' ? './classic' : './classic/testing';
+      contract.packages[name].exports[subpath] = exportNode;
+      packages[name].manifest.exports[subpath] = exportNode;
+      packages[name].manifest.exports[classic] = exportNode;
+      baseline[name][subpath] = { types: [record(symbol)] };
+      surfaces[name][subpath] = { types: [record('NativeOnly')] };
+      surfaces[name][classic] = { types: [record(symbol)] };
+    }
+    const compare = (options) =>
+      comparePackageSets(contract, baseline, packages, surfaces, true, options);
+    expect(compare({ classicCompatibility: true })).toEqual([]);
+    expect(compare()).toContain('@openai/agents [types].Agent was removed');
+    expect(compare()).toContain(
+      '@openai/agents/testing [types].ScriptedModel was removed',
+    );
+    surfaces[name]['./classic/testing'].types = [];
+    expect(compare({ classicCompatibility: true })).toContain(
+      '@openai/agents/testing [types].ScriptedModel was removed',
+    );
+    delete packages[name].manifest.exports['./classic'];
+    expect(compare({ classicCompatibility: true })).toContain(
+      '@openai/agents export path was removed',
+    );
+    expect(packages[name].manifest.exports['.']).toBe(exportNode);
+    expect(surfaces[name]['.'].types[0].name).toBe('NativeOnly');
+  });
+
+  test('maps classic exports', { timeout: 15_000 }, async () => {
+    await withObjectFixture(
+      webSearchDeclaration(),
+      async ({ packages, contract }) => {
+        const baseline = await inspectPackageSet(
+          packages,
+          'dist',
+          [],
+          imagePolicies,
+        );
+        const info = packages['@openai/agents'];
+        info.manifest.exports = { ...info.manifest.exports };
+        const classic = info.entries['.'];
+        info.entries['./classic'] = classic;
+        info.manifest.exports['./classic'] = classic.exportNode;
+        const nativeExport = {
+          import: {
+            types: './dist/native.d.mts',
+            default: './dist/native.mjs',
+          },
+          require: { types: './dist/native.d.ts', default: './dist/native.js' },
+        };
+        info.manifest.exports['.'] = nativeExport;
+        await writeFile(
+          path.join(info.packageRoot, 'src/native.ts'),
+          'export const nativeOnly = 1;',
+        );
+        await writeFile(
+          path.join(info.packageRoot, 'dist/native.d.mts'),
+          'export declare const nativeOnly = 1;',
+        );
+        await writeFile(
+          path.join(info.packageRoot, 'dist/native.d.ts'),
+          'export declare const nativeOnly = 1;',
+        );
+        const roots = {};
+        for (const [name, candidate] of Object.entries(packages)) {
+          roots[name] = candidate.packageRoot;
+          await writeFile(
+            path.join(candidate.packageRoot, 'package.json'),
+            JSON.stringify(candidate.manifest),
+          );
+        }
+        for (const mode of ['source', 'dist']) {
+          const loaded = await contractSurface.loadPackageSet(roots, mode);
+          const declarations =
+            loaded['@openai/agents'].entries['.'].declarations;
+          expect(declarations.map((entry) => entry.entryFile)).toEqual(
+            mode === 'source'
+              ? [
+                  path.join(info.packageRoot, 'src/native.ts'),
+                  path.join(info.packageRoot, 'src/native.ts'),
+                ]
+              : [
+                  path.join(info.packageRoot, 'dist/native.d.mts'),
+                  path.join(info.packageRoot, 'dist/native.d.ts'),
+                ],
+          );
+          const surfaces = await inspectPackageSet(
+            loaded,
+            mode,
+            [],
+            imagePolicies,
+            { classicCompatibility: true },
+          );
+          expect(
+            comparePackageSets(contract, baseline, loaded, surfaces, false, {
+              classicCompatibility: true,
+            }),
+          ).toEqual([]);
+          expect(surfaces['@openai/agents']['.']['import.types'][0].name).toBe(
+            'nativeOnly',
+          );
+          expect(
+            surfaces['@openai/agents']['./classic'].types[0],
+          ).toHaveProperty('objectProperties');
+        }
+      },
+    );
+  });
+
+  test('checks nested native runtime bindings and classic CJS/ESM identity', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'agents-native-contract-'));
+    try {
+      const exportNode = {
+        import: { types: './index.d.mts', default: './index.mjs' },
+        require: { types: './index.d.ts', default: './index.cjs' },
+      };
+      const classicExport = {
+        types: './classic.d.ts',
+        import: './classic.mjs',
+        require: './classic.cjs',
+      };
+      await Promise.all([
+        writeFile(
+          path.join(root, 'index.mjs'),
+          'export const nativeImport = 1;',
+        ),
+        writeFile(path.join(root, 'index.cjs'), 'exports.nativeRequire = 1;'),
+        writeFile(path.join(root, 'owner.mjs'), 'export const Agent = {};'),
+        writeFile(path.join(root, 'owner.cjs'), 'exports.Agent = {};'),
+        writeFile(
+          path.join(root, 'classic.mjs'),
+          "export { Agent } from './owner.mjs';",
+        ),
+        writeFile(
+          path.join(root, 'classic.cjs'),
+          "module.exports = require('./owner.cjs');",
+        ),
+        ...['index.d.mts', 'index.d.ts', 'classic.d.ts'].map((file) =>
+          writeFile(path.join(root, file), 'export {};'),
+        ),
+      ]);
+      const ownerExport = {
+        types: './classic.d.ts',
+        import: './owner.mjs',
+        require: './owner.cjs',
+      };
+      const entry = (node) => ({ exportNode: node });
+      const packages = {
+        '@openai/agents': {
+          packageRoot: root,
+          manifest: {
+            exports: { '.': exportNode, './classic': classicExport },
+          },
+          entries: {
+            '.': entry(exportNode),
+            './classic': entry(classicExport),
+          },
+        },
+        '@openai/agents-core': {
+          packageRoot: root,
+          manifest: { exports: { '.': ownerExport } },
+          entries: { '.': entry(ownerExport) },
+        },
+      };
+      const record = (name) => ({ name, kind: 'const', spaces: ['value'] });
+      const surfaces = {
+        '@openai/agents': {
+          '.': {
+            'import.types': [record('nativeImport')],
+            'require.types': [record('nativeRequire')],
+          },
+          './classic': { types: [record('Agent')] },
+        },
+        '@openai/agents-core': { '.': { types: [record('Agent')] } },
+      };
+      expect(await contractSurface.assertAllTargetsExist(packages)).toEqual([]);
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toEqual([]);
+      surfaces['@openai/agents']['.']['import.types'].push(
+        record('missingImportBinding'),
+      );
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toContain(
+        '@openai/agents import.missingImportBinding has no runtime binding',
+      );
+      surfaces['@openai/agents']['.']['import.types'].pop();
+      surfaces['@openai/agents']['.']['require.types'].push(
+        record('missingRequireBinding'),
+      );
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toContain(
+        '@openai/agents require.missingRequireBinding has no runtime binding',
+      );
+      const differentClassic = './different-classic.cjs';
+      await writeFile(path.join(root, differentClassic), 'exports.Agent = {};');
+      classicExport.require = differentClassic;
+      await writeFile(
+        path.join(root, 'different-classic.mjs'),
+        'export const Agent = {};',
+      );
+      classicExport.import = './different-classic.mjs';
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toContain(
+        '@openai/agents/classic.Agent is not the @openai/agents-core runtime binding in import',
+      );
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toContain(
+        '@openai/agents/classic.Agent is not the @openai/agents-core runtime binding in require',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

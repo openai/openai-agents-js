@@ -61,11 +61,17 @@ function sourcePathForExport(
   exportPath: string,
   target: PackageExportTarget,
 ): string {
-  const distTarget = selectNodeImportTarget(target);
+  let distTarget = selectNodeImportTarget(target);
   if (distTarget === undefined) {
     throw new Error(
       `Package export ${workspacePackage.name}${exportPath.slice(1)} has no Node-compatible import target.`,
     );
+  }
+  if (
+    workspacePackage.name === '@openai/agents' &&
+    exportPath === './experimental/mcp-tasks'
+  ) {
+    distTarget = './dist/experimental/mcp-tasks/index.mjs';
   }
   if (!distTarget.startsWith('./dist/')) {
     throw new Error(

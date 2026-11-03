@@ -1,4 +1,4 @@
-import { MemorySession, run } from '@openai/agents';
+import { MemorySession, run } from '@openai/agents/classic';
 import {
   filesystem,
   Manifest,

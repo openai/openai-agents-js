@@ -90,6 +90,51 @@ beforeAll(() => {
 });
 
 describe('retry policies', () => {
+  it.each(['response', 'stream'] as const)(
+    'refuses a revoked %s attempt without another Model call or policy evaluation',
+    async (invocation) => {
+      const failure = new Error('Retryable Model failure');
+      const refused = new Error('Captured request was revoked');
+      attachModelFailureUsage(failure, responseUsage(2, 3));
+      const model = new ScriptedModel([
+        modelError(failure, { replaySafety: 'safe' }),
+        textResponse('Must not dispatch'),
+      ]);
+      const policy = vi.fn(() => ({ retry: true, delayMs: 0 }));
+      const request = {
+        modelSettings: { retry: { maxRetries: 2, policy } },
+      } as unknown as ModelRequest;
+      let attempts = 0;
+      const handlers = {
+        beforeAttempt() {
+          if (++attempts === 2) throw refused;
+        },
+      };
+      const run = async () => {
+        if (invocation === 'response') {
+          await getResponseWithRetry(model, request, handlers);
+        } else {
+          for await (const _event of getStreamedResponseWithRetry(
+            model,
+            request,
+            handlers,
+          )) {
+            // The admission failure occurs before another Model event.
+          }
+        }
+      };
+      await expect(run()).rejects.toBe(refused);
+      expect(model.calls).toHaveLength(1);
+      expect(policy).toHaveBeenCalledTimes(1);
+      expect(attempts).toBe(2);
+      expect(consumeModelFailureUsage(refused)).toMatchObject({
+        requests: 1,
+        inputTokens: 2,
+        outputTokens: 3,
+      });
+    },
+  );
+
   it('retries non-streaming requests only when the user policy opts in', async () => {
     const model = new ScriptedModel([
       modelError(errorWith('Rate limited', { statusCode: 429 })),
@@ -573,6 +618,171 @@ describe('retry policies', () => {
     const result = await run(agent, 'hello');
 
     expect(result.finalOutput).toBe('Recovered from seconds header');
+    expect(model.calls).toHaveLength(2);
+  });
+
+  it.each([false, true])(
+    'honors the full retry-after delay across timer limits (stream=%s)',
+    async (stream) => {
+      vi.useFakeTimers();
+      try {
+        const model = new ScriptedModel([
+          modelError(
+            errorWith('Rate limited', {
+              responseHeaders: { 'retry-after-ms': '2147483648' },
+            }),
+          ),
+          stream
+            ? modelStream([createDoneEvent('Recovered')])
+            : textResponse('Recovered'),
+        ]);
+        const agent = new Agent({
+          name: 'LongRetryAfterAgent',
+          model,
+          modelSettings: {
+            retry: { maxRetries: 1, policy: retryPolicies.retryAfter() },
+          },
+        });
+        const resultPromise = (async () => {
+          if (!stream) return run(agent, 'hello');
+          const result = await run(agent, 'hello', { stream: true });
+          for await (const _event of result) {
+            // Consume the public stream before inspecting its final output.
+          }
+          await result.completed;
+          return result;
+        })();
+
+        await vi.advanceTimersByTimeAsync(2_147_483_647);
+        expect(model.calls).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect((await resultPromise).finalOutput).toBe('Recovered');
+        expect(model.calls).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('does not retry early for an oversized retry-after with real timers', async () => {
+    const controller = new AbortController();
+    const cancellation = new Error('Cancel the long retry wait');
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const model = new ScriptedModel([
+      modelResponder(() => {
+        watchdog = setTimeout(() => controller.abort(cancellation), 50);
+        throw errorWith('Rate limited', {
+          responseHeaders: { 'retry-after-ms': '2147483648' },
+        });
+      }),
+      textResponse('Must not retry before cancellation'),
+    ]);
+    const resultPromise = run(
+      new Agent({
+        name: 'AbortLongRetryAgent',
+        model,
+        modelSettings: {
+          retry: { maxRetries: 1, policy: retryPolicies.retryAfter() },
+        },
+      }),
+      'hello',
+      { signal: controller.signal },
+    );
+    try {
+      await expect(resultPromise).rejects.toBe(cancellation);
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      clearTimeout(watchdog);
+      controller.abort(cancellation);
+      await resultPromise.catch(() => {});
+    }
+  });
+
+  it('cleans up cancellation in a later retry-delay segment', async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const cancellation = new Error('Cancel the remaining retry wait');
+    try {
+      const model = new ScriptedModel([
+        modelError(
+          errorWith('Rate limited', {
+            responseHeaders: { 'retry-after-ms': '2147483747' },
+          }),
+        ),
+        textResponse('Must not retry after cancellation'),
+      ]);
+      const outcome = run(
+        new Agent({
+          name: 'AbortLaterRetrySegmentAgent',
+          model,
+          modelSettings: {
+            retry: { maxRetries: 1, policy: retryPolicies.retryAfter() },
+          },
+        }),
+        'hello',
+        { signal: controller.signal },
+      ).catch((error) => error);
+
+      await vi.advanceTimersByTimeAsync(2_147_483_697);
+      expect(model.calls).toHaveLength(1);
+      controller.abort(cancellation);
+      expect(await outcome).toBe(cancellation);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      controller.abort(cancellation);
+      vi.useRealTimers();
+    }
+  });
+
+  it('declines overflowing retry-after seconds without shorter backoff', async () => {
+    const original = errorWith('Rate limited', {
+      statusCode: 429,
+      responseHeaders: { 'retry-after': '1' + '0'.repeat(308) },
+    });
+    const model = new ScriptedModel([
+      modelError(original),
+      textResponse('Must not fall back to a shorter delay'),
+    ]);
+    await expect(
+      run(
+        new Agent({
+          name: 'OverflowingRetryAfterAgent',
+          model,
+          modelSettings: {
+            retry: {
+              maxRetries: 1,
+              backoff: { initialDelayMs: 0, jitter: false },
+              policy: retryPolicies.httpStatus([429]),
+            },
+          },
+        }),
+        'hello',
+      ),
+    ).rejects.toBe(original);
+    expect(model.calls).toHaveLength(1);
+  });
+
+  it('preserves explicit zero delay over overflowing retry-after seconds', async () => {
+    const model = new ScriptedModel([
+      modelError(
+        errorWith('Rate limited', {
+          responseHeaders: { 'retry-after': '1' + '0'.repeat(308) },
+        }),
+      ),
+      textResponse('Recovered with the explicit policy'),
+    ]);
+    const result = await run(
+      new Agent({
+        name: 'ExplicitRetryDelayAgent',
+        model,
+        modelSettings: {
+          retry: { maxRetries: 1, policy: () => ({ retry: true, delayMs: 0 }) },
+        },
+      }),
+      'hello',
+    );
+    expect(result.finalOutput).toBe('Recovered with the explicit policy');
     expect(model.calls).toHaveLength(2);
   });
 

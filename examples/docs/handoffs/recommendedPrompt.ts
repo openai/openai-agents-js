@@ -1,4 +1,4 @@
-import { Agent } from '@openai/agents';
+import { Agent } from '@openai/agents/classic';
 import { RECOMMENDED_PROMPT_PREFIX } from '@openai/agents-core/extensions';
 
 const billingAgent = new Agent({

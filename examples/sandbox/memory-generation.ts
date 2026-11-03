@@ -1,4 +1,4 @@
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 import {
   filesystem,
   Manifest,

@@ -9,8 +9,11 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Agent, Runner, applyPatchTool } from '@openai/agents';
-import { ScriptedModel, assistantMessage } from '@openai/agents/testing';
+import { Agent, Runner, applyPatchTool } from '@openai/agents/classic';
+import {
+  ScriptedModel,
+  assistantMessage,
+} from '@openai/agents/classic/testing';
 import { WorkspaceEditor } from './apply-patch';
 
 describe('apply-patch workspace editor', () => {

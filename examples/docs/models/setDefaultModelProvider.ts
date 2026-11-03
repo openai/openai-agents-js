@@ -1,4 +1,4 @@
-import { setDefaultModelProvider } from '@openai/agents';
+import { setDefaultModelProvider } from '@openai/agents/classic';
 
 setDefaultModelProvider({
   async getModel() {

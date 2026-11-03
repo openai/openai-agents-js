@@ -4,7 +4,7 @@ import {
   UserError,
   createCustomSpan,
   tool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { loadEnv } from '@openai/agents-core/_shims';
 import {
   isZodObject,
@@ -20,7 +20,7 @@ import type {
   FunctionCallItem,
   FunctionTool,
   Span,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import {
   Codex,
   type CodexOptions,

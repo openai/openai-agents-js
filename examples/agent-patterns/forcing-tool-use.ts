@@ -8,7 +8,7 @@ import {
   RunContext,
   type FunctionToolResult,
   type ToolUseBehavior,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 type Weather = {

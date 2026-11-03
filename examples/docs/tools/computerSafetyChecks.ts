@@ -1,4 +1,8 @@
-import { computerTool, type Computer, type ComputerTool } from '@openai/agents';
+import {
+  computerTool,
+  type Computer,
+  type ComputerTool,
+} from '@openai/agents/classic';
 
 export function computerToolWithSafetyChecks(computer: Computer): ComputerTool {
   return computerTool({

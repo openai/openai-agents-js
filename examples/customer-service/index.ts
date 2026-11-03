@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import readline from 'node:readline/promises';
-import { Agent, withTrace, tool, run, RunContext } from '@openai/agents';
+import {
+  Agent,
+  withTrace,
+  tool,
+  run,
+  RunContext,
+} from '@openai/agents/classic';
 import { RECOMMENDED_PROMPT_PREFIX } from '@openai/agents-core/extensions';
 
 // ------------------------------------------------

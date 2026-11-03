@@ -2,7 +2,12 @@
 
 import { z } from 'zod';
 
-import { Agent, getGlobalTraceProvider, run, tool } from '@openai/agents';
+import {
+  Agent,
+  getGlobalTraceProvider,
+  run,
+  tool,
+} from '@openai/agents/classic';
 
 const getWeatherTool = tool({
   name: 'get_weather',

@@ -243,7 +243,6 @@ function getComputerTraceInputPayload(
 }
 
 /**
- * @internal
  * Normalizes tool outputs once so downstream code works with fully structured protocol items.
  * Doing this here keeps API surface stable even when providers add new shapes.
  */

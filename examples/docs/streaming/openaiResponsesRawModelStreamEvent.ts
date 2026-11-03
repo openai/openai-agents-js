@@ -1,5 +1,5 @@
-import type { RunStreamEvent } from '@openai/agents';
-import { isOpenAIResponsesRawModelStreamEvent } from '@openai/agents';
+import type { RunStreamEvent } from '@openai/agents/classic';
+import { isOpenAIResponsesRawModelStreamEvent } from '@openai/agents/classic';
 
 export function isOpenAIResponsesTextDelta(event: RunStreamEvent): boolean {
   return (

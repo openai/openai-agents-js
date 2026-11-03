@@ -9,7 +9,7 @@ import {
   retryPolicies,
   setTracingDisabled,
   tool,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import { z } from 'zod';
 
 import { createRunner, getToolOutputs, integrationModel } from '../helpers.mjs';

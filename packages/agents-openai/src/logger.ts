@@ -1,5 +1,5 @@
 import { getLogger } from '@openai/agents-core';
 
-const logger = getLogger('openai-agents:openai');
+const logger: ReturnType<typeof getLogger> = getLogger('openai-agents:openai');
 
 export default logger;

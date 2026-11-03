@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { Agent, setTracingDisabled, tool } from '@openai/agents';
+import { Agent, setTracingDisabled, tool } from '@openai/agents/classic';
 import { z } from 'zod';
 
 import {

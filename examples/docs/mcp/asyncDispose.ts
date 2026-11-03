@@ -1,4 +1,7 @@
-import { MCPServerStreamableHttp, connectMcpServers } from '@openai/agents';
+import {
+  MCPServerStreamableHttp,
+  connectMcpServers,
+} from '@openai/agents/classic';
 
 async function main() {
   const servers = [

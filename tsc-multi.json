@@ -1,7 +1,15 @@
 {
   "targets": [
-    { "extname": ".js", "module": "commonjs", "moduleResolution": "node" },
-    { "extname": ".mjs", "module": "esnext" }
+    {
+      "extname": ".mjs",
+      "module": "esnext",
+      "moduleResolution": "bundler"
+    },
+    {
+      "extname": ".js",
+      "module": "commonjs",
+      "moduleResolution": "bundler"
+    }
   ],
   "projects": [
     "packages/agents-core/tsconfig.json",
@@ -9,5 +17,6 @@
     "packages/agents-realtime/tsconfig.json",
     "packages/agents/tsconfig.json",
     "packages/agents-extensions/tsconfig.json"
-  ]
+  ],
+  "compiler": "@typescript/typescript6"
 }

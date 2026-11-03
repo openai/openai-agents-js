@@ -1,4 +1,4 @@
-import { Agent, run, withTrace } from '@openai/agents';
+import { Agent, run, withTrace } from '@openai/agents/classic';
 import { createInterface } from 'node:readline/promises';
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });

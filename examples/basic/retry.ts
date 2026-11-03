@@ -3,7 +3,7 @@ import {
   type ModelRetrySettings,
   Runner,
   retryPolicies,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 
 async function main() {
   const applyPolicies = retryPolicies.any(

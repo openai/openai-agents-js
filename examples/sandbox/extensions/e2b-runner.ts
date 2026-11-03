@@ -1,4 +1,4 @@
-import { Runner } from '@openai/agents';
+import { Runner } from '@openai/agents/classic';
 import {
   E2BSandboxClient,
   type E2BSandboxType,

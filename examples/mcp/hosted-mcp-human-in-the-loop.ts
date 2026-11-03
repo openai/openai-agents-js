@@ -3,7 +3,7 @@ import {
   Runner,
   hostedMcpTool,
   RunToolApprovalItem,
-} from '@openai/agents';
+} from '@openai/agents/classic';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 

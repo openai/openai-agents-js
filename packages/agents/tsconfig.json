@@ -1,8 +1,19 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
+    "target": "ES2022",
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "./src",
+    "lib": ["ESNext", "DOM"],
+    "paths": {
+      "@hyperjump/json-schema/experimental": [
+        "../../node_modules/@hyperjump/json-schema/lib/experimental"
+      ],
+      "@hyperjump/json-schema/instance/experimental": [
+        "../../node_modules/@hyperjump/json-schema/lib/instance"
+      ]
+    },
+    "moduleResolution": "bundler"
   },
-  "exclude": ["dist/**", "test/**"]
+  "exclude": ["dist/**", "examples/**", "test/**", "native/**", "scripts/**"]
 }

@@ -1,4 +1,4 @@
-import { Runner, Agent } from '@openai/agents';
+import { Runner, Agent } from '@openai/agents/classic';
 
 const agent = new Agent({
   name: 'Creative writer',
