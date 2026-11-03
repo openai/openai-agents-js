@@ -6,4 +6,4 @@
 '@openai/agents-realtime': patch
 ---
 
-Add an experimental embedded Codex harness at `@openai/agents` and expose the existing runner at `@openai/agents/classic`.
+feat: Embed the Codex harness in `@openai/agents` and expose the classic Agent and Runner APIs at `@openai/agents/classic`.

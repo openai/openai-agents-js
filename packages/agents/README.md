@@ -20,11 +20,13 @@ main().catch((error: unknown) => {
 
 The example requires the native addon and model credentials, such as `OPENAI_API_KEY`. `agent.run()` creates and closes its own Session; `await using` also closes this example's provider. Save it as a TypeScript file and run it with `tsx`. Use `agent.session()` for multiple turns and close it in `finally`.
 
-Use the included [greeting](examples/basic.ts) and [typed-context](examples/typed-context.ts) examples with this build. The [native guide](NATIVE.md) and [testing guide](TESTING.md) are also included.
+Try the [greeting](examples/basic.ts) and [typed-context](examples/typed-context.ts) examples. See the [native guide](NATIVE.md) for API details and the [testing guide](TESTING.md) for scripted responses.
 
-## Build from source
+## Install
 
-Use Node.js 24. Follow the [native build instructions](NATIVE.md#build-from-source) to build the addon and helper executables. For the classic API, use [the classic guide](CLASSIC.md).
+Use Node.js 24 and follow the [installation guide](NATIVE.md#install) to run the starter from a GitHub release. To add the SDK to an existing application, follow the [local dependency setup](NATIVE.md#add-the-sdk-to-an-existing-application). To work on the SDK itself, follow the [source build instructions](NATIVE.md#build-from-source).
+
+For the classic API, see the [classic guide](CLASSIC.md).
 
 ## Sessions
 

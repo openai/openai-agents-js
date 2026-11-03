@@ -1,6 +1,6 @@
 # OpenAI Agents SDK
 
-Build agents that call application tools and keep a conversation going. This branch embeds the Codex harness in the JavaScript and TypeScript SDK. Codex runs model turns and keeps conversation history in your application.
+Build agents with the Codex harness in JavaScript and TypeScript. Define instructions, connect your tools, and run agents in your application. Codex runs model turns and keeps conversation history.
 
 ## Build agents in TypeScript
 
@@ -10,13 +10,13 @@ Use the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/ov
 
 ## Install
 
-Use Node.js 24 and follow the [source build instructions](packages/agents/NATIVE.md#build-from-source) from a checkout of `feat/codex-harness`. The build compiles the native addon and helper executables for your machine.
+Use Node.js 24. Download one `agents-starter-<version>-<platform>.tar.gz` bundle for your platform from [GitHub Releases](https://github.com/openai/openai-agents-js/releases). It includes the built SDK, the compiled native runtime, and a JavaScript example. Follow the [installation guide](packages/agents/NATIVE.md#install) to install dependencies and run the example. For an existing application, use the same four SDK tarballs with the [local dependency setup](packages/agents/NATIVE.md#add-the-sdk-to-an-existing-application).
 
-**The embedded harness is experimental.** The [npm package](https://www.npmjs.com/package/@openai/agents) installs the released SDK. In this checkout, use [`@openai/agents/classic`](packages/agents/CLASSIC.md) for the classic Agent and Runner APIs.
+**The first release with the Codex harness is not available yet.**
 
 ## Example
 
-Save this as `packages/agents/examples/greeting.ts` in your checkout:
+Add Zod 4 to your project with `npm install zod@4`, then save this as `greeting.ts`.
 
 ```ts
 import { Agent, NativeProvider, tool } from '@openai/agents';
@@ -49,7 +49,7 @@ main().catch((error: unknown) => {
 });
 ```
 
-Set `OPENAI_API_KEY` in your environment, then run `pnpm exec tsx packages/agents/examples/greeting.ts` from the repository root.
+Set `OPENAI_API_KEY` in your environment, then run `npx tsx greeting.ts` from your project directory.
 
 The example makes a live model request. When the model asks for the greeting tool, the SDK calls your function and sends the result back to the model. The script prints a greeting such as `Hello, Ada!`.
 
@@ -66,9 +66,11 @@ Start with the [native SDK overview](packages/agents/README.md), or choose a top
 | [Streaming](packages/agents/NATIVE.md#observations-and-interruption) | Read text and tool events as they arrive. |
 | [Native API guide](packages/agents/NATIVE.md) | Look up runtime behavior and supported options. |
 
+For the classic Agent and Runner APIs, see the [classic guide](packages/agents/CLASSIC.md).
+
 ## More examples
 
-After the source build, run an example such as `pnpm exec tsx packages/agents/examples/basic.ts` from the repository root. The examples that call a model need `OPENAI_API_KEY`. Use the [testing guide](packages/agents/TESTING.md) for scripted responses.
+Use examples from the same release as your installed SDK. The [example guide](packages/agents/examples/README.md) covers setup and commands. Examples that call a model need `OPENAI_API_KEY`.
 
 - [Function tools](packages/agents/examples/basic.ts). Call a greeting function.
 - [Typed application context](packages/agents/examples/typed-context.ts). Use application context and return structured output.
@@ -82,4 +84,4 @@ Use [GitHub issues](https://github.com/openai/openai-agents-js/issues) for quest
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for local development and tests.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and tests. The [source build instructions](packages/agents/NATIVE.md#build-from-source) cover the native runtime and SDK packages.

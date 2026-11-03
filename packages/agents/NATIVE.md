@@ -2,7 +2,48 @@
 
 Import from `@openai/agents`. The embedded Codex runtime owns model execution, tool admission, history, and compaction. TypeScript owns application callbacks and their cleanup. Start with the [greeting example](examples/basic.ts).
 
-Use Node.js 24 for source builds. The branch is experimental. Platform and package distribution decisions are still open.
+## Install
+
+Use Node.js 24 with its bundled npm. Download the `agents-starter-<version>-<platform>.tar.gz` bundle for your platform from [GitHub Releases](https://github.com/openai/openai-agents-js/releases). The bundle includes the prebuilt SDK and native runtime. It also includes a lockfile and a JavaScript example.
+
+**The first release with the Codex harness is not available yet.**
+
+The Linux x64 bundle requires glibc 2.39 or later and the OpenSSL 3 runtime. On a minimal Ubuntu 24.04 system, install `libssl3t64`.
+
+Verify the bundle against `SHA256SUMS-<platform>` from the same release, then extract it. The release also includes `build-<platform>.json`, which records the package build. Set `OPENAI_API_KEY` and run these commands from the `agents-starter` directory.
+
+```sh
+npm ci --ignore-scripts
+node hello.mjs
+```
+
+npm installs the SDK packages from the bundle and downloads third-party dependencies from your configured registry. Keep the lockfile and bundled packages together. The example makes a live model request and prints a greeting.
+
+### Add the SDK to an existing application
+
+The starter contains four SDK tarballs in `vendor/agents/`. The release also provides them separately. Use all four tarballs from the same version and platform.
+
+Copy the four tarballs into your application's `vendor/agents/` directory. Merge these entries into your `package.json`. The example uses version `0.22.0-alpha.1` and platform `linux-x64`. Use the filenames from your download.
+
+```json
+{
+  "dependencies": {
+    "@openai/agents": "file:vendor/agents/openai-agents-0.22.0-alpha.1-linux-x64.tgz",
+    "@openai/agents-core": "file:vendor/agents/openai-agents-core-0.22.0-alpha.1-linux-x64.tgz",
+    "@openai/agents-openai": "file:vendor/agents/openai-agents-openai-0.22.0-alpha.1-linux-x64.tgz",
+    "@openai/agents-realtime": "file:vendor/agents/openai-agents-realtime-0.22.0-alpha.1-linux-x64.tgz"
+  },
+  "overrides": {
+    "@openai/agents-core": "$@openai/agents-core",
+    "@openai/agents-openai": "$@openai/agents-openai",
+    "@openai/agents-realtime": "$@openai/agents-realtime"
+  }
+}
+```
+
+The npm overrides make transitive SDK dependencies use these same local packages. Run `npm install --ignore-scripts` to update your application's lockfile. Keep that lockfile and the four tarballs. Use `npm ci --ignore-scripts` for later installs. npm downloads third-party dependencies from your configured registry. The tarballs include the prebuilt native runtime.
+
+### Deno and Bun
 
 Deno needs a local `node_modules` directory to load the native addon. For a package installed with npm or pnpm, use `deno run --node-modules-dir=manual --allow-ffi --allow-read --allow-write --allow-env --allow-net app.ts`. Scope file, environment, and network permissions to your application. Native addons run outside Deno's permission sandbox; `--allow-ffi` grants native code access to the host. See [Deno's native-addon requirements](https://docs.deno.com/runtime/fundamentals/node/#use-packages-with-native-addons). Bun loads the addon without an additional permission flag.
 
