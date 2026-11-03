@@ -511,7 +511,7 @@ export function assertOutputState(
     throw new TypeError('Checkpoint requires matching current output contract');
   }
 }
-/** Build the SDK envelope around the native codec payload. */
+/** @internal Build the SDK envelope around the native codec payload. */
 export function fromNativeCheckpoint(
   state: NativeCheckpoint,
   identity: OutputIdentity,
@@ -549,7 +549,7 @@ export function fromNativeCheckpoint(
       })) ?? [],
   });
 }
-// Strict-object errors include arbitrary keys from saved application data.
+/** @internal Hide arbitrary saved keys reported by strict-object errors. */
 export function validateSessionState(input: unknown): SessionState {
   const result = sessionStateSchema.safeParse(input);
   if (result.success) return result.data;
