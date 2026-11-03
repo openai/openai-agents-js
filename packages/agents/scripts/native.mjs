@@ -20,7 +20,7 @@ import console from 'node:console';
 import { parseArgs } from 'node:util';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { getCACertificates, setDefaultCACertificates } from 'node:tls';
+import * as tls from 'node:tls';
 import { prepareSources, sha256Bytes } from './native-source.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -160,10 +160,16 @@ async function verifiedV8(filename, override) {
   const temporary = `${destination}.${process.pid}.part`;
   try {
     const url = `https://github.com/openai/codex/releases/download/rusty-v8-v${v8Release.version}/${filename}`;
-    setDefaultCACertificates([
-      ...getCACertificates('default'),
-      ...getCACertificates('system'),
-    ]);
+    // Older supported Node versions retain their normal TLS trust configuration.
+    if (
+      typeof tls.getCACertificates === 'function' &&
+      typeof tls.setDefaultCACertificates === 'function'
+    ) {
+      tls.setDefaultCACertificates([
+        ...tls.getCACertificates('default'),
+        ...tls.getCACertificates('system'),
+      ]);
+    }
     const response = await globalThis.fetch(url);
     if (!response.ok)
       throw new Error(`V8 download failed (${response.status}): ${filename}`);
