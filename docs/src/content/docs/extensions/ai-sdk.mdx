@@ -20,19 +20,9 @@ The Agents SDK uses OpenAI models through the Responses API or Chat Completions 
 
 <Steps>
 
-1. Install the extensions package, which includes the AI SDK adapter:
+1. [Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/examples/guides/installation.md#run-the-classic-extensions). The checkout includes the OpenAI provider used here. See the [AI SDK provider list](https://ai-sdk.dev/docs/foundations/providers-and-models) for other model packages.
 
-   ```bash
-   npm install @openai/agents-extensions
-   ```
-
-2. Choose a model package from the [Vercel's AI SDK](https://ai-sdk.dev/docs/foundations/providers-and-models) and install it:
-
-   ```bash
-   npm install @ai-sdk/openai
-   ```
-
-3. Import the adapter and model to connect to your agent:
+2. Import the adapter and model to connect to your agent:
 
    <Code
      lang="typescript"
@@ -40,7 +30,7 @@ The Agents SDK uses OpenAI models through the Responses API or Chat Completions 
      title="Import the adapter"
    />
 
-4. Create the model instance for the agent:
+3. Create the model instance for the agent:
 
    <Code lang="typescript" code={aiSdkModelExample} title="Create the model" />
 

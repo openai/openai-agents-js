@@ -1,12 +1,18 @@
-import { Agent, MCPServerStdio } from '@openai/agents/classic';
+import { Agent, MCPServerStdio, run } from '@openai/agents/classic';
 
 const server = new MCPServerStdio({
-  fullCommand: 'pnpm exec mcp-server-filesystem ./sample_files',
+  command: 'npx',
+  args: ['--no', 'mcp-server-filesystem', './sample_files'],
 });
 
-await server.connect();
-
-const agent = new Agent({
-  name: 'Assistant',
-  mcpServers: [server],
-});
+try {
+  await server.connect();
+  const agent = new Agent({
+    name: 'Assistant',
+    mcpServers: [server],
+  });
+  const result = await run(agent, 'List the sample files.');
+  console.log(result.finalOutput);
+} finally {
+  await server.close();
+}

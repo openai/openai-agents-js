@@ -1,3 +1,5 @@
+'use server';
+
 // This runs on the server
 import 'server-only';
 

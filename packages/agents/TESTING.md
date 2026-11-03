@@ -2,6 +2,8 @@
 
 Use `@openai/agents/testing` in Node to run a native Agent against scripted Responses events. The helper starts one loopback HTTP endpoint and supplies an ordinary `NativeProvider`. The native engine still executes the Agent loop and declared functions.
 
+Install Zod 4 in your application and save this example as `scripted-test.mts`.
+
 ```ts
 import assert from 'node:assert/strict';
 import { Agent, tool } from '@openai/agents';
@@ -36,6 +38,8 @@ await withScriptedResponses(
   },
 );
 ```
+
+Run `npx tsx scripted-test.mts` from your application directory. The script exits silently when all assertions pass.
 
 ## Assert application behavior
 

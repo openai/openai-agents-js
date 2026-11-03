@@ -28,11 +28,7 @@ The dedicated Twilio transport handles the connection, interruptions, and audio 
 
    For local development, configure a tunnel such as [`ngrok`](https://ngrok.io/) or [Cloudflare Tunnel](https://developers.cloudflare.com/pages/how-to/preview-with-cloudflare-tunnel/) to make your local server accessible to Twilio. The server must validate `X-Twilio-Signature` on both the incoming call webhook and the WebSocket upgrade before creating a transport or connecting to OpenAI. Use the [official Twilio request validator](https://www.twilio.com/docs/usage/security), the account's primary Auth Token, and a configured public URL. Do not derive that URL from request Host or forwarded headers. `TwilioRealtimeTransportLayer` receives an already authenticated WebSocket; the adapter does not authenticate HTTP requests.
 
-3. **Install the extensions package, which includes the Twilio adapter:**
-
-   ```bash
-   npm install @openai/agents-extensions
-   ```
+3. [Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/examples/guides/installation.md#run-the-classic-extensions).
 
 4. **Import the adapter and model to connect to your `RealtimeSession`:**
 

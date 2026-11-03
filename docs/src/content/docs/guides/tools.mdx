@@ -334,7 +334,7 @@ Agent tools can stream all nested run events back to your app. Choose the hook s
 
 ### 5. MCP servers
 
-You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and attach them to an agent. For instance, you can use `MCPServerStdio` to spawn and connect to the stdio MCP server:
+You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and attach them to an agent. Use the [filesystem server setup](/openai-agents-js/guides/mcp#3-stdio-mcp-servers) to install the server and create a `sample_files` directory. Then use `MCPServerStdio` to connect to it:
 
 <Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
@@ -346,13 +346,7 @@ For a complete example, see [`filesystem-example.ts`](https://github.com/openai/
 
 `@openai/agents-extensions/experimental/codex` provides `codexTool()`, a function tool that routes model tool calls to the Codex SDK so the agent can run workspace-scoped tasks (shell, file edits, MCP tools) autonomously. This API is experimental and may change.
 
-Install dependencies first:
-
-```bash
-npm install @openai/agents-extensions @openai/codex-sdk
-```
-
-Quick start:
+[Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/examples/guides/installation.md#run-the-classic-extensions). The checkout includes the Codex SDK dependency.
 
 <Code
   lang="typescript"

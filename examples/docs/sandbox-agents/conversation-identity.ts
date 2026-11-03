@@ -1,5 +1,6 @@
 import { MemorySession, run } from '@openai/agents/classic';
 import {
+  file,
   filesystem,
   Manifest,
   memory,
@@ -8,7 +9,13 @@ import {
 } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 
-const manifest = new Manifest();
+const manifest = new Manifest({
+  entries: {
+    'data/leads.csv': file({
+      content: 'company,status\nExample Co,Interested\n',
+    }),
+  },
+});
 const agent = new SandboxAgent({
   name: 'Memory-enabled reviewer',
   model: 'gpt-5.6-sol',

@@ -49,7 +49,7 @@ const crmTools = toolNamespace({
 
 const agent = new Agent({
   name: 'Operations assistant',
-  model: 'gpt-5.4',
+  model: 'gpt-5.6-sol',
   // Mixing namespaced and top-level deferred tools in one request is supported.
   tools: [shippingLookup, ...crmTools, toolSearchTool()],
 });

@@ -15,3 +15,5 @@ result
     compatibleWithNodeStreams: true,
   })
   .pipe(process.stdout);
+
+await result.completed;

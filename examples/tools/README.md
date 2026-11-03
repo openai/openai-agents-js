@@ -6,7 +6,10 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
 
 - `computer-use.ts` – Uses the computer tool with Playwright to automate a local browser.
 
+  Install Playwright's Chromium before the first run.
+
   ```bash
+  pnpm -F tools exec playwright install chromium
   pnpm examples:tools-computer-use
   ```
 

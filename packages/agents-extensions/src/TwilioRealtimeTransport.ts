@@ -103,7 +103,7 @@ export type TwilioRealtimeTransportLayerOptions =
  *
  * transport.on('*', (event) => {
  *   if (event.type === 'twilio_message') {
- *     console.log('Twilio message:', event.data);
+ *     console.log('Twilio message:', event.message);
  *   }
  * });
  * ```

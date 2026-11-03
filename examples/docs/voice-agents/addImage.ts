@@ -8,6 +8,9 @@ const session = new RealtimeSession(agent, {
   model: 'gpt-realtime-2.1',
 });
 
+// Connect with an ephemeral client token before sending conversation events.
+await session.connect({ apiKey: '<client-api-key>' });
+
 const imageDataUrl = 'data:image/png;base64,...';
 
 session.addImage(imageDataUrl, { triggerResponse: false });

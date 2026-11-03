@@ -23,7 +23,11 @@ class TenantSession implements RunContextAwareSession<TenantContext> {
     runContext?: RunContext<TenantContext>,
   ): Promise<AgentInputItem[]> {
     const items = this.getTenantItems(runContext);
-    return limit === undefined ? [...items] : items.slice(-limit);
+    return limit === undefined
+      ? [...items]
+      : limit <= 0
+        ? []
+        : items.slice(-limit);
   }
 
   async addItems(

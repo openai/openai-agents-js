@@ -55,6 +55,19 @@ Copy the four tarballs into your application's `vendor/agents/` directory. Merge
 
 The overrides keep transitive SDK dependencies on the same local packages. Run `npm install --ignore-scripts` from your application's directory to update its lockfile. Keep the lockfile and the four tarballs. For later installs, run `npm ci --ignore-scripts`.
 
+## Run the classic extensions
+
+The alpha bundle includes the core SDK packages. Run examples that use `@openai/agents-extensions` from a checkout of the `feat/codex-harness` branch so the SDK and extensions use the same revision.
+
+Use Node.js 24 and the pnpm version pinned in `package.json`. From the repository root, install dependencies and build the TypeScript packages:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+Then follow the setup for the [AI SDK examples](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/ai-sdk) or [Twilio example](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/realtime-twilio).
+
 ## Deno and Bun
 
 Deno needs a local `node_modules` directory to load the native addon. For a package installed with npm or pnpm, use `deno run --node-modules-dir=manual --allow-ffi --allow-read --allow-write --allow-env --allow-net app.ts`.

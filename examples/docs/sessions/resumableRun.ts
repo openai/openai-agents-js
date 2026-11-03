@@ -1,8 +1,18 @@
-import { Agent, MemorySession, Runner } from '@openai/agents/classic';
+import { Agent, MemorySession, Runner, tool } from '@openai/agents/classic';
+import { z } from 'zod';
+
+const searchItinerary = tool({
+  name: 'search_itinerary',
+  description: 'Search the sample itinerary.',
+  parameters: z.object({}),
+  needsApproval: true,
+  execute: () => 'Sample itinerary: Paris, November 3.',
+});
 
 const agent = new Agent({
   name: 'Trip Planner',
-  instructions: 'Plan trips and ask for approval before booking anything.',
+  instructions: 'Use search_itinerary to find the sample itinerary.',
+  tools: [searchItinerary],
 });
 
 const runner = new Runner();

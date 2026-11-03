@@ -1,6 +1,6 @@
 import { Agent, run } from '@openai/agents/classic';
 
-// Import the model package you installed
+// Import the OpenAI model provider
 import { openai } from '@ai-sdk/openai';
 
 // Import the adapter
@@ -16,5 +16,5 @@ const agent = new Agent({
   model,
 });
 
-// Run the agent with the new model
-run(agent, 'What is the capital of Germany?');
+const result = await run(agent, 'What is the capital of Germany?');
+console.log(result.finalOutput);

@@ -4,6 +4,7 @@ import {
   ModelRequest,
   ModelResponse,
   ResponseStreamEvent,
+  Usage,
 } from '@openai/agents-core';
 
 import { Agent, Runner } from '@openai/agents/classic';
@@ -13,19 +14,52 @@ class EchoModel implements Model {
   constructor() {
     this.name = 'Echo';
   }
-  async getResponse(request: ModelRequest): Promise<ModelResponse> {
+  async getResponse(request: ModelRequest) {
+    let text = '';
+    if (typeof request.input === 'string') {
+      text = request.input;
+    } else {
+      for (const item of request.input) {
+        if ('role' in item && item.role === 'user') {
+          text =
+            typeof item.content === 'string'
+              ? item.content
+              : item.content
+                  .filter((part) => part.type === 'input_text')
+                  .map((part) => part.text)
+                  .join('');
+        }
+      }
+    }
     return {
-      usage: {},
-      output: [{ role: 'assistant', content: request.input as string }],
-    } as any;
+      usage: new Usage(),
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text }],
+        },
+      ],
+    } satisfies ModelResponse;
   }
   async *getStreamedResponse(
-    _request: ModelRequest,
+    request: ModelRequest,
   ): AsyncIterable<ResponseStreamEvent> {
+    const response = await this.getResponse(request);
+    for (const item of response.output) {
+      if (item.type === 'message' && item.role === 'assistant') {
+        for (const part of item.content) {
+          if (part.type === 'output_text') {
+            yield { type: 'output_text_delta', delta: part.text };
+          }
+        }
+      }
+    }
     yield {
-      type: 'response.completed',
-      response: { output: [], usage: {} },
-    } as any;
+      type: 'response_done',
+      response: { id: 'echo_response', ...response },
+    };
   }
 }
 

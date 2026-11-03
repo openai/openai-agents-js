@@ -84,6 +84,7 @@ async function main(): Promise<void> {
             // We set it so the run-context key is tool-specific and to avoid collisions when adding more Codex tools.
             name: 'codex_engineer',
             sandboxMode: 'workspace-write',
+            codexOptions: { codexPathOverride: process.env.CODEX_PATH },
             defaultThreadOptions: {
               model: 'gpt-5.4',
               modelReasoningEffort: 'low',

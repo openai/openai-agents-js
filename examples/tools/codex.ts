@@ -113,6 +113,7 @@ async function main(): Promise<void> {
       }
       const codex = codexTool({
         sandboxMode: 'workspace-write',
+        codexOptions: { codexPathOverride: process.env.CODEX_PATH },
         defaultThreadOptions: {
           model: 'gpt-5.4',
           modelReasoningEffort: 'low',

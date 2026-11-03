@@ -9,9 +9,9 @@ When a call connects, start speaking after the prompt. To try an interruption, a
 You need a Twilio phone number to run the example. Set these server-side environment variables before you start:
 
 ```bash
-OPENAI_API_KEY=your-openai-api-key
-TWILIO_AUTH_TOKEN=your-primary-twilio-auth-token
-TWILIO_PUBLIC_BASE_URL=https://your-public-host.example
+export OPENAI_API_KEY=your-openai-api-key
+export TWILIO_AUTH_TOKEN=your-primary-twilio-auth-token
+export TWILIO_PUBLIC_BASE_URL=https://your-public-host.example
 ```
 
 Use the primary Auth Token for the Twilio account that sends the requests. Keep both credentials on the server. `TWILIO_PUBLIC_BASE_URL` must be an HTTPS origin without credentials, a path prefix, query string, or fragment. An optional trailing slash is accepted. The example refuses to start without these settings.
