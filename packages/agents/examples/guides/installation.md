@@ -10,7 +10,7 @@ The Windows x64 bundle uses the Microsoft Visual C++ runtime. If Windows reports
 
 ## Run the starter bundle
 
-When the `0.22.0-alpha.1` prerelease appears on [GitHub Releases](https://github.com/openai/openai-agents-js/releases), download the starter archive for the machine that will run your application.
+Download the starter archive for the machine that will run your application from the [0.22.0-alpha.1 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.1).
 
 | Platform            | Starter archive                                     |
 | ------------------- | --------------------------------------------------- |

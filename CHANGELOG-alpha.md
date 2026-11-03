@@ -1,8 +1,10 @@
-# Preview changelog
+# Alpha changelog
 
-Release notes for previews of the OpenAI Agents SDK for JavaScript and TypeScript.
+Release notes for alpha versions of the OpenAI Agents SDK for JavaScript and TypeScript.
 
-## 0.22.0-alpha.1 (Unreleased)
+## 0.22.0-alpha.1
+
+[GitHub prerelease and prebuilt bundles](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.1)
 
 This alpha introduces the embedded Codex harness through `@openai/agents`. Use the examples and package guides from the same release as your installed SDK.
 
