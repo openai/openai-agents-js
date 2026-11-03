@@ -2,7 +2,7 @@
 
 [mcp-reports.ts](mcp-reports.ts) discovers a selected `report` tool through the classic SDK's `MCPServerStreamableHttp` client, then uses it in a native Session through `selectMcpTools`. The application owns the connection, report resolver, stored results and reader identity. This recipe adds no SDK storage service.
 
-Use Node.js 24 and complete the [native source setup](../NATIVE.md#build-from-source), including built workspace packages. Run from the repository root:
+Use Node.js 24 and complete the [native source setup](guides/building.md), including built workspace packages. Run from the repository root:
 
 ```sh
 MCP_URL=http://localhost:8000/mcp pnpm exec tsx packages/agents/examples/mcp-reports.ts

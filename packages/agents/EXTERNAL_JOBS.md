@@ -69,7 +69,7 @@ Automatic delivery refuses JSON containing the current model API key, journal ke
 
 ## Run the process-restart example
 
-Use Node.js 24 or later on a local POSIX filesystem. Build this checkout's packages and native runtime using [NATIVE.md](NATIVE.md) before running the example. Run the following commands from the repository root with `pnpm` using Node.js 24. The mock uses the public `@openai/agents/testing` fixture and the real native loop over loopback HTTP. It needs no API key or external model service.
+Use Node.js 24 or later on a local POSIX filesystem. Build this checkout's packages and native runtime using [the source build guide](examples/guides/building.md) before running the example. Run the following commands from the repository root with `pnpm` using Node.js 24. The mock uses the public `@openai/agents/testing` fixture and the real native loop over loopback HTTP. It needs no API key or external model service.
 
 Choose an absolute private directory outside every model-visible mount. Its parent must already exist and be trusted by the application. The example creates the directory with mode `0700`. Keep its database, SQLite sidecars, lock databases and private receipts outside those mounts for the entire job lifetime. The host trusts the parent directory and processes with the same effective UID.
 

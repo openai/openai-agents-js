@@ -2,7 +2,7 @@
 
 This example connects a small Node.js service to a browser without a frontend framework. A worker owns each native Session and its original Turn. Disconnecting an HTTP reader stops observation. The worker continues. The separate Stop action cancels that Turn and waits for cleanup.
 
-Use Node.js 24 and build the matching SDK and native addon as the [native build guide](../NATIVE.md#build-from-source) describes. This example makes live model calls. Set `OPENAI_API_KEY` in the server's environment, then choose a local demo token and start the service from the checkout root:
+Use Node.js 24 and build the matching SDK and native addon as the [native build guide](guides/building.md) describes. This example makes live model calls. Set `OPENAI_API_KEY` in the server's environment, then choose a local demo token and start the service from the checkout root:
 
 ```sh
 export REPORT_SERVICE_TOKEN="your-local-demo-token"

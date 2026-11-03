@@ -23,6 +23,6 @@ This alpha introduces the embedded Codex harness through `@openai/agents`. Use t
 
 ### Documentation and examples
 
-- Start from one platform bundle with the compiled native runtime, matching SDK packages, a lockfile, and `hello.mjs`. See [installation](packages/agents/NATIVE.md#install) for release availability and setup.
+- Start from one platform bundle with the compiled native runtime, matching SDK packages, a lockfile, and `hello.mjs`. See [installation](packages/agents/examples/guides/installation.md) for release availability and setup.
 - Add the same matched package set to an existing application with local file dependencies and npm overrides.
 - Follow the [native API guide](packages/agents/NATIVE.md), [testing guide](packages/agents/TESTING.md), and [examples](packages/agents/examples/README.md) for supported workflows.

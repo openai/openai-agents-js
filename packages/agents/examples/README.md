@@ -1,6 +1,6 @@
 # SDK examples
 
-Run these commands from the repository root after [building the native addon](../NATIVE.md#build-from-source). Each example says when you need model credentials.
+Run these commands from the repository root after [building the native addon](guides/building.md). Each example says when you need model credentials.
 
 - [basic.ts](basic.ts): ask an Agent to use a greeting tool, then print its answer.
 - [image-input.ts](image-input.ts): submit an inline PNG and return a validated dominant color. Its command entrypoint makes a live model request with configured credentials and optional `OPENAI_BASE_URL`. Run `pnpm exec tsx packages/agents/examples/image-input.ts`. Local synthetic tests prove image plumbing and validation, not live visual recognition.
@@ -125,7 +125,7 @@ pnpm exec tsx packages/agents/examples/code-mode.ts
 
 Follow the quickstart for model credentials. Keep credentials in the server process.
 
-Code Mode is optional. Ordinary function calls do not need generated JavaScript. The example's expected paper-sales total is 50, but a live answer depends on the model. It does not save a pending code cell. Portable idle history checkpoints do not serialize a live JavaScript VM. See the native guide's [history and state limits](../NATIVE.md#history-and-state).
+Code Mode is optional. Ordinary function calls do not need generated JavaScript. The example's expected paper-sales total is 50, but a live answer depends on the model. It does not save a pending code cell. Portable idle history checkpoints do not serialize a live JavaScript VM. See the native guide's [history and state limits](guides/state.md#history-and-state).
 
 ## Remote executor
 
@@ -156,7 +156,7 @@ Roles provide instructions. They do not isolate authority. Children share the Se
 
 The helper waits for the root Turn, captures the current child snapshots, and awaits each captured child's issued `turn` when present. Root completion alone does not prove that every child finished. Each child wait joins that exact Turn. It does not join future child turns or every descendant that may appear later. The returned statuses describe the snapshot, not a live view.
 
-To cancel a child, use the captured child's `tryCancel(turn)` and join that Turn with `turn.wait()`. See [native children](../NATIVE.md#remote-tools-and-children). Before the helper returns, owned Session disposal stops and joins remaining work, then closes the provider. Completed external effects remain.
+To cancel a child, use the captured child's `tryCancel(turn)` and join that Turn with `turn.wait()`. See [native children](guides/executors.md#native-child-agents). Before the helper returns, owned Session disposal stops and joins remaining work, then closes the provider. Completed external effects remain.
 
 ### Apply collaboration policy
 

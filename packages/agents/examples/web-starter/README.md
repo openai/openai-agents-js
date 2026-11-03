@@ -1,6 +1,6 @@
 # Local native web starter
 
-This single-process example runs a browser task through a real native Session. It uses scripted Responses and a trusted local HTTP MCP peer. It needs no API key and makes no billable model calls. Use Node.js 24 on Linux or macOS with a private local POSIX filesystem. Complete the [native source setup](../../NATIVE.md#build-from-source), including the matching addon, runtime helpers, and built workspace packages. The browser client uses plain JavaScript and needs no separate frontend build.
+This single-process example runs a browser task through a real native Session. It uses scripted Responses and a trusted local HTTP MCP peer. It needs no API key and makes no billable model calls. Use Node.js 24 on Linux or macOS with a private local POSIX filesystem. Complete the [native source setup](../guides/building.md), including the matching addon, runtime helpers, and built workspace packages. The browser client uses plain JavaScript and needs no separate frontend build.
 
 ## Start the service
 

@@ -2,6 +2,14 @@
 
 `@openai/agents` runs agents through an embedded Codex runtime. Give an Agent instructions and tools, then run it to get an answer. Use a Session when you need follow-up messages, streamed output, or a saved conversation.
 
+## Install
+
+[Install the native SDK](examples/guides/installation.md) to run the release starter or add the SDK to an existing application. See [Build from source](examples/guides/building.md) if you work on the SDK itself.
+
+## Run an agent
+
+After installing the SDK, set `OPENAI_API_KEY` in your environment and save this example as `hello.ts` in your application.
+
 ```ts
 import { Agent, NativeProvider } from '@openai/agents';
 
@@ -18,26 +26,21 @@ main().catch((error: unknown) => {
 });
 ```
 
-The example requires the native addon and model credentials, such as `OPENAI_API_KEY`. `agent.run()` creates and closes its own Session. `await using` closes the provider. Save the example as a TypeScript file and run it with `tsx`. For multiple turns, use `agent.session()` and close the Session in `finally`.
+From your application directory, run the example.
 
-Try the [greeting](examples/basic.ts) and [typed-context](examples/typed-context.ts) examples. See the [native guide](NATIVE.md) for API details and the [testing guide](TESTING.md) for scripted responses.
+```sh
+npx tsx hello.ts
+```
 
-## Install
+The script makes a live model request and prints the reply. `agent.run()` creates and closes its own Session, and `await using` closes the provider.
 
-Use Node.js 24 and follow the [installation guide](NATIVE.md#install) to run the starter from a GitHub release. To add the SDK to an existing application, follow the [local dependency setup](NATIVE.md#add-the-sdk-to-an-existing-application). To work on the SDK itself, follow the [source build instructions](NATIVE.md#build-from-source).
+Try the [greeting](examples/basic.ts) and [typed-context](examples/typed-context.ts) examples.
 
-For the classic API, see the [classic guide](CLASSIC.md).
+## SDK guides
 
-## Sessions
-
-Open a Session with `agent.session({ tools })` to replace its initial tool declarations, as with Python's `agent.session(tools=...)`. Omit `tools` to inherit `agent.tools`. Pass `[]` to open without those declarations. The SDK captures each Session's opening configuration before its first await. Concurrent Sessions can use the same tool names with different callbacks or MCP connections. Application hooks keep the original Agent, and the SDK does not change `agent.tools`.
-
-Opening overrides do not remove a separately supplied Environment or programmatic execution capabilities. MCP declarations still connect during opening. To override tools, use a Session. `agent.run()` does not accept `tools`. Restore uses the current opening declarations and bindings after the existing checkpoint matching checks.
-
-See [the tenant tools example](examples/opening-tools.ts) for two Sessions with separate callbacks.
-
-Use `localStorage(path)` with an explicit Session to keep a supported root conversation in a trusted application directory. Retain `session.id`. To reopen the conversation, pass `{ storage, resume: id }` with current tools, context, and provider. Always await Session close.
-
-Local profiles support managed function and manual tools. With a current Environment and NativeAgents declaration, local profiles can also admit native children. Local profiles cannot export portable state or use MCP, Apps, Plugins, or Code Mode. You can read settled descendant history through the original root Session ID without restarting historical child runtimes. An open descendant with an unfinished turn, or an unknown tool effect, blocks reopening. The SDK does not replay the callback.
-
-See [the local-storage example](examples/local-storage.ts) and the [profile lifetime and cleanup contract](NATIVE.md#local-native-profiles).
+- [Native API guide](NATIVE.md). Find the reference for sessions, output, tools, and native interactions.
+- <a name="sessions"></a>[Sessions](examples/guides/sessions.md). Open a session, choose its tools, and run multiple turns.
+- [Session history and state](examples/guides/state.md). Save a checkpoint or reopen a local profile.
+- [Examples](examples/README.md). Find runnable workflows and their setup requirements.
+- [Testing](TESTING.md). Run scripted responses without model credentials.
+- [Classic API](CLASSIC.md). Use the classic Agent and Runner APIs.

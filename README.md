@@ -10,7 +10,7 @@ Use the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/ov
 
 ## Install
 
-Use Node.js 24. Download one `agents-starter-<version>-<platform>.tar.gz` bundle for your platform from [GitHub Releases](https://github.com/openai/openai-agents-js/releases). It includes the built SDK, the compiled native runtime, and a JavaScript example. Follow the [installation guide](packages/agents/NATIVE.md#install) to install dependencies and run the example. For an existing application, use the same four SDK tarballs with the [local dependency setup](packages/agents/NATIVE.md#add-the-sdk-to-an-existing-application).
+Use Node.js 24. Follow [Install the native SDK](packages/agents/examples/guides/installation.md) to run the release starter or [add the SDK to an existing application](packages/agents/examples/guides/installation.md#add-the-sdk-to-an-existing-application).
 
 **The first release with the Codex harness is not available yet.**
 
@@ -59,12 +59,14 @@ Start with the [native SDK overview](packages/agents/README.md), or choose a top
 
 | Guide | What you can do |
 | --- | --- |
-| [Agent configuration](packages/agents/NATIVE.md#agents-and-sessions) | Set instructions, tools, and a provider. |
-| [Function tools](packages/agents/NATIVE.md#input-tools-and-output) | Make TypeScript functions available with `tool`. |
-| [MCP tools](packages/agents/NATIVE.md#remote-tools-and-children) | Connect an agent to tools from MCP servers. |
-| [Sessions and state](packages/agents/NATIVE.md#history-and-state) | Continue conversations and restore saved state. |
-| [Streaming](packages/agents/NATIVE.md#observations-and-interruption) | Read text and tool events as they arrive. |
-| [Native API guide](packages/agents/NATIVE.md) | Look up runtime behavior and supported options. |
+| [Agents and sessions](packages/agents/examples/guides/sessions.md) | Set instructions and a provider, stream events, and cancel turns. |
+| [Tools and input](packages/agents/examples/guides/tools.md) | Declare functions and select tools for a turn. |
+| [Output contracts](packages/agents/examples/guides/output.md) | Return plain text or validated structured output. |
+| [MCP tools](packages/agents/examples/guides/mcp.md) | Connect tools from native or application-owned MCP servers. |
+| [Remote executors](packages/agents/examples/guides/executors.md) | Connect a workspace and admit child agents. |
+| [Session history and state](packages/agents/examples/guides/state.md) | Read conversation history and restore saved state. |
+| [Native interactions](packages/agents/examples/guides/interactions.md) | Handle approvals, forms, and verification. |
+| [Native API guide](packages/agents/NATIVE.md) | Browse all native SDK topics. |
 
 For the classic Agent and Runner APIs, see the [classic guide](packages/agents/CLASSIC.md).
 
@@ -84,4 +86,4 @@ Use [GitHub issues](https://github.com/openai/openai-agents-js/issues) for quest
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and tests. The [source build instructions](packages/agents/NATIVE.md#build-from-source) cover the native runtime and SDK packages.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and tests. The [source build instructions](packages/agents/examples/guides/building.md) cover the native runtime and SDK packages.

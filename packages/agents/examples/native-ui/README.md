@@ -4,7 +4,7 @@ Use these application helpers when your UI consumes Vercel UI Message Stream v1 
 
 ## Run the example
 
-Use Node.js 24 and complete the [source setup](../../NATIVE.md#build-from-source) with matching native products and built workspace packages. Set `OPENAI_API_KEY` privately, then run from the checkout root:
+Use Node.js 24 and complete the [source setup](../guides/building.md) with matching native products and built workspace packages. Set `OPENAI_API_KEY` privately, then run from the checkout root:
 
 ```sh
 pnpm exec tsx packages/agents/examples/native-ui/run.ts vercel
