@@ -163,7 +163,15 @@
     {
       "path": "0041-confirm-darwin-terminal-release.patch",
       "sha256": "088652777103735ac7aa73f1c121110d790db91c4b6fefdab9a9d6c2d7c7a249"
+    },
+    {
+      "path": "0042-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0043-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
     }
   ],
-  "result_tree": "fb9f7b2acd1f4d3d0682c42c3eb33c73cc2e6ea6"
+  "result_tree": "8bc6e255bda20f53432ede4b23bb6550f6fa7012"
 }
