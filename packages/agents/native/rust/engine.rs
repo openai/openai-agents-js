@@ -515,10 +515,9 @@ impl EngineState {
             if startup.config.model.is_none() {
                 startup.config.model = saved.model.clone();
             }
-            startup.initial_history = self.history(id).await?;
+            let mut initial_history = self.history(id).await?;
             ensure!(
-                startup
-                    .initial_history
+                initial_history
                     .get_dynamic_tools()
                     .unwrap_or_default()
                     .is_empty(),
@@ -526,9 +525,14 @@ impl EngineState {
             );
             let executor_policy =
                 crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
-            let InitialHistory::Resumed(history) = &mut startup.initial_history else {
+            let InitialHistory::Resumed(history) = &mut initial_history else {
                 anyhow::bail!("SDK resume requires the stored model context");
             };
+            if let Some(path) = history.rollout_path.as_deref() {
+                let home = self.local_storage_home().expect("checked local store");
+                crate::environment::check_local_resume_rollout_path(&startup, &home.join(path))
+                    .await?;
+            }
             let admission = self
                 .local_checklist_store
                 .as_ref()
@@ -561,13 +565,13 @@ impl EngineState {
             history.rollout_path = prepared.rollout_path.clone();
             history.history_revision = prepared.history_revision.clone();
             ensure!(
-                startup
-                    .initial_history
+                initial_history
                     .get_dynamic_tools()
                     .unwrap_or_default()
                     .is_empty(),
                 "SDK resume cannot authorize saved startup tools"
             );
+            startup.initial_history = initial_history;
             local_resume_admission = Some(admission);
         }
         if let Some(store) = &self.local_checklist_store {
