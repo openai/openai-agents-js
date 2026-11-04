@@ -804,10 +804,10 @@ const localStorageOverlap =
 const runtimeHomeOverlap =
   /Keep the native runtime home outside the executor cwd and writable roots/;
 
-it.skipIf(!supported)(
-  'keeps relocated checklist state outside local grants',
+it.skipIf(!supported).for(['canonical', 'uppercase'] as const)(
+  'keeps relocated checklist state outside local grants (%s)',
   { timeout: 45_000 },
-  async (context) => {
+  async (spelling, context) => {
     const temporary = await mkdtemp(join(tmpdir(), 'agents-checklist-alias-'));
     try {
       const base = await realpath(temporary);
@@ -852,7 +852,17 @@ it.skipIf(!supported)(
       const relocated = join(base, 'relocated-checklists');
       await rename(directory, relocated);
       await symlink(relocated, directory);
-      const backing = join(relocated, `${threadId}.json`);
+      const logical = join(relocated, `${threadId}.json`);
+      const backing =
+        spelling === 'uppercase'
+          ? join(relocated, `${threadId.toUpperCase()}.JSON`)
+          : logical;
+      if (backing !== logical) {
+        const intermediate = join(relocated, 'checklist-rename');
+        await rename(logical, intermediate);
+        await rename(intermediate, backing);
+      }
+      const selectedByStore = existsSync(logical);
       const alias = join(extra, 'linked-checklist');
       await link(backing, alias);
       const open = (writableRoots: string[] = []) =>
@@ -865,27 +875,32 @@ it.skipIf(!supported)(
           storage,
           resume: threadId,
         });
-      await expect(async () => {
-        await using _session = await open([extra]);
-      }).rejects.toThrow(localStorageOverlap);
+      if (selectedByStore) {
+        await expect(async () => {
+          await using _session = await open([extra]);
+        }).rejects.toThrow(localStorageOverlap);
+      }
       await expect(async () => {
         await using _session = await open([relocated]);
       }).rejects.toThrow(localStorageOverlap);
       expect(server.requests).toHaveLength(2);
       await using resumed = await open();
-      expect(await resumed.checklist()).toMatchObject({ plan });
-      await expect(
-        resumed.submit('Do not grant the linked checklist.', {
-          writableRoots: [extra],
-        }),
-      ).rejects.toThrow(localStorageOverlap);
-      expect(server.requests).toHaveLength(2);
-      await rename(alias, join(base, 'disjoint-checklist-link'));
+      const expectedPlan = selectedByStore ? plan : undefined;
+      expect((await resumed.checklist())?.plan).toEqual(expectedPlan);
+      if (selectedByStore) {
+        await expect(
+          resumed.submit('Do not grant the linked checklist.', {
+            writableRoots: [extra],
+          }),
+        ).rejects.toThrow(localStorageOverlap);
+        expect(server.requests).toHaveLength(2);
+        await rename(alias, join(base, 'disjoint-checklist-link'));
+      }
       const turn = await resumed.submit('Use the disjoint grant.', {
         writableRoots: [extra],
       });
       expect((await turn.wait()).finalOutput).toBe('Used a disjoint grant.');
-      expect(await resumed.checklist()).toMatchObject({ plan });
+      expect((await resumed.checklist())?.plan).toEqual(expectedPlan);
       server.assertExhausted();
     } finally {
       await rm(temporary, { recursive: true, force: true });

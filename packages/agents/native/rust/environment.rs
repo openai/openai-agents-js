@@ -986,15 +986,29 @@ fn linked_relocated_checklist_files(
     for entry in entries {
         let entry = entry.context(error)?;
         let name = entry.file_name();
-        let is_checklist = name
-            .to_str()
-            .and_then(|name| name.strip_suffix(".json"))
-            .and_then(|id| codex_protocol::ThreadId::from_string(id).ok())
-            .is_some();
-        // The store only uses <thread-id>.json, directly inside this directory.
-        if is_checklist && (resolved != directory || entry.file_type().context(error)?.is_symlink())
-        {
-            let path = resolve(&entry.path())?;
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some((stem, _)) = name.rsplit_once('.') else {
+            continue;
+        };
+        let Ok(id) = codex_protocol::ThreadId::from_string(stem) else {
+            continue;
+        };
+        let logical_name = format!("{id}.json");
+        if !name.eq_ignore_ascii_case(&logical_name) {
+            continue;
+        }
+        // Look up the name the store opens. A different spelling may select
+        // the same entry on a case-insensitive filesystem.
+        let path = resolved.join(logical_name);
+        let metadata = match path.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(source) => return Err(source).context(error),
+        };
+        if resolved != directory || metadata.is_symlink() {
+            let path = resolve(&path)?;
             linked.extend(linked_local_regular_file(path).context(error)?);
         }
     }
