@@ -259,6 +259,170 @@ it('publishes the accepted draft when the filesystem returns short reads', async
   }
 });
 
+it.each(['none', 'session', 'provider', 'both'] as const)(
+  'accepts and publishes only after owned cleanup succeeds (%s)',
+  async (failureAt) => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'native-worker-accept-close-'),
+    );
+    const workspace = join(directory, 'workspace');
+    const draft = '# Release note\nExample draft.\n';
+    const sha256 = createHash('sha256').update(draft).digest('hex');
+    const sessionFailure = new Error('Synthetic session close failure.');
+    const providerFailure = new Error('Synthetic provider close failure.');
+    const order: string[] = [];
+    const states: (string | undefined)[] = [];
+    const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+      id: 'thread',
+      async close() {
+        order.push('session');
+        states.push((await readWorkerSnapshot(directory))?.state);
+        if (failureAt === 'session' || failureAt === 'both')
+          throw sessionFailure;
+      },
+      async submit() {
+        return {
+          turnId: 'turn',
+          async *events() {},
+          async waitForAttention() {
+            return { finalOutput: { summary: 'Draft ready.', question: null } };
+          },
+        };
+      },
+      async *items() {
+        yield {
+          id: 'hash-evidence',
+          turnId: 'turn',
+          type: 'command_execution',
+          status: 'completed',
+          exitCode: 0,
+          cwd: await realpath(workspace),
+          argv: ['/bin/bash', '-c', 'sha256sum draft.md'],
+          output: sha256 + '  draft.md\n',
+        };
+      },
+    } as unknown as Session);
+    const closeProvider = NativeProvider.prototype.close;
+    const provider = vi
+      .spyOn(NativeProvider.prototype, 'close')
+      .mockImplementation(async function (this: NativeProvider) {
+        order.push('provider');
+        states.push((await readWorkerSnapshot(directory))?.state);
+        await closeProvider.call(this);
+        if (failureAt === 'provider' || failureAt === 'both')
+          throw providerFailure;
+      });
+    try {
+      await mkdir(workspace);
+      await writeFile(join(workspace, 'draft.md'), draft);
+      const result = await runWorker(directory).catch(
+        (error: unknown) => error,
+      );
+      expect(order).toEqual(['session', 'provider']);
+      if (failureAt === 'none') {
+        expect(result).toMatchObject({ state: 'accepted', sha256 });
+        const published = await publishAcceptedDraft(directory);
+        await expect(readFile(published, 'utf8')).resolves.toBe(draft);
+      } else {
+        if (failureAt === 'both')
+          expect(result).toMatchObject({
+            name: 'AggregateError',
+            cause: sessionFailure,
+            errors: [sessionFailure, providerFailure],
+          });
+        else
+          expect(result).toBe(
+            failureAt === 'session' ? sessionFailure : providerFailure,
+          );
+        await expect(publishAcceptedDraft(directory)).rejects.toThrow(
+          'Publication requires an accepted draft.',
+        );
+        expect((await readWorkerSnapshot(directory))?.state).not.toBe(
+          'accepted',
+        );
+      }
+      expect(states).toEqual(['working', 'working']);
+    } finally {
+      provider.mockRestore();
+      session.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each(['read', 'validation', 'success'] as const)(
+  'preserves the draft outcome when closing its file fails (%s)',
+  async (outcome) => {
+    const directory = await mkdtemp(
+      join(tmpdir(), 'native-worker-draft-close-'),
+    );
+    const workspace = join(directory, 'workspace');
+    const primary = new Error('Synthetic draft read failure.');
+    const cleanup = new Error('Synthetic draft close failure.');
+    const fs =
+      await vi.importActual<typeof import('node:fs/promises')>(
+        'node:fs/promises',
+      );
+    try {
+      await mkdir(workspace);
+      await writeFile(
+        join(workspace, 'draft.md'),
+        outcome === 'validation'
+          ? Buffer.alloc(4097)
+          : '# Release note\nDraft.\n',
+      );
+      await writeFile(
+        join(directory, 'snapshot.json'),
+        JSON.stringify({
+          threadId: 'thread',
+          state: 'accepted',
+          sha256: '0'.repeat(64),
+        }),
+      );
+      const closed = vi.fn();
+      vi.mocked(open).mockImplementationOnce(async (path, flags, mode) => {
+        const file = await fs.open(path, flags, mode);
+        const close = file.close.bind(file);
+        const read = file.read.bind(file);
+        return Object.assign(file, {
+          read:
+            outcome === 'read'
+              ? async () => {
+                  throw primary;
+                }
+              : read,
+          async close() {
+            await close();
+            closed();
+            throw cleanup;
+          },
+        });
+      });
+      const failure = await publishAcceptedDraft(directory).catch(
+        (error: unknown) => error,
+      );
+      expect(closed).toHaveBeenCalledOnce();
+      if (outcome === 'success') expect(failure).toBe(cleanup);
+      else {
+        expect(failure).toBeInstanceOf(AggregateError);
+        const cause = (failure as AggregateError).cause;
+        if (outcome === 'read') expect(cause).toBe(primary);
+        else
+          expect(cause).toMatchObject({
+            message: 'Draft must be a private regular file of at most 4 KiB.',
+          });
+        expect((failure as AggregateError).errors).toEqual([cause, cleanup]);
+      }
+      await expect(
+        readFile(join(directory, 'published-' + '0'.repeat(64) + '.md')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      vi.mocked(open).mockReset();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
 it('preserves a snapshot write failure when temporary file cleanup also fails', async () => {
   const directory = await mkdtemp(
     join(tmpdir(), 'native-worker-atomic-write-'),

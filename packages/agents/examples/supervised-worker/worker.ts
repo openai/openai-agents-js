@@ -174,28 +174,32 @@ async function readDraft(path: string) {
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
   );
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4096)
-      throw new Error('Draft must be a private regular file of at most 4 KiB.');
-    const buffer = Buffer.alloc(4097);
-    let length = 0;
-    while (length < buffer.length) {
-      const { bytesRead } = await file.read(
-        buffer,
-        length,
-        buffer.length - length,
-        null,
-      );
-      if (bytesRead === 0) break;
-      length += bytesRead;
-    }
-    if (length > 4096) throw new Error('Draft grew past 4 KiB.');
-    if (length !== stat.size) throw new Error('Draft changed while reading.');
-    return buffer.subarray(0, length);
-  } finally {
-    await file.close();
-  }
+  return withCleanup(
+    async () => {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4096)
+        throw new Error(
+          'Draft must be a private regular file of at most 4 KiB.',
+        );
+      const buffer = Buffer.alloc(4097);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await file.read(
+          buffer,
+          length,
+          buffer.length - length,
+          null,
+        );
+        if (bytesRead === 0) break;
+        length += bytesRead;
+      }
+      if (length > 4096) throw new Error('Draft grew past 4 KiB.');
+      if (length !== stat.size) throw new Error('Draft changed while reading.');
+      return buffer.subarray(0, length);
+    },
+    () => file.close(),
+    'Closing the worker draft failed.',
+  );
 }
 
 const digest = (bytes: Buffer) =>
@@ -458,12 +462,11 @@ export async function superviseArtifact(options: WorkerOptions) {
         await saveStatusAndThrow(snapshot, error);
       }
     }
-    await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
     return snapshot;
   };
 
   let session: Session<z.infer<typeof claim>> | undefined;
-  return withCleanup(
+  const snapshot = await withCleanup(
     async () => {
       session = await openSession().catch(recordStartupFailure);
       return runSession(session);
@@ -478,6 +481,9 @@ export async function superviseArtifact(options: WorkerOptions) {
       ),
     'Closing the worker failed.',
   );
+  // Publication eligibility requires both owned resources to finish closing.
+  await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
+  return snapshot;
 }
 
 /** The supervisor calls this separately after the worker has joined. */
