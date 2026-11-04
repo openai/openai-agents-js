@@ -260,7 +260,11 @@ export async function superviseArtifact(options: WorkerOptions) {
         observerFailure.promise,
       ]);
       if (!('finalOutput' in outcome)) {
-        attention = 'type' in outcome ? outcome.reason : 'interaction';
+        if ('type' in outcome) {
+          attention = outcome.reason;
+          throw outcome.error;
+        }
+        attention = 'interaction';
         throw new Error('Supervisor action is needed before continuing.');
       }
       await observations;
@@ -312,8 +316,39 @@ export async function superviseArtifact(options: WorkerOptions) {
     timings,
   };
   if (summary.question === null) {
-    const draft = await readDraft(path.draft).catch(async (error: unknown) => {
-      if (isMissing(error)) return undefined;
+    try {
+      const draft = await readDraft(path.draft).catch((error: unknown) => {
+        if (isMissing(error)) return undefined;
+        throw error;
+      });
+      const sha256 = draft && digest(draft);
+      let evidence: string | undefined;
+      // Only a command in this completed operation can support these bytes.
+      for await (const item of session.items()) {
+        if (
+          sha256 &&
+          item.turnId === turn.turnId &&
+          item.type === 'command_execution' &&
+          item.status === 'completed' &&
+          item.exitCode === 0 &&
+          (item.cwd?.startsWith('file:')
+            ? fileURLToPath(item.cwd)
+            : item.cwd) === workspace &&
+          item.command.includes('sha256sum draft.md') &&
+          item.output?.includes(sha256 + '  draft.md')
+        )
+          evidence = item.id;
+      }
+      if (evidence !== undefined) snapshot.evidence = evidence;
+      if (
+        evidence &&
+        sha256 &&
+        draft?.toString().startsWith('# Release note\n')
+      ) {
+        snapshot.state = 'accepted';
+        snapshot.sha256 = sha256;
+      }
+    } catch (error) {
       try {
         await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
       } catch (persistence) {
@@ -324,30 +359,6 @@ export async function superviseArtifact(options: WorkerOptions) {
         );
       }
       throw error;
-    });
-    const sha256 = draft && digest(draft);
-    // Only a command in this completed operation can support these bytes.
-    for await (const item of session.items()) {
-      if (
-        sha256 &&
-        item.turnId === turn.turnId &&
-        item.type === 'command_execution' &&
-        item.status === 'completed' &&
-        item.exitCode === 0 &&
-        (item.cwd?.startsWith('file:') ? fileURLToPath(item.cwd) : item.cwd) ===
-          workspace &&
-        item.command.includes('sha256sum draft.md') &&
-        item.output?.includes(sha256 + '  draft.md')
-      )
-        snapshot.evidence = item.id;
-    }
-    if (
-      snapshot.evidence &&
-      sha256 &&
-      draft?.toString().startsWith('# Release note\n')
-    ) {
-      snapshot.state = 'accepted';
-      snapshot.sha256 = sha256;
     }
   }
   await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
