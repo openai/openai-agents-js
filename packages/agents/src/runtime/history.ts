@@ -224,6 +224,7 @@ export type SessionItem = ItemIdentity &
         type: 'function_call_output';
         callId: string;
         status: ItemStatus;
+        reconciliation?: 'applied' | 'not_applied';
         output: JsonValue;
         error: string | null;
       }
@@ -370,6 +371,7 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('function_call_output'),
       callId: z.string(),
+      reconciliation: z.enum(['applied', 'not_applied']).optional(),
       status: repairItemStatusSchema,
       output: jsonValue,
       error: z.string().nullable(),
@@ -625,6 +627,20 @@ function webAction(raw: JsonObject): WebSearchAction | null {
       return { type: 'other' };
   }
 }
+function reconciliationOutcome(raw: JsonObject) {
+  if (
+    raw.type !== 'function_call_output' &&
+    raw.type !== 'custom_tool_call_output'
+  )
+    return undefined;
+  const kinds = object(
+    raw.internal_chat_message_metadata_passthrough,
+  )?.content_item_kinds;
+  if (!Array.isArray(kinds) || kinds.length !== 1) return undefined;
+  if (kinds[0] === 'sdk_reconciliation.applied') return 'applied';
+  if (kinds[0] === 'sdk_reconciliation.not_applied') return 'not_applied';
+}
+
 function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   const output =
     raw.type === 'function_call_output' ||
@@ -670,15 +686,18 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       arguments: raw.arguments ?? raw.input ?? null,
       status: 'in_progress',
     };
-  if (output && typeof raw.call_id === 'string')
+  if (output && typeof raw.call_id === 'string') {
+    const reconciliation = reconciliationOutcome(raw);
     return {
       ...common,
       type: 'function_call_output',
       callId: raw.call_id,
-      status: 'completed',
+      status: reconciliation === 'not_applied' ? 'failed' : 'completed',
       output: raw.output ?? null,
       error: null,
+      ...(reconciliation === undefined ? {} : { reconciliation }),
     };
+  }
   if (raw.type === 'web_search_call')
     return {
       ...common,
@@ -1022,6 +1041,11 @@ export function projectHistory(
         payload.internal_chat_message_metadata_passthrough,
       );
       if (
+        reconciliationOutcome(payload) &&
+        typeof metadata?.turn_id === 'string'
+      )
+        turn = metadata.turn_id;
+      if (
         !turn &&
         aborted &&
         ['function_call_output', 'custom_tool_call_output'].includes(
@@ -1034,6 +1058,11 @@ export function projectHistory(
       if (turn) {
         const item = responseItem(payload, turn);
         if (item) {
+          if (item.type === 'function_call_output' && item.reconciliation) {
+            const reconciled = turns.get(turn);
+            if (reconciled?.status === 'in_progress')
+              reconciled.status = 'cancelled';
+          }
           const occurrence = remember(
             item,
             false,
@@ -1217,11 +1246,18 @@ export function projectHistory(
       while (cursorIds.has(item.id)) item.id += ':' + index;
       cursorIds.add(item.id);
     }
-    if (item.type === 'function_call' && !occurrence.native) {
-      const terminal = turns.get(item.turnId)?.status;
-      item.status =
-        occurrence.output?.item.status ??
-        (terminal && terminal !== 'in_progress' ? 'incomplete' : 'in_progress');
+    if (item.type === 'function_call') {
+      const output = occurrence.output?.item;
+      if (output?.type === 'function_call_output' && output.reconciliation)
+        item.status = output.status;
+      else if (!occurrence.native) {
+        const terminal = turns.get(item.turnId)?.status;
+        item.status =
+          output?.status ??
+          (terminal && terminal !== 'in_progress'
+            ? 'incomplete'
+            : 'in_progress');
+      }
     }
   }
   return {
