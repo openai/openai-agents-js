@@ -1,3 +1,5 @@
+import { captureTracing } from './tracing-context';
+import type { TraceOptions } from './telemetry';
 import { assertOutputState, sessionStateSchema } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { nativeAgentConfig } from './agent-configuration';
@@ -59,6 +61,7 @@ export interface AgentOptions<Context = undefined, Output = string> {
 }
 
 export interface SessionOptions<Context = undefined> {
+  tracing?: TraceOptions;
   context?: Context;
   state?: SessionState;
   /** Borrow this provider instead of the Agent provider. */
@@ -281,6 +284,7 @@ export class Agent<Context = undefined, Output = string> {
   ): Promise<Session<Output, Context>> {
     const options = { ...(args[0] ?? {}) };
     options.signal?.throwIfAborted();
+    const tracingCapture = captureTracing(options.tracing);
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
     try {
@@ -294,6 +298,15 @@ export class Agent<Context = undefined, Output = string> {
         },
       );
       try {
+        session.tracingCapture = tracingCapture;
+        const originalClose = session.onClose;
+        session.onClose = async () => {
+          try {
+            await originalClose?.();
+          } finally {
+            tracingCapture?.finish();
+          }
+        };
         environmentOwner.signal.throwIfAborted();
         const opened = await openSession(
           setup,
@@ -311,6 +324,7 @@ export class Agent<Context = undefined, Output = string> {
         return lease.failOpening(error);
       }
     } catch (error) {
+      tracingCapture?.finish(error);
       if (acquiredEnvironment && !providerOwnsCleanup) {
         try {
           await acquiredEnvironment.dispose();
@@ -348,6 +362,7 @@ export class Agent<Context = undefined, Output = string> {
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
       context: options.context,
+      tracing: options.tracing,
       state: options.state,
       environment: options.environment,
       instructionFiles: options.instructionFiles,

@@ -355,6 +355,8 @@ pub(crate) fn pre_admission(error: anyhow::Error) -> anyhow::Error {
 }
 
 pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value) -> Result<Value> {
+    let mut value = value;
+    codex_otel::sdk_trace::prepare_submission(&mut value).map_err(anyhow::Error::msg)?;
     let mut mutation = Some(state.mutations.lock().await);
     crate::graph_stop::check_after_wait(state, &value)?;
     let thread = &state.thread;

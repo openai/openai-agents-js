@@ -107,6 +107,15 @@ jobs:
           pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
           -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
           --reporter=verbose
+      - name: Qualify native tracing and decoded OTLP transports
+        if: runner.os == 'Linux'
+        env:
+          AGENTS_REQUIRE_TRACING_QUALIFICATION: '1'
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/agents-otel-collector"
+          "$RUNNER_TEMP/agents-otel-collector/bin/python" -m pip install grpcio==1.85.0 opentelemetry-proto==1.45.1
+          OTLP_TEST_PYTHON="$RUNNER_TEMP/agents-otel-collector/bin/python" pnpm exec vitest run --project @openai/agents packages/agents/test/native/tracing-parity.test.ts packages/agents/test/native/telemetry-transports.test.ts
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles

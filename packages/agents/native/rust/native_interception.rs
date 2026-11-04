@@ -89,6 +89,8 @@ fn json_text<S: serde::Serializer>(value: &Value, serializer: S) -> Result<S::Ok
 // Borrow every potentially large field until its measured lease exists.
 #[derive(Serialize)]
 struct Request<'a, I, R, K> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tracing_context: Option<&'a str>,
     phase: &'static str,
     route: &'static str,
     boundary: &'static str,
@@ -1785,7 +1787,9 @@ impl StartedExec {
                 ..
             } => (cell_id, content_items),
         };
+        let tracing = codex_otel::sdk_trace::ContextLease::capture();
         let request = Request {
+            tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "after",
             route: "code_mode",
             boundary: "cell_return",
@@ -3297,7 +3301,9 @@ impl DirectRequest {
             // web/image, missing ids and malformed search are not client calls.
             _ => return Ok((item, false)),
         };
+        let tracing = codex_otel::sdk_trace::ContextLease::capture();
         let request = Request {
+            tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "before",
             route: "direct",
             boundary: "pre_dispatch",
@@ -3680,7 +3686,9 @@ impl ToolLifecycleContributor for Boundary {
                 return Err(());
             }
             let retained = control.root && route == "code_mode";
+            let tracing = codex_otel::sdk_trace::ContextLease::capture();
             let request = Request {
+                tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "after",
                 route,
                 boundary: "executor_return",
@@ -3878,7 +3886,9 @@ impl ToolLifecycleContributor for Boundary {
             };
             let original = std::mem::replace(input.result, crate::mcp_result_control::withheld());
             let tool = input.mcp_tool.tool_info();
+            let tracing = codex_otel::sdk_trace::ContextLease::capture();
             let request = Request {
+                tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "after",
                 route: "mcp",
                 boundary: "executor_return",
@@ -4662,7 +4672,9 @@ impl CodeModeSessionDelegate for Delegate {
                 // to ordinary, unselected native calls.
                 return self.inner.invoke_tool(invocation, cancellation_token).await;
             }
+            let tracing = codex_otel::sdk_trace::ContextLease::capture();
             let request = Request {
+                tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "before",
                 route: "code_mode",
                 boundary: "pre_dispatch",
@@ -4765,7 +4777,9 @@ impl CodeModeSessionDelegate for Delegate {
                 );
             }
             let retained = retained.expect("non-builtin after input was retained");
+            let tracing = codex_otel::sdk_trace::ContextLease::capture();
             let request = Request {
+                tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "after",
                 route: "code_mode",
                 boundary: "nested_return",
@@ -4937,7 +4951,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for Executor {
             let ToolPayload::Function { arguments } = &payload else {
                 unreachable!()
             };
+            let tracing = codex_otel::sdk_trace::ContextLease::capture();
             let request = Request {
+                tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "after",
                 route: "extension",
                 boundary: "executor_return",
@@ -5633,7 +5649,9 @@ mod tests {
             meta: Some(json!({"fixture":"shared"})),
         };
         let arguments = json!({"query":"escaped\n\t\"and backslash\\"});
+        let tracing = codex_otel::sdk_trace::ContextLease::capture();
         let request = Request {
+            tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "after",
             route: "mcp",
             boundary: "executor_return",
@@ -5679,7 +5697,9 @@ mod tests {
             meta: Some(json!({"marker":"ordinary\nmetadata"})),
         };
         let arguments = json!({"query":"a\nb\"c\\tail"});
+        let tracing = codex_otel::sdk_trace::ContextLease::capture();
         let request = Request {
+            tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "after",
             route: "mcp",
             boundary: "executor_return",
