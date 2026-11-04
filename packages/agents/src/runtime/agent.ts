@@ -24,7 +24,7 @@ import {
   type OneShotOptions,
   type Completed,
 } from './session';
-import { isManualSessionState } from './state';
+import { isManualSessionState, toRuntimeCheckpoint } from './state';
 import { environmentConfig } from './environment';
 import { NativeProviderRoutes, type SelectedModelRoute } from './http-model';
 import type { ProviderLease } from './provider';
@@ -123,7 +123,7 @@ export async function openSession(
   }
   if (saved)
     native._validate_application_instructions(
-      encode(saved.native.history),
+      encode(saved.history),
       instructions,
     );
   const manualTools = catalog.tools.filter((tool) => tool.kind === 'manual');
@@ -155,7 +155,7 @@ export async function openSession(
       throw new TypeError(
         'Manual checkpoint requires matching current instructions and manual result declarations',
       );
-    const prior = z.array(jsonObject).parse(saved.native.managed_tool_specs);
+    const prior = z.array(jsonObject).parse(saved.managed_tool_specs);
     const current = decode(z.array(jsonObject), catalog.specsJson);
     for (const call of pending) {
       const select = (specs: typeof prior) =>
@@ -172,7 +172,7 @@ export async function openSession(
   } else if (
     saved &&
     !isDeepStrictEqual(
-      saved.native.managed_tool_specs,
+      saved.managed_tool_specs,
       decode(jsonValue, catalog.specsJson),
     )
   ) {
@@ -189,7 +189,9 @@ export async function openSession(
   )
     throw new InteractionRequired();
 
-  const checkpointJson = saved ? encodeReceipt(saved.native) : undefined;
+  const checkpointJson = saved
+    ? encodeReceipt(toRuntimeCheckpoint(saved))
+    : undefined;
   const freshManual = isManualSessionState(saved);
   const carrier = new NativeProviderRoutes(setup.selectedModel);
   let engine: import('./binding').Engine | undefined = undefined;

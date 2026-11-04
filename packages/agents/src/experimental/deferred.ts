@@ -839,7 +839,7 @@ export class DeferredTools {
             await session._prepareDeferredCheckpoint(request, validate, signal);
           if (
             !isManualSessionState(state) ||
-            state.native.source_session_id !== request.sessionId ||
+            state.source_session_id !== request.sessionId ||
             state.manual_continuation.turn_id !== request.turnId
           )
             throw new TypeError('Deferred checkpoint identity changed');
@@ -853,7 +853,7 @@ export class DeferredTools {
                 tenant: this.tenant,
                 runId: this.runId,
                 providerId: input.job.providerId,
-                sessionId: state.native.source_session_id,
+                sessionId: state.source_session_id,
                 turnId: state.manual_continuation.turn_id,
                 callId: pending.call_id,
                 toolName: pending.name,

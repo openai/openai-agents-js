@@ -199,12 +199,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(recovered.transforms).toBe(1);
         expect(recovered.nativeTransforms).toBe(0);
         expect(recovered.finalOutput).toEqual({ answer: 'done' });
-        expect(recovered.state.native.root_code_mode.stored_values).toEqual(
-          saved.native.root_code_mode.stored_values,
+        expect(recovered.state.root_code_mode.stored_values).toEqual(
+          saved.root_code_mode.stored_values,
         );
         expect(
-          BigInt(recovered.state.native.root_code_mode.next_cell_id),
-        ).toBeGreaterThan(BigInt(saved.native.root_code_mode.next_cell_id));
+          BigInt(recovered.state.root_code_mode.next_cell_id),
+        ).toBeGreaterThan(BigInt(saved.root_code_mode.next_cell_id));
         expect(await readFile(join(executor.cwd, 'effect.txt'), 'utf8')).toBe(
           'effect',
         );

@@ -140,15 +140,15 @@ async function main() {
       const state = await session.suspend();
       assert((await outcome) instanceof InteractionRequired);
       assert.equal(state.kind, 'manual');
-      assert.deepEqual(state.native.root_code_mode.stored_values.value, {
+      assert.deepEqual(state.root_code_mode.stored_values.value, {
         n: 7,
         a: [null, true, '雪'],
       });
       assert.equal(
-        state.native.root_code_mode.stored_values.seed,
+        state.root_code_mode.stored_values.seed,
         'committed-seed-result',
       );
-      assert.equal(state.native.source_session_id, session.id);
+      assert.equal(state.source_session_id, session.id);
       const binding = Object.freeze({
         sourceActor: session.id,
         turnId: request.turnId,

@@ -716,11 +716,11 @@ function assertCheckpointUsageGroups(
   descendantId?: string,
 ): void {
   const descendant = descendantId
-    ? state.native.descendants.find((entry) => entry.thread_id === descendantId)
+    ? state.descendants.find((entry) => entry.thread_id === descendantId)
     : undefined;
   if (descendantId && !descendant)
     throw new Error('Missing retained child checkpoint');
-  const history = descendant ? descendant.history : state.native.history;
+  const history = descendant ? descendant.history : state.history;
   const records = history.filter(
     (item) =>
       item.type === 'token_usage_record' &&
@@ -765,8 +765,8 @@ function assertCheckpointUsageGroups(
       wireUsage(index === 0 ? initial : expected),
     );
   }
-  expect(state.native.root_metadata.history ?? null).toBeNull();
-  for (const child of state.native.descendants)
+  expect(state.root_metadata.history ?? null).toBeNull();
+  for (const child of state.descendants)
     expect(child.metadata.history ?? null).toBeNull();
 }
 
@@ -887,9 +887,9 @@ describe(
         const first = parseSessionState(
           JSON.stringify(await session.saveState()),
         );
-        expect(
-          first.native.history.slice(0, before.native.history.length),
-        ).toEqual(before.native.history);
+        expect(first.history.slice(0, before.history.length)).toEqual(
+          before.history,
+        );
         assertCheckpointUsageGroups(
           first,
           turn.turnId,
@@ -900,10 +900,10 @@ describe(
 
         // Exercise the same transport for retained compaction usage and token_count
         // windows. Use the actual native usage record, not a second counter codec.
-        const record = first.native.history.findLast(
+        const record = first.history.findLast(
           (row) => row.type === 'token_usage_record',
         );
-        const compacted = first.native.history.findLast(
+        const compacted = first.history.findLast(
           (row) => row.type === 'compacted',
         );
         if (
@@ -947,7 +947,7 @@ describe(
             rate_limits: null,
           },
         };
-        first.native.history.push(window);
+        first.history.push(window);
         const stored = parseSessionState(JSON.stringify(first));
         const nextProvider = context.own(
           'provider',
@@ -961,11 +961,11 @@ describe(
         await restored.compact({ summary });
         expect(server.requests).toHaveLength(2);
         const second = await restored.saveState();
-        expect(
-          second.native.history.slice(0, stored.native.history.length),
-        ).toEqual(stored.native.history);
-        expect(second.native.history).toContainEqual(window);
-        expect(second.native.history).toContainEqual(compacted);
+        expect(second.history.slice(0, stored.history.length)).toEqual(
+          stored.history,
+        );
+        expect(second.history).toContainEqual(window);
+        expect(second.history).toContainEqual(compacted);
         assertCheckpointUsageGroups(
           second,
           turn.turnId,
@@ -1417,7 +1417,7 @@ describe(
               }
             };
             const checkpointRecord = (state: SessionState, turnId: string) => {
-              const records = state.native.history.filter(
+              const records = state.history.filter(
                 (item) =>
                   item.type === 'token_usage_record' &&
                   item.payload !== null &&

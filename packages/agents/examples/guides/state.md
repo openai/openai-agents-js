@@ -26,7 +26,7 @@ The destination selects native `HttpMCP` and `StdioMCP` declarations. Restore ma
 
 ### Portable checkpoint shape
 
-New checkpoints have a `kind` of `idle` or `manual`. The `native` field contains the Codex checkpoint, including its own codec and any settled Code Mode data. Applications should pass the entire SDK checkpoint to restore. To resume a flat numbered checkpoint from an earlier alpha, use the SDK build that wrote it and finish pending work before upgrading.
+New checkpoints have a `kind` of `idle` or `manual`. Read conversation data directly from the checkpoint, for example `state.history` and `state.source_session_id`. Pass the entire checkpoint to restore. To resume an untagged numbered checkpoint from an earlier alpha, use the SDK build that wrote it and finish pending work before upgrading.
 
 Both kinds record the output contract, tool defaults, and network policy identity. Restore requires matching output and network policy. A manual checkpoint also records the pending calls, their instructions and result schemas, and any operation-specific selection or remaining model-step limit. Supply the matching tool declarations. An omitted selection uses the defaults; an empty selection allows no tools.
 

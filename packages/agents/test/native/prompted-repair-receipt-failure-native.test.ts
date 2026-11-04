@@ -310,7 +310,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             expect(fork.repair_turns).toEqual([
               {
                 ...attempt,
-                parentSessionId: fork.native.source_session_id,
+                parentSessionId: fork.source_session_id,
               },
             ]);
             expect(fault.evidence.correctionHistoryFailures).toBe(0);
@@ -447,7 +447,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const saved = await session.saveState();
       if (saved.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
-      expect(saved.native.source_session_id).toBe(session.id);
+      expect(saved.source_session_id).toBe(session.id);
       expect(saved.repair_turns).toEqual([]);
       expect(saved.repair_items).toEqual([]);
       const fork = await session.fork();

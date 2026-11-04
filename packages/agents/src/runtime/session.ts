@@ -7033,7 +7033,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     return {
       serialized: encodeReceipt(this.restored),
-      sourceSessionId: this.restored.native.source_session_id,
+      sourceSessionId: this.restored.source_session_id,
       arguments:
         typeof call.event.msg.arguments === 'string'
           ? decode(jsonValue, call.event.msg.arguments)
@@ -7192,23 +7192,23 @@ export class Session<OutputT = string, Context = unknown> {
         selection: this.checkpointSelections(),
         networkPolicy: networkPolicyDigest(this.environment?.network),
       });
-    const prior = this.restored.native.recovery;
+    const prior = this.restored.recovery;
     const decorated: NativeCheckpoint = {
       ...state,
       recovery: {
         interrupted_thread_ids: [
           ...new Set([
             ...(prior?.interrupted_thread_ids ?? []),
-            ...this.restored.native.interrupted_thread_ids,
+            ...this.restored.interrupted_thread_ids,
           ]),
         ],
         expired_actions: [
           ...(prior?.expired_actions ?? []),
-          ...this.restored.native.pending_actions,
+          ...this.restored.pending_actions,
         ],
       },
       root_tool_origins: {
-        ...this.restored.native.root_tool_origins,
+        ...this.restored.root_tool_origins,
         ...state.root_tool_origins,
       },
     };

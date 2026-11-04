@@ -511,15 +511,13 @@ describe('Environment source public opening and actual Session cleanup', () => {
         kind: 'idle',
         network_policy_digest: null,
         output_context: prepareOutput(undefined).identity,
-        native: {
-          format_version: 2,
-          codex_revision: CODEX_REVISION,
-          source_session_id: 'saved-root',
-          root_metadata: {},
-          history: [],
-          managed_tool_specs: [],
-          agent_options: {},
-        },
+        format_version: 2,
+        codex_revision: CODEX_REVISION,
+        source_session_id: 'saved-root',
+        root_metadata: {},
+        history: [],
+        managed_tool_specs: [],
+        agent_options: {},
       }),
     );
     const original = new Error('checkpoint restore mismatch');

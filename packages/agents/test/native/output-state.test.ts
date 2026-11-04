@@ -1,3 +1,4 @@
+import { toRuntimeCheckpoint } from '../../src/runtime/state';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, NativeProvider } from '../../src';
@@ -54,7 +55,7 @@ function withOutputState(
   prior?: SessionState | null,
   repairs?: NonNullable<Parameters<typeof fromNativeCheckpoint>[2]>['repairs'],
 ) {
-  return fromNativeCheckpoint(state.native, identity, {
+  return fromNativeCheckpoint(toRuntimeCheckpoint(state), identity, {
     repairs: repairs ?? {
       turns: (prior ?? state).repair_turns,
       items: (prior ?? state).repair_items,
@@ -320,7 +321,7 @@ describe('portable output contract', () => {
     expect(() =>
       assertOutputState(state, prepareOutput(undefined).identity),
     ).toThrow('matching current output');
-    expect(state.native).toEqual(pending().native);
+    expect(toRuntimeCheckpoint(state)).toEqual(toRuntimeCheckpoint(pending()));
   });
 });
 
@@ -381,8 +382,8 @@ describe('passive repair receipts', () => {
     expect(recordedTurnFromWire(state.repair_turns[1]).usage?.inputTokens).toBe(
       9007199254740993n,
     );
-    expect(state.native).toEqual(root().native);
-    expect(state.native.history).toEqual([]);
+    expect(toRuntimeCheckpoint(state)).toEqual(toRuntimeCheckpoint(root()));
+    expect(state.history).toEqual([]);
   });
 
   it('captures the complete current repair snapshot without duplicating prior receipts', () => {
@@ -440,7 +441,9 @@ describe('passive repair receipts', () => {
     expect(state.repair_turns[1].usage?.totalTokens).toBe('9007199254740995');
     expect(state.repair_items[0].item.generation).toBe('9007199254740993');
     expect(roundTrip(state)).toEqual(state);
-    expect(state.native).toEqual(root('forked-root').native);
+    expect(toRuntimeCheckpoint(state)).toEqual(
+      toRuntimeCheckpoint(root('forked-root')),
+    );
     state.repair_turns[0].id = 'caller mutation';
     state.repair_items[0].item.text = 'caller mutation';
     state.repair_turns.pop();
@@ -486,7 +489,7 @@ describe('passive repair receipts', () => {
         repair_items: prior.repair_items,
       });
       expect(roundTrip(state)).toEqual(state);
-      expect(state.native).toEqual(source.native);
+      expect(toRuntimeCheckpoint(state)).toEqual(toRuntimeCheckpoint(source));
     }
   });
 
@@ -527,7 +530,9 @@ describe('passive repair receipts', () => {
     });
     forked.repair_items[0].item.text = 'caller mutation';
     expect(JSON.stringify(source)).toBe(before);
-    expect(forked.native).toEqual(root('forked-root').native);
+    expect(toRuntimeCheckpoint(forked)).toEqual(
+      toRuntimeCheckpoint(root('forked-root')),
+    );
   });
 
   it('retains reused item IDs across legitimate turn and call/output scopes', () => {
@@ -572,7 +577,7 @@ describe('passive repair receipts', () => {
       'call-item',
       'call-item',
     ]);
-    expect(repeated.native).toEqual(root().native);
+    expect(toRuntimeCheckpoint(repeated)).toEqual(toRuntimeCheckpoint(root()));
   });
 
   it('rejects duplicate attempts, mismatched item ownership and inexact counters', () => {
@@ -677,15 +682,15 @@ describe('settled checkpoint codec', () => {
     const saved = readVm(input);
     const state = fromNativeCheckpoint(saved, vmPlain.identity);
     const restored = parseSessionState(JSON.stringify(state));
-    const raw = restored.native;
+    const raw = toRuntimeCheckpoint(restored);
     expect(raw.format_version).toBe(4);
     expect(readVm(raw)).toEqual(saved);
-    expect(state.native.root_code_mode?.stored_values).toEqual(
+    expect(state.root_code_mode?.stored_values).toEqual(
       input.root_code_mode.stored_values,
     );
-    expect(state.native.root_goal).toEqual(input.root_goal);
-    expect(state.native.root_turn_budget).toEqual(input.root_turn_budget);
-    expect(state.native.root_metadata).toEqual(input.root_metadata);
+    expect(state.root_goal).toEqual(input.root_goal);
+    expect(state.root_turn_budget).toEqual(input.root_turn_budget);
+    expect(state.root_metadata).toEqual(input.root_metadata);
     expect(withOutputState(restored, vmPlain.identity).kind).toBe('idle');
     expect(encodeReceipt(raw)).toContain('"next_cell_id":18446744073709551615');
     expect(encodeReceipt(raw)).toContain(
@@ -800,7 +805,7 @@ describe('settled checkpoint codec', () => {
     if (state.kind !== 'manual')
       throw new Error('Expected a manual checkpoint');
     expect(state.manual_continuation).toEqual(manual.manual_continuation);
-    expect(state.native).toEqual(readVm(vmNative()));
+    expect(toRuntimeCheckpoint(state)).toEqual(readVm(vmNative()));
     expect(withOutputState(state, vmPlain.identity).kind).toBe('manual');
   });
 });
@@ -845,13 +850,13 @@ describe('lossless VM stored JSON', () => {
       const decorated = withOutputState(state, vmPlain.identity);
       const parsed = sessionStateSchema.parse(decorated);
       const stored = parseSessionState(JSON.stringify(parsed));
-      const restored = readVm(stored.native);
+      const restored = readVm(toRuntimeCheckpoint(stored));
       for (const stage of [
         native,
-        state.native,
-        decorated.native,
-        parsed.native,
-        stored.native,
+        state,
+        decorated,
+        parsed,
+        stored,
         restored,
       ]) {
         const result = vmStoredAt(stage, location);
@@ -876,16 +881,14 @@ describe('lossless VM stored JSON', () => {
       const state = fromNativeCheckpoint(readVm(vmNative()), vmPlain.identity);
       const snapshot =
         location === 'root'
-          ? state.native.root_code_mode
-          : state.native.descendants[0].code_mode;
+          ? state.root_code_mode
+          : state.descendants[0].code_mode;
       if (!snapshot) throw new Error('Expected VM snapshot');
       snapshot.stored_values = ownStoredValues();
       const expected = JSON.stringify(snapshot.stored_values);
       const restored = parseSessionState(encodeReceipt(state));
-      expect(JSON.stringify(vmStoredAt(restored.native, location))).toBe(
-        expected,
-      );
-      expectOrdinaryPrototypes(vmStoredAt(restored.native, location));
+      expect(JSON.stringify(vmStoredAt(restored, location))).toBe(expected);
+      expectOrdinaryPrototypes(vmStoredAt(restored, location));
     },
   );
 
@@ -917,10 +920,10 @@ describe('lossless VM stored JSON', () => {
     );
     expect(state.kind).toBe('manual');
     const saved = parseSessionState(encodeReceipt(state));
-    const restored = readVm(saved.native);
+    const restored = readVm(toRuntimeCheckpoint(saved));
     const reencodedEnvelope = parseNative(
       encodeReceipt({
-        checkpoint: saved.native,
+        checkpoint: toRuntimeCheckpoint(saved),
         manual_continuation: {},
       }),
     ) as { checkpoint: unknown };
@@ -967,8 +970,8 @@ describe('lossless VM stored JSON', () => {
       expect(() => encodeReceipt(input)).toThrow('Invalid retained cell ID');
       const mutated =
         location === 'root'
-          ? publicState.native.root_code_mode
-          : publicState.native.descendants[0].code_mode;
+          ? publicState.root_code_mode
+          : publicState.descendants[0].code_mode;
       if (!mutated) throw new Error('Expected VM snapshot');
       Object.defineProperty(mutated.completed_cells, '__proto__', {
         value: mutated.completed_cells['1'],
@@ -1039,7 +1042,7 @@ describe('lossless VM stored JSON', () => {
       vmPlain.identity,
     );
     const restored = parseSessionState(encodeReceipt(state));
-    expect(JSON.stringify(restored.native.root_code_mode?.stored_values)).toBe(
+    expect(JSON.stringify(restored.root_code_mode?.stored_values)).toBe(
       JSON.stringify(input),
     );
   });
@@ -1072,11 +1075,10 @@ describe('lossless VM stored JSON', () => {
       expect(parseNative(JSON.stringify(application))).toEqual(application);
     }
     const state = fromNativeCheckpoint(readVm(vmNative()), vmPlain.identity);
-    const expected = JSON.stringify(state.native.root_code_mode?.stored_values);
+    const expected = JSON.stringify(state.root_code_mode?.stored_values);
     expect(
       JSON.stringify(
-        parseSessionState(encodeReceipt(state)).native.root_code_mode
-          ?.stored_values,
+        parseSessionState(encodeReceipt(state)).root_code_mode?.stored_values,
       ),
     ).toBe(expected);
   });

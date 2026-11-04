@@ -544,11 +544,11 @@ describe('public live capabilities and checkpoint advice', () => {
           item.id.startsWith('msg_sdk_application_')
         );
       });
-    const openingReceipts = receipts(opening.native);
+    const openingReceipts = receipts(opening);
     expect(openingReceipts).toHaveLength(1);
     expect(
       native._validate_application_instructions(
-        JSON.stringify(opening.native.history),
+        JSON.stringify(opening.history),
         openingText,
       ),
     ).toBe(true);
@@ -575,13 +575,13 @@ describe('public live capabilities and checkpoint advice', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(server.requests).toHaveLength(0);
     const saved = await session.saveState();
-    expect(receipts(saved.native)).toEqual(openingReceipts);
+    expect(receipts(saved)).toEqual(openingReceipts);
     expect(await readSessionInstructions(saved)).toBe(
       'CAPABILITY_ADVICE_MUST_NOT_PUBLISH',
     );
     expect(
       native._validate_application_instructions(
-        JSON.stringify(saved.native.history),
+        JSON.stringify(saved.history),
         'CAPABILITY_ADVICE_MUST_NOT_PUBLISH',
       ),
     ).toBe(true);

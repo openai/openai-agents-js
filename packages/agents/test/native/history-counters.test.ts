@@ -62,13 +62,11 @@ const receipt = (usage: unknown) => ({
   kind: 'manual',
   network_policy_digest: null,
   output_context: prepareOutput(undefined).identity,
-  native: {
-    format_version: 2,
-    codex_revision: CODEX_REVISION,
-    source_session_id: 'session',
-    history: [],
-    root_metadata: {},
-  },
+  format_version: 2,
+  codex_revision: CODEX_REVISION,
+  source_session_id: 'session',
+  history: [],
+  root_metadata: {},
   manual_continuation: {
     turn_id: 't',
     reply_order: ['c'],

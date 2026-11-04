@@ -1,3 +1,4 @@
+import { toRuntimeCheckpoint } from '../../src/runtime/state';
 import { describe, expect, it } from 'vitest';
 import { inspect } from 'node:util';
 import {
@@ -29,13 +30,11 @@ describe('portable state authority', () => {
                 ...(kind === 'unknown-key' ? { [secret]: true } : {}),
                 output_context: prepareOutput(undefined).identity,
                 network_policy_digest: null,
-                native: {
-                  format_version: 2,
-                  codex_revision: CODEX_REVISION,
-                  source_session_id: 'saved-session',
-                  root_metadata: {},
-                  history: kind === 'unknown-key' ? [] : { message: secret },
-                },
+                format_version: 2,
+                codex_revision: CODEX_REVISION,
+                source_session_id: 'saved-session',
+                root_metadata: {},
+                history: kind === 'unknown-key' ? [] : { message: secret },
               });
       let caught: unknown;
       try {
@@ -68,7 +67,7 @@ describe('portable state authority', () => {
     }
     const envelope = {
       kind: 'idle',
-      native,
+      ...native,
       output_context,
       network_policy_digest: null,
     };
@@ -76,7 +75,8 @@ describe('portable state authority', () => {
       parseSessionState(
         JSON.stringify({
           ...envelope,
-          native: { ...native, codex_revision: 'other' },
+          ...native,
+          codex_revision: 'other',
         }),
       ),
     ).toThrow();
@@ -84,7 +84,8 @@ describe('portable state authority', () => {
       parseSessionState(
         JSON.stringify({
           ...envelope,
-          native: { ...native, format_version: 99 },
+          ...native,
+          format_version: 99,
         }),
       ),
     ).toThrow();
@@ -99,9 +100,9 @@ describe('portable child graph', () => {
     history: [],
     root_metadata: {},
   };
-  const envelope = (native: unknown) => ({
+  const envelope = (native: object) => ({
     kind: 'idle',
-    native,
+    ...native,
     output_context: prepareOutput(undefined).identity,
     network_policy_digest: null,
   });
@@ -142,7 +143,7 @@ describe('portable child graph', () => {
       ],
     };
     expect(parseSessionState(JSON.stringify(envelope(valid)))).toMatchObject({
-      native: valid,
+      ...valid,
     });
     expect(() =>
       parseSessionState(
@@ -169,9 +170,9 @@ describe('retained planning data at the portable opening parser', () => {
       tokens_used: 1,
     },
   };
-  const envelope = (native: unknown) => ({
+  const envelope = (native: object) => ({
     kind: 'idle',
-    native,
+    ...native,
     output_context: prepareOutput(undefined).identity,
     network_policy_digest: null,
   });
@@ -243,14 +244,17 @@ describe('static selection checkpoint envelope', () => {
         operation_tools: [lookup],
         default_tools: [],
       });
-      const payload = saved.native;
+      expect(saved.source_session_id).toBe('original-session');
+      expect(saved.history).toEqual([]);
+      expect(saved).not.toHaveProperty('native');
+      const payload = toRuntimeCheckpoint(saved);
       expect(payload.format_version).toBe(codec);
       expect(payload).not.toHaveProperty('operation_tools');
       expect(payload).not.toHaveProperty('default_tools');
       expect(parseNativeCheckpoint(payload)).toMatchObject(native(codec));
       expect(() =>
         parseNativeCheckpoint({ ...payload, operation_tools: [lookup] }),
-      ).toThrow('SDK envelope');
+      ).toThrow();
     },
   );
 
@@ -267,7 +271,7 @@ describe('static selection checkpoint envelope', () => {
       selection: { default_tools: [] },
     });
     expect(vm.kind).toBe('idle');
-    expect(vm.native.format_version).toBe(4);
+    expect(vm.format_version).toBe(4);
   });
 
   it('rejects duplicate references and operation metadata outside a manual checkpoint', () => {

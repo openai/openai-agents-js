@@ -281,7 +281,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const request = await nextAction(source);
         const state = structuredClone(await f.jobs.prepare(source, request));
         expect(await completion).toBeInstanceOf(InteractionRequired);
-        const receipts = state.native.history.filter((row) => {
+        const receipts = state.history.filter((row) => {
           if (row.type !== 'response_item') return false;
           const payload = jsonObject.parse(row.payload);
           return (
@@ -292,9 +292,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(receipts).toHaveLength(1);
         const receipt = receipts[0]!;
         if (invalidReceipt === 'missing')
-          state.native.history = state.native.history.filter(
-            (row) => row !== receipt,
-          );
+          state.history = state.history.filter((row) => row !== receipt);
         else {
           const payload = jsonObject.parse(receipt.payload);
           if (invalidReceipt === 'wrong id')

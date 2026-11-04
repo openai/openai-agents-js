@@ -42,13 +42,11 @@ function pendingCheckpoint() {
     kind: 'manual',
     network_policy_digest: null,
     output_context: prepareOutput(undefined).identity,
-    native: {
-      format_version: 2,
-      codex_revision: CODEX_REVISION,
-      source_session_id: 'saved-session',
-      root_metadata: {},
-      history: [],
-    },
+    format_version: 2,
+    codex_revision: CODEX_REVISION,
+    source_session_id: 'saved-session',
+    root_metadata: {},
+    history: [],
     manual_continuation: {
       turn_id: 'turn',
       reply_order: ['original-call'],

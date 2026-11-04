@@ -319,15 +319,13 @@ describe('native opening options without loading native code', () => {
         kind: 'idle',
         network_policy_digest: null,
         output_context: prepareOutput(undefined).identity,
-        native: {
-          format_version: 2,
-          codex_revision: CODEX_REVISION,
-          source_session_id: 'saved-root',
-          root_metadata: {},
-          history: [],
-          managed_tool_specs: [],
-          agent_options: {},
-        },
+        format_version: 2,
+        codex_revision: CODEX_REVISION,
+        source_session_id: 'saved-root',
+        root_metadata: {},
+        history: [],
+        managed_tool_specs: [],
+        agent_options: {},
       }),
     );
     const original = structuredClone(state);
@@ -343,7 +341,7 @@ describe('native opening options without loading native code', () => {
     expect(selected._acquire).toHaveBeenCalledTimes(1);
     expect(acquire).not.toHaveBeenCalled();
     expect(state).toEqual(original);
-    expect(state.native.agent_options).toEqual({});
+    expect(state.agent_options).toEqual({});
     await session.close();
     await Promise.all([selected.close(), agent.provider.close()]);
   });
@@ -448,15 +446,13 @@ describe('native opening options without loading native code', () => {
         kind: 'idle',
         network_policy_digest: null,
         output_context: prepareOutput(undefined).identity,
-        native: {
-          format_version: 2,
-          codex_revision: CODEX_REVISION,
-          source_session_id: 'saved-root',
-          root_metadata: {},
-          history: [],
-          managed_tool_specs: [],
-          agent_options: {},
-        },
+        format_version: 2,
+        codex_revision: CODEX_REVISION,
+        source_session_id: 'saved-root',
+        root_metadata: {},
+        history: [],
+        managed_tool_specs: [],
+        agent_options: {},
       }),
     );
     const selected = provider();

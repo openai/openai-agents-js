@@ -296,7 +296,7 @@ it.skipIf(
       });
       const restored = await agent.session({ state, environment: equivalent });
       try {
-        expect(restored.id).toBe(state.native.source_session_id);
+        expect(restored.id).toBe(state.source_session_id);
       } finally {
         await restored.close();
       }

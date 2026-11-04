@@ -122,8 +122,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         parentTurnId: earlier.turnId,
       });
       // The earlier invalid output is native history; the correction is passive.
-      expect(JSON.stringify(state.native.history)).toContain('EARLIER_ROOT');
-      expect(JSON.stringify(state.native.history)).not.toContain(repaired);
+      expect(JSON.stringify(state.history)).toContain('EARLIER_ROOT');
+      expect(JSON.stringify(state.history)).not.toContain(repaired);
       expect(JSON.stringify(state.repair_items)).toContain(repaired);
       expect(JSON.stringify(state)).not.toContain(
         'synthetic-repair-capture-key',
@@ -220,10 +220,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         throw new Error('Expected output-aware idle state');
       expect(before.repair_turns).toHaveLength(1);
       expect(before.repair_items.length).toBeGreaterThan(0);
-      expect(JSON.stringify(before.native.history)).toContain(
-        'ORIGINAL_SUMMARY_TASK',
-      );
-      expect(JSON.stringify(before.native.history)).not.toContain(repaired);
+      expect(JSON.stringify(before.history)).toContain('ORIGINAL_SUMMARY_TASK');
+      expect(JSON.stringify(before.history)).not.toContain(repaired);
       expect(JSON.stringify(before.repair_items)).toContain(repaired);
       const repairItems = (await collect(source.items())).filter(
         (item) => item.turnId === attempt.id,
@@ -238,16 +236,16 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(fork.repair_turns).toEqual(
         before.repair_turns.map((row) => ({
           ...row,
-          parentSessionId: fork.native.source_session_id,
+          parentSessionId: fork.source_session_id,
         })),
       );
       expect(fork.repair_items).toEqual(
         before.repair_items.map((row) => ({
           ...row,
-          parentSessionId: fork.native.source_session_id,
+          parentSessionId: fork.source_session_id,
         })),
       );
-      expect(JSON.stringify(fork.native.history)).not.toContain(repaired);
+      expect(JSON.stringify(fork.history)).not.toContain(repaired);
       expect(server.requests).toHaveLength(3);
       expect(effects).toEqual(['once']);
       await source.close();
@@ -264,7 +262,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           (item) => item.turnId === attempt.id,
         ),
       ).toEqual(repairItems);
-      expect(JSON.stringify(final.native.history)).not.toContain(repaired);
+      expect(JSON.stringify(final.history)).not.toContain(repaired);
       expect(restore).toHaveBeenCalled();
       for (const [json] of restore.mock.calls) {
         expect(json).not.toContain(repaired);

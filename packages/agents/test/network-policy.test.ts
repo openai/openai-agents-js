@@ -1,3 +1,4 @@
+import { toRuntimeCheckpoint } from '../src/runtime/state';
 import { describe, expect, it } from 'vitest';
 import { Environment, environmentConfig } from '../src/runtime/environment';
 import {
@@ -171,7 +172,7 @@ describe('checkpoint network authority', () => {
         });
         expect(state.kind).toBe(pending ? 'manual' : 'idle');
         expect(isManualSessionState(state)).toBe(!!pending);
-        expect(state.native).toEqual(native(codec));
+        expect(toRuntimeCheckpoint(state)).toEqual(native(codec));
         expect(parseSessionState(JSON.stringify(state))).toEqual(state);
         if (pending && state.kind === 'manual')
           expect(state.manual_continuation).toEqual(
@@ -217,11 +218,11 @@ describe('checkpoint network authority', () => {
     const { network_policy_digest: _digest, ...missing } = state;
     expect(() => parseSessionState(JSON.stringify(missing))).toThrow();
     expect(() =>
-      parseSessionState(JSON.stringify({ ...state, format_version: 4 })),
+      parseSessionState(JSON.stringify({ ...state, native: native(2) })),
     ).toThrow();
     expect(() => parseNativeCheckpoint(state)).toThrow();
     expect(() =>
       parseNativeCheckpoint({ ...native(2), network_policy_digest: digest }),
-    ).toThrow('SDK envelope');
+    ).toThrow();
   });
 });

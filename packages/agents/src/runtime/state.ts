@@ -285,38 +285,17 @@ const sdkOutputState = {
   repair_turns: z.array(repairTurnWireSchema).default([]),
   repair_items: z.array(repairItemWireSchema).default([]),
 };
-const checkpointTreeSchema = z.object({ ...rootState, ...treeState });
+const checkpointTreeSchema = z.object({
+  ...rootState,
+  ...treeState,
+  format_version: z.union([z.literal(2), z.literal(4)]),
+  root_memory_mode: z.enum(['enabled', 'disabled']).nullable().optional(),
+  managed_tool_specs: jsonValue.optional(),
+  agent_options: jsonObject.optional(),
+});
 const nativeCheckpointSchema = checkpointTreeSchema
-  .extend({ format_version: z.union([z.literal(2), z.literal(4)]) })
-  .catchall(jsonValue)
-  .superRefine((state, ctx) => {
-    validateCheckpointTree(state, ctx);
-    if (
-      [
-        'output_context',
-        'repair_turns',
-        'repair_items',
-        'manual_continuation',
-        'manual_context',
-        'operation_tools',
-        'default_tools',
-        'network_policy_digest',
-      ].some((key) => key in state)
-    )
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Expected a native checkpoint, not an SDK envelope',
-      });
-    if (
-      state.format_version === 2 &&
-      (state.root_code_mode != null ||
-        state.descendants.some((child) => child.code_mode != null))
-    )
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Native CodeMode state requires format_version=4',
-      });
-  });
+  .strict()
+  .superRefine(validateCheckpointTree);
 export type NativeCheckpoint = z.infer<typeof nativeCheckpointSchema>;
 
 /** @internal Decode only checkpoint payloads returned by the native owner. */
@@ -327,7 +306,7 @@ export function parseNativeCheckpoint(source: unknown): NativeCheckpoint {
 }
 
 const checkpointFields = {
-  native: nativeCheckpointSchema,
+  ...checkpointTreeSchema.shape,
   ...sdkOutputState,
   default_tools: checkpointSelectionFields.default_tools,
   network_policy_digest: z
@@ -350,16 +329,17 @@ export const sessionStateSchema = z
     ],
     {
       error:
-        'Expected an idle or manual checkpoint. Open older flat checkpoints with the SDK that saved them.',
+        'Expected an idle or manual checkpoint. Open older untagged checkpoints with the SDK that saved them.',
     },
   )
   .superRefine((state, ctx) => {
+    validateCheckpointTree(state, ctx);
     const turns = new Map<string, (typeof state.repair_turns)[number]>();
     for (const turn of state.repair_turns) {
       const key = JSON.stringify([turn.sessionId, turn.id]);
       if (
-        turn.parentSessionId !== state.native.source_session_id ||
-        turn.sessionId === state.native.source_session_id ||
+        turn.parentSessionId !== state.source_session_id ||
+        turn.sessionId === state.source_session_id ||
         turns.has(key)
       ) {
         ctx.addIssue({
@@ -375,7 +355,7 @@ export const sessionStateSchema = z
       );
       if (
         !turn ||
-        item.parentSessionId !== state.native.source_session_id ||
+        item.parentSessionId !== state.source_session_id ||
         item.parentTurnId !== turn.parentTurnId
       ) {
         ctx.addIssue({
@@ -418,6 +398,15 @@ function validateCheckpointTree(
   state: z.infer<typeof checkpointTreeSchema>,
   ctx: z.RefinementCtx,
 ): void {
+  if (
+    state.format_version === 2 &&
+    (state.root_code_mode != null ||
+      state.descendants.some((child) => child.code_mode != null))
+  )
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Native CodeMode state requires format_version=4',
+    });
   if (
     state.root_checklist &&
     state.root_checklist.thread_id !== state.source_session_id
@@ -531,7 +520,7 @@ export function fromNativeCheckpoint(
   } = {},
 ): SessionState {
   return sessionStateSchema.parse({
-    native: state,
+    ...state,
     kind: manual ? 'manual' : 'idle',
     ...manual,
     ...selection,
@@ -548,6 +537,10 @@ export function fromNativeCheckpoint(
         parentSessionId: state.source_session_id,
       })) ?? [],
   });
+}
+/** @internal Project a validated portable checkpoint onto the runtime wire schema. */
+export function toRuntimeCheckpoint(state: SessionState): NativeCheckpoint {
+  return checkpointTreeSchema.parse(state);
 }
 /** @internal Hide arbitrary saved keys reported by strict-object errors. */
 export function validateSessionState(input: unknown): SessionState {
@@ -574,9 +567,9 @@ export async function readSessionInstructions(
   state: SessionState,
 ): Promise<string> {
   const native = await binding();
-  if (state.native.codex_revision !== native.CODEX_REVISION)
+  if (state.codex_revision !== native.CODEX_REVISION)
     throw new TypeError('Checkpoint belongs to an unsupported Codex revision');
-  return native._read_session_instructions(encode(state.native.history));
+  return native._read_session_instructions(encode(state.history));
 }
 
 /** @internal Reject changed authority before reconnecting to the executor. */

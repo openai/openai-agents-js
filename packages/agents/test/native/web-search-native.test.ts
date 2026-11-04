@@ -240,7 +240,7 @@ it.each(['gpt-5.5', 'gpt-5.6-sol'])(
         provider,
         tools: [webSearch({ route: 'hosted' })],
       }).session({ state });
-      expect(restored.id).toBe(state.native.source_session_id);
+      expect(restored.id).toBe(state.source_session_id);
     }
     expect(peer.model.requests).toHaveLength(1);
     expect(peer.searches).toHaveLength(0);
@@ -266,9 +266,8 @@ it.each(['managed-specs', 'root-identity'] as const)(
     }
     const raw = JSON.parse(JSON.stringify(state));
     if (corruption === 'root-identity')
-      raw.native.root_metadata.thread_id =
-        '00000000-0000-4000-8000-000000000123';
-    else raw.native.managed_tool_specs = [{ name: 'ungranted' }];
+      raw.root_metadata.thread_id = '00000000-0000-4000-8000-000000000123';
+    else raw.managed_tool_specs = [{ name: 'ungranted' }];
     await using executor = await forbiddenExecutor();
     await expect(
       new Agent({
@@ -728,9 +727,9 @@ async function savedAgentModels(
     }
     const state = await session.saveState();
     if (childModel) {
-      expect(state.native.descendants).toHaveLength(1);
-      expect(state.native.descendants[0].status).toBe('active');
-      expect(state.native.descendants[0].metadata.model).toBe(childModel);
+      expect(state.descendants).toHaveLength(1);
+      expect(state.descendants[0].status).toBe('active');
+      expect(state.descendants[0].metadata.model).toBe(childModel);
     }
     expect(peer.searches).toHaveLength(0);
     peer.model.assertExhausted();
@@ -782,8 +781,8 @@ it('admits a closed saved Lite child as inert history without widening current c
   // The portable schema accepts an individually closed edge, independent of a
   // completed child turn. This checks imported data, not a new child-close API.
   const state = JSON.parse(JSON.stringify(captured));
-  state.native.descendants[0].status = 'closed';
-  state.native.descendants[0].closed_at = 1;
+  state.descendants[0].status = 'closed';
+  state.descendants[0].closed_at = 1;
   const executor = await startPublicExecutor();
   try {
     await using peer = await searchPeer([]);
@@ -880,7 +879,7 @@ it('retains explicit compatible config for the old three-argument checkpoint eng
       provider,
       tools: [webSearch({ route: 'hosted' })],
     }).session({ state });
-    expect(session.id).toBe(state.native.source_session_id);
+    expect(session.id).toBe(state.source_session_id);
     expect(legacyCalls).toBe(1);
     expect(peer.model.requests).toHaveLength(0);
     expect(peer.searches).toHaveLength(0);
@@ -892,7 +891,7 @@ it('retains explicit compatible config for the old three-argument checkpoint eng
 
 it('uses explicit compatible config for a valid managed checkpoint without settings history', async () => {
   const saved = await ordinarySavedModel();
-  const history = saved.native.history.filter((item) => {
+  const history = saved.history.filter((item) => {
     const payload = item.payload;
     return !(
       item.type === 'event_msg' &&
@@ -902,10 +901,10 @@ it('uses explicit compatible config for a valid managed checkpoint without setti
       payload.type === 'thread_settings_applied'
     );
   });
-  expect(history.length).toBeLessThan(saved.native.history.length);
+  expect(history.length).toBeLessThan(saved.history.length);
   const state: SessionState = {
     ...saved,
-    native: { ...saved.native, history },
+    history,
   };
   await using peer = await searchPeer([]);
   await using provider = providerAt(peer.url);
@@ -915,7 +914,7 @@ it('uses explicit compatible config for a valid managed checkpoint without setti
     provider,
     tools: [webSearch({ route: 'hosted' })],
   }).session({ state });
-  expect(session.id).toBe(saved.native.source_session_id);
+  expect(session.id).toBe(saved.source_session_id);
   expect(peer.model.requests).toHaveLength(0);
   expect(peer.searches).toHaveLength(0);
   peer.model.assertExhausted();
@@ -931,10 +930,10 @@ const wireUsageCases = [
 function usageHistory(state: SessionState, container: 'root' | 'descendant') {
   if (container === 'root')
     return {
-      history: state.native.history,
-      threadId: state.native.source_session_id,
+      history: state.history,
+      threadId: state.source_session_id,
     };
-  const child = state.native.descendants[0];
+  const child = state.descendants[0];
   if (!child) throw new Error('Missing saved descendant');
   return { history: child.history, threadId: child.thread_id };
 }
@@ -1039,7 +1038,7 @@ it.each(wireUsageCases)(
           tools: ['exec_command', 'write_stdin', 'apply_patch'],
         }),
       });
-      expect(restored.id).toBe(state.native.source_session_id);
+      expect(restored.id).toBe(state.source_session_id);
       const reopened = await restored.saveState();
       const retained = usageHistory(reopened, container).history.find(
         (item) => {

@@ -59,13 +59,11 @@ function exampleSessions() {
     kind: 'idle',
     network_policy_digest: null,
     output_context: prepareOutput(undefined).identity,
-    native: {
-      format_version: 2,
-      codex_revision: CODEX_REVISION,
-      source_session_id: 'example-session',
-      history: [],
-      root_metadata: {},
-    },
+    format_version: 2,
+    codex_revision: CODEX_REVISION,
+    source_session_id: 'example-session',
+    history: [],
+    root_metadata: {},
   }));
   const session = {
     [Symbol.asyncDispose](): Promise<void> {
@@ -148,7 +146,8 @@ describe('conversation example ownership without native execution', () => {
     expect(owned.opening.mock.calls[1][0]).toMatchObject({
       state: {
         kind: 'idle',
-        native: { format_version: 2, source_session_id: 'example-session' },
+        format_version: 2,
+        source_session_id: 'example-session',
       },
     });
     expect(owned.calls).toEqual([

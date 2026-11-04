@@ -184,7 +184,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(context.signal.aborted).toBe(false);
         for (const reply of stale)
           await expect(session.respond(reply)).rejects.toThrow();
-        state.native.root_metadata.changed = 'detached';
+        state.root_metadata.changed = 'detached';
         expect(JSON.stringify(await session.suspend())).toBe(exact);
         expect(await completion).toBeInstanceOf(InteractionRequired);
         expect(peer.callTool).toHaveBeenCalledTimes(1);

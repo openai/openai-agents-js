@@ -532,11 +532,7 @@ export class Agent<Context = undefined, Output = string> {
       );
     if (nativeAgents && !model && state == null)
       throw new TypeError('NativeAgents requires an explicit compatible model');
-    if (
-      Array.isArray(state?.native.descendants) &&
-      state.native.descendants.length > 0 &&
-      !nativeAgents
-    )
+    if (state && state.descendants.length > 0 && !nativeAgents)
       throw new TypeError(
         'Restoring child state requires current NativeAgents',
       );
@@ -749,8 +745,8 @@ export class Agent<Context = undefined, Output = string> {
                   : { _sdk_resume_thread_id: resume }),
               }),
           ...(state &&
-          (state.native.root_goal != null ||
-            state.native.descendants?.some((child) => child.goal != null))
+          (state.root_goal != null ||
+            state.descendants?.some((child) => child.goal != null))
             ? { native_goal_store: home.codex_home }
             : {}),
           ...(nativeAgents

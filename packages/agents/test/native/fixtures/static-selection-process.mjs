@@ -113,7 +113,7 @@ async function main() {
         saved.manual_continuation.pending_manual.map((call) => call.call_id),
         ['manual-B'],
       );
-      assert.deepEqual(saved.native.root_code_mode.stored_values, {
+      assert.deepEqual(saved.root_code_mode.stored_values, {
         accepted: { output: 'checked-native-text' },
         structured: { n: 7, a: [null, true, '雪'] },
       });

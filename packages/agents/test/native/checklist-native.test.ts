@@ -125,7 +125,7 @@ it('reads accepted whole-list updates, keeps invalid updates out and preserves t
       plan: last,
     });
     const saved = await session.saveState();
-    expect(saved.native.root_checklist?.plan).toEqual(last);
+    expect(saved.root_checklist?.plan).toEqual(last);
     server.assertExhausted();
   } finally {
     await session.close();

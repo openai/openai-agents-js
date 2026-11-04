@@ -116,11 +116,11 @@ describe('supplied native compaction', () => {
       const saved = parseSessionState(
         JSON.stringify(await session.saveState()),
       );
-      expect(saved.native.source_session_id).toBe(id);
-      expect(
-        saved.native.history.slice(0, before.native.history.length),
-      ).toEqual(before.native.history);
-      expect(saved.native.history).toContainEqual(
+      expect(saved.source_session_id).toBe(id);
+      expect(saved.history.slice(0, before.history.length)).toEqual(
+        before.history,
+      );
+      expect(saved.history).toContainEqual(
         expect.objectContaining({
           type: 'compacted',
           payload: expect.objectContaining({ message: summary }),
@@ -180,11 +180,11 @@ describe('supplied native compaction', () => {
       await session.compact({ summary: 'second supplied summary' });
       expect(server.requests).toHaveLength(1);
       const repeated = await session.saveState();
+      expect(repeated.history.slice(0, before.history.length)).toEqual(
+        before.history,
+      );
       expect(
-        repeated.native.history.slice(0, before.native.history.length),
-      ).toEqual(before.native.history);
-      expect(
-        repeated.native.history.filter((record) => record.type === 'compacted'),
+        repeated.history.filter((record) => record.type === 'compacted'),
       ).toHaveLength(2);
       await session.compact();
       expect(server.requests).toHaveLength(2);
@@ -223,7 +223,7 @@ describe('supplied native compaction', () => {
       ).rejects.toThrow();
       expect(admission).not.toHaveBeenCalled();
       const after = await session.saveState();
-      expectPreservedAudit(before.native, after.native);
+      expectPreservedAudit(before, after);
       expect(await readSessionInstructions(after)).toBe('Answer.');
       expect(await collect(session.items())).toEqual([]);
       expect(await collect(session.turns())).toEqual([]);
@@ -274,8 +274,8 @@ describe('supplied native compaction', () => {
     const original = await agent.session();
     const state = await original.saveState();
     await original.close();
-    state.native.root_goal = {
-      thread_id: state.native.source_session_id,
+    state.root_goal = {
+      thread_id: state.source_session_id,
       objective: 'Retain this goal',
       status: 'paused',
       token_budget: 100,
@@ -294,10 +294,8 @@ describe('supplied native compaction', () => {
         /goal/i,
       );
       expect(candidate).not.toHaveBeenCalled();
-      expect((await session.saveState()).native.root_goal).toEqual(
-        before.native.root_goal,
-      );
-      expect(before.native.root_goal).toMatchObject(state.native.root_goal!);
+      expect((await session.saveState()).root_goal).toEqual(before.root_goal);
+      expect(before.root_goal).toMatchObject(state.root_goal!);
       expect(server.requests).toHaveLength(0);
       expect(
         (await (await session.submit('Continue')).wait()).finalOutput,
@@ -411,7 +409,7 @@ describe('supplied native compaction', () => {
       release.resolve();
       expect(await outcome).toBeInstanceOf(Error);
       const after = await session.saveState();
-      expectPreservedAudit(before.native, after.native);
+      expectPreservedAudit(before, after);
       expect(await readSessionInstructions(after)).toBe('Answer.');
       expect(await collect(session.items())).toEqual([]);
       expect(await collect(session.turns())).toEqual([]);
@@ -463,7 +461,7 @@ describe('supplied native compaction', () => {
       });
       const saved = await session.saveState();
       expect(
-        saved.native.history.filter((record) => record.type === 'compacted'),
+        saved.history.filter((record) => record.type === 'compacted'),
       ).toEqual([]);
       server.assertExhausted();
     } finally {
@@ -608,7 +606,7 @@ describe('supplied native compaction', () => {
       expect(cleanupSpy).toHaveBeenCalledTimes(1);
       expect(session.id).toBe(id);
       const after = await session.saveState();
-      expectPreservedAudit(before.native, after.native);
+      expectPreservedAudit(before, after);
       expect(await readSessionInstructions(after)).toBe('Answer.');
       expect(await collect(session.items())).toEqual([]);
       expect(await collect(session.turns())).toEqual([]);
@@ -648,7 +646,7 @@ describe('supplied native compaction', () => {
       );
       expect(cleanup).toHaveBeenCalledTimes(1);
       const after = await session.saveState();
-      expectPreservedAudit(before.native, after.native);
+      expectPreservedAudit(before, after);
       expect(await readSessionInstructions(after)).toBe('Answer.');
       expect(await collect(session.items())).toEqual([]);
       expect(await collect(session.turns())).toEqual([]);

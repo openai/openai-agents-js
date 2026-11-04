@@ -81,9 +81,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         throw new Error('Expected retained seal receipt');
       expect(JSON.stringify(error.state)).toBe(exact);
       expect(error.state).not.toBe(state);
-      error.state.native.root_metadata.caller = 'mutated error copy';
+      error.state.root_metadata.caller = 'mutated error copy';
       const persist = async () => {
-        state.native.root_metadata.caller = 'failed write';
+        state.root_metadata.caller = 'failed write';
         throw new Error('application persistence failed');
       };
       await expect(persist()).rejects.toThrow('application persistence failed');
@@ -214,12 +214,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         completedAt: null,
         error: null,
         usage: null,
-        parentSessionId: state.native.source_session_id,
+        parentSessionId: state.source_session_id,
         parentTurnId: originalTurn.turn.turnId,
       });
       state.repair_items.push({
         sessionId: 'attempt-session',
-        parentSessionId: state.native.source_session_id,
+        parentSessionId: state.source_session_id,
         parentTurnId: originalTurn.turn.turnId,
         item: {
           id: 'attempt-item',
@@ -242,7 +242,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(forked.repair_turns[0]).toMatchObject({
         sessionId: 'attempt-session',
         id: 'attempt-turn',
-        parentSessionId: forked.native.source_session_id,
+        parentSessionId: forked.source_session_id,
         parentTurnId: originalTurn.turn.turnId,
       });
       expect(forked.repair_items[0].item.id).toBe('attempt-item');

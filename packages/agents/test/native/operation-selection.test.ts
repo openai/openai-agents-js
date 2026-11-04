@@ -225,7 +225,7 @@ it('resolves stale selectors to acknowledged bindings and keeps defaults and FIF
       ?.description,
   ).toBe('Current.');
   const state = await session.saveState();
-  expect(state.native.managed_tool_specs).toEqual([
+  expect(state.managed_tool_specs).toEqual([
     expect.objectContaining({ name: 'a', description: 'Current.' }),
   ]);
   expect(state).toMatchObject({ kind: 'idle', default_tools: [] });
@@ -764,7 +764,7 @@ it('retains hidden admitted bindings and narrowed defaults across supplied compa
   await session.compact({ summary: 'Remember the completed answer.' });
   expect(server.requests).toHaveLength(1);
   const state = await session.saveState();
-  expect(state.native.managed_tool_specs).toEqual([
+  expect(state.managed_tool_specs).toEqual([
     expect.objectContaining({ name: 'a' }),
     expect.objectContaining({ name: 'b' }),
   ]);

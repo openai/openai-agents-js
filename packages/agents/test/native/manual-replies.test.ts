@@ -18,13 +18,11 @@ it('rejects an idle checkpoint before opening a pending lookup', async () => {
     kind: 'idle',
     network_policy_digest: null,
     output_context: prepareOutput(undefined).identity,
-    native: {
-      format_version: 2,
-      codex_revision: CODEX_REVISION,
-      source_session_id: 'idle-lookup-session',
-      root_metadata: {},
-      history: [],
-    },
+    format_version: 2,
+    codex_revision: CODEX_REVISION,
+    source_session_id: 'idle-lookup-session',
+    root_metadata: {},
+    history: [],
   });
   await expect(resumeLookup(json, 'Unused label')).rejects.toThrow(
     'Expected a pending manual checkpoint.',

@@ -224,10 +224,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           .wait()
           .catch((error: unknown) => error);
         const saved = await source.saveState();
-        expect(saved.native.source_session_id).toBe(source.id);
-        expect(saved.native.interrupted_thread_ids).toContain(child.id);
-        expect(saved.native.descendants).toHaveLength(1);
-        expect(saved.native.descendants[0]).toMatchObject({
+        expect(saved.source_session_id).toBe(source.id);
+        expect(saved.interrupted_thread_ids).toContain(child.id);
+        expect(saved.descendants).toHaveLength(1);
+        expect(saved.descendants[0]).toMatchObject({
           thread_id: child.id,
           parent_thread_id: source.id,
         });
@@ -402,8 +402,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           expect((await child.turn.wait()).finalOutput).toBe('child settled');
           const saved = await source.saveState();
           expect(saved.kind).toBe('idle');
-          expect(saved.native.descendants).toHaveLength(1);
-          const descendant = saved.native.descendants[0]!;
+          expect(saved.descendants).toHaveLength(1);
+          const descendant = saved.descendants[0]!;
           expect(descendant.thread_id).toBe(childId);
           expect(descendant.code_mode?.stored_values.child_value).toBe(
             committed,
@@ -447,7 +447,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             throw new Error('Expected the resumed child turn');
           expect((await resumed.turn.wait()).finalOutput).toBe('child resumed');
           const continued = await restored.saveState();
-          const continuedChild = continued.native.descendants.find(
+          const continuedChild = continued.descendants.find(
             (item) => item.thread_id === childId,
           )!;
           expect(continuedChild.code_mode?.stored_values).toMatchObject({
@@ -537,21 +537,17 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const fork = await source.fork();
       expect(saved.kind).toBe('idle');
       expect(fork.kind).toBe('idle');
-      expect(fork.native.source_session_id).not.toBe(
-        saved.native.source_session_id,
+      expect(fork.source_session_id).not.toBe(saved.source_session_id);
+      expect(fork.root_code_mode?.stored_values).toEqual(
+        saved.root_code_mode?.stored_values,
       );
-      expect(fork.native.root_code_mode?.stored_values).toEqual(
-        saved.native.root_code_mode?.stored_values,
-      );
-      expect(fork.native.root_code_mode?.stored_values.saved).toEqual(
-        expectedSaved,
-      );
+      expect(fork.root_code_mode?.stored_values.saved).toEqual(expectedSaved);
       expect(
-        Object.hasOwn(fork.native.root_code_mode!.stored_values, '__proto__'),
+        Object.hasOwn(fork.root_code_mode!.stored_values, '__proto__'),
       ).toBe(true);
-      expect(
-        Object.getPrototypeOf(fork.native.root_code_mode!.stored_values),
-      ).toBe(Object.prototype);
+      expect(Object.getPrototypeOf(fork.root_code_mode!.stored_values)).toBe(
+        Object.prototype,
+      );
       await using copy = await new Agent({
         ...declaration,
         tools: [
@@ -569,15 +565,15 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         ).finalOutput,
       ).toBe('continued');
       const changed = await copy.saveState();
-      expect(changed.native.root_code_mode?.stored_values.saved).toEqual({
+      expect(changed.root_code_mode?.stored_values.saved).toEqual({
         ...expectedSaved,
         value: 8,
       });
+      expect(BigInt(changed.root_code_mode!.next_cell_id)).toBeGreaterThan(
+        BigInt(fork.root_code_mode!.next_cell_id),
+      );
       expect(
-        BigInt(changed.native.root_code_mode!.next_cell_id),
-      ).toBeGreaterThan(BigInt(fork.native.root_code_mode!.next_cell_id));
-      expect(
-        (await source.saveState()).native.root_code_mode?.stored_values.saved,
+        (await source.saveState()).root_code_mode?.stored_values.saved,
       ).toEqual(expectedSaved);
       expect(originalReads).toBe(0);
       expect(currentReads).toBe(1);
