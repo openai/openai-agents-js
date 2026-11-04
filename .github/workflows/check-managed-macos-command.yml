@@ -17,8 +17,8 @@ jobs:
     env:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: darwin-arm64
-      QUALIFIED_SDK_COMMIT: cb3fa9ec8dc9fab3d2a41b3503184f0a07b14e3b
-      QUALIFIED_SDK_TREE: 972c34c7f36b7bb287f61c6d7f758dd1f3fd79cb
+      QUALIFIED_SDK_COMMIT: e652e7c0f4e68c8ded39dcde50c7aa36574758a6
+      QUALIFIED_SDK_TREE: 10edee35289482253537c256c8fc6081ee4fdeb7
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: '3'
       CARGO_INCREMENTAL: '0'
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: cb3fa9ec8dc9fab3d2a41b3503184f0a07b14e3b
+          ref: e652e7c0f4e68c8ded39dcde50c7aa36574758a6
           persist-credentials: false
       - name: Check exact source
         run: |
@@ -118,96 +118,6 @@ jobs:
             --maxWorkers=1 --reporter=verbose
           pnpm test:native packages/agents/test/native/compaction-late-admission-native.test.ts \
             --maxWorkers=1 --reporter=verbose
-      - name: Qualify grant replacement after managed network denial
-        env:
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: |
-          set -euo pipefail
-          fixture=packages/agents/test/native/local-executor-policy-native.test.ts
-          case_name='applies a per-turn write policy after a managed network denial'
-          probe_dir="$(mktemp -d "$RUNNER_TEMP/js-darwin-policy-probe.XXXXXX")"
-          patch="$probe_dir/private.patch"
-          node --input-type=module -e '
-            import { readFileSync, writeFileSync } from "node:fs";
-            writeFileSync(process.argv[1], Buffer.from(readFileSync(0, "utf8"), "base64"));
-          ' "$patch" <<'PRIVATE_PROBE_PATCH'
-          LS0tIGEvcGFja2FnZXMvYWdlbnRzL3Rlc3QvbmF0aXZlL2xvY2FsLWV4ZWN1dG9yLXBvbGljeS1u
-          YXRpdmUudGVzdC50cworKysgYi9wYWNrYWdlcy9hZ2VudHMvdGVzdC9uYXRpdmUvbG9jYWwtZXhl
-          Y3V0b3ItcG9saWN5LW5hdGl2ZS50ZXN0LnRzCkBAIC0xMjUzLDYgKzEyNTMsNzUgQEAKICAgMzBf
-          MDAwLAogKTsKIAoraXQuc2tpcElmKHByb2Nlc3MucGxhdGZvcm0gIT09ICdkYXJ3aW4nKSgKKyAg
-          J2FwcGxpZXMgYSBwZXItdHVybiB3cml0ZSBwb2xpY3kgYWZ0ZXIgYSBtYW5hZ2VkIG5ldHdvcmsg
-          ZGVuaWFsJywKKyAgYXN5bmMgKCkgPT4geworICAgIGNvbnN0IHRlbXBvcmFyeSA9IGF3YWl0IG1r
-          ZHRlbXAoam9pbih0bXBkaXIoKSwgJ2FnZW50cy1sb2NhbC1uZXQtZGVuaWFsLScpKTsKKyAgICB0
-          cnkgeworICAgICAgY29uc3QgZGlyZWN0b3J5ID0gYXdhaXQgcmVhbHBhdGgodGVtcG9yYXJ5KTsK
-          KyAgICAgIGNvbnN0IGN3ZCA9IGpvaW4oZGlyZWN0b3J5LCAnd29ya3NwYWNlJyk7CisgICAgICBj
-          b25zdCBzaWJsaW5nID0gam9pbihkaXJlY3RvcnksICdzaWJsaW5nJyk7CisgICAgICBhd2FpdCBQ
-          cm9taXNlLmFsbChbbWtkaXIoY3dkKSwgbWtkaXIoc2libGluZyldKTsKKyAgICAgIGNvbnN0IGRl
-          bmllZEhvc3QgPSAnYmxvY2tlZC5leGFtcGxlLmludmFsaWQnOworICAgICAgY29uc3Qgc2VydmVy
-          ID0gbmV3IE1vZGVsU2VydmVyKFsKKyAgICAgICAgWworICAgICAgICAgIGNhbGwoCisgICAgICAg
-          ICAgICAnZXhlY19jb21tYW5kJywKKyAgICAgICAgICAgIHsKKyAgICAgICAgICAgICAgY21kOgor
-          ICAgICAgICAgICAgICAgICd0ZXN0IC1uICIkSFRUUF9QUk9YWSIgfHwgZXhpdCAxMDsgJyArCisg
-          ICAgICAgICAgICAgICAgJy91c3IvYmluL2N1cmwgLS1zaWxlbnQgLS1zaG93LWVycm9yIC0tbWF4
-          LXRpbWUgMyAtLXByb3h5ICIkSFRUUF9QUk9YWSIgJyArCisgICAgICAgICAgICAgICAgYC0tbm9w
-          cm94eSAnJyAtLW91dHB1dCAvZGV2L251bGwgaHR0cDovLyR7ZGVuaWVkSG9zdH0vOyBleGVjIC9i
-          aW4vc2xlZXAgMzBgLAorICAgICAgICAgICAgfSwKKyAgICAgICAgICAgIHsgY2FsbElkOiAnZGVu
-          aWVkJyB9LAorICAgICAgICAgICksCisgICAgICAgIF0sCisgICAgICAgIChyZXF1ZXN0KSA9PiB7
-          CisgICAgICAgICAgY29uc3Qgb3V0cHV0ID0gKHJlcXVlc3QuaW5wdXQgYXMgSnNvbk9iamVjdFtd
-          KS5maW5kKAorICAgICAgICAgICAgKGl0ZW0pID0+CisgICAgICAgICAgICAgIGl0ZW0udHlwZSA9
-          PT0gJ2Z1bmN0aW9uX2NhbGxfb3V0cHV0JyAmJiBpdGVtLmNhbGxfaWQgPT09ICdkZW5pZWQnLAor
-          ICAgICAgICAgICk/Lm91dHB1dDsKKyAgICAgICAgICBleHBlY3Qob3V0cHV0KS50b01hdGNoKC9e
-          ZXhlY19jb21tYW5kIGZhaWxlZDogUHJvY2Vzc0ZhaWxlZC8pOworICAgICAgICAgIGV4cGVjdChv
-          dXRwdXQpLnRvQ29udGFpbihgJHtkZW5pZWRIb3N0fSB3YXMgYmxvY2tlZDpgKTsKKyAgICAgICAg
-          ICByZXR1cm4gW21lc3NhZ2UoJ25ldHdvcmsgZGVuaWVkJyldOworICAgICAgICB9LAorICAgICAg
-          ICBbCisgICAgICAgICAgY2FsbCgKKyAgICAgICAgICAgICdleGVjX2NvbW1hbmQnLAorICAgICAg
-          ICAgICAgeyBjbWQ6IGBwcmludGYgYWxsb3dlZCA+ICIke2pvaW4oc2libGluZywgJ21hcmtlcicp
-          fSJgIH0sCisgICAgICAgICAgICB7IGNhbGxJZDogJ3JlcGxhY2UnIH0sCisgICAgICAgICAgKSwK
-          KyAgICAgICAgXSwKKyAgICAgICAgW21lc3NhZ2UoJ3dyaXRlIGFsbG93ZWQnKV0sCisgICAgICBd
-          KTsKKyAgICAgIGF3YWl0IHVzaW5nIHByb3ZpZGVyID0gYXdhaXQgcHJvdmlkZXJGb3Ioc2VydmVy
-          KTsKKyAgICAgIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsKKyAgICAgICAgcHJvdmlkZXIsCisg
-          ICAgICAgIG1vZGVsOiAnZ3B0LTUnLAorICAgICAgICBpbnN0cnVjdGlvbnM6ICdVc2UgdGhlIGxv
-          Y2FsIGNvbW1hbmRzLicsCisgICAgICB9KTsKKyAgICAgIGF3YWl0IHVzaW5nIHNlc3Npb24gPSBh
-          d2FpdCBhZ2VudC5zZXNzaW9uKHsKKyAgICAgICAgZW52aXJvbm1lbnQ6IEVudmlyb25tZW50Lmxv
-          Y2FsKHsKKyAgICAgICAgICBjd2QsCisgICAgICAgICAgdG9vbHM6IFsnZXhlY19jb21tYW5kJ10s
-          CisgICAgICAgICAgbmV0d29yazogeyBkZW5pZWREb21haW5zOiBbZGVuaWVkSG9zdF0gfSwKKyAg
-          ICAgICAgfSksCisgICAgICB9KTsKKyAgICAgIGNvbnN0IGRlbmllZCA9IGF3YWl0IHNlc3Npb24u
-          c3VibWl0KCdQcm9iZSB0aGUgZGVuaWVkIGhvc3QuJyk7CisgICAgICBleHBlY3QoKGF3YWl0IGRl
-          bmllZC53YWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCduZXR3b3JrIGRlbmllZCcpOworICAgICAg
-          Y29uc3QgcmVwbGFjZWQgPSBhd2FpdCBzZXNzaW9uLnN1Ym1pdCgnV3JpdGUgaW50byB0aGUgbmV3
-          IHJvb3QuJywgeworICAgICAgICB3cml0YWJsZVJvb3RzOiBbc2libGluZ10sCisgICAgICB9KTsK
-          KyAgICAgIGV4cGVjdCgoYXdhaXQgcmVwbGFjZWQud2FpdCgpKS5maW5hbE91dHB1dCkudG9CZSgn
-          d3JpdGUgYWxsb3dlZCcpOworICAgICAgZXhwZWN0KGF3YWl0IHJlYWRGaWxlKGpvaW4oc2libGlu
-          ZywgJ21hcmtlcicpLCAndXRmOCcpKS50b0JlKCdhbGxvd2VkJyk7CisgICAgICBzZXJ2ZXIuYXNz
-          ZXJ0RXhoYXVzdGVkKCk7CisgICAgfSBmaW5hbGx5IHsKKyAgICAgIGF3YWl0IHJtKHRlbXBvcmFy
-          eSwgeyByZWN1cnNpdmU6IHRydWUsIGZvcmNlOiB0cnVlIH0pOworICAgIH0KKyAgfSwKKyAgMzBf
-          MDAwLAorKTsKKwogaXQuc2tpcElmKCFzdXBwb3J0ZWQpLmZvcihbJ3BvcnRhYmxlJywgJ2xvY2Fs
-          J10gYXMgY29uc3QpKAogICAnYXBwbGllcyBhIHBlci10dXJuIHdyaXRlIHBvbGljeSBhbmQgcmVx
-          dWlyZXMgdGhlIGN1cnJlbnQgcG9saWN5IG9uICVzIHJlc3RvcmUnLAogICB7IHRpbWVvdXQ6IDQ1
-          XzAwMCB9LAo=
-          PRIVATE_PROBE_PATCH
-          printf '%s  %s\n' '25fe2d5ffc4a2a5855c7ca936565664df5308b2de2c24920d960034208a7a965' "$patch" | shasum -a 256 -c -
-          printf 'Private driver fixture patch %s on SDK %s\n' '25fe2d5ffc4a2a5855c7ca936565664df5308b2de2c24920d960034208a7a965' "$QUALIFIED_SDK_COMMIT"
-          mkdir -p "$probe_dir/$(dirname "$fixture")"
-          cp "$fixture" "$probe_dir/$fixture"
-          (cd "$probe_dir" && git apply --no-index "$patch")
-          temporary_test="${fixture%.test.ts}.qualification.test.ts"
-          test ! -e "$temporary_test"
-          trap 'rm -f -- "$temporary_test"' EXIT
-          cp "$probe_dir/$fixture" "$temporary_test"
-          git diff --exit-code
-          pnpm test:native "$temporary_test" -t "$case_name" --maxWorkers=1 \
-            --reporter=verbose --reporter=json --outputFile "$probe_dir/result.json"
-          node --input-type=module - "$probe_dir/result.json" "$case_name" <<'JS'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const [, , path, name] = process.argv;
-          const report = JSON.parse(readFileSync(path, 'utf8'));
-          const cases = report.testResults.flatMap((file) => file.assertionResults)
-            .filter((test) => test.title === name);
-          assert.equal(cases.length, 1);
-          assert.equal(cases[0].status, 'passed');
-          console.log('Passed private driver fixture:', name);
-          JS
-          git diff --exit-code
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles
@@ -415,3 +325,94 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+      - name: Qualify grant replacement after managed network denial
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          set -euo pipefail
+          fixture=packages/agents/test/native/local-executor-policy-native.test.ts
+          case_name='applies a per-turn write policy after a managed network denial'
+          probe_dir="$(mktemp -d "$RUNNER_TEMP/js-darwin-policy-probe.XXXXXX")"
+          patch="$probe_dir/private.patch"
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            writeFileSync(process.argv[1], Buffer.from(readFileSync(0, "utf8"), "base64"));
+          ' "$patch" <<'PRIVATE_PROBE_PATCH'
+          LS0tIGEvcGFja2FnZXMvYWdlbnRzL3Rlc3QvbmF0aXZlL2xvY2FsLWV4ZWN1dG9yLXBvbGljeS1u
+          YXRpdmUudGVzdC50cworKysgYi9wYWNrYWdlcy9hZ2VudHMvdGVzdC9uYXRpdmUvbG9jYWwtZXhl
+          Y3V0b3ItcG9saWN5LW5hdGl2ZS50ZXN0LnRzCkBAIC0xMjUzLDYgKzEyNTMsNzYgQEAKICAgMzBf
+          MDAwLAogKTsKIAoraXQuc2tpcElmKHByb2Nlc3MucGxhdGZvcm0gIT09ICdkYXJ3aW4nKSgKKyAg
+          J2FwcGxpZXMgYSBwZXItdHVybiB3cml0ZSBwb2xpY3kgYWZ0ZXIgYSBtYW5hZ2VkIG5ldHdvcmsg
+          ZGVuaWFsJywKKyAgYXN5bmMgKCkgPT4geworICAgIGNvbnN0IHRlbXBvcmFyeSA9IGF3YWl0IG1r
+          ZHRlbXAoam9pbih0bXBkaXIoKSwgJ2FnZW50cy1sb2NhbC1uZXQtZGVuaWFsLScpKTsKKyAgICB0
+          cnkgeworICAgICAgY29uc3QgZGlyZWN0b3J5ID0gYXdhaXQgcmVhbHBhdGgodGVtcG9yYXJ5KTsK
+          KyAgICAgIGNvbnN0IGN3ZCA9IGpvaW4oZGlyZWN0b3J5LCAnd29ya3NwYWNlJyk7CisgICAgICBj
+          b25zdCBzaWJsaW5nID0gam9pbihkaXJlY3RvcnksICdzaWJsaW5nJyk7CisgICAgICBhd2FpdCBQ
+          cm9taXNlLmFsbChbbWtkaXIoY3dkKSwgbWtkaXIoc2libGluZyldKTsKKyAgICAgIGNvbnN0IGRl
+          bmllZEhvc3QgPSAnYmxvY2tlZC5leGFtcGxlLmludmFsaWQnOworICAgICAgY29uc3Qgc2VydmVy
+          ID0gbmV3IE1vZGVsU2VydmVyKFsKKyAgICAgICAgWworICAgICAgICAgIGNhbGwoCisgICAgICAg
+          ICAgICAnZXhlY19jb21tYW5kJywKKyAgICAgICAgICAgIHsKKyAgICAgICAgICAgICAgY21kOgor
+          ICAgICAgICAgICAgICAgICd0ZXN0IC1uICIkSFRUUF9QUk9YWSIgfHwgZXhpdCAxMDsgJyArCisg
+          ICAgICAgICAgICAgICAgJy91c3IvYmluL2N1cmwgLS1zaWxlbnQgLS1zaG93LWVycm9yIC0tbWF4
+          LXRpbWUgMyAtLXByb3h5ICIkSFRUUF9QUk9YWSIgJyArCisgICAgICAgICAgICAgICAgYC0tbm9w
+          cm94eSAnJyAtLW91dHB1dCAvZGV2L251bGwgaHR0cDovLyR7ZGVuaWVkSG9zdH0vOyBleGVjIC9i
+          aW4vc2xlZXAgMzBgLAorICAgICAgICAgICAgfSwKKyAgICAgICAgICAgIHsgY2FsbElkOiAnZGVu
+          aWVkJyB9LAorICAgICAgICAgICksCisgICAgICAgIF0sCisgICAgICAgIChyZXF1ZXN0KSA9PiB7
+          CisgICAgICAgICAgY29uc3Qgb3V0cHV0ID0gKHJlcXVlc3QuaW5wdXQgYXMgSnNvbk9iamVjdFtd
+          KS5maW5kKAorICAgICAgICAgICAgKGl0ZW0pID0+CisgICAgICAgICAgICAgIGl0ZW0udHlwZSA9
+          PT0gJ2Z1bmN0aW9uX2NhbGxfb3V0cHV0JyAmJiBpdGVtLmNhbGxfaWQgPT09ICdkZW5pZWQnLAor
+          ICAgICAgICAgICk/Lm91dHB1dDsKKyAgICAgICAgICBleHBlY3Qob3V0cHV0KS50b01hdGNoKC9e
+          ZXhlY19jb21tYW5kIGZhaWxlZDogUHJvY2Vzc0ZhaWxlZC8pOworICAgICAgICAgIGV4cGVjdChv
+          dXRwdXQpLnRvQ29udGFpbihkZW5pZWRIb3N0KTsKKyAgICAgICAgICBleHBlY3Qob3V0cHV0KS50
+          b0NvbnRhaW4oJ3dhcyBibG9ja2VkOicpOworICAgICAgICAgIHJldHVybiBbbWVzc2FnZSgnbmV0
+          d29yayBkZW5pZWQnKV07CisgICAgICAgIH0sCisgICAgICAgIFsKKyAgICAgICAgICBjYWxsKAor
+          ICAgICAgICAgICAgJ2V4ZWNfY29tbWFuZCcsCisgICAgICAgICAgICB7IGNtZDogYHByaW50ZiBh
+          bGxvd2VkID4gIiR7am9pbihzaWJsaW5nLCAnbWFya2VyJyl9ImAgfSwKKyAgICAgICAgICAgIHsg
+          Y2FsbElkOiAncmVwbGFjZScgfSwKKyAgICAgICAgICApLAorICAgICAgICBdLAorICAgICAgICBb
+          bWVzc2FnZSgnd3JpdGUgYWxsb3dlZCcpXSwKKyAgICAgIF0pOworICAgICAgYXdhaXQgdXNpbmcg
+          cHJvdmlkZXIgPSBhd2FpdCBwcm92aWRlckZvcihzZXJ2ZXIpOworICAgICAgY29uc3QgYWdlbnQg
+          PSBuZXcgQWdlbnQoeworICAgICAgICBwcm92aWRlciwKKyAgICAgICAgbW9kZWw6ICdncHQtNScs
+          CisgICAgICAgIGluc3RydWN0aW9uczogJ1VzZSB0aGUgbG9jYWwgY29tbWFuZHMuJywKKyAgICAg
+          IH0pOworICAgICAgYXdhaXQgdXNpbmcgc2Vzc2lvbiA9IGF3YWl0IGFnZW50LnNlc3Npb24oewor
+          ICAgICAgICBlbnZpcm9ubWVudDogRW52aXJvbm1lbnQubG9jYWwoeworICAgICAgICAgIGN3ZCwK
+          KyAgICAgICAgICB0b29sczogWydleGVjX2NvbW1hbmQnXSwKKyAgICAgICAgICBuZXR3b3JrOiB7
+          IGRlbmllZERvbWFpbnM6IFtkZW5pZWRIb3N0XSB9LAorICAgICAgICB9KSwKKyAgICAgIH0pOwor
+          ICAgICAgY29uc3QgZGVuaWVkID0gYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1Byb2JlIHRoZSBkZW5p
+          ZWQgaG9zdC4nKTsKKyAgICAgIGV4cGVjdCgoYXdhaXQgZGVuaWVkLndhaXQoKSkuZmluYWxPdXRw
+          dXQpLnRvQmUoJ25ldHdvcmsgZGVuaWVkJyk7CisgICAgICBjb25zdCByZXBsYWNlZCA9IGF3YWl0
+          IHNlc3Npb24uc3VibWl0KCdXcml0ZSBpbnRvIHRoZSBuZXcgcm9vdC4nLCB7CisgICAgICAgIHdy
+          aXRhYmxlUm9vdHM6IFtzaWJsaW5nXSwKKyAgICAgIH0pOworICAgICAgZXhwZWN0KChhd2FpdCBy
+          ZXBsYWNlZC53YWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCd3cml0ZSBhbGxvd2VkJyk7CisgICAg
+          ICBleHBlY3QoYXdhaXQgcmVhZEZpbGUoam9pbihzaWJsaW5nLCAnbWFya2VyJyksICd1dGY4Jykp
+          LnRvQmUoJ2FsbG93ZWQnKTsKKyAgICAgIHNlcnZlci5hc3NlcnRFeGhhdXN0ZWQoKTsKKyAgICB9
+          IGZpbmFsbHkgeworICAgICAgYXdhaXQgcm0odGVtcG9yYXJ5LCB7IHJlY3Vyc2l2ZTogdHJ1ZSwg
+          Zm9yY2U6IHRydWUgfSk7CisgICAgfQorICB9LAorICAzMF8wMDAsCispOworCiBpdC5za2lwSWYo
+          IXN1cHBvcnRlZCkuZm9yKFsncG9ydGFibGUnLCAnbG9jYWwnXSBhcyBjb25zdCkoCiAgICdhcHBs
+          aWVzIGEgcGVyLXR1cm4gd3JpdGUgcG9saWN5IGFuZCByZXF1aXJlcyB0aGUgY3VycmVudCBwb2xp
+          Y3kgb24gJXMgcmVzdG9yZScsCiAgIHsgdGltZW91dDogNDVfMDAwIH0sCg==
+          PRIVATE_PROBE_PATCH
+          printf '%s  %s\n' '3b27bf5f198837312949cd8dceb99a6dfe5227996f241041a5b638c5e86ecacb' "$patch" | shasum -a 256 -c -
+          printf 'Private driver fixture patch %s on SDK %s\n' '3b27bf5f198837312949cd8dceb99a6dfe5227996f241041a5b638c5e86ecacb' "$QUALIFIED_SDK_COMMIT"
+          shasum -a 256 packages/agents/native/build-receipt.json
+          mkdir -p "$probe_dir/$(dirname "$fixture")"
+          cp "$fixture" "$probe_dir/$fixture"
+          (cd "$probe_dir" && git apply --no-index "$patch")
+          temporary_test="${fixture%.test.ts}.qualification.test.ts"
+          test ! -e "$temporary_test"
+          trap 'rm -f -- "$temporary_test"' EXIT
+          cp "$probe_dir/$fixture" "$temporary_test"
+          git diff --exit-code
+          pnpm test:native "$temporary_test" -t "$case_name" --maxWorkers=1 \
+            --reporter=verbose --reporter=json --outputFile "$probe_dir/result.json"
+          node --input-type=module - "$probe_dir/result.json" "$case_name" <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const [, , path, name] = process.argv;
+          const report = JSON.parse(readFileSync(path, 'utf8'));
+          const cases = report.testResults.flatMap((file) => file.assertionResults)
+            .filter((test) => test.title === name);
+          assert.equal(cases.length, 1);
+          assert.equal(cases[0].status, 'passed');
+          console.log('Passed private driver fixture:', name);
+          JS
+          git diff --exit-code
