@@ -54,7 +54,7 @@ describe('native history projection', () => {
         payload: { type: 'task_complete', turn_id: 'turn' },
       },
     ];
-    const retained = projectHistory(records, 'root').items.map(
+    const retained = projectHistory(records, 'portable-copy').items.map(
       ({ data: _data, ...item }) => item,
     );
     expect(retained).toEqual(

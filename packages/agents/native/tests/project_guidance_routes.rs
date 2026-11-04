@@ -225,7 +225,7 @@ async fn installed_skill_read_preserves_real_provider_eof_and_lifecycle_authorit
                 .await;
         }
         step.insert(enrolled_roots(&manager).await);
-        thread.insert(Rules::new(root()));
+        thread.insert(Rules::new(root(), codex_exec_server::LOCAL_ENVIRONMENT_ID));
         let rules = thread.get::<Rules>().unwrap();
         let lifecycle = CanonicalRules::new(std::sync::Weak::new(), manager);
         let mode = serde_json::from_value(json!({

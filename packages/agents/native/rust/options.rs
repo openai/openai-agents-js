@@ -399,6 +399,7 @@ impl ThreadOptions {
                 .thread_extension_init
                 .insert(crate::canonical_rules::Rules::new(
                     trusted.trusted_root().clone(),
+                    trusted.id(),
                 ));
         }
         // An explicit empty selection also clears roots restored from history.
@@ -408,15 +409,12 @@ impl ThreadOptions {
                 .and_then(|env| env.capability_roots())
                 .unwrap_or_default(),
         );
-        options.environments = match self.environments {
-            Some(environments) => Some(ops::environments(environments)?),
-            None => environment.map(|env| {
-                options
-                    .thread_extension_init
-                    .insert(crate::native_interception::EagerCommandEnvironment(true));
-                vec![env.selection(&options.config)]
-            }),
-        };
+        if self.environments.is_none() && environment.is_some() {
+            options
+                .thread_extension_init
+                .insert(crate::native_interception::EagerCommandEnvironment(true));
+        }
+        options.environments = self.environments.map(ops::environments).transpose()?;
         options.reserved_thread_id = self.reserved_thread_id;
         options.disabled_plugin_ids = self.disabled_plugin_ids;
         options.client_mcp_extensions =

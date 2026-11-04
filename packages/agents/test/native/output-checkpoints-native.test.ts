@@ -95,6 +95,15 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(server.requests).toHaveLength(1);
       expect(server.requests[0]).not.toHaveProperty('text.format');
       expect(recovered.format_version).toBe(5);
+      expect(recovered.history).toContainEqual(
+        expect.objectContaining({
+          type: 'turn_context',
+          payload: expect.objectContaining({
+            sdk_receipt: expect.objectContaining({ executors: [] }),
+          }),
+        }),
+      );
+      expect(exact).not.toContain('"strict_executor_writes"');
       const native = await binding();
       const create = vi.spyOn(native, 'create_checkpoint_engine');
       const restore = vi.spyOn(native.Engine.prototype, 'restore_checkpoint');
