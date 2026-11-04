@@ -1168,3 +1168,54 @@ test('SDK qualification follows job attempts, accepting a retry after skipped se
   delete f.qualification.run_attempt;
   await assert.rejects(f.resolve(), /Missing SDK qualification attempt/);
 });
+
+test('fork-only native candidate history falls back to a fresh build', async () => {
+  const f = donorFixture();
+  f.run.event = 'pull_request';
+  f.run.head_repository.id = 2;
+  f.run.head_branch = 'fork-work';
+  f.artifact.workflow_run.head_repository_id = 2;
+  f.artifact.workflow_run.head_branch = 'fork-work';
+  assert.equal(await f.resolve(), undefined);
+});
+
+test('a newer fork snapshot does not hide a valid owned branch push donor', async () => {
+  const f = donorFixture();
+  const ownedRun = globalThis.structuredClone(f.run);
+  ownedRun.id = 21;
+  ownedRun.head_branch = 'sdk-work';
+  ownedRun.referenced_workflows[0].ref = 'refs/heads/sdk-work';
+  const ownedArtifact = {
+    ...globalThis.structuredClone(f.artifact),
+    id: 11,
+    created_at: '2026-11-04T00:00:00Z',
+    workflow_run: {
+      ...f.artifact.workflow_run,
+      id: 21,
+      head_branch: 'sdk-work',
+    },
+  };
+  f.run.event = 'pull_request';
+  f.run.head_repository.id = 2;
+  f.run.head_branch = 'fork-work';
+  f.artifact.workflow_run.head_repository_id = 2;
+  f.artifact.workflow_run.head_branch = 'fork-work';
+  f.listing.artifacts.push(ownedArtifact);
+  f.listing.total_count++;
+  const reads = [];
+  f.github.rest.actions.getWorkflowRun = async ({ run_id }) => {
+    reads.push(run_id);
+    return { data: run_id === 21 ? ownedRun : f.run };
+  };
+  const selected = await f.resolve();
+  assert.equal(selected.artifactId, 11);
+  assert.equal(selected.runId, 21);
+  assert.deepEqual(reads, [20, 21]);
+});
+
+test('eligible push candidates still reject foreign artifact checkout ownership', async () => {
+  const f = donorFixture();
+  f.artifact.workflow_run.head_repository_id = 2;
+  f.run.head_repository.id = 2;
+  await assert.rejects(f.resolve(), /Foreign artifact source/);
+});

@@ -394,11 +394,6 @@ export async function resolveNativeDonor({
       repositoryId,
       'Foreign artifact repository',
     );
-    assert.equal(
-      artifact.workflow_run.head_repository_id,
-      repositoryId,
-      'Foreign artifact source',
-    );
     const { data: run } = await github.rest.actions.getWorkflowRun({
       ...repo,
       run_id: artifact.workflow_run.id,
@@ -409,6 +404,11 @@ export async function resolveNativeDonor({
       'Unexpected producer run ID',
     );
     if (run.event !== 'push') continue;
+    assert.equal(
+      artifact.workflow_run.head_repository_id,
+      repositoryId,
+      'Foreign artifact source',
+    );
     assert.ok(
       typeof run.status === 'string' &&
         (run.status !== 'completed' || typeof run.conclusion === 'string'),
