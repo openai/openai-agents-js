@@ -1773,6 +1773,40 @@ mod tests {
         ])));
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn rejects_a_selected_compressed_rollout_alias_into_a_local_grant() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let store = directory.path().join("relocated");
+        fs::create_dir(&workspace).unwrap();
+        fs::create_dir(&store).unwrap();
+        let cwd = PathUri::from_host_native_path(workspace.canonicalize().unwrap()).unwrap();
+        let strict = StrictExecutorWrites {
+            canonical_cwd: cwd.clone(),
+            root_pins: HashMap::from([(write_root_key(&cwd), cwd)]),
+        };
+        let recorded = store.join("rollout.jsonl");
+        let compressed = recorded.with_extension("jsonl.zst");
+        let target = workspace.join("rollout.jsonl.zst");
+        fs::write(&target, []).unwrap();
+        symlink(&target, &compressed).unwrap();
+
+        assert!(!recorded.exists());
+        let error = strict
+            .check_local_rollout_path(&recorded)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(LOCAL_STORAGE_OVERLAP));
+
+        fs::remove_file(&compressed).unwrap();
+        fs::rename(target, &compressed).unwrap();
+        strict.check_local_rollout_path(&recorded).await.unwrap();
+    }
+
     #[test]
     fn durable_resume_does_not_skip_a_malformed_executor_receipt() {
         let id = codex_protocol::ThreadId::new();
