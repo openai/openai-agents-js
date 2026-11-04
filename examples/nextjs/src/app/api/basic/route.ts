@@ -5,19 +5,57 @@ import { agent } from '@/agents';
 import { Runner, RunState, RunToolApprovalItem } from '@openai/agents/classic';
 import type { AgentInputItem } from '@openai/agents/classic';
 import { db } from '@/db';
+import {
+  getDemoSession,
+  readLimitedJson,
+  reserveModelRun,
+  sameOrigin,
+} from '@/demoSession';
 
 function generateConversationId() {
   return `conv_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
 }
 
 export async function POST(req: NextRequest) {
+  if (!sameOrigin(req)) {
+    return NextResponse.json({ error: 'Invalid origin' }, { status: 403 });
+  }
+  const session = getDemoSession(req);
+  if (!session) {
+    return NextResponse.json(
+      { error: 'Demo session required' },
+      { status: 401 },
+    );
+  }
   try {
-    const data = await req.json();
-    let { messages, conversationId, decisions } = data;
-
-    if (!messages) {
-      messages = [];
+    const body = await readLimitedJson(req, 16 * 1024);
+    if ('status' in body) {
+      return NextResponse.json(
+        { error: 'Invalid request' },
+        { status: body.status },
+      );
     }
+    const data = body.value as {
+      messages?: AgentInputItem[];
+      conversationId?: string | null;
+      decisions?: Record<string, string>;
+    };
+    if (
+      !data ||
+      typeof data !== 'object' ||
+      !Array.isArray(data.messages) ||
+      (data.conversationId !== undefined &&
+        data.conversationId !== null &&
+        typeof data.conversationId !== 'string') ||
+      (data.decisions !== undefined &&
+        (typeof data.decisions !== 'object' ||
+          data.decisions === null ||
+          Array.isArray(data.decisions)))
+    ) {
+      return NextResponse.json({ error: 'Invalid request' }, { status: 400 });
+    }
+    const { messages } = data;
+    let { conversationId, decisions } = data;
 
     if (!conversationId) {
       // we will generate a conversation ID so we can keep track of the state in case of conversations
@@ -25,9 +63,7 @@ export async function POST(req: NextRequest) {
       conversationId = generateConversationId();
     }
 
-    if (!decisions) {
-      decisions = null;
-    }
+    decisions ??= {};
 
     const runner = new Runner({
       groupId: conversationId,
@@ -39,7 +75,7 @@ export async function POST(req: NextRequest) {
       data.conversationId /* original conversationId */
     ) {
       // If we receive a new request with decisions, we will look up the current state in the database
-      const stateString = await db().get(data.conversationId);
+      const stateString = await db().get(`${session}:${data.conversationId}`);
 
       if (!stateString) {
         return NextResponse.json(
@@ -74,13 +110,22 @@ export async function POST(req: NextRequest) {
       input = messages;
     }
 
+    if (!reserveModelRun(session)) {
+      return NextResponse.json(
+        { error: 'Model run limit reached' },
+        { status: 429 },
+      );
+    }
     const result = await runner.run(agent, input);
 
     if (result.interruptions.length > 0) {
       // If the run resulted in one or more interruptions, we will store the current state in the database
 
       // store the state in the database
-      await db().set(conversationId, JSON.stringify(result.state));
+      await db().set(
+        `${session}:${conversationId}`,
+        JSON.stringify(result.state),
+      );
 
       // We will return all the interruptions as approval requests to the UI/client so it can generate
       // the UI for approvals

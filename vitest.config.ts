@@ -139,6 +139,20 @@ function createProjects(reviewTestProfile: boolean) {
         include: ['test/**/*.test.ts'],
       },
     },
+    {
+      root: resolve(rootDir, 'examples/nextjs'),
+      resolve: {
+        alias: {
+          ...testAliases,
+          '@': resolve(rootDir, 'examples/nextjs/src'),
+        },
+      },
+      test: {
+        ...baseTestConfig,
+        name: 'nextjs-example',
+        include: ['test/**/*.test.ts'],
+      },
+    },
     financialResearchExampleProject,
     realtimeReactNativeExampleProject,
   ];
