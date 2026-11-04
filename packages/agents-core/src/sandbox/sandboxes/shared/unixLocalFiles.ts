@@ -36,21 +36,23 @@ export type LocalFilePath = {
   rootTarget?: string;
 };
 
-type FileRequest = {
-  operation:
-    | 'read'
-    | 'image'
-    | 'list'
-    | 'exists'
-    | 'directoryExists'
-    | 'create'
-    | 'update'
-    | 'delete';
-  path: LocalFilePath;
-  destination?: LocalFilePath;
-  unlinkPath?: LocalFilePath;
-  limit?: number;
-};
+type FileRequest =
+  | {
+      operation:
+        | 'read'
+        | 'image'
+        | 'list'
+        | 'exists'
+        | 'directoryExists'
+        | 'create'
+        | 'update'
+        | 'delete';
+      path: LocalFilePath;
+      destination?: LocalFilePath;
+      unlinkPath?: LocalFilePath;
+      limit?: number;
+    }
+  | { operation: 'chownRecursive'; uid: number; gid: number };
 
 // Resolve from trusted host configuration, never the manifest's command environment.
 function pythonExecutable(mode: LocalFileIOProtection): string {
@@ -226,7 +228,10 @@ export class UnixLocalFiles {
               new Error(
                 `${detail.code ?? 'EIO'}: ${detail.message ?? 'UnixLocal file worker failed. Python 3 with its standard library is required.'}`,
               ),
-              { code: detail.code ?? 'EIO', path: request.path.path },
+              {
+                code: detail.code ?? 'EIO',
+                path: 'path' in request ? request.path.path : undefined,
+              },
             );
           }
           if (primaryError) reject(primaryError);

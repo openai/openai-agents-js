@@ -1,11 +1,18 @@
+import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
 import console from 'node:console';
 import process from 'node:process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 
 const apiKey = process.env.OPENAI_API_KEY;
 const model = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-realtime-2.1';
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '127.0.0.1';
+const pairingToken =
+  host === '127.0.0.1' || host === '::1' || host === 'localhost'
+    ? null
+    : randomBytes(24).toString('base64url');
+const tokenRequests = new Map();
 
 if (!apiKey) {
   throw new Error('Set OPENAI_API_KEY before starting the token server.');
@@ -20,6 +27,30 @@ const server = createServer(async (request, response) => {
     sendJson(response, 404, { error: 'Not found.' });
     return;
   }
+  if (pairingToken) {
+    const expected = Buffer.from(`Bearer ${pairingToken}`);
+    const supplied = Buffer.from(request.headers.authorization ?? '');
+    if (
+      supplied.length !== expected.length ||
+      !timingSafeEqual(supplied, expected)
+    ) {
+      sendJson(response, 401, { error: 'Pairing token required.' });
+      return;
+    }
+  }
+
+  const client = request.socket.remoteAddress;
+  const now = Date.now();
+  let window = tokenRequests.get(client);
+  if (!window || now >= window.resetAt) {
+    window = { count: 0, resetAt: now + 60_000 };
+    tokenRequests.set(client, window);
+  }
+  if (window.count >= 6) {
+    sendJson(response, 429, { error: 'Too many token requests.' });
+    return;
+  }
+  window.count += 1;
 
   try {
     const tokenResponse = await globalThis.fetch(
@@ -69,6 +100,9 @@ if (host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') {
 }
 
 server.listen(port, host, () => {
+  if (pairingToken) {
+    console.log(`Pairing token: ${pairingToken}`);
+  }
   console.log(`Realtime token server listening on http://${host}:${port}`);
 });
 

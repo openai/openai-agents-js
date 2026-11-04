@@ -59,7 +59,6 @@ import {
 } from '../workspacePaths';
 import type { LocalSandboxSnapshot, LocalSandboxSnapshotSpec } from './types';
 import {
-  applyOwnershipRecursive,
   assertLocalWorkspaceManifestMetadataSupported,
   materializeLocalWorkspaceManifest,
   materializeLocalWorkspaceManifestEntry,
@@ -70,7 +69,6 @@ import {
 import {
   assertMountCredentialsRebound,
   assertHostPathGrantsRebound,
-  mergeManifestEntryDelta,
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
   serializeMountCredentialRedactionMetadata,
@@ -516,34 +514,28 @@ export class UnixLocalSandboxSession<
     args: MaterializeEntryArgs,
   ): Promise<void> {
     const logicalPath = this.resolveLogicalPath(args.path);
-    const nextManifest = mergeManifestEntryDelta(
-      this.state.manifest,
-      logicalPath,
-      args.entry,
-    );
+    const manifest = new Manifest({
+      root: this.state.manifest.root,
+      entries: { [logicalPath]: args.entry },
+    });
+    const nextManifest = mergeManifestDelta(this.state.manifest, manifest);
     assertExistingMountTopologyPreserved(this.state.manifest, nextManifest);
     validateMountCredentialBoundaries(nextManifest);
     const runAs = await this.resolveFilesystemRunAs(args.runAs);
+    const mountRoots = runAs ? this.resolveMountOwnershipRoots(manifest) : [];
     await materializeLocalWorkspaceManifestEntry(
       this.state.workspaceRootPath,
       logicalPath,
       args.entry,
       {
         localSourceGrants: this.state.manifest.extraPathGrants,
+        manifestRoot: manifest.root,
       },
     );
     if (runAs) {
-      await applyOwnershipRecursive(
-        this.resolveSandboxPath(args.path),
-        runAs.uid,
-        runAs.gid,
-      );
+      await this.applyOwnershipRecursive(manifest, mountRoots, runAs);
     }
-    this.state.manifest = mergeManifestEntryDelta(
-      this.state.manifest,
-      logicalPath,
-      args.entry,
-    );
+    this.state.manifest = mergeManifestDelta(this.state.manifest, manifest);
     this.captureFilesystemRoots();
     captureLiveMountCredentialAuthority(this.state.manifest);
   }
@@ -568,19 +560,16 @@ export class UnixLocalSandboxSession<
       manifest,
     );
     const identity = await this.resolveFilesystemRunAs(runAs);
+    const mountRoots = identity
+      ? this.resolveMountOwnershipRoots(manifest)
+      : [];
     await materializeLocalWorkspaceManifest(
       manifest,
       this.state.workspaceRootPath,
     );
     const environment = await manifest.resolveEnvironment();
     if (identity) {
-      for (const path of Object.keys(manifest.entries)) {
-        await applyOwnershipRecursive(
-          this.resolveSandboxPath(path),
-          identity.uid,
-          identity.gid,
-        );
-      }
+      await this.applyOwnershipRecursive(manifest, mountRoots, identity);
     }
     this.state.environment = {
       ...this.state.environment,
@@ -686,6 +675,55 @@ export class UnixLocalSandboxSession<
       this.resolveSandboxPath(path, options);
     }
     return this.resolveHostPath(path, options, mode);
+  }
+
+  private async applyOwnershipRecursive(
+    manifest: Manifest,
+    mountRoots: LocalFilePath[],
+    identity: UnixRunAsIdentity,
+  ): Promise<void> {
+    const paths = Object.entries(manifest.entries)
+      .filter(([, entry]) => entry.type !== 'mount')
+      .map(([path]) => this.resolveFilesystemPath(path, {}, 'entry'))
+      .concat(mountRoots);
+    if (paths.length > 0) {
+      await this.files.run(
+        { operation: 'chownRecursive', uid: identity.uid, gid: identity.gid },
+        { input: JSON.stringify(paths) },
+      );
+    }
+  }
+
+  private resolveMountOwnershipRoots(manifest: Manifest): LocalFilePath[] {
+    const paths: LocalFilePath[] = [];
+    const workspacePaths = new WorkspacePathPolicy({ root: manifest.root });
+    for (const {
+      entry,
+      mountPath,
+    } of manifest.mountTargetsForMaterialization()) {
+      const source = localBindMountSource(entry);
+      if (!source || entry.readOnly !== false) {
+        continue;
+      }
+      const { workspaceRelativePath } = workspacePaths.resolve(mountPath);
+      if (workspaceRelativePath === undefined) {
+        continue;
+      }
+      const root = this.filesystemRoots.has(source)
+        ? this.filesystemRoot(source).content
+        : realpathForValidation(source, mountPath);
+      // Pin the declared source before materialization, then verify the installed alias.
+      paths.push({
+        path: root,
+        accessPath: resolve(
+          this.state.workspaceRootPath,
+          workspaceRelativePath,
+        ),
+        preserveLeaf: false,
+        rootTarget: root,
+      });
+    }
+    return paths;
   }
 
   private resolveHostPath(
