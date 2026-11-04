@@ -803,6 +803,165 @@ const localStorageOverlap =
 const runtimeHomeOverlap =
   /Keep the native runtime home outside the executor cwd and writable roots/;
 
+it.skipIf(!supported).for(['sessions', 'dated sessions', 'archives'] as const)(
+  'keeps relocated %s outside local grants on open and replacement',
+  { timeout: 35_000 },
+  async (placement, context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-rollout-root-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'extra');
+      const storage = localStorage(join(base, 'profile'));
+      await Promise.all([mkdir(cwd), mkdir(extra), mkdir(storage.path)]);
+      const sessions = join(storage.path, 'sessions');
+      let alias = sessions;
+      if (placement === 'dated sessions') {
+        const [year, month, day] = new Date()
+          .toISOString()
+          .slice(0, 10)
+          .split('-');
+        const dated = join(sessions, year!, month!);
+        await mkdir(dated, { recursive: true });
+        alias = join(dated, day!);
+      } else if (placement === 'archives') {
+        alias = join(storage.path, 'archived_sessions');
+      }
+      // Unrelated application symlinks are outside Core's rollout layout.
+      await symlink(cwd, join(storage.path, 'unrelated'));
+      await symlink(cwd, alias);
+      const server = new ModelServer([[message('Persisted safely.')]]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      const environment = Environment.local({ cwd });
+      const open = () => agent.session({ environment, storage });
+      await expect(async () => {
+        await using _session = await open();
+      }).rejects.toThrow(localStorageOverlap);
+      expect(server.requests).toHaveLength(0);
+
+      await rm(alias);
+      await symlink(extra, alias);
+      await using session = await open().catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          /could not establish the platform sandbox/.test(error.message) &&
+          process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+        ) {
+          context.skip('This host cannot launch a nested platform sandbox');
+        }
+        throw error;
+      });
+      await expect(
+        session.submit('Do not grant this directory.', {
+          writableRoots: [extra],
+        }),
+      ).rejects.toThrow(localStorageOverlap);
+      expect(server.requests).toHaveLength(0);
+      const turn = await session.submit('Persist with a disjoint grant.');
+      expect((await turn.wait()).finalOutput).toBe('Persisted safely.');
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(!supported).for(['file alias', 'recorded path'] as const)(
+  'keeps a selected local rollout outside grants on resume and replacement (%s)',
+  { timeout: 50_000 },
+  async (placement, context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-rollout-file-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'extra');
+      const storage = localStorage(join(base, 'profile'));
+      const sessions = join(storage.path, 'sessions');
+      await Promise.all([mkdir(cwd), mkdir(extra), mkdir(storage.path)]);
+      if (placement === 'recorded path') await symlink(extra, sessions);
+      const server = new ModelServer([
+        [message('Seeded the history.')],
+        [message('Resumed with a disjoint grant.')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      const environment = Environment.local({ cwd });
+      let threadId: string;
+      {
+        await using seed = await agent
+          .session({ environment, storage })
+          .catch((error: unknown) => {
+            if (
+              error instanceof Error &&
+              /could not establish the platform sandbox/.test(error.message) &&
+              process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+            ) {
+              context.skip('This host cannot launch a nested platform sandbox');
+            }
+            throw error;
+          });
+        threadId = seed.id;
+        const turn = await seed.submit('Seed the history.');
+        expect((await turn.wait()).finalOutput).toBe('Seeded the history.');
+      }
+      const open = (writableRoots: string[] = []) =>
+        agent.session({
+          environment: Environment.local({ cwd, writableRoots }),
+          storage,
+          resume: threadId,
+        });
+      if (placement === 'recorded path') {
+        // Resume records the canonical path selected by Core in SQLite.
+        {
+          await using anchored = await open();
+          expect(anchored.id).toBe(threadId);
+        }
+        await rm(sessions);
+      } else {
+        const files = await readdir(sessions, {
+          recursive: true,
+          withFileTypes: true,
+        });
+        const rollout = files.find((entry) =>
+          entry.name.endsWith(`${threadId}.jsonl`),
+        );
+        if (!rollout) throw new Error('The local profile has no rollout.');
+        const original = join(rollout.parentPath, rollout.name);
+        const relocated = join(extra, rollout.name);
+        await rename(original, relocated);
+        await symlink(relocated, original);
+      }
+      await expect(async () => {
+        await using _session = await open([extra]);
+      }).rejects.toThrow(localStorageOverlap);
+      expect(server.requests).toHaveLength(1);
+      await using resumed = await open();
+      await expect(
+        resumed.submit('Do not grant the selected rollout.', {
+          writableRoots: [extra],
+        }),
+      ).rejects.toThrow(localStorageOverlap);
+      expect(server.requests).toHaveLength(1);
+      const turn = await resumed.submit('Resume with a disjoint grant.');
+      expect((await turn.wait()).finalOutput).toBe(
+        'Resumed with a disjoint grant.',
+      );
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
+
 it.skipIf(!supported).for([
   ['open', 'direct'],
   ['open', 'relocated'],

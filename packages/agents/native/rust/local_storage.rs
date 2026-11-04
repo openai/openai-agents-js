@@ -343,6 +343,10 @@ fn validate_local_tree(
 }
 
 impl LocalChecklistStore {
+    pub(crate) async fn live_rollout_path(&self, id: ThreadId) -> ThreadStoreResult<PathBuf> {
+        self.inner.live_rollout_path(id).await
+    }
+
     pub fn new(
         inner: LocalThreadStore,
         state: Arc<codex_state::StateRuntime>,

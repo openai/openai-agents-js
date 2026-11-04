@@ -477,6 +477,12 @@ async fn prepare_write_selection(
         state.engine.local_storage_home(),
     )
     .await?;
+    if selection.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID
+        && let Some(store) = &state.engine.local_checklist_store
+    {
+        let path = store.live_rollout_path(state.id).await?;
+        strict.check_local_rollout_path(&path).await?;
+    }
     if selection != &replacement {
         let descendants = state
             .engine

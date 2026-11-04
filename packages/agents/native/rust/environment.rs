@@ -175,6 +175,60 @@ impl StrictExecutorWrites {
         );
         Ok(())
     }
+
+    pub(crate) async fn check_local_rollout_path(&self, path: &Path) -> Result<()> {
+        let existing = codex_rollout::existing_rollout_path(path).await;
+        let roots = self
+            .root_pins
+            .values()
+            .map(PathUri::to_abs_path)
+            .collect::<Result<Vec<_>, _>>()?;
+        let roots = LocalWriteRoots::new(&roots).context("could not verify local write roots")?;
+        let resolved = resolve_local_rollout_path(&roots, path)?;
+        let resolved = if let Some(existing) = existing.filter(|existing| existing != path) {
+            resolve_local_rollout_path(&roots, &existing)?
+        } else {
+            resolved
+        };
+        // Resume can materialize a compressed rollout next to the canonical file.
+        let plain = codex_rollout::plain_rollout_path(&resolved);
+        let plain = (plain != resolved)
+            .then(|| resolve_local_rollout_path(&roots, &plain))
+            .transpose()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let mut linked = linked_local_rollout_file(resolved)?
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(plain) = plain {
+                linked.extend(linked_local_rollout_file(plain)?);
+            }
+            ensure!(
+                !roots.contains_hard_link_to_any(&linked)?,
+                "{LOCAL_STORAGE_OVERLAP}; remove hard links to its files from the writable roots"
+            );
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let _ = plain;
+        Ok(())
+    }
+}
+
+pub(crate) async fn check_local_resume_rollout_path(
+    startup: &codex_core_api::StartThreadOptions,
+    path: &Path,
+) -> Result<()> {
+    if startup
+        .environments
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|selection| selection.environment_id == LOCAL_ENVIRONMENT_ID)
+        && let Some(strict) = startup.thread_extension_init.get::<StrictExecutorWrites>()
+    {
+        strict.check_local_rollout_path(path).await?;
+    }
+    Ok(())
 }
 
 fn write_root_key(path: &PathUri) -> Vec<u8> {
@@ -841,7 +895,7 @@ fn check_local_session_write_roots(
             storage,
             sqlite,
             "could not resolve local session storage",
-            "Keep local session storage outside the executor cwd and writable roots",
+            LOCAL_STORAGE_OVERLAP,
         )?;
     }
     check_local_protected_path(
@@ -866,6 +920,7 @@ fn check_local_protected_path(
         let mut linked_files = linked_local_protected_files(&resolved).context(resolve_error)?;
         if path == sqlite.home() {
             linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
+            linked_files.extend(linked_relocated_rollout_files(roots, &resolved)?);
         }
         ensure!(
             !roots
@@ -877,6 +932,83 @@ fn check_local_protected_path(
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let _ = (resolved, sqlite);
     Ok(())
+}
+
+const LOCAL_STORAGE_OVERLAP: &str =
+    "Keep local session storage outside the executor cwd and writable roots";
+
+fn resolve_local_rollout_path(roots: &LocalWriteRoots<'_>, path: &Path) -> Result<PathBuf> {
+    resolve_local_protected_path(
+        roots,
+        path,
+        "could not resolve a native rollout path",
+        LOCAL_STORAGE_OVERLAP,
+    )
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_local_rollout_file(path: PathBuf) -> Result<Option<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+
+    match path.symlink_metadata() {
+        Ok(metadata) => Ok((metadata.is_file() && metadata.nlink() > 1).then_some(path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("could not inspect a native rollout file"),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_relocated_rollout_files(
+    roots: &LocalWriteRoots<'_>,
+    home: &Path,
+) -> Result<Vec<PathBuf>> {
+    let sessions = home.join(codex_rollout::SESSIONS_SUBDIR);
+    let archives = home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    let mut directories = Vec::new();
+    for (path, date_depth) in [(sessions, 0), (archives, 3)] {
+        let resolved = resolve_local_rollout_path(roots, &path)?;
+        let relocated = resolved != path;
+        directories.push((resolved, date_depth, relocated));
+    }
+    let mut linked = Vec::new();
+    while let Some((directory, date_depth, relocated)) = directories.pop() {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error)
+                if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                return Err(error).context("could not inspect a native rollout directory");
+            }
+        };
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            // Follow directory aliases only in Core's sessions/YYYY/MM/DD layout.
+            let date = entry.file_name();
+            let date = date.as_encoded_bytes();
+            let date_directory = date_depth < 3
+                && date.len() == if date_depth == 0 { 4 } else { 2 }
+                && date.iter().all(u8::is_ascii_digit);
+            if date_directory && (kind.is_dir() || kind.is_symlink()) {
+                let (path, relocated) = if kind.is_symlink() {
+                    (resolve_local_rollout_path(roots, &path)?, true)
+                } else {
+                    (path, relocated)
+                };
+                directories.push((path, date_depth + 1, relocated));
+            } else if (relocated || kind.is_symlink())
+                && codex_rollout::rollout_id_from_path(&path).is_some()
+            {
+                let path = resolve_local_rollout_path(roots, &path)?;
+                linked.extend(linked_local_rollout_file(path)?);
+            }
+        }
+    }
+    Ok(linked)
 }
 
 fn resolve_local_protected_path(
