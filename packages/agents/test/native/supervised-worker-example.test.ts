@@ -74,7 +74,7 @@ function launch(
         !sandboxRequired &&
         outcome.code === 1 &&
         stderr.includes(
-          '[Error: local executor could not establish the platform sandbox]',
+          'local executor could not establish the platform sandbox',
         )
       ) {
         startupContext.skip(
