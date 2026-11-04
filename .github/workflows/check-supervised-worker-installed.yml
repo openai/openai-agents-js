@@ -17,8 +17,8 @@ jobs:
       run:
         shell: bash
     env:
-      WORKER_SOURCE: e9aaecdb94c66c4cc27df6d87a6c49924e444133
-      WORKER_TREE: ce6af97ebbb3df7ed9f3832a58cc869aa0e525f3
+      WORKER_SOURCE: eac2fe4e7158628b4ff85ee6401118f70f4d225e
+      WORKER_TREE: d3ecca71b7c8179114de4950f39d30b05dd58252
       PRODUCER_SDK: 41008a519857bdea4576373fd56a374d62122851
       PRODUCER_RUN: '41898786688'
       PRODUCER_JOB: '126815325454'
@@ -28,7 +28,7 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
-        ref: e9aaecdb94c66c4cc27df6d87a6c49924e444133
+        ref: eac2fe4e7158628b4ff85ee6401118f70f4d225e
         persist-credentials: false
     - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       with:
@@ -72,8 +72,8 @@ jobs:
         OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         OPENAI_AGENTS_NATIVE_TESTS: '1'
       run: "set -euo pipefail\ncheckout=\"$GITHUB_WORKSPACE\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ncat > \"$RUNNER_TEMP/worker-source-paths.txt\" <<'PATHS'\npackages/agents/examples/supervised-worker/worker.ts\npackages/agents/examples/web-starter/mcp-peer.ts\npackages/agents/examples/web-starter/protocol.ts\npackages/agents/test/native/fixtures/model-server.ts\npackages/agents/test/native/fixtures/borrowed-mcp.ts\npackages/agents/test/native/supervised-worker-cleanup.test.ts\npackages/agents/test/native/fixtures/supervised-worker.ts\npackages/agents/test/native/supervised-worker-example.test.ts\nPATHS\nwhile IFS= read -r path; do\n  mkdir -p \"$consumer/$(dirname \"$path\")\"\n  cp \"$checkout/$path\" \"$consumer/$path\"\n  cmp \"$checkout/$path\" \"$consumer/$path\"\n  sha256sum \"$path\"\ndone < \"$RUNNER_TEMP/worker-source-paths.txt\" | tee \"$RUNNER_TEMP/worker-source-inputs.txt\"\nln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nln -s \"$checkout/node_modules/tsx\" \"$consumer/node_modules/tsx\"\
-        \nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\ntest \"$(id -u)\" != 0\nnode --input-type=module -e 'import { LocalRecoveryRequired } from \"@openai/agents\"; if (typeof LocalRecoveryRequired !== \"function\") process.exit(1);'\nlocale -a\nnative=\"node_modules/@openai/agents\"\nsha256sum \"$native\"/native/{codex.node,build-receipt.json} \"$native\"/bin/* | tee \"$RUNNER_TEMP/worker-installed-products.txt\"\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  packages/agents/test/native/supervised-worker-{example,cleanup}.test.ts \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/worker-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/worker-qualification.log\"\nsha256sum -c \"$RUNNER_TEMP/worker-installed-products.txt\"\njq -e '.numTotalTests==28 and .numPassedTests==28 and .numFailedTests==0 and .numPendingTests==0\
-        \ and ([.testResults[] | select(.name | endswith(\"supervised-worker-example.test.ts\")) | .assertionResults[] | select(.status==\"passed\")]|length)==4 and ([.testResults[] | select(.name | endswith(\"supervised-worker-cleanup.test.ts\")) | .assertionResults[] | select(.status==\"passed\")]|length)==24' \\\n  \"$RUNNER_TEMP/worker-vitest.json\"\n"
+        \nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\ntest \"$(id -u)\" != 0\nnode --input-type=module -e 'import { LocalRecoveryRequired } from \"@openai/agents\"; if (typeof LocalRecoveryRequired !== \"function\") process.exit(1);'\nlocale -a\nnative=\"node_modules/@openai/agents\"\nsha256sum \"$native\"/native/{codex.node,build-receipt.json} \"$native\"/bin/* | tee \"$RUNNER_TEMP/worker-installed-products.txt\"\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  packages/agents/test/native/supervised-worker-{example,cleanup}.test.ts \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/worker-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/worker-qualification.log\"\nsha256sum -c \"$RUNNER_TEMP/worker-installed-products.txt\"\njq -e '.numTotalTests==29 and .numPassedTests==29 and .numFailedTests==0 and .numPendingTests==0\
+        \ and ([.testResults[] | select(.name | endswith(\"supervised-worker-example.test.ts\")) | .assertionResults[] | select(.status==\"passed\")]|length)==4 and ([.testResults[] | select(.name | endswith(\"supervised-worker-cleanup.test.ts\")) | .assertionResults[] | select(.status==\"passed\")]|length)==25' \\\n  \"$RUNNER_TEMP/worker-vitest.json\"\n"
     - if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:

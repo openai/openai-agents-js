@@ -259,7 +259,7 @@ it('publishes the accepted draft when the filesystem returns short reads', async
   }
 });
 
-it.each(['none', 'session', 'provider', 'both'] as const)(
+it.each(['none', 'session', 'provider', 'both', 'review'] as const)(
   'accepts and publishes only after owned cleanup succeeds (%s)',
   async (failureAt) => {
     const directory = await mkdtemp(
@@ -277,7 +277,11 @@ it.each(['none', 'session', 'provider', 'both'] as const)(
       async close() {
         order.push('session');
         states.push((await readWorkerSnapshot(directory))?.state);
-        if (failureAt === 'session' || failureAt === 'both')
+        if (
+          failureAt === 'session' ||
+          failureAt === 'both' ||
+          failureAt === 'review'
+        )
           throw sessionFailure;
       },
       async submit() {
@@ -285,7 +289,13 @@ it.each(['none', 'session', 'provider', 'both'] as const)(
           turnId: 'turn',
           async *events() {},
           async waitForAttention() {
-            return { finalOutput: { summary: 'Draft ready.', question: null } };
+            return {
+              finalOutput: {
+                summary: 'Draft ready.',
+                question:
+                  failureAt === 'review' ? 'What date should I use?' : null,
+              },
+            };
           },
         };
       },
@@ -332,7 +342,9 @@ it.each(['none', 'session', 'provider', 'both'] as const)(
           });
         else
           expect(result).toBe(
-            failureAt === 'session' ? sessionFailure : providerFailure,
+            failureAt === 'session' || failureAt === 'review'
+              ? sessionFailure
+              : providerFailure,
           );
         await expect(publishAcceptedDraft(directory)).rejects.toThrow(
           'Publication requires an accepted draft.',
@@ -341,7 +353,13 @@ it.each(['none', 'session', 'provider', 'both'] as const)(
           'accepted',
         );
       }
-      expect(states).toEqual(['working', 'working']);
+      if (failureAt === 'review') {
+        expect(states).toEqual(['needs_review', 'needs_review']);
+        await expect(readWorkerSnapshot(directory)).resolves.toMatchObject({
+          state: 'needs_review',
+          claim: { question: 'What date should I use?' },
+        });
+      } else expect(states).toEqual(['working', 'working']);
     } finally {
       provider.mockRestore();
       session.mockRestore();
