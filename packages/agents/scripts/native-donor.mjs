@@ -137,15 +137,23 @@ async function runJobs(github, repo, runId) {
   return data.total_count > 100 ? undefined : data.jobs;
 }
 
-export function publicationBoundary(jobs) {
+function publicationPhases(jobs) {
   const native = platforms.map((platform) => {
     const matches = jobs.filter((job) =>
       named(job, `Native publication (${platform})`),
     );
     assert.ok(matches.length > 0, 'Native phase lacks a platform publication');
-    matches.sort(
-      (a, b) => timestamp(b.completed_at) - timestamp(a.completed_at),
+    for (const job of matches)
+      assert.ok(
+        Number.isSafeInteger(job.run_attempt) && job.run_attempt > 0,
+        'Missing native publication attempt',
+      );
+    assert.equal(
+      new Set(matches.map((job) => job.run_attempt)).size,
+      matches.length,
+      'Ambiguous native publication attempt',
     );
+    matches.sort((a, b) => b.run_attempt - a.run_attempt);
     assert.equal(
       matches[0].conclusion,
       'success',
@@ -183,16 +191,32 @@ export function publicationBoundary(jobs) {
         !step.started_at
       )
         continue;
-      // Every executed marker across all platforms and attempts must establish its start.
-      sdk.push(timestamp(step.started_at));
+      // Opaque job names must not hide an executed SDK marker or its attempt.
+      assert.ok(
+        Number.isSafeInteger(job.run_attempt) && job.run_attempt > 0,
+        'Missing SDK execution attempt',
+      );
+      sdk.push({ attempt: job.run_attempt, start: timestamp(step.started_at) });
     }
   }
-  if (sdk.length)
-    assert.ok(
-      cutoff < Math.min(...sdk),
-      'SDK execution preceded complete native publication',
-    );
-  return { native, cutoff, sdkStarted: sdk.length > 0 };
+  const crossed = allNative.flatMap((job) =>
+    sdk
+      .filter((marker) => timestamp(job.completed_at) >= marker.start)
+      .map((marker) => job.run_attempt > marker.attempt),
+  );
+  return {
+    native,
+    cutoff,
+    sdkStarted: sdk.length > 0,
+    interleaved: crossed.length > 0,
+    laterAttemptOnly: crossed.length > 0 && crossed.every(Boolean),
+  };
+}
+
+export function publicationBoundary(jobs) {
+  const { native, cutoff, sdkStarted, interleaved } = publicationPhases(jobs);
+  assert.ok(!interleaved, 'SDK execution preceded complete native publication');
+  return { native, cutoff, sdkStarted };
 }
 
 function originalPublication(
@@ -202,7 +226,11 @@ function originalPublication(
   { requireQualification },
 ) {
   assert.match(artifact.digest ?? '', digestPattern);
-  const boundary = publicationBoundary(jobs);
+  const boundary = publicationPhases(jobs);
+  assert.ok(
+    !boundary.interleaved || boundary.laterAttemptOnly,
+    'SDK execution preceded complete native publication',
+  );
   const job = boundary.native[platforms.indexOf(platform)];
   assert.ok(job, 'Unsupported native platform');
   const upload = job.steps?.find(
@@ -262,6 +290,12 @@ function originalPublication(
       'Native snapshot lacks extracted-package qualification',
     );
   }
+  // A valid full rerun can serve its own captured snapshots, but cannot donate
+  // products republished after an earlier attempt executed SDK code.
+  if (boundary.interleaved) {
+    if (requireQualification && boundary.laterAttemptOnly) return undefined;
+    assert.fail('SDK execution preceded complete native publication');
+  }
   return job.run_attempt;
 }
 
@@ -271,7 +305,12 @@ export async function validateCurrentSnapshot({
   name,
   platform,
   snapshot,
+  consumerAttempt,
 }) {
+  assert.ok(
+    Number.isSafeInteger(consumerAttempt) && consumerAttempt > 0,
+    'Missing current SDK attempt',
+  );
   assert.match(snapshot.artifact_id ?? '', /^[1-9]\d*$/);
   assert.match(snapshot.artifact_digest ?? '', /^[a-f0-9]{64}$/);
   assert.equal(
@@ -310,7 +349,27 @@ export async function validateCurrentSnapshot({
   );
   const jobs = await runJobs(github, context.repo, context.runId);
   assert.ok(jobs, 'Native phase history exceeds the supported bound');
-  const attempt = originalPublication(artifact, jobs, platform, {
+  const isNative = (job) =>
+    platforms.some((entry) => named(job, `Native publication (${entry})`));
+  for (const job of jobs) {
+    if (
+      isNative(job) ||
+      platforms.some((entry) => named(job, `SDK and package (${entry})`)) ||
+      job.steps?.some((step) => step.name === 'Begin SDK execution')
+    )
+      assert.ok(
+        Number.isSafeInteger(job.run_attempt) &&
+          job.run_attempt > 0 &&
+          job.run_attempt <= consumerAttempt,
+        'Invalid current snapshot job attempt',
+      );
+  }
+  // Failed-only retries retain earlier native jobs. A full rerun publishes new
+  // products; only SDK execution in this consumer attempt constrains transfer.
+  const currentJobs = jobs.filter(
+    (job) => isNative(job) || job.run_attempt === consumerAttempt,
+  );
+  const attempt = originalPublication(artifact, currentJobs, platform, {
     requireQualification: false,
   });
   const scope = validateNativeScope(JSON.parse(snapshot.provenance));
@@ -461,6 +520,7 @@ export async function resolveNativeDonor({
     const attempt = originalPublication(artifact, jobs, platform, {
       requireQualification: true,
     });
+    if (attempt === undefined) continue;
     return {
       artifactId: artifact.id,
       runId: run.id,

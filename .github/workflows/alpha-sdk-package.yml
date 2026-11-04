@@ -90,6 +90,7 @@ jobs:
             const { validateCurrentSnapshot } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'packages/agents/scripts/native-donor.mjs')).href);
             const snapshot = JSON.parse(process.env.NATIVE_SNAPSHOTS)[process.env.SNAPSHOT_JOB]?.outputs;
             const selected = await validateCurrentSnapshot({ github, context,
+              consumerAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
               name: process.env.NATIVE_ARTIFACT_NAME, platform: process.env.EXPECTED_PLATFORM, snapshot });
             core.setOutput('artifact_id', selected.artifactId);
 

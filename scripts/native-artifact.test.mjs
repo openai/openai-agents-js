@@ -734,6 +734,7 @@ test('global publication cutoff rejects cross-platform SDK interleaving and earl
   f.nativeJobs[1].completed_at = '2026-11-04T00:00:04Z';
   f.jobs.jobs.push({
     name: 'old SDK attempt',
+    run_attempt: 1,
     steps: [
       {
         name: 'Begin SDK execution',
@@ -746,6 +747,156 @@ test('global publication cutoff rejects cross-platform SDK interleaving and earl
     () => publicationBoundary(f.jobs.jobs),
     /SDK execution preceded/,
   );
+});
+
+function fullRerunFixture() {
+  const f = donorFixture();
+  f.qualification.conclusion = 'failure';
+  f.qualification.steps[1].conclusion = 'failure';
+  const nativeRetry = globalThis.structuredClone(f.nativeJobs);
+  const sdkRetry = globalThis.structuredClone(f.sdkJobs);
+  for (const job of nativeRetry) {
+    job.run_attempt = 2;
+    job.completed_at = '2026-11-04T00:01:04Z';
+    job.steps[1].started_at = '2026-11-04T00:01:00Z';
+    job.steps[1].completed_at = '2026-11-04T00:01:02Z';
+  }
+  for (const job of sdkRetry) {
+    job.run_attempt = 2;
+    job.conclusion = 'success';
+    job.steps[0].started_at = '2026-11-04T00:01:06Z';
+    job.steps[1].conclusion = 'success';
+  }
+  f.jobs.jobs.push(...nativeRetry, ...sdkRetry);
+  f.jobs.total_count = f.jobs.jobs.length;
+  f.artifact.created_at = '2026-11-04T00:01:01Z';
+  return { ...f, nativeRetry, sdkRetry };
+}
+
+function currentSnapshot(f, producerAttempt) {
+  return {
+    artifact_id: String(f.artifact.id),
+    artifact_digest: f.artifact.digest.slice('sha256:'.length),
+    artifact_name: f.artifact.name,
+    provenance: JSON.stringify({
+      ...f.scope,
+      run_id: f.artifact.workflow_run.id,
+      run_attempt: producerAttempt,
+    }),
+  };
+}
+
+test('current snapshots support a full rerun after SDK failure and SDK-only retries', async () => {
+  for (const fullRerun of [false, true]) {
+    const f = fullRerun ? fullRerunFixture() : donorFixture();
+    f.context.runId = 20;
+    if (!fullRerun) {
+      f.qualification.conclusion = 'failure';
+      const sdkRetry = globalThis.structuredClone(f.sdkJobs);
+      for (const job of sdkRetry) {
+        job.run_attempt = 2;
+        job.conclusion = 'success';
+        job.steps[0].started_at = '2026-11-04T00:01:06Z';
+      }
+      f.jobs.jobs.push(...sdkRetry);
+      f.jobs.total_count = f.jobs.jobs.length;
+    }
+    assert.deepEqual(
+      await validateCurrentSnapshot({
+        github: f.github,
+        context: f.context,
+        name: f.artifact.name,
+        platform: 'linux-x64',
+        snapshot: currentSnapshot(f, fullRerun ? 2 : 1),
+        consumerAttempt: 2,
+      }),
+      { artifactId: 10, runId: 20 },
+    );
+  }
+});
+
+test('current reruns reject interleaving, ambiguous attempts, and mismatched provenance', async () => {
+  for (const invalid of [
+    'interleaved',
+    'missing-sdk-attempt',
+    'duplicate-native',
+    'future-native',
+    'producer-attempt',
+    'consumer-attempt',
+  ]) {
+    const f = fullRerunFixture();
+    f.context.runId = 20;
+    if (invalid === 'interleaved')
+      f.sdkRetry[1].steps[0].started_at = '2026-11-04T00:01:03Z';
+    if (invalid === 'missing-sdk-attempt') {
+      f.jobs.jobs.push({
+        name: 'opaque previous SDK job',
+        steps: [
+          {
+            name: 'Begin SDK execution',
+            conclusion: 'success',
+            started_at: '2026-11-04T00:00:06Z',
+          },
+        ],
+      });
+      f.jobs.total_count++;
+    }
+    if (invalid === 'duplicate-native') {
+      f.jobs.jobs.push(globalThis.structuredClone(f.nativeRetry[0]));
+      f.jobs.total_count++;
+    }
+    if (invalid === 'future-native') f.nativeRetry[0].run_attempt = 3;
+    await assert.rejects(
+      validateCurrentSnapshot({
+        github: f.github,
+        context: f.context,
+        name: f.artifact.name,
+        platform: 'linux-x64',
+        snapshot: currentSnapshot(f, invalid === 'producer-attempt' ? 1 : 2),
+        consumerAttempt: invalid === 'consumer-attempt' ? undefined : 2,
+      }),
+    );
+  }
+});
+
+test('historical full-rerun publications fall back to an older eligible donor or a fresh build', async () => {
+  const f = fullRerunFixture();
+  assert.equal(await f.resolve(), undefined);
+  const older = donorFixture();
+  older.run.id = 19;
+  older.artifact.id = 9;
+  older.artifact.workflow_run.id = 19;
+  f.listing.artifacts.push(older.artifact);
+  f.listing.total_count++;
+  f.github.rest.actions.getWorkflowRun = async ({ run_id }) => ({
+    data: run_id === 19 ? older.run : f.run,
+  });
+  f.github.rest.actions.listJobsForWorkflowRun = async ({ run_id }) => ({
+    data: run_id === 19 ? older.jobs : f.jobs,
+  });
+  assert.equal((await f.resolve()).artifactId, 9);
+});
+
+test('historical rerun fallback still rejects same-attempt interleaving and malformed metadata', async () => {
+  for (const invalid of [
+    'interleaved',
+    'missing-sdk-attempt',
+    'missing-timestamp',
+    'upload',
+    'digest',
+    'qualification',
+  ]) {
+    const f = fullRerunFixture();
+    if (invalid === 'interleaved')
+      f.sdkRetry[1].steps[0].started_at = '2026-11-04T00:01:03Z';
+    if (invalid === 'missing-sdk-attempt') delete f.qualification.run_attempt;
+    if (invalid === 'missing-timestamp')
+      delete f.qualification.steps[0].started_at;
+    if (invalid === 'upload') delete f.nativeRetry[0].steps[1];
+    if (invalid === 'digest') f.artifact.digest = 'invalid';
+    if (invalid === 'qualification') delete f.sdkRetry[0].steps[1];
+    await assert.rejects(f.resolve());
+  }
 });
 
 test('captured current-run IDs and digests reject post-barrier replacement', async () => {
@@ -769,6 +920,7 @@ test('captured current-run IDs and digests reject post-barrier replacement', asy
         name: f.artifact.name,
         platform: 'linux-x64',
         snapshot,
+        consumerAttempt: 1,
       });
     if (invalid === 'none')
       assert.deepEqual(await validate(), { artifactId: 10, runId: 20 });
@@ -1166,7 +1318,7 @@ test('SDK qualification follows job attempts, accepting a retry after skipped se
   f.jobs.jobs.pop();
   f.jobs.total_count--;
   delete f.qualification.run_attempt;
-  await assert.rejects(f.resolve(), /Missing SDK qualification attempt/);
+  await assert.rejects(f.resolve(), /Missing SDK execution attempt/);
 });
 
 test('fork-only native candidate history falls back to a fresh build', async () => {
