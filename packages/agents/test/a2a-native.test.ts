@@ -16,7 +16,11 @@ import {
   ServerCallContext,
   type AgentExecutor,
 } from '@a2a-js/sdk/server';
-import { NativeA2AExecutor } from '../src/a2a/executor';
+import {
+  NativeA2AExecutor,
+  type NativeA2ABinding,
+  type NativeA2AClaim,
+} from '../src/a2a/executor';
 import { connectA2A } from '../src/a2a/client';
 import { inputProposal } from '../src/a2a/content';
 import { FileA2AStore } from './a2a-store';
@@ -541,6 +545,223 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       );
     }, 30_000);
 
+    it.each([
+      'retire',
+      'recovered worker',
+      'recovered load',
+      'claim failure',
+      'commit failure',
+      'binding mismatch',
+      'missing record',
+      'nonwaiting record',
+    ] as const)(
+      'cancels a waiting follow-up before Session ownership: %s',
+      async (mode) => {
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const recovered =
+          mode === 'recovered worker' || mode === 'recovered load';
+        const continuationOwner = recovered ? 3 : 2;
+        const retirementOwner = continuationOwner + 1;
+        const succeeds = mode === 'retire' || recovered;
+        await withScriptedResponses(
+          [[toolCall('decision', {}, { callId: 'decision' })]],
+          async (model) => {
+            const entering = Promise.withResolvers<void>(),
+              release = Promise.withResolvers<void>(),
+              cancelling = Promise.withResolvers<void>();
+            let factories = 0,
+              owners = 0,
+              retirementCommits = 0;
+            let stale: NativeA2AClaim | undefined;
+            class HeldStore extends FileA2AStore {
+              override async own<T>(
+                scope: NativeA2ABinding,
+                run: (claim: NativeA2AClaim) => Promise<T>,
+              ): Promise<T> {
+                const owner = ++owners;
+                if (owner === retirementOwner && mode === 'claim failure')
+                  throw new Error('claim unavailable');
+                return super.own(scope, async (claim) => {
+                  if (owner === continuationOwner) stale = claim;
+                  return run({
+                    ...claim,
+                    load: async () => {
+                      const record = await claim.load();
+                      if (
+                        owner === continuationOwner &&
+                        mode === 'recovered load'
+                      ) {
+                        entering.resolve();
+                        await release.promise;
+                      }
+                      if (owner === retirementOwner) {
+                        if (mode === 'missing record') return undefined;
+                        if (
+                          mode === 'binding mismatch' ||
+                          mode === 'nonwaiting record'
+                        ) {
+                          if (!record)
+                            throw new Error('Missing fixture record');
+                          if (mode === 'binding mismatch')
+                            return {
+                              ...record,
+                              binding: {
+                                ...record.binding,
+                                principal: 'foreign',
+                              },
+                            };
+                          return { ...record, state: 'claimed' };
+                        }
+                      }
+                      return record;
+                    },
+                    commit: async (expected, record) => {
+                      if (owner === retirementOwner) {
+                        retirementCommits++;
+                        if (mode === 'commit failure')
+                          throw new Error('commit unavailable');
+                      }
+                      await claim.commit(expected, record);
+                    },
+                  });
+                });
+              }
+            }
+            const store = new HeldStore(),
+              agent = new Agent({
+                instructions: 'Ask.',
+                model: 'gpt-5.5',
+                provider: model.provider,
+                tools: [
+                  manualTool({
+                    name: 'decision',
+                    description: 'Choose.',
+                    parameters: z.strictObject({}),
+                    result: z.boolean(),
+                  }),
+                ],
+              });
+            const sessions = vi.spyOn(agent, 'session');
+            const createExecutor = () =>
+              new NativeA2AExecutor({
+                store,
+                agentFactory: async () => {
+                  if (++factories === 2) {
+                    entering.resolve();
+                    await release.promise;
+                  }
+                  return { agent, context: undefined };
+                },
+              });
+            let native = createExecutor();
+            const openRemote = () =>
+              host(store, {
+                execute: native.execute,
+                cancelTask: async (id, bus) => {
+                  const result = native.cancelTask(id, bus);
+                  cancelling.resolve();
+                  await result;
+                },
+              });
+            let remote = await openRemote();
+            try {
+              const created = await remote.client.sendMessage(
+                input([Part.fromJSON({ text: 'begin' })]),
+              );
+              if (!('id' in created)) throw new Error('Missing Task');
+              const waiting = await settled(remote.client, created);
+              expect(waiting.status?.state).toBe(
+                TaskState.TASK_STATE_INPUT_REQUIRED,
+              );
+              const proposal = inputProposal(waiting)!;
+              if (recovered) {
+                await remote.close();
+                native = createExecutor();
+                await native.recover(
+                  store.record(waiting.id, context)!.binding,
+                  context,
+                );
+                expect(factories).toBe(1);
+                expect(sessions).toHaveBeenCalledTimes(1);
+                remote = await openRemote();
+              }
+              const following = remote.client
+                .sendMessage(
+                  input(
+                    [
+                      Part.fromJSON({
+                        data: {
+                          challenge: proposal.challenge,
+                          generation: proposal.generation,
+                          result: true,
+                        },
+                      }),
+                    ],
+                    waiting.id,
+                    waiting.contextId,
+                  ),
+                )
+                .then(
+                  () => true,
+                  () => false,
+                );
+              await entering.promise;
+              const before = store.record(waiting.id, context)!;
+              const canceled = remote.client
+                .cancelTask({ tenant: '', id: waiting.id, metadata: undefined })
+                .then(
+                  (value) => ({ value }),
+                  (error) => ({ error: String(error) }),
+                );
+              await cancelling.promise;
+              release.resolve();
+              const cancellation = await canceled;
+              expect(await following).toBe(false);
+              expect(errors).toHaveBeenCalled();
+              const logs = errors.mock.calls.map((args) => args.map(String));
+              if (succeeds) {
+                expect(JSON.stringify(logs)).toContain('stale snapshot');
+                expect(JSON.stringify(logs)).not.toContain(
+                  'Agent execution failed',
+                );
+              }
+              expect(owners).toBe(retirementOwner);
+              expect(factories).toBe(mode === 'recovered load' ? 1 : 2);
+              expect(sessions).toHaveBeenCalledTimes(1);
+              expect(model.requests).toHaveLength(1);
+              expect(retirementCommits).toBe(
+                succeeds || mode === 'commit failure' ? 1 : 0,
+              );
+              if (succeeds) {
+                expect(
+                  'value' in cancellation && cancellation.value.status?.state,
+                ).toBe(TaskState.TASK_STATE_CANCELED);
+                const retired = store.record(waiting.id, context)!;
+                expect(retired.state).toBe('canceled');
+                expect(retired.checkpoint).toBeUndefined();
+                expect(retired.pending).toBeUndefined();
+                await expect(stale!.current()).rejects.toThrow('stale owner');
+                await expect(
+                  stale!.commit(before.generation, {
+                    ...before,
+                    generation: before.generation + 1,
+                  }),
+                ).rejects.toThrow('stale owner');
+                expect(store.record(waiting.id, context)).toEqual(retired);
+              } else {
+                expect('error' in cancellation).toBe(true);
+                expect(store.record(waiting.id, context)).toEqual(before);
+              }
+            } finally {
+              release.resolve();
+              await remote.close();
+            }
+          },
+        );
+      },
+      30_000,
+    );
+
     it('cancels after a waiting checkpoint commits but before its public acknowledgment', async () => {
       await withScriptedResponses(
         [[toolCall('decision', {}, { callId: 'decision' })]],
@@ -714,9 +935,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               ),
             ).rejects.toThrow();
             expect(errors).toHaveBeenCalled();
-            expect(JSON.stringify(errors.mock.calls)).not.toContain(
-              '"result":"invalid"',
-            );
+            expect(
+              JSON.stringify(errors.mock.calls.map((args) => args.map(String))),
+            ).not.toContain('"result":"invalid"');
             expect(store.record(waiting.id, context)?.state).toBe('waiting');
             expect(model.requests).toHaveLength(1);
             const answered = await remote.client.sendMessage(

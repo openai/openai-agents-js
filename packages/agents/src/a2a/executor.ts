@@ -443,7 +443,16 @@ export class NativeA2AExecutor<
         }
       });
     } catch (error) {
-      failure = error instanceof A2AError ? error : new A2AError('unavailable');
+      let cause = error;
+      if (controller.signal.aborted) {
+        try {
+          await this.#retireWaiting(scope, bus);
+          return;
+        } catch (retirementError) {
+          cause = retirementError;
+        }
+      }
+      failure = cause instanceof A2AError ? cause : new A2AError('unavailable');
       throw failure;
     } finally {
       this.#active.delete(scope.taskId);
@@ -471,11 +480,22 @@ export class NativeA2AExecutor<
     }
     const scope = this.#waiting.get(taskId);
     if (!scope) throw new A2AError('unavailable');
+    await this.#retireWaiting(scope, bus);
+  };
+
+  async #retireWaiting(
+    scope: NativeA2ABinding,
+    bus: ExecutionEventBus,
+  ): Promise<void> {
     await this.#options.store.own(scope, async (claim) => {
       const record = await claim.load();
       await claim.current();
       if (!record || record.state !== 'waiting')
         throw new A2AError('unavailable');
+      if (
+        canonicalDeferredInput(record.binding) !== canonicalDeferredInput(scope)
+      )
+        throw new A2AError('authorization');
       const desired = structuredClone(record.desired);
       desired.status = {
         state: TaskState.TASK_STATE_CANCELED,
@@ -495,9 +515,9 @@ export class NativeA2AExecutor<
       // The official cancellation handler starts its event consumer only AFTER this method returns.
       bus.publish(AgentEvent.task(desired));
       bus.finished();
-      this.#waiting.delete(taskId);
+      this.#waiting.delete(scope.taskId);
     });
-  };
+  }
 
   /** Host calls only after the prior owner AND official event consumers have stopped. Never reruns a Session. */
   async recover(
