@@ -99,31 +99,53 @@ function paths(directory: string) {
   };
 }
 
+async function withWriteCleanup(
+  write: () => Promise<void>,
+  cleanup: () => Promise<void>,
+) {
+  try {
+    await write();
+  } catch (error) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Cleaning up the worker write failed.',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  await cleanup();
+}
+
 async function atomicWrite(
   path: string,
   data: string | Buffer,
   replace: boolean,
 ) {
   const temporary = path + '.' + randomUUID();
-  try {
-    const file = await open(temporary, 'wx', 0o600);
-    try {
-      await file.writeFile(data);
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    if (replace) await rename(temporary, path);
-    else await link(temporary, path);
-    const directory = await open(dirname(path), 'r');
-    try {
-      await directory.sync();
-    } finally {
-      await directory.close();
-    }
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await withWriteCleanup(
+    async () => {
+      const file = await open(temporary, 'wx', 0o600);
+      await withWriteCleanup(
+        async () => {
+          await file.writeFile(data);
+          await file.sync();
+        },
+        () => file.close(),
+      );
+      if (replace) await rename(temporary, path);
+      else await link(temporary, path);
+      const directory = await open(dirname(path), 'r');
+      await withWriteCleanup(
+        () => directory.sync(),
+        () => directory.close(),
+      );
+    },
+    () => rm(temporary, { force: true }),
+  );
 }
 
 /** A detached reader can load this snapshot without opening the SDK writer. */
@@ -148,9 +170,20 @@ async function readDraft(path: string) {
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4096)
       throw new Error('Draft must be a private regular file of at most 4 KiB.');
     const buffer = Buffer.alloc(4097);
-    const { bytesRead } = await file.read(buffer);
-    if (bytesRead > 4096) throw new Error('Draft grew past 4 KiB.');
-    return buffer.subarray(0, bytesRead);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await file.read(
+        buffer,
+        length,
+        buffer.length - length,
+        null,
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > 4096) throw new Error('Draft grew past 4 KiB.');
+    if (length !== stat.size) throw new Error('Draft changed while reading.');
+    return buffer.subarray(0, length);
   } finally {
     await file.close();
   }
@@ -162,6 +195,21 @@ const digest = (bytes: Buffer) =>
 export async function superviseArtifact(options: WorkerOptions) {
   const { directory, task, reports } = options;
   const path = paths(directory);
+  const saveStatusAndThrow = async (
+    snapshot: WorkerSnapshot,
+    error: unknown,
+  ): Promise<never> => {
+    try {
+      await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
+    } catch (persistence) {
+      throw new AggregateError(
+        [error, persistence],
+        'Saving the worker status failed.',
+        { cause: error },
+      );
+    }
+    throw error;
+  };
   await mkdir(path.workspace, { recursive: true, mode: 0o700 });
   const workspace = await realpath(path.workspace);
   const previous = await readWorkerSnapshot(directory);
@@ -204,16 +252,24 @@ export async function superviseArtifact(options: WorkerOptions) {
     try {
       return await agent.session(config);
     } catch (error) {
-      if (!(error instanceof LocalRecoveryRequired) || !options.reconcile)
-        throw error;
-      const receipts: ReconciledCall[] = [];
-      for (const call of error.calls) {
-        opening.throwIfAborted();
-        const receipt = await options.reconcile(call, opening);
-        if (!receipt) throw error;
-        receipts.push(receipt);
+      if (!(error instanceof LocalRecoveryRequired)) throw error;
+      try {
+        if (!options.reconcile) throw error;
+        const receipts: ReconciledCall[] = [];
+        for (const call of error.calls) {
+          opening.throwIfAborted();
+          const receipt = await options.reconcile(call, opening);
+          if (!receipt) throw error;
+          receipts.push(receipt);
+        }
+        return await agent.session({ ...config, reconciledCalls: receipts });
+      } catch (recoveryError) {
+        if (previous?.state !== 'working') throw recoveryError;
+        return await saveStatusAndThrow(
+          { ...previous, state: 'needs_attention', attention: 'interrupted' },
+          recoveryError,
+        );
       }
-      return await agent.session({ ...config, reconciledCalls: receipts });
     }
   };
   await using session = await openSession();
@@ -225,19 +281,9 @@ export async function superviseArtifact(options: WorkerOptions) {
   const deadline = AbortSignal.timeout(options.turnMs ?? 30_000);
   const turn = await session
     .submit(task, { ifBusy: 'reject', writableRoots: [] })
-    .catch(async (error: unknown) => {
-      started.state = 'needs_attention';
-      try {
-        await atomicWrite(path.snapshot, JSON.stringify(started), true);
-      } catch (persistence) {
-        throw new AggregateError(
-          [error, persistence],
-          'Saving the worker status failed.',
-          { cause: error },
-        );
-      }
-      throw error;
-    });
+    .catch((error: unknown) =>
+      saveStatusAndThrow({ ...started, state: 'needs_attention' }, error),
+    );
   const followUpSubmissionMs = previous ? performance.now() - submitted : null;
   let firstToolMs: number | null = null;
   let steer = options.steer;
@@ -360,16 +406,7 @@ export async function superviseArtifact(options: WorkerOptions) {
         snapshot.sha256 = sha256;
       }
     } catch (error) {
-      try {
-        await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
-      } catch (persistence) {
-        throw new AggregateError(
-          [error, persistence],
-          'Saving the worker status failed.',
-          { cause: error },
-        );
-      }
-      throw error;
+      await saveStatusAndThrow(snapshot, error);
     }
   }
   await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
