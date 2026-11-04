@@ -899,6 +899,40 @@ test('historical rerun fallback still rejects same-attempt interleaving and malf
   }
 });
 
+for (const source of ['historical', 'current']) {
+  test(`${source} publications accept the adjacent API timestamp second without widening the SDK boundary`, async () => {
+    for (const [created, cutoff, accepted] of [
+      ['2026-11-04T00:00:03Z', '2026-11-04T00:00:04Z', true],
+      ['2026-11-04T00:00:03.001Z', '2026-11-04T00:00:04Z', false],
+      ['2026-11-04T00:00:03Z', '2026-11-04T00:00:03Z', false],
+    ]) {
+      const f = donorFixture();
+      f.artifact.created_at = created;
+      for (const job of f.nativeJobs) job.completed_at = cutoff;
+      let validate = f.resolve;
+      if (source === 'current') {
+        f.context.runId = 20;
+        validate = () =>
+          validateCurrentSnapshot({
+            github: f.github,
+            context: f.context,
+            name: f.artifact.name,
+            platform: 'linux-x64',
+            snapshot: {
+              artifact_id: '10',
+              artifact_digest: 'a'.repeat(64),
+              artifact_name: f.artifact.name,
+              provenance: JSON.stringify({ ...f.scope, run_id: 20 }),
+            },
+            consumerAttempt: 1,
+          });
+      }
+      if (accepted) assert.equal((await validate()).artifactId, 10);
+      else await assert.rejects(validate(), /original pre-SDK publication/);
+    }
+  });
+}
+
 test('captured current-run IDs and digests reject post-barrier replacement', async () => {
   for (const invalid of ['none', 'id', 'digest', 'late', 'equal']) {
     const f = donorFixture();

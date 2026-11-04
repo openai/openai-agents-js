@@ -250,9 +250,10 @@ function originalPublication(
     'Native snapshot was not published in the pure phase',
   );
   const created = timestamp(artifact.created_at);
+  // The artifact and job APIs can place the same upload in adjacent seconds.
   assert.ok(
     created >= timestamp(upload.started_at) &&
-      created < timestamp(upload.completed_at) + 1000 &&
+      created <= timestamp(upload.completed_at) + 1000 &&
       created < boundary.cutoff,
     'Artifact is not an original pre-SDK publication',
   );
