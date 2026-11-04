@@ -1596,6 +1596,139 @@ it
 );
 
 it.skipIf(process.platform !== 'darwin')(
+  'confirms Session close with a stopped macOS command wrapper',
+  async () => {
+    const directory = await realpath(
+      await mkdtemp(join(tmpdir(), 'agents-paused-wrapper-')),
+    );
+    const marker = join(directory, 'heartbeat');
+    const quotedMarker = "'" + marker.replaceAll("'", "'\\''") + "'";
+    const heartbeat = () => readFile(marker, 'utf8');
+    const details = (pid: number) => {
+      const result = spawnSync(
+        '/bin/ps',
+        ['-ww', '-p', String(pid), '-o', 'stat=,lstart=,command='],
+        { encoding: 'utf8' },
+      );
+      if (result.error) throw result.error;
+      if (result.status === 1 && !result.stderr) return null;
+      expect(result.status, result.stderr).toBe(0);
+      const match = /^(\S+)\s+(.+)$/.exec(result.stdout.trim());
+      expect(match).not.toBeNull();
+      return { stopped: match![1]!.startsWith('T'), identity: match![2]! };
+    };
+    const signal = (pid: number, action: 'SIGSTOP' | 'SIGCONT') => {
+      try {
+        process.kill(pid, action);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    };
+    try {
+      const helper = await realpath(
+        join(packageRoot, 'bin', 'codex-sdk-runtime'),
+      );
+      const wrapperCommand = helper + ' --codex-sdk-darwin-command ';
+      const server = new ModelServer([
+        [
+          call(
+            'exec_command',
+            {
+              cmd:
+                'printf "%s\\n" "$$" > ' +
+                quotedMarker +
+                '; i=0; while [ "$i" -lt 180 ]; do printf x >> ' +
+                quotedMarker +
+                '; /bin/sleep 0.25; i=$((i + 1)); done',
+              yield_time_ms: 1000,
+            },
+            { callId: 'paused-wrapper-heartbeat' },
+          ),
+        ],
+        (request) => {
+          expect(JSON.stringify(request.input)).toMatch(
+            /Process running with session ID \d+/,
+          );
+          return [message('Heartbeat running.')];
+        },
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        instructions: 'Use the local command.',
+      });
+      const session = await agent.session({
+        environment: Environment.local({
+          cwd: directory,
+          tools: ['exec_command'],
+        }),
+      });
+      let pausedWrapper: { pid: number; identity: string } | undefined;
+      try {
+        const turn = await session.submit('Start the heartbeat.');
+        expect((await turn.wait()).finalOutput).toBe('Heartbeat running.');
+        const wrappers = execFileSync(
+          '/bin/ps',
+          ['-axww', '-o', 'pid=,ppid=,command='],
+          { encoding: 'utf8' },
+        )
+          .split('\n')
+          .map((row) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(row))
+          .filter(
+            (row) =>
+              Number(row?.[2]) === process.pid &&
+              row?.[3]?.startsWith(wrapperCommand),
+          );
+        expect(wrappers).toHaveLength(1);
+        const wrapperPid = Number(wrappers[0]![1]);
+        const wrapper = details(wrapperPid);
+        expect(wrapper?.identity).toContain(wrapperCommand);
+        const payloadPid = Number((await heartbeat()).split('\n')[0]);
+        expect(Number.isSafeInteger(payloadPid) && payloadPid > 1).toBe(true);
+        const payload = details(payloadPid);
+        expect(payload?.identity).toContain(marker);
+
+        signal(wrapperPid, 'SIGSTOP');
+        pausedWrapper = { pid: wrapperPid, identity: wrapper!.identity };
+        await vi.waitFor(
+          () =>
+            expect(details(wrapperPid)).toEqual({
+              stopped: true,
+              identity: wrapper!.identity,
+            }),
+          { timeout: 2_000 },
+        );
+        const beforeClose = await heartbeat();
+        await vi.waitFor(async () =>
+          expect((await heartbeat()).length).toBeGreaterThan(
+            beforeClose.length,
+          ),
+        );
+
+        await session.close();
+        expect(details(wrapperPid)?.identity).not.toBe(wrapper!.identity);
+        expect(details(payloadPid)?.identity).not.toBe(payload!.identity);
+        const atClose = await heartbeat();
+        await delay(600);
+        expect(await heartbeat()).toBe(atClose);
+        server.assertExhausted();
+      } finally {
+        if (pausedWrapper) {
+          const current = details(pausedWrapper.pid);
+          if (current?.stopped && current.identity === pausedWrapper.identity) {
+            signal(pausedWrapper.pid, 'SIGCONT');
+          }
+        }
+        await session.close().catch(() => {});
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  45_000,
+);
+
+it.skipIf(process.platform !== 'darwin')(
   'blocks delegation from a local command to launchd',
   async () => {
     const launchctl = (...args: string[]) => {
