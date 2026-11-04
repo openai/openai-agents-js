@@ -1,0 +1,143 @@
+diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
+index 2741c23b5558dfad63c83303de83e2f3cfefdc40..3f63ce239fa8c2c954f1a18c8e5aa95f56c18436 100644
+--- a/codex-rs/core/src/model_request.rs
++++ b/codex-rs/core/src/model_request.rs
+@@ -12,11 +12,14 @@ use codex_protocol::models::ResponseItem;
+ use std::collections::HashMap;
+ use std::sync::Arc;
+
+-pub(crate) async fn wait_if_sampling_stopped(admission: Option<&dyn ModelToolAdmission>) {
+-    if admission
+-        .and_then(|admission| admission.turn_store().get::<TurnSamplingStop>())
++pub(crate) fn turn_sampling_stopped(turn_store: &ExtensionData) -> bool {
++    turn_store
++        .get::<TurnSamplingStop>()
+         .is_some_and(|stop| stop.requested())
+-    {
++}
++
++pub(crate) async fn wait_if_sampling_stopped(admission: Option<&dyn ModelToolAdmission>) {
++    if admission.is_some_and(|admission| turn_sampling_stopped(admission.turn_store())) {
+         // Keep the native interrupt responsible for aborting the task and joining cleanup.
+         std::future::pending::<()>().await;
+     }
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index d2dfca39fc47c7300b70cc9afd47dc03011d1ed8..b9b1d8ef576a2989e36b4a0e74e50e1540d6d2ef 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -351,6 +351,7 @@ pub(crate) async fn run_turn(
+             Arc::clone(&first_step_context),
+             &mut client_session,
+             Arc::clone(&world_state),
++            &cancellation_token,
+             CompactionReason::ContextLimit,
+             CompactionPhase::PreTurn,
+         )
+@@ -637,6 +638,7 @@ pub(crate) async fn run_turn(
+                         Arc::clone(&step_context),
+                         &mut client_session,
+                         Arc::clone(&world_state),
++                        &cancellation_token,
+                         CompactionReason::ContextLimit,
+                         CompactionPhase::MidTurn,
+                     )
+@@ -742,6 +744,7 @@ pub(crate) async fn run_turn(
+                             Arc::clone(&step_context),
+                             &mut client_session,
+                             Arc::clone(&world_state),
++                            &cancellation_token,
+                             CompactionReason::ContextLimit,
+                             CompactionPhase::PostTurn,
+                         )
+@@ -789,6 +792,7 @@ pub(crate) async fn run_turn(
+                     Arc::clone(&step_context),
+                     &mut client_session,
+                     Arc::clone(&world_state),
++                    &cancellation_token,
+                     CompactionReason::ContextLimit,
+                     CompactionPhase::MidTurn,
+                 )
+@@ -1327,6 +1331,7 @@ async fn run_pre_sampling_compact(
+             step_context,
+             client_session,
+             world_state,
++            cancellation_token,
+             CompactionReason::ContextLimit,
+             CompactionPhase::PreTurn,
+         )
+@@ -1428,6 +1433,7 @@ async fn maybe_run_previous_model_inline_compact(
+         replacement_step_context,
+         client_session,
+         world_state,
++        cancellation_token,
+         reason,
+         CompactionPhase::PreTurn,
+     )
+@@ -1436,6 +1442,7 @@ async fn maybe_run_previous_model_inline_compact(
+ }
+
+ /// `world_state` belongs to `replacement_step_context`, which may differ from the compactor.
++#[allow(clippy::too_many_arguments)]
+ #[instrument(
+     level = "trace",
+     skip_all,
+@@ -1447,6 +1454,7 @@ async fn run_auto_compact(
+     replacement_step_context: Arc<StepContext>,
+     client_session: &mut ModelClientSession,
+     world_state: Arc<WorldState>,
++    cancellation_token: &CancellationToken,
+     reason: CompactionReason,
+     phase: CompactionPhase,
+ ) -> CodexResult<()> {
+@@ -1476,6 +1484,12 @@ async fn run_auto_compact(
+         return Ok(());
+     }
+
++    if crate::model_request::turn_sampling_stopped(&turn_context.extension_data) {
++        // The native interrupt still owns task cancellation and cleanup.
++        cancellation_token.cancelled().await;
++        return Err(CodexErr::TurnAborted);
++    }
++
+     match turn_context.provider.capabilities().remote_compaction {
+         RemoteCompactionSupport::V2 => {
+             emit_compact_metric(
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 8ca115440a4d387f92297441844a8dd049deab87..68b1c19203c69835d2d6e61ad2c617a726f90988 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -10,16 +10,30 @@ use std::sync::atomic::AtomicBool;
+ use std::sync::atomic::Ordering;
+
+ /// Stops admission to model requests while the host interrupts the turn.
+-/// Hosts can install the same stop in every turn they close together.
+ #[derive(Clone, Debug, Default)]
+-pub struct TurnSamplingStop(Arc<AtomicBool>);
++pub struct TurnSamplingStop {
++    requested: Arc<AtomicBool>,
++    graph: Option<Arc<AtomicBool>>,
++}
+
+ impl TurnSamplingStop {
++    /// Create an independent turn stop that also follows this graph stop.
++    pub fn for_turn(&self) -> Self {
++        Self {
++            requested: Arc::default(),
++            graph: Some(Arc::clone(&self.requested)),
++        }
++    }
++
+     pub fn request(&self) {
+-        self.0.store(true, Ordering::Release);
++        self.requested.store(true, Ordering::Release);
+     }
+
+     pub fn requested(&self) -> bool {
+-        self.0.load(Ordering::Acquire)
++        self.requested.load(Ordering::Acquire)
++            || self
++                .graph
++                .as_ref()
++                .is_some_and(|stop| stop.load(Ordering::Acquire))
+     }
+ }
