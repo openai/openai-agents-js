@@ -22,6 +22,7 @@ import {
   type McpNamespace,
   type NativeProviderOptions,
   type ReconciledCall,
+  type Session,
   type UncertainCall,
 } from '@openai/agents';
 import { z } from 'zod';
@@ -101,26 +102,29 @@ function paths(directory: string) {
   };
 }
 
-async function withWriteCleanup(
-  write: () => Promise<void>,
+async function withCleanup<Result>(
+  run: () => Promise<Result>,
   cleanup: () => Promise<void>,
-) {
+  cleanupFailure: string,
+): Promise<Result> {
+  let result: Result;
   try {
-    await write();
+    result = await run();
   } catch (error) {
     try {
       await cleanup();
     } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        'Cleaning up the worker write failed.',
-        { cause: error },
-      );
+      throw new AggregateError([error, cleanupError], cleanupFailure, {
+        cause: error,
+      });
     }
     throw error;
   }
   await cleanup();
+  return result;
 }
+
+const writeCleanupFailure = 'Cleaning up the worker write failed.';
 
 async function atomicWrite(
   path: string,
@@ -128,25 +132,28 @@ async function atomicWrite(
   replace: boolean,
 ) {
   const temporary = path + '.' + randomUUID();
-  await withWriteCleanup(
+  await withCleanup(
     async () => {
       const file = await open(temporary, 'wx', 0o600);
-      await withWriteCleanup(
+      await withCleanup(
         async () => {
           await file.writeFile(data);
           await file.sync();
         },
         () => file.close(),
+        writeCleanupFailure,
       );
       if (replace) await rename(temporary, path);
       else await link(temporary, path);
       const directory = await open(dirname(path), 'r');
-      await withWriteCleanup(
+      await withCleanup(
         () => directory.sync(),
         () => directory.close(),
+        writeCleanupFailure,
       );
     },
     () => rm(temporary, { force: true }),
+    writeCleanupFailure,
   );
 }
 
@@ -267,13 +274,8 @@ export async function superviseArtifact(options: WorkerOptions) {
       provider: new NativeProvider(options.provider),
     };
   };
-  const {
-    workspace,
-    tools,
-    environment,
-    provider: ownedProvider,
-  } = await prepare().catch(recordStartupFailure);
-  await using provider = ownedProvider;
+  const { workspace, tools, environment, provider } =
+    await prepare().catch(recordStartupFailure);
   const openSession = async () => {
     const agent = new Agent({
       provider,
@@ -310,151 +312,172 @@ export async function superviseArtifact(options: WorkerOptions) {
       return agent.session({ ...config, reconciledCalls: receipts });
     }
   };
-  await using session = await openSession().catch(recordStartupFailure);
-  const startupMs = performance.now() - startup;
-  const started: WorkerSnapshot = { threadId: session.id, state: 'working' };
-  await atomicWrite(path.snapshot, JSON.stringify(started), true);
+  const runSession = async (session: Session<z.infer<typeof claim>>) => {
+    const startupMs = performance.now() - startup;
+    const started: WorkerSnapshot = { threadId: session.id, state: 'working' };
+    await atomicWrite(path.snapshot, JSON.stringify(started), true);
 
-  const submitted = performance.now();
-  const deadline = AbortSignal.timeout(options.turnMs ?? 30_000);
-  const taskWithVerification =
-    task +
-    `\n\nAfter saving draft.md, run ${verifyDraftCommand} as a standalone exec_command without a terminal.`;
-  const turn = await session
-    .submit(taskWithVerification, { ifBusy: 'reject', writableRoots: [] })
-    .catch((error: unknown) =>
-      saveStatusAndThrow({ ...started, state: 'needs_attention' }, error),
-    );
-  const followUpSubmissionMs = previous ? performance.now() - submitted : null;
-  let firstToolMs: number | null = null;
-  let steer = options.steer;
-  let steeringWrite: Promise<void> | undefined;
-  const observerFailure = Promise.withResolvers<never>();
-  const observations = (async () => {
-    for await (const event of turn.events()) {
-      if (event.type === 'turn_started' && steer !== undefined) {
-        const text = steer;
+    const submitted = performance.now();
+    const deadline = AbortSignal.timeout(options.turnMs ?? 30_000);
+    const taskWithVerification =
+      task +
+      `\n\nAfter saving draft.md, run ${verifyDraftCommand} as a standalone exec_command without a terminal.`;
+    const turn = await session
+      .submit(taskWithVerification, { ifBusy: 'reject', writableRoots: [] })
+      .catch((error: unknown) =>
+        saveStatusAndThrow({ ...started, state: 'needs_attention' }, error),
+      );
+    const followUpSubmissionMs = previous
+      ? performance.now() - submitted
+      : null;
+    let firstToolMs: number | null = null;
+    let steer = options.steer;
+    let steeringWrite: Promise<void> | undefined;
+    const observerFailure = Promise.withResolvers<never>();
+    const observations = (async () => {
+      for await (const event of turn.events()) {
+        if (event.type === 'turn_started' && steer !== undefined) {
+          const text = steer;
+          steer = undefined;
+          started.steering = await turn.steerExact(text, event.turnId);
+          if (started.state === 'working') {
+            steeringWrite = atomicWrite(
+              path.snapshot,
+              JSON.stringify(started),
+              true,
+            );
+            await steeringWrite;
+          }
+        }
+        if (event.type === 'tool_started')
+          firstToolMs ??= performance.now() - submitted;
+      }
+    })();
+    void observations.catch(observerFailure.reject);
+    const summary = await (async () => {
+      let attention: WorkerSnapshot['attention'];
+      try {
+        const outcome = await Promise.race([
+          turn.waitForAttention({ signal: deadline }),
+          observerFailure.promise,
+        ]);
+        if (!('finalOutput' in outcome)) {
+          if ('type' in outcome) {
+            attention = outcome.reason;
+            throw outcome.error;
+          }
+          attention = 'interaction';
+          throw new Error('Supervisor action is needed before continuing.');
+        }
+        await observations;
+        return outcome.finalOutput;
+      } catch (error) {
+        started.state = 'needs_attention';
         steer = undefined;
-        started.steering = await turn.steerExact(text, event.turnId);
-        if (started.state === 'working') {
-          steeringWrite = atomicWrite(
+        if (deadline.aborted && error === deadline.reason)
+          attention = 'deadline';
+        const failures = [error];
+        try {
+          await turn.cancel();
+          await observations.catch(() => {});
+        } catch (cleanup) {
+          failures.push(cleanup);
+        }
+        // A failed cancellation can leave the observer open. Join only any
+        // steering write it already started before saving the attention state.
+        await steeringWrite?.catch(() => {});
+        try {
+          await atomicWrite(
             path.snapshot,
-            JSON.stringify(started),
+            JSON.stringify({ ...started, attention }),
             true,
           );
-          await steeringWrite;
+        } catch (persistence) {
+          throw new AggregateError(
+            [...failures, persistence],
+            'Saving the worker status failed.',
+            { cause: error },
+          );
         }
-      }
-      if (event.type === 'tool_started')
-        firstToolMs ??= performance.now() - submitted;
-    }
-  })();
-  void observations.catch(observerFailure.reject);
-  const summary = await (async () => {
-    let attention: WorkerSnapshot['attention'];
-    try {
-      const outcome = await Promise.race([
-        turn.waitForAttention({ signal: deadline }),
-        observerFailure.promise,
-      ]);
-      if (!('finalOutput' in outcome)) {
-        if ('type' in outcome) {
-          attention = outcome.reason;
-          throw outcome.error;
-        }
-        attention = 'interaction';
-        throw new Error('Supervisor action is needed before continuing.');
-      }
-      await observations;
-      return outcome.finalOutput;
-    } catch (error) {
-      started.state = 'needs_attention';
-      steer = undefined;
-      if (deadline.aborted && error === deadline.reason) attention = 'deadline';
-      const failures = [error];
-      try {
-        await turn.cancel();
-        await observations.catch(() => {});
-      } catch (cleanup) {
-        failures.push(cleanup);
-      }
-      // A failed cancellation can leave the observer open. Join only any
-      // steering write it already started before saving the attention state.
-      await steeringWrite?.catch(() => {});
-      try {
-        await atomicWrite(
-          path.snapshot,
-          JSON.stringify({ ...started, attention }),
-          true,
-        );
-      } catch (persistence) {
-        throw new AggregateError(
-          [...failures, persistence],
-          'Saving the worker status failed.',
-          { cause: error },
-        );
-      }
-      if (failures.length > 1)
-        throw new AggregateError(failures, 'Turn cancellation failed.', {
-          cause: error,
-        });
-      throw error;
-    }
-  })();
-  const timings = {
-    startupMs,
-    followUpSubmissionMs,
-    firstToolMs,
-    completionMs: performance.now() - submitted,
-  };
-  const snapshot: WorkerSnapshot = {
-    ...started,
-    state: 'needs_review',
-    claim: summary,
-    timings,
-  };
-  if (summary.question === null) {
-    try {
-      const draft = await readDraft(path.draft).catch((error: unknown) => {
-        if (isMissing(error)) return undefined;
+        if (failures.length > 1)
+          throw new AggregateError(failures, 'Turn cancellation failed.', {
+            cause: error,
+          });
         throw error;
-      });
-      const sha256 = draft && digest(draft);
-      let evidence: string | undefined;
-      // Only a command in this completed operation can support these bytes.
-      for await (const item of session.items()) {
+      }
+    })();
+    const timings = {
+      startupMs,
+      followUpSubmissionMs,
+      firstToolMs,
+      completionMs: performance.now() - submitted,
+    };
+    const snapshot: WorkerSnapshot = {
+      ...started,
+      state: 'needs_review',
+      claim: summary,
+      timings,
+    };
+    if (summary.question === null) {
+      try {
+        const draft = await readDraft(path.draft).catch((error: unknown) => {
+          if (isMissing(error)) return undefined;
+          throw error;
+        });
+        const sha256 = draft && digest(draft);
+        let evidence: string | undefined;
+        // Only a command in this completed operation can support these bytes.
+        for await (const item of session.items()) {
+          if (
+            sha256 &&
+            item.turnId === turn.turnId &&
+            item.type === 'command_execution' &&
+            item.status === 'completed' &&
+            item.exitCode === 0 &&
+            (item.cwd?.startsWith('file:')
+              ? fileURLToPath(item.cwd)
+              : item.cwd) === workspace &&
+            item.argv?.length === 3 &&
+            ['bash', 'sh', 'zsh'].includes(basename(item.argv[0])) &&
+            item.argv[1] === '-c' &&
+            item.argv[2] === verifyDraftCommand &&
+            matchesDraftHash(item.output, sha256)
+          )
+            evidence = item.id;
+        }
+        if (evidence !== undefined) snapshot.evidence = evidence;
         if (
+          evidence &&
           sha256 &&
-          item.turnId === turn.turnId &&
-          item.type === 'command_execution' &&
-          item.status === 'completed' &&
-          item.exitCode === 0 &&
-          (item.cwd?.startsWith('file:')
-            ? fileURLToPath(item.cwd)
-            : item.cwd) === workspace &&
-          item.argv?.length === 3 &&
-          ['bash', 'sh', 'zsh'].includes(basename(item.argv[0])) &&
-          item.argv[1] === '-c' &&
-          item.argv[2] === verifyDraftCommand &&
-          matchesDraftHash(item.output, sha256)
-        )
-          evidence = item.id;
+          draft?.toString().startsWith('# Release note\n')
+        ) {
+          snapshot.state = 'accepted';
+          snapshot.sha256 = sha256;
+        }
+      } catch (error) {
+        await saveStatusAndThrow(snapshot, error);
       }
-      if (evidence !== undefined) snapshot.evidence = evidence;
-      if (
-        evidence &&
-        sha256 &&
-        draft?.toString().startsWith('# Release note\n')
-      ) {
-        snapshot.state = 'accepted';
-        snapshot.sha256 = sha256;
-      }
-    } catch (error) {
-      await saveStatusAndThrow(snapshot, error);
     }
-  }
-  await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
-  return snapshot;
+    await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
+    return snapshot;
+  };
+
+  let session: Session<z.infer<typeof claim>> | undefined;
+  return withCleanup(
+    async () => {
+      session = await openSession().catch(recordStartupFailure);
+      return runSession(session);
+    },
+    () =>
+      withCleanup(
+        async () => {
+          await session?.close();
+        },
+        () => provider.close(),
+        'Closing the worker provider failed.',
+      ),
+    'Closing the worker failed.',
+  );
 }
 
 /** The supervisor calls this separately after the worker has joined. */
