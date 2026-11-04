@@ -6,7 +6,6 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -21,7 +20,8 @@ import { parseArgs } from 'node:util';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as tls from 'node:tls';
-import { prepareSources, sha256Bytes } from './native-source.mjs';
+import { prepareSources } from './native-source.mjs';
+import { nativeInputs, nativeSourceSpecs } from './native-receipt.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = join(packageRoot, 'native');
@@ -72,66 +72,14 @@ function run(program, args, options = {}) {
   return result.stdout;
 }
 
-const cargoManifest = readFileSync(join(root, 'Cargo.toml'), 'utf8');
-const rmcp = cargoManifest.match(
-  /^rmcp = \{ git = "([^"]+)", rev = "([a-f0-9]{40})", version = "=3\.3\.0"/m,
-);
-if (!rmcp || rmcp[1] !== 'https://github.com/modelcontextprotocol/rust-sdk') {
-  throw new Error(
-    'Cargo.toml must retain the pinned RMCP Git source and exact version',
-  );
-}
-const sources = [
-  {
-    name: 'codex',
-    url: 'https://github.com/openai/codex.git',
-    revision,
-    source: values.source,
-    patches: 'patches',
-  },
-  {
-    name: 'rust-sdk',
-    url: rmcp[1],
-    revision: rmcp[2],
-    source: values['rmcp-source'],
-    patches: 'rmcp-patches',
-  },
-];
+const sources = nativeSourceSpecs(packageRoot, {
+  source: values.source,
+  rmcpSource: values['rmcp-source'],
+});
 function audit(prepare = false) {
   return prepareSources(root, sources, prepare);
 }
 
-// One input snapshot and product inventory serve build validation and its receipt.
-function buildInputs() {
-  const files = new Set([
-    'native/CODEX_REVISION',
-    'native/Cargo.toml',
-    'native/Cargo.lock',
-    'native/build.rs',
-    'native/tests/fixtures/exec_server.rs',
-  ]);
-  for (const directory of [
-    'native/rust',
-    'native/patches',
-    'native/rmcp-patches',
-    'scripts',
-  ]) {
-    for (const name of readdirSync(join(packageRoot, directory), {
-      recursive: true,
-    })) {
-      const relative = `${directory}/${name}`;
-      if (lstatSync(join(packageRoot, relative)).isFile()) files.add(relative);
-    }
-  }
-  return Object.fromEntries(
-    [...files]
-      .sort()
-      .map((file) => [
-        file,
-        sha256Bytes(readFileSync(join(packageRoot, file))),
-      ]),
-  );
-}
 function equalSnapshot(actual, expected, label) {
   if (JSON.stringify(actual) !== JSON.stringify(expected))
     throw new Error(`${label} changed during native build`);
@@ -191,7 +139,7 @@ async function build() {
   const receiptPath = join(root, 'build-receipt.json');
   rmSync(receiptPath, { force: true });
   const sourceIdentity = audit();
-  const inputs = buildInputs();
+  const inputs = nativeInputs(packageRoot);
   const release = values.release || command === 'package';
   const environment = {
     ...process.env,
@@ -299,7 +247,7 @@ async function build() {
     );
   }
   equalSnapshot(audit(), sourceIdentity, 'Reviewed source');
-  equalSnapshot(buildInputs(), inputs, 'Native inputs');
+  equalSnapshot(nativeInputs(packageRoot), inputs, 'Native inputs');
   const output = join(
     environment.CARGO_TARGET_DIR,
     ...(environment.CARGO_BUILD_TARGET ? [host] : []),
@@ -377,7 +325,7 @@ async function build() {
       }
     }
     equalSnapshot(audit(), sourceIdentity, 'Reviewed source');
-    equalSnapshot(buildInputs(), inputs, 'Native inputs');
+    equalSnapshot(nativeInputs(packageRoot), inputs, 'Native inputs');
     const products = Object.fromEntries(
       await Promise.all(
         payload.map(async ([destination]) => [

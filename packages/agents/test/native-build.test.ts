@@ -59,7 +59,12 @@ describe('native source archive', () => {
     for (const path of [native, scripts, source]) {
       mkdirSync(path, { recursive: true });
     }
-    for (const file of ['native.mjs', 'native-source.mjs', 'v8-release.json']) {
+    for (const file of [
+      'native.mjs',
+      'native-source.mjs',
+      'native-receipt.mjs',
+      'v8-release.json',
+    ]) {
       copyFileSync(
         resolve(import.meta.dirname, '../scripts', file),
         join(scripts, file),
@@ -151,7 +156,12 @@ describe('native source archive reviewed patches', () => {
     const scripts = join(dir, 'agents/scripts');
     for (const path of [source, native, scripts])
       mkdirSync(path, { recursive: true });
-    for (const name of ['native.mjs', 'native-source.mjs', 'v8-release.json'])
+    for (const name of [
+      'native.mjs',
+      'native-source.mjs',
+      'native-receipt.mjs',
+      'v8-release.json',
+    ])
       copyFileSync(
         resolve(import.meta.dirname, '../scripts', name),
         join(scripts, name),
@@ -315,7 +325,11 @@ describe.skipIf(process.platform === 'win32')(
         for (const path of [native, scripts, tools, source]) {
           mkdirSync(path, { recursive: true });
         }
-        for (const name of ['native.mjs', 'native-source.mjs'])
+        for (const name of [
+          'native.mjs',
+          'native-source.mjs',
+          'native-receipt.mjs',
+        ])
           copyFileSync(
             resolve(import.meta.dirname, '../scripts', name),
             join(scripts, name),

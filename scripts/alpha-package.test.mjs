@@ -19,6 +19,8 @@ import {
   verifyStarterLock,
 } from './alpha-package.mjs';
 
+import { nativeInputs } from '../packages/agents/scripts/native-receipt.mjs';
+
 const version = '0.22.0-alpha.1';
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -122,11 +124,32 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
     'bin/codex-linux-sandbox': 'sandbox',
     'bin/codex-execve-wrapper': 'wrapper',
   };
+  const series = JSON.stringify({ patches: [], result_tree: 'c'.repeat(40) });
+  const nativeFiles = {
+    'native/Cargo.toml': `rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "${revision}", version = "=3.3.0" }\n`,
+    'native/Cargo.lock': 'lock',
+    'native/build.rs': 'build',
+    'native/tests/fixtures/exec_server.rs': 'fixture',
+    'native/rust/lib.rs': 'source',
+    'native/patches/series.json': series,
+    'native/rmcp-patches/series.json': series,
+    'scripts/native.mjs': 'producer',
+  };
+  for (const [name, bytes] of Object.entries(nativeFiles)) {
+    await mkdir(dirname(join(packageRoot, name)), { recursive: true });
+    await writeFile(join(packageRoot, name), bytes);
+  }
+  const identity = {
+    revision,
+    result_tree: 'c'.repeat(40),
+    manifest_sha256: digest(series),
+    patches: [],
+  };
   const receipt = {
     format: 'reviewed-native-v1',
     release: true,
     host: 'x86_64-unknown-linux-gnu',
-    sources: { codex: { revision } },
+    sources: { codex: identity, 'rust-sdk': identity },
     inputs: { 'native/CODEX_REVISION': digest(revision) },
     products: Object.fromEntries(
       Object.entries(files)
@@ -141,6 +164,7 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
       await writeFile(join(packageRoot, name), bytes);
       await chmod(join(packageRoot, name), 0o755);
     }
+    receipt.inputs = nativeInputs(packageRoot);
     await writeFile(receiptPath, JSON.stringify(receipt));
     assert.equal(
       (await verifyNativeReceipt(root, 'linux-x64')).revision,

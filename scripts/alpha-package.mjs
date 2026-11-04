@@ -19,6 +19,12 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { execaSync } from 'execa';
 
+import {
+  nativeHosts as hosts,
+  verifyNativeReceipt,
+} from '../packages/agents/scripts/native-receipt.mjs';
+export { verifyNativeReceipt };
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const packageNames = [
   'agents',
@@ -27,11 +33,6 @@ export const packageNames = [
   'agents-realtime',
 ];
 const publicNames = packageNames.map((name) => `@openai/${name}`);
-const hosts = {
-  'linux-x64': 'x86_64-unknown-linux-gnu',
-  'darwin-arm64': 'aarch64-apple-darwin',
-  'win32-x64': 'x86_64-pc-windows-msvc',
-};
 const hash = (bytes, algorithm = 'sha256', encoding = 'hex') =>
   createHash(algorithm).update(bytes).digest(encoding);
 const json = async (file) => JSON.parse(await readFile(file, 'utf8'));
@@ -137,62 +138,6 @@ export function verifyStarterLock(lock, packages) {
     [...publicNames].sort(),
     'Incomplete SDK lock',
   );
-}
-
-export async function verifyNativeReceipt(repository, platform) {
-  assert.ok(hosts[platform], 'Unsupported alpha artifact platform');
-  const packageRoot = join(repository, 'packages/agents');
-  const receipt = await json(join(packageRoot, 'native/build-receipt.json'));
-  assert.equal(receipt.format, 'reviewed-native-v1');
-  assert.equal(
-    receipt.release,
-    true,
-    'Alpha artifacts require a release native build',
-  );
-  assert.equal(receipt.host, hosts[platform]);
-  const revision = (
-    await readFile(join(packageRoot, 'native/CODEX_REVISION'), 'utf8')
-  ).trim();
-  assert.match(revision, /^[a-f0-9]{40}$/);
-  assert.equal(receipt.sources?.codex?.revision, revision);
-  assert.ok(Object.hasOwn(receipt.inputs, 'native/CODEX_REVISION'));
-  const suffix = platform.startsWith('win32-') ? '.exe' : '';
-  const helpers = [
-    'codex-sdk-runtime',
-    'codex-code-mode-host',
-    ...(platform.startsWith('linux-') ? ['codex-linux-sandbox'] : []),
-    ...(!suffix ? ['codex-execve-wrapper'] : []),
-  ].map((name) => `bin/${name}${suffix}`);
-  assert.deepEqual(
-    Object.keys(receipt.products).sort(),
-    ['native/codex.node', ...helpers].sort(),
-    'Unexpected native product inventory',
-  );
-  for (const [section, prefix] of [
-    ['inputs', ''],
-    ['products', 'sha256:'],
-  ]) {
-    for (const [name, expected] of Object.entries(receipt[section])) {
-      assert.ok(
-        !isAbsolute(name) && !name.split(/[\\/]/).includes('..'),
-        'Unsafe native receipt path',
-      );
-      const file = join(packageRoot, name);
-      const stat = await lstat(file);
-      assert.ok(
-        stat.isFile() && stat.size > 0,
-        `Invalid native ${section} file: ${name}`,
-      );
-      assert.equal(
-        `${prefix}${hash(await readFile(file))}`,
-        expected,
-        `Native ${section} changed: ${name}`,
-      );
-      if (section === 'products' && helpers.includes(name) && !suffix)
-        assert.ok(stat.mode & 0o111, `Helper is not executable: ${name}`);
-    }
-  }
-  return { revision, helpers };
 }
 
 async function stagePackage(
