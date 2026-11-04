@@ -2,11 +2,13 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
+  link,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -800,6 +802,101 @@ const localStorageOverlap =
   /Keep local session storage outside the executor cwd and writable roots/;
 const runtimeHomeOverlap =
   /Keep the native runtime home outside the executor cwd and writable roots/;
+
+it.skipIf(!supported).for([
+  ['open', 'direct'],
+  ['open', 'relocated'],
+  ['replacement', 'direct'],
+  ['replacement', 'relocated'],
+] as const)(
+  'rejects a profile database hard link in a local grant on %s (%s)',
+  { timeout: 35_000 },
+  async ([stage, placement], context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-storage-hardlink-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'extra');
+      const profile = join(base, 'profile');
+      await Promise.all([mkdir(cwd), mkdir(extra)]);
+      const server = new ModelServer([
+        [message('Seeded the profile.')],
+        [message('Used a disjoint grant.')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      const environment = Environment.local({ cwd, tools: ['exec_command'] });
+      const storage = localStorage(profile);
+      let threadId: string;
+      {
+        await using seed = await agent
+          .session({ environment, storage })
+          .catch((error: unknown) => {
+            if (
+              error instanceof Error &&
+              /could not establish the platform sandbox/.test(error.message) &&
+              process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+            ) {
+              expect(server.requests).toHaveLength(0);
+              context.skip('This host cannot launch a nested platform sandbox');
+            }
+            throw error;
+          });
+        threadId = seed.id;
+        expect(
+          (await (await seed.submit('Seed the profile.')).wait()).finalOutput,
+        ).toBe('Seeded the profile.');
+      }
+      const database = (await readdir(profile)).find((name) =>
+        /^state_\d+\.sqlite$/.test(name),
+      );
+      if (!database)
+        throw new Error('The local profile has no state database.');
+      const original = join(profile, database);
+      const backing =
+        placement === 'direct' ? original : join(base, 'relocated', database);
+      if (placement === 'relocated') {
+        await mkdir(join(base, 'relocated'));
+        await rename(original, backing);
+        await symlink(backing, original);
+      }
+      const alias = join(stage === 'open' ? cwd : extra, 'linked-storage');
+      const disjoint = join(base, 'linked-storage');
+      await link(backing, alias);
+      const open = () =>
+        agent.session({ environment, storage, resume: threadId });
+      if (stage === 'open') {
+        await expect(async () => {
+          await using _session = await open();
+        }).rejects.toThrow(localStorageOverlap);
+        expect(server.requests).toHaveLength(1);
+        await rename(alias, disjoint);
+      }
+      await using resumed = await open();
+      if (stage === 'replacement') {
+        await expect(
+          resumed.submit('Reject the linked grant.', {
+            writableRoots: [extra],
+          }),
+        ).rejects.toThrow(localStorageOverlap);
+        expect(server.requests).toHaveLength(1);
+        await rename(alias, disjoint);
+      }
+      expect(resumed.id).toBe(threadId);
+      const turn = await resumed.submit('Use the disjoint grant.', {
+        writableRoots: [extra],
+      });
+      expect((await turn.wait()).finalOutput).toBe('Used a disjoint grant.');
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
 
 it.skipIf(!supported).for(['cwd', 'aliased writable root'] as const)(
   'rejects a local executor grant to the runtime home through %s',

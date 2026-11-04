@@ -1,11 +1,6 @@
 name: Check the managed local command on Apple Silicon
-on:
-  push:
-    branches: [test/managed-macos-command-qualification-20261104]
-
 permissions:
   contents: read
-
 jobs:
   package:
     name: Build and test the exact JS SDK package
@@ -17,373 +12,255 @@ jobs:
     env:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: darwin-arm64
-      QUALIFIED_SDK_COMMIT: 99cd4e16581f9789cb063047559cd65d3b48c62d
-      QUALIFIED_SDK_TREE: 566f2f8789495bbaad20b7e5679869fa61956252
-      RUSTUP_TOOLCHAIN: '1.95.0'
+      QUALIFIED_SDK_COMMIT: efdf5fa0c4c0817987d22f93c4539d3c33344c0e
+      QUALIFIED_SDK_TREE: 10e3fb0fdc7b38b92741653f9c1f6b6de5767da2
+      RUSTUP_TOOLCHAIN: 1.95.0
       CARGO_BUILD_JOBS: '3'
       CARGO_INCREMENTAL: '0'
-
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 99cd4e16581f9789cb063047559cd65d3b48c62d
-          persist-credentials: false
-      - name: Check exact source
-        run: |
-          test "$(git rev-parse HEAD)" = "$QUALIFIED_SDK_COMMIT"
-          test "$(git rev-parse HEAD^{tree})" = "$QUALIFIED_SDK_TREE"
-          sw_vers
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
-        with:
-          run_install: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: '24'
-          cache: pnpm
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: efdf5fa0c4c0817987d22f93c4539d3c33344c0e
+        persist-credentials: false
+    - name: Check exact source
+      run: 'test "$(git rev-parse HEAD)" = "$QUALIFIED_SDK_COMMIT"
 
-      - name: Check runner platform
-        run: |
-          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+        test "$(git rev-parse HEAD^{tree})" = "$QUALIFIED_SDK_TREE"
 
-      - name: Install Rust
-        run: |
-          echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: Install macOS build tools
-        if: runner.os == 'macOS'
-        run: brew install cmake pkgconf protobuf openssl@3
-      - name: Restore the Rust downloads
-        id: rust-downloads
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry/index
-            ${{ env.CARGO_HOME }}/registry/cache
-            ${{ env.CARGO_HOME }}/git/db
-            packages/agents/native/.cache/v8
-          key: js-managed-macos-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/Cargo.lock') }}
-      - name: Build the SDK and native runtime
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
-          node packages/agents/scripts/native.mjs package
-      - name: Build the macOS WSS test fixture
-        if: runner.os == 'macOS'
-        working-directory: packages/agents/native
-        run: |
-          # Reuse the verified V8 files and target from native.mjs package.
-          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
-          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
-          cargo build --locked --release --example exec-server-fixture
-          fixture="$CARGO_TARGET_DIR/release/examples/exec-server-fixture"
-          test -x "$fixture"
-          echo "CODEX_EXEC_SERVER_TEST_BINARY=$fixture" >> "$GITHUB_ENV"
-      - name: Save the Rust downloads
-        if: ${{ !cancelled() && steps.rust-downloads.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry/index
-            ${{ env.CARGO_HOME }}/registry/cache
-            ${{ env.CARGO_HOME }}/git/db
-            packages/agents/native/.cache/v8
-          key: js-managed-macos-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/Cargo.lock') }}
-      - name: Check the portable sleep fixture on macOS
-        run: |
-          test -x /bin/sleep
-          /bin/sleep 0
-          PATH=/usr/bin:/bin /bin/sh -c 'command -v sleep; exec sleep 0'
-      - name: Qualify local executor grants on macOS
-        if: runner.os == 'macOS'
-        env:
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: >-
-          pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
-          -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|rejects a local executor grant to the runtime home'
-          --reporter=verbose
-      - name: Qualify native cancellation and model-step resume on macOS
-        run: |
-          pnpm test:native packages/agents/test/native/executor-stop-native.test.ts \
-            -t 'fences a direct result before native' --maxWorkers=1 --reporter=verbose
-          pnpm test:native packages/agents/test/native/model-preparation-cap.test.ts \
-            --maxWorkers=1 --reporter=verbose
-          pnpm test:native packages/agents/test/native/executor-receipt-resume-native.test.ts \
-            -t 'can attach a trusted implicit remote executor' --maxWorkers=1 --reporter=verbose
-          pnpm test:native \
-            packages/agents/test/native/embedded-commands.test.ts \
-            packages/agents/test/native/turn-controls.test.ts \
-            packages/agents/test/native/parity-child-manual.test.ts \
-            -t 'returns the actual native compact Turn|lets a graceful exact stop preserve|accepts a live child manual reply' \
-            --maxWorkers=1 --reporter=verbose
-          pnpm test:native packages/agents/test/native/compaction-late-admission-native.test.ts \
-            --maxWorkers=1 --reporter=verbose
-      - name: Create the release bundles
-        run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
-      - name: Test the extracted bundles
-        run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
-      - name: Verify launchd denial from the installed npm package
-        id: install
-        run: |
-          cat > "$RUNNER_TEMP/js-install.mjs" <<'INSTALL'
-          import assert from "node:assert/strict";
-          import { execFileSync } from "node:child_process";
-          import { cpSync, readFileSync, realpathSync } from "node:fs";
-          import { join, sep } from "node:path";
-          import { pathToFileURL } from "node:url";
+        sw_vers
 
-          const checkout = process.argv[2];
-          const { hashes, verifyArtifactDirectory } = await import(
-            pathToFileURL(join(checkout, "scripts/verify-alpha-package.mjs"))
-          );
-          const { verifyNativeReceipt, verifyStarterLock } = await import(
-            pathToFileURL(join(checkout, "scripts/alpha-package.mjs"))
-          );
-          const { ARTIFACT_DIRECTORY, PRODUCER_SDK, RECEIPT_SOURCE, RUNNER_TEMP } =
-            process.env;
-          assert.equal(process.platform + "-" + process.arch, "darwin-arm64");
-          const build = await verifyArtifactDirectory(ARTIFACT_DIRECTORY);
-          assert.equal(build.sourceCommit, PRODUCER_SDK);
-          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
-          for (const profile of ["starter", "app"]) {
-            const installed = readJson(
-              join(ARTIFACT_DIRECTORY, `installed-${profile}-darwin-arm64.json`),
-            );
-            assert.equal(installed.profile, profile);
-            assert(installed.verified.includes("native-receipt"));
-            for (const field of Object.keys(build))
-              assert.deepEqual(installed[field], build[field]);
-          }
+        '
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      with:
+        run_install: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+        cache: pnpm
+    - name: Check runner platform
+      run: 'node -e ''require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)''
 
-          execFileSync("/usr/bin/tar", [
-            "-xzf",
-            join(ARTIFACT_DIRECTORY, build.starter.archive),
-            "-C",
-            RUNNER_TEMP,
-          ]);
-          const consumer = join(RUNNER_TEMP, "agents-starter");
-          const manifest = readJson(join(consumer, "package.json"));
-          for (const [name, record] of Object.entries(build.packages)) {
-            assert.equal(
-              manifest.dependencies[name],
-              `file:vendor/agents/${record.archive}`,
-            );
-            assert.equal(
-              (await hashes(join(consumer, "vendor/agents", record.archive))).sha256,
-              record.sha256,
-            );
-          }
-          verifyStarterLock(
-            readJson(join(consumer, "package-lock.json")),
-            build.packages,
-          );
-          const npm = join(process.execPath, "../../lib/node_modules/npm/bin/npm-cli.js");
-          execFileSync(process.execPath, [npm, "ci", "--ignore-scripts"], {
-            cwd: consumer,
-            env: { ...process.env, NODE_PATH: "", PATH: "" },
-            stdio: "inherit",
-          });
+        '
+    - name: Install Rust
+      run: 'echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
 
-          const installed = realpathSync(join(consumer, "node_modules/@openai/agents"));
-          assert(installed.startsWith(realpathSync(consumer) + sep));
-          const checked = join(RECEIPT_SOURCE, "packages/agents");
-          const nativeReceipt = readJson(join(installed, "native/build-receipt.json"));
-          const inputs = execFileSync(
-            "git",
-            [
-              "ls-files",
-              "--",
-              "native/CODEX_REVISION",
-              "native/Cargo.toml",
-              "native/Cargo.lock",
-              "native/build.rs",
-              "native/tests/fixtures/exec_server.rs",
-              "native/rust",
-              "native/patches",
-              "native/rmcp-patches",
-              "scripts",
-            ],
-            { cwd: join(checkout, "packages/agents"), encoding: "utf8" },
-          )
-            .trim()
-            .split("\n");
-          assert.deepEqual(Object.keys(nativeReceipt.inputs).sort(), inputs.sort());
-          cpSync(
-            join(installed, "native/build-receipt.json"),
-            join(checked, "native/build-receipt.json"),
-          );
-          cpSync(
-            join(installed, "native/codex.node"),
-            join(checked, "native/codex.node"),
-          );
-          cpSync(join(installed, "bin"), join(checked, "bin"), { recursive: true });
-          const { revision } = await verifyNativeReceipt(RECEIPT_SOURCE, build.platform);
-          assert.equal(revision, build.codexRevision);
+        echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
 
-          execFileSync(
-            process.execPath,
-            [
-              "--input-type=module",
-              "-e",
-              `
-            import assert from 'node:assert/strict';
-            import { createRequire } from 'node:module';
-            import { fileURLToPath } from 'node:url';
-            const root = process.env.INSTALLED_AGENT_ROOT;
-            const sdk = fileURLToPath(import.meta.resolve('@openai/agents'));
-            assert(sdk.startsWith(root + '/dist/'), sdk);
-            const { Environment } = await import('@openai/agents');
-            assert.equal(typeof Environment.local, 'function');
-            const require = createRequire(import.meta.url);
-            const native = root + '/native/codex.node';
-            assert.equal(typeof require(native).create_engine, 'function');
-            console.log('Loaded installed SDK and native addon', sdk, native);
-          `,
-            ],
-            {
-              cwd: consumer,
-              env: { ...process.env, NODE_PATH: "", INSTALLED_AGENT_ROOT: installed },
-              stdio: "inherit",
-            },
-          );
-          console.log(
-            "Verified native source, products and installed package",
-            build.sourceCommit,
-            revision,
-          );
-          INSTALL
-          TEST_FILE=packages/agents/test/native/local-executor-policy-native.test.ts
-          set -euo pipefail
-          checkout="$PWD"
-          artifacts="$RUNNER_TEMP/agents-alpha"
-          stage="$RUNNER_TEMP/native-receipt-source"
-          mkdir "$stage"
-          git archive HEAD packages/agents | tar -x -C "$stage"
+        rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
 
-          export ARTIFACT_DIRECTORY="$artifacts" RECEIPT_SOURCE="$stage"
-          export PRODUCER_SDK="$QUALIFIED_SDK_COMMIT"
-          node "$RUNNER_TEMP/js-install.mjs" "$checkout"
-          consumer="$RUNNER_TEMP/agents-starter"
-          test_dir="$consumer/test/native"
-          mkdir -p "$test_dir"
-          cp "$TEST_FILE" "$test_dir/"
-          cp -R packages/agents/test/native/fixtures "$test_dir/"
-          ln -s "$checkout/node_modules/vitest" "$consumer/node_modules/vitest"
-          printf 'export default {};\n' > "$consumer/vitest.config.mjs"
-          cd "$consumer"
-          unset NODE_PATH OPENAI_API_KEY
-          export OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1
-          node "$checkout/node_modules/vitest/vitest.mjs" run \
-            --pool=forks --maxWorkers=1 --root "$consumer" --config "$consumer/vitest.config.mjs" \
-            "test/native/${TEST_FILE##*/}" -t '^blocks delegation from a local command to launchd$' \
-            --reporter=verbose --reporter=json --outputFile.json="$RUNNER_TEMP/launchd.json"
+        '
+    - name: Install macOS build tools
+      if: runner.os == 'macOS'
+      run: brew install cmake pkgconf protobuf openssl@3
+    - name: Restore the Rust downloads
+      id: rust-downloads
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: '${{ env.CARGO_HOME }}/registry/index
 
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import { readFileSync, writeFileSync } from 'node:fs';
-          const report = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/launchd.json', 'utf8'));
-          const cases = report.testResults.flatMap(({ assertionResults }) =>
-            assertionResults.filter(({ status }) => status === 'passed')
-          );
-          assert.equal(cases.length, 1);
-          assert.equal(cases[0].fullName, 'blocks delegation from a local command to launchd');
-          const native = JSON.parse(readFileSync('node_modules/@openai/agents/native/build-receipt.json', 'utf8'));
-          const evidence = { sourceCommit: process.env.PRODUCER_SDK, platform: process.platform + '-' + process.arch,
-            test: cases[0].fullName, status: cases[0].status, products: native.products };
-          writeFileSync(process.env.ARTIFACT_DIRECTORY + '/acceptance-launchd-darwin-arm64.json',
-            JSON.stringify(evidence, null, 2) + '\n');
-          console.log('Verified installed npm regression', cases[0].fullName);
-          JS
-      - name: Check the installed package evidence
-        run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import { readdirSync, readFileSync } from 'node:fs';
-          import { join } from 'node:path';
-          const output = join(process.env.RUNNER_TEMP, 'agents-alpha');
-          const records = readdirSync(output).filter((file) =>
-            /^(build|installed)-.*\.json$/.test(file),
-          );
-          assert(records.some((file) => file.startsWith('build-')));
-          assert(records.some((file) => file.startsWith('installed-')));
-          for (const record of records) {
-            const manifest = JSON.parse(readFileSync(join(output, record), 'utf8'));
-            assert.equal(manifest.sourceCommit, process.env.QUALIFIED_SDK_COMMIT);
-            assert.equal(manifest.platform, process.env.EXPECTED_PLATFORM);
-            console.log(record, manifest.sourceCommit, manifest.platform);
-          }
-          JS
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: agents-alpha-darwin-arm64
-          path: |
-            ${{ runner.temp }}/agents-alpha/*.tgz
-            ${{ runner.temp }}/agents-alpha/*.tar.gz
-            ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
-            ${{ runner.temp }}/agents-alpha/build-*.json
-            ${{ runner.temp }}/agents-alpha/installed-*.json
-            ${{ runner.temp }}/agents-alpha/acceptance-launchd-darwin-arm64.json
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-      - name: Verify paused wrapper cleanup through the installed release package
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        env:
-          OPENAI_AGENTS_NATIVE_TESTS: '1'
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-          PROBE_SHA256: 22f1be6e8848d02fa461f2af3d363c2eab5d20079cd9ee57a7d46190e070903c
-          PROBE_SLUG: wrapper
-          PROBE_TITLE: closes a paused local command wrapper without disturbing a disjoint command
-        run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nproduct_hashes() {\n  (cd \"$1/node_modules/@openai/agents\" && shasum -a 256 native/{codex.node,build-receipt.json} bin/codex-*)\n}\n\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\nfixture=\"$test_dir/managed-$PROBE_SLUG.test.ts\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$fixture\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nif [[ ! -e \"$consumer/node_modules/vitest\" ]]; then\n  ln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nfi\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\nprobe=\"$RUNNER_TEMP/$PROBE_SLUG-probe.ts\"\nbase64 -D >\"$probe\" <<'PROBE'\naXQuc2tpcElmKHByb2Nlc3MucGxhdGZvcm0gIT09ICJkYXJ3aW4iKSgKICAiY2xvc2VzIGEgcGF1\nc2VkIGxvY2FsIGNvbW1hbmQgd3JhcHBlciB3aXRob3V0IGRpc3R1cmJpbmcgYSBkaXNqb2ludCBj\nb21tYW5kIiwKICBhc3luYyAoKSA9PiB7CiAgICBjb25zdCBkaXJlY3RvcnkgPSBhd2FpdCByZWFs\ncGF0aCgKICAgICAgYXdhaXQgbWtkdGVtcChqb2luKHRtcGRpcigpLCAiYWdlbnRzLWRhcndpbi13\n\
-          cmFwcGVyLSIpKSwKICAgICk7CiAgICBjb25zdCBjd2QgPSBqb2luKGRpcmVjdG9yeSwgIndvcmtz\ncGFjZSIpOwogICAgY29uc3QgZ3JhbnQgPSBqb2luKGRpcmVjdG9yeSwgImdyYW50Iik7CiAgICBj\nb25zdCBtYXJrZXIgPSBqb2luKGdyYW50LCAiaGVhcnRiZWF0Iik7CiAgICBjb25zdCBwaWRGaWxl\nID0gam9pbihncmFudCwgInBheWxvYWQtcGlkIik7CiAgICBjb25zdCBjb250cm9sID0gam9pbihk\naXJlY3RvcnksICJkaXNqb2ludCIpOwogICAgY29uc3QgY29udHJvbE1hcmtlciA9IGpvaW4oY29u\ndHJvbCwgImhlYXJ0YmVhdCIpOwogICAgY29uc3QgY29udHJvbFBpZEZpbGUgPSBqb2luKGNvbnRy\nb2wsICJwYXlsb2FkLXBpZCIpOwogICAgY29uc3QgcXVvdGVkID0gKHBhdGg6IHN0cmluZykgPT4g\nIiciICsgcGF0aC5yZXBsYWNlQWxsKCInIiwgIidcXCcnIikgKyAiJyI7CiAgICBjb25zdCBzaXpl\nID0gKHBhdGggPSBtYXJrZXIpID0+CiAgICAgIHJlYWRGaWxlKHBhdGgsICJ1dGY4IikudGhlbigo\ndmFsdWUpID0+IHZhbHVlLmxlbmd0aCk7CiAgICBjb25zdCBoZWxwZXIgPSBhd2FpdCByZWFscGF0\naCgKICAgICAgam9pbihwYWNrYWdlUm9vdCwgIm5vZGVfbW9kdWxlcy9Ab3BlbmFpL2FnZW50cy9i\naW4vY29kZXgtc2RrLXJ1bnRpbWUiKSwKICAgICk7CiAgICBjb25zdCB3cmFwcGVyQ29tbWFuZCA9\nIGhlbHBlciArICIgLS1jb2RleC1zZGstZGFyd2luLWNvbW1hbmQgIjsKICAgIGNvbnN0IHByb2Nl\nc3NEZXRhaWxzID0gKHBpZDogbnVtYmVyKSA9PiB7CiAgICAgIGNvbnN0IHJlc3VsdCA9IHNwYXdu\n\
-          U3luYygKICAgICAgICAiL2Jpbi9wcyIsCiAgICAgICAgWyItd3ciLCAiLXAiLCBTdHJpbmcocGlk\nKSwgIi1vIiwgInN0YXQ9LGxzdGFydD0sY29tbWFuZD0iXSwKICAgICAgICB7IGVuY29kaW5nOiAi\ndXRmOCIgfSwKICAgICAgKTsKICAgICAgaWYgKHJlc3VsdC5lcnJvcikgdGhyb3cgcmVzdWx0LmVy\ncm9yOwogICAgICBpZiAocmVzdWx0LnN0YXR1cyA9PT0gMSkgcmV0dXJuIG51bGw7CiAgICAgIGV4\ncGVjdChyZXN1bHQuc3RhdHVzKS50b0JlKDApOwogICAgICBjb25zdCBbLCBzdGF0dXMsIGlkZW50\naXR5XSA9CiAgICAgICAgL14oXFMrKVxzKyguKykkLy5leGVjKHJlc3VsdC5zdGRvdXQudHJpbSgp\nKSA/PyBbXTsKICAgICAgcmV0dXJuIHN0YXR1cyAmJiBpZGVudGl0eSA/IHsgc3RhdHVzLCBpZGVu\ndGl0eSB9IDogbnVsbDsKICAgIH07CiAgICBjb25zdCBwcm9jZXNzSWRlbnRpdHkgPSAocGlkOiBu\ndW1iZXIpID0+CiAgICAgIHByb2Nlc3NEZXRhaWxzKHBpZCk/LmlkZW50aXR5ID8/IG51bGw7CiAg\nICBjb25zdCBmaW5kV3JhcHBlciA9ICgpID0+IHsKICAgICAgY29uc3Qgcm93cyA9IGV4ZWNGaWxl\nU3luYygKICAgICAgICAiL2Jpbi9wcyIsCiAgICAgICAgWyItYXh3dyIsICItbyIsICJwaWQ9LHBw\naWQ9LGNvbW1hbmQ9Il0sCiAgICAgICAgeyBlbmNvZGluZzogInV0ZjgiIH0sCiAgICAgICkuc3Bs\naXQoIlxuIik7CiAgICAgIGNvbnN0IG1hdGNoZXMgPSByb3dzCiAgICAgICAgLm1hcCgocm93KSA9\nPiAvXlxzKihcZCspXHMrKFxkKylccysoLiopJC8uZXhlYyhyb3cpKQogICAgICAgIC5maWx0ZXIo\n\
-          CiAgICAgICAgICAocm93KSA9PgogICAgICAgICAgICBOdW1iZXIocm93Py5bMl0pID09PSBwcm9j\nZXNzLnBpZCAmJgogICAgICAgICAgICByb3c/LlszXT8uc3RhcnRzV2l0aCh3cmFwcGVyQ29tbWFu\nZCksCiAgICAgICAgKTsKICAgICAgZXhwZWN0KG1hdGNoZXMpLnRvSGF2ZUxlbmd0aCgxKTsKICAg\nICAgcmV0dXJuIE51bWJlcihtYXRjaGVzWzBdPy5bMV0pOwogICAgfTsKICAgIGNvbnN0IGhlYXJ0\nYmVhdCA9IChwYXRoOiBzdHJpbmcsIHBpZFBhdGg6IHN0cmluZywgY2FsbElkOiBzdHJpbmcpID0+\nCiAgICAgIGNhbGwoCiAgICAgICAgImV4ZWNfY29tbWFuZCIsCiAgICAgICAgewogICAgICAgICAg\nY21kOgogICAgICAgICAgICAncHJpbnRmICIlc1xcbiIgIiQkIiA+ICcgKwogICAgICAgICAgICBx\ndW90ZWQocGlkUGF0aCkgKwogICAgICAgICAgICAnOyBpPTA7IHdoaWxlIFsgIiRpIiAtbHQgMTgw\nIF07IGRvIHByaW50ZiB4ID4+ICcgKwogICAgICAgICAgICBxdW90ZWQocGF0aCkgKwogICAgICAg\nICAgICAiOyAvYmluL3NsZWVwIDAuMjU7IGk9JCgoaSArIDEpKTsgZG9uZSIsCiAgICAgICAgICB5\naWVsZF90aW1lX21zOiAxMDAwLAogICAgICAgIH0sCiAgICAgICAgeyBjYWxsSWQgfSwKICAgICAg\nKTsKICAgIGNvbnN0IHNlcnZlciA9IG5ldyBNb2RlbFNlcnZlcihbCiAgICAgIFtoZWFydGJlYXQo\nbWFya2VyLCBwaWRGaWxlLCAic3RhcnQtcGF1c2VkLWhlYXJ0YmVhdCIpXSwKICAgICAgKHJlcXVl\nc3QpID0+IHsKICAgICAgICBleHBlY3QoSlNPTi5zdHJpbmdpZnkocmVxdWVzdC5pbnB1dCkpLnRv\n\
-          TWF0Y2goCiAgICAgICAgICAvUHJvY2VzcyBydW5uaW5nIHdpdGggc2Vzc2lvbiBJRCBcZCsvLAog\nICAgICAgICk7CiAgICAgICAgcmV0dXJuIFttZXNzYWdlKCJIZWFydGJlYXQgcnVubmluZy4iKV07\nCiAgICAgIH0sCiAgICAgIFtoZWFydGJlYXQoY29udHJvbE1hcmtlciwgY29udHJvbFBpZEZpbGUs\nICJzdGFydC1kaXNqb2ludC1oZWFydGJlYXQiKV0sCiAgICAgIChyZXF1ZXN0KSA9PiB7CiAgICAg\nICAgZXhwZWN0KEpTT04uc3RyaW5naWZ5KHJlcXVlc3QuaW5wdXQpKS50b01hdGNoKAogICAgICAg\nICAgL1Byb2Nlc3MgcnVubmluZyB3aXRoIHNlc3Npb24gSUQgXGQrLywKICAgICAgICApOwogICAg\nICAgIHJldHVybiBbbWVzc2FnZSgiRGlzam9pbnQgaGVhcnRiZWF0IHJ1bm5pbmcuIildOwogICAg\nICB9LAogICAgXSk7CiAgICBsZXQgd3JhcHBlcjogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0\ncmluZyB9IHwgdW5kZWZpbmVkOwogICAgbGV0IHBheWxvYWQ6IHsgcGlkOiBudW1iZXI7IGlkZW50\naXR5OiBzdHJpbmcgfSB8IHVuZGVmaW5lZDsKICAgIGxldCBjb250cm9sUGF5bG9hZDogeyBwaWQ6\nIG51bWJlcjsgaWRlbnRpdHk6IHN0cmluZyB9IHwgdW5kZWZpbmVkOwogICAgbGV0IGNsb3NlQ29u\ndHJvbDogKCgpID0+IFByb21pc2U8dm9pZD4pIHwgdW5kZWZpbmVkOwogICAgbGV0IHBhdXNlSW5q\nZWN0ZWQgPSBmYWxzZTsKICAgIGxldCBjbG9zZVN0YXJ0ZWQgPSBmYWxzZTsKICAgIGNvbnN0IG1h\ndGNoZXNJZGVudGl0eSA9IChwcm9jZXNzSW5mbzogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0\n\
-          cmluZyB9KSA9PgogICAgICBwcm9jZXNzSWRlbnRpdHkocHJvY2Vzc0luZm8ucGlkKSA9PT0gcHJv\nY2Vzc0luZm8uaWRlbnRpdHk7CiAgICBjb25zdCBzdG9wcGVkID0gKHByb2Nlc3NJbmZvOiB7IHBp\nZDogbnVtYmVyOyBpZGVudGl0eTogc3RyaW5nIH0pID0+IHsKICAgICAgY29uc3QgZGV0YWlscyA9\nIHByb2Nlc3NEZXRhaWxzKHByb2Nlc3NJbmZvLnBpZCk7CiAgICAgIHJldHVybiAoCiAgICAgICAg\nZGV0YWlscz8uaWRlbnRpdHkgPT09IHByb2Nlc3NJbmZvLmlkZW50aXR5ICYmCiAgICAgICAgZGV0\nYWlscy5zdGF0dXMuc3RhcnRzV2l0aCgiVCIpCiAgICAgICk7CiAgICB9OwogICAgY29uc3Qgc2ln\nbmFsID0gKAogICAgICBwcm9jZXNzSW5mbzogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0cmlu\nZyB9LAogICAgICBhY3Rpb246IE5vZGVKUy5TaWduYWxzLAogICAgKSA9PiB7CiAgICAgIGlmICgh\nbWF0Y2hlc0lkZW50aXR5KHByb2Nlc3NJbmZvKSkgcmV0dXJuOwogICAgICB0cnkgewogICAgICAg\nIHByb2Nlc3Mua2lsbChwcm9jZXNzSW5mby5waWQsIGFjdGlvbik7CiAgICAgIH0gY2F0Y2ggKGVy\ncm9yKSB7CiAgICAgICAgaWYgKChlcnJvciBhcyBOb2RlSlMuRXJybm9FeGNlcHRpb24pLmNvZGUg\nIT09ICJFU1JDSCIpIHRocm93IGVycm9yOwogICAgICB9CiAgICB9OwogICAgY29uc3QgcmVhZFBh\neWxvYWQgPSBhc3luYyAocGF0aDogc3RyaW5nLCBoZWFydGJlYXRQYXRoOiBzdHJpbmcpID0+IHsK\nICAgICAgY29uc3QgcGlkID0gTnVtYmVyKChhd2FpdCByZWFkRmlsZShwYXRoLCAidXRmOCIpKS50\n\
-          cmltKCkpOwogICAgICBleHBlY3QoTnVtYmVyLmlzU2FmZUludGVnZXIocGlkKSAmJiBwaWQgPiAx\nKS50b0JlKHRydWUpOwogICAgICBjb25zdCBpZGVudGl0eSA9IHByb2Nlc3NJZGVudGl0eShwaWQp\nOwogICAgICBleHBlY3QoaWRlbnRpdHkpLnRvQ29udGFpbihoZWFydGJlYXRQYXRoKTsKICAgICAg\ncmV0dXJuIHsgcGlkLCBpZGVudGl0eTogaWRlbnRpdHkhIH07CiAgICB9OwogICAgdHJ5IHsKICAg\nICAgYXdhaXQgUHJvbWlzZS5hbGwoW21rZGlyKGN3ZCksIG1rZGlyKGdyYW50KSwgbWtkaXIoY29u\ndHJvbCldKTsKICAgICAgYXdhaXQgdXNpbmcgcHJvdmlkZXIgPSBhd2FpdCBwcm92aWRlckZvcihz\nZXJ2ZXIpOwogICAgICBjb25zdCBhZ2VudCA9IG5ldyBBZ2VudCh7CiAgICAgICAgcHJvdmlkZXIs\nCiAgICAgICAgbW9kZWw6ICJncHQtNSIsCiAgICAgICAgaW5zdHJ1Y3Rpb25zOiAiUnVuIHRoZSBz\nY3JpcHRlZCBsb2NhbCBjb21tYW5kLiIsCiAgICAgIH0pOwogICAgICBjb25zdCBzZXNzaW9uID0g\nYXdhaXQgYWdlbnQuc2Vzc2lvbih7CiAgICAgICAgZW52aXJvbm1lbnQ6IEVudmlyb25tZW50Lmxv\nY2FsKHsKICAgICAgICAgIGN3ZCwKICAgICAgICAgIHdyaXRhYmxlUm9vdHM6IFtncmFudF0sCiAg\nICAgICAgICB0b29sczogWyJleGVjX2NvbW1hbmQiXSwKICAgICAgICB9KSwKICAgICAgfSk7CiAg\nICAgIHRyeSB7CiAgICAgICAgY29uc3QgdHVybiA9IGF3YWl0IHNlc3Npb24uc3VibWl0KCJTdGFy\ndCB0aGUgYm91bmRlZCBoZWFydGJlYXQuIik7CiAgICAgICAgZXhwZWN0KChhd2FpdCB0dXJuLndh\n\
-          aXQoKSkuZmluYWxPdXRwdXQpLnRvQmUoIkhlYXJ0YmVhdCBydW5uaW5nLiIpOwogICAgICAgIGNv\nbnN0IHdyYXBwZXJQaWQgPSBmaW5kV3JhcHBlcigpOwogICAgICAgIGNvbnN0IHdyYXBwZXJJZGVu\ndGl0eSA9IHByb2Nlc3NJZGVudGl0eSh3cmFwcGVyUGlkKTsKICAgICAgICBleHBlY3Qod3JhcHBl\ncklkZW50aXR5KS50b0NvbnRhaW4od3JhcHBlckNvbW1hbmQpOwogICAgICAgIHdyYXBwZXIgPSB7\nIHBpZDogd3JhcHBlclBpZCwgaWRlbnRpdHk6IHdyYXBwZXJJZGVudGl0eSEgfTsKICAgICAgICBw\nYXlsb2FkID0gYXdhaXQgcmVhZFBheWxvYWQocGlkRmlsZSwgbWFya2VyKTsKICAgICAgICBjb25z\ndCBjb250cm9sU2Vzc2lvbiA9IGF3YWl0IGFnZW50LnNlc3Npb24oewogICAgICAgICAgZW52aXJv\nbm1lbnQ6IEVudmlyb25tZW50LmxvY2FsKHsKICAgICAgICAgICAgY3dkOiBjb250cm9sLAogICAg\nICAgICAgICB3cml0YWJsZVJvb3RzOiBbY29udHJvbF0sCiAgICAgICAgICAgIHRvb2xzOiBbImV4\nZWNfY29tbWFuZCJdLAogICAgICAgICAgfSksCiAgICAgICAgfSk7CiAgICAgICAgY2xvc2VDb250\ncm9sID0gKCkgPT4gY29udHJvbFNlc3Npb24uY2xvc2UoKTsKICAgICAgICBjb25zdCBjb250cm9s\nVHVybiA9IGF3YWl0IGNvbnRyb2xTZXNzaW9uLnN1Ym1pdCgKICAgICAgICAgICJTdGFydCB0aGUg\nZGlzam9pbnQgaGVhcnRiZWF0LiIsCiAgICAgICAgKTsKICAgICAgICBleHBlY3QoKGF3YWl0IGNv\nbnRyb2xUdXJuLndhaXQoKSkuZmluYWxPdXRwdXQpLnRvQmUoCiAgICAgICAgICAiRGlzam9pbnQg\n\
-          aGVhcnRiZWF0IHJ1bm5pbmcuIiwKICAgICAgICApOwogICAgICAgIGNvbnRyb2xQYXlsb2FkID0g\nYXdhaXQgcmVhZFBheWxvYWQoY29udHJvbFBpZEZpbGUsIGNvbnRyb2xNYXJrZXIpOwoKICAgICAg\nICBzaWduYWwod3JhcHBlciwgIlNJR1NUT1AiKTsKICAgICAgICBwYXVzZUluamVjdGVkID0gdHJ1\nZTsKICAgICAgICBhd2FpdCB2aS53YWl0Rm9yKCgpID0+IGV4cGVjdChzdG9wcGVkKHdyYXBwZXIh\nKSkudG9CZSh0cnVlKSwgewogICAgICAgICAgdGltZW91dDogMjAwMCwKICAgICAgICB9KTsKICAg\nICAgICBjb25zdCBiZWZvcmVDbG9zZSA9IGF3YWl0IHNpemUoKTsKICAgICAgICBhd2FpdCB2aS53\nYWl0Rm9yKGFzeW5jICgpID0+CiAgICAgICAgICBleHBlY3QoYXdhaXQgc2l6ZSgpKS50b0JlR3Jl\nYXRlclRoYW4oYmVmb3JlQ2xvc2UpLAogICAgICAgICk7CgogICAgICAgIGNvbnN0IHN0YXJ0ZWQg\nPSBwZXJmb3JtYW5jZS5ub3coKTsKICAgICAgICBjbG9zZVN0YXJ0ZWQgPSB0cnVlOwogICAgICAg\nIGNvbnN0IHRpbWVvdXQgPSBuZXcgQWJvcnRDb250cm9sbGVyKCk7CiAgICAgICAgY29uc3QgY2xv\nc2UgPSBzZXNzaW9uLmNsb3NlKCkudGhlbigKICAgICAgICAgICgpID0+ICh7IG91dGNvbWU6ICJy\nZXNvbHZlZCIsIG1lc3NhZ2U6ICIiIH0pLAogICAgICAgICAgKGVycm9yOiB1bmtub3duKSA9PiAo\neyBvdXRjb21lOiAicmVqZWN0ZWQiLCBtZXNzYWdlOiBTdHJpbmcoZXJyb3IpIH0pLAogICAgICAg\nICk7CiAgICAgICAgY29uc3Qgb2JzZXJ2ZWQgPSBhd2FpdCBQcm9taXNlLnJhY2UoWwogICAgICAg\n\
-          ICAgY2xvc2UsCiAgICAgICAgICBkZWxheSgKICAgICAgICAgICAgMTZfMDAwLAogICAgICAgICAg\nICB7IG91dGNvbWU6ICJ0aW1lb3V0IiwgbWVzc2FnZTogIiIgfSwKICAgICAgICAgICAgeyBzaWdu\nYWw6IHRpbWVvdXQuc2lnbmFsIH0sCiAgICAgICAgICApLAogICAgICAgIF0pLmZpbmFsbHkoKCkg\nPT4gdGltZW91dC5hYm9ydCgpKTsKICAgICAgICBjb25zdCBjbG9zZU1pbGxpc2Vjb25kcyA9IE1h\ndGgucm91bmQocGVyZm9ybWFuY2Uubm93KCkgLSBzdGFydGVkKTsKICAgICAgICBjb25zdCB3cmFw\ncGVyRXhpdGVkQXRDbG9zZSA9ICFtYXRjaGVzSWRlbnRpdHkod3JhcHBlcik7CiAgICAgICAgY29u\nc3QgcGF5bG9hZEV4aXRlZEF0Q2xvc2UgPSAhbWF0Y2hlc0lkZW50aXR5KHBheWxvYWQpOwogICAg\nICAgIGNvbnN0IGF0Q2xvc2UgPSBhd2FpdCBzaXplKCk7CiAgICAgICAgY29uc3QgY29udHJvbEF0\nQ2xvc2UgPSBhd2FpdCBzaXplKGNvbnRyb2xNYXJrZXIpOwogICAgICAgIGF3YWl0IGRlbGF5KDYw\nMCk7CiAgICAgICAgY29uc3QgYWZ0ZXJDbG9zZSA9IGF3YWl0IHNpemUoKTsKICAgICAgICBjb25z\ndCBjb250cm9sQWZ0ZXJDbG9zZSA9IGF3YWl0IHNpemUoY29udHJvbE1hcmtlcik7CiAgICAgICAg\nY29uc29sZS5pbmZvKAogICAgICAgICAgIltEYXJ3aW4gd3JhcHBlciBmaXhlZF0iLAogICAgICAg\nICAgSlNPTi5zdHJpbmdpZnkoewogICAgICAgICAgICBjbG9zZTogb2JzZXJ2ZWQsCiAgICAgICAg\nICAgIGNsb3NlTWlsbGlzZWNvbmRzLAogICAgICAgICAgICB3cmFwcGVyRXhpdGVkQXRDbG9zZSwK\n\
-          ICAgICAgICAgICAgcGF5bG9hZEV4aXRlZEF0Q2xvc2UsCiAgICAgICAgICAgIGF0Q2xvc2UsCiAg\nICAgICAgICAgIGFmdGVyQ2xvc2UsCiAgICAgICAgICAgIGNvbnRyb2xBdENsb3NlLAogICAgICAg\nICAgICBjb250cm9sQWZ0ZXJDbG9zZSwKICAgICAgICAgIH0pLAogICAgICAgICk7CiAgICAgICAg\nZXhwZWN0KG9ic2VydmVkLm91dGNvbWUpLnRvQmUoInJlc29sdmVkIik7CiAgICAgICAgZXhwZWN0\nKHdyYXBwZXJFeGl0ZWRBdENsb3NlKS50b0JlKHRydWUpOwogICAgICAgIGV4cGVjdChwYXlsb2Fk\nRXhpdGVkQXRDbG9zZSkudG9CZSh0cnVlKTsKICAgICAgICBleHBlY3QoYWZ0ZXJDbG9zZSkudG9C\nZShhdENsb3NlKTsKICAgICAgICBleHBlY3QobWF0Y2hlc0lkZW50aXR5KGNvbnRyb2xQYXlsb2Fk\nKSkudG9CZSh0cnVlKTsKICAgICAgICBleHBlY3QoY29udHJvbEFmdGVyQ2xvc2UpLnRvQmVHcmVh\ndGVyVGhhbihjb250cm9sQXRDbG9zZSk7CiAgICAgICAgYXdhaXQgc2Vzc2lvbi5jbG9zZSgpOwog\nICAgICAgIGF3YWl0IGNsb3NlQ29udHJvbCgpOwogICAgICAgIGV4cGVjdChtYXRjaGVzSWRlbnRp\ndHkoY29udHJvbFBheWxvYWQpKS50b0JlKGZhbHNlKTsKICAgICAgICBjbG9zZUNvbnRyb2wgPSB1\nbmRlZmluZWQ7CiAgICAgICAgc2VydmVyLmFzc2VydEV4aGF1c3RlZCgpOwogICAgICB9IGZpbmFs\nbHkgewogICAgICAgIC8vIFRoZXNlIHNpZ25hbHMgYXJlIG9ubHkgYSBmYWlsLXNhZmUgZm9yIGlk\nZW50aXRpZXMgc3RpbGwgb3duZWQgYnkgdGhlIHRlc3QuCiAgICAgICAgaWYgKHBhdXNlSW5qZWN0\n\
-          ZWQgJiYgd3JhcHBlciAmJiBtYXRjaGVzSWRlbnRpdHkod3JhcHBlcikpIHsKICAgICAgICAgIHNp\nZ25hbCh3cmFwcGVyLCAiU0lHQ09OVCIpOwogICAgICAgIH0KICAgICAgICBpZiAocGF5bG9hZCkg\nc2lnbmFsKHBheWxvYWQsICJTSUdLSUxMIik7CiAgICAgICAgaWYgKGNvbnRyb2xQYXlsb2FkKSBz\naWduYWwoY29udHJvbFBheWxvYWQsICJTSUdLSUxMIik7CiAgICAgICAgY29uc3QgY2xlYW51cCA9\nIFtdOwogICAgICAgIGlmICghY2xvc2VTdGFydGVkKSBjbGVhbnVwLnB1c2goc2Vzc2lvbi5jbG9z\nZSgpLmNhdGNoKCgpID0+IHt9KSk7CiAgICAgICAgaWYgKGNsb3NlQ29udHJvbCkgY2xlYW51cC5w\ndXNoKGNsb3NlQ29udHJvbCgpLmNhdGNoKCgpID0+IHt9KSk7CiAgICAgICAgaWYgKGNsZWFudXAu\nbGVuZ3RoKQogICAgICAgICAgYXdhaXQgUHJvbWlzZS5yYWNlKFtQcm9taXNlLmFsbChjbGVhbnVw\nKSwgZGVsYXkoNDAwMCldKTsKICAgICAgfQogICAgfSBmaW5hbGx5IHsKICAgICAgYXdhaXQgcm0o\nZGlyZWN0b3J5LCB7IHJlY3Vyc2l2ZTogdHJ1ZSwgZm9yY2U6IHRydWUgfSk7CiAgICB9CiAgfSwK\nICA1NV8wMDAsCik7Cg==\nPROBE\nprintf '%s  %s\\n' \"$PROBE_SHA256\" \"$probe\" | shasum -a 256 -c\ncat \"$probe\" >> \"$fixture\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nproduct_hashes \"$consumer\" | tee \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\"\
-          \nstatus=0\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/managed-$PROBE_SLUG.test.ts\" -t \"^$PROBE_TITLE$\" \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/$PROBE_SLUG-report.json\" \\\n  | tee \"$RUNNER_TEMP/$PROBE_SLUG-evidence.log\" || status=$?\nproduct_hashes \"$consumer\" > \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ncmp \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\" \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ntest \"$status\" = 0\njq -e --arg title \"$PROBE_TITLE\" \\\n  '[.testResults[].assertionResults[] | select(.status==\"passed\") | .fullName] == [$title]' \\\n  \"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\n"
-      - name: Verify hard-link guards through the installed release package
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        env:
-          OPENAI_AGENTS_NATIVE_TESTS: '1'
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-          PROBE_SHA256: 5310eef0f31985b2c30d9661cdd6d87de20cd3790f28c85d53cfbec84de249c9
-          PROBE_SLUG: helper-alias
-          PROBE_TITLE: qualifies native helper hard-link grants in an installed macOS package
-          OPENAI_AGENTS_EXPECT_HELPER_ALIAS_REJECT: '1'
-        run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nproduct_hashes() {\n  (cd \"$1/node_modules/@openai/agents\" && shasum -a 256 native/{codex.node,build-receipt.json} bin/codex-*)\n}\n\noriginal=\"$consumer\"\nconsumer=\"$RUNNER_TEMP/agents-alias-starter\"\nmkdir \"$consumer\"\ncp -RP \"$original/node_modules\" \"$original/package.json\" \"$consumer/\"\ncmp <(product_hashes \"$original\") <(product_hashes \"$consumer\")\n\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\nfixture=\"$test_dir/managed-$PROBE_SLUG.test.ts\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$fixture\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nif [[ ! -e \"$consumer/node_modules/vitest\" ]]; then\n  ln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nfi\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\nprobe=\"$RUNNER_TEMP/$PROBE_SLUG-probe.ts\"\nbase64 -D >\"$probe\" <<'PROBE'\nCmltcG9ydCB7IGNvcHlGaWxlIGFzIGNvcHlEYXJ3aW5BbGlhc0ZpbGUsIGxpbmsgYXMgbGlua0Rh\n\
-          cndpbkFsaWFzRmlsZSwgcmVuYW1lIGFzIHJlbmFtZURhcndpbkFsaWFzRmlsZSwgc3RhdCBhcyBz\ndGF0RGFyd2luQWxpYXNGaWxlIH0gZnJvbSAnbm9kZTpmcy9wcm9taXNlcyc7CgppdCgncXVhbGlm\naWVzIG5hdGl2ZSBoZWxwZXIgaGFyZC1saW5rIGdyYW50cyBpbiBhbiBpbnN0YWxsZWQgbWFjT1Mg\ncGFja2FnZScsIGFzeW5jICgpID0+IHsKICBleHBlY3QocHJvY2Vzcy5wbGF0Zm9ybSkudG9CZSgn\nZGFyd2luJyk7CiAgY29uc3QgY29uc3VtZXIgPSBhd2FpdCByZWFscGF0aChwYWNrYWdlUm9vdCk7\nCiAgY29uc3QgaGVscGVyID0gYXdhaXQgcmVhbHBhdGgoam9pbihjb25zdW1lciwgJ25vZGVfbW9k\ndWxlcy9Ab3BlbmFpL2FnZW50cy9iaW4vY29kZXgtY29kZS1tb2RlLWhvc3QnKSk7CiAgZXhwZWN0\nKGhlbHBlci5zdGFydHNXaXRoKGNvbnN1bWVyICsgJy8nKSkudG9CZSh0cnVlKTsKICBjb25zdCB7\nIG1vZGUsIHNpemUgfSA9IGF3YWl0IHN0YXREYXJ3aW5BbGlhc0ZpbGUoaGVscGVyKTsKICBleHBl\nY3Qoc2l6ZSkudG9CZUdyZWF0ZXJUaGFuKDEwMDAwKTsKICBjb25zdCBzY3JhdGNoID0gYXdhaXQg\nbWtkdGVtcChqb2luKGNvbnN1bWVyLCAnZGFyd2luLWhlbHBlci1hbGlhcy0nKSk7CiAgY29uc3Qg\nc2F2ZWQgPSBqb2luKHNjcmF0Y2gsICdvcmlnaW5hbC1jb2RlLW1vZGUtaG9zdCcpOwogIGNvbnN0\nIHN0b3JlID0gam9pbihzY3JhdGNoLCAnc3RvcmUnKTsKICBjb25zdCBjd2QgPSBqb2luKHNjcmF0\nY2gsICdjd2QnKTsKICBjb25zdCBvdmVybGFwID0gam9pbihzY3JhdGNoLCAnb3ZlcmxhcCcpOwog\n\
-          IGNvbnN0IGRpc2pvaW50ID0gam9pbihzY3JhdGNoLCAnZGlzam9pbnQnKTsKICBjb25zdCBhbGlh\ncyA9IGpvaW4ob3ZlcmxhcCwgJ25hdGl2ZS1ob3N0LWFsaWFzJyk7CiAgY29uc3QgaW52b2tlZCA9\nIGpvaW4oc2NyYXRjaCwgJ2hvc3QtaW52b2tlZCcpOwogIGNvbnN0IGluc3RhbGxlZFNoaW0gPSBq\nb2luKHNjcmF0Y2gsICdjb25maWd1cmVkLWhvc3Qtc2hpbScpOwogIGNvbnN0IHF1b3RlID0gKHBh\ndGg6IHN0cmluZykgPT4gIiciICsgcGF0aC5yZXBsYWNlQWxsKCInIiwgIidcXCcnIikgKyAiJyI7\nCiAgY29uc3QgbWFya2VyID0gJ3IyMC1pbmVydC1oYXJkbGluay1tYXJrZXInOwogIGNvbnN0IHNo\naW0gPSBgIyEvYmluL3NoXG5wcmludGYgJXMgaW52b2tlZCA+ICR7cXVvdGUoaW52b2tlZCl9XG5l\neGVjICR7cXVvdGUoam9pbihzdG9yZSwgJ3JlYWwtaG9zdCcpKX0gIiRAIlxuIyBNYXJrZXI6IGA7\nCiAgY29uc3QgZml4ZWQgPSBwcm9jZXNzLmVudi5PUEVOQUlfQUdFTlRTX0VYUEVDVF9IRUxQRVJf\nQUxJQVNfUkVKRUNUID09PSAnMSc7CiAgYXdhaXQgUHJvbWlzZS5hbGwoW21rZGlyKHN0b3JlKSwg\nbWtkaXIoY3dkKSwgbWtkaXIob3ZlcmxhcCksIG1rZGlyKGRpc2pvaW50KV0pOwogIGF3YWl0IGNv\ncHlEYXJ3aW5BbGlhc0ZpbGUoaGVscGVyLCBqb2luKHN0b3JlLCAncmVhbC1ob3N0JykpOwogIGNv\nbnN0IGZpbmdlcnByaW50ID0gKHBhdGg6IHN0cmluZykgPT4KICAgIGV4ZWNGaWxlU3luYygnL3Vz\nci9iaW4vc2hhc3VtJywgWyctYScsICcyNTYnLCBwYXRoXSwgeyBlbmNvZGluZzogJ3V0ZjgnIH0p\n\
-          LnNwbGl0KC9ccysvLCAxKVswXTsKICBleHBlY3QoZmluZ2VycHJpbnQoam9pbihzdG9yZSwgJ3Jl\nYWwtaG9zdCcpKSkudG9CZShmaW5nZXJwcmludChoZWxwZXIpKTsKICBhd2FpdCB3cml0ZUZpbGUo\naW5zdGFsbGVkU2hpbSwgc2hpbSwgeyBtb2RlOiBtb2RlICYgMG83NzcgfSk7CiAgYXdhaXQgcmVu\nYW1lRGFyd2luQWxpYXNGaWxlKGhlbHBlciwgc2F2ZWQpOwogIHRyeSB7CiAgICBhd2FpdCByZW5h\nbWVEYXJ3aW5BbGlhc0ZpbGUoaW5zdGFsbGVkU2hpbSwgaGVscGVyKTsKICAgIGF3YWl0IGxpbmtE\nYXJ3aW5BbGlhc0ZpbGUoaGVscGVyLCBhbGlhcyk7CiAgICBhd2FpdCBsaW5rRGFyd2luQWxpYXNG\naWxlKGhlbHBlciwgam9pbihzdG9yZSwgJ290aGVyLWluc3RhbGwtbGluaycpKTsKICAgIGNvbnN0\nIHByb3RlY3RlZFN0YXQgPSBhd2FpdCBzdGF0RGFyd2luQWxpYXNGaWxlKGhlbHBlciwgeyBiaWdp\nbnQ6IHRydWUgfSk7CiAgICBjb25zdCBhbGlhc1N0YXQgPSBhd2FpdCBzdGF0RGFyd2luQWxpYXNG\naWxlKGFsaWFzLCB7IGJpZ2ludDogdHJ1ZSB9KTsKICAgIGV4cGVjdChbYWxpYXNTdGF0LmRldiwg\nYWxpYXNTdGF0LmlubywgYWxpYXNTdGF0Lm5saW5rXSkudG9FcXVhbChbcHJvdGVjdGVkU3RhdC5k\nZXYsIHByb3RlY3RlZFN0YXQuaW5vLCAzbl0pOwogICAgY29uc29sZS5sb2coJ0RhcndpbiBoZWxw\nZXIgaWRlbnRpdHk6JywgU3RyaW5nKHByb3RlY3RlZFN0YXQuZGV2KSwgU3RyaW5nKHByb3RlY3Rl\nZFN0YXQuaW5vKSwgJ25saW5rPTMnKTsKICAgIGNvbnN0IGVudmlyb25tZW50ID0gKHJvb3Q6IHN0\n\
-          cmluZykgPT4KICAgICAgRW52aXJvbm1lbnQubG9jYWwoeyBjd2QsIHdyaXRhYmxlUm9vdHM6IFty\nb290XSwgdG9vbHM6IFsnZXhlY19jb21tYW5kJ10gfSk7CiAgICBjb25zdCBkaXJlY3RXcml0ZSA9\nIGBwcmludGYgJXMgZGlyZWN0LXBhdGgtd3JpdGUgPj4gJHtxdW90ZShoZWxwZXIpfWA7CiAgICBj\nb25zdCBjb250cm9sUHJvb2YgPSBqb2luKGRpc2pvaW50LCAnb3JkaW5hcnktd3JpdGUnKTsKICAg\nIHsKICAgICAgY29uc3QgY29tbWFuZCA9IGBpZiAoJHtkaXJlY3RXcml0ZX0pOyB0aGVuIGV4aXQg\nMzc7IGZpOyBwcmludGYgJXMgb3JkaW5hcnkgPiAke3F1b3RlKGNvbnRyb2xQcm9vZil9YDsKICAg\nICAgY29uc3Qgc2VydmVyID0gbmV3IE1vZGVsU2VydmVyKFtbY2FsbCgnZXhlY19jb21tYW5kJywg\neyBjbWQ6IGNvbW1hbmQgfSwgeyBjYWxsSWQ6ICdkaXNqb2ludCcgfSldLCBbbWVzc2FnZSgnZG9u\nZScpXV0pOwogICAgICBhd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNl\ncnZlcik7CiAgICAgIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlkZXIsIG1vZGVsOiAn\nZ3B0LTUnLCBpbnN0cnVjdGlvbnM6ICdXb3JrLicgfSk7CiAgICAgIGF3YWl0IHVzaW5nIHNlc3Np\nb24gPSBhd2FpdCBhZ2VudC5zZXNzaW9uKHsgZW52aXJvbm1lbnQ6IGVudmlyb25tZW50KGRpc2pv\naW50KSB9KTsKICAgICAgZXhwZWN0KChhd2FpdCAoYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1J1biB0\naGUgY29tbWFuZC4nKSkud2FpdCgpKS5maW5hbE91dHB1dCkudG9CZSgnZG9uZScpOwogICAgICBl\n\
-          eHBlY3QoYXdhaXQgcmVhZEZpbGUoY29udHJvbFByb29mLCAndXRmOCcpKS50b0JlKCdvcmRpbmFy\neScpOwogICAgICBleHBlY3QoYXdhaXQgcmVhZEZpbGUoaGVscGVyLCAndXRmOCcpKS50b0JlKHNo\naW0pOwogICAgICBleHBlY3Qoc2VydmVyLnJlcXVlc3RzKS50b0hhdmVMZW5ndGgoMik7CiAgICAg\nIGNvbnNvbGUubG9nKCdEaXNqb2ludCBvcmRpbmFyeSB3cml0ZSBhbGxvd2VkOyBkaXJlY3QgaGVs\ncGVyIHBhdGggd3JpdGUgZGVuaWVkLicpOwogICAgfQogICAgewogICAgICBjb25zdCBwcm9vZiA9\nIGpvaW4ob3ZlcmxhcCwgJ29yZGluYXJ5LXdyaXRlJyk7CiAgICAgIGNvbnN0IHN0YXR1cyA9IGpv\naW4ob3ZlcmxhcCwgJ2FsaWFzLXdyaXRlLXJlc3VsdCcpOwogICAgICBjb25zdCBjb21tYW5kID0g\nYHByaW50ZiAlcyBvcmRpbmFyeSA+ICR7cXVvdGUocHJvb2YpfTsgaWYgKHByaW50ZiAlcyAke3F1\nb3RlKG1hcmtlcil9ID4+ICR7cXVvdGUoYWxpYXMpfSk7IHRoZW4gcHJpbnRmIGFsbG93ZWQ7IGVs\nc2UgcHJpbnRmIGRlbmllZDsgZmkgPiAke3F1b3RlKHN0YXR1cyl9YDsKICAgICAgY29uc3Qgc2Vy\ndmVyID0gbmV3IE1vZGVsU2VydmVyKFtbY2FsbCgnZXhlY19jb21tYW5kJywgeyBjbWQ6IGNvbW1h\nbmQgfSwgeyBjYWxsSWQ6ICdhbGlhcycgfSldLCBbbWVzc2FnZSgnZG9uZScpXV0pOwogICAgICBh\nd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNlcnZlcik7CiAgICAgIGNv\nbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlkZXIsIG1vZGVsOiAnZ3B0LTUnLCBpbnN0cnVj\n\
-          dGlvbnM6ICdXb3JrLicsIHByb2dyYW1tYXRpY1Rvb2xDYWxsaW5nOiBmYWxzZSB9KTsKICAgICAg\naWYgKGZpeGVkKSB7CiAgICAgICAgYXdhaXQgZXhwZWN0KGFnZW50LnNlc3Npb24oeyBlbnZpcm9u\nbWVudDogZW52aXJvbm1lbnQob3ZlcmxhcCkgfSkpLnJlamVjdHMudG9UaHJvdygvbG9jYWwgZXhl\nY3V0b3Igd3JpdGUgcm9vdHMgbXVzdCBub3QgY29udGFpbiBpbnN0YWxsZWQgc2FuZGJveCBoZWxw\nZXJzLyk7CiAgICAgICAgZXhwZWN0KHNlcnZlci5yZXF1ZXN0cykudG9IYXZlTGVuZ3RoKDApOwog\nICAgICAgIGV4cGVjdChhd2FpdCByZWFkRmlsZShoZWxwZXIsICd1dGY4JykpLnRvQmUoc2hpbSk7\nCiAgICAgICAgY29uc29sZS5sb2coJ0FsaWFzZWQgaGVscGVyIGdyYW50IHJlamVjdGVkIGJlZm9y\nZSBhbnkgbW9kZWwgY2FsbC4nKTsKICAgICAgfSBlbHNlIHsKICAgICAgICBhd2FpdCB1c2luZyBz\nZXNzaW9uID0gYXdhaXQgYWdlbnQuc2Vzc2lvbih7IGVudmlyb25tZW50OiBlbnZpcm9ubWVudChv\ndmVybGFwKSB9KTsKICAgICAgICBleHBlY3QoKGF3YWl0IChhd2FpdCBzZXNzaW9uLnN1Ym1pdCgn\nUnVuIHRoZSBjb21tYW5kLicpKS53YWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCdkb25lJyk7CiAg\nICAgICAgZXhwZWN0KGF3YWl0IHJlYWRGaWxlKHByb29mLCAndXRmOCcpKS50b0JlKCdvcmRpbmFy\neScpOwogICAgICAgIGNvbnN0IGRpc3Bvc2l0aW9uID0gYXdhaXQgcmVhZEZpbGUoc3RhdHVzLCAn\ndXRmOCcpOwogICAgICAgIGV4cGVjdChbJ2FsbG93ZWQnLCAnZGVuaWVkJ10pLnRvQ29udGFpbihk\n\
-          aXNwb3NpdGlvbik7CiAgICAgICAgZXhwZWN0KGF3YWl0IHJlYWRGaWxlKGhlbHBlciwgJ3V0Zjgn\nKSkudG9CZShzaGltICsgKGRpc3Bvc2l0aW9uID09PSAnYWxsb3dlZCcgPyBtYXJrZXIgOiAnJykp\nOwogICAgICAgIGV4cGVjdChzZXJ2ZXIucmVxdWVzdHMpLnRvSGF2ZUxlbmd0aCgyKTsKICAgICAg\nICBjb25zb2xlLmxvZygnUHJlLWV4aXN0aW5nIGhlbHBlciBoYXJkbGluayB3cml0ZTonLCBkaXNw\nb3NpdGlvbik7CiAgICAgIH0KICAgIH0KICAgIHsKICAgICAgY29uc3Qgc2VydmVyID0gbmV3IE1v\nZGVsU2VydmVyKFtbeyB0eXBlOiAnY3VzdG9tX3Rvb2xfY2FsbCcsIG5hbWU6ICdleGVjJywgaW5w\ndXQ6ICd0ZXh0KCJEQVJXSU5fSE9TVF9TRUxFQ1RFRCIpJywgY2FsbF9pZDogJ2NvZGUnIH1dLCBb\nbWVzc2FnZSgnZG9uZScpXV0pOwogICAgICBhd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHBy\nb3ZpZGVyRm9yKHNlcnZlcik7CiAgICAgIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlk\nZXIsIG1vZGVsOiAnZ3B0LTUnLCBpbnN0cnVjdGlvbnM6ICdXb3JrLicsIHByb2dyYW1tYXRpY1Rv\nb2xDYWxsaW5nOiB0cnVlIH0pOwogICAgICBhd2FpdCB1c2luZyBzZXNzaW9uID0gYXdhaXQgYWdl\nbnQuc2Vzc2lvbih7IGVudmlyb25tZW50OiBlbnZpcm9ubWVudChkaXNqb2ludCkgfSk7CiAgICAg\nIGV4cGVjdCgoYXdhaXQgKGF3YWl0IHNlc3Npb24uc3VibWl0KCdSdW4gdGhlIGdlbmVyYXRlZCBj\nb2RlLicpKS53YWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCdkb25lJyk7CiAgICAgIGV4cGVjdChK\n\
-          U09OLnN0cmluZ2lmeShzZXJ2ZXIucmVxdWVzdHNbMV0/LmlucHV0KSkudG9Db250YWluKCdEQVJX\nSU5fSE9TVF9TRUxFQ1RFRCcpOwogICAgICBleHBlY3QoYXdhaXQgcmVhZEZpbGUoaW52b2tlZCwg\nJ3V0ZjgnKSkudG9CZSgnaW52b2tlZCcpOwogICAgICBjb25zb2xlLmxvZygnQSBsYXRlciBkaXNq\nb2ludCBDb2RlIE1vZGUgc2Vzc2lvbiBpbnZva2VkIHRoZSBzZWxlY3RlZCBwYWNrYWdlZCBob3N0\nLicpOwogICAgfQogICAgewogICAgICBhd2FpdCB3cml0ZUZpbGUoaW5zdGFsbGVkU2hpbSwgc2hp\nbSwgeyBtb2RlOiBtb2RlICYgMG83NzcgfSk7CiAgICAgIGF3YWl0IHJlbmFtZURhcndpbkFsaWFz\nRmlsZShpbnN0YWxsZWRTaGltLCBoZWxwZXIpOwogICAgICBleHBlY3QoKGF3YWl0IHN0YXREYXJ3\naW5BbGlhc0ZpbGUoaGVscGVyKSkubmxpbmspLnRvQmUoMSk7CiAgICAgIGNvbnN0IGJlZm9yZSA9\nIGF3YWl0IHJlYWRGaWxlKGhlbHBlciwgJ3V0ZjgnKTsKICAgICAgY29uc3QgZnJlc2hBbGlhcyA9\nIGpvaW4oZGlzam9pbnQsICduZXctaGFyZGxpbmsnKTsKICAgICAgY29uc3Qgc3RhdHVzID0gam9p\nbihkaXNqb2ludCwgJ25ldy1oYXJkbGluay1yZXN1bHQnKTsKICAgICAgY29uc3QgbmV3TWFya2Vy\nID0gJ3IyMC1uZXctbGluay1pbmVydC1tYXJrZXInOwogICAgICBjb25zdCBjb21tYW5kID0gWwog\nICAgICAgIGBpZiB0ZXN0IC1yICR7cXVvdGUoaGVscGVyKX07IHRoZW4gcHJpbnRmIHJlYWRhYmxl\nOyBlbHNlIHByaW50ZiB1bnJlYWRhYmxlOyBmaWAsCiAgICAgICAgYGlmIC9iaW4vbG4gJHtxdW90\n\
-          ZShoZWxwZXIpfSAke3F1b3RlKGZyZXNoQWxpYXMpfTsgdGhlbiBwcmludGYgOmxpbmtlZDsgZWxz\nZSBwcmludGYgOnJlZnVzZWQ7IGZpYCwKICAgICAgICBgaWYgdGVzdCAtZSAke3F1b3RlKGZyZXNo\nQWxpYXMpfSAmJiAocHJpbnRmICVzICR7cXVvdGUobmV3TWFya2VyKX0gPj4gJHtxdW90ZShmcmVz\naEFsaWFzKX0pOyB0aGVuIHByaW50ZiA6d3JvdGU7IGVsc2UgcHJpbnRmIDp1bmNoYW5nZWQ7IGZp\nYCwKICAgICAgXS5qb2luKCc7ICcpOwogICAgICBjb25zdCBzZXJ2ZXIgPSBuZXcgTW9kZWxTZXJ2\nZXIoW1tjYWxsKCdleGVjX2NvbW1hbmQnLCB7IGNtZDogYHsgJHtjb21tYW5kfTsgfSA+ICR7cXVv\ndGUoc3RhdHVzKX1gIH0sIHsgY2FsbElkOiAnZnJlc2gtbGluaycgfSldLCBbbWVzc2FnZSgnZG9u\nZScpXV0pOwogICAgICBhd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNl\ncnZlcik7CiAgICAgIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlkZXIsIG1vZGVsOiAn\nZ3B0LTUnLCBpbnN0cnVjdGlvbnM6ICdXb3JrLicgfSk7CiAgICAgIGF3YWl0IHVzaW5nIHNlc3Np\nb24gPSBhd2FpdCBhZ2VudC5zZXNzaW9uKHsgZW52aXJvbm1lbnQ6IGVudmlyb25tZW50KGRpc2pv\naW50KSB9KTsKICAgICAgZXhwZWN0KChhd2FpdCAoYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1J1biB0\naGUgY29tbWFuZC4nKSkud2FpdCgpKS5maW5hbE91dHB1dCkudG9CZSgnZG9uZScpOwogICAgICBj\nb25zdCBkaXNwb3NpdGlvbiA9IGF3YWl0IHJlYWRGaWxlKHN0YXR1cywgJ3V0ZjgnKTsKICAgICAg\n\
-          ZXhwZWN0KGRpc3Bvc2l0aW9uKS50b01hdGNoKC9eKHJlYWRhYmxlfHVucmVhZGFibGUpOihsaW5r\nZWR8cmVmdXNlZCk6KHdyb3RlfHVuY2hhbmdlZCkkLyk7CiAgICAgIGV4cGVjdChhd2FpdCByZWFk\nRmlsZShoZWxwZXIsICd1dGY4JykpLnRvQmUoYmVmb3JlICsgKGRpc3Bvc2l0aW9uLmVuZHNXaXRo\nKCc6d3JvdGUnKSA/IG5ld01hcmtlciA6ICcnKSk7CiAgICAgIGlmIChmaXhlZCkgZXhwZWN0KGRp\nc3Bvc2l0aW9uKS5ub3QudG9NYXRjaCgvOndyb3RlJC8pOwogICAgICBjb25zb2xlLmxvZygnUG9z\ndC1hZG1pc3Npb24gaGVscGVyIGhhcmRsaW5rOicsIGRpc3Bvc2l0aW9uKTsKICAgICAgYXdhaXQg\ncm0oZnJlc2hBbGlhcywgeyBmb3JjZTogdHJ1ZSB9KTsKICAgIH0KICAgIHsKICAgICAgY29uc3Qg\nc291cmNlID0gam9pbihzdG9yZSwgJ3JlYWQtb25seS1zZWNvbmQtbmFtZScpOwogICAgICBhd2Fp\ndCBsaW5rRGFyd2luQWxpYXNGaWxlKGhlbHBlciwgc291cmNlKTsKICAgICAgZXhwZWN0KChhd2Fp\ndCBzdGF0RGFyd2luQWxpYXNGaWxlKGhlbHBlcikpLm5saW5rKS50b0JlKDIpOwogICAgICBjb25z\ndCBiZWZvcmUgPSBhd2FpdCByZWFkRmlsZShoZWxwZXIsICd1dGY4Jyk7CiAgICAgIGNvbnN0IGFs\naWFzVGFyZ2V0ID0gam9pbihkaXNqb2ludCwgJ2xpbmstZnJvbS1kaXNqb2ludC1zb3VyY2UnKTsK\nICAgICAgY29uc3QgbG9jYWxTb3VyY2UgPSBqb2luKGRpc2pvaW50LCAnbG9jYWwtaGFyZGxpbmst\nc291cmNlJyk7CiAgICAgIGNvbnN0IGxvY2FsVGFyZ2V0ID0gam9pbihkaXNqb2ludCwgJ2xvY2Fs\n\
-          LWhhcmRsaW5rLXRhcmdldCcpOwogICAgICBjb25zdCBzdGF0dXMgPSBqb2luKGRpc2pvaW50LCAn\ncmVhZGFibGUtYWxpYXMtbGluay1yZXN1bHQnKTsKICAgICAgY29uc3QgbWFya2VyID0gJ3IyMC1k\naXNqb2ludC1zb3VyY2UtbWFya2VyJzsKICAgICAgY29uc3QgY29tbWFuZCA9IFsKICAgICAgICBg\naWYgL2Jpbi9jYXQgJHtxdW90ZShzb3VyY2UpfSA+IC9kZXYvbnVsbDsgdGhlbiBwcmludGYgcmVh\nZGFibGU7IGVsc2UgcHJpbnRmIHVucmVhZGFibGU7IGZpYCwKICAgICAgICBgaWYgL2Jpbi9sbiAk\ne3F1b3RlKHNvdXJjZSl9ICR7cXVvdGUoYWxpYXNUYXJnZXQpfTsgdGhlbiBwcmludGYgOmxpbmtl\nZDsgZWxzZSBwcmludGYgOnJlZnVzZWQ7IGZpYCwKICAgICAgICBgaWYgdGVzdCAtZSAke3F1b3Rl\nKGFsaWFzVGFyZ2V0KX0gJiYgKHByaW50ZiAlcyAke3F1b3RlKG1hcmtlcil9ID4+ICR7cXVvdGUo\nYWxpYXNUYXJnZXQpfSk7IHRoZW4gcHJpbnRmIDp3cm90ZTsgZWxzZSBwcmludGYgOnVuY2hhbmdl\nZDsgZmlgLAogICAgICAgIGBwcmludGYgbG9jYWwgPiAke3F1b3RlKGxvY2FsU291cmNlKX1gLAog\nICAgICAgIGBpZiAvYmluL2xuICR7cXVvdGUobG9jYWxTb3VyY2UpfSAke3F1b3RlKGxvY2FsVGFy\nZ2V0KX07IHRoZW4gcHJpbnRmIDpsb2NhbC1saW5rZWQ7IGVsc2UgcHJpbnRmIDpsb2NhbC1yZWZ1\nc2VkOyBmaWAsCiAgICAgIF0uam9pbignOyAnKTsKICAgICAgY29uc3Qgc2VydmVyID0gbmV3IE1v\nZGVsU2VydmVyKFtbY2FsbCgnZXhlY19jb21tYW5kJywgeyBjbWQ6IGB7ICR7Y29tbWFuZH07IH0g\n\
-          PiAke3F1b3RlKHN0YXR1cyl9YCB9LCB7IGNhbGxJZDogJ291dHNpZGUtYWxpYXMnIH0pXSwgW21l\nc3NhZ2UoJ2RvbmUnKV1dKTsKICAgICAgYXdhaXQgdXNpbmcgcHJvdmlkZXIgPSBhd2FpdCBwcm92\naWRlckZvcihzZXJ2ZXIpOwogICAgICBjb25zdCBhZ2VudCA9IG5ldyBBZ2VudCh7IHByb3ZpZGVy\nLCBtb2RlbDogJ2dwdC01JywgaW5zdHJ1Y3Rpb25zOiAnV29yay4nIH0pOwogICAgICBhd2FpdCB1\nc2luZyBzZXNzaW9uID0gYXdhaXQgYWdlbnQuc2Vzc2lvbih7IGVudmlyb25tZW50OiBlbnZpcm9u\nbWVudChkaXNqb2ludCkgfSk7CiAgICAgIGV4cGVjdCgoYXdhaXQgKGF3YWl0IHNlc3Npb24uc3Vi\nbWl0KCdSdW4gdGhlIGNvbW1hbmQuJykpLndhaXQoKSkuZmluYWxPdXRwdXQpLnRvQmUoJ2RvbmUn\nKTsKICAgICAgY29uc3QgZGlzcG9zaXRpb24gPSBhd2FpdCByZWFkRmlsZShzdGF0dXMsICd1dGY4\nJyk7CiAgICAgIGV4cGVjdChkaXNwb3NpdGlvbikudG9NYXRjaCgvXihyZWFkYWJsZXx1bnJlYWRh\nYmxlKToobGlua2VkfHJlZnVzZWQpOih3cm90ZXx1bmNoYW5nZWQpOmxvY2FsLShsaW5rZWR8cmVm\ndXNlZCkkLyk7CiAgICAgIGV4cGVjdChhd2FpdCByZWFkRmlsZShoZWxwZXIsICd1dGY4JykpLnRv\nQmUoYmVmb3JlICsgKGRpc3Bvc2l0aW9uLmluY2x1ZGVzKCc6d3JvdGU6JykgPyBtYXJrZXIgOiAn\nJykpOwogICAgICBpZiAoZml4ZWQpIGV4cGVjdChkaXNwb3NpdGlvbikubm90LnRvQ29udGFpbign\nOndyb3RlOicpOwogICAgICBjb25zb2xlLmxvZygnUG9zdC1hZG1pc3Npb24gbGluayBmcm9tIGRp\n\
-          c2pvaW50IGhlbHBlciBhbGlhczonLCBkaXNwb3NpdGlvbik7CiAgICB9CiAgfSBmaW5hbGx5IHsK\nICAgIGF3YWl0IHJlbmFtZURhcndpbkFsaWFzRmlsZShzYXZlZCwgaGVscGVyKTsKICAgIGF3YWl0\nIHJtKHNjcmF0Y2gsIHsgcmVjdXJzaXZlOiB0cnVlLCBmb3JjZTogdHJ1ZSB9KTsKICB9Cn0sIDkw\nXzAwMCk7Cg==\nPROBE\nprintf '%s  %s\\n' \"$PROBE_SHA256\" \"$probe\" | shasum -a 256 -c\ncat \"$probe\" >> \"$fixture\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nproduct_hashes \"$consumer\" | tee \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\"\nstatus=0\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/managed-$PROBE_SLUG.test.ts\" -t \"^$PROBE_TITLE$\" \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/$PROBE_SLUG-report.json\" \\\n  | tee \"$RUNNER_TEMP/$PROBE_SLUG-evidence.log\" || status=$?\nproduct_hashes \"$consumer\" > \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ncmp \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\" \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\
-          \ntest \"$status\" = 0\njq -e --arg title \"$PROBE_TITLE\" \\\n  '[.testResults[].assertionResults[] | select(.status==\"passed\") | .fullName] == [$title]' \\\n  \"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\n"
-      - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: js-darwin-installed-probe-evidence
-          path: '${{ runner.temp }}/wrapper-*.json
+          ${{ env.CARGO_HOME }}/registry/cache
 
-            ${{ runner.temp }}/wrapper-*.log
+          ${{ env.CARGO_HOME }}/git/db
 
-            ${{ runner.temp }}/wrapper-products*.txt
+          packages/agents/native/.cache/v8
 
-            ${{ runner.temp }}/helper-alias-*.json
+          '
+        key: js-managed-macos-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/Cargo.lock') }}
+    - name: Build the SDK and native runtime
+      run: 'pnpm install --frozen-lockfile
 
-            ${{ runner.temp }}/helper-alias-*.log
+        pnpm build
 
-            ${{ runner.temp }}/helper-alias-products*.txt'
-          if-no-files-found: warn
+        node packages/agents/scripts/native.mjs package
+
+        '
+    - name: Build the macOS WSS test fixture
+      if: runner.os == 'macOS'
+      working-directory: packages/agents/native
+      run: '# Reuse the verified V8 files and target from native.mjs package.
+
+        export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
+
+        export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
+
+        cargo build --locked --release --example exec-server-fixture
+
+        fixture="$CARGO_TARGET_DIR/release/examples/exec-server-fixture"
+
+        test -x "$fixture"
+
+        echo "CODEX_EXEC_SERVER_TEST_BINARY=$fixture" >> "$GITHUB_ENV"
+
+        '
+    - name: Save the Rust downloads
+      if: ${{ !cancelled() && steps.rust-downloads.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: '${{ env.CARGO_HOME }}/registry/index
+
+          ${{ env.CARGO_HOME }}/registry/cache
+
+          ${{ env.CARGO_HOME }}/git/db
+
+          packages/agents/native/.cache/v8
+
+          '
+        key: js-managed-macos-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/Cargo.lock') }}
+    - name: Check the portable sleep fixture on macOS
+      run: 'test -x /bin/sleep
+
+        /bin/sleep 0
+
+        PATH=/usr/bin:/bin /bin/sh -c ''command -v sleep; exec sleep 0''
+
+        '
+    - name: Qualify local executor grants on macOS
+      if: runner.os == 'macOS'
+      env:
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+      run: pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|rejects a local executor grant to the runtime home' --reporter=verbose
+    - name: Qualify native cancellation and model-step resume on macOS
+      run: "pnpm test:native packages/agents/test/native/executor-stop-native.test.ts \\\n  -t 'fences a direct result before native' --maxWorkers=1 --reporter=verbose\npnpm test:native packages/agents/test/native/model-preparation-cap.test.ts \\\n  --maxWorkers=1 --reporter=verbose\npnpm test:native packages/agents/test/native/executor-receipt-resume-native.test.ts \\\n  -t 'can attach a trusted implicit remote executor' --maxWorkers=1 --reporter=verbose\npnpm test:native \\\n  packages/agents/test/native/embedded-commands.test.ts \\\n  packages/agents/test/native/turn-controls.test.ts \\\n  packages/agents/test/native/parity-child-manual.test.ts \\\n  -t 'returns the actual native compact Turn|lets a graceful exact stop preserve|accepts a live child manual reply' \\\n  --maxWorkers=1 --reporter=verbose\npnpm test:native packages/agents/test/native/compaction-late-admission-native.test.ts \\\n  --maxWorkers=1 --reporter=verbose\n"
+    - name: Create the release bundles
+      run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+    - name: Test the extracted bundles
+      run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
+    - name: Verify launchd denial from the installed npm package
+      id: install
+      run: "cat > \"$RUNNER_TEMP/js-install.mjs\" <<'INSTALL'\nimport assert from \"node:assert/strict\";\nimport { execFileSync } from \"node:child_process\";\nimport { cpSync, readFileSync, realpathSync } from \"node:fs\";\nimport { join, sep } from \"node:path\";\nimport { pathToFileURL } from \"node:url\";\n\nconst checkout = process.argv[2];\nconst { hashes, verifyArtifactDirectory } = await import(\n  pathToFileURL(join(checkout, \"scripts/verify-alpha-package.mjs\"))\n);\nconst { verifyNativeReceipt, verifyStarterLock } = await import(\n  pathToFileURL(join(checkout, \"scripts/alpha-package.mjs\"))\n);\nconst { ARTIFACT_DIRECTORY, PRODUCER_SDK, RECEIPT_SOURCE, RUNNER_TEMP } =\n  process.env;\nassert.equal(process.platform + \"-\" + process.arch, \"darwin-arm64\");\nconst build = await verifyArtifactDirectory(ARTIFACT_DIRECTORY);\nassert.equal(build.sourceCommit, PRODUCER_SDK);\nconst readJson = (path) => JSON.parse(readFileSync(path, \"utf8\"));\nfor (const profile of [\"starter\", \"app\"]) {\n  const installed\
+        \ = readJson(\n    join(ARTIFACT_DIRECTORY, `installed-${profile}-darwin-arm64.json`),\n  );\n  assert.equal(installed.profile, profile);\n  assert(installed.verified.includes(\"native-receipt\"));\n  for (const field of Object.keys(build))\n    assert.deepEqual(installed[field], build[field]);\n}\n\nexecFileSync(\"/usr/bin/tar\", [\n  \"-xzf\",\n  join(ARTIFACT_DIRECTORY, build.starter.archive),\n  \"-C\",\n  RUNNER_TEMP,\n]);\nconst consumer = join(RUNNER_TEMP, \"agents-starter\");\nconst manifest = readJson(join(consumer, \"package.json\"));\nfor (const [name, record] of Object.entries(build.packages)) {\n  assert.equal(\n    manifest.dependencies[name],\n    `file:vendor/agents/${record.archive}`,\n  );\n  assert.equal(\n    (await hashes(join(consumer, \"vendor/agents\", record.archive))).sha256,\n    record.sha256,\n  );\n}\nverifyStarterLock(\n  readJson(join(consumer, \"package-lock.json\")),\n  build.packages,\n);\nconst npm = join(process.execPath, \"../../lib/node_modules/npm/bin/npm-cli.js\"\
+        );\nexecFileSync(process.execPath, [npm, \"ci\", \"--ignore-scripts\"], {\n  cwd: consumer,\n  env: { ...process.env, NODE_PATH: \"\", PATH: \"\" },\n  stdio: \"inherit\",\n});\n\nconst installed = realpathSync(join(consumer, \"node_modules/@openai/agents\"));\nassert(installed.startsWith(realpathSync(consumer) + sep));\nconst checked = join(RECEIPT_SOURCE, \"packages/agents\");\nconst nativeReceipt = readJson(join(installed, \"native/build-receipt.json\"));\nconst inputs = execFileSync(\n  \"git\",\n  [\n    \"ls-files\",\n    \"--\",\n    \"native/CODEX_REVISION\",\n    \"native/Cargo.toml\",\n    \"native/Cargo.lock\",\n    \"native/build.rs\",\n    \"native/tests/fixtures/exec_server.rs\",\n    \"native/rust\",\n    \"native/patches\",\n    \"native/rmcp-patches\",\n    \"scripts\",\n  ],\n  { cwd: join(checkout, \"packages/agents\"), encoding: \"utf8\" },\n)\n  .trim()\n  .split(\"\\n\");\nassert.deepEqual(Object.keys(nativeReceipt.inputs).sort(), inputs.sort());\ncpSync(\n  join(installed, \"native/build-receipt.json\"\
+        ),\n  join(checked, \"native/build-receipt.json\"),\n);\ncpSync(\n  join(installed, \"native/codex.node\"),\n  join(checked, \"native/codex.node\"),\n);\ncpSync(join(installed, \"bin\"), join(checked, \"bin\"), { recursive: true });\nconst { revision } = await verifyNativeReceipt(RECEIPT_SOURCE, build.platform);\nassert.equal(revision, build.codexRevision);\n\nexecFileSync(\n  process.execPath,\n  [\n    \"--input-type=module\",\n    \"-e\",\n    `\n  import assert from 'node:assert/strict';\n  import { createRequire } from 'node:module';\n  import { fileURLToPath } from 'node:url';\n  const root = process.env.INSTALLED_AGENT_ROOT;\n  const sdk = fileURLToPath(import.meta.resolve('@openai/agents'));\n  assert(sdk.startsWith(root + '/dist/'), sdk);\n  const { Environment } = await import('@openai/agents');\n  assert.equal(typeof Environment.local, 'function');\n  const require = createRequire(import.meta.url);\n  const native = root + '/native/codex.node';\n  assert.equal(typeof require(native).create_engine,\
+        \ 'function');\n  console.log('Loaded installed SDK and native addon', sdk, native);\n`,\n  ],\n  {\n    cwd: consumer,\n    env: { ...process.env, NODE_PATH: \"\", INSTALLED_AGENT_ROOT: installed },\n    stdio: \"inherit\",\n  },\n);\nconsole.log(\n  \"Verified native source, products and installed package\",\n  build.sourceCommit,\n  revision,\n);\nINSTALL\nTEST_FILE=packages/agents/test/native/local-executor-policy-native.test.ts\nset -euo pipefail\ncheckout=\"$PWD\"\nartifacts=\"$RUNNER_TEMP/agents-alpha\"\nstage=\"$RUNNER_TEMP/native-receipt-source\"\nmkdir \"$stage\"\ngit archive HEAD packages/agents | tar -x -C \"$stage\"\n\nexport ARTIFACT_DIRECTORY=\"$artifacts\" RECEIPT_SOURCE=\"$stage\"\nexport PRODUCER_SDK=\"$QUALIFIED_SDK_COMMIT\"\nnode \"$RUNNER_TEMP/js-install.mjs\" \"$checkout\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\ncp \"$TEST_FILE\" \"$test_dir/\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nln -s \"$checkout/node_modules/vitest\"\
+        \ \"$consumer/node_modules/vitest\"\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nexport OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/${TEST_FILE##*/}\" -t '^blocks delegation from a local command to launchd$' \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/launchd.json\"\n\nnode --input-type=module <<'JS'\nimport assert from 'node:assert/strict';\nimport { readFileSync, writeFileSync } from 'node:fs';\nconst report = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/launchd.json', 'utf8'));\nconst cases = report.testResults.flatMap(({ assertionResults }) =>\n  assertionResults.filter(({ status }) => status === 'passed')\n);\nassert.equal(cases.length, 1);\nassert.equal(cases[0].fullName, 'blocks delegation from a local command to launchd');\nconst\
+        \ native = JSON.parse(readFileSync('node_modules/@openai/agents/native/build-receipt.json', 'utf8'));\nconst evidence = { sourceCommit: process.env.PRODUCER_SDK, platform: process.platform + '-' + process.arch,\n  test: cases[0].fullName, status: cases[0].status, products: native.products };\nwriteFileSync(process.env.ARTIFACT_DIRECTORY + '/acceptance-launchd-darwin-arm64.json',\n  JSON.stringify(evidence, null, 2) + '\\n');\nconsole.log('Verified installed npm regression', cases[0].fullName);\nJS\n\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nif [[ ! -e \"$consumer/node_modules/ws\" ]]; then\n  ln -s \"$GITHUB_WORKSPACE/node_modules/ws\" \"$consumer/node_modules/ws\"\nfi\n"
+    - name: Check the installed package evidence
+      run: "node --input-type=module <<'JS'\nimport assert from 'node:assert/strict';\nimport { readdirSync, readFileSync } from 'node:fs';\nimport { join } from 'node:path';\nconst output = join(process.env.RUNNER_TEMP, 'agents-alpha');\nconst records = readdirSync(output).filter((file) =>\n  /^(build|installed)-.*\\.json$/.test(file),\n);\nassert(records.some((file) => file.startsWith('build-')));\nassert(records.some((file) => file.startsWith('installed-')));\nfor (const record of records) {\n  const manifest = JSON.parse(readFileSync(join(output, record), 'utf8'));\n  assert.equal(manifest.sourceCommit, process.env.QUALIFIED_SDK_COMMIT);\n  assert.equal(manifest.platform, process.env.EXPECTED_PLATFORM);\n  console.log(record, manifest.sourceCommit, manifest.platform);\n}\nJS\n"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: agents-alpha-darwin-arm64
+        path: '${{ runner.temp }}/agents-alpha/*.tgz
+
+          ${{ runner.temp }}/agents-alpha/*.tar.gz
+
+          ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
+
+          ${{ runner.temp }}/agents-alpha/build-*.json
+
+          ${{ runner.temp }}/agents-alpha/installed-*.json
+
+          ${{ runner.temp }}/agents-alpha/acceptance-launchd-darwin-arm64.json
+
+          '
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 14
+    - name: Verify paused wrapper cleanup through the installed release package
+      if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        PROBE_SHA256: 22f1be6e8848d02fa461f2af3d363c2eab5d20079cd9ee57a7d46190e070903c
+        PROBE_SLUG: wrapper
+        PROBE_TITLE: closes a paused local command wrapper without disturbing a disjoint command
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nproduct_hashes() {\n  (cd \"$1/node_modules/@openai/agents\" && shasum -a 256 native/{codex.node,build-receipt.json} bin/codex-*)\n}\n\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\nfixture=\"$test_dir/managed-$PROBE_SLUG.test.ts\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$fixture\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nif [[ ! -e \"$consumer/node_modules/vitest\" ]]; then\n  ln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nfi\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\nprobe=\"$RUNNER_TEMP/$PROBE_SLUG-probe.ts\"\nbase64 -D >\"$probe\" <<'PROBE'\naXQuc2tpcElmKHByb2Nlc3MucGxhdGZvcm0gIT09ICJkYXJ3aW4iKSgKICAiY2xvc2VzIGEgcGF1\nc2VkIGxvY2FsIGNvbW1hbmQgd3JhcHBlciB3aXRob3V0IGRpc3R1cmJpbmcgYSBkaXNqb2ludCBj\nb21tYW5kIiwKICBhc3luYyAoKSA9PiB7CiAgICBjb25zdCBkaXJlY3RvcnkgPSBhd2FpdCByZWFs\ncGF0aCgKICAgICAgYXdhaXQgbWtkdGVtcChqb2luKHRtcGRpcigpLCAiYWdlbnRzLWRhcndpbi13\n\
+        cmFwcGVyLSIpKSwKICAgICk7CiAgICBjb25zdCBjd2QgPSBqb2luKGRpcmVjdG9yeSwgIndvcmtz\ncGFjZSIpOwogICAgY29uc3QgZ3JhbnQgPSBqb2luKGRpcmVjdG9yeSwgImdyYW50Iik7CiAgICBj\nb25zdCBtYXJrZXIgPSBqb2luKGdyYW50LCAiaGVhcnRiZWF0Iik7CiAgICBjb25zdCBwaWRGaWxl\nID0gam9pbihncmFudCwgInBheWxvYWQtcGlkIik7CiAgICBjb25zdCBjb250cm9sID0gam9pbihk\naXJlY3RvcnksICJkaXNqb2ludCIpOwogICAgY29uc3QgY29udHJvbE1hcmtlciA9IGpvaW4oY29u\ndHJvbCwgImhlYXJ0YmVhdCIpOwogICAgY29uc3QgY29udHJvbFBpZEZpbGUgPSBqb2luKGNvbnRy\nb2wsICJwYXlsb2FkLXBpZCIpOwogICAgY29uc3QgcXVvdGVkID0gKHBhdGg6IHN0cmluZykgPT4g\nIiciICsgcGF0aC5yZXBsYWNlQWxsKCInIiwgIidcXCcnIikgKyAiJyI7CiAgICBjb25zdCBzaXpl\nID0gKHBhdGggPSBtYXJrZXIpID0+CiAgICAgIHJlYWRGaWxlKHBhdGgsICJ1dGY4IikudGhlbigo\ndmFsdWUpID0+IHZhbHVlLmxlbmd0aCk7CiAgICBjb25zdCBoZWxwZXIgPSBhd2FpdCByZWFscGF0\naCgKICAgICAgam9pbihwYWNrYWdlUm9vdCwgIm5vZGVfbW9kdWxlcy9Ab3BlbmFpL2FnZW50cy9i\naW4vY29kZXgtc2RrLXJ1bnRpbWUiKSwKICAgICk7CiAgICBjb25zdCB3cmFwcGVyQ29tbWFuZCA9\nIGhlbHBlciArICIgLS1jb2RleC1zZGstZGFyd2luLWNvbW1hbmQgIjsKICAgIGNvbnN0IHByb2Nl\nc3NEZXRhaWxzID0gKHBpZDogbnVtYmVyKSA9PiB7CiAgICAgIGNvbnN0IHJlc3VsdCA9IHNwYXdu\n\
+        U3luYygKICAgICAgICAiL2Jpbi9wcyIsCiAgICAgICAgWyItd3ciLCAiLXAiLCBTdHJpbmcocGlk\nKSwgIi1vIiwgInN0YXQ9LGxzdGFydD0sY29tbWFuZD0iXSwKICAgICAgICB7IGVuY29kaW5nOiAi\ndXRmOCIgfSwKICAgICAgKTsKICAgICAgaWYgKHJlc3VsdC5lcnJvcikgdGhyb3cgcmVzdWx0LmVy\ncm9yOwogICAgICBpZiAocmVzdWx0LnN0YXR1cyA9PT0gMSkgcmV0dXJuIG51bGw7CiAgICAgIGV4\ncGVjdChyZXN1bHQuc3RhdHVzKS50b0JlKDApOwogICAgICBjb25zdCBbLCBzdGF0dXMsIGlkZW50\naXR5XSA9CiAgICAgICAgL14oXFMrKVxzKyguKykkLy5leGVjKHJlc3VsdC5zdGRvdXQudHJpbSgp\nKSA/PyBbXTsKICAgICAgcmV0dXJuIHN0YXR1cyAmJiBpZGVudGl0eSA/IHsgc3RhdHVzLCBpZGVu\ndGl0eSB9IDogbnVsbDsKICAgIH07CiAgICBjb25zdCBwcm9jZXNzSWRlbnRpdHkgPSAocGlkOiBu\ndW1iZXIpID0+CiAgICAgIHByb2Nlc3NEZXRhaWxzKHBpZCk/LmlkZW50aXR5ID8/IG51bGw7CiAg\nICBjb25zdCBmaW5kV3JhcHBlciA9ICgpID0+IHsKICAgICAgY29uc3Qgcm93cyA9IGV4ZWNGaWxl\nU3luYygKICAgICAgICAiL2Jpbi9wcyIsCiAgICAgICAgWyItYXh3dyIsICItbyIsICJwaWQ9LHBw\naWQ9LGNvbW1hbmQ9Il0sCiAgICAgICAgeyBlbmNvZGluZzogInV0ZjgiIH0sCiAgICAgICkuc3Bs\naXQoIlxuIik7CiAgICAgIGNvbnN0IG1hdGNoZXMgPSByb3dzCiAgICAgICAgLm1hcCgocm93KSA9\nPiAvXlxzKihcZCspXHMrKFxkKylccysoLiopJC8uZXhlYyhyb3cpKQogICAgICAgIC5maWx0ZXIo\n\
+        CiAgICAgICAgICAocm93KSA9PgogICAgICAgICAgICBOdW1iZXIocm93Py5bMl0pID09PSBwcm9j\nZXNzLnBpZCAmJgogICAgICAgICAgICByb3c/LlszXT8uc3RhcnRzV2l0aCh3cmFwcGVyQ29tbWFu\nZCksCiAgICAgICAgKTsKICAgICAgZXhwZWN0KG1hdGNoZXMpLnRvSGF2ZUxlbmd0aCgxKTsKICAg\nICAgcmV0dXJuIE51bWJlcihtYXRjaGVzWzBdPy5bMV0pOwogICAgfTsKICAgIGNvbnN0IGhlYXJ0\nYmVhdCA9IChwYXRoOiBzdHJpbmcsIHBpZFBhdGg6IHN0cmluZywgY2FsbElkOiBzdHJpbmcpID0+\nCiAgICAgIGNhbGwoCiAgICAgICAgImV4ZWNfY29tbWFuZCIsCiAgICAgICAgewogICAgICAgICAg\nY21kOgogICAgICAgICAgICAncHJpbnRmICIlc1xcbiIgIiQkIiA+ICcgKwogICAgICAgICAgICBx\ndW90ZWQocGlkUGF0aCkgKwogICAgICAgICAgICAnOyBpPTA7IHdoaWxlIFsgIiRpIiAtbHQgMTgw\nIF07IGRvIHByaW50ZiB4ID4+ICcgKwogICAgICAgICAgICBxdW90ZWQocGF0aCkgKwogICAgICAg\nICAgICAiOyAvYmluL3NsZWVwIDAuMjU7IGk9JCgoaSArIDEpKTsgZG9uZSIsCiAgICAgICAgICB5\naWVsZF90aW1lX21zOiAxMDAwLAogICAgICAgIH0sCiAgICAgICAgeyBjYWxsSWQgfSwKICAgICAg\nKTsKICAgIGNvbnN0IHNlcnZlciA9IG5ldyBNb2RlbFNlcnZlcihbCiAgICAgIFtoZWFydGJlYXQo\nbWFya2VyLCBwaWRGaWxlLCAic3RhcnQtcGF1c2VkLWhlYXJ0YmVhdCIpXSwKICAgICAgKHJlcXVl\nc3QpID0+IHsKICAgICAgICBleHBlY3QoSlNPTi5zdHJpbmdpZnkocmVxdWVzdC5pbnB1dCkpLnRv\n\
+        TWF0Y2goCiAgICAgICAgICAvUHJvY2VzcyBydW5uaW5nIHdpdGggc2Vzc2lvbiBJRCBcZCsvLAog\nICAgICAgICk7CiAgICAgICAgcmV0dXJuIFttZXNzYWdlKCJIZWFydGJlYXQgcnVubmluZy4iKV07\nCiAgICAgIH0sCiAgICAgIFtoZWFydGJlYXQoY29udHJvbE1hcmtlciwgY29udHJvbFBpZEZpbGUs\nICJzdGFydC1kaXNqb2ludC1oZWFydGJlYXQiKV0sCiAgICAgIChyZXF1ZXN0KSA9PiB7CiAgICAg\nICAgZXhwZWN0KEpTT04uc3RyaW5naWZ5KHJlcXVlc3QuaW5wdXQpKS50b01hdGNoKAogICAgICAg\nICAgL1Byb2Nlc3MgcnVubmluZyB3aXRoIHNlc3Npb24gSUQgXGQrLywKICAgICAgICApOwogICAg\nICAgIHJldHVybiBbbWVzc2FnZSgiRGlzam9pbnQgaGVhcnRiZWF0IHJ1bm5pbmcuIildOwogICAg\nICB9LAogICAgXSk7CiAgICBsZXQgd3JhcHBlcjogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0\ncmluZyB9IHwgdW5kZWZpbmVkOwogICAgbGV0IHBheWxvYWQ6IHsgcGlkOiBudW1iZXI7IGlkZW50\naXR5OiBzdHJpbmcgfSB8IHVuZGVmaW5lZDsKICAgIGxldCBjb250cm9sUGF5bG9hZDogeyBwaWQ6\nIG51bWJlcjsgaWRlbnRpdHk6IHN0cmluZyB9IHwgdW5kZWZpbmVkOwogICAgbGV0IGNsb3NlQ29u\ndHJvbDogKCgpID0+IFByb21pc2U8dm9pZD4pIHwgdW5kZWZpbmVkOwogICAgbGV0IHBhdXNlSW5q\nZWN0ZWQgPSBmYWxzZTsKICAgIGxldCBjbG9zZVN0YXJ0ZWQgPSBmYWxzZTsKICAgIGNvbnN0IG1h\ndGNoZXNJZGVudGl0eSA9IChwcm9jZXNzSW5mbzogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0\n\
+        cmluZyB9KSA9PgogICAgICBwcm9jZXNzSWRlbnRpdHkocHJvY2Vzc0luZm8ucGlkKSA9PT0gcHJv\nY2Vzc0luZm8uaWRlbnRpdHk7CiAgICBjb25zdCBzdG9wcGVkID0gKHByb2Nlc3NJbmZvOiB7IHBp\nZDogbnVtYmVyOyBpZGVudGl0eTogc3RyaW5nIH0pID0+IHsKICAgICAgY29uc3QgZGV0YWlscyA9\nIHByb2Nlc3NEZXRhaWxzKHByb2Nlc3NJbmZvLnBpZCk7CiAgICAgIHJldHVybiAoCiAgICAgICAg\nZGV0YWlscz8uaWRlbnRpdHkgPT09IHByb2Nlc3NJbmZvLmlkZW50aXR5ICYmCiAgICAgICAgZGV0\nYWlscy5zdGF0dXMuc3RhcnRzV2l0aCgiVCIpCiAgICAgICk7CiAgICB9OwogICAgY29uc3Qgc2ln\nbmFsID0gKAogICAgICBwcm9jZXNzSW5mbzogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0cmlu\nZyB9LAogICAgICBhY3Rpb246IE5vZGVKUy5TaWduYWxzLAogICAgKSA9PiB7CiAgICAgIGlmICgh\nbWF0Y2hlc0lkZW50aXR5KHByb2Nlc3NJbmZvKSkgcmV0dXJuOwogICAgICB0cnkgewogICAgICAg\nIHByb2Nlc3Mua2lsbChwcm9jZXNzSW5mby5waWQsIGFjdGlvbik7CiAgICAgIH0gY2F0Y2ggKGVy\ncm9yKSB7CiAgICAgICAgaWYgKChlcnJvciBhcyBOb2RlSlMuRXJybm9FeGNlcHRpb24pLmNvZGUg\nIT09ICJFU1JDSCIpIHRocm93IGVycm9yOwogICAgICB9CiAgICB9OwogICAgY29uc3QgcmVhZFBh\neWxvYWQgPSBhc3luYyAocGF0aDogc3RyaW5nLCBoZWFydGJlYXRQYXRoOiBzdHJpbmcpID0+IHsK\nICAgICAgY29uc3QgcGlkID0gTnVtYmVyKChhd2FpdCByZWFkRmlsZShwYXRoLCAidXRmOCIpKS50\n\
+        cmltKCkpOwogICAgICBleHBlY3QoTnVtYmVyLmlzU2FmZUludGVnZXIocGlkKSAmJiBwaWQgPiAx\nKS50b0JlKHRydWUpOwogICAgICBjb25zdCBpZGVudGl0eSA9IHByb2Nlc3NJZGVudGl0eShwaWQp\nOwogICAgICBleHBlY3QoaWRlbnRpdHkpLnRvQ29udGFpbihoZWFydGJlYXRQYXRoKTsKICAgICAg\ncmV0dXJuIHsgcGlkLCBpZGVudGl0eTogaWRlbnRpdHkhIH07CiAgICB9OwogICAgdHJ5IHsKICAg\nICAgYXdhaXQgUHJvbWlzZS5hbGwoW21rZGlyKGN3ZCksIG1rZGlyKGdyYW50KSwgbWtkaXIoY29u\ndHJvbCldKTsKICAgICAgYXdhaXQgdXNpbmcgcHJvdmlkZXIgPSBhd2FpdCBwcm92aWRlckZvcihz\nZXJ2ZXIpOwogICAgICBjb25zdCBhZ2VudCA9IG5ldyBBZ2VudCh7CiAgICAgICAgcHJvdmlkZXIs\nCiAgICAgICAgbW9kZWw6ICJncHQtNSIsCiAgICAgICAgaW5zdHJ1Y3Rpb25zOiAiUnVuIHRoZSBz\nY3JpcHRlZCBsb2NhbCBjb21tYW5kLiIsCiAgICAgIH0pOwogICAgICBjb25zdCBzZXNzaW9uID0g\nYXdhaXQgYWdlbnQuc2Vzc2lvbih7CiAgICAgICAgZW52aXJvbm1lbnQ6IEVudmlyb25tZW50Lmxv\nY2FsKHsKICAgICAgICAgIGN3ZCwKICAgICAgICAgIHdyaXRhYmxlUm9vdHM6IFtncmFudF0sCiAg\nICAgICAgICB0b29sczogWyJleGVjX2NvbW1hbmQiXSwKICAgICAgICB9KSwKICAgICAgfSk7CiAg\nICAgIHRyeSB7CiAgICAgICAgY29uc3QgdHVybiA9IGF3YWl0IHNlc3Npb24uc3VibWl0KCJTdGFy\ndCB0aGUgYm91bmRlZCBoZWFydGJlYXQuIik7CiAgICAgICAgZXhwZWN0KChhd2FpdCB0dXJuLndh\n\
+        aXQoKSkuZmluYWxPdXRwdXQpLnRvQmUoIkhlYXJ0YmVhdCBydW5uaW5nLiIpOwogICAgICAgIGNv\nbnN0IHdyYXBwZXJQaWQgPSBmaW5kV3JhcHBlcigpOwogICAgICAgIGNvbnN0IHdyYXBwZXJJZGVu\ndGl0eSA9IHByb2Nlc3NJZGVudGl0eSh3cmFwcGVyUGlkKTsKICAgICAgICBleHBlY3Qod3JhcHBl\ncklkZW50aXR5KS50b0NvbnRhaW4od3JhcHBlckNvbW1hbmQpOwogICAgICAgIHdyYXBwZXIgPSB7\nIHBpZDogd3JhcHBlclBpZCwgaWRlbnRpdHk6IHdyYXBwZXJJZGVudGl0eSEgfTsKICAgICAgICBw\nYXlsb2FkID0gYXdhaXQgcmVhZFBheWxvYWQocGlkRmlsZSwgbWFya2VyKTsKICAgICAgICBjb25z\ndCBjb250cm9sU2Vzc2lvbiA9IGF3YWl0IGFnZW50LnNlc3Npb24oewogICAgICAgICAgZW52aXJv\nbm1lbnQ6IEVudmlyb25tZW50LmxvY2FsKHsKICAgICAgICAgICAgY3dkOiBjb250cm9sLAogICAg\nICAgICAgICB3cml0YWJsZVJvb3RzOiBbY29udHJvbF0sCiAgICAgICAgICAgIHRvb2xzOiBbImV4\nZWNfY29tbWFuZCJdLAogICAgICAgICAgfSksCiAgICAgICAgfSk7CiAgICAgICAgY2xvc2VDb250\ncm9sID0gKCkgPT4gY29udHJvbFNlc3Npb24uY2xvc2UoKTsKICAgICAgICBjb25zdCBjb250cm9s\nVHVybiA9IGF3YWl0IGNvbnRyb2xTZXNzaW9uLnN1Ym1pdCgKICAgICAgICAgICJTdGFydCB0aGUg\nZGlzam9pbnQgaGVhcnRiZWF0LiIsCiAgICAgICAgKTsKICAgICAgICBleHBlY3QoKGF3YWl0IGNv\nbnRyb2xUdXJuLndhaXQoKSkuZmluYWxPdXRwdXQpLnRvQmUoCiAgICAgICAgICAiRGlzam9pbnQg\n\
+        aGVhcnRiZWF0IHJ1bm5pbmcuIiwKICAgICAgICApOwogICAgICAgIGNvbnRyb2xQYXlsb2FkID0g\nYXdhaXQgcmVhZFBheWxvYWQoY29udHJvbFBpZEZpbGUsIGNvbnRyb2xNYXJrZXIpOwoKICAgICAg\nICBzaWduYWwod3JhcHBlciwgIlNJR1NUT1AiKTsKICAgICAgICBwYXVzZUluamVjdGVkID0gdHJ1\nZTsKICAgICAgICBhd2FpdCB2aS53YWl0Rm9yKCgpID0+IGV4cGVjdChzdG9wcGVkKHdyYXBwZXIh\nKSkudG9CZSh0cnVlKSwgewogICAgICAgICAgdGltZW91dDogMjAwMCwKICAgICAgICB9KTsKICAg\nICAgICBjb25zdCBiZWZvcmVDbG9zZSA9IGF3YWl0IHNpemUoKTsKICAgICAgICBhd2FpdCB2aS53\nYWl0Rm9yKGFzeW5jICgpID0+CiAgICAgICAgICBleHBlY3QoYXdhaXQgc2l6ZSgpKS50b0JlR3Jl\nYXRlclRoYW4oYmVmb3JlQ2xvc2UpLAogICAgICAgICk7CgogICAgICAgIGNvbnN0IHN0YXJ0ZWQg\nPSBwZXJmb3JtYW5jZS5ub3coKTsKICAgICAgICBjbG9zZVN0YXJ0ZWQgPSB0cnVlOwogICAgICAg\nIGNvbnN0IHRpbWVvdXQgPSBuZXcgQWJvcnRDb250cm9sbGVyKCk7CiAgICAgICAgY29uc3QgY2xv\nc2UgPSBzZXNzaW9uLmNsb3NlKCkudGhlbigKICAgICAgICAgICgpID0+ICh7IG91dGNvbWU6ICJy\nZXNvbHZlZCIsIG1lc3NhZ2U6ICIiIH0pLAogICAgICAgICAgKGVycm9yOiB1bmtub3duKSA9PiAo\neyBvdXRjb21lOiAicmVqZWN0ZWQiLCBtZXNzYWdlOiBTdHJpbmcoZXJyb3IpIH0pLAogICAgICAg\nICk7CiAgICAgICAgY29uc3Qgb2JzZXJ2ZWQgPSBhd2FpdCBQcm9taXNlLnJhY2UoWwogICAgICAg\n\
+        ICAgY2xvc2UsCiAgICAgICAgICBkZWxheSgKICAgICAgICAgICAgMTZfMDAwLAogICAgICAgICAg\nICB7IG91dGNvbWU6ICJ0aW1lb3V0IiwgbWVzc2FnZTogIiIgfSwKICAgICAgICAgICAgeyBzaWdu\nYWw6IHRpbWVvdXQuc2lnbmFsIH0sCiAgICAgICAgICApLAogICAgICAgIF0pLmZpbmFsbHkoKCkg\nPT4gdGltZW91dC5hYm9ydCgpKTsKICAgICAgICBjb25zdCBjbG9zZU1pbGxpc2Vjb25kcyA9IE1h\ndGgucm91bmQocGVyZm9ybWFuY2Uubm93KCkgLSBzdGFydGVkKTsKICAgICAgICBjb25zdCB3cmFw\ncGVyRXhpdGVkQXRDbG9zZSA9ICFtYXRjaGVzSWRlbnRpdHkod3JhcHBlcik7CiAgICAgICAgY29u\nc3QgcGF5bG9hZEV4aXRlZEF0Q2xvc2UgPSAhbWF0Y2hlc0lkZW50aXR5KHBheWxvYWQpOwogICAg\nICAgIGNvbnN0IGF0Q2xvc2UgPSBhd2FpdCBzaXplKCk7CiAgICAgICAgY29uc3QgY29udHJvbEF0\nQ2xvc2UgPSBhd2FpdCBzaXplKGNvbnRyb2xNYXJrZXIpOwogICAgICAgIGF3YWl0IGRlbGF5KDYw\nMCk7CiAgICAgICAgY29uc3QgYWZ0ZXJDbG9zZSA9IGF3YWl0IHNpemUoKTsKICAgICAgICBjb25z\ndCBjb250cm9sQWZ0ZXJDbG9zZSA9IGF3YWl0IHNpemUoY29udHJvbE1hcmtlcik7CiAgICAgICAg\nY29uc29sZS5pbmZvKAogICAgICAgICAgIltEYXJ3aW4gd3JhcHBlciBmaXhlZF0iLAogICAgICAg\nICAgSlNPTi5zdHJpbmdpZnkoewogICAgICAgICAgICBjbG9zZTogb2JzZXJ2ZWQsCiAgICAgICAg\nICAgIGNsb3NlTWlsbGlzZWNvbmRzLAogICAgICAgICAgICB3cmFwcGVyRXhpdGVkQXRDbG9zZSwK\n\
+        ICAgICAgICAgICAgcGF5bG9hZEV4aXRlZEF0Q2xvc2UsCiAgICAgICAgICAgIGF0Q2xvc2UsCiAg\nICAgICAgICAgIGFmdGVyQ2xvc2UsCiAgICAgICAgICAgIGNvbnRyb2xBdENsb3NlLAogICAgICAg\nICAgICBjb250cm9sQWZ0ZXJDbG9zZSwKICAgICAgICAgIH0pLAogICAgICAgICk7CiAgICAgICAg\nZXhwZWN0KG9ic2VydmVkLm91dGNvbWUpLnRvQmUoInJlc29sdmVkIik7CiAgICAgICAgZXhwZWN0\nKHdyYXBwZXJFeGl0ZWRBdENsb3NlKS50b0JlKHRydWUpOwogICAgICAgIGV4cGVjdChwYXlsb2Fk\nRXhpdGVkQXRDbG9zZSkudG9CZSh0cnVlKTsKICAgICAgICBleHBlY3QoYWZ0ZXJDbG9zZSkudG9C\nZShhdENsb3NlKTsKICAgICAgICBleHBlY3QobWF0Y2hlc0lkZW50aXR5KGNvbnRyb2xQYXlsb2Fk\nKSkudG9CZSh0cnVlKTsKICAgICAgICBleHBlY3QoY29udHJvbEFmdGVyQ2xvc2UpLnRvQmVHcmVh\ndGVyVGhhbihjb250cm9sQXRDbG9zZSk7CiAgICAgICAgYXdhaXQgc2Vzc2lvbi5jbG9zZSgpOwog\nICAgICAgIGF3YWl0IGNsb3NlQ29udHJvbCgpOwogICAgICAgIGV4cGVjdChtYXRjaGVzSWRlbnRp\ndHkoY29udHJvbFBheWxvYWQpKS50b0JlKGZhbHNlKTsKICAgICAgICBjbG9zZUNvbnRyb2wgPSB1\nbmRlZmluZWQ7CiAgICAgICAgc2VydmVyLmFzc2VydEV4aGF1c3RlZCgpOwogICAgICB9IGZpbmFs\nbHkgewogICAgICAgIC8vIFRoZXNlIHNpZ25hbHMgYXJlIG9ubHkgYSBmYWlsLXNhZmUgZm9yIGlk\nZW50aXRpZXMgc3RpbGwgb3duZWQgYnkgdGhlIHRlc3QuCiAgICAgICAgaWYgKHBhdXNlSW5qZWN0\n\
+        ZWQgJiYgd3JhcHBlciAmJiBtYXRjaGVzSWRlbnRpdHkod3JhcHBlcikpIHsKICAgICAgICAgIHNp\nZ25hbCh3cmFwcGVyLCAiU0lHQ09OVCIpOwogICAgICAgIH0KICAgICAgICBpZiAocGF5bG9hZCkg\nc2lnbmFsKHBheWxvYWQsICJTSUdLSUxMIik7CiAgICAgICAgaWYgKGNvbnRyb2xQYXlsb2FkKSBz\naWduYWwoY29udHJvbFBheWxvYWQsICJTSUdLSUxMIik7CiAgICAgICAgY29uc3QgY2xlYW51cCA9\nIFtdOwogICAgICAgIGlmICghY2xvc2VTdGFydGVkKSBjbGVhbnVwLnB1c2goc2Vzc2lvbi5jbG9z\nZSgpLmNhdGNoKCgpID0+IHt9KSk7CiAgICAgICAgaWYgKGNsb3NlQ29udHJvbCkgY2xlYW51cC5w\ndXNoKGNsb3NlQ29udHJvbCgpLmNhdGNoKCgpID0+IHt9KSk7CiAgICAgICAgaWYgKGNsZWFudXAu\nbGVuZ3RoKQogICAgICAgICAgYXdhaXQgUHJvbWlzZS5yYWNlKFtQcm9taXNlLmFsbChjbGVhbnVw\nKSwgZGVsYXkoNDAwMCldKTsKICAgICAgfQogICAgfSBmaW5hbGx5IHsKICAgICAgYXdhaXQgcm0o\nZGlyZWN0b3J5LCB7IHJlY3Vyc2l2ZTogdHJ1ZSwgZm9yY2U6IHRydWUgfSk7CiAgICB9CiAgfSwK\nICA1NV8wMDAsCik7Cg==\nPROBE\nprintf '%s  %s\\n' \"$PROBE_SHA256\" \"$probe\" | shasum -a 256 -c\ncat \"$probe\" >> \"$fixture\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nproduct_hashes \"$consumer\" | tee \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\"\
+        \nstatus=0\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/managed-$PROBE_SLUG.test.ts\" -t \"^$PROBE_TITLE$\" \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/$PROBE_SLUG-report.json\" \\\n  | tee \"$RUNNER_TEMP/$PROBE_SLUG-evidence.log\" || status=$?\nproduct_hashes \"$consumer\" > \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ncmp \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\" \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ntest \"$status\" = 0\njq -e --arg title \"$PROBE_TITLE\" \\\n  '[.testResults[].assertionResults[] | select(.status==\"passed\") | .fullName] == [$title]' \\\n  \"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\n"
+    - name: Verify hard-link guards through the installed release package
+      if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        PROBE_SHA256: 5310eef0f31985b2c30d9661cdd6d87de20cd3790f28c85d53cfbec84de249c9
+        PROBE_SLUG: helper-alias
+        PROBE_TITLE: qualifies native helper hard-link grants in an installed macOS package
+        OPENAI_AGENTS_EXPECT_HELPER_ALIAS_REJECT: '1'
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nproduct_hashes() {\n  (cd \"$1/node_modules/@openai/agents\" && shasum -a 256 native/{codex.node,build-receipt.json} bin/codex-*)\n}\n\noriginal=\"$consumer\"\nconsumer=\"$RUNNER_TEMP/agents-alias-starter\"\nmkdir \"$consumer\"\ncp -RP \"$original/node_modules\" \"$original/package.json\" \"$consumer/\"\ncmp <(product_hashes \"$original\") <(product_hashes \"$consumer\")\n\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\nfixture=\"$test_dir/managed-$PROBE_SLUG.test.ts\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$fixture\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nif [[ ! -e \"$consumer/node_modules/vitest\" ]]; then\n  ln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nfi\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\nprobe=\"$RUNNER_TEMP/$PROBE_SLUG-probe.ts\"\nbase64 -D >\"$probe\" <<'PROBE'\nCmltcG9ydCB7IGNvcHlGaWxlIGFzIGNvcHlEYXJ3aW5BbGlhc0ZpbGUsIGxpbmsgYXMgbGlua0Rh\n\
+        cndpbkFsaWFzRmlsZSwgcmVuYW1lIGFzIHJlbmFtZURhcndpbkFsaWFzRmlsZSwgc3RhdCBhcyBz\ndGF0RGFyd2luQWxpYXNGaWxlIH0gZnJvbSAnbm9kZTpmcy9wcm9taXNlcyc7CgppdCgncXVhbGlm\naWVzIG5hdGl2ZSBoZWxwZXIgaGFyZC1saW5rIGdyYW50cyBpbiBhbiBpbnN0YWxsZWQgbWFjT1Mg\ncGFja2FnZScsIGFzeW5jICgpID0+IHsKICBleHBlY3QocHJvY2Vzcy5wbGF0Zm9ybSkudG9CZSgn\nZGFyd2luJyk7CiAgY29uc3QgY29uc3VtZXIgPSBhd2FpdCByZWFscGF0aChwYWNrYWdlUm9vdCk7\nCiAgY29uc3QgaGVscGVyID0gYXdhaXQgcmVhbHBhdGgoam9pbihjb25zdW1lciwgJ25vZGVfbW9k\ndWxlcy9Ab3BlbmFpL2FnZW50cy9iaW4vY29kZXgtY29kZS1tb2RlLWhvc3QnKSk7CiAgZXhwZWN0\nKGhlbHBlci5zdGFydHNXaXRoKGNvbnN1bWVyICsgJy8nKSkudG9CZSh0cnVlKTsKICBjb25zdCB7\nIG1vZGUsIHNpemUgfSA9IGF3YWl0IHN0YXREYXJ3aW5BbGlhc0ZpbGUoaGVscGVyKTsKICBleHBl\nY3Qoc2l6ZSkudG9CZUdyZWF0ZXJUaGFuKDEwMDAwKTsKICBjb25zdCBzY3JhdGNoID0gYXdhaXQg\nbWtkdGVtcChqb2luKGNvbnN1bWVyLCAnZGFyd2luLWhlbHBlci1hbGlhcy0nKSk7CiAgY29uc3Qg\nc2F2ZWQgPSBqb2luKHNjcmF0Y2gsICdvcmlnaW5hbC1jb2RlLW1vZGUtaG9zdCcpOwogIGNvbnN0\nIHN0b3JlID0gam9pbihzY3JhdGNoLCAnc3RvcmUnKTsKICBjb25zdCBjd2QgPSBqb2luKHNjcmF0\nY2gsICdjd2QnKTsKICBjb25zdCBvdmVybGFwID0gam9pbihzY3JhdGNoLCAnb3ZlcmxhcCcpOwog\n\
+        IGNvbnN0IGRpc2pvaW50ID0gam9pbihzY3JhdGNoLCAnZGlzam9pbnQnKTsKICBjb25zdCBhbGlh\ncyA9IGpvaW4ob3ZlcmxhcCwgJ25hdGl2ZS1ob3N0LWFsaWFzJyk7CiAgY29uc3QgaW52b2tlZCA9\nIGpvaW4oc2NyYXRjaCwgJ2hvc3QtaW52b2tlZCcpOwogIGNvbnN0IGluc3RhbGxlZFNoaW0gPSBq\nb2luKHNjcmF0Y2gsICdjb25maWd1cmVkLWhvc3Qtc2hpbScpOwogIGNvbnN0IHF1b3RlID0gKHBh\ndGg6IHN0cmluZykgPT4gIiciICsgcGF0aC5yZXBsYWNlQWxsKCInIiwgIidcXCcnIikgKyAiJyI7\nCiAgY29uc3QgbWFya2VyID0gJ3IyMC1pbmVydC1oYXJkbGluay1tYXJrZXInOwogIGNvbnN0IHNo\naW0gPSBgIyEvYmluL3NoXG5wcmludGYgJXMgaW52b2tlZCA+ICR7cXVvdGUoaW52b2tlZCl9XG5l\neGVjICR7cXVvdGUoam9pbihzdG9yZSwgJ3JlYWwtaG9zdCcpKX0gIiRAIlxuIyBNYXJrZXI6IGA7\nCiAgY29uc3QgZml4ZWQgPSBwcm9jZXNzLmVudi5PUEVOQUlfQUdFTlRTX0VYUEVDVF9IRUxQRVJf\nQUxJQVNfUkVKRUNUID09PSAnMSc7CiAgYXdhaXQgUHJvbWlzZS5hbGwoW21rZGlyKHN0b3JlKSwg\nbWtkaXIoY3dkKSwgbWtkaXIob3ZlcmxhcCksIG1rZGlyKGRpc2pvaW50KV0pOwogIGF3YWl0IGNv\ncHlEYXJ3aW5BbGlhc0ZpbGUoaGVscGVyLCBqb2luKHN0b3JlLCAncmVhbC1ob3N0JykpOwogIGNv\nbnN0IGZpbmdlcnByaW50ID0gKHBhdGg6IHN0cmluZykgPT4KICAgIGV4ZWNGaWxlU3luYygnL3Vz\nci9iaW4vc2hhc3VtJywgWyctYScsICcyNTYnLCBwYXRoXSwgeyBlbmNvZGluZzogJ3V0ZjgnIH0p\n\
+        LnNwbGl0KC9ccysvLCAxKVswXTsKICBleHBlY3QoZmluZ2VycHJpbnQoam9pbihzdG9yZSwgJ3Jl\nYWwtaG9zdCcpKSkudG9CZShmaW5nZXJwcmludChoZWxwZXIpKTsKICBhd2FpdCB3cml0ZUZpbGUo\naW5zdGFsbGVkU2hpbSwgc2hpbSwgeyBtb2RlOiBtb2RlICYgMG83NzcgfSk7CiAgYXdhaXQgcmVu\nYW1lRGFyd2luQWxpYXNGaWxlKGhlbHBlciwgc2F2ZWQpOwogIHRyeSB7CiAgICBhd2FpdCByZW5h\nbWVEYXJ3aW5BbGlhc0ZpbGUoaW5zdGFsbGVkU2hpbSwgaGVscGVyKTsKICAgIGF3YWl0IGxpbmtE\nYXJ3aW5BbGlhc0ZpbGUoaGVscGVyLCBhbGlhcyk7CiAgICBhd2FpdCBsaW5rRGFyd2luQWxpYXNG\naWxlKGhlbHBlciwgam9pbihzdG9yZSwgJ290aGVyLWluc3RhbGwtbGluaycpKTsKICAgIGNvbnN0\nIHByb3RlY3RlZFN0YXQgPSBhd2FpdCBzdGF0RGFyd2luQWxpYXNGaWxlKGhlbHBlciwgeyBiaWdp\nbnQ6IHRydWUgfSk7CiAgICBjb25zdCBhbGlhc1N0YXQgPSBhd2FpdCBzdGF0RGFyd2luQWxpYXNG\naWxlKGFsaWFzLCB7IGJpZ2ludDogdHJ1ZSB9KTsKICAgIGV4cGVjdChbYWxpYXNTdGF0LmRldiwg\nYWxpYXNTdGF0LmlubywgYWxpYXNTdGF0Lm5saW5rXSkudG9FcXVhbChbcHJvdGVjdGVkU3RhdC5k\nZXYsIHByb3RlY3RlZFN0YXQuaW5vLCAzbl0pOwogICAgY29uc29sZS5sb2coJ0RhcndpbiBoZWxw\nZXIgaWRlbnRpdHk6JywgU3RyaW5nKHByb3RlY3RlZFN0YXQuZGV2KSwgU3RyaW5nKHByb3RlY3Rl\nZFN0YXQuaW5vKSwgJ25saW5rPTMnKTsKICAgIGNvbnN0IGVudmlyb25tZW50ID0gKHJvb3Q6IHN0\n\
+        cmluZykgPT4KICAgICAgRW52aXJvbm1lbnQubG9jYWwoeyBjd2QsIHdyaXRhYmxlUm9vdHM6IFty\nb290XSwgdG9vbHM6IFsnZXhlY19jb21tYW5kJ10gfSk7CiAgICBjb25zdCBkaXJlY3RXcml0ZSA9\nIGBwcmludGYgJXMgZGlyZWN0LXBhdGgtd3JpdGUgPj4gJHtxdW90ZShoZWxwZXIpfWA7CiAgICBj\nb25zdCBjb250cm9sUHJvb2YgPSBqb2luKGRpc2pvaW50LCAnb3JkaW5hcnktd3JpdGUnKTsKICAg\nIHsKICAgICAgY29uc3QgY29tbWFuZCA9IGBpZiAoJHtkaXJlY3RXcml0ZX0pOyB0aGVuIGV4aXQg\nMzc7IGZpOyBwcmludGYgJXMgb3JkaW5hcnkgPiAke3F1b3RlKGNvbnRyb2xQcm9vZil9YDsKICAg\nICAgY29uc3Qgc2VydmVyID0gbmV3IE1vZGVsU2VydmVyKFtbY2FsbCgnZXhlY19jb21tYW5kJywg\neyBjbWQ6IGNvbW1hbmQgfSwgeyBjYWxsSWQ6ICdkaXNqb2ludCcgfSldLCBbbWVzc2FnZSgnZG9u\nZScpXV0pOwogICAgICBhd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNl\ncnZlcik7CiAgICAgIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlkZXIsIG1vZGVsOiAn\nZ3B0LTUnLCBpbnN0cnVjdGlvbnM6ICdXb3JrLicgfSk7CiAgICAgIGF3YWl0IHVzaW5nIHNlc3Np\nb24gPSBhd2FpdCBhZ2VudC5zZXNzaW9uKHsgZW52aXJvbm1lbnQ6IGVudmlyb25tZW50KGRpc2pv\naW50KSB9KTsKICAgICAgZXhwZWN0KChhd2FpdCAoYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1J1biB0\naGUgY29tbWFuZC4nKSkud2FpdCgpKS5maW5hbE91dHB1dCkudG9CZSgnZG9uZScpOwogICAgICBl\n\
+        eHBlY3QoYXdhaXQgcmVhZEZpbGUoY29udHJvbFByb29mLCAndXRmOCcpKS50b0JlKCdvcmRpbmFy\neScpOwogICAgICBleHBlY3QoYXdhaXQgcmVhZEZpbGUoaGVscGVyLCAndXRmOCcpKS50b0JlKHNo\naW0pOwogICAgICBleHBlY3Qoc2VydmVyLnJlcXVlc3RzKS50b0hhdmVMZW5ndGgoMik7CiAgICAg\nIGNvbnNvbGUubG9nKCdEaXNqb2ludCBvcmRpbmFyeSB3cml0ZSBhbGxvd2VkOyBkaXJlY3QgaGVs\ncGVyIHBhdGggd3JpdGUgZGVuaWVkLicpOwogICAgfQogICAgewogICAgICBjb25zdCBwcm9vZiA9\nIGpvaW4ob3ZlcmxhcCwgJ29yZGluYXJ5LXdyaXRlJyk7CiAgICAgIGNvbnN0IHN0YXR1cyA9IGpv\naW4ob3ZlcmxhcCwgJ2FsaWFzLXdyaXRlLXJlc3VsdCcpOwogICAgICBjb25zdCBjb21tYW5kID0g\nYHByaW50ZiAlcyBvcmRpbmFyeSA+ICR7cXVvdGUocHJvb2YpfTsgaWYgKHByaW50ZiAlcyAke3F1\nb3RlKG1hcmtlcil9ID4+ICR7cXVvdGUoYWxpYXMpfSk7IHRoZW4gcHJpbnRmIGFsbG93ZWQ7IGVs\nc2UgcHJpbnRmIGRlbmllZDsgZmkgPiAke3F1b3RlKHN0YXR1cyl9YDsKICAgICAgY29uc3Qgc2Vy\ndmVyID0gbmV3IE1vZGVsU2VydmVyKFtbY2FsbCgnZXhlY19jb21tYW5kJywgeyBjbWQ6IGNvbW1h\nbmQgfSwgeyBjYWxsSWQ6ICdhbGlhcycgfSldLCBbbWVzc2FnZSgnZG9uZScpXV0pOwogICAgICBh\nd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNlcnZlcik7CiAgICAgIGNv\nbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlkZXIsIG1vZGVsOiAnZ3B0LTUnLCBpbnN0cnVj\n\
+        dGlvbnM6ICdXb3JrLicsIHByb2dyYW1tYXRpY1Rvb2xDYWxsaW5nOiBmYWxzZSB9KTsKICAgICAg\naWYgKGZpeGVkKSB7CiAgICAgICAgYXdhaXQgZXhwZWN0KGFnZW50LnNlc3Npb24oeyBlbnZpcm9u\nbWVudDogZW52aXJvbm1lbnQob3ZlcmxhcCkgfSkpLnJlamVjdHMudG9UaHJvdygvbG9jYWwgZXhl\nY3V0b3Igd3JpdGUgcm9vdHMgbXVzdCBub3QgY29udGFpbiBpbnN0YWxsZWQgc2FuZGJveCBoZWxw\nZXJzLyk7CiAgICAgICAgZXhwZWN0KHNlcnZlci5yZXF1ZXN0cykudG9IYXZlTGVuZ3RoKDApOwog\nICAgICAgIGV4cGVjdChhd2FpdCByZWFkRmlsZShoZWxwZXIsICd1dGY4JykpLnRvQmUoc2hpbSk7\nCiAgICAgICAgY29uc29sZS5sb2coJ0FsaWFzZWQgaGVscGVyIGdyYW50IHJlamVjdGVkIGJlZm9y\nZSBhbnkgbW9kZWwgY2FsbC4nKTsKICAgICAgfSBlbHNlIHsKICAgICAgICBhd2FpdCB1c2luZyBz\nZXNzaW9uID0gYXdhaXQgYWdlbnQuc2Vzc2lvbih7IGVudmlyb25tZW50OiBlbnZpcm9ubWVudChv\ndmVybGFwKSB9KTsKICAgICAgICBleHBlY3QoKGF3YWl0IChhd2FpdCBzZXNzaW9uLnN1Ym1pdCgn\nUnVuIHRoZSBjb21tYW5kLicpKS53YWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCdkb25lJyk7CiAg\nICAgICAgZXhwZWN0KGF3YWl0IHJlYWRGaWxlKHByb29mLCAndXRmOCcpKS50b0JlKCdvcmRpbmFy\neScpOwogICAgICAgIGNvbnN0IGRpc3Bvc2l0aW9uID0gYXdhaXQgcmVhZEZpbGUoc3RhdHVzLCAn\ndXRmOCcpOwogICAgICAgIGV4cGVjdChbJ2FsbG93ZWQnLCAnZGVuaWVkJ10pLnRvQ29udGFpbihk\n\
+        aXNwb3NpdGlvbik7CiAgICAgICAgZXhwZWN0KGF3YWl0IHJlYWRGaWxlKGhlbHBlciwgJ3V0Zjgn\nKSkudG9CZShzaGltICsgKGRpc3Bvc2l0aW9uID09PSAnYWxsb3dlZCcgPyBtYXJrZXIgOiAnJykp\nOwogICAgICAgIGV4cGVjdChzZXJ2ZXIucmVxdWVzdHMpLnRvSGF2ZUxlbmd0aCgyKTsKICAgICAg\nICBjb25zb2xlLmxvZygnUHJlLWV4aXN0aW5nIGhlbHBlciBoYXJkbGluayB3cml0ZTonLCBkaXNw\nb3NpdGlvbik7CiAgICAgIH0KICAgIH0KICAgIHsKICAgICAgY29uc3Qgc2VydmVyID0gbmV3IE1v\nZGVsU2VydmVyKFtbeyB0eXBlOiAnY3VzdG9tX3Rvb2xfY2FsbCcsIG5hbWU6ICdleGVjJywgaW5w\ndXQ6ICd0ZXh0KCJEQVJXSU5fSE9TVF9TRUxFQ1RFRCIpJywgY2FsbF9pZDogJ2NvZGUnIH1dLCBb\nbWVzc2FnZSgnZG9uZScpXV0pOwogICAgICBhd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHBy\nb3ZpZGVyRm9yKHNlcnZlcik7CiAgICAgIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlk\nZXIsIG1vZGVsOiAnZ3B0LTUnLCBpbnN0cnVjdGlvbnM6ICdXb3JrLicsIHByb2dyYW1tYXRpY1Rv\nb2xDYWxsaW5nOiB0cnVlIH0pOwogICAgICBhd2FpdCB1c2luZyBzZXNzaW9uID0gYXdhaXQgYWdl\nbnQuc2Vzc2lvbih7IGVudmlyb25tZW50OiBlbnZpcm9ubWVudChkaXNqb2ludCkgfSk7CiAgICAg\nIGV4cGVjdCgoYXdhaXQgKGF3YWl0IHNlc3Npb24uc3VibWl0KCdSdW4gdGhlIGdlbmVyYXRlZCBj\nb2RlLicpKS53YWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCdkb25lJyk7CiAgICAgIGV4cGVjdChK\n\
+        U09OLnN0cmluZ2lmeShzZXJ2ZXIucmVxdWVzdHNbMV0/LmlucHV0KSkudG9Db250YWluKCdEQVJX\nSU5fSE9TVF9TRUxFQ1RFRCcpOwogICAgICBleHBlY3QoYXdhaXQgcmVhZEZpbGUoaW52b2tlZCwg\nJ3V0ZjgnKSkudG9CZSgnaW52b2tlZCcpOwogICAgICBjb25zb2xlLmxvZygnQSBsYXRlciBkaXNq\nb2ludCBDb2RlIE1vZGUgc2Vzc2lvbiBpbnZva2VkIHRoZSBzZWxlY3RlZCBwYWNrYWdlZCBob3N0\nLicpOwogICAgfQogICAgewogICAgICBhd2FpdCB3cml0ZUZpbGUoaW5zdGFsbGVkU2hpbSwgc2hp\nbSwgeyBtb2RlOiBtb2RlICYgMG83NzcgfSk7CiAgICAgIGF3YWl0IHJlbmFtZURhcndpbkFsaWFz\nRmlsZShpbnN0YWxsZWRTaGltLCBoZWxwZXIpOwogICAgICBleHBlY3QoKGF3YWl0IHN0YXREYXJ3\naW5BbGlhc0ZpbGUoaGVscGVyKSkubmxpbmspLnRvQmUoMSk7CiAgICAgIGNvbnN0IGJlZm9yZSA9\nIGF3YWl0IHJlYWRGaWxlKGhlbHBlciwgJ3V0ZjgnKTsKICAgICAgY29uc3QgZnJlc2hBbGlhcyA9\nIGpvaW4oZGlzam9pbnQsICduZXctaGFyZGxpbmsnKTsKICAgICAgY29uc3Qgc3RhdHVzID0gam9p\nbihkaXNqb2ludCwgJ25ldy1oYXJkbGluay1yZXN1bHQnKTsKICAgICAgY29uc3QgbmV3TWFya2Vy\nID0gJ3IyMC1uZXctbGluay1pbmVydC1tYXJrZXInOwogICAgICBjb25zdCBjb21tYW5kID0gWwog\nICAgICAgIGBpZiB0ZXN0IC1yICR7cXVvdGUoaGVscGVyKX07IHRoZW4gcHJpbnRmIHJlYWRhYmxl\nOyBlbHNlIHByaW50ZiB1bnJlYWRhYmxlOyBmaWAsCiAgICAgICAgYGlmIC9iaW4vbG4gJHtxdW90\n\
+        ZShoZWxwZXIpfSAke3F1b3RlKGZyZXNoQWxpYXMpfTsgdGhlbiBwcmludGYgOmxpbmtlZDsgZWxz\nZSBwcmludGYgOnJlZnVzZWQ7IGZpYCwKICAgICAgICBgaWYgdGVzdCAtZSAke3F1b3RlKGZyZXNo\nQWxpYXMpfSAmJiAocHJpbnRmICVzICR7cXVvdGUobmV3TWFya2VyKX0gPj4gJHtxdW90ZShmcmVz\naEFsaWFzKX0pOyB0aGVuIHByaW50ZiA6d3JvdGU7IGVsc2UgcHJpbnRmIDp1bmNoYW5nZWQ7IGZp\nYCwKICAgICAgXS5qb2luKCc7ICcpOwogICAgICBjb25zdCBzZXJ2ZXIgPSBuZXcgTW9kZWxTZXJ2\nZXIoW1tjYWxsKCdleGVjX2NvbW1hbmQnLCB7IGNtZDogYHsgJHtjb21tYW5kfTsgfSA+ICR7cXVv\ndGUoc3RhdHVzKX1gIH0sIHsgY2FsbElkOiAnZnJlc2gtbGluaycgfSldLCBbbWVzc2FnZSgnZG9u\nZScpXV0pOwogICAgICBhd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNl\ncnZlcik7CiAgICAgIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsgcHJvdmlkZXIsIG1vZGVsOiAn\nZ3B0LTUnLCBpbnN0cnVjdGlvbnM6ICdXb3JrLicgfSk7CiAgICAgIGF3YWl0IHVzaW5nIHNlc3Np\nb24gPSBhd2FpdCBhZ2VudC5zZXNzaW9uKHsgZW52aXJvbm1lbnQ6IGVudmlyb25tZW50KGRpc2pv\naW50KSB9KTsKICAgICAgZXhwZWN0KChhd2FpdCAoYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1J1biB0\naGUgY29tbWFuZC4nKSkud2FpdCgpKS5maW5hbE91dHB1dCkudG9CZSgnZG9uZScpOwogICAgICBj\nb25zdCBkaXNwb3NpdGlvbiA9IGF3YWl0IHJlYWRGaWxlKHN0YXR1cywgJ3V0ZjgnKTsKICAgICAg\n\
+        ZXhwZWN0KGRpc3Bvc2l0aW9uKS50b01hdGNoKC9eKHJlYWRhYmxlfHVucmVhZGFibGUpOihsaW5r\nZWR8cmVmdXNlZCk6KHdyb3RlfHVuY2hhbmdlZCkkLyk7CiAgICAgIGV4cGVjdChhd2FpdCByZWFk\nRmlsZShoZWxwZXIsICd1dGY4JykpLnRvQmUoYmVmb3JlICsgKGRpc3Bvc2l0aW9uLmVuZHNXaXRo\nKCc6d3JvdGUnKSA/IG5ld01hcmtlciA6ICcnKSk7CiAgICAgIGlmIChmaXhlZCkgZXhwZWN0KGRp\nc3Bvc2l0aW9uKS5ub3QudG9NYXRjaCgvOndyb3RlJC8pOwogICAgICBjb25zb2xlLmxvZygnUG9z\ndC1hZG1pc3Npb24gaGVscGVyIGhhcmRsaW5rOicsIGRpc3Bvc2l0aW9uKTsKICAgICAgYXdhaXQg\ncm0oZnJlc2hBbGlhcywgeyBmb3JjZTogdHJ1ZSB9KTsKICAgIH0KICAgIHsKICAgICAgY29uc3Qg\nc291cmNlID0gam9pbihzdG9yZSwgJ3JlYWQtb25seS1zZWNvbmQtbmFtZScpOwogICAgICBhd2Fp\ndCBsaW5rRGFyd2luQWxpYXNGaWxlKGhlbHBlciwgc291cmNlKTsKICAgICAgZXhwZWN0KChhd2Fp\ndCBzdGF0RGFyd2luQWxpYXNGaWxlKGhlbHBlcikpLm5saW5rKS50b0JlKDIpOwogICAgICBjb25z\ndCBiZWZvcmUgPSBhd2FpdCByZWFkRmlsZShoZWxwZXIsICd1dGY4Jyk7CiAgICAgIGNvbnN0IGFs\naWFzVGFyZ2V0ID0gam9pbihkaXNqb2ludCwgJ2xpbmstZnJvbS1kaXNqb2ludC1zb3VyY2UnKTsK\nICAgICAgY29uc3QgbG9jYWxTb3VyY2UgPSBqb2luKGRpc2pvaW50LCAnbG9jYWwtaGFyZGxpbmst\nc291cmNlJyk7CiAgICAgIGNvbnN0IGxvY2FsVGFyZ2V0ID0gam9pbihkaXNqb2ludCwgJ2xvY2Fs\n\
+        LWhhcmRsaW5rLXRhcmdldCcpOwogICAgICBjb25zdCBzdGF0dXMgPSBqb2luKGRpc2pvaW50LCAn\ncmVhZGFibGUtYWxpYXMtbGluay1yZXN1bHQnKTsKICAgICAgY29uc3QgbWFya2VyID0gJ3IyMC1k\naXNqb2ludC1zb3VyY2UtbWFya2VyJzsKICAgICAgY29uc3QgY29tbWFuZCA9IFsKICAgICAgICBg\naWYgL2Jpbi9jYXQgJHtxdW90ZShzb3VyY2UpfSA+IC9kZXYvbnVsbDsgdGhlbiBwcmludGYgcmVh\nZGFibGU7IGVsc2UgcHJpbnRmIHVucmVhZGFibGU7IGZpYCwKICAgICAgICBgaWYgL2Jpbi9sbiAk\ne3F1b3RlKHNvdXJjZSl9ICR7cXVvdGUoYWxpYXNUYXJnZXQpfTsgdGhlbiBwcmludGYgOmxpbmtl\nZDsgZWxzZSBwcmludGYgOnJlZnVzZWQ7IGZpYCwKICAgICAgICBgaWYgdGVzdCAtZSAke3F1b3Rl\nKGFsaWFzVGFyZ2V0KX0gJiYgKHByaW50ZiAlcyAke3F1b3RlKG1hcmtlcil9ID4+ICR7cXVvdGUo\nYWxpYXNUYXJnZXQpfSk7IHRoZW4gcHJpbnRmIDp3cm90ZTsgZWxzZSBwcmludGYgOnVuY2hhbmdl\nZDsgZmlgLAogICAgICAgIGBwcmludGYgbG9jYWwgPiAke3F1b3RlKGxvY2FsU291cmNlKX1gLAog\nICAgICAgIGBpZiAvYmluL2xuICR7cXVvdGUobG9jYWxTb3VyY2UpfSAke3F1b3RlKGxvY2FsVGFy\nZ2V0KX07IHRoZW4gcHJpbnRmIDpsb2NhbC1saW5rZWQ7IGVsc2UgcHJpbnRmIDpsb2NhbC1yZWZ1\nc2VkOyBmaWAsCiAgICAgIF0uam9pbignOyAnKTsKICAgICAgY29uc3Qgc2VydmVyID0gbmV3IE1v\nZGVsU2VydmVyKFtbY2FsbCgnZXhlY19jb21tYW5kJywgeyBjbWQ6IGB7ICR7Y29tbWFuZH07IH0g\n\
+        PiAke3F1b3RlKHN0YXR1cyl9YCB9LCB7IGNhbGxJZDogJ291dHNpZGUtYWxpYXMnIH0pXSwgW21l\nc3NhZ2UoJ2RvbmUnKV1dKTsKICAgICAgYXdhaXQgdXNpbmcgcHJvdmlkZXIgPSBhd2FpdCBwcm92\naWRlckZvcihzZXJ2ZXIpOwogICAgICBjb25zdCBhZ2VudCA9IG5ldyBBZ2VudCh7IHByb3ZpZGVy\nLCBtb2RlbDogJ2dwdC01JywgaW5zdHJ1Y3Rpb25zOiAnV29yay4nIH0pOwogICAgICBhd2FpdCB1\nc2luZyBzZXNzaW9uID0gYXdhaXQgYWdlbnQuc2Vzc2lvbih7IGVudmlyb25tZW50OiBlbnZpcm9u\nbWVudChkaXNqb2ludCkgfSk7CiAgICAgIGV4cGVjdCgoYXdhaXQgKGF3YWl0IHNlc3Npb24uc3Vi\nbWl0KCdSdW4gdGhlIGNvbW1hbmQuJykpLndhaXQoKSkuZmluYWxPdXRwdXQpLnRvQmUoJ2RvbmUn\nKTsKICAgICAgY29uc3QgZGlzcG9zaXRpb24gPSBhd2FpdCByZWFkRmlsZShzdGF0dXMsICd1dGY4\nJyk7CiAgICAgIGV4cGVjdChkaXNwb3NpdGlvbikudG9NYXRjaCgvXihyZWFkYWJsZXx1bnJlYWRh\nYmxlKToobGlua2VkfHJlZnVzZWQpOih3cm90ZXx1bmNoYW5nZWQpOmxvY2FsLShsaW5rZWR8cmVm\ndXNlZCkkLyk7CiAgICAgIGV4cGVjdChhd2FpdCByZWFkRmlsZShoZWxwZXIsICd1dGY4JykpLnRv\nQmUoYmVmb3JlICsgKGRpc3Bvc2l0aW9uLmluY2x1ZGVzKCc6d3JvdGU6JykgPyBtYXJrZXIgOiAn\nJykpOwogICAgICBpZiAoZml4ZWQpIGV4cGVjdChkaXNwb3NpdGlvbikubm90LnRvQ29udGFpbign\nOndyb3RlOicpOwogICAgICBjb25zb2xlLmxvZygnUG9zdC1hZG1pc3Npb24gbGluayBmcm9tIGRp\n\
+        c2pvaW50IGhlbHBlciBhbGlhczonLCBkaXNwb3NpdGlvbik7CiAgICB9CiAgfSBmaW5hbGx5IHsK\nICAgIGF3YWl0IHJlbmFtZURhcndpbkFsaWFzRmlsZShzYXZlZCwgaGVscGVyKTsKICAgIGF3YWl0\nIHJtKHNjcmF0Y2gsIHsgcmVjdXJzaXZlOiB0cnVlLCBmb3JjZTogdHJ1ZSB9KTsKICB9Cn0sIDkw\nXzAwMCk7Cg==\nPROBE\nprintf '%s  %s\\n' \"$PROBE_SHA256\" \"$probe\" | shasum -a 256 -c\ncat \"$probe\" >> \"$fixture\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nproduct_hashes \"$consumer\" | tee \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\"\nstatus=0\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/managed-$PROBE_SLUG.test.ts\" -t \"^$PROBE_TITLE$\" \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/$PROBE_SLUG-report.json\" \\\n  | tee \"$RUNNER_TEMP/$PROBE_SLUG-evidence.log\" || status=$?\nproduct_hashes \"$consumer\" > \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ncmp \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\" \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\
+        \ntest \"$status\" = 0\njq -e --arg title \"$PROBE_TITLE\" \\\n  '[.testResults[].assertionResults[] | select(.status==\"passed\") | .fullName] == [$title]' \\\n  \"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\n"
+    - name: Confirm close before a started command returns to the provider
+      if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        PROBE_SHA256: 31f82db9534447983bee0f4e45589da8ef8359b4424408d87b116e4c11113000
+        PROBE_SLUG: wrapper-starting
+        PROBE_TITLE: closes a paused local wrapper before the command returns to the model
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nproduct_hashes() {\n  (cd \"$1/node_modules/@openai/agents\" && shasum -a 256 native/{codex.node,build-receipt.json} bin/codex-*)\n}\n\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\nfixture=\"$test_dir/managed-$PROBE_SLUG.test.ts\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$fixture\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nif [[ ! -e \"$consumer/node_modules/vitest\" ]]; then\n  ln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nfi\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\nprobe=\"$RUNNER_TEMP/$PROBE_SLUG-probe.ts\"\nbase64 -D >\"$probe\" <<'PROBE'\naXQuc2tpcElmKHByb2Nlc3MucGxhdGZvcm0gIT09ICJkYXJ3aW4iKSgKICAiY2xvc2VzIGEgcGF1\nc2VkIGxvY2FsIHdyYXBwZXIgYmVmb3JlIHRoZSBjb21tYW5kIHJldHVybnMgdG8gdGhlIG1vZGVs\nIiwKICBhc3luYyAoKSA9PiB7CiAgICBjb25zdCBkaXJlY3RvcnkgPSBhd2FpdCByZWFscGF0aCgK\nICAgICAgYXdhaXQgbWtkdGVtcChqb2luKHRtcGRpcigpLCAiYWdlbnRzLWRhcndpbi13cmFwcGVy\n\
+        LXN0YXJ0aW5nLSIpKSwKICAgICk7CiAgICBjb25zdCBtYXJrZXIgPSBqb2luKGRpcmVjdG9yeSwg\nImhlYXJ0YmVhdCIpOwogICAgY29uc3QgcGlkRmlsZSA9IGpvaW4oZGlyZWN0b3J5LCAicGF5bG9h\nZC1waWQiKTsKICAgIGNvbnN0IHF1b3RlZCA9IChwYXRoOiBzdHJpbmcpID0+ICInIiArIHBhdGgu\ncmVwbGFjZUFsbCgiJyIsICInXFwnJyIpICsgIiciOwogICAgY29uc3QgaGVscGVyID0gYXdhaXQg\ncmVhbHBhdGgoCiAgICAgIGpvaW4ocGFja2FnZVJvb3QsICJub2RlX21vZHVsZXMvQG9wZW5haS9h\nZ2VudHMvYmluL2NvZGV4LXNkay1ydW50aW1lIiksCiAgICApOwogICAgY29uc3Qgd3JhcHBlckNv\nbW1hbmQgPSBoZWxwZXIgKyAiIC0tY29kZXgtc2RrLWRhcndpbi1jb21tYW5kICI7CiAgICBjb25z\ndCBzaXplID0gKCkgPT4gcmVhZEZpbGUobWFya2VyLCAidXRmOCIpLnRoZW4oKHZhbHVlKSA9PiB2\nYWx1ZS5sZW5ndGgpOwogICAgY29uc3QgcHJvY2Vzc0RldGFpbHMgPSAocGlkOiBudW1iZXIpID0+\nIHsKICAgICAgY29uc3QgcmVzdWx0ID0gc3Bhd25TeW5jKAogICAgICAgICIvYmluL3BzIiwKICAg\nICAgICBbIi13dyIsICItcCIsIFN0cmluZyhwaWQpLCAiLW8iLCAic3RhdD0sbHN0YXJ0PSxjb21t\nYW5kPSJdLAogICAgICAgIHsgZW5jb2Rpbmc6ICJ1dGY4IiB9LAogICAgICApOwogICAgICBpZiAo\ncmVzdWx0LmVycm9yKSB0aHJvdyByZXN1bHQuZXJyb3I7CiAgICAgIGlmIChyZXN1bHQuc3RhdHVz\nID09PSAxKSByZXR1cm4gbnVsbDsKICAgICAgZXhwZWN0KHJlc3VsdC5zdGF0dXMpLnRvQmUoMCk7\n\
+        CiAgICAgIGNvbnN0IFssIHN0YXR1cywgaWRlbnRpdHldID0KICAgICAgICAvXihcUyspXHMrKC4r\nKSQvLmV4ZWMocmVzdWx0LnN0ZG91dC50cmltKCkpID8/IFtdOwogICAgICByZXR1cm4gc3RhdHVz\nICYmIGlkZW50aXR5ID8geyBzdGF0dXMsIGlkZW50aXR5IH0gOiBudWxsOwogICAgfTsKICAgIHR5\ncGUgT3duZWRQcm9jZXNzID0geyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0cmluZyB9OwogICAg\nY29uc3QgbWF0Y2hlcyA9ICh7IHBpZCwgaWRlbnRpdHkgfTogT3duZWRQcm9jZXNzKSA9PgogICAg\nICBwcm9jZXNzRGV0YWlscyhwaWQpPy5pZGVudGl0eSA9PT0gaWRlbnRpdHk7CiAgICBjb25zdCBz\naWduYWwgPSAoY2hpbGQ6IE93bmVkUHJvY2VzcywgYWN0aW9uOiBOb2RlSlMuU2lnbmFscykgPT4g\newogICAgICBpZiAoIW1hdGNoZXMoY2hpbGQpKSByZXR1cm47CiAgICAgIHRyeSB7CiAgICAgICAg\ncHJvY2Vzcy5raWxsKGNoaWxkLnBpZCwgYWN0aW9uKTsKICAgICAgfSBjYXRjaCAoZXJyb3IpIHsK\nICAgICAgICBpZiAoKGVycm9yIGFzIE5vZGVKUy5FcnJub0V4Y2VwdGlvbikuY29kZSAhPT0gIkVT\nUkNIIikgdGhyb3cgZXJyb3I7CiAgICAgIH0KICAgIH07CiAgICBjb25zdCBzZXJ2ZXIgPSBuZXcg\nTW9kZWxTZXJ2ZXIoWwogICAgICBbCiAgICAgICAgY2FsbCgKICAgICAgICAgICJleGVjX2NvbW1h\nbmQiLAogICAgICAgICAgewogICAgICAgICAgICBjbWQ6CiAgICAgICAgICAgICAgJ3ByaW50ZiAi\nJXNcXG4iICIkJCIgPiAnICsKICAgICAgICAgICAgICBxdW90ZWQocGlkRmlsZSkgKwogICAgICAg\n\
+        ICAgICAgICc7IGk9MDsgd2hpbGUgWyAiJGkiIC1sdCAxODAgXTsgZG8gcHJpbnRmIHggPj4gJyAr\nCiAgICAgICAgICAgICAgcXVvdGVkKG1hcmtlcikgKwogICAgICAgICAgICAgICI7IC9iaW4vc2xl\nZXAgMC4yNTsgaT0kKChpICsgMSkpOyBkb25lIiwKICAgICAgICAgICAgeWllbGRfdGltZV9tczog\nMTBfMDAwLAogICAgICAgICAgfSwKICAgICAgICAgIHsgY2FsbElkOiAic3RhcnQtdW5yZXR1cm5l\nZC1oZWFydGJlYXQiIH0sCiAgICAgICAgKSwKICAgICAgXSwKICAgIF0pOwogICAgbGV0IHdyYXBw\nZXI6IE93bmVkUHJvY2VzcyB8IHVuZGVmaW5lZDsKICAgIGxldCBwYXlsb2FkOiBPd25lZFByb2Nl\nc3MgfCB1bmRlZmluZWQ7CiAgICBsZXQgcGF1c2VkID0gZmFsc2U7CiAgICB0cnkgewogICAgICBh\nd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNlcnZlcik7CiAgICAgIGNv\nbnN0IGFnZW50ID0gbmV3IEFnZW50KHsKICAgICAgICBwcm92aWRlciwKICAgICAgICBtb2RlbDog\nImdwdC01IiwKICAgICAgICBpbnN0cnVjdGlvbnM6ICJSdW4gdGhlIHNjcmlwdGVkIGxvY2FsIGNv\nbW1hbmQuIiwKICAgICAgfSk7CiAgICAgIGNvbnN0IHNlc3Npb24gPSBhd2FpdCBhZ2VudC5zZXNz\naW9uKHsKICAgICAgICBlbnZpcm9ubWVudDogRW52aXJvbm1lbnQubG9jYWwoewogICAgICAgICAg\nY3dkOiBkaXJlY3RvcnksCiAgICAgICAgICB3cml0YWJsZVJvb3RzOiBbZGlyZWN0b3J5XSwKICAg\nICAgICAgIHRvb2xzOiBbImV4ZWNfY29tbWFuZCJdLAogICAgICAgIH0pLAogICAgICB9KTsKICAg\n\
+        ICAgdHJ5IHsKICAgICAgICBhd2FpdCBzZXNzaW9uLnN1Ym1pdCgiU3RhcnQgdGhlIGJvdW5kZWQg\naGVhcnRiZWF0LiIpOwogICAgICAgIGF3YWl0IHZpLndhaXRGb3IoYXN5bmMgKCkgPT4gZXhwZWN0\nKGF3YWl0IHNpemUoKSkudG9CZUdyZWF0ZXJUaGFuKDApLCB7CiAgICAgICAgICB0aW1lb3V0OiA1\nMDAwLAogICAgICAgIH0pOwogICAgICAgIGNvbnN0IHBheWxvYWRQaWQgPSBOdW1iZXIoKGF3YWl0\nIHJlYWRGaWxlKHBpZEZpbGUsICJ1dGY4IikpLnRyaW0oKSk7CiAgICAgICAgZXhwZWN0KE51bWJl\nci5pc1NhZmVJbnRlZ2VyKHBheWxvYWRQaWQpICYmIHBheWxvYWRQaWQgPiAxKS50b0JlKHRydWUp\nOwogICAgICAgIGNvbnN0IHBheWxvYWRJZGVudGl0eSA9IHByb2Nlc3NEZXRhaWxzKHBheWxvYWRQ\naWQpPy5pZGVudGl0eTsKICAgICAgICBleHBlY3QocGF5bG9hZElkZW50aXR5KS50b0NvbnRhaW4o\nbWFya2VyKTsKICAgICAgICBwYXlsb2FkID0geyBwaWQ6IHBheWxvYWRQaWQsIGlkZW50aXR5OiBw\nYXlsb2FkSWRlbnRpdHkhIH07CgogICAgICAgIGNvbnN0IHdyYXBwZXJzID0gZXhlY0ZpbGVTeW5j\nKAogICAgICAgICAgIi9iaW4vcHMiLAogICAgICAgICAgWyItYXh3dyIsICItbyIsICJwaWQ9LHBw\naWQ9LGNvbW1hbmQ9Il0sCiAgICAgICAgICB7IGVuY29kaW5nOiAidXRmOCIgfSwKICAgICAgICAp\nCiAgICAgICAgICAuc3BsaXQoIlxuIikKICAgICAgICAgIC5tYXAoKHJvdykgPT4gL15ccyooXGQr\nKVxzKyhcZCspXHMrKC4qKSQvLmV4ZWMocm93KSkKICAgICAgICAgIC5maWx0ZXIoCiAgICAgICAg\n\
+        ICAgIChyb3cpID0+CiAgICAgICAgICAgICAgTnVtYmVyKHJvdz8uWzJdKSA9PT0gcHJvY2Vzcy5w\naWQgJiYKICAgICAgICAgICAgICByb3c/LlszXT8uc3RhcnRzV2l0aCh3cmFwcGVyQ29tbWFuZCks\nCiAgICAgICAgICApOwogICAgICAgIGV4cGVjdCh3cmFwcGVycykudG9IYXZlTGVuZ3RoKDEpOwog\nICAgICAgIGNvbnN0IHdyYXBwZXJQaWQgPSBOdW1iZXIod3JhcHBlcnNbMF0/LlsxXSk7CiAgICAg\nICAgZXhwZWN0KE51bWJlci5pc1NhZmVJbnRlZ2VyKHdyYXBwZXJQaWQpICYmIHdyYXBwZXJQaWQg\nPiAxKS50b0JlKHRydWUpOwogICAgICAgIGNvbnN0IHdyYXBwZXJJZGVudGl0eSA9IHByb2Nlc3NE\nZXRhaWxzKHdyYXBwZXJQaWQpPy5pZGVudGl0eTsKICAgICAgICBleHBlY3Qod3JhcHBlcklkZW50\naXR5KS50b0NvbnRhaW4od3JhcHBlckNvbW1hbmQpOwogICAgICAgIHdyYXBwZXIgPSB7IHBpZDog\nd3JhcHBlclBpZCwgaWRlbnRpdHk6IHdyYXBwZXJJZGVudGl0eSEgfTsKICAgICAgICBzaWduYWwo\nd3JhcHBlciwgIlNJR1NUT1AiKTsKICAgICAgICBwYXVzZWQgPSB0cnVlOwogICAgICAgIGF3YWl0\nIHZpLndhaXRGb3IoCiAgICAgICAgICAoKSA9PiB7CiAgICAgICAgICAgIGNvbnN0IGRldGFpbHMg\nPSBwcm9jZXNzRGV0YWlscyh3cmFwcGVyUGlkKTsKICAgICAgICAgICAgZXhwZWN0KGRldGFpbHM/\nLmlkZW50aXR5KS50b0JlKHdyYXBwZXJJZGVudGl0eSk7CiAgICAgICAgICAgIGV4cGVjdChkZXRh\naWxzPy5zdGF0dXMuc3RhcnRzV2l0aCgiVCIpKS50b0JlKHRydWUpOwogICAgICAgICAgfSwKICAg\n\
+        ICAgICAgIHsgdGltZW91dDogMjAwMCB9LAogICAgICAgICk7CiAgICAgICAgY29uc3QgYmVmb3Jl\nQ2xvc2UgPSBhd2FpdCBzaXplKCk7CiAgICAgICAgYXdhaXQgdmkud2FpdEZvcihhc3luYyAoKSA9\nPgogICAgICAgICAgZXhwZWN0KGF3YWl0IHNpemUoKSkudG9CZUdyZWF0ZXJUaGFuKGJlZm9yZUNs\nb3NlKSwKICAgICAgICApOwogICAgICAgIC8vIFRoZSBwcm92aWRlciBoYXMgcmVjZWl2ZWQgbm8g\nY29tbWFuZCByZXN1bHQgb3IgY29udGludWF0aW9uIHJlcXVlc3QuCiAgICAgICAgZXhwZWN0KHNl\ncnZlci5yZXF1ZXN0cykudG9IYXZlTGVuZ3RoKDEpOwoKICAgICAgICBjb25zdCBzdGFydCA9IHBl\ncmZvcm1hbmNlLm5vdygpOwogICAgICAgIGNvbnN0IHRpbWVvdXQgPSBuZXcgQWJvcnRDb250cm9s\nbGVyKCk7CiAgICAgICAgY29uc3QgY2xvc2UgPSBhd2FpdCBQcm9taXNlLnJhY2UoWwogICAgICAg\nICAgc2Vzc2lvbi5jbG9zZSgpLnRoZW4oCiAgICAgICAgICAgICgpID0+ICh7IG91dGNvbWU6ICJy\nZXNvbHZlZCIsIG1lc3NhZ2U6ICIiIH0pLAogICAgICAgICAgICAoZXJyb3I6IHVua25vd24pID0+\nICh7CiAgICAgICAgICAgICAgb3V0Y29tZTogInJlamVjdGVkIiwKICAgICAgICAgICAgICBtZXNz\nYWdlOiBTdHJpbmcoZXJyb3IpLAogICAgICAgICAgICB9KSwKICAgICAgICAgICksCiAgICAgICAg\nICBkZWxheSgKICAgICAgICAgICAgMTZfMDAwLAogICAgICAgICAgICB7IG91dGNvbWU6ICJ0aW1l\nb3V0IiwgbWVzc2FnZTogIiIgfSwKICAgICAgICAgICAgeyBzaWduYWw6IHRpbWVvdXQuc2lnbmFs\n\
+        IH0sCiAgICAgICAgICApLAogICAgICAgIF0pLmZpbmFsbHkoKCkgPT4gdGltZW91dC5hYm9ydCgp\nKTsKICAgICAgICBjb25zdCBlbGFwc2VkID0gTWF0aC5yb3VuZChwZXJmb3JtYW5jZS5ub3coKSAt\nIHN0YXJ0KTsKICAgICAgICBjb25zdCB3cmFwcGVyRXhpdGVkQXRDbG9zZSA9ICFtYXRjaGVzKHdy\nYXBwZXIpOwogICAgICAgIGNvbnN0IHBheWxvYWRFeGl0ZWRBdENsb3NlID0gIW1hdGNoZXMocGF5\nbG9hZCk7CiAgICAgICAgY29uc3QgYXRDbG9zZSA9IGF3YWl0IHNpemUoKTsKICAgICAgICBhd2Fp\ndCBkZWxheSg2MDApOwogICAgICAgIGNvbnN0IGFmdGVyQ2xvc2UgPSBhd2FpdCBzaXplKCk7CiAg\nICAgICAgY29uc29sZS5pbmZvKAogICAgICAgICAgIltEYXJ3aW4gd3JhcHBlciBzdGFydGluZ10i\nLAogICAgICAgICAgSlNPTi5zdHJpbmdpZnkoewogICAgICAgICAgICBjbG9zZSwKICAgICAgICAg\nICAgZWxhcHNlZCwKICAgICAgICAgICAgd3JhcHBlckV4aXRlZEF0Q2xvc2UsCiAgICAgICAgICAg\nIHBheWxvYWRFeGl0ZWRBdENsb3NlLAogICAgICAgICAgICBwcm92aWRlclJlcXVlc3RzOiBzZXJ2\nZXIucmVxdWVzdHMubGVuZ3RoLAogICAgICAgICAgICBhdENsb3NlLAogICAgICAgICAgICBhZnRl\nckNsb3NlLAogICAgICAgICAgfSksCiAgICAgICAgKTsKICAgICAgICBleHBlY3QoY2xvc2Uub3V0\nY29tZSkudG9CZSgicmVzb2x2ZWQiKTsKICAgICAgICBleHBlY3Qod3JhcHBlckV4aXRlZEF0Q2xv\nc2UpLnRvQmUodHJ1ZSk7CiAgICAgICAgZXhwZWN0KHBheWxvYWRFeGl0ZWRBdENsb3NlKS50b0Jl\n\
+        KHRydWUpOwogICAgICAgIGV4cGVjdChhZnRlckNsb3NlKS50b0JlKGF0Q2xvc2UpOwogICAgICAg\nIGV4cGVjdChzZXJ2ZXIucmVxdWVzdHMpLnRvSGF2ZUxlbmd0aCgxKTsKICAgICAgICBzZXJ2ZXIu\nYXNzZXJ0RXhoYXVzdGVkKCk7CiAgICAgIH0gZmluYWxseSB7CiAgICAgICAgaWYgKHBhdXNlZCAm\nJiB3cmFwcGVyKSBzaWduYWwod3JhcHBlciwgIlNJR0NPTlQiKTsKICAgICAgICBpZiAocGF5bG9h\nZCkgc2lnbmFsKHBheWxvYWQsICJTSUdLSUxMIik7CiAgICAgICAgYXdhaXQgUHJvbWlzZS5yYWNl\nKFtzZXNzaW9uLmNsb3NlKCkuY2F0Y2goKCkgPT4ge30pLCBkZWxheSg0MDAwKV0pOwogICAgICB9\nCiAgICB9IGZpbmFsbHkgewogICAgICBhd2FpdCBybShkaXJlY3RvcnksIHsgcmVjdXJzaXZlOiB0\ncnVlLCBmb3JjZTogdHJ1ZSB9KTsKICAgIH0KICB9LAogIDM2XzAwMCwKKTsK\nPROBE\nprintf '%s  %s\\n' \"$PROBE_SHA256\" \"$probe\" | shasum -a 256 -c\ncat \"$probe\" >> \"$fixture\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nproduct_hashes \"$consumer\" | tee \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\"\nstatus=0\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/managed-$PROBE_SLUG.test.ts\"\
+        \ -t \"^$PROBE_TITLE$\" \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/$PROBE_SLUG-report.json\" \\\n  | tee \"$RUNNER_TEMP/$PROBE_SLUG-evidence.log\" || status=$?\nproduct_hashes \"$consumer\" > \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ncmp \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\" \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ntest \"$status\" = 0\njq -e --arg title \"$PROBE_TITLE\" \\\n  '[.testResults[].assertionResults[] | select(.status==\"passed\") | .fullName] == [$title]' \\\n  \"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\n"
+    - name: Qualify private database aliases in the installed SDK
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ntestdir=\"$consumer/test/native\"\nmkdir -p \"$testdir\"\ncp -R packages/agents/test/native/fixtures \"$testdir/\"\ncp packages/agents/test/native/{local-executor-policy-native,executor-receipt-resume-native}.test.ts \"$testdir/\"\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  test/native/local-executor-policy-native.test.ts \\\n  -t 'rejects a profile database hard link|applies a per-turn write policy and requires the current policy on local restore' \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/storage-alias-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/storage-alias.log\"\njq -e '([.testResults[].assertionResults[] | select(.fullName|test(\"rejects a profile database hard\
+        \ link\")) | select(.status==\"passed\")]|length)==4 and ([.testResults[].assertionResults[] | select(.fullName|test(\"applies a per-turn write policy and requires the current policy on local restore\")) | select(.status==\"passed\")]|length)==1 and .numFailedTests==0' \\\n  \"$RUNNER_TEMP/storage-alias-vitest.json\"\n"
+      if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+    - name: Qualify WSS executor receipt restore in the installed SDK
+      if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\ntest -x \"$CODEX_EXEC_SERVER_TEST_BINARY\"\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  test/native/executor-receipt-resume-native.test.ts \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/receipt-restore-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/receipt-restore.log\"\njq -e '.success and .numTotalTests > 0 and .numPassedTests == .numTotalTests and .numFailedTests == 0' \\\n  \"$RUNNER_TEMP/receipt-restore-vitest.json\"\n"
+    - if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: js-darwin-installed-probe-evidence
+        path: '${{ runner.temp }}/wrapper-*.json
+
+          ${{ runner.temp }}/wrapper-*.log
+
+          ${{ runner.temp }}/wrapper-products*.txt
+
+          ${{ runner.temp }}/helper-alias-*.json
+
+          ${{ runner.temp }}/helper-alias-*.log
+
+          ${{ runner.temp }}/helper-alias-products*.txt
+
+          ${{ runner.temp }}/wrapper-starting-*.json
+
+          ${{ runner.temp }}/wrapper-starting-*.log
+
+          ${{ runner.temp }}/wrapper-starting-products*.txt
+
+          ${{ runner.temp }}/storage-alias-vitest.json
+
+          ${{ runner.temp }}/storage-alias.log
+
+          ${{ runner.temp }}/receipt-restore-vitest.json
+
+          ${{ runner.temp }}/receipt-restore.log'
+        if-no-files-found: warn
+'on':
+  push:
+    branches:
+    - test/managed-macos-command-qualification-20261104
