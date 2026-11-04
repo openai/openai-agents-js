@@ -30,6 +30,31 @@ function runWorker(directory: string, steer?: string) {
   });
 }
 
+it('records attention before disposing the session when submission rejects', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-worker-submission-'));
+  const error = new Error('Synthetic submission failure.');
+  let snapshotAtDisposal: Awaited<ReturnType<typeof readWorkerSnapshot>>;
+  const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+    id: 'thread',
+    async [Symbol.asyncDispose]() {
+      snapshotAtDisposal = await readWorkerSnapshot(directory);
+    },
+    async submit() {
+      throw error;
+    },
+  } as unknown as Session);
+  try {
+    await expect(runWorker(directory)).rejects.toBe(error);
+    expect(snapshotAtDisposal).toMatchObject({
+      threadId: 'thread',
+      state: 'needs_attention',
+    });
+  } finally {
+    session.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('records attention before session disposal when cancelling active work fails', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'native-worker-cancel-'));
   const entered = Promise.withResolvers<void>();
