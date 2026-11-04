@@ -167,7 +167,15 @@
     {
       "path": "0042-confirm-owned-tree-shutdown.patch",
       "sha256": "d46090b9165a1535b2df44c8f863203be163e6fa16156eef959f1783a16ef01d"
+    },
+    {
+      "path": "0043-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0044-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
     }
   ],
-  "result_tree": "d085c4a8096c930e27393a7c351637b65a3ebcc4"
+  "result_tree": "0a8c726269b0c859ac3b90344b8c8f99fa85294d"
 }
