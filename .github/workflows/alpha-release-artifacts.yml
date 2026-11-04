@@ -89,11 +89,14 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.
         with:
           # Keep credentials and Cargo configuration outside the cache.
+          # Preserve verified source timestamps so Cargo can reuse path dependencies.
           path: |
             ${{ runner.temp }}/agents-cargo/registry
             ${{ runner.temp }}/agents-cargo/git
             ${{ runner.temp }}/agents-target
             packages/agents/native/.cache/v8
+            packages/agents/native/.upstream/reviewed-codex
+            packages/agents/native/.upstream/reviewed-rust-sdk
           # Require the same native sources, toolchain, and workflow settings.
           key: native-v1-${{ matrix.platform }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/CODEX_REVISION', 'packages/agents/native/Cargo.toml', 'packages/agents/native/Cargo.lock', 'packages/agents/native/build.rs', 'packages/agents/native/rust/**', 'packages/agents/native/patches/**', 'packages/agents/native/rmcp-patches/**', 'packages/agents/native/tests/fixtures/exec_server.rs', 'packages/agents/scripts/**', '.github/workflows/alpha-release-artifacts.yml') }}
 
