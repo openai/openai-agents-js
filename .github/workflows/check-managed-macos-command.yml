@@ -1,0 +1,95 @@
+name: Check the managed local command on Apple Silicon
+on:
+  push:
+    branches: [test/managed-macos-command-qualification-20261104]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build and test the exact JS SDK package
+    runs-on: macos-15
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      ALPHA_VERSION: 0.22.0-alpha.1
+      EXPECTED_PLATFORM: darwin-arm64
+      RUSTUP_TOOLCHAIN: '1.95.0'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fc05174fed62426ffbb76212c9a40c3a1aee7945
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Check runner platform
+        run: |
+          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+
+      - name: Install Rust
+        run: |
+          echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: brew install cmake pkgconf protobuf openssl@3
+      - name: Install Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --yes --no-progress
+
+      - name: Build the SDK and native runtime
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          node packages/agents/scripts/native.mjs package
+      - name: Qualify the Linux worker
+        if: runner.os == 'Linux'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          pnpm test:native \
+            packages/agents/test/native/supervised-worker-example.test.ts \
+            packages/agents/test/native/supervised-worker-cleanup.test.ts \
+            --reporter=verbose
+          pnpm test:native \
+            packages/agents/test/native/local-executor-policy-native.test.ts \
+            -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy' \
+            --reporter=verbose
+      - name: Qualify local executor grants on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
+          -t 'joins a detached local child at|joins an interrupted local command|joins a yielded local process|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS'
+          --reporter=verbose
+      - name: Create the release bundles
+        run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+      - name: Test the extracted bundles
+        run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: agents-alpha-darwin-arm64
+          path: |
+            ${{ runner.temp }}/agents-alpha/*.tgz
+            ${{ runner.temp }}/agents-alpha/*.tar.gz
+            ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
+            ${{ runner.temp }}/agents-alpha/build-*.json
+            ${{ runner.temp }}/agents-alpha/installed-*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
