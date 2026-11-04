@@ -18,6 +18,7 @@ export type RuntimeOptions = JsonObject & {
   loader?: JsonObject;
 };
 export type ThreadOptions = JsonObject & {
+  parent_trace?: { traceparent: string; tracestate?: string | null };
   _sdk_resume_thread_id?: string;
   config?: JsonObject;
   runtime?: RuntimeOptions;

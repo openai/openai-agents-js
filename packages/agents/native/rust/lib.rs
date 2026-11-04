@@ -2775,7 +2775,14 @@ impl NativeThread {
         &self,
         output_schema_json: Option<String>,
         selection_json: Option<String>,
+        trace_json: Option<String>,
     ) -> napi::Result<String> {
+        let trace = trace_json
+            .map(|trace| {
+                serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>(&trace)
+                    .map_err(native_error)
+            })
+            .transpose()?;
         let output_schema = output_schema_json
             .map(|schema| serde_json::from_str::<Value>(&schema).map_err(native_error))
             .transpose()?;
@@ -2831,6 +2838,7 @@ impl NativeThread {
             settings,
             output_schema,
             selection,
+            trace,
         )
         .await
         .map_err(native_error)?;

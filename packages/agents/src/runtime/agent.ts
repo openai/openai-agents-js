@@ -1,3 +1,4 @@
+import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { assertCheckpointNetworkPolicy } from './state';
 import { assertCheckpointSelections } from './selection-state';
@@ -90,7 +91,9 @@ export async function openSession(
     ...(model === undefined ? {} : { model }),
     ...(environment ? { environment: environmentConfig(environment) } : {}),
   };
+  const parentTrace = captureTraceContext(options.parentTrace);
   const threadOptions: ThreadOptions = {
+    ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...setup.threadOptions,
     ...(options.localStorage
       ? {}
