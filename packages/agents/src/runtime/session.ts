@@ -257,6 +257,12 @@ export type OneShotOptions = {
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
+  /**
+   * Maximum root model preparations for this submission. Zero blocks the first
+   * preparation. Manual suspension retains the remaining budget. Provider
+   * retries, output repairs, and child agents have separate lifecycles.
+   */
+  maxModelSteps?: number;
   /** Omission uses Session defaults; an empty list selects no tools. */
   tools?: readonly ToolSelector<Context>[];
   /**
@@ -282,8 +288,18 @@ export interface SubmitOptions<
 > extends OperationOptions<Context> {
   ifBusy?: 'steer' | 'reject';
 }
+/** @internal Validate before opening a provider or allocating a submission. */
+export function validateMaxModelSteps(
+  value: number | undefined,
+): number | undefined {
+  if (value !== undefined && (!Number.isSafeInteger(value) || value < 0))
+    throw new TypeError('maxModelSteps must be a nonnegative safe integer');
+  return value;
+}
+
 interface OperationSelection {
   readonly names: readonly ReturnType<typeof toolIdentity>[] | undefined;
+  readonly maxModelSteps?: number;
   readonly beforeStep?: OperationOptions<any>['beforeStep'];
   generation?: bigint;
   stepIndex: number;
@@ -2218,8 +2234,16 @@ export class Session<OutputT = string, Context = unknown> {
   async _run(
     input: string | JsonValue[],
     callerSignal?: AbortSignal,
+    maxModelSteps?: number,
   ): Promise<NativeRunResult> {
-    this.startTurn(input, false, undefined, false, undefined, callerSignal);
+    this.startTurn(
+      input,
+      false,
+      undefined,
+      false,
+      this.captureSelection({ maxModelSteps }),
+      callerSignal,
+    );
 
     return this.#waitResult();
   }
@@ -2345,7 +2369,11 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const parts = nativeInput(input as UserInput);
     if (ifBusy === 'steer' && this.lifecycle.kind === 'turn') {
-      if (options?.tools !== undefined || options?.beforeStep !== undefined)
+      if (
+        options?.tools !== undefined ||
+        options?.beforeStep !== undefined ||
+        options?.maxModelSteps !== undefined
+      )
         throw new TypeError('Operation selection applies only to new roots');
       const run = this.rootRun(this.lifecycle.run);
       this.requireDefaultOutput(run);
@@ -2424,13 +2452,18 @@ export class Session<OutputT = string, Context = unknown> {
   private captureSelection(
     options?: OperationOptions<Context>,
   ): OperationSelection | undefined {
-    if (options?.tools === undefined && options?.beforeStep === undefined)
+    if (
+      options?.tools === undefined &&
+      options?.beforeStep === undefined &&
+      options?.maxModelSteps === undefined
+    )
       return;
     return {
       names:
         options.tools === undefined
           ? undefined
           : this.selectionNames([...options.tools]),
+      maxModelSteps: validateMaxModelSteps(options.maxModelSteps),
       beforeStep: options.beforeStep,
       stepIndex: 0,
     };
@@ -2903,7 +2936,9 @@ export class Session<OutputT = string, Context = unknown> {
             selection: {
               generation: this.catalog.generation.toString(),
               names: selection.names ?? null,
-              before_step: selection.beforeStep !== undefined,
+              before_step:
+                selection.beforeStep !== undefined ||
+                selection.maxModelSteps !== undefined,
             },
           }
         : {}),
@@ -4221,10 +4256,19 @@ export class Session<OutputT = string, Context = unknown> {
           signal.throwIfAborted();
           if (this.graphStops.size)
             throw new TurnAborted('Step preparation stopped');
-          const selected = await selection.beforeStep!({
+          if (
+            selection.maxModelSteps !== undefined &&
+            selection.stepIndex >= selection.maxModelSteps
+          )
+            throw new NativeError('Root model step limit reached', {
+              code: 'max_model_steps_exceeded',
+              retryable: false,
+            });
+          const stepIndex = selection.stepIndex++;
+          const selected = await selection.beforeStep?.({
             context: this.options.context as Context,
             submission: this.#turnFor(this.rootRun(run)),
-            stepIndex: selection.stepIndex++,
+            stepIndex,
             signal,
           });
           signal.throwIfAborted();
@@ -4804,8 +4848,8 @@ export class Session<OutputT = string, Context = unknown> {
                 schema == null ? undefined : encodeReceipt(schema),
                 encode({
                   generation: this.catalog.generation.toString(),
-                  names: run.selection.names,
-                  before_step: false,
+                  names: run.selection.names ?? null,
+                  before_step: run.selection.maxModelSteps !== undefined,
                 }),
               )
             : schema == null
@@ -5115,6 +5159,12 @@ export class Session<OutputT = string, Context = unknown> {
           {
             manual_continuation: result.manual_continuation,
             manual_context: {
+              ...(run.selection?.maxModelSteps === undefined
+                ? {}
+                : {
+                    remaining_model_steps:
+                      run.selection.maxModelSteps - run.selection.stepIndex,
+                  }),
               instructions: this.threadOptions._managed_instructions
                 ? this.#native._application_instructions()
                 : (this.threadOptions.instructions ?? null),
@@ -5168,11 +5218,19 @@ export class Session<OutputT = string, Context = unknown> {
 
     run.id = state.manual_continuation.turn_id;
     const operation = readCheckpointSelections(state).operation_tools;
-    if (operation !== undefined)
+    const remaining = state.manual_context.remaining_model_steps;
+    if (operation !== undefined || remaining !== undefined)
       run.selection = {
-        names: this.selectionNames(
-          operation.map((reference) => ({ kind: 'tool_ref', ...reference })),
-        ),
+        names:
+          operation === undefined
+            ? undefined
+            : this.selectionNames(
+                operation.map((reference) => ({
+                  kind: 'tool_ref',
+                  ...reference,
+                })),
+              ),
+        maxModelSteps: remaining,
         generation: this.catalog.generation,
         stepIndex: 0,
       };
