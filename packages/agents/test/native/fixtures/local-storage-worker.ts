@@ -3,9 +3,11 @@ import { inspect } from 'node:util';
 import { z } from 'zod';
 import {
   Agent,
+  LocalRecoveryRequired,
   NativeProvider,
   localStorage,
   tool,
+  type ReconciledCall,
   type ToolContext,
 } from '../../../src/index';
 
@@ -14,7 +16,8 @@ const config = JSON.parse(process.argv[2]) as {
   effects: string;
   url: string;
   label: string;
-  mode: 'run' | 'hold-effect' | 'hold-open';
+  mode: 'run' | 'hold-before' | 'hold-effect' | 'hold-open';
+  reconciledCalls?: ReconciledCall[];
   resume?: string;
   apiKey?: string;
 };
@@ -34,6 +37,10 @@ const agent = new Agent<{ label: string }>({
       description: 'Record one application effect.',
       parameters: z.object({}),
       execute: async (_args, { context }: ToolContext<{ label: string }>) => {
+        if (config.mode === 'hold-before') {
+          process.send?.({ type: 'beforeEffect' });
+          await new Promise(() => {});
+        }
         await appendFile(config.effects, context.label + '\n');
         process.send?.({ type: 'effect' });
         if (config.mode === 'hold-effect') await new Promise(() => {});
@@ -46,7 +53,10 @@ async function main() {
   try {
     const session = await agent.session({
       storage: localStorage(config.profile),
-      resume: config.resume,
+      ...(config.resume === undefined ? {} : { resume: config.resume }),
+      ...(config.reconciledCalls === undefined
+        ? {}
+        : { reconciledCalls: config.reconciledCalls }),
       context: { label: config.label },
     });
     const history = async () => {
@@ -82,10 +92,19 @@ async function main() {
     await provider.close();
     process.send?.({ type: 'done' });
   } catch (error) {
+    const inspection =
+      error instanceof LocalRecoveryRequired
+        ? {
+            calls: error.calls,
+            turns: error.turns.map(({ id, status }) => ({ id, status })),
+            items: error.items,
+          }
+        : {};
     process.send?.({
       type: 'failure',
       message: error instanceof Error ? error.message : String(error),
       details: inspect(error, { depth: null }),
+      ...inspection,
     });
     try {
       await provider.close();

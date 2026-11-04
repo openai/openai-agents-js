@@ -55,6 +55,10 @@ export class Engine {
     options_json: string,
     specs_json: string,
   ): Promise<NativeThread>;
+  _start_local_resume(
+    options_json: string,
+    specs_json: string,
+  ): Promise<NativeThread | string>;
   _close_report(): Promise<string | null>;
   close(): Promise<void>;
 }

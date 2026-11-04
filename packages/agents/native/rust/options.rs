@@ -208,6 +208,8 @@ impl ThreadInstructionsProvider for ThreadInstructions {
 pub struct ThreadOptions {
     #[serde(rename = "_sdk_resume_thread_id")]
     pub(crate) sdk_resume_thread_id: Option<ThreadId>,
+    #[serde(rename = "_sdk_reconciled_calls")]
+    pub(crate) sdk_reconciled_calls: Vec<crate::local_reconciliation::Receipt>,
     #[serde(rename = "_native_agent_roles")]
     native_agent_roles: Option<Vec<String>>,
     #[serde(rename = "_native_agent_before_step")]
