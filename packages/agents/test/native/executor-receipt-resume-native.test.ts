@@ -1,4 +1,10 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import {
@@ -48,7 +54,8 @@ it
       const connection = {
         url: executor.url,
         headers: executor.headers,
-        cwd: executor.cwd,
+        // A legacy mode change requires identical workspace grants.
+        cwd: mode === 'legacy' ? await realpath(executor.cwd) : executor.cwd,
         tools: ['exec_command'] as const,
       };
       const implicit = new Environment(connection);
