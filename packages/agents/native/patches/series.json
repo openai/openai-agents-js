@@ -183,7 +183,15 @@
     {
       "path": "0046-protect-macos-local-helper-hard-links.patch",
       "sha256": "dd1f102c61a4d8bac29b72dfbce0bb334228b0c31e3212590ebeac8f0f39cf08"
+    },
+    {
+      "path": "0047-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0048-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
     }
   ],
-  "result_tree": "6074b74bf7fa29bd97f0f700fe950d4b92f946b8"
+  "result_tree": "57d4bcbf1e6f6c108c824b0d929ca58e9f429d84"
 }
