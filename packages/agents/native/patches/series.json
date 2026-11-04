@@ -187,7 +187,15 @@
     {
       "path": "0047-resume-trusted-darwin-wrapper-during-shutdown.patch",
       "sha256": "8e51ed328d871fa82532f9a8a4d2bfd33134852e936c0c092387c871adc8a049"
+    },
+    {
+      "path": "0048-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0049-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
     }
   ],
-  "result_tree": "066d534a097d3d16940708d4fad4454153224ffd"
+  "result_tree": "5c51ac3c1e75c8eb439a9b1f8385ac09bf794a3b"
 }
