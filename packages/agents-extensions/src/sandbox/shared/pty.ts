@@ -122,7 +122,6 @@ export async function openPtyWebSocket(args: {
   url: string;
   providerName: string;
   headers?: Record<string, string>;
-  headersUnsupportedUrl?: string;
   timeoutMs?: number;
   configure?: (socket: PtyWebSocket) => void | Promise<void>;
 }): Promise<PtyWebSocket> {
@@ -276,7 +275,6 @@ async function createWebSocket(args: {
   url: string;
   providerName: string;
   headers?: Record<string, string>;
-  headersUnsupportedUrl?: string;
 }): Promise<PtyWebSocket> {
   if (!args.headers && typeof globalThis.WebSocket === 'function') {
     return new globalThis.WebSocket(args.url) as unknown as PtyWebSocket;
@@ -305,12 +303,8 @@ async function createWebSocket(args: {
     wsImportError = error;
   }
 
-  if (typeof globalThis.WebSocket === 'function') {
-    if (!args.headers || args.headersUnsupportedUrl) {
-      return new globalThis.WebSocket(
-        args.headersUnsupportedUrl ?? args.url,
-      ) as unknown as PtyWebSocket;
-    }
+  if (!args.headers && typeof globalThis.WebSocket === 'function') {
+    return new globalThis.WebSocket(args.url) as unknown as PtyWebSocket;
   }
 
   if (args.headers) {
