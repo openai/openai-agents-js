@@ -792,7 +792,7 @@ fn check_local_helper_paths<'a>(
     helpers: impl IntoIterator<Item = &'a Path>,
     system_search: impl IntoIterator<Item = &'a Path>,
 ) -> Result<()> {
-    let verify = |path: &Path| -> Result<()> {
+    let verify = |path: &Path| {
         resolve_local_path(
             path,
             false,
@@ -804,11 +804,11 @@ fn check_local_helper_paths<'a>(
                 );
                 Ok(())
             },
-        )?;
-        Ok(())
+        )
     };
+    let mut resolved_helpers = Vec::new();
     for path in helpers {
-        verify(path)?;
+        resolved_helpers.push(verify(path)?);
     }
     for directory in system_search {
         verify(directory)?;
@@ -816,9 +816,15 @@ fn check_local_helper_paths<'a>(
         // before isolation, even for the capability probe used to select it.
         let bwrap = directory.join("bwrap");
         if bwrap.symlink_metadata().is_ok() {
-            verify(&bwrap)?;
+            resolved_helpers.push(verify(&bwrap)?);
         }
     }
+    ensure!(
+        !roots
+            .contains_hard_link_to_any(&resolved_helpers)
+            .context("could not check writable roots for installed sandbox helper hard links; use readable writable roots")?,
+        "local executor write roots must not contain installed sandbox helpers"
+    );
     Ok(())
 }
 

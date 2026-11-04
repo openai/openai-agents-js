@@ -169,13 +169,29 @@
       "sha256": "d46090b9165a1535b2df44c8f863203be163e6fa16156eef959f1783a16ef01d"
     },
     {
-      "path": "0043-stop-auto-compaction-after-sdk-stop.patch",
+      "path": "0043-scope-managed-process-shutdown.patch",
+      "sha256": "79941be81863ce7948ff58781cc63c6dd0cec03487702881d81441041081a3b1"
+    },
+    {
+      "path": "0044-protect-local-helper-hard-links.patch",
+      "sha256": "96cc15f6742b20578468fa01876774bcc735fbea325e442313c20eba12016de5"
+    },
+    {
+      "path": "0045-protect-reverse-local-bind-aliases.patch",
+      "sha256": "1eb99a3ac7386544dcfc83df9977e88050dfdf5bc45011acf61405d6fa10174f"
+    },
+    {
+      "path": "0046-protect-macos-local-helper-hard-links.patch",
+      "sha256": "dd1f102c61a4d8bac29b72dfbce0bb334228b0c31e3212590ebeac8f0f39cf08"
+    },
+    {
+      "path": "0047-stop-auto-compaction-after-sdk-stop.patch",
       "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
     },
     {
-      "path": "0044-sdk-provider-compaction-admission.patch",
+      "path": "0048-sdk-provider-compaction-admission.patch",
       "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
     }
   ],
-  "result_tree": "0a8c726269b0c859ac3b90344b8c8f99fa85294d"
+  "result_tree": "57d4bcbf1e6f6c108c824b0d929ca58e9f429d84"
 }
