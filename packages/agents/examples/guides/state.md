@@ -16,7 +16,7 @@ History projects a canonical accepted input's Responses record and native user i
 
 `saveState()` exports idle conversation state. `suspend()` seals a supported pending manual boundary and exports its continuation. Restore with `agent.session({ state })`, supplying current trusted declarations. Snapshots contain conversation data. They contain neither running JavaScript nor a workspace backup. Python checkpoint interchange is not supported.
 
-Opening a checkpoint with a local executor or explicit `Environment.writableRoots` requires the matching saved executor policy digest. Older checkpoints without that digest can still reopen with their compatible default executor policy. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.
+Opening a checkpoint with a local executor or explicit `Environment.writableRoots` requires the matching saved executor policy digest. For a checkpoint without that digest, restore with a WSS Environment that omits `writableRoots` and matches the saved `network` setting. For an idle checkpoint with no network policy, you can also omit the Environment. To use a local executor or explicit `writableRoots` instead, open a new Session without this checkpoint. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.
 
 ### Restore instructions and tools
 
@@ -138,6 +138,8 @@ await reopened.close();
 See the [local-storage example](../local-storage.ts).
 
 ### Profile ownership
+
+The SDK rejects a local working directory or writable root that overlaps the storage profile. For example, put the worker in `worker/workspace` and keep its session history in `worker/profile`.
 
 A profile uses the native local store and one native writer per conversation. Concurrent writers refuse. A clean close that completes cleanup releases that writer. The profile survives cleanup of the provider's temporary directory. Opening uses current callbacks, credentials and accepted instructions. Saved tool names do not authorize new effects. The directory is conversation storage, not a backup of workspace files, credentials, JavaScript tasks or live reply grants.
 

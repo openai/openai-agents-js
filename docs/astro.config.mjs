@@ -189,6 +189,10 @@ const sidebar = [
         ],
       },
       {
+        label: 'Supervise a native worker',
+        link: '/guides/native-workers',
+      },
+      {
         label: 'Voice agents',
         translations: {
           ja: '音声エージェント',
