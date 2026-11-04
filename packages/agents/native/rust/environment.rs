@@ -13,23 +13,24 @@ use codex_core::{
 };
 use codex_core_api::{
     Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
-    NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec,
+    NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec, SqliteConfig,
 };
 use codex_exec_server::{
     Environment, EnvironmentInfo, ExecParams, ExecProcessEvent, ExecServerError,
     ExecServerRuntimeOptions, FileSystemSandboxContext, GetMetadataOptions, LOCAL_ENVIRONMENT_ID,
     LocalWriteRoots, ProcessId, REMOTE_ENVIRONMENT_ID, RemoteEnvironmentOptions,
 };
+use codex_history::RolloutItem;
 use codex_protocol::capabilities::{CapabilityRootLocation, SelectedCapabilityRoot};
 use codex_protocol::config_types::{
     ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit, WindowsSandboxLevel,
 };
-use codex_protocol::models::{PermissionProfile, PermissionProfileSnapshot};
+use codex_protocol::models::{PermissionProfile, PermissionProfileSnapshot, ResponseItem};
 use codex_protocol::permissions::{
     FileSystemAccessMode, FileSystemPath, FileSystemSpecialPath, NetworkSandboxPolicy,
 };
 use codex_protocol::protocol::{
-    AskForApproval, EnvironmentConfig, EnvironmentConfigState, GranularApprovalConfig,
+    AskForApproval, EnvironmentConfig, EnvironmentConfigState, EventMsg, GranularApprovalConfig,
     TurnEnvironmentSelection,
 };
 use codex_protocol::sandbox::SandboxType;
@@ -833,10 +834,12 @@ fn check_local_session_write_roots(
     roots: &LocalWriteRoots<'_>,
     storage: Option<&Path>,
 ) -> Result<()> {
+    let sqlite = config.sqlite_config();
     if let Some(storage) = storage {
         check_local_protected_path(
             roots,
             storage,
+            sqlite,
             "could not resolve local session storage",
             "Keep local session storage outside the executor cwd and writable roots",
         )?;
@@ -844,6 +847,7 @@ fn check_local_session_write_roots(
     check_local_protected_path(
         roots,
         config.codex_home.as_path(),
+        sqlite,
         "could not resolve the native runtime home",
         "Keep the native runtime home outside the executor cwd and writable roots",
     )
@@ -852,16 +856,119 @@ fn check_local_session_write_roots(
 fn check_local_protected_path(
     roots: &LocalWriteRoots<'_>,
     path: &Path,
+    sqlite: &SqliteConfig,
     resolve_error: &'static str,
     overlap_error: &'static str,
 ) -> Result<()> {
-    // Runtime and SQLite directories may be created after this check.
+    let resolved = resolve_local_protected_path(roots, path, resolve_error, overlap_error)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut linked_files = linked_local_protected_files(&resolved).context(resolve_error)?;
+        if path == sqlite.home() {
+            linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
+        }
+        ensure!(
+            !roots
+                .contains_hard_link_to_any(&linked_files)
+                .context("could not check writable roots for private storage hard links")?,
+            "{overlap_error}; remove hard links to its files from the writable roots"
+        );
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = (resolved, sqlite);
+    Ok(())
+}
+
+fn resolve_local_protected_path(
+    roots: &LocalWriteRoots<'_>,
+    path: &Path,
+    resolve_error: &'static str,
+    overlap_error: &'static str,
+) -> Result<PathBuf> {
+    // Runtime and SQLite files may be created after this check.
     let resolved = resolve_local_path(path, true, resolve_error, |entry| {
         ensure!(!roots.contains_entry(entry)?, "{overlap_error}");
         Ok(())
     })?;
     ensure!(!roots.has_root_at_or_below(&resolved)?, "{overlap_error}");
-    Ok(())
+    Ok(resolved)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_relocated_sqlite_files(
+    roots: &LocalWriteRoots<'_>,
+    sqlite: &SqliteConfig,
+    overlap_error: &'static str,
+) -> Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let resolve_error = "could not inspect a native SQLite path";
+    let mut linked_files = Vec::new();
+    for db in sqlite.runtime_db_paths() {
+        let metadata = match db.path.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context(resolve_error),
+        };
+        if !metadata.is_symlink() {
+            continue;
+        }
+        // SQLite resolves its configured DB filename and keeps sidecars beside
+        // the resolved DB. Inspect those files without traversing external trees.
+        let db = resolve_local_protected_path(roots, &db.path, resolve_error, overlap_error)?;
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut path = db.as_os_str().to_os_string();
+            path.push(suffix);
+            let path = PathBuf::from(path);
+            let metadata = match path.symlink_metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error).context(resolve_error),
+            };
+            if metadata.is_file() {
+                ensure!(
+                    !roots.contains_entry(&path)? && !roots.has_root_at_or_below(&path)?,
+                    "{overlap_error}"
+                );
+                if metadata.nlink() > 1 {
+                    linked_files.push(path);
+                }
+            }
+        }
+    }
+    Ok(linked_files)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_local_protected_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+
+    let mut directories = vec![root.to_owned()];
+    let mut linked_files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            // DirEntry::metadata does not follow symlinks. Native state can
+            // also disappear during a normal rename or cleanup.
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if metadata.is_dir() {
+                directories.push(entry.path());
+            } else if metadata.is_file() && metadata.nlink() > 1 {
+                linked_files.push(entry.path());
+            }
+        }
+    }
+    Ok(linked_files)
 }
 
 fn resolve_local_path(
@@ -1056,6 +1163,93 @@ pub(crate) fn check_checkpoint_policy(
     Ok(())
 }
 
+fn has_executor_receipt_markers(receipt: &Value) -> bool {
+    ["codex_source_tree", "strict_executor_writes", "executors"]
+        .into_iter()
+        .any(|field| receipt.get(field).is_some())
+}
+
+fn validate_sdk_receipt_identities(history: &[RolloutItem], thread_id: &str) -> Result<()> {
+    // Core writes sampling receipts into the producing thread's raw rollout.
+    // Native forks and subagents may retain identified ancestor receipts.
+    let own_root = matches!(history.first(), Some(RolloutItem::SessionMeta(header))
+        if header.meta.id.to_string() == thread_id
+            && header.meta.source.parent_thread_id().is_none()
+            && header.meta.parent_thread_id.is_none()
+            && header.meta.forked_from_id.is_none()
+            && header.meta.history_base.is_none());
+    for item in history {
+        let RolloutItem::TurnContext(context) = item else {
+            continue;
+        };
+        let Some(receipt) = context.sdk_receipt.as_ref() else {
+            continue;
+        };
+        if has_executor_receipt_markers(receipt) {
+            ensure!(
+                receipt["thread_id"].as_str().is_some_and(|id| {
+                    codex_protocol::ThreadId::from_string(id).is_ok()
+                        && (!own_root || id == thread_id)
+                }),
+                "Local resume requires the recorded executor write and network policy"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn has_sampled_model(history: &[RolloutItem]) -> bool {
+    history.iter().any(|item| match item {
+        RolloutItem::EventMsg(EventMsg::TurnComplete(turn)) => {
+            turn.last_agent_message.is_some() || turn.time_to_first_token_ms.is_some()
+        }
+        RolloutItem::ResponseItem(response) => match &response.item {
+            ResponseItem::Message { role, .. } => role == "assistant",
+            ResponseItem::Reasoning { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. } => true,
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+fn has_legacy_executor_profiles(history: &[RolloutItem]) -> bool {
+    let mut contexts = history
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::TurnContext(context) => Some(context),
+            _ => None,
+        })
+        .peekable();
+    contexts.peek().is_some()
+        && contexts.all(|context| {
+            context.network.is_none() && is_legacy_executor_profile(&context.permission_profile())
+        })
+}
+
+fn is_legacy_executor_profile(profile: &PermissionProfile) -> bool {
+    if *profile == PermissionProfile::read_only() {
+        return true;
+    }
+    // The concrete write path is a PathUri and can belong to a different OS.
+    profile
+        .file_system_sandbox_policy()
+        .entries
+        .into_iter()
+        .find(|entry| entry.access == FileSystemAccessMode::Write)
+        .is_some_and(|entry| match entry.path {
+            FileSystemPath::Path { path } => {
+                *profile == workspace_profile(std::slice::from_ref(&path))
+            }
+            _ => false,
+        })
+}
+
 /// Trusted current executor policy, compared under the durable writer lock.
 #[derive(Default)]
 pub(crate) struct LocalResumeExecutorPolicy {
@@ -1079,24 +1273,25 @@ impl LocalResumeExecutorPolicy {
 
     pub(crate) fn validate(
         &self,
-        history: &[codex_history::RolloutItem],
+        history: &[RolloutItem],
         id: codex_protocol::ThreadId,
     ) -> Result<()> {
         let id = id.to_string();
+        validate_sdk_receipt_identities(history, &id)?;
         let is_strict = |flag: Option<&serde_json::Value>| {
             flag.is_some_and(|flag| flag.as_bool() != Some(false))
         };
         let mut recorded = history.iter().rev().filter_map(|item| {
-            let codex_history::RolloutItem::TurnContext(context) = item else {
+            let RolloutItem::TurnContext(context) = item else {
                 return None;
             };
             let receipt = context.sdk_receipt.as_ref()?;
-            if receipt["thread_id"].as_str() != Some(id.as_str()) {
-                return None;
-            }
-            let executors = receipt.get("executors");
-            let strict_flag = receipt.get("strict_executor_writes");
-            (executors.is_some() || is_strict(strict_flag)).then_some((executors, strict_flag))
+            (receipt["thread_id"].as_str() == Some(id.as_str())
+                && has_executor_receipt_markers(receipt))
+            .then_some((
+                receipt.get("executors"),
+                receipt.get("strict_executor_writes"),
+            ))
         });
         if let Some((previous, strict_flag)) = recorded.next() {
             let previous = previous
@@ -1139,6 +1334,18 @@ impl LocalResumeExecutorPolicy {
             };
             ensure!(
                 same_policy,
+                "Local resume requires the recorded executor write and network policy"
+            );
+        } else if has_sampled_model(history) {
+            // Released SDKs wrote receipt-free model-only and implicit WSS histories.
+            // Only the current owner's default policy can reopen these profiles.
+            let implicit = match self.values.as_slice() {
+                [] => true,
+                [policy] => is_implicit_remote_policy(policy) && policy["network_policy"].is_null(),
+                _ => false,
+            };
+            ensure!(
+                !self.strict && implicit && has_legacy_executor_profiles(history),
                 "Local resume requires the recorded executor write and network policy"
             );
         }
@@ -1423,6 +1630,18 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn legacy_executor_profile_supports_a_windows_wss_workspace() {
+        let cwd: PathUri = "file:///C:/workspace".parse().unwrap();
+        let extra: PathUri = "file:///C:/extra".parse().unwrap();
+        assert!(is_legacy_executor_profile(&workspace_profile(
+            std::slice::from_ref(&cwd)
+        )));
+        assert!(!is_legacy_executor_profile(&workspace_profile(&[
+            cwd, extra
+        ])));
+    }
+
+    #[test]
     fn durable_resume_does_not_skip_a_malformed_executor_receipt() {
         let id = codex_protocol::ThreadId::new();
         let context = |receipt| {
@@ -1439,6 +1658,18 @@ mod tests {
             }))
             .unwrap()
         };
+        let parent = codex_protocol::ThreadId::new();
+        let fork = RolloutItem::SessionMeta(codex_protocol::protocol::SessionMetaLine {
+            meta: codex_protocol::protocol::SessionMeta {
+                id,
+                forked_from_id: Some(parent),
+                ..Default::default()
+            },
+            git: None,
+        });
+        let inherited = context(json!({ "codex_source_tree": "fixture", "thread_id": parent }));
+        assert!(validate_sdk_receipt_identities(&[fork, inherited], &id.to_string()).is_ok());
+
         let values = vec![json!({ "transport": "remote" })];
         let older = context(json!({
             "thread_id": id,

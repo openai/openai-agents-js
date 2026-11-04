@@ -11,7 +11,7 @@ use codex_core_api::{CodexThread, Config, ManagedLocalExecCancelFailure, WithTur
 use codex_extension_api::{
     ExtensionData, ExtensionDataInit, ExtensionFuture, ThreadIdleCause, ThreadIdleInput,
     ThreadLifecycleContributor, ThreadStopInput, TurnAbortInput, TurnErrorInput,
-    TurnLifecycleContributor, TurnSamplingStop, TurnStartInput, TurnStopInput,
+    TurnLifecycleContributor, TurnStartInput, TurnStopInput,
 };
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::{EventMsg, Op};
@@ -43,7 +43,6 @@ pub(crate) struct Turn {
     admission: watch::Sender<Admission>,
     steering: Option<Steering>,
     graceful: AtomicBool,
-    sampling_stop: TurnSamplingStop,
     input_recorded: AtomicBool,
     terminal: AtomicBool,
     local_exec_cancel_failed: AtomicBool,
@@ -129,9 +128,6 @@ impl Turn {
 
     pub(crate) fn request_graceful(&self) {
         self.graceful.store(true, Ordering::Release);
-    }
-    pub(crate) fn stop_sampling(&self) {
-        self.sampling_stop.request();
     }
     pub(crate) fn born_fenced(&self) -> bool {
         self.born_fenced
@@ -552,11 +548,11 @@ impl TurnLifecycleContributor for Contributor {
             let owner = input
                 .thread_store
                 .get::<crate::native_interception::Control>();
-            let sampling_stop = owner
-                .as_ref()
-                .map(|owner| owner.graph().close_sampling.for_turn())
-                .unwrap_or_default();
-            input.turn_store.insert(sampling_stop.clone());
+            if let Some(owner) = &owner {
+                input
+                    .turn_store
+                    .insert(owner.graph().close_sampling.clone());
+            }
             let graph = owner
                 .as_ref()
                 .map(|control| control.graph().state.lock().expect("graph stop poisoned"));
@@ -583,7 +579,6 @@ impl TurnLifecycleContributor for Contributor {
                 admission: watch::channel(Admission::Pending).0,
                 steering: managed_steering.then(Steering::default),
                 graceful: AtomicBool::new(false),
-                sampling_stop,
                 input_recorded: AtomicBool::new(false),
                 terminal: AtomicBool::new(false),
                 local_exec_cancel_failed: AtomicBool::new(false),

@@ -17,17 +17,18 @@ jobs:
       run:
         shell: bash
     env:
-      WORKER_SOURCE: 523ae96c7b3bba2dac51f2516ee0ad28ee64741e
-      WORKER_TREE: 1ed45bffe7af6e39c800901457313c9f01b19efe
-      PRODUCER_SDK: 3f8e77a87a9b2bab64e278c185506b537536dc7e
-      PRODUCER_RUN: '41889859049'
-      PRODUCER_JOB: '126784059466'
-      ARTIFACT_ID: '13354679502'
-      ARTIFACT_SHA256: 6ea5c83872524dbf25da979a2b1dc3c11bc0f0145f6359dd6715396c37a5e33c
+      WORKER_SOURCE: 7fae5d567af2593863484c8719229751aa3edfc5
+      WORKER_TREE: 876124f7752dbc78aa9e8b35a30de27fc4a2ebe3
+      PRODUCER_SDK: 41008a519857bdea4576373fd56a374d62122851
+      PRODUCER_RUN: '41898786688'
+      PRODUCER_JOB: '126815325454'
+      ARTIFACT_ID: '13358874040'
+      ARTIFACT_SHA256: 091001cdcae2d0ae9837101377e9580f401687125b0a9a9a6bd241067df1302a
+      PRODUCER_DRIVER: 8aa34797b01f393621bff8c6a8552d03faebd918
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
-        ref: 523ae96c7b3bba2dac51f2516ee0ad28ee64741e
+        ref: 7fae5d567af2593863484c8719229751aa3edfc5
         persist-credentials: false
     - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
       with:
@@ -38,7 +39,7 @@ jobs:
         cache: pnpm
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
-        ref: 3f8e77a87a9b2bab64e278c185506b537536dc7e
+        ref: 41008a519857bdea4576373fd56a374d62122851
         path: .qualification-producer
         persist-credentials: false
     - name: Verify the exact worker and prepare its locked test runner
@@ -58,8 +59,8 @@ jobs:
     - name: Fetch the authenticated Linux release archive
       env:
         GH_TOKEN: ${{ github.token }}
-      run: "set -euo pipefail\nrepo=\"repos/$GITHUB_REPOSITORY\"\nmetadata=\"$RUNNER_TEMP/worker-artifact.json\"\ngh api \"$repo/actions/jobs/$PRODUCER_JOB\" > \"$RUNNER_TEMP/worker-producer-job.json\"\njq -e --arg id \"$PRODUCER_JOB\" --arg run \"$PRODUCER_RUN\" --arg source \"$PRODUCER_SDK\" \\\n  '(.id|tostring)==$id and (.run_id|tostring)==$run and .head_sha==$source and .conclusion==\"success\"' \\\n  \"$RUNNER_TEMP/worker-producer-job.json\"\ngh api \"$repo/actions/artifacts/$ARTIFACT_ID\" > \"$metadata\"\njq -e --arg id \"$ARTIFACT_ID\" --arg run \"$PRODUCER_RUN\" --arg source \"$PRODUCER_SDK\" --arg digest \"sha256:$ARTIFACT_SHA256\" \\\n  '(.id|tostring)==$id and (.workflow_run.id|tostring)==$run and .workflow_run.head_sha==$source and .digest==$digest and .expired==false and .name==\"agents-alpha-linux-x64\"' \"$metadata\"\narchive=\"$RUNNER_TEMP/worker-artifact.zip\"\ngh api \"$repo/actions/artifacts/$ARTIFACT_ID/zip\" > \"$archive\"\nprintf '%s  %s\\n' \"$ARTIFACT_SHA256\" \"$archive\" | sha256sum -c\n\
-        mkdir \"$RUNNER_TEMP/agents-alpha\"\nunzip -q \"$archive\" -d \"$RUNNER_TEMP/agents-alpha\"\n"
+      run: "set -euo pipefail\nrepo=\"repos/$GITHUB_REPOSITORY\"\nmetadata=\"$RUNNER_TEMP/worker-artifact.json\"\ngh api \"$repo/actions/jobs/$PRODUCER_JOB\" > \"$RUNNER_TEMP/worker-producer-job.json\"\njq -e --arg id \"$PRODUCER_JOB\" --arg run \"$PRODUCER_RUN\" --arg source \"$PRODUCER_DRIVER\" \\\n  '(.id|tostring)==$id and (.run_id|tostring)==$run and .head_sha==$source and .status==\"completed\" and ([.steps[] | select(.conclusion==\"success\") | .name] as $ok | ([\"Check the exact sealed SDK source\",\"Build the SDK and native runtime\",\"Create the release bundles\",\"Test the extracted bundles\"] - $ok | length)==0)' \\\n  \"$RUNNER_TEMP/worker-producer-job.json\"\ngh api \"$repo/actions/artifacts/$ARTIFACT_ID\" > \"$metadata\"\njq -e --arg id \"$ARTIFACT_ID\" --arg run \"$PRODUCER_RUN\" --arg source \"$PRODUCER_DRIVER\" --arg digest \"sha256:$ARTIFACT_SHA256\" \\\n  '(.id|tostring)==$id and (.workflow_run.id|tostring)==$run and .workflow_run.head_sha==$source and .digest==$digest and .expired==false and\
+        \ .name==\"agents-alpha-linux-x64\"' \"$metadata\"\narchive=\"$RUNNER_TEMP/worker-artifact.zip\"\ngh api \"$repo/actions/artifacts/$ARTIFACT_ID/zip\" > \"$archive\"\nprintf '%s  %s\\n' \"$ARTIFACT_SHA256\" \"$archive\" | sha256sum -c\nmkdir \"$RUNNER_TEMP/agents-alpha\"\nunzip -q \"$archive\" -d \"$RUNNER_TEMP/agents-alpha\"\n"
     - name: Verify and install the original Linux release archive
       run: "cat > \"$RUNNER_TEMP/js-install.mjs\" <<'INSTALL'\nimport assert from \"node:assert/strict\";\nimport { execFileSync } from \"node:child_process\";\nimport { cpSync, readFileSync, realpathSync } from \"node:fs\";\nimport { join, sep } from \"node:path\";\nimport { pathToFileURL } from \"node:url\";\n\nconst checkout = process.argv[2];\nconst { hashes, verifyArtifactDirectory } = await import(\n  pathToFileURL(join(checkout, \"scripts/verify-alpha-package.mjs\"))\n);\nconst { verifyNativeReceipt, verifyStarterLock } = await import(\n  pathToFileURL(join(checkout, \"scripts/alpha-package.mjs\"))\n);\nconst { ARTIFACT_DIRECTORY, PRODUCER_SDK, RECEIPT_SOURCE, RUNNER_TEMP } =\n  process.env;\nassert.equal(process.platform + \"-\" + process.arch, \"linux-x64\");\nconst build = await verifyArtifactDirectory(ARTIFACT_DIRECTORY);\nassert.equal(build.sourceCommit, PRODUCER_SDK);\nconst readJson = (path) => JSON.parse(readFileSync(path, \"utf8\"));\nfor (const profile of [\"starter\", \"app\"]) {\n  const installed\
         \ = readJson(\n    join(ARTIFACT_DIRECTORY, `installed-${profile}-linux-x64.json`),\n  );\n  assert.equal(installed.profile, profile);\n  assert(installed.verified.includes(\"native-receipt\"));\n  for (const field of Object.keys(build))\n    assert.deepEqual(installed[field], build[field]);\n}\n\nexecFileSync(\"/usr/bin/tar\", [\n  \"-xzf\",\n  join(ARTIFACT_DIRECTORY, build.starter.archive),\n  \"-C\",\n  RUNNER_TEMP,\n]);\nconst consumer = join(RUNNER_TEMP, \"agents-starter\");\nconst manifest = readJson(join(consumer, \"package.json\"));\nfor (const [name, record] of Object.entries(build.packages)) {\n  assert.equal(\n    manifest.dependencies[name],\n    `file:vendor/agents/${record.archive}`,\n  );\n  assert.equal(\n    (await hashes(join(consumer, \"vendor/agents\", record.archive))).sha256,\n    record.sha256,\n  );\n}\nverifyStarterLock(\n  readJson(join(consumer, \"package-lock.json\")),\n  build.packages,\n);\nconst npm = join(process.execPath, \"../../lib/node_modules/npm/bin/npm-cli.js\");\n\
@@ -70,8 +71,9 @@ jobs:
       env:
         OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         OPENAI_AGENTS_NATIVE_TESTS: '1'
-      run: "set -euo pipefail\ncheckout=\"$GITHUB_WORKSPACE\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ncat > \"$RUNNER_TEMP/worker-source-paths.txt\" <<'PATHS'\npackages/agents/examples/supervised-worker/worker.ts\npackages/agents/examples/web-starter/mcp-peer.ts\npackages/agents/examples/web-starter/protocol.ts\npackages/agents/test/native/fixtures/model-server.ts\npackages/agents/test/native/fixtures/supervised-worker.ts\npackages/agents/test/native/supervised-worker-example.test.ts\nPATHS\nwhile IFS= read -r path; do\n  mkdir -p \"$consumer/$(dirname \"$path\")\"\n  cp \"$checkout/$path\" \"$consumer/$path\"\n  cmp \"$checkout/$path\" \"$consumer/$path\"\n  sha256sum \"$path\"\ndone < \"$RUNNER_TEMP/worker-source-paths.txt\" | tee \"$RUNNER_TEMP/worker-source-inputs.txt\"\nln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nln -s \"$checkout/node_modules/tsx\" \"$consumer/node_modules/tsx\"\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\ncd \"$consumer\"\nunset NODE_PATH\
-        \ OPENAI_API_KEY\ntest \"$(id -u)\" != 0\nlocale -a\nnative=\"node_modules/@openai/agents\"\nsha256sum \"$native\"/native/{codex.node,build-receipt.json} \"$native\"/bin/* | tee \"$RUNNER_TEMP/worker-installed-products.txt\"\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  packages/agents/test/native/supervised-worker-example.test.ts \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/worker-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/worker-qualification.log\"\nsha256sum -c \"$RUNNER_TEMP/worker-installed-products.txt\"\njq -e '.numTotalTests==4 and .numPassedTests==4 and .numFailedTests==0 and .numPendingTests==0' \\\n  \"$RUNNER_TEMP/worker-vitest.json\"\n"
+      run: "set -euo pipefail\ncheckout=\"$GITHUB_WORKSPACE\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ncat > \"$RUNNER_TEMP/worker-source-paths.txt\" <<'PATHS'\npackages/agents/examples/supervised-worker/worker.ts\npackages/agents/examples/web-starter/mcp-peer.ts\npackages/agents/examples/web-starter/protocol.ts\npackages/agents/test/native/fixtures/model-server.ts\npackages/agents/test/native/fixtures/borrowed-mcp.ts\npackages/agents/test/native/supervised-worker-cleanup.test.ts\npackages/agents/test/native/fixtures/supervised-worker.ts\npackages/agents/test/native/supervised-worker-example.test.ts\nPATHS\nwhile IFS= read -r path; do\n  mkdir -p \"$consumer/$(dirname \"$path\")\"\n  cp \"$checkout/$path\" \"$consumer/$path\"\n  cmp \"$checkout/$path\" \"$consumer/$path\"\n  sha256sum \"$path\"\ndone < \"$RUNNER_TEMP/worker-source-paths.txt\" | tee \"$RUNNER_TEMP/worker-source-inputs.txt\"\nln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nln -s \"$checkout/node_modules/tsx\" \"$consumer/node_modules/tsx\"\
+        \nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\ntest \"$(id -u)\" != 0\nnode --input-type=module -e 'import { LocalRecoveryRequired } from \"@openai/agents\"; if (typeof LocalRecoveryRequired !== \"function\") process.exit(1);'\nlocale -a\nnative=\"node_modules/@openai/agents\"\nsha256sum \"$native\"/native/{codex.node,build-receipt.json} \"$native\"/bin/* | tee \"$RUNNER_TEMP/worker-installed-products.txt\"\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  packages/agents/test/native/supervised-worker-{example,cleanup}.test.ts \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/worker-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/worker-qualification.log\"\nsha256sum -c \"$RUNNER_TEMP/worker-installed-products.txt\"\njq -e '.numTotalTests==21 and .numPassedTests==21 and .numFailedTests==0 and .numPendingTests==0\
+        \ and ([.testResults[] | select(.name | endswith(\"supervised-worker-example.test.ts\")) | .assertionResults[] | select(.status==\"passed\")]|length)==4 and ([.testResults[] | select(.name | endswith(\"supervised-worker-cleanup.test.ts\")) | .assertionResults[] | select(.status==\"passed\")]|length)==17' \\\n  \"$RUNNER_TEMP/worker-vitest.json\"\n"
     - if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
