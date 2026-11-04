@@ -804,7 +804,7 @@ const localStorageOverlap =
 const runtimeHomeOverlap =
   /Keep the native runtime home outside the executor cwd and writable roots/;
 
-it.skipIf(!supported).for(['canonical', 'uppercase'] as const)(
+it.skipIf(!supported).for(['canonical', 'unicode'] as const)(
   'keeps relocated checklist state outside local grants (%s)',
   { timeout: 45_000 },
   async (spelling, context) => {
@@ -852,10 +852,11 @@ it.skipIf(!supported).for(['canonical', 'uppercase'] as const)(
       const relocated = join(base, 'relocated-checklists');
       await rename(directory, relocated);
       await symlink(relocated, directory);
+      await symlink(extra, join(storage.path, 'application-scratch'));
       const logical = join(relocated, `${threadId}.json`);
       const backing =
-        spelling === 'uppercase'
-          ? join(relocated, `${threadId.toUpperCase()}.JSON`)
+        spelling === 'unicode'
+          ? join(relocated, `${threadId.toUpperCase()}.j\u017fon`)
           : logical;
       if (backing !== logical) {
         const intermediate = join(relocated, 'checklist-rename');
@@ -875,11 +876,9 @@ it.skipIf(!supported).for(['canonical', 'uppercase'] as const)(
           storage,
           resume: threadId,
         });
-      if (selectedByStore) {
-        await expect(async () => {
-          await using _session = await open([extra]);
-        }).rejects.toThrow(localStorageOverlap);
-      }
+      await expect(async () => {
+        await using _session = await open([extra]);
+      }).rejects.toThrow(localStorageOverlap);
       await expect(async () => {
         await using _session = await open([relocated]);
       }).rejects.toThrow(localStorageOverlap);
@@ -887,15 +886,25 @@ it.skipIf(!supported).for(['canonical', 'uppercase'] as const)(
       await using resumed = await open();
       const expectedPlan = selectedByStore ? plan : undefined;
       expect((await resumed.checklist())?.plan).toEqual(expectedPlan);
-      if (selectedByStore) {
+      await expect(
+        resumed.submit('Do not grant the linked checklist.', {
+          writableRoots: [extra],
+        }),
+      ).rejects.toThrow(localStorageOverlap);
+      const disjoint = join(base, 'disjoint-checklist-link');
+      if (spelling === 'canonical') {
+        await rm(backing);
+        await symlink(alias, backing);
         await expect(
-          resumed.submit('Do not grant the linked checklist.', {
+          resumed.submit('Do not grant the checklist target.', {
             writableRoots: [extra],
           }),
         ).rejects.toThrow(localStorageOverlap);
-        expect(server.requests).toHaveLength(2);
-        await rename(alias, join(base, 'disjoint-checklist-link'));
+        await rm(backing);
+        await symlink(disjoint, backing);
       }
+      expect(server.requests).toHaveLength(2);
+      await rename(alias, disjoint);
       const turn = await resumed.submit('Use the disjoint grant.', {
         writableRoots: [extra],
       });

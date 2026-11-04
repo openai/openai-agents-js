@@ -985,32 +985,17 @@ fn linked_relocated_checklist_files(
     let mut linked = Vec::new();
     for entry in entries {
         let entry = entry.context(error)?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
+        let kind = entry.file_type().context(error)?;
+        // The SDK owns this directory. A volume can resolve alternate
+        // spellings to the same file, so check direct entries by identity.
+        let path = if kind.is_symlink() {
+            resolve(&entry.path())?
+        } else if resolved != directory && kind.is_file() {
+            entry.path()
+        } else {
             continue;
         };
-        let Some((stem, _)) = name.rsplit_once('.') else {
-            continue;
-        };
-        let Ok(id) = codex_protocol::ThreadId::from_string(stem) else {
-            continue;
-        };
-        let logical_name = format!("{id}.json");
-        if !name.eq_ignore_ascii_case(&logical_name) {
-            continue;
-        }
-        // Look up the name the store opens. A different spelling may select
-        // the same entry on a case-insensitive filesystem.
-        let path = resolved.join(logical_name);
-        let metadata = match path.symlink_metadata() {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(source) => return Err(source).context(error),
-        };
-        if resolved != directory || metadata.is_symlink() {
-            let path = resolve(&path)?;
-            linked.extend(linked_local_regular_file(path).context(error)?);
-        }
+        linked.extend(linked_local_regular_file(path).context(error)?);
     }
     Ok(linked)
 }
