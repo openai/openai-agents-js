@@ -140,6 +140,55 @@ describe('native history projection', () => {
     expect(projected.items.map((i) => i.id)).toEqual(['c1', 'c1:output']);
   });
 
+  it('keeps late execution for a surviving turn and drops it for a rolled-back turn', () => {
+    const completion = {
+      type: 'event_msg' as const,
+      payload: {
+        type: 'item_completed',
+        thread_id: 'root',
+        turn_id: 't1',
+        item: {
+          type: 'CommandExecution',
+          id: 'late',
+          command: ['printf', 'hello'],
+          status: 'completed',
+        },
+      },
+    };
+    const finished: ThreadHistory = [
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1' } },
+    ];
+    expect(
+      projectHistory([...finished, completion], 'root').items,
+    ).toMatchObject([
+      { id: 'late', turnId: 't1', threadId: 'root', status: 'completed' },
+    ]);
+    const projected = projectHistory(
+      [
+        ...finished,
+        {
+          type: 'event_msg',
+          payload: { type: 'thread_rolled_back', num_turns: 1 },
+        },
+        { type: 'event_msg', payload: { type: 'task_started', turn_id: 't2' } },
+        completion,
+        {
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            id: 'surviving',
+            role: 'user',
+            content: [],
+          },
+        },
+      ],
+      'root',
+    );
+    expect(projected.turns.map(({ id }) => id)).toEqual(['t2']);
+    expect(projected.items).toMatchObject([{ id: 'surviving', turnId: 't2' }]);
+  });
+
   it.each([
     ['function_call', 'function_call_output'],
     ['custom_tool_call', 'custom_tool_call_output'],

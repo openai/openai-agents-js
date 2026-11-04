@@ -311,7 +311,11 @@ impl EnvironmentOptions {
         Ok(())
     }
 
-    pub(crate) fn check_local_storage(&self, storage: &Path) -> Result<()> {
+    pub(crate) fn check_local_session_paths(
+        &self,
+        config: &Config,
+        storage: Option<&Path>,
+    ) -> Result<()> {
         if !self.local {
             return Ok(());
         }
@@ -323,7 +327,7 @@ impl EnvironmentOptions {
                     .context("could not resolve an executor write root")
             })
             .collect::<Result<Vec<_>>>()?;
-        check_local_storage_write_roots(&roots, storage)
+        check_local_session_write_roots(config, &roots, storage)
     }
 
     pub(crate) async fn prepare(&self, config: &Config) -> Result<EnvironmentManager> {
@@ -726,9 +730,7 @@ async fn strict_write_profile(
             .map(PathUri::to_abs_path)
             .collect::<Result<Vec<_>, _>>()?;
         check_local_helper_write_roots(config, &local_roots)?;
-        if let Some(storage) = local_storage {
-            check_local_storage_write_roots(&local_roots, storage)?;
-        }
+        check_local_session_write_roots(config, &local_roots, local_storage)?;
         for entry in &mut filesystem_policy.entries {
             if entry.access == FileSystemAccessMode::Read
                 && matches!(
@@ -817,25 +819,46 @@ fn check_local_helper_paths<'a>(
     Ok(())
 }
 
-fn check_local_storage_write_roots(roots: &[AbsolutePathBuf], storage: &Path) -> Result<()> {
-    const OVERLAP: &str = "Keep local session storage outside the executor cwd and writable roots";
-    let resolved = resolve_local_path(
-        storage,
-        true,
-        "could not resolve local session storage",
-        |entry| {
-            ensure!(
-                !roots.iter().any(|root| entry.starts_with(root.as_path())),
-                "{OVERLAP}"
-            );
-            Ok(())
-        },
-    )?;
+fn check_local_session_write_roots(
+    config: &Config,
+    roots: &[AbsolutePathBuf],
+    storage: Option<&Path>,
+) -> Result<()> {
+    if let Some(storage) = storage {
+        check_local_protected_path(
+            roots,
+            storage,
+            "could not resolve local session storage",
+            "Keep local session storage outside the executor cwd and writable roots",
+        )?;
+    }
+    check_local_protected_path(
+        roots,
+        config.codex_home.as_path(),
+        "could not resolve the native runtime home",
+        "Keep the native runtime home outside the executor cwd and writable roots",
+    )
+}
+
+fn check_local_protected_path(
+    roots: &[AbsolutePathBuf],
+    path: &Path,
+    resolve_error: &'static str,
+    overlap_error: &'static str,
+) -> Result<()> {
+    // Runtime and SQLite directories may be created after this check.
+    let resolved = resolve_local_path(path, true, resolve_error, |entry| {
+        ensure!(
+            !roots.iter().any(|root| entry.starts_with(root.as_path())),
+            "{overlap_error}"
+        );
+        Ok(())
+    })?;
     ensure!(
         !roots
             .iter()
             .any(|root| root.as_path().starts_with(&resolved)),
-        "{OVERLAP}"
+        "{overlap_error}"
     );
     Ok(())
 }

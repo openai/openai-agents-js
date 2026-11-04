@@ -17,8 +17,8 @@ jobs:
     env:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: darwin-arm64
-      QUALIFIED_SDK_COMMIT: ed30ff45fd2cdb0ff0f4dc487bfcd741db5e2d4b
-      QUALIFIED_SDK_TREE: 1bf6769afa875ce1455f06d759fa67e48204a196
+      QUALIFIED_SDK_COMMIT: 72ea7e63879ad0c0484d3114321304757cc0b845
+      QUALIFIED_SDK_TREE: 3bdc8b3538418aa1900b3a330e67ca47490f6ced
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: '3'
       CARGO_INCREMENTAL: '0'
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ed30ff45fd2cdb0ff0f4dc487bfcd741db5e2d4b
+          ref: 72ea7e63879ad0c0484d3114321304757cc0b845
           persist-credentials: false
       - name: Check exact source
         run: |
@@ -89,13 +89,18 @@ jobs:
             ${{ env.CARGO_HOME }}/git/db
             packages/agents/native/.cache/v8
           key: js-managed-macos-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/Cargo.lock') }}
+      - name: Check the portable sleep fixture on macOS
+        run: |
+          test -x /bin/sleep
+          /bin/sleep 0
+          PATH=/usr/bin:/bin /bin/sh -c 'command -v sleep; exec sleep 0'
       - name: Qualify local executor grants on macOS
         if: runner.os == 'macOS'
         env:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: >-
           pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
-          -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS'
+          -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|rejects a local executor grant to the runtime home'
           --reporter=verbose
       - name: Qualify native cancellation and model-step resume on macOS
         run: |
@@ -105,6 +110,12 @@ jobs:
             --maxWorkers=1 --reporter=verbose
           pnpm test:native packages/agents/test/native/executor-receipt-resume-native.test.ts \
             -t 'can attach a trusted implicit remote executor' --maxWorkers=1 --reporter=verbose
+          pnpm test:native \
+            packages/agents/test/native/embedded-commands.test.ts \
+            packages/agents/test/native/turn-controls.test.ts \
+            packages/agents/test/native/parity-child-manual.test.ts \
+            -t 'returns the actual native compact Turn|lets a graceful exact stop preserve|accepts a live child manual reply' \
+            --maxWorkers=1 --reporter=verbose
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles
