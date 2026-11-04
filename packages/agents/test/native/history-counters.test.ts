@@ -3,6 +3,7 @@ import {
   projectHistory,
   recordedTurnFromWire,
   recordedTurnToWire,
+  repairTurnWireSchema,
   type ThreadHistory,
 } from '../../src/runtime/history';
 import {
@@ -89,6 +90,136 @@ describe('exact observational counters', () => {
     expect(
       recordedTurnFromWire(recordedTurnToWire(project([]))).usage,
     ).toBeNull();
+  });
+
+  it('preserves reported cache writes, including zero and exact large counts', () => {
+    for (const [raw, expected] of [
+      [0, 0],
+      [7, 7],
+      [large, 9007199254740993n],
+    ] as const) {
+      expect(
+        project(record({ cache_write_input_tokens: raw })).usage
+          ?.inputTokensDetails,
+      ).toEqual({ cachedTokens: 0, cacheWriteTokens: expected });
+    }
+    expect(project(record({})).usage?.inputTokensDetails).not.toHaveProperty(
+      'cacheWriteTokens',
+    );
+  });
+
+  it('only totals cache writes when every response reports the counter', () => {
+    expect(
+      project([
+        ...response({ cache_write_input_tokens: large }),
+        ...response({ cache_write_input_tokens: 2 }),
+      ]).usage?.inputTokensDetails,
+    ).toEqual({ cachedTokens: 0, cacheWriteTokens: 9007199254740995n });
+    expect(
+      project([
+        ...response({ cache_write_input_tokens: 0 }),
+        ...response({ cache_write_input_tokens: 0 }),
+      ]).usage?.inputTokensDetails,
+    ).toEqual({ cachedTokens: 0, cacheWriteTokens: 0 });
+    const unavailable: ThreadHistory[] = [
+      response({}),
+      [
+        {
+          type: 'event_msg',
+          payload: { type: 'raw_response_completed', turn_id: 't' },
+        },
+      ],
+    ];
+    for (const missing of unavailable) {
+      for (const records of [
+        [...missing, ...response({ cache_write_input_tokens: 7 })],
+        [...response({ cache_write_input_tokens: 7 }), ...missing],
+      ]) {
+        expect(project(records).usage?.inputTokensDetails).not.toHaveProperty(
+          'cacheWriteTokens',
+        );
+      }
+    }
+    expect(project(response({})).usage?.inputTokensDetails).not.toHaveProperty(
+      'cacheWriteTokens',
+    );
+    expect(project(unavailable[1]).usage).toBeNull();
+    expect(
+      project([...unavailable[1], ...record({ cache_write_input_tokens: 5 })])
+        .usage?.inputTokensDetails,
+    ).toEqual({ cachedTokens: 0, cacheWriteTokens: 5 });
+  });
+
+  it('still rejects malformed cache writes after an incomplete response', () => {
+    expect(() =>
+      project([
+        ...response({}),
+        ...response({ cache_write_input_tokens: null }),
+      ]),
+    ).toThrow();
+  });
+
+  it('clears incomplete response cache accounting when a turn restarts', () => {
+    expect(
+      project([
+        {
+          type: 'event_msg',
+          payload: { type: 'raw_response_completed', turn_id: 't' },
+        },
+        ...start,
+        ...response({ cache_write_input_tokens: 3 }),
+      ]).usage?.inputTokensDetails,
+    ).toEqual({ cachedTokens: 0, cacheWriteTokens: 3 });
+  });
+
+  it('discards incomplete response accounting when history rolls back', () => {
+    expect(
+      project([
+        {
+          type: 'event_msg',
+          payload: { type: 'raw_response_completed', turn_id: 't' },
+        },
+        {
+          type: 'event_msg',
+          payload: { type: 'thread_rolled_back', num_turns: 1 },
+        },
+        ...response({ cache_write_input_tokens: 4 }),
+      ]).usage?.inputTokensDetails,
+    ).toEqual({ cachedTokens: 0, cacheWriteTokens: 4 });
+  });
+
+  it('roundtrips optional cache writes through JSON and strict repair turns', () => {
+    for (const raw of [undefined, 0, large]) {
+      const turn = {
+        ...project(
+          record(raw === undefined ? {} : { cache_write_input_tokens: raw }),
+        ),
+        subagentId: null,
+        status: 'completed' as const,
+        parentSessionId: 'parent',
+        parentTurnId: 'parent-turn',
+      };
+      const wire = repairTurnWireSchema.parse(
+        JSON.parse(JSON.stringify(recordedTurnToWire(turn))),
+      );
+      expect(wire.usage?.inputTokensDetails).toEqual(
+        raw === undefined
+          ? { cachedTokens: 0 }
+          : { cachedTokens: 0, cacheWriteTokens: raw },
+      );
+      expect(recordedTurnFromWire(wire)).toEqual(turn);
+      if (wire.usage) {
+        expect(
+          repairTurnWireSchema.safeParse({
+            ...wire,
+            usage: {
+              ...wire.usage,
+              inputTokensDetails: { cachedTokens: 0, cacheWriteTokens: -1 },
+            },
+          }).success,
+        ).toBe(false);
+      }
+    }
   });
 
   it('preserves safe counts and every large recorded counter exactly', () => {

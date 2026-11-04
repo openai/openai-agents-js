@@ -27,7 +27,11 @@ export type ThreadHistory = z.infer<typeof threadHistorySchema>;
 /** Safe counters remain numbers; larger exact counts are bigint. */
 export interface RecordedTokenUsage {
   inputTokens: TokenCount;
-  inputTokensDetails: { cachedTokens: TokenCount };
+  inputTokensDetails: {
+    cachedTokens: TokenCount;
+    /** Omitted when the cache-write count is unavailable or incomplete. */
+    cacheWriteTokens?: TokenCount;
+  };
   outputTokens: TokenCount;
   outputTokensDetails: { reasoningTokens: TokenCount };
   totalTokens: TokenCount;
@@ -35,7 +39,10 @@ export interface RecordedTokenUsage {
 
 export interface RecordedTokenUsageWire {
   inputTokens: TokenCountWire;
-  inputTokensDetails: { cachedTokens: TokenCountWire };
+  inputTokensDetails: {
+    cachedTokens: TokenCountWire;
+    cacheWriteTokens?: TokenCountWire;
+  };
   outputTokens: TokenCountWire;
   outputTokensDetails: { reasoningTokens: TokenCountWire };
   totalTokens: TokenCountWire;
@@ -96,7 +103,10 @@ export const repairTurnWireSchema = z
       .object({
         inputTokens: nonnegativeTokenCountWireSchema,
         inputTokensDetails: z
-          .object({ cachedTokens: nonnegativeTokenCountWireSchema })
+          .object({
+            cachedTokens: nonnegativeTokenCountWireSchema,
+            cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
+          })
           .strict(),
         outputTokens: nonnegativeTokenCountWireSchema,
         outputTokensDetails: z
@@ -134,6 +144,13 @@ function mapRecordedUsage<T>(
     inputTokens: convert(usage.inputTokens),
     inputTokensDetails: {
       cachedTokens: convert(usage.inputTokensDetails.cachedTokens),
+      ...(usage.inputTokensDetails.cacheWriteTokens === undefined
+        ? {}
+        : {
+            cacheWriteTokens: convert(
+              usage.inputTokensDetails.cacheWriteTokens,
+            ),
+          }),
     },
     outputTokens: convert(usage.outputTokens),
     outputTokensDetails: {
@@ -423,6 +440,9 @@ function recordedUsage(raw: JsonObject): RecordedTokenUsage {
     inputTokens: usageCount(raw, 'input_tokens'),
     inputTokensDetails: {
       cachedTokens: usageCount(raw, 'cached_input_tokens'),
+      ...(raw.cache_write_input_tokens === undefined
+        ? {}
+        : { cacheWriteTokens: usageCount(raw, 'cache_write_input_tokens') }),
     },
     outputTokens: usageCount(raw, 'output_tokens'),
     outputTokensDetails: {
@@ -833,6 +853,7 @@ export function projectHistory(
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
   const responseUsage = new Map<string, JsonObject>();
+  const incompleteCacheWriteUsage = new Set<string>();
   const failures = new Map<string, Failure>();
   let items: HistoryOccurrence[] = [];
   const identities = new Map<string, HistoryOccurrence>();
@@ -946,6 +967,7 @@ export function projectHistory(
           turns.delete(id);
           usage.delete(id);
           responseUsage.delete(id);
+          incompleteCacheWriteUsage.delete(id);
           failures.delete(id);
         }
         items = items.filter(({ item }) => !removed.has(item.turnId));
@@ -968,13 +990,22 @@ export function projectHistory(
         failures.set(id, failure(payload));
       if (payload.type === 'raw_response_completed') {
         const report = object(payload.token_usage);
+        if (report?.cache_write_input_tokens === undefined)
+          incompleteCacheWriteUsage.add(id);
+        if (incompleteCacheWriteUsage.has(id)) {
+          const total = responseUsage.get(id);
+          if (total) delete total.cache_write_input_tokens;
+        }
         if (report) {
           const total = responseUsage.get(id) ?? {};
           for (const key of usageFields) {
-            const sum = addTokenCounts(
-              usageCount(total, key),
-              usageCount(report, key),
-            );
+            const count = usageCount(report, key);
+            if (
+              key === 'cache_write_input_tokens' &&
+              incompleteCacheWriteUsage.has(id)
+            )
+              continue;
+            const sum = addTokenCounts(usageCount(total, key), count);
             total[key] = tokenCountToWire(sum);
           }
           responseUsage.set(id, total);
@@ -1017,6 +1048,7 @@ export function projectHistory(
         if (started) {
           failures.delete(id);
           responseUsage.delete(id);
+          incompleteCacheWriteUsage.delete(id);
         }
         const error =
           failures.get(id) ??

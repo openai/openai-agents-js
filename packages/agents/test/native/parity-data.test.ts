@@ -249,7 +249,7 @@ describe('Python data API parity', () => {
         },
         usage: {
           inputTokens: 17,
-          inputTokensDetails: { cachedTokens: 3 },
+          inputTokensDetails: { cachedTokens: 3, cacheWriteTokens: 4 },
           outputTokens: 7,
           outputTokensDetails: { reasoningTokens: 2 },
           totalTokens: 24,

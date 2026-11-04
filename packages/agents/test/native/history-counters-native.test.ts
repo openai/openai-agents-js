@@ -656,7 +656,10 @@ function assertTurnUsage(
   expect(turn, `missing actual recorded turn ${turnId}`).toBeDefined();
   expect(turn?.usage).toEqual({
     inputTokens: expected.inputTokens,
-    inputTokensDetails: { cachedTokens: expected.cachedInputTokens },
+    inputTokensDetails: {
+      cachedTokens: expected.cachedInputTokens,
+      cacheWriteTokens: expected.cacheWriteInputTokens,
+    },
     outputTokens: expected.outputTokens,
     outputTokensDetails: { reasoningTokens: expected.reasoningOutputTokens },
     totalTokens: expected.totalTokens,
