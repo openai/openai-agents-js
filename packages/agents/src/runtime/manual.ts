@@ -140,6 +140,15 @@ export function manualResultSchema(tool: ManualTool): JsonValue {
   return jsonValue.parse(tool[manualDefinition].resultSchema);
 }
 
+/** @internal Validate against the current captured declaration before a durable claim. */
+export function validateManualResult(tool: ManualTool, value: unknown): void {
+  try {
+    tool[manualDefinition].parseResult(value);
+  } catch {
+    throw new TypeError('Manual tool result failed validation');
+  }
+}
+
 /** @internal Each Session owns and revokes these capabilities; no grant is serialized. */
 export function createManualRequest<Input, Result>(
   tool: ManualTool<Input, Result>,
