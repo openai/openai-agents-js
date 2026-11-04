@@ -97,10 +97,14 @@ function draft(callId: string, text: string) {
   return call(
     'exec_command',
     {
-      cmd: `printf '%s\\n' '# Release note' '${text}' > draft.md && sha256sum draft.md`,
+      cmd: `printf '%s\\n' '# Release note' '${text}' > draft.md`,
     },
     { callId },
   );
+}
+
+function verifyDraft(callId: string) {
+  return call('exec_command', { cmd: 'sha256sum draft.md' }, { callId });
 }
 
 function claim(summary: string, question: string | null) {
@@ -139,12 +143,14 @@ sandboxTest(
           ];
         },
         [draft('alice-draft', 'Alice finished after a restart.')],
+        [verifyDraft('alice-verify')],
         [claim('Alice finished.', null)],
       ]);
       const bob = new ModelServer([
         [call('report', {}, { namespace: 'reports', callId: 'bob-report' })],
         [claim('Bob has a question.', 'What date should I use?')],
         [draft('bob-draft', 'Bob used the supplied date.')],
+        [verifyDraft('bob-verify')],
         [claim('Bob revised the note.', null)],
       ]);
       const aliceConfig = {
@@ -369,6 +375,7 @@ sandboxTest(
           return [claim('Too late.', null)];
         },
         [draft('restarted-draft', 'The next turn finished.')],
+        [verifyDraft('restarted-verify')],
         [claim('Recovered after the deadline.', null)],
       ]);
       const config = {
