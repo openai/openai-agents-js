@@ -7,6 +7,7 @@ import {
   realpath,
   rename,
   rm,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -57,6 +58,25 @@ function runWorker(
     ...options,
   });
 }
+
+it('creates a new canonical worker directory before opening its session', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'native-worker-new-'));
+  const directory = join(parent, 'new-worker');
+  const primary = new Error('Synthetic opening failure.');
+  const session = vi
+    .spyOn(Agent.prototype, 'session')
+    .mockRejectedValue(primary);
+  try {
+    await expect(runWorker(directory)).rejects.toBe(primary);
+    await expect(realpath(join(directory, 'workspace'))).resolves.toBe(
+      join(await realpath(directory), 'workspace'),
+    );
+    expect(session).toHaveBeenCalledOnce();
+  } finally {
+    session.mockRestore();
+    await rm(parent, { recursive: true, force: true });
+  }
+});
 
 it('journals a joined worker when reopening its profile times out', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'native-worker-reopen-'));
@@ -220,52 +240,91 @@ it.each([
   }
 });
 
-it('publishes the accepted draft when the filesystem returns short reads', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'native-worker-short-read-'));
-  const workspace = join(directory, 'workspace');
-  const draft = Buffer.from('# Release note\nExample draft.\n');
-  const sha256 = createHash('sha256').update(draft).digest('hex');
-  const fs =
-    await vi.importActual<typeof import('node:fs/promises')>(
-      'node:fs/promises',
+it.for([false, true])(
+  'publishes the accepted draft with short reads (retarget: %s)',
+  async (retarget, context) => {
+    if (retarget && process.platform === 'win32')
+      context.skip('Requires creating a directory symbolic link.');
+    const directory = await mkdtemp(
+      join(tmpdir(), 'native-worker-short-read-'),
     );
-  vi.mocked(open).mockImplementationOnce(async (path, flags, mode) => {
-    const file = await fs.open(path, flags, mode);
-    const read = file.read.bind(file);
-    // A filesystem read can stop before EOF even when more bytes are available.
-    return Object.assign(file, {
-      read(
-        buffer: Buffer,
-        offset = 0,
-        length = buffer.length,
-        position = null,
-      ) {
-        return read(buffer, offset, Math.min(length, 5), position);
-      },
+    const workspace = join(directory, 'workspace');
+    const directoryLink = directory + '-link';
+    const other = directory + '-other';
+    const draft = Buffer.from('# Release note\nExample draft.\n');
+    const sha256 = createHash('sha256').update(draft).digest('hex');
+    const fs =
+      await vi.importActual<typeof import('node:fs/promises')>(
+        'node:fs/promises',
+      );
+    vi.mocked(open).mockImplementationOnce(async (path, flags, mode) => {
+      const file = await fs.open(path, flags, mode);
+      const read = file.read.bind(file);
+      const close = file.close.bind(file);
+      // A filesystem read can stop before EOF even when more bytes are available.
+      return Object.assign(file, {
+        async close() {
+          await close();
+          if (retarget) {
+            await rm(directoryLink);
+            await symlink(other, directoryLink, 'dir');
+          }
+        },
+        read(
+          buffer: Buffer,
+          offset = 0,
+          length = buffer.length,
+          position = null,
+        ) {
+          return read(buffer, offset, Math.min(length, 5), position);
+        },
+      });
     });
-  });
-  try {
-    await mkdir(workspace);
-    await writeFile(join(workspace, 'draft.md'), draft);
-    await writeFile(
-      join(directory, 'snapshot.json'),
-      JSON.stringify({ threadId: 'thread', state: 'accepted', sha256 }),
-    );
-    const published = await publishAcceptedDraft(directory);
-    await expect(readFile(published)).resolves.toEqual(draft);
-  } finally {
-    vi.mocked(open).mockReset();
-    await rm(directory, { recursive: true, force: true });
-  }
-});
+    try {
+      await mkdir(workspace);
+      await writeFile(join(workspace, 'draft.md'), draft);
+      await writeFile(
+        join(directory, 'snapshot.json'),
+        JSON.stringify({ threadId: 'thread', state: 'accepted', sha256 }),
+      );
+      if (retarget) {
+        await mkdir(other);
+        await symlink(directory, directoryLink, 'dir');
+      }
+      const published = await publishAcceptedDraft(
+        retarget ? directoryLink : directory,
+      );
+      const original = join(
+        await realpath(directory),
+        'published-' + sha256 + '.md',
+      );
+      await expect(readFile(original)).resolves.toEqual(draft);
+      expect(published).toBe(original);
+      await expect(readFile(published)).resolves.toEqual(draft);
+      if (retarget)
+        await expect(
+          readFile(join(other, 'published-' + sha256 + '.md')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      vi.mocked(open).mockReset();
+      await rm(directoryLink, { force: true });
+      await rm(other, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
-it.each(['none', 'session', 'provider', 'both', 'review'] as const)(
+it.for(['none', 'session', 'provider', 'both', 'review', 'retarget'] as const)(
   'accepts and publishes only after owned cleanup succeeds (%s)',
-  async (failureAt) => {
+  async (failureAt, context) => {
+    if (failureAt === 'retarget' && process.platform === 'win32')
+      context.skip('Requires creating a directory symbolic link.');
     const directory = await mkdtemp(
       join(tmpdir(), 'native-worker-accept-close-'),
     );
     const workspace = join(directory, 'workspace');
+    const directoryLink = directory + '-link';
+    const other = directory + '-other';
     const draft = '# Release note\nExample draft.\n';
     const sha256 = createHash('sha256').update(draft).digest('hex');
     const sessionFailure = new Error('Synthetic session close failure.');
@@ -277,6 +336,10 @@ it.each(['none', 'session', 'provider', 'both', 'review'] as const)(
       async close() {
         order.push('session');
         states.push((await readWorkerSnapshot(directory))?.state);
+        if (failureAt === 'retarget') {
+          await rm(directoryLink);
+          await symlink(other, directoryLink, 'dir');
+        }
         if (
           failureAt === 'session' ||
           failureAt === 'both' ||
@@ -325,12 +388,21 @@ it.each(['none', 'session', 'provider', 'both', 'review'] as const)(
     try {
       await mkdir(workspace);
       await writeFile(join(workspace, 'draft.md'), draft);
-      const result = await runWorker(directory).catch(
-        (error: unknown) => error,
-      );
+      if (failureAt === 'retarget') {
+        await mkdir(other);
+        await symlink(directory, directoryLink, 'dir');
+      }
+      const result = await runWorker(
+        failureAt === 'retarget' ? directoryLink : directory,
+      ).catch((error: unknown) => error);
       expect(order).toEqual(['session', 'provider']);
-      if (failureAt === 'none') {
+      if (failureAt === 'none' || failureAt === 'retarget') {
         expect(result).toMatchObject({ state: 'accepted', sha256 });
+        await expect(readWorkerSnapshot(directory)).resolves.toMatchObject({
+          state: 'accepted',
+        });
+        if (failureAt === 'retarget')
+          await expect(readWorkerSnapshot(other)).resolves.toBeUndefined();
         const published = await publishAcceptedDraft(directory);
         await expect(readFile(published, 'utf8')).resolves.toBe(draft);
       } else {
@@ -363,6 +435,8 @@ it.each(['none', 'session', 'provider', 'both', 'review'] as const)(
     } finally {
       provider.mockRestore();
       session.mockRestore();
+      await rm(directoryLink, { force: true });
+      await rm(other, { recursive: true, force: true });
       await rm(directory, { recursive: true, force: true });
     }
   },
