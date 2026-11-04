@@ -384,7 +384,13 @@ async fn prepared_writer_transfers_once_and_binds_current_native_inputs() {
     let (store, id, params) = root_profile(home.path()).await;
     let instructions = Arc::new(crate::options::ThreadInstructions::for_test(None, false));
     let admission = store
-        .prepare_resume(params, None, instructions.clone(), Default::default())
+        .prepare_resume(
+            params,
+            None,
+            instructions.clone(),
+            Default::default(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let prepared = admission.prepared_params().unwrap().clone();
@@ -418,7 +424,13 @@ async fn mismatched_prepared_claim_preserves_the_valid_consumer() {
     let (store, id, params) = root_profile(home.path()).await;
     let instructions = Arc::new(crate::options::ThreadInstructions::for_test(None, false));
     let admission = store
-        .prepare_resume(params, None, instructions.clone(), Default::default())
+        .prepare_resume(
+            params,
+            None,
+            instructions.clone(),
+            Default::default(),
+            Vec::new(),
+        )
         .await
         .unwrap();
     let prepared = admission.prepared_params().unwrap().clone();
@@ -477,6 +489,7 @@ async fn retired_prepared_writer_retains_failed_cleanup_for_close_retry() {
             None,
             Arc::new(crate::options::ThreadInstructions::for_test(None, false)),
             Default::default(),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -510,9 +523,10 @@ async fn cancellation_before_and_after_native_registration_retires_the_same_owne
                     None,
                     Arc::new(crate::options::ThreadInstructions::for_test(None, false)),
                     Default::default(),
+                    Vec::new(),
                 )
                 .await?;
-            ThreadStoreResult::Ok(())
+            Ok::<(), anyhow::Error>(())
         });
         probe.entered.acquire().await.unwrap().forget();
         operation.abort();
