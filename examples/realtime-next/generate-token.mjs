@@ -1,6 +1,6 @@
-'use server';
+import { fileURLToPath } from 'node:url';
 
-export async function getToken() {
+export async function generateToken() {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error('Missing OPENAI_API_KEY environment variable.');
@@ -32,32 +32,29 @@ export async function getToken() {
               require_approval: 'always',
             },
           ],
-          // tracing: {
-          //   workflow_name: 'Realtime Next Demo',
-          // },
         },
       }),
     },
   );
 
   if (!response.ok) {
-    let detail = '';
-    try {
-      const errJson = await response.json();
-      detail = JSON.stringify(errJson);
-    } catch {
-      detail = await response.text();
-    }
     throw new Error(
-      `Failed to create ephemeral client secret: ${response.status} ${response.statusText}${detail ? ` - ${detail}` : ''}`,
+      `Failed to create ephemeral client secret: ${response.status} ${response.statusText}`,
     );
   }
 
-  const clientSecret: {
-    value: string;
-    expires_at: number;
-    session: Record<string, unknown>;
-  } = await response.json();
-
+  const clientSecret = await response.json();
+  if (typeof clientSecret.value !== 'string' || !clientSecret.value) {
+    throw new Error('OpenAI did not return an ephemeral client secret.');
+  }
   return clientSecret.value;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  generateToken()
+    .then(console.log)
+    .catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    });
 }
