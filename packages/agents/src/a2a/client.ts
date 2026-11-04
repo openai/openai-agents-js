@@ -79,7 +79,10 @@ async function boundedResponse(
   response: Response,
   limit: number,
 ): Promise<Response> {
-  if (!response.ok || !response.body) throw new A2AError('unavailable');
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => {});
+    throw new A2AError('unavailable');
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -147,18 +150,18 @@ export async function connectA2A(
     init: RequestInit,
     credential?: string,
   ): Promise<Response> => {
-    const signal = AbortSignal.any([
-      AbortSignal.timeout(timeout),
-      ...(options.signal ? [options.signal] : []),
-      ...(init.signal ? [init.signal] : []),
-    ]);
-    const headers = new Headers(init.headers);
-    if (credential !== undefined && parent)
-      for (const [key, value] of Object.entries(parent.toHeaders()))
-        headers.set(key, value);
-    if (credential !== undefined)
-      headers.set('Authorization', `Bearer ${credential}`);
     try {
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(timeout),
+        ...(options.signal ? [options.signal] : []),
+        ...(init.signal ? [init.signal] : []),
+      ]);
+      const headers = new Headers(init.headers);
+      if (credential !== undefined && parent)
+        for (const [key, value] of Object.entries(parent.toHeaders()))
+          headers.set(key, value);
+      if (credential !== undefined)
+        headers.set('Authorization', `Bearer ${credential}`);
       return await boundedResponse(
         await transportFetch(url, {
           ...init,
@@ -239,11 +242,12 @@ export async function connectA2A(
           let token: string;
           try {
             token = await options.authorization(operation);
+            if (typeof token !== 'string' || !token || /[\r\n]/.test(token))
+              throw new A2AError('authorization');
+            new Headers().set('Authorization', `Bearer ${token}`);
           } catch {
             throw new A2AError('authorization');
           }
-          if (typeof token !== 'string' || !token || /[\r\n]/.test(token))
-            throw new A2AError('authorization');
           await current();
           if (operation !== 'observe') {
             try {

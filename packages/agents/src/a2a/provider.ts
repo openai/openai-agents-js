@@ -159,13 +159,23 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       return { status: 'unknown', receipt };
     if (task.metadata?.['agents.a2a.outcome'] === 'unknown')
       return { status: 'unknown', receipt };
-    if (state === TaskState.TASK_STATE_COMPLETED) {
-      const value = this.#options.project(structuredClone(task));
-      checkBytes(
-        value,
-        bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
-      );
-      return { status: 'completed', receipt, value };
+    try {
+      if (state === TaskState.TASK_STATE_COMPLETED) {
+        const value = this.#options.project(structuredClone(task));
+        checkBytes(
+          value,
+          bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
+        );
+        return { status: 'completed', receipt, value };
+      }
+      if (state === TaskState.TASK_STATE_INPUT_REQUIRED)
+        return {
+          status: 'inputRequired',
+          receipt,
+          value: inputProposal(task),
+        };
+    } catch {
+      return { status: 'unknown', receipt };
     }
     if (state === TaskState.TASK_STATE_CANCELED)
       return { status: 'cancelled', receipt };
@@ -174,12 +184,6 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       state === TaskState.TASK_STATE_REJECTED
     )
       return { status: 'failed', receipt };
-    if (state === TaskState.TASK_STATE_INPUT_REQUIRED)
-      return {
-        status: 'inputRequired',
-        receipt,
-        value: inputProposal(task),
-      };
     // Authentication is a host credential flow; it never becomes an approval answer.
     return {
       status: 'pending',

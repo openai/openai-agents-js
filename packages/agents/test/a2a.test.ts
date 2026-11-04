@@ -306,6 +306,68 @@ it('rejects a card route mismatch before resolving credentials', async () => {
   expect(remote.calls).toEqual([]);
 });
 
+it.each([
+  ['embedded NUL', 'synthetic-\0-credential-sentinel'],
+  ['invalid ByteString', 'synthetic-\u0100-credential-sentinel'],
+])(
+  'rejects %s credentials safely before reserving or sending an RPC',
+  async (_kind, token) => {
+    const remote = await peer();
+    let credentials = 0,
+      reservations = 0;
+    const authorization = async () => {
+      credentials++;
+      return token;
+    };
+    const reserve = async () => {
+      reservations++;
+    };
+    const client = await connectA2A(remote.endpoint, {
+      authorization,
+      reserve,
+    });
+    expect(credentials).toBe(0);
+    for (const operation of [
+      () => client.getTask({ tenant: '', id: 'task' }),
+      () =>
+        client.sendMessage({
+          tenant: '',
+          metadata: undefined,
+          configuration: undefined,
+          message: {
+            ...Message.fromJSON({}),
+            messageId: 'synthetic-message',
+            role: Role.ROLE_USER,
+            parts: [Part.fromJSON({ text: 'hello' })],
+          },
+        }),
+    ]) {
+      const failure = await operation().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(A2AError);
+      expect(failure).toMatchObject({
+        reason: 'authorization',
+        message: 'A2A authorization',
+      });
+      expect(failure).not.toHaveProperty('cause');
+      expect(String(failure)).not.toContain('credential-sentinel');
+    }
+    expect(credentials).toBe(2);
+    const provider = new A2AJobProvider({
+      endpoint: remote.endpoint,
+      authorize: async () => {},
+      authorization,
+      reserve,
+      encode: () => [Part.fromJSON({ text: 'hello' })],
+      project: () => null,
+    });
+    expect(await provider.start(claim(), null, context)).toEqual({
+      status: 'unknown',
+    });
+    expect(reservations).toBe(0);
+    expect(remote.calls).toEqual([]);
+  },
+);
+
 it('refuses redirects and oversized discovery before credentials', async () => {
   const remote = await peer();
   let credentials = 0;
@@ -328,6 +390,226 @@ it('refuses redirects and oversized discovery before credentials', async () => {
     ).rejects.toThrow('A2A');
   }
   expect(credentials).toBe(0);
+});
+
+it.each(
+  ['discovery', 'poll'].flatMap((phase) =>
+    [401, 429, 503].map((status) => ({ phase, status })),
+  ),
+)(
+  'cancels rejected $phase bodies with status $status without leaking cleanup errors',
+  async ({ phase, status }) => {
+    const remote = await peer();
+    let canceled = 0;
+    const bodies: ReadableStream<Uint8Array>[] = [];
+    const transport: typeof fetch = async (url, init) => {
+      if (phase === 'poll' && String(url) === remote.endpoint.cardUrl)
+        return fetch(url, init);
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          canceled++;
+          if (status === 503) throw new Error('secret-cleanup-sentinel');
+        },
+      });
+      bodies.push(body);
+      return new Response(body, { status });
+    };
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const operation = async () => {
+          const client = await connectA2A(remote.endpoint, {
+            authorization: async () => 'synthetic',
+            fetch: transport,
+          });
+          await client.getTask({ tenant: '', id: 'task' });
+        };
+        const failure = await operation().catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(A2AError);
+        expect(failure).toMatchObject({ message: 'A2A unavailable' });
+        expect(failure).not.toHaveProperty('cause');
+        expect(String(failure)).not.toContain('secret-cleanup-sentinel');
+      }
+      expect(canceled).toBe(2);
+    } finally {
+      await Promise.all(bodies.map((body) => body.cancel().catch(() => {})));
+    }
+  },
+);
+
+it.each(['throwing', 'oversized'])(
+  'retains an acknowledged receipt after a %s projection and observes it after restart',
+  async (failure) => {
+    const remote = await peer();
+    let reservations = 0,
+      projections = 0;
+    const options = {
+      endpoint: remote.endpoint,
+      authorize: async () => {},
+      authorization: async () => 'synthetic',
+      reserve: async () => {
+        reservations++;
+      },
+      encode: () => [Part.fromJSON({ text: 'hello' })],
+      limits: { bodyBytes: 2048 },
+    };
+    const original = new A2AJobProvider({
+      ...options,
+      project: () => {
+        projections++;
+        if (failure === 'throwing')
+          throw new Error('secret-projection-sentinel');
+        return 'x'.repeat(4096);
+      },
+    });
+    const update = await original.start(claim(), null, context);
+    expect(update.status).toBe('unknown');
+    expect(update).not.toHaveProperty('value');
+    expect(update.receipt).toEqual(expect.any(String));
+    expect(projections).toBe(1);
+    const receipt = JSON.parse(update.receipt!);
+    expect(receipt).toEqual({
+      scope: expect.stringMatching(/^[a-f0-9]{64}$/),
+      taskId: expect.any(String),
+      contextId: expect.any(String),
+    });
+    const replacement = new A2AJobProvider({
+      ...options,
+      project: () => 'accepted',
+    });
+    expect(
+      await replacement.start(claim('start', update), null, context),
+    ).toEqual({
+      status: 'completed',
+      receipt: update.receipt,
+      value: 'accepted',
+    });
+    expect(remote.calls).toEqual(['SendMessage', 'GetTask']);
+    expect(reservations).toBe(1);
+  },
+);
+
+it('keeps a body limit error safe when reader cleanup rejects', async () => {
+  const remote = await peer();
+  let canceled = 0;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new Uint8Array(64));
+    },
+    cancel() {
+      canceled++;
+      throw new Error('secret-cleanup-sentinel');
+    },
+  });
+  const failure = await connectA2A(remote.endpoint, {
+    authorization: async () => 'synthetic',
+    limits: { bodyBytes: 32 },
+    fetch: async () => new Response(body),
+  }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(A2AError);
+  expect(failure).toMatchObject({ message: 'A2A limit' });
+  expect(failure).not.toHaveProperty('cause');
+  expect(String(failure)).not.toContain('secret-cleanup-sentinel');
+  expect(canceled).toBe(1);
+});
+
+it.each(['revoked authority', 'missing identity'])(
+  'does not retain an acknowledged task under %s',
+  async (rejection) => {
+    const remote = await peer();
+    let allowed = true,
+      acknowledged = false,
+      projections = 0;
+    const provider = new A2AJobProvider({
+      endpoint: remote.endpoint,
+      authorize: async () => {
+        if (!allowed) throw new Error('revoked');
+      },
+      authorization: async () => 'synthetic',
+      reserve: async () => {},
+      encode: () => [Part.fromJSON({ text: 'hello' })],
+      project: () => {
+        projections++;
+        return 'rejected';
+      },
+      fetch: async (url, init) => {
+        const response = await fetch(url, init);
+        if (String(url) !== remote.endpoint.rpcUrl) return response;
+        acknowledged = true;
+        if (rejection === 'revoked authority') {
+          allowed = false;
+          return response;
+        }
+        const payload = await response.json();
+        expect(payload.result.task.contextId).toEqual(expect.any(String));
+        payload.result.task.contextId = '';
+        return new Response(JSON.stringify(payload), {
+          headers: response.headers,
+        });
+      },
+    });
+    expect(await provider.start(claim(), null, context)).toEqual({
+      status: 'unknown',
+    });
+    expect(acknowledged).toBe(true);
+    expect(projections).toBe(0);
+    expect(remote.calls).toEqual(['SendMessage']);
+  },
+);
+
+it('retains only the existing receipt when an observed task identity changes', async () => {
+  const remote = await peer();
+  let reservations = 0,
+    projections = 0,
+    changed = false;
+  const options = {
+    endpoint: remote.endpoint,
+    authorize: async () => {},
+    authorization: async () => 'synthetic',
+    reserve: async () => {
+      reservations++;
+    },
+    encode: () => [Part.fromJSON({ text: 'hello' })],
+    project: () => 'accepted',
+  };
+  const update = await new A2AJobProvider(options).start(
+    claim(),
+    null,
+    context,
+  );
+  const replacement = new A2AJobProvider({
+    ...options,
+    project: () => {
+      projections++;
+      return 'rejected';
+    },
+    fetch: async (url, init) => {
+      const response = await fetch(url, init);
+      if (String(url) !== remote.endpoint.rpcUrl) return response;
+      const payload = await response.json();
+      expect(payload.result.contextId).toBe(
+        JSON.parse(update.receipt!).contextId,
+      );
+      payload.result.contextId = 'different-context';
+      changed = true;
+      return new Response(JSON.stringify(payload), {
+        headers: response.headers,
+      });
+    },
+  });
+  expect(await replacement.observe(claim('observe', update), context)).toEqual({
+    status: 'unknown',
+    receipt: update.receipt,
+  });
+  expect(changed).toBe(true);
+  expect(projections).toBe(0);
+  expect(
+    await new A2AJobProvider(options).observe(
+      claim('observe', update),
+      context,
+    ),
+  ).toEqual(update);
+  expect(remote.calls).toEqual(['SendMessage', 'GetTask', 'GetTask']);
+  expect(reservations).toBe(1);
 });
 
 it('keeps lost create acknowledgments unknown and only observes a known receipt after restart', async () => {
