@@ -1,4 +1,5 @@
 import { networkPolicyDigest } from './network-policy';
+import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
   parseEmbeddedCommand,
   nativeReviewOutput,
@@ -188,7 +189,11 @@ type ToolIdentity = {
 
 const submissionSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('started'), turn_id: z.string() }),
-  z.object({ status: z.literal('steered'), turn_id: z.string() }),
+  z.object({
+    status: z.literal('steered'),
+    turn_id: z.string(),
+    input_id: z.string().min(1).optional(),
+  }),
   z.object({ status: z.literal('not_submitted'), reason: jsonValue }),
 ]);
 export type AcceptedSubmission = Exclude<
@@ -353,6 +358,43 @@ export interface PendingRequests<
   readonly requests: readonly RequestT[];
 }
 
+/** Acceptance of one input by an exact native root turn. */
+export interface SteeringReceipt {
+  readonly sessionId: string;
+  readonly submissionId: string;
+  readonly turnId: string;
+  readonly inputId: string;
+}
+
+/** A known terminal state that needs a supervisor's attention. */
+export interface TurnNeedsAttention {
+  readonly type: 'needs_attention';
+  readonly reason:
+    'interrupted' | 'connection_lost' | 'rate_limited' | 'quota_blocked';
+  readonly error: NativeError;
+  readonly rateLimits: ApiRateLimits;
+}
+
+const quotaCategories = new Set([
+  'session_budget_exceeded',
+  'usage_limit_exceeded',
+  'credit_balance_exhausted',
+  'project_spend_limit_exceeded',
+  'organization_spend_limit_exceeded',
+  'organization_usage_limit_exceeded',
+  'billing_not_active',
+]);
+
+function attentionReason(
+  error: NativeError,
+): TurnNeedsAttention['reason'] | undefined {
+  if (error instanceof TurnAborted) return 'interrupted';
+  if (error.category === 'connection_failed') return 'connection_lost';
+  if (error.category === 'rate_limit_exceeded') return 'rate_limited';
+  if (error.category && quotaCategories.has(error.category))
+    return 'quota_blocked';
+}
+
 /** @internal One settlement view for the issued handle's joined public result. */
 export interface TurnCompletion<T> {
   readonly promise: Promise<Completed<T>>;
@@ -364,6 +406,7 @@ export interface TurnCompletion<T> {
 /** @internal The Session supplies live requests; observations carry no authority. */
 export interface TurnRequestWait<T, NativeId extends string | null = string> {
   notify(): void;
+  rateLimits(): ApiRateLimits;
   wait(
     turn: Turn<T, NativeId>,
     options: AnyRequestWaitOptions,
@@ -382,6 +425,10 @@ export let issueTurn: <T, NativeId extends string | null = string>(
   cancel: (mode: 'force' | 'graceful') => Promise<void>,
   identity?: { childId: string; instanceId: string },
   requests?: TurnRequestWait<T, NativeId>,
+  steerExact?: (
+    input: UserInput,
+    expectedTurnId: string,
+  ) => Promise<SteeringReceipt>,
 ) => Turn<T, NativeId>;
 
 /**
@@ -404,6 +451,10 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
     private readonly cancelRoot: (mode: 'force' | 'graceful') => Promise<void>,
     identity?: { childId: string; instanceId: string },
     private readonly requests?: TurnRequestWait<OutputT, NativeId>,
+    private readonly steerExactInput?: (
+      input: UserInput,
+      expectedTurnId: string,
+    ) => Promise<SteeringReceipt>,
   ) {
     this.childId = identity?.childId ?? null;
     this.instanceId = identity?.instanceId ?? null;
@@ -421,6 +472,7 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
       cancel,
       identity,
       requests,
+      steerExact,
     ) =>
       new Turn(
         sessionId,
@@ -432,6 +484,7 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
         cancel,
         identity,
         requests,
+        steerExact,
       );
   }
 
@@ -497,6 +550,28 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
     return this.requests.wait(this, options, state);
   }
 
+  /** Wait for this turn's result, live requests or a known supervisory stop. Aborting only ends the wait. */
+  async waitForAttention({ signal }: { signal?: AbortSignal } = {}): Promise<
+    | Completed<OutputT>
+    | PendingRequests<OutputT, NativeId, Interaction>
+    | TurnNeedsAttention
+  > {
+    try {
+      return await this.wait({ until: 'interaction', signal });
+    } catch (error) {
+      if (signal?.aborted && error === signal.reason) throw error;
+      if (!(error instanceof NativeError)) throw error;
+      const reason = attentionReason(error);
+      if (!reason || !this.requests) throw error;
+      return Object.freeze({
+        type: 'needs_attention',
+        reason,
+        error,
+        rateLimits: this.requests.rateLimits(),
+      });
+    }
+  }
+
   /** Steer only this root and its owned continuation. */
   steer(input: UserInput): Promise<void> {
     if (arguments.length > 1)
@@ -504,6 +579,22 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
         new TypeError('steer accepts input without operation options'),
       );
     return this.steerInput(input);
+  }
+
+  /** Target the native ID from a turn_started observation without following a continuation. */
+  steerExact(
+    input: UserInput,
+    expectedTurnId: string,
+  ): Promise<SteeringReceipt> {
+    if (!this.steerExactInput)
+      return Promise.reject(
+        new NativeError('Turn.steerExact supports root Turns only'),
+      );
+    if (typeof expectedTurnId !== 'string' || expectedTurnId.length === 0)
+      return Promise.reject(
+        new TypeError('expectedTurnId must be a non-empty string'),
+      );
+    return this.steerExactInput(input, expectedTurnId);
   }
 
   /** Stop this root and join its cleanup. A settled root is a no-op. */
@@ -551,6 +642,7 @@ interface NativeRunResult {
 }
 
 export class TurnAborted extends NativeError {}
+export class StaleTurnError extends NativeError {}
 export class TurnNotSubmitted extends NativeError {
   constructor(readonly reason: JsonValue) {
     super('Native turn was not submitted: ' + encode(reason));
@@ -707,6 +799,15 @@ type ContextReplacement = {
 };
 
 export class Session<OutputT = string, Context = unknown> {
+  private apiRateLimitState: { snapshot: ApiRateLimits } = {
+    snapshot: Object.freeze({}),
+  };
+
+  /** Latest usable API-key limits observed in this live session. */
+  rateLimits(): ApiRateLimits {
+    return this.apiRateLimitState.snapshot;
+  }
+
   private readonly turnHandles = new WeakMap<
     NativeTurn,
     Turn<unknown, string | null>
@@ -2048,6 +2149,7 @@ export class Session<OutputT = string, Context = unknown> {
         undefined,
         {
           notify: () => this.observations.notify(),
+          rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
             this.waitRequests(
               turn,
@@ -2055,6 +2157,10 @@ export class Session<OutputT = string, Context = unknown> {
               options,
               completion,
             ),
+        },
+        (input, expectedTurnId) => {
+          this.checkCallbackOperation('steer');
+          return this.steerRun(run, nativeInput(input), expectedTurnId);
         },
       );
       this.turnHandles.set(run, turn);
@@ -2496,13 +2602,24 @@ export class Session<OutputT = string, Context = unknown> {
     );
   }
 
+  private steerRun(anchor: NativeTurn, input: JsonValue[]): Promise<void>;
+  private steerRun(
+    anchor: NativeTurn,
+    input: JsonValue[],
+    expectedTurnId: string,
+  ): Promise<SteeringReceipt>;
   private async steerRun(
     anchor: NativeTurn,
     input: JsonValue[],
-  ): Promise<void> {
+    expectedTurnId?: string,
+  ): Promise<void | SteeringReceipt> {
     this.checkCallbackOperation('steer');
     for (;;) {
       const run = this.ownedStep(anchor);
+      if (expectedTurnId !== undefined && run?.id !== expectedTurnId)
+        throw markNativeErrorNotStarted(
+          new StaleTurnError('Turn is no longer active'),
+        );
       if (!run) throw new NativeError('Turn is no longer active');
       if (submissions.get(run)?.repair)
         throw new NativeError('Output repair cannot accept steering input');
@@ -2518,7 +2635,13 @@ export class Session<OutputT = string, Context = unknown> {
       )
         throw new NativeError('Current turn cannot accept steering input');
       await run.accepted.promise;
-      if (this.ownedStep(anchor) !== run) continue;
+      if (this.ownedStep(anchor) !== run) {
+        if (expectedTurnId !== undefined)
+          throw markNativeErrorNotStarted(
+            new StaleTurnError('Turn is no longer active'),
+          );
+        continue;
+      }
       if (
         this.manualRestoring ||
         this.manualSealing ||
@@ -2533,14 +2656,40 @@ export class Session<OutputT = string, Context = unknown> {
       const receipt = decode(
         submissionSchema,
         await this.#native._submit(
-          encode({ mode: 'steer', expected_turn_id: run.id, input }),
+          encode({
+            mode: 'steer',
+            expected_turn_id: run.id,
+            input,
+            ...(expectedTurnId !== undefined ? { exact_steering: true } : {}),
+          }),
         ),
       );
-      if (receipt.status === 'not_submitted')
+      if (receipt.status === 'not_submitted') {
+        if (
+          expectedTurnId !== undefined &&
+          receipt.reason &&
+          typeof receipt.reason === 'object' &&
+          !Array.isArray(receipt.reason) &&
+          ['no_active_turn', 'expected_turn_mismatch'].includes(
+            String(receipt.reason.type),
+          )
+        )
+          throw markNativeErrorNotStarted(
+            new StaleTurnError('Turn is no longer active'),
+          );
         throw markNativeErrorNotStarted(new TurnNotSubmitted(receipt.reason));
+      }
       if (receipt.status !== 'steered' || receipt.turn_id !== run.id)
         throw new TurnNotSubmitted('Unexpected steering receipt');
-      return;
+      if (expectedTurnId === undefined) return;
+      if (!receipt.input_id)
+        throw new NativeError('Native steering input ID is unavailable');
+      return Object.freeze({
+        sessionId: this.id,
+        submissionId: this.submissionIds.get(run)!,
+        turnId: receipt.turn_id,
+        inputId: receipt.input_id,
+      });
     }
   }
 
@@ -3197,6 +3346,9 @@ export class Session<OutputT = string, Context = unknown> {
       });
       repair.opening = undefined;
       const correction = repair.session;
+      // A correction uses the owning session's model provider and reports into
+      // the same live snapshot in the order its response headers arrive.
+      correction.apiRateLimitState = this.apiRateLimitState;
       correction.observations.linkRepairParent(
         this.observations,
         this.submissionIds.get(run)!,
@@ -3465,6 +3617,10 @@ export class Session<OutputT = string, Context = unknown> {
         if (!this.isOpen || this.#native !== native) return;
         const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
         const msg = event.msg;
+        if (msg.type === 'token_count') {
+          const snapshot = apiRateLimits(msg.api_rate_limits);
+          if (snapshot) this.apiRateLimitState.snapshot = snapshot;
+        }
         if (msg.type === 'elicitation_status') {
           await this.observeNativeUrlStatus(native, event);
           continue;
@@ -3679,12 +3835,7 @@ export class Session<OutputT = string, Context = unknown> {
     owner.instanceId ??= event.subagent_instance_id;
     const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
-      this.observations.append({
-        type: 'usage_updated',
-        turnId,
-        submissionId,
-        usage: tokenUsageInfo(msg.info),
-      });
+      this.observeTokenCount(event, turnId, submissionId);
     if (
       msg.type === 'agent_message_content_delta' &&
       msg.thread_id === id &&
@@ -3955,6 +4106,33 @@ export class Session<OutputT = string, Context = unknown> {
     await this.handleRequest(owner, event);
   }
 
+  private observeTokenCount(
+    event: NativeEvent,
+    turnId: string,
+    submissionId: string,
+  ): boolean {
+    const { msg } = event;
+    if (msg.api_rate_limits !== undefined) {
+      const snapshot = apiRateLimits(msg.api_rate_limits);
+      if (snapshot && event.id === turnId)
+        this.observations.append({
+          type: 'api_rate_limits_updated',
+          turnId,
+          submissionId,
+          snapshot,
+        });
+      // A header-only notification carries neither usage nor managed limits.
+      if (msg.info == null && msg.rate_limits == null) return false;
+    }
+    this.observations.append({
+      type: 'usage_updated',
+      turnId,
+      submissionId,
+      usage: tokenUsageInfo(msg.info),
+    });
+    return true;
+  }
+
   private process(run: NativeTurn, event: NativeEvent): void {
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     const msg = event.msg;
@@ -4068,15 +4246,11 @@ export class Session<OutputT = string, Context = unknown> {
         submissionId: this.submissionIds.get(run)!,
         itemId: String(msg.item.id ?? ''),
       });
-    if (kind === 'token_count') {
+    if (
+      kind === 'token_count' &&
+      this.observeTokenCount(event, run.id!, this.submissionIds.get(run)!)
+    )
       run.usage = msg.info ?? null;
-      this.observations.append({
-        type: 'usage_updated',
-        turnId: run.id!,
-        submissionId: this.submissionIds.get(run)!,
-        usage: tokenUsageInfo(run.usage),
-      });
-    }
     if (
       kind === 'agent_message_content_delta' &&
       eventTurn === run.id &&
@@ -6247,6 +6421,7 @@ export class Session<OutputT = string, Context = unknown> {
           ),
         requests: {
           notify: () => this.observations.notify(),
+          rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
             this.waitRequests(turn, () => owner, options, completion),
         },

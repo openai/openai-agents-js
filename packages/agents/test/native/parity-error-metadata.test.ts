@@ -207,6 +207,16 @@ describe('native retry guidance', () => {
           retryable,
           retryAfterMs: advice === null ? null : 0,
         });
+        if (status === 429) {
+          expect(await turn.waitForAttention()).toEqual({
+            type: 'needs_attention',
+            reason: 'rate_limited',
+            error,
+            rateLimits: { retryAfterSeconds: 0 },
+          });
+        } else {
+          await expect(turn.waitForAttention()).rejects.toBe(error);
+        }
         await expect(turn.wait()).rejects.toBe(error);
         expect(peer.rejectedRequests).toBe(1);
         model.assertExhausted();
@@ -401,6 +411,14 @@ describe('Python-aligned native provider error metadata', () => {
         // The earlier native error notice must be enriched by terminal settlement.
         expect(error.message).toBeTruthy();
         await expect(turn.wait()).rejects.toBe(error);
+        if (failure.code === 'insufficient_quota') {
+          expect(await turn.waitForAttention()).toEqual({
+            type: 'needs_attention',
+            reason: 'quota_blocked',
+            error,
+            rateLimits: { retryAfterSeconds: 0 },
+          });
+        }
         expect(peer.rejectedRequests).toBeGreaterThan(0);
         model.assertExhausted();
       } finally {
@@ -614,6 +632,7 @@ describe('Python-aligned native provider error metadata', () => {
         requestId: authentication.requestId,
         category: 'authentication_error',
       });
+      await expect(childTurn.waitForAttention()).rejects.toBe(error);
       const repeated: unknown = await childTurn
         .wait()
         .catch((error: unknown) => error);

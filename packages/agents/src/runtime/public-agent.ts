@@ -166,6 +166,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'pendingInteractions'
   | 'items'
   | 'turns'
+  | 'rateLimits'
   | 'goal'
   | 'subagents'
   | 'checklist'

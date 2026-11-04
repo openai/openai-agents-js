@@ -438,7 +438,30 @@ export class NativeProviderRoutes {
         }
         const local = await new Promise<WebSocket>((resolve, reject) => {
           socket.once('error', reject);
-          wss.handleUpgrade(request, socket, head, resolve);
+          // The loopback handshake has its own protocol headers. Forward only
+          // provider rate advice so Core can observe it on the live connection.
+          const rateHeaders = responseHeaders(remote.headers).filter(([name]) =>
+            /^(?:retry-after|x-ratelimit-(?:limit|remaining|reset)-(?:requests|tokens|project-tokens))$/i.test(
+              name,
+            ),
+          );
+          const appendRateHeaders = (
+            headers: string[],
+            source: IncomingMessage,
+          ) => {
+            if (source !== request) return;
+            for (const [name, value] of rateHeaders) {
+              validateHeaderName(name);
+              validateHeaderValue(name, value);
+              headers.push(`${name}: ${value}`);
+            }
+          };
+          wss.on('headers', appendRateHeaders);
+          try {
+            wss.handleUpgrade(request, socket, head, resolve);
+          } finally {
+            wss.off('headers', appendRateHeaders);
+          }
         });
         await this.sentinelSocket(
           local,

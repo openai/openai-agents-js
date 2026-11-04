@@ -5,6 +5,7 @@ import {
   Environment,
   NativeAgents,
   NativeProvider,
+  StaleTurnError,
   manualTool,
   tool,
   type ActionRequested,
@@ -44,8 +45,12 @@ describe('exact root Turn controls', () => {
       [message('A done')],
       [call('hold', {}, { callId: 'B-call' })],
       (request) => {
-        expect(JSON.stringify(request.input)).toContain('implicit detail');
-        expect(JSON.stringify(request.input)).toContain('exact detail');
+        const input = JSON.stringify(request.input);
+        expect(input).toContain('implicit detail');
+        expect(input).toContain('legacy detail');
+        expect(input.split('exact one')).toHaveLength(2);
+        expect(input.split('exact two')).toHaveLength(2);
+        expect(input).not.toContain('stale detail');
         return [message('B done')];
       },
     ]);
@@ -76,8 +81,26 @@ describe('exact root Turn controls', () => {
       );
       await first.cancel();
       await first.cancel({ mode: 'graceful' });
+      const stale: unknown = await first
+        .steerExact('stale detail', second.turnId)
+        .catch((error: unknown) => error);
+      expect(stale).toBeInstanceOf(StaleTurnError);
+      expect(stale).toMatchObject({ effects: 'notStarted' });
       expect(await session.submit('implicit detail')).toBe(second);
-      await second.steer('exact detail');
+      await second.steer('legacy detail');
+      const firstReceipt = await second.steerExact('exact one', second.turnId);
+      const secondReceipt = await second.steerExact('exact two', second.turnId);
+      expect(firstReceipt).toEqual({
+        sessionId: session.id,
+        submissionId: second.submissionId,
+        turnId: second.turnId,
+        inputId: expect.any(String),
+      });
+      expect(secondReceipt).toMatchObject({
+        turnId: second.turnId,
+        inputId: expect.any(String),
+      });
+      expect(firstReceipt.inputId).not.toBe(secondReceipt.inputId);
       await expect(
         session.submit('rejected', { ifBusy: 'reject' }),
       ).rejects.toThrow();
@@ -219,6 +242,13 @@ describe('exact root Turn controls', () => {
       const first = await session.submit('A');
       const failure = first.wait().catch((error: unknown) => error);
       await entered.promise;
+      const waiter = new AbortController();
+      const waitFailure = new Error('Supervisor stopped waiting');
+      const passive = first.waitForAttention({ signal: waiter.signal });
+      waiter.abort(waitFailure);
+      await expect(passive).rejects.toBe(waitFailure);
+      expect(server.requests).toHaveLength(1);
+      const attention = first.waitForAttention();
       let settled = 0;
       const stopping = first.cancel().then(() => {
         settled++;
@@ -237,6 +267,11 @@ describe('exact root Turn controls', () => {
       await Promise.all([stopping, repeated]);
       expect(settled).toBe(2);
       expect(await failure).toBeInstanceOf(Error);
+      expect(await attention).toMatchObject({
+        type: 'needs_attention',
+        reason: 'interrupted',
+        error: await failure,
+      });
       const second = await session.submit('B');
       await first.cancel();
       expect((await second.wait()).finalOutput).toBe('survivor');
@@ -359,7 +394,11 @@ describe('exact root Turn controls', () => {
         turnId: originalId,
       });
       expect(observerEnded).toBe(false);
-      const requestWait = first.wait({ until: 'request' });
+      const requestWait = first.waitForAttention();
+      if (!originalId) throw new Error('No initial native turn ID');
+      await expect(
+        first.steerExact('stale native step', originalId),
+      ).rejects.toBeInstanceOf(StaleTurnError);
       const steering = first.steer('captured while successor admission waits');
       release.resolve();
       await steering;
@@ -380,6 +419,16 @@ describe('exact root Turn controls', () => {
       expect(batch.requests[0].submissionId).toBe(request.submissionId);
       expect(request.turnId).not.toBe(first.turnId);
       expect(first.turnId).toBe(originalId);
+      const receipt = await first.steerExact(
+        'exact continuation detail',
+        request.turnId,
+      );
+      expect(receipt).toEqual({
+        sessionId: session.id,
+        submissionId: request.submissionId,
+        turnId: request.turnId,
+        inputId: expect.any(String),
+      });
       expect(await session.submit('implicit continuation detail')).toBe(first);
       await expect(
         // @ts-expect-error Manual replies cannot carry new-submission options.

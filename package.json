@@ -102,7 +102,7 @@
     "verify:lint": "pnpm lint",
     "verify:test": "pnpm test",
     "verify:format": "pnpm format:check:changed",
-    "test:native": "OPENAI_AGENTS_NATIVE_TESTS=1 vitest run --project @openai/agents",
+    "test:native": "OPENAI_AGENTS_NATIVE_TESTS=1 vitest run --pool=forks --project @openai/agents",
     "native:prepare": "pnpm -C packages/agents native:prepare",
     "native:build": "pnpm -C packages/agents native:build",
     "native:audit": "pnpm -C packages/agents native:audit",

@@ -91,7 +91,11 @@
     {
       "path": "0023-native-owned-turn-retirement.patch",
       "sha256": "fb97a3e2602463dd2d796727f53176fe424bd2228724067bc71d8908e49287c4"
+    },
+    {
+      "path": "0024-api-key-rate-limits.patch",
+      "sha256": "7214955c12f507f0534a7813205eeba656265aa6d919aa3704ec5a47f3ea7d64"
     }
   ],
-  "result_tree": "de13b5d6ca933224ecc2c8e0a2ddf428aba38bb6"
+  "result_tree": "fa74ed80025deb5a9da3fbb5fcc3da9fbb6be38d"
 }
