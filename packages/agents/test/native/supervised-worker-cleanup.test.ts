@@ -96,34 +96,45 @@ it('journals a joined worker when reopening its profile times out', async () => 
 it.each([
   {
     label: 'printed hash',
-    command: 'printf',
-    extraOutput: false,
+    forge: true,
     accepted: false,
   },
   {
-    label: 'extra output',
-    command: 'sha256sum draft.md',
-    extraOutput: true,
+    label: 'output after the hash',
+    output: (line: string) => `${line}\nOther output.\n`,
+    accepted: false,
+  },
+  {
+    label: 'a shell diagnostic before the hash',
+    output: (line: string) =>
+      `/bin/bash: warning: setlocale: LC_ALL: cannot change locale (C.UTF-8)\n${line}\n`,
+    accepted: true,
+  },
+  {
+    label: 'duplicate hash results',
+    output: (line: string) => `${line}\n${line}\n`,
+    accepted: false,
+  },
+  {
+    label: 'conflicting hash results',
+    output: (line: string) => `${'0'.repeat(64)}  draft.md\n${line}\n`,
     accepted: false,
   },
   {
     label: 'standalone hash',
-    command: 'sha256sum draft.md',
-    extraOutput: false,
     accepted: true,
   },
 ])(
   'checks native command evidence for $label',
-  async ({ command, extraOutput, accepted }) => {
+  async ({ forge, output, accepted }) => {
     const directory = await mkdtemp(join(tmpdir(), 'native-worker-evidence-'));
     const workspace = join(directory, 'workspace');
     const draft = '# Release note\nExample draft.\n';
     const sha256 = createHash('sha256').update(draft).digest('hex');
     const hashLine = sha256 + '  draft.md';
-    const script =
-      command === 'printf'
-        ? `printf '%s\\n' '${hashLine}' # sha256sum draft.md`
-        : command;
+    const script = forge
+      ? `printf '%s\\n' '${hashLine}' # sha256sum draft.md`
+      : 'sha256sum draft.md';
     const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
       id: 'thread',
       async [Symbol.asyncDispose]() {},
@@ -146,7 +157,7 @@ it.each([
           cwd: pathToFileURL(await realpath(workspace)).href,
           command: `/bin/bash -c '${script}'`,
           argv: ['/bin/bash', '-c', script],
-          output: hashLine + '\n' + (extraOutput ? 'Other output.\n' : ''),
+          output: output?.(hashLine) ?? hashLine + '\n',
         };
       },
     } as unknown as Session);

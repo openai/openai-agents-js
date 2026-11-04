@@ -194,6 +194,18 @@ async function readDraft(path: string) {
 const digest = (bytes: Buffer) =>
   createHash('sha256').update(bytes).digest('hex');
 
+function matchesDraftHash(output: string | null, sha256: string): boolean {
+  // Native history combines stdout and stderr. Shell diagnostics can precede
+  // the hash, so require it on the final line and reject other hash lines.
+  const lines = output?.split('\n');
+  return (
+    lines !== undefined &&
+    lines.pop() === '' &&
+    lines.pop() === `${sha256}  draft.md` &&
+    !lines.some((line) => /^[a-f0-9]{64} [ *]/i.test(line))
+  );
+}
+
 export async function superviseArtifact(options: WorkerOptions) {
   const { directory, task, reports } = options;
   const path = paths(directory);
@@ -268,10 +280,11 @@ export async function superviseArtifact(options: WorkerOptions) {
       model: options.model,
       tools,
       outputType: claim,
+      // Local checkpoints require the original instructions on reopen.
       instructions:
         'Use the selected report tool to prepare a synthetic release note. ' +
         'Use exec_command to save draft.md in the workspace. Start the file with "# Release note". ' +
-        `Run ${verifyDraftCommand} as a standalone exec_command without a terminal after saving. ` +
+        `Run ${verifyDraftCommand} after saving so the application can check the exact bytes. ` +
         'If you need information, return it in question. Return a brief summary. ' +
         'The application reviews and publishes the draft.',
     });
@@ -304,8 +317,11 @@ export async function superviseArtifact(options: WorkerOptions) {
 
   const submitted = performance.now();
   const deadline = AbortSignal.timeout(options.turnMs ?? 30_000);
+  const taskWithVerification =
+    task +
+    `\n\nAfter saving draft.md, run ${verifyDraftCommand} as a standalone exec_command without a terminal.`;
   const turn = await session
-    .submit(task, { ifBusy: 'reject', writableRoots: [] })
+    .submit(taskWithVerification, { ifBusy: 'reject', writableRoots: [] })
     .catch((error: unknown) =>
       saveStatusAndThrow({ ...started, state: 'needs_attention' }, error),
     );
@@ -420,7 +436,7 @@ export async function superviseArtifact(options: WorkerOptions) {
           ['bash', 'sh', 'zsh'].includes(basename(item.argv[0])) &&
           item.argv[1] === '-c' &&
           item.argv[2] === verifyDraftCommand &&
-          item.output === sha256 + '  draft.md\n'
+          matchesDraftHash(item.output, sha256)
         )
           evidence = item.id;
       }
