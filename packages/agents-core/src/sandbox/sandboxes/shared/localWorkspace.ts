@@ -21,7 +21,6 @@ import { formatSandboxProcessError, runSandboxProcess } from './runProcess';
 import type { SandboxProcessResult } from './runProcess';
 import {
   chmod,
-  chown,
   lstat,
   mkdir,
   mkdtemp,
@@ -319,37 +318,6 @@ export async function restoreLocalWorkspaceManifestStickyPermissions(
       }
     }
   }
-}
-
-export async function applyOwnershipRecursive(
-  targetPath: string,
-  uid: number,
-  gid: number,
-): Promise<void> {
-  const info = await lstat(targetPath).catch((error: unknown) => {
-    if (isSandboxPathNotFoundError(error)) {
-      return null;
-    }
-    throw error;
-  });
-  if (!info) {
-    return;
-  }
-  if (info.isSymbolicLink()) {
-    return;
-  }
-
-  await chown(targetPath, uid, gid);
-  if (!info.isDirectory()) {
-    return;
-  }
-
-  const children = await readdir(targetPath);
-  await Promise.all(
-    children.map(async (child) => {
-      await applyOwnershipRecursive(join(targetPath, child), uid, gid);
-    }),
-  );
 }
 
 export async function pathExists(path: string): Promise<boolean> {

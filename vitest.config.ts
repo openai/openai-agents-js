@@ -120,6 +120,7 @@ function createProjects(reviewTestProfile: boolean) {
           'examples/tools/apply-patch.test.ts',
           'examples/tools/computer-use-hitl.test.ts',
           'examples/live/**/*.test.{ts,mjs}',
+          'examples/realtime-next/src/app/server/backendAgent.action.test.ts',
         ],
       },
     },
