@@ -319,7 +319,11 @@ export async function openSession(
 export async function runOwnedSession<Output>(
   session: Session<Output>,
   input: string | JsonValue[] | null,
-  options: { returnState?: boolean; signal?: AbortSignal } = {},
+  options: {
+    returnState?: boolean;
+    signal?: AbortSignal;
+    maxModelSteps?: number;
+  } = {},
 ): Promise<Completed<Output>> {
   const cancellation: { rejection?: unknown; reason?: unknown } = {};
   const retire = AsyncResource.bind(() => {
@@ -342,7 +346,11 @@ export async function runOwnedSession<Output>(
 async function completeOwnedSession<Output>(
   session: Session<Output>,
   input: string | JsonValue[] | null,
-  options: { returnState?: boolean; signal?: AbortSignal },
+  options: {
+    returnState?: boolean;
+    signal?: AbortSignal;
+    maxModelSteps?: number;
+  },
   cancellation: { rejection?: unknown; reason?: unknown },
 ): Promise<Completed<Output>> {
   const originalFailure = (error: unknown) =>
@@ -365,7 +373,9 @@ async function completeOwnedSession<Output>(
   const result = await (
     input == null
       ? session.wait()
-      : session._run(input, options.signal).then(() => session.wait())
+      : session
+          ._run(input, options.signal, options.maxModelSteps)
+          .then(() => session.wait())
   ).catch(async (error) => {
     const primary = originalFailure(error);
     try {

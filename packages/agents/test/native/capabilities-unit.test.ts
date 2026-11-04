@@ -238,6 +238,7 @@ function fixture(
             snapshot: checkpoint,
           })),
     ),
+    _stop_sampling_for_close: vi.fn(),
     _close_report: vi.fn(async () => null),
   } as unknown as NativeThread;
   const engine = {

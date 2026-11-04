@@ -2818,14 +2818,8 @@ impl NativeThread {
                     .map_err(native_error)
             })
             .transpose()?;
-        if selection
-            .as_ref()
-            .is_some_and(|selection| selection.before_step)
-        {
-            return Err(native_error(
-                "manual continuation recovery requires static selection",
-            ));
-        }
+        // A restored root can use step preparation to enforce its remaining
+        // SDK budget. The SDK never serializes an application callback.
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         inner
@@ -3104,6 +3098,19 @@ impl NativeThread {
     #[napi(js_name = "_close_selected_environment")]
     pub async fn _close_selected_environment(&self) -> napi::Result<Option<String>> {
         self.close_owned(true).await
+    }
+
+    #[napi(js_name = "_stop_sampling_for_close")]
+    pub fn _stop_sampling_for_close(&self) -> napi::Result<()> {
+        if let Some(inner) = self.live()?
+            && let Some(root) = inner
+                .thread
+                .thread_extension_data()
+                .get::<native_interception::Control>()
+        {
+            root.graph().close_sampling.request();
+        }
+        Ok(())
     }
 }
 

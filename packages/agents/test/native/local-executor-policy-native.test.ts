@@ -1,4 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import {
   mkdir,
   mkdtemp,
@@ -1543,4 +1545,140 @@ it
       }
     }
   },
+);
+
+it.skipIf(process.platform !== 'darwin')(
+  'blocks delegation from a local command to launchd',
+  async () => {
+    const launchctl = (...args: string[]) => {
+      const result = spawnSync('/bin/launchctl', args, {
+        encoding: 'utf8',
+        timeout: 5_000,
+      });
+      if (result.error) throw result.error;
+      return result;
+    };
+    const uid = process.getuid!();
+    const gui = `gui/${uid}`;
+    const domain = launchctl('print', gui).status === 0 ? gui : `user/${uid}`;
+    const label = `org.openai.agents.sdk-test.${randomUUID()}`;
+    const service = `${domain}/${label}`;
+    const runCount = () => {
+      const result = launchctl('print', service);
+      expect(result.status, result.stderr).toBe(0);
+      const count = /^\s*runs = (\d+)/m.exec(result.stdout)?.[1];
+      expect(count, result.stdout).toBeDefined();
+      return Number(count);
+    };
+    const quote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
+
+    const directory = await mkdtemp(join(tmpdir(), 'agents-launchd-'));
+    try {
+      const root = await realpath(directory);
+      const cwd = join(root, 'workspace');
+      const marker = join(root, 'launchd-marker');
+      const plist = join(cwd, `${label}.plist`);
+      await mkdir(cwd);
+      const xmlMarker = marker
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+      const sessionType = domain.startsWith('user/')
+        ? '<key>LimitLoadToSessionType</key><string>Background</string>'
+        : '';
+      await writeFile(
+        plist,
+        `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/touch</string><string>${xmlMarker}</string></array>
+  <key>RunAtLoad</key><false/>
+  <key>KeepAlive</key><false/>
+  <key>ExitTimeOut</key><integer>2</integer>
+  <key>ThrottleInterval</key><integer>1</integer>
+  ${sessionType}
+</dict>
+</plist>
+`,
+      );
+
+      const attempts = [
+        ['bootstrap', [domain, plist]],
+        ['kickstart', [service]],
+      ] as const;
+      const server = new ModelServer(
+        attempts.flatMap(([operation, args]) => {
+          const command = ['/bin/launchctl', operation, ...args]
+            .map(quote)
+            .join(' ');
+          return [
+            [
+              call(
+                'exec_command',
+                {
+                  cmd: `rc=0; ${command} || rc=$?; printf '${operation} exit %s\\n' "$rc"`,
+                  login: false,
+                  yield_time_ms: 10_000,
+                },
+                { callId: operation },
+              ),
+            ],
+            [message('checked')],
+          ];
+        }),
+      );
+      await using provider = await providerFor(server);
+      const agent = new Agent({ provider, instructions: 'Work.' });
+
+      expect(launchctl('print', service).status).not.toBe(0);
+      expect(existsSync(marker)).toBe(false);
+      {
+        await using session = await agent.session({
+          environment: Environment.local({ cwd, tools: ['exec_command'] }),
+        });
+        const tryDelegation = async (operation: 'bootstrap' | 'kickstart') => {
+          const turn = await session.submit(`Try launchctl ${operation}.`);
+          expect((await turn.wait()).finalOutput).toBe('checked');
+          const command = (await Array.fromAsync(session.items()))
+            .filter((item) => item.type === 'command_execution')
+            .find((item) => item.callId === operation);
+          expect(command?.output).toMatch(
+            new RegExp(`^${operation} exit [1-9]\\d*$`, 'm'),
+          );
+        };
+        await tryDelegation('bootstrap');
+        expect(launchctl('print', service).status).not.toBe(0);
+        expect(existsSync(marker)).toBe(false);
+
+        const bootstrapped = launchctl('bootstrap', domain, plist);
+        expect(bootstrapped.status, bootstrapped.stderr).toBe(0);
+        expect(runCount()).toBe(0);
+
+        await tryDelegation('kickstart');
+        expect(runCount()).toBe(0);
+        expect(existsSync(marker)).toBe(false);
+      }
+
+      const kicked = launchctl('kickstart', service);
+      expect(kicked.status, kicked.stderr).toBe(0);
+      await vi.waitFor(() => expect(existsSync(marker)).toBe(true), {
+        timeout: 5_000,
+      });
+      expect(runCount()).toBe(1);
+      server.assertExhausted();
+    } finally {
+      try {
+        const stopped = launchctl('bootout', service);
+        if (stopped.status !== 0) {
+          expect(launchctl('print', service).status, stopped.stderr).not.toBe(
+            0,
+          );
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  },
+  45_000,
 );

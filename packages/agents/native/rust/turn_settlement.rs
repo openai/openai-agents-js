@@ -548,6 +548,9 @@ impl TurnLifecycleContributor for Contributor {
             let owner = input
                 .thread_store
                 .get::<crate::native_interception::Control>();
+            if let Some(owner) = &owner {
+                input.turn_store.insert(owner.graph().close_sampling.clone());
+            }
             let graph = owner
                 .as_ref()
                 .map(|control| control.graph().state.lock().expect("graph stop poisoned"));

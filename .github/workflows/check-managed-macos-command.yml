@@ -17,8 +17,8 @@ jobs:
     env:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: darwin-arm64
-      QUALIFIED_SDK_COMMIT: b4aa1b10ef582db276ac2919a509a2f4efedb1c8
-      QUALIFIED_SDK_TREE: 704f21d80f403591dd649e89686d3295061b5985
+      QUALIFIED_SDK_COMMIT: 4dc9c03355cd7453ce3b8f85d10a64b6f261de22
+      QUALIFIED_SDK_TREE: aae0735c823654ee9a2598a0780a99bc23467b1c
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: '3'
       CARGO_INCREMENTAL: '0'
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b4aa1b10ef582db276ac2919a509a2f4efedb1c8
+          ref: 4dc9c03355cd7453ce3b8f85d10a64b6f261de22
           persist-credentials: false
       - name: Check exact source
         run: |
@@ -84,8 +84,16 @@ jobs:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: >-
           pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
-          -t 'joins a detached local child at|joins an interrupted local command|joins a yielded local process|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS'
+          -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS'
           --reporter=verbose
+      - name: Qualify native cancellation and model-step resume on macOS
+        run: |
+          pnpm test:native packages/agents/test/native/executor-stop-native.test.ts \
+            -t 'fences a direct result before native' --maxWorkers=1 --reporter=verbose
+          pnpm test:native packages/agents/test/native/model-preparation-cap.test.ts \
+            --maxWorkers=1 --reporter=verbose
+          pnpm test:native packages/agents/test/native/executor-receipt-resume-native.test.ts \
+            -t 'can attach a trusted implicit remote executor' --maxWorkers=1 --reporter=verbose
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles

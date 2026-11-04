@@ -39,6 +39,7 @@ import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureReconciledCalls, type ReconciledCall } from './local-recovery';
 import { captureTools, toolIdentity, type Tool } from './tools';
+import { validateMaxModelSteps, type OperationOptions } from './session';
 import type {
   Session as CoreSession,
   SessionOptions as CoreSessionOptions,
@@ -91,6 +92,8 @@ export interface RunOptions<Context = undefined> extends Omit<
   SessionOptions<Context>,
   'tools' | 'storage' | 'resume' | 'reconciledCalls'
 > {
+  /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
+  maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
   returnState?: boolean;
   onNativeQuestion?: (
     request: NativeQuestion,
@@ -336,6 +339,11 @@ export class Agent<Context = undefined, Output = string> {
       if (key in options)
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
+    const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
+    if (input === null && maxModelSteps !== undefined)
+      throw new TypeError(
+        'Cannot replace the model step budget when resuming a run',
+      );
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
@@ -364,6 +372,7 @@ export class Agent<Context = undefined, Output = string> {
       sessionOptions,
     ] as SessionArguments<Context>);
     return runOwnedSession(session as CoreSession<Output>, preparedInput, {
+      maxModelSteps,
       returnState: options.returnState,
       signal: options.signal,
     });

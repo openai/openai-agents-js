@@ -261,6 +261,7 @@ const manualContinuationSchema = z.object({
     .min(1),
 });
 const manualContextSchema = z.object({
+  remaining_model_steps: z.number().int().nonnegative().safe().optional(),
   instructions: z.string().nullable(),
   result_schemas: z.array(
     z.object({
