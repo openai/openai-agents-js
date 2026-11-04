@@ -82,6 +82,7 @@ it.each(['selected', 'omitted', 'empty', 'no-environment'] as const)(
           'exec_command',
         );
         saved = await source.saveState();
+        expect(saved).not.toHaveProperty('executor_policy_digest');
         expect(JSON.stringify(saved)).not.toContain(
           executor.headers.Authorization,
         );

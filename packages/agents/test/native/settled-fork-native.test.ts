@@ -1,3 +1,5 @@
+import { mkdir, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -30,6 +32,66 @@ afterEach(async () => {
 });
 
 describe('settled root fork', () => {
+  it('forks with the currently applied writable roots', async (context) => {
+    if (process.platform !== 'linux') context.skip();
+    const executor = await startPublicExecutor();
+    const { server, provider } = await setup([
+      [message('Roots changed')],
+      [message('Source continued')],
+    ]);
+    try {
+      const openingRoot = join(executor.cwd, '..', 'fork-opening-root');
+      const nextRoot = join(
+        await realpath(executor.cwd),
+        '..',
+        'fork-current-root',
+      );
+      await Promise.all([mkdir(openingRoot), mkdir(nextRoot)]);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      await using source = await agent.session({
+        environment: new Environment({
+          url: executor.url,
+          headers: executor.headers,
+          cwd: executor.cwd,
+          writableRoots: [openingRoot],
+          tools: ['exec_command'],
+        }),
+      });
+      const opening = await source.saveState();
+      expect(opening.executor_policy_digest).toBeDefined();
+      const changed = await source.submit('Change roots', {
+        writableRoots: [nextRoot],
+      });
+      expect((await changed.wait()).finalOutput).toBe('Roots changed');
+      const current = await source.saveState();
+      expect(current.source_session_id).toBe(source.id);
+      expect(current.executor_policy_digest).toBeDefined();
+      expect(current.executor_policy_digest).not.toBe(
+        opening.executor_policy_digest,
+      );
+
+      const forked = await source.fork();
+      expect(forked.source_session_id).not.toBe(source.id);
+      expect(forked.executor_policy_digest).toBe(
+        current.executor_policy_digest,
+      );
+
+      const continued = await source.submit('Continue source');
+      expect((await continued.wait()).finalOutput).toBe('Source continued');
+      expect((await source.saveState()).executor_policy_digest).toBe(
+        current.executor_policy_digest,
+      );
+      server.assertExhausted();
+    } finally {
+      await provider.close();
+      await executor.close();
+    }
+  });
+
   it('copies history once, uses current destination bindings and excludes later source work', async () => {
     const { server, provider } = await setup([
       [call('lookup', {}, { callId: 'old-call' })],

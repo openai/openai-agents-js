@@ -41,7 +41,7 @@ mod access;
 pub use access::AccessContributor;
 
 // Installed only from current host thread options, never from saved history.
-pub struct Rules(Mutex<Scope>, PathUri, Mutex<Option<PathUri>>);
+pub struct Rules(Mutex<Scope>, PathUri, Mutex<Option<PathUri>>, &'static str);
 
 #[derive(Default)]
 struct RuleSnapshot {
@@ -130,8 +130,13 @@ pub(crate) struct CellImageOrigin {
 }
 
 impl Rules {
-    pub fn new(trusted_root: PathUri) -> Self {
-        Self(Mutex::new(Scope::default()), trusted_root, Mutex::new(None))
+    pub fn new(trusted_root: PathUri, environment_id: &'static str) -> Self {
+        Self(
+            Mutex::new(Scope::default()),
+            trusted_root,
+            Mutex::new(None),
+            environment_id,
+        )
     }
 
     pub(crate) fn cell_image_origin(self: &Arc<Self>, turn: &str) -> Option<CellImageOrigin> {
@@ -314,8 +319,7 @@ impl CanonicalRules {
         // The read tool uses the first native selection as its cwd as well.
         let selection = input.environments.first().context("no selected executor")?;
         ensure!(
-            selection.environment_id == codex_exec_server::REMOTE_ENVIRONMENT_ID
-                && selection.cwd == rules.1,
+            selection.environment_id == rules.3 && selection.cwd == rules.1,
             "trusted primary executor changed"
         );
         // The primary FromThread selection deliberately hides its normalized

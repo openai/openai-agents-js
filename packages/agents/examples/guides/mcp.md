@@ -22,6 +22,8 @@ Use on-demand HTTP connections in a fresh plain Session with a direct root. The 
 
 For a remote declaration, set `location: 'environment'` and use the executor's command and script path, such as `args: ['/workspace/mcp-server.mjs']`. Open the Session with its current `Environment`. The executor supplies the selected variable values; the SDK does not forward controller-host secret values. The remote MCP process can start even when `Environment.tools` is empty. Those tools control model-visible executor operations, not MCP startup. Choose a process and executor the application trusts. Session-scoped connections start during opening, before invocation approval can run.
 
+`Environment.writableRoots` and `Environment.network` govern executor command tools. A trusted stdio server runs with the permissions of its process on the selected machine.
+
 ## Choose a stdio process lifetime
 
 `StdioMCP` keeps its process alive across root turns when `lifetime` is omitted or set to `'session'`. Set `lifetime: 'turn'` to start a separate process for each root turn and stop it before the next turn starts. Process state does not carry across those turns. Choose this option when a stdio server must ask the application for forms tied to the original root turn. Server prompts from a persistent process without a trusted original turn are refused. Core-generated root MCP tool approvals remain available with either lifetime.
