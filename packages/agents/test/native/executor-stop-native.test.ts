@@ -92,7 +92,12 @@ function stopped(
 async function open(
   responses: ConstructorParameters<typeof ModelServer>[0],
   policy: Partial<EnvironmentOptions> = {},
-  options: { code?: boolean; children?: boolean; tools?: Tool[] } = {},
+  options: {
+    code?: boolean;
+    children?: boolean;
+    tools?: Tool[];
+    usage?: JsonObject;
+  } = {},
 ) {
   const executor = await startPublicExecutor();
   let provider: NativeProvider | undefined;
@@ -117,7 +122,7 @@ async function open(
       );
   };
   try {
-    const model = new ModelServer(responses);
+    const model = new ModelServer(responses, options.usage);
     const config = await model.config();
     provider = new NativeProvider({
       baseUrl: (config['model_providers.fixture'] as { base_url: string })
@@ -681,9 +686,14 @@ await tools.exec_command({cmd:'printf stale > stale-denied.txt'}); await probe;`
   }
 }, 45_000);
 
-it.each(['cancel', 'close'] as const)(
-  'fences a direct result before native %s settles',
-  async (operation) => {
+it.each([
+  ['cancel', 'ordinary sampling'],
+  ['close', 'ordinary sampling'],
+  ['cancel', 'automatic compaction'],
+  ['close', 'automatic compaction'],
+] as const)(
+  'fences a direct result before native %s settles with %s',
+  async (operation, continuation) => {
     const transformEntered = Promise.withResolvers<void>();
     const releaseTransform = Promise.withResolvers<void>();
     const settleEntered = Promise.withResolvers<void>();
@@ -734,6 +744,18 @@ it.each(['cancel', 'close'] as const)(
             return value;
           },
         },
+        {
+          usage:
+            continuation === 'automatic compaction'
+              ? {
+                  input_tokens: 260_000,
+                  output_tokens: 1_000,
+                  total_tokens: 261_000,
+                  input_tokens_details: { cached_tokens: 0 },
+                  output_tokens_details: { reasoning_tokens: 0 },
+                }
+              : undefined,
+        },
       );
       const followup = Promise.withResolvers<void>();
       f.model.onRecord = (phase) => {
@@ -776,7 +798,7 @@ it.each(['cancel', 'close'] as const)(
       if (interrupted.ok)
         throw new Error('Cancelled turn completed successfully');
       expect(interrupted.error).toBeInstanceOf(TurnAborted);
-      if (operation === 'cancel') {
+      if (operation === 'cancel' && continuation === 'ordinary sampling') {
         const next = await f.session.submit('Run a fresh turn.');
         expect(
           (await bounded(next.wait(), 'successor result')).finalOutput,
