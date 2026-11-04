@@ -121,6 +121,9 @@ impl Request {
                     .and_then(|s| s.active())
                 {
                     turn.request_graceful();
+                    if force {
+                        turn.stop_sampling();
+                    }
                     if scope == Scope::Tree || force {
                         turn.reject_model();
                     }
@@ -266,6 +269,7 @@ async fn settle(
                 if receipt.terminal() {
                     join_terminal(&thread, &owner, &receipt).await?;
                 } else if force {
+                    receipt.stop_sampling();
                     receipt.reject_model();
                     thread
                         .submit(Op::Interrupt)
