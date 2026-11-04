@@ -17,18 +17,37 @@ const backendAgent = new Agent({
 });
 
 const runner = new Runner();
+let remainingRefundRequests = 20;
 
 export async function handleRefundRequest(
   request: string,
   history: RealtimeItem[] = [],
 ) {
+  if (process.env.NODE_ENV !== 'development') {
+    throw new Error('The refund demo is available only in local development.');
+  }
+  if (typeof request !== 'string' || request.length > 2000) {
+    throw new Error('Refund request must be at most 2000 characters.');
+  }
+  if (!Array.isArray(history) || history.length > 30) {
+    throw new Error('Refund history must contain at most 30 items.');
+  }
+  const historyJson = JSON.stringify(history, null, 2);
+  if (historyJson.length > 12000) {
+    throw new Error('Refund history must be at most 12000 characters.');
+  }
+  if (remainingRefundRequests <= 0) {
+    throw new Error('Refund demo request limit reached. Restart the demo to reset it.');
+  }
+  remainingRefundRequests--;
+
   const input = [
     user(
       `
 Request: ${request}
 
 ## Past Conversation History
-${JSON.stringify(history, null, 2)}
+${historyJson}
       `.trim(),
     ),
   ];
