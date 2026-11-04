@@ -20,16 +20,17 @@ use codex_exec_server::{
     ExecServerRuntimeOptions, FileSystemSandboxContext, GetMetadataOptions, LOCAL_ENVIRONMENT_ID,
     LocalWriteRoots, ProcessId, REMOTE_ENVIRONMENT_ID, RemoteEnvironmentOptions,
 };
+use codex_history::RolloutItem;
 use codex_protocol::capabilities::{CapabilityRootLocation, SelectedCapabilityRoot};
 use codex_protocol::config_types::{
     ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit, WindowsSandboxLevel,
 };
-use codex_protocol::models::{PermissionProfile, PermissionProfileSnapshot};
+use codex_protocol::models::{PermissionProfile, PermissionProfileSnapshot, ResponseItem};
 use codex_protocol::permissions::{
     FileSystemAccessMode, FileSystemPath, FileSystemSpecialPath, NetworkSandboxPolicy,
 };
 use codex_protocol::protocol::{
-    AskForApproval, EnvironmentConfig, EnvironmentConfigState, GranularApprovalConfig,
+    AskForApproval, EnvironmentConfig, EnvironmentConfigState, EventMsg, GranularApprovalConfig,
     TurnEnvironmentSelection,
 };
 use codex_protocol::sandbox::SandboxType;
@@ -1162,6 +1163,58 @@ pub(crate) fn check_checkpoint_policy(
     Ok(())
 }
 
+fn has_sampled_model(history: &[RolloutItem]) -> bool {
+    history.iter().any(|item| match item {
+        RolloutItem::EventMsg(EventMsg::TurnComplete(turn)) => {
+            turn.last_agent_message.is_some() || turn.time_to_first_token_ms.is_some()
+        }
+        RolloutItem::ResponseItem(response) => match &response.item {
+            ResponseItem::Message { role, .. } => role == "assistant",
+            ResponseItem::Reasoning { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::FunctionCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::ToolSearchCall { .. }
+            | ResponseItem::WebSearchCall { .. }
+            | ResponseItem::ImageGenerationCall { .. } => true,
+            _ => false,
+        },
+        _ => false,
+    })
+}
+
+fn has_legacy_executor_profiles(history: &[RolloutItem]) -> bool {
+    let mut contexts = history
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::TurnContext(context) => Some(context),
+            _ => None,
+        })
+        .peekable();
+    contexts.peek().is_some()
+        && contexts.all(|context| {
+            context.network.is_none() && is_legacy_executor_profile(&context.permission_profile())
+        })
+}
+
+fn is_legacy_executor_profile(profile: &PermissionProfile) -> bool {
+    if *profile == PermissionProfile::read_only() {
+        return true;
+    }
+    // The concrete write path is a PathUri and can belong to a different OS.
+    profile
+        .file_system_sandbox_policy()
+        .entries
+        .into_iter()
+        .find(|entry| entry.access == FileSystemAccessMode::Write)
+        .is_some_and(|entry| match entry.path {
+            FileSystemPath::Path { path } => {
+                *profile == workspace_profile(std::slice::from_ref(&path))
+            }
+            _ => false,
+        })
+}
+
 /// Trusted current executor policy, compared under the durable writer lock.
 #[derive(Default)]
 pub(crate) struct LocalResumeExecutorPolicy {
@@ -1185,7 +1238,7 @@ impl LocalResumeExecutorPolicy {
 
     pub(crate) fn validate(
         &self,
-        history: &[codex_history::RolloutItem],
+        history: &[RolloutItem],
         id: codex_protocol::ThreadId,
     ) -> Result<()> {
         let id = id.to_string();
@@ -1193,7 +1246,7 @@ impl LocalResumeExecutorPolicy {
             flag.is_some_and(|flag| flag.as_bool() != Some(false))
         };
         let mut recorded = history.iter().rev().filter_map(|item| {
-            let codex_history::RolloutItem::TurnContext(context) = item else {
+            let RolloutItem::TurnContext(context) = item else {
                 return None;
             };
             let receipt = context.sdk_receipt.as_ref()?;
@@ -1202,7 +1255,11 @@ impl LocalResumeExecutorPolicy {
             }
             let executors = receipt.get("executors");
             let strict_flag = receipt.get("strict_executor_writes");
-            (executors.is_some() || is_strict(strict_flag)).then_some((executors, strict_flag))
+            // SDK sampling receipts have included the executor field since their introduction.
+            (executors.is_some()
+                || is_strict(strict_flag)
+                || receipt.get("codex_source_tree").is_some())
+            .then_some((executors, strict_flag))
         });
         if let Some((previous, strict_flag)) = recorded.next() {
             let previous = previous
@@ -1245,6 +1302,18 @@ impl LocalResumeExecutorPolicy {
             };
             ensure!(
                 same_policy,
+                "Local resume requires the recorded executor write and network policy"
+            );
+        } else if has_sampled_model(history) {
+            // Released SDKs wrote receipt-free model-only and implicit WSS histories.
+            // Only the current owner's default policy can reopen these profiles.
+            let implicit = match self.values.as_slice() {
+                [] => true,
+                [policy] => is_implicit_remote_policy(policy) && policy["network_policy"].is_null(),
+                _ => false,
+            };
+            ensure!(
+                !self.strict && implicit && has_legacy_executor_profiles(history),
                 "Local resume requires the recorded executor write and network policy"
             );
         }
@@ -1527,6 +1596,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     use codex_core_api::AbsolutePathBuf;
     use serde_json::json;
+
+    #[test]
+    fn legacy_executor_profile_supports_a_windows_wss_workspace() {
+        let cwd: PathUri = "file:///C:/workspace".parse().unwrap();
+        let extra: PathUri = "file:///C:/extra".parse().unwrap();
+        assert!(is_legacy_executor_profile(&workspace_profile(
+            std::slice::from_ref(&cwd)
+        )));
+        assert!(!is_legacy_executor_profile(&workspace_profile(&[
+            cwd, extra
+        ])));
+    }
 
     #[test]
     fn durable_resume_does_not_skip_a_malformed_executor_receipt() {
