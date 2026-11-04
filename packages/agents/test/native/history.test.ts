@@ -1,6 +1,98 @@
 import { describe, expect, it } from 'vitest';
-import { projectHistory, type ThreadHistory } from '../../src/runtime/history';
+import type { JsonObject } from '../../src/runtime/binding';
+import {
+  projectExecutionItem,
+  projectHistory,
+  type ThreadHistory,
+} from '../../src/runtime/history';
 describe('native history projection', () => {
+  it('keeps canonical command, patch and MCP completions without a start record', () => {
+    const rawItems: JsonObject[] = [
+      {
+        type: 'CommandExecution',
+        id: 'command-1',
+        command: ['/bin/sh', '-c', "printf '%s' 'a b'"],
+        cwd: '/workspace',
+        status: 'failed',
+        aggregated_output: 'denied',
+      },
+      {
+        type: 'FileChange',
+        id: 'patch-1',
+        changes: {
+          '/workspace/example': {
+            type: 'update',
+            unified_diff: '- old\n+ new',
+            move_path: null,
+          },
+        },
+        status: 'completed',
+      },
+      {
+        type: 'McpToolCall',
+        id: 'mcp-1',
+        server: 'fixture',
+        tool: 'lookup',
+        arguments: { query: 'a b' },
+        result: { content: [{ type: 'text', text: 'result' }] },
+        status: 'completed',
+      },
+    ];
+    const records: ThreadHistory = [
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 'turn' } },
+      ...rawItems.map((item) => ({
+        type: 'event_msg' as const,
+        payload: {
+          type: 'item_completed',
+          thread_id: 'root',
+          turn_id: 'turn',
+          item,
+        },
+      })),
+      {
+        type: 'event_msg',
+        payload: { type: 'task_complete', turn_id: 'turn' },
+      },
+    ];
+    const retained = projectHistory(records, 'root').items.map(
+      ({ data: _data, ...item }) => item,
+    );
+    expect(retained).toEqual(
+      rawItems.map((item) => projectExecutionItem(item, 'turn', 'root')),
+    );
+    expect(retained).toMatchObject([
+      {
+        type: 'command_execution',
+        argv: rawItems[0]!.command,
+        output: 'denied',
+        status: 'failed',
+        threadId: 'root',
+        turnId: 'turn',
+        callId: 'command-1',
+      },
+      {
+        type: 'file_change',
+        changes: {
+          '/workspace/example': {
+            type: 'update',
+            unifiedDiff: '- old\n+ new',
+            movePath: null,
+          },
+        },
+        threadId: 'root',
+        turnId: 'turn',
+        callId: 'patch-1',
+      },
+      {
+        type: 'mcp_call',
+        arguments: { query: 'a b' },
+        threadId: 'root',
+        turnId: 'turn',
+        callId: 'mcp-1',
+      },
+    ]);
+  });
+
   it('does not invent messages from a turn completion and removes rolled back pairs', () => {
     const records: ThreadHistory = [
       { type: 'turn_context', payload: { turn_id: 't1' } },
@@ -46,6 +138,55 @@ describe('native history projection', () => {
       ['t1', 'completed'],
     ]);
     expect(projected.items.map((i) => i.id)).toEqual(['c1', 'c1:output']);
+  });
+
+  it('keeps late execution for a surviving turn and drops it for a rolled-back turn', () => {
+    const completion = {
+      type: 'event_msg' as const,
+      payload: {
+        type: 'item_completed',
+        thread_id: 'root',
+        turn_id: 't1',
+        item: {
+          type: 'CommandExecution',
+          id: 'late',
+          command: ['printf', 'hello'],
+          status: 'completed',
+        },
+      },
+    };
+    const finished: ThreadHistory = [
+      { type: 'event_msg', payload: { type: 'task_started', turn_id: 't1' } },
+      { type: 'event_msg', payload: { type: 'task_complete', turn_id: 't1' } },
+    ];
+    expect(
+      projectHistory([...finished, completion], 'root').items,
+    ).toMatchObject([
+      { id: 'late', turnId: 't1', threadId: 'root', status: 'completed' },
+    ]);
+    const projected = projectHistory(
+      [
+        ...finished,
+        {
+          type: 'event_msg',
+          payload: { type: 'thread_rolled_back', num_turns: 1 },
+        },
+        { type: 'event_msg', payload: { type: 'task_started', turn_id: 't2' } },
+        completion,
+        {
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            id: 'surviving',
+            role: 'user',
+            content: [],
+          },
+        },
+      ],
+      'root',
+    );
+    expect(projected.turns.map(({ id }) => id)).toEqual(['t2']);
+    expect(projected.items).toMatchObject([{ id: 'surviving', turnId: 't2' }]);
   });
 
   it.each([

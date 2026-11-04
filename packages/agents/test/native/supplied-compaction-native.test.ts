@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -56,6 +57,62 @@ afterEach(async () => {
 });
 
 describe('supplied native compaction', () => {
+  it.each([false, true])(
+    'carries accepted instruction file receipts through supplied compaction with replacement=%s',
+    async (replace) => {
+      const cwd = await mkdtemp(join(tmpdir(), 'agents-compact-instructions-'));
+      try {
+        const path = join(await realpath(cwd), 'instructions.md');
+        const openingFile = 'Instructions read when the session opened.';
+        await writeFile(path, openingFile);
+        const server = new ModelServer([[message('Continued answer')]]);
+        await using provider = await providerFor(server);
+        const agent = new Agent({
+          instructions: 'Opening instructions.',
+          model: 'gpt-5',
+          provider,
+        });
+        await using session = await agent.session({ instructionFiles: [path] });
+        await rm(path);
+        const replacement = 'Replacement instructions.';
+        if (replace) await session.update({ instructions: replacement });
+
+        await session.compact({ summary: 'Supplied summary.' });
+        expect(server.requests).toHaveLength(0);
+        const turn = await session.submit('Continue');
+        expect((await turn.wait()).finalOutput).toBe('Continued answer');
+        const [recorded] = await collect(session.turns());
+        const expected = replace
+          ? replacement
+          : `Opening instructions.
+
+${openingFile}`;
+        expect(JSON.stringify(server.requests[0]?.input)).toContain(
+          JSON.stringify(expected).slice(1, -1),
+        );
+        expect(recorded?.receipt).toMatchObject({
+          developerInstructionsSha256: createHash('sha256')
+            .update(expected)
+            .digest('hex'),
+          instructionFiles: replace
+            ? []
+            : [
+                {
+                  path,
+                  source: 'application_file',
+                  sha256: createHash('sha256')
+                    .update(openingFile)
+                    .digest('hex'),
+                },
+              ],
+        });
+        server.assertExhausted();
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('preserves canonical audit, identity, receipts and current bindings through JSON restore', async () => {
     const summary = '  Supplied context: the project code is amber.\n';
     const checkRequest = (request: unknown) => {

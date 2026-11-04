@@ -110,6 +110,8 @@ export { parseSessionState, readSessionInstructions } from './runtime/state';
 export type { TokenUsage, TokenUsageInfo } from './runtime/run-events';
 export type {
   Observation,
+  ObservationOptions,
+  ExecutionItemSummary,
   ObservedEvent,
   ApiRateLimitsUpdated,
 } from './runtime/observation';
@@ -120,6 +122,8 @@ export type {
 export type { Subagent } from './runtime/subagents';
 export type {
   SessionItem,
+  ExecutionItem,
+  PatchChange,
   RecordedTurn,
   Failure,
   RecordedTokenUsage,
@@ -142,6 +146,12 @@ export type { NativeGoals, NativeGoal } from './runtime/goals';
 
 export { localStorage } from './runtime/local-storage';
 export type { LocalStorage } from './runtime/local-storage';
+export type {
+  ExecutorNetworkReceipt,
+  ExecutorPolicyReceipt,
+  InstructionFileReceipt,
+  TurnReceipt,
+} from './runtime/turn-receipt';
 
 export { webSearch } from './runtime/web-search';
 export type { WebSearch, WebSearchOptions } from './runtime/web-search';

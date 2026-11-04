@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { realpath, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -6,6 +9,7 @@ import {
   NativeAgents,
   NativeError,
   NativeProvider,
+  NativeRole,
   tool,
   type Observation,
   type Session,
@@ -27,6 +31,7 @@ type ChildResponse = (
 function childServer(
   responses: readonly ChildResponse[],
   names: readonly string[] = ['child'],
+  agentType?: string,
 ) {
   let rootId: string | undefined;
   let rootRequests = 0;
@@ -40,7 +45,11 @@ function childServer(
         return names.map((name) =>
           call(
             'spawn_agent',
-            { task_name: name, message: 'Complete the assigned work.' },
+            {
+              task_name: name,
+              message: 'Complete the assigned work.',
+              ...(agentType ? { agent_type: agentType } : {}),
+            },
             { namespace: 'collaboration', callId: `spawn-${name}` },
           ),
         );
@@ -86,6 +95,88 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await ModelServer.closeAll();
 });
+
+it.each([
+  { role: 'default', inherits: true },
+  { role: 'named', inherits: false },
+])(
+  'attributes files to a child by instruction source (role $role)',
+  async ({ role, inherits }) => {
+    const instructions = 'Use the child fixture.';
+    const combined = `Delegate.\n\n${instructions}`;
+    let childRequest: JsonObject | undefined;
+    const server = childServer(
+      [
+        (request) => {
+          childRequest = request;
+          return [message('child final')];
+        },
+      ],
+      undefined,
+      role,
+    );
+    const executor = await startPublicExecutor();
+    try {
+      const instructionFile = join(await realpath(executor.cwd), 'child.md');
+      await writeFile(instructionFile, instructions);
+      await using provider = await providerFor(server);
+      await using session = await new Agent({
+        instructions: 'Delegate.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [
+          new NativeAgents({
+            additionalRoles: [
+              new NativeRole({
+                name: 'named',
+                description: 'Supplies explicit developer instructions.',
+                instructions: combined,
+              }),
+            ],
+          }),
+        ],
+      }).session({
+        instructionFiles: [instructionFile],
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        }),
+      });
+      expect((await (await session.submit('begin')).wait()).finalOutput).toBe(
+        'root finished',
+      );
+      const { child, turn } = await oneChild(session);
+      expect((await turn.wait()).finalOutput).toBe('child final');
+      expect(JSON.stringify(childRequest?.input)).toContain(
+        JSON.stringify(combined).slice(1, -1),
+      );
+      const recorded = (
+        await Array.fromAsync(session.turns({ subagentId: child.id }))
+      ).find((entry) => entry.id === turn.turnId);
+      expect(recorded?.receipt).toMatchObject({
+        threadId: child.id,
+        turnId: turn.turnId,
+        developerInstructionsSha256: createHash('sha256')
+          .update(combined)
+          .digest('hex'),
+        instructionFiles: inherits
+          ? [
+              {
+                path: instructionFile,
+                source: 'application_file',
+                sha256: createHash('sha256').update(instructions).digest('hex'),
+              },
+            ]
+          : [],
+      });
+      server.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+);
 
 describe('passive real-native child Turn events', () => {
   it('drains the real child terminal after its native result settles', async () => {

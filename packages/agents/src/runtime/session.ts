@@ -68,6 +68,7 @@ import { nativeInput, type UserInput, type FunctionCallOutput } from './input';
 import {
   ObservationBuffer,
   type Observation,
+  type ObservationOptions,
   type ObservationPhase,
   type TurnObservationScope,
 } from './observation';
@@ -140,6 +141,7 @@ import {
 } from './run-events';
 import {
   projectHistory,
+  projectExecutionItem,
   threadHistorySchema,
   recordedTurnToWire,
   recordedTurnFromWire,
@@ -420,7 +422,7 @@ export let issueTurn: <T, NativeId extends string | null = string>(
   turnId: NativeId | (() => NativeId),
   submissionId: string,
   completion: () => Promise<Completed<T>>,
-  events: (options: { after?: number }) => AsyncIterableIterator<Observation>,
+  events: (options: ObservationOptions) => AsyncIterableIterator<Observation>,
   steer: (input: UserInput) => Promise<void>,
   cancel: (mode: 'force' | 'graceful') => Promise<void>,
   identity?: { childId: string; instanceId: string },
@@ -444,9 +446,9 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
     private readonly nativeIdentity: NativeId | (() => NativeId),
     readonly submissionId: string,
     private readonly completion: () => Promise<Completed<OutputT>>,
-    private readonly observations: (options: {
-      after?: number;
-    }) => AsyncIterableIterator<Observation>,
+    private readonly observations: (
+      options: ObservationOptions,
+    ) => AsyncIterableIterator<Observation>,
     private readonly steerInput: (input: UserInput) => Promise<void>,
     private readonly cancelRoot: (mode: 'force' | 'graceful') => Promise<void>,
     identity?: { childId: string; instanceId: string },
@@ -494,8 +496,11 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
       : this.nativeIdentity;
   }
 
-  /** Observe this Turn's events. Closing the reader leaves execution unchanged. */
-  events(options: { after?: number } = {}): AsyncIterableIterator<Observation> {
+  /**
+   * Observe this Turn's events. Closing the reader leaves execution unchanged.
+   * Execution completions contain identity and status by default.
+   */
+  events(options: ObservationOptions = {}): AsyncIterableIterator<Observation> {
     return this.observations(options);
   }
 
@@ -1277,7 +1282,12 @@ export class Session<OutputT = string, Context = unknown> {
     void pending.finally(() => this.childContinuations.delete(pending));
   }
 
-  events(options: { after?: number } = {}) {
+  /**
+   * Observe this Session's events. Execution completions contain identity and status by default.
+   * Use includeExecutionDetails only in trusted code.
+   * Recover full retained execution records through items() after a gap.
+   */
+  events(options: ObservationOptions = {}) {
     return this.observations.events(options);
   }
 
@@ -3717,7 +3727,10 @@ export class Session<OutputT = string, Context = unknown> {
           this.processChild(event, native, producer);
           continue;
         }
-        if (!run) continue;
+        if (!run) {
+          this.observeRootExecution(event);
+          continue;
+        }
         if (this.manualSuspending) {
           // A manual seal can refuse while an automatic request is queued.
           // Keep those events until native confirms that it suspended the turn.
@@ -3807,6 +3820,27 @@ export class Session<OutputT = string, Context = unknown> {
         ? event.id
         : undefined);
     if (typeof turnId !== 'string') return;
+    if (msg.type === 'item_completed' && msg.thread_id === id) {
+      const item = projectExecutionItem(msg.item, turnId, id);
+      if (item) {
+        const owner = this.childCallbacks.find(id, incarnation, turnId);
+        if (
+          owner &&
+          owner.observationPhase !== 'ended' &&
+          (!owner.instanceId || owner.instanceId === event.subagent_instance_id)
+        ) {
+          this.observations.append({
+            type: 'execution_item_completed',
+            turnId,
+            submissionId: `child:${id}:${incarnation}:${turnId}`,
+            item,
+          });
+        } else {
+          this.observations.gap();
+        }
+        return;
+      }
+    }
     const startsTurn =
       msg.type === 'task_started' || msg.type === 'turn_started';
     if (startsTurn)
@@ -4133,10 +4167,38 @@ export class Session<OutputT = string, Context = unknown> {
     return true;
   }
 
+  private observeRootExecution(event: NativeEvent): void {
+    const msg = event.msg;
+    if (
+      msg.type !== 'item_completed' ||
+      msg.thread_id !== this.id ||
+      typeof msg.turn_id !== 'string' ||
+      event.subagent_id !== undefined ||
+      event.subagent_incarnation !== undefined ||
+      event.subagent_instance_id !== undefined
+    )
+      return;
+    const item = projectExecutionItem(msg.item, msg.turn_id, this.id);
+    if (!item) return;
+    const owner = this.lastRun;
+    if (
+      owner?.id === msg.turn_id &&
+      submissions.get(owner)!.observation !== 'ended'
+    ) {
+      this.observations.append({
+        type: 'execution_item_completed',
+        turnId: msg.turn_id,
+        submissionId: this.submissionIds.get(owner)!,
+        item,
+      });
+    } else this.observations.gap();
+  }
+
   private process(run: NativeTurn, event: NativeEvent): void {
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     const msg = event.msg;
     const kind = msg.type;
+    this.observeRootExecution(event);
     if (
       [
         'exec_approval_request',
@@ -6881,7 +6943,10 @@ export class Session<OutputT = string, Context = unknown> {
       beforeRetirement();
       const checkpoint = await owner.change.prepare(summary);
       const current = decode(
-        z.object({ instructions: z.string() }),
+        z.object({
+          instructions: z.string(),
+          instruction_files: z.array(jsonObject),
+        }),
         await owner.change.options(),
       );
       const servers = mcpConfig(
@@ -6893,6 +6958,7 @@ export class Session<OutputT = string, Context = unknown> {
       const options: ThreadOptions = {
         ...this.threadOptions,
         instructions: current.instructions,
+        _sdk_instruction_files: current.instruction_files,
         config: { ...this.threadOptions.config, mcp_servers: servers },
       };
       beforeRetirement();

@@ -467,6 +467,13 @@ it('expires an MCP result policy while retaining its callback and withholding it
   expect(JSON.stringify(await Array.fromAsync(session.items()))).not.toMatch(
     /PRIVATE_LATE_RECORD|PRIVATE_LATE_REPLACEMENT/,
   );
+  for (const includeExecutionDetails of [false, true]) {
+    expect(
+      JSON.stringify(
+        await Array.fromAsync(turn.events({ includeExecutionDetails })),
+      ),
+    ).not.toMatch(/PRIVATE_LATE_RECORD|PRIVATE_LATE_REPLACEMENT/);
+  }
   expect(model.requests).toHaveLength(2);
   model.assertExhausted();
 }, 15_000);

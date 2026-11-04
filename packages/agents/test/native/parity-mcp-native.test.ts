@@ -6,12 +6,24 @@ import {
   HttpMCP,
   NativeProvider,
   type MCPResultContext,
+  type ObservedEvent,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { TurnAborted } from '../../src/runtime/session';
 import { binding, type NativeThread } from '../../src/runtime/binding';
 
 afterEach(() => ModelServer.closeAll());
+
+async function throughTurnFinished<Event extends ObservedEvent>(
+  events: AsyncIterableIterator<Event>,
+): Promise<Event[]> {
+  const observations: Event[] = [];
+  for await (const event of events) {
+    observations.push(event);
+    if (event.type === 'turn_finished') break;
+  }
+  return observations;
+}
 
 it('selects native MCP tools and applies the captured async result transform before model and history', async () => {
   const calls: unknown[] = [];
@@ -45,7 +57,7 @@ it('selects native MCP tools and applies the captured async result transform bef
               description: name,
               inputSchema: {
                 type: 'object',
-                properties: {},
+                properties: { value: { type: 'string' } },
                 additionalProperties: false,
               },
             })),
@@ -74,7 +86,11 @@ it('selects native MCP tools and applies the captured async result transform bef
     (request) => {
       expect(JSON.stringify(request.tools)).not.toContain('hidden');
       return [
-        call('lookup', {}, { callId: 'mcp-1', namespace: 'mcp__fixture' }),
+        call(
+          'lookup',
+          { value: 'private-argument' },
+          { callId: 'mcp-1', namespace: 'mcp__fixture' },
+        ),
       ];
     },
     (request) => {
@@ -127,6 +143,10 @@ it('selects native MCP tools and applies the captured async result transform bef
     const capabilities = session.capabilities;
     expect(capabilities.get('mcpBeforePolicy').status).toBe('supported');
     expect(capabilities.get('mcpResultPolicy').status).toBe('supported');
+    const passive = throughTurnFinished(session.events());
+    const detailed = throughTurnFinished(
+      session.events({ includeExecutionDetails: true }),
+    );
     const turn = await session.submit('Run lookup');
     expect((await turn.wait()).finalOutput).toBe('done');
     expect(invocation?.context).toBe(context);
@@ -136,12 +156,42 @@ it('selects native MCP tools and applies the captured async result transform bef
       serverName: 'fixture',
       toolName: 'lookup',
     });
-    expect(calls).toMatchObject([{ name: 'lookup', arguments: {} }]);
-    const observations = [];
-    for await (const event of session.events()) {
-      observations.push(event);
-      if (event.type === 'turn_finished') break;
-    }
+    expect(calls).toMatchObject([
+      { name: 'lookup', arguments: { value: 'private-argument' } },
+    ]);
+    const observations = await passive;
+    const compactCompletion = observations.find(
+      (event) => event.type === 'execution_item_completed',
+    );
+    expect(compactCompletion?.item).toEqual({
+      type: 'mcp_call',
+      id: 'mcp-1',
+      callId: 'mcp-1',
+      threadId: session.id,
+      turnId: turn.turnId,
+      status: 'completed',
+    });
+    expect(JSON.stringify(observations)).not.toMatch(
+      /private-argument|private-result|public-result/,
+    );
+    const detailedCompletion = (await detailed).find(
+      (event) => event.type === 'execution_item_completed',
+    );
+    expect(detailedCompletion).toMatchObject({
+      sequence: compactCompletion?.sequence,
+      submissionId: compactCompletion?.submissionId,
+      item: {
+        arguments: { value: 'private-argument' },
+        output: { content: [{ type: 'text', text: 'public-result' }] },
+      },
+    });
+    expect(JSON.stringify(detailedCompletion)).not.toContain('private-result');
+    expect(await Array.fromAsync(turn.events())).toContainEqual(
+      compactCompletion,
+    );
+    expect(
+      await Array.fromAsync(turn.events({ includeExecutionDetails: true })),
+    ).toContainEqual(detailedCompletion);
     expect(
       observations.filter(
         (event) =>
@@ -166,6 +216,7 @@ it('selects native MCP tools and applies the captured async result transform bef
     ]);
     const history = [];
     for await (const item of session.items()) history.push(item);
+    expect(JSON.stringify(history)).toContain('private-argument');
     expect(JSON.stringify(history)).toContain('public-result');
     expect(JSON.stringify(history)).not.toContain('private-result');
     await session.update({
