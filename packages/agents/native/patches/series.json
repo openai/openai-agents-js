@@ -97,12 +97,20 @@
       "sha256": "7214955c12f507f0534a7813205eeba656265aa6d919aa3704ec5a47f3ea7d64"
     },
     {
+      "path": "0025-redact-executor-startup-tracing.patch",
+      "sha256": "2febc726d78dd113512306c3bd59d9eaf4b233ff18cba8559af20e94c918b7a0"
+    },
+    {
       "path": "0026-retained-execution-completions.patch",
       "sha256": "c96852d1582d17b99e5ffaafa110c471fd3af697a7b384afa15e86955897af10"
     },
     {
       "path": "0027-sdk-turn-receipts.patch",
       "sha256": "84ce3642d995537a685899dd8647779ad5b2b6873b604887b26775b05a467def"
+    },
+    {
+      "path": "0028-sdk-local-network-receipts.patch",
+      "sha256": "44d43b139d8d1f8a010dbab32a3bb7ae8e54f10a695e97026e63c93d73bb0fcf"
     },
     {
       "path": "0029-retain-early-sandbox-denials.patch",
@@ -117,9 +125,33 @@
       "sha256": "9bcc68e416238a496cb17a7fcd9311482e6104273e1dd2a2d946baf26501ab87"
     },
     {
+      "path": "0032-sdk-local-sandbox-defaults.patch",
+      "sha256": "72887c35366c4f7deb4d75f55bed76c08e4ce55af95b02818d4555bf6db22bc8"
+    },
+    {
       "path": "0033-sdk-sampling-context-replay.patch",
       "sha256": "854e1cc69b0636638fa1b84989ee0841fa95f54840d7ebb0a531dbe2278a0d0d"
+    },
+    {
+      "path": "0034-join-interrupted-local-commands.patch",
+      "sha256": "b543ed58e9e889edcc93881e114b663aa45add8bdcf4a4db8ce26586d6379fdd"
+    },
+    {
+      "path": "0035-join-linux-sandbox-namespace.patch",
+      "sha256": "ac20320a01ca204d0b221e5a7b72728472aa3954251df321d8f9711b6dce7730"
+    },
+    {
+      "path": "0036-own-managed-local-launch-before-payload.patch",
+      "sha256": "ff21a782e0b41d19bccc533010130b81345dd541cced2ba6d7544a9f8bc12501"
+    },
+    {
+      "path": "0037-own-managed-darwin-command-cohort.patch",
+      "sha256": "2df2d03f5f8c88124e6b54a9c85f02f1b9aff8b56e768f289eaa75c0971ccb43"
+    },
+    {
+      "path": "0038-stop-sampling-before-sdk-close.patch",
+      "sha256": "0b73e08b9d932ab8aaaf273ed963ded0175267b637ce8d02f866b6092a48600c"
     }
   ],
-  "result_tree": "8603013bd6542ccfcfa43f56c4d3ec5f4b5e3bf1"
+  "result_tree": "68feb74de7071446c37f26079d85c84793ed862f"
 }
