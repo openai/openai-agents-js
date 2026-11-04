@@ -214,6 +214,7 @@ async function cancellationFixture() {
         },
       ]),
     _child_instance: async () => ['7', current],
+    _stop_sampling_for_close: () => {},
     _close_report: closeNative,
   };
   const session = new Session(

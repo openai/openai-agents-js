@@ -3,6 +3,7 @@ use codex_protocol::protocol::AgentStatus;
 use serde_json::{Value, json};
 
 use crate::engine::ThreadState;
+use crate::environment::StrictExecutorWrites;
 
 async fn check_idle(state: &ThreadState) -> anyhow::Result<()> {
     let _mutation = state
@@ -248,6 +249,21 @@ impl Change {
             }
             (None, None) => {}
             _ => anyhow::bail!("compaction candidate changed managed tool ownership"),
+        }
+        let source = self.state.thread.thread_extension_data();
+        let target = candidate.thread.thread_extension_data();
+        match (
+            source.get::<StrictExecutorWrites>(),
+            target.get::<StrictExecutorWrites>(),
+        ) {
+            (Some(source), Some(strict)) => {
+                strict.check_pins(&source)?;
+                // The restored selection was built from canonical paths.
+                // Keep the source's accepted declarations for this Session.
+                target.insert((*source).clone());
+            }
+            (None, None) => {}
+            _ => anyhow::bail!("compaction candidate changed strict executor ownership"),
         }
         Ok(())
     }

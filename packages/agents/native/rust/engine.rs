@@ -77,6 +77,11 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    pub(crate) fn local_storage_home(&self) -> Option<&std::path::Path> {
+        (self.local_checklist_store.is_some() || self.goals.is_some())
+            .then(|| self.service_config.sqlite_config().home())
+    }
+
     pub(crate) fn validate_hosted_search(config: &Config, info: &ModelInfo) -> anyhow::Result<()> {
         ensure!(
             config.web_search_mode.value() == codex_protocol::config_types::WebSearchMode::Disabled
@@ -185,9 +190,10 @@ impl EngineState {
         let telemetry = crate::telemetry::engine_starting().await?;
         let runtime_json = config::prepare_runtime(&runtime_json)?;
         let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
-        if let Some(environment) = config::environment(&runtime_json)? {
+        let environment_options = config::environment(&runtime_json)?;
+        if let Some(environment) = &environment_options {
             environment.restrict_network_approval(&mut config)?;
-            environment.check_network_config(&config)?;
+            environment.check_config(&config)?;
         }
         let sdk_selected_model = config::sdk_selected_model(&runtime_json)?;
         if let Some(settings) = &telemetry {
@@ -221,6 +227,13 @@ impl EngineState {
                     && !config.features.enabled(Feature::CodeMode),
                 "local storage requires current NativeAgents and no Code Mode"
             );
+        }
+        let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
+        // Check before opening SQLite or reading a stored thread.
+        if (goals_enabled || local_home.is_some())
+            && let Some(environment) = &environment_options
+        {
+            environment.check_local_storage(config.sqlite_config().home())?;
         }
         let responses = Arc::new(crate::response_control::ResponseContributor::default());
         let services = &config;
@@ -292,7 +305,6 @@ impl EngineState {
             })
         });
         let sentinel = Arc::new(RwLock::new(None));
-        let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
         let state_db = if goals_enabled || local_home.is_some() {
             // StateRuntime supplies the exact goal store used by the extension.
             // Avoid rollout::try_init's unrelated host rollout backfill.
@@ -380,12 +392,11 @@ impl EngineState {
         };
         // Retain the environment before startup can fail. The private context
         // owner drains this exact manager even when no EngineState is returned.
-        let remote_options = config::environment(&runtime_json)?;
         let environment = Arc::new(
-            if local_checklist_store.is_some() && remote_options.is_none() {
+            if local_checklist_store.is_some() && environment_options.is_none() {
                 EnvironmentManager::without_environments(config.http_client_factory())
             } else {
-                match remote_options.clone() {
+                match &environment_options {
                     Some(environment) => environment.prepare(&config).await?,
                     None => crate::environment::for_unattached_threads(&config).await?,
                 }
@@ -397,15 +408,8 @@ impl EngineState {
                 .map_err(|_| anyhow::anyhow!("candidate environment owner poisoned"))? =
                 Some(crate::RuntimeOwned::new(environment.clone()));
         }
-        if let Some(remote) = environment.get_environment(codex_exec_server::REMOTE_ENVIRONMENT_ID)
-        {
-            remote
-                .wait_until_ready()
-                .await
-                .map_err(|_| anyhow::anyhow!("remote executor failed to become ready"))?;
-            if let Some(options) = &remote_options {
-                options.check_network_target(&remote).await?;
-            }
+        if let Some(options) = &environment_options {
+            options.check_ready(&config, &environment).await?;
         }
         let manager = Arc::new_cyclic(|weak| {
             let extensions = extensions::build(
@@ -515,6 +519,7 @@ impl EngineState {
                     .is_empty(),
                 "SDK resume cannot authorize saved startup tools"
             );
+            let executor_policy = crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
             let InitialHistory::Resumed(history) = &mut startup.initial_history else {
                 anyhow::bail!("SDK resume requires the stored model context");
             };
@@ -541,6 +546,7 @@ impl EngineState {
                     },
                     saved.model,
                     instructions.clone(),
+                    executor_policy,
                 )
                 .await?;
             let prepared = admission.prepared_params()?;
@@ -1209,7 +1215,26 @@ impl EngineState {
         // the final configuration as well as the engine's initial admission.
         if let Some(environment) = config::environment(&self.runtime_json)? {
             environment.restrict_network_approval(&mut startup.config)?;
-            environment.check_network_config(&startup.config)?;
+            environment.check_config(&startup.config)?;
+            if startup.environments.is_none() {
+                let (selection, strict) = environment
+                    .selection(
+                        &startup.config,
+                        &self.manager.environment_manager(),
+                        self.local_storage_home(),
+                    )
+                    .await?;
+                environment.configure_local_proxy(&mut startup.config, &selection)?;
+                if let Some(strict) = strict {
+                    startup.thread_extension_init.insert(strict);
+                }
+                startup.environments = Some(vec![selection]);
+            } else {
+                ensure!(
+                    !environment.strict_writes(),
+                    "strict executor policy cannot use raw environment overrides"
+                );
+            }
         }
         let config = &startup.config;
         let original = &self.service_config;

@@ -65,17 +65,29 @@ const capabilityDirectory = z
     );
   }, 'Capability directories cannot contain URI queries or fragments');
 
-export const remoteEnvironmentSchema = z
+const remoteEnvironmentSchema = z
   .object({
     url: z.string().url(),
     cwd: pathUri,
     capability_directories: z.array(capabilityDirectory).optional(),
+    writable_roots: z.array(capabilityDirectory).optional(),
     headers: z.record(z.string(), z.string()).optional(),
     connect_timeout: z.number().nonnegative().finite().nullable().optional(),
     network: networkPolicyWireSchema.optional(),
   })
   .strict();
-export type RemoteEnvironment = z.infer<typeof remoteEnvironmentSchema>;
+const localEnvironmentSchema = remoteEnvironmentSchema
+  .omit({ url: true, headers: true, connect_timeout: true })
+  .extend({ local: z.literal(true) });
+const environmentSchema = z.union([
+  remoteEnvironmentSchema,
+  localEnvironmentSchema,
+]);
+export type EnvironmentConfig = z.infer<typeof environmentSchema>;
+
+export function captureWritableRoots(roots: readonly string[]): string[] {
+  return z.array(capabilityDirectory).parse(roots);
+}
 export type ExecutorToolName = 'exec_command' | 'write_stdin' | 'apply_patch';
 
 export interface ExecutorContext<Context = unknown> {
@@ -99,8 +111,10 @@ export interface EnvironmentOptions<Context = unknown> {
   url: string;
   cwd: string;
   capabilityDirectories?: readonly string[];
+  /** Extra writable directories on the executor. The workspace is always included. */
+  writableRoots?: readonly string[];
   tools?: readonly ExecutorToolName[];
-  /** Explicit managed-proxy policy; requires exec_command and a supported remote executor. */
+  /** Explicit managed proxy policy. Requires exec_command and a supported executor. */
   network?: NetworkPolicy;
   headers?: Readonly<Record<string, string>>;
   connectTimeout?: number;
@@ -125,7 +139,24 @@ export interface EnvironmentOptions<Context = unknown> {
   policyTimeout?: number;
 }
 
+export type LocalEnvironmentOptions<Context = unknown> = Omit<
+  EnvironmentOptions<Context>,
+  'url' | 'headers' | 'connectTimeout'
+>;
+
 export class Environment<Context = any> {
+  /**
+   * Execute in the local Linux or macOS sandbox using packaged helpers.
+   * Commands can read the workspace, declared writable roots, and platform
+   * runtime files. They start with a system PATH and no inherited host variables.
+   * Install the SDK helpers outside every writable root, including the workspace.
+   */
+  static local<Context>(
+    options: LocalEnvironmentOptions<Context>,
+  ): Environment<Context> {
+    return new Environment({ ...options, local: true });
+  }
+
   /**
    * Capture a source's resource scope and release it after native retirement.
    * An optional sourceSignal requests retirement if that resource ends early.
@@ -139,9 +170,17 @@ export class Environment<Context = any> {
     return createEnvironmentLease(environment, dispose, sourceSignal);
   }
 
-  readonly url: string;
+  #remoteUrl?: string;
+  readonly kind: 'local' | 'remote';
+  /** WSS transport URL. A local Environment has no transport URL. */
+  get url(): string {
+    if (this.#remoteUrl === undefined)
+      throw new TypeError('Local executor has no transport URL');
+    return this.#remoteUrl;
+  }
   readonly cwd: string;
   readonly capabilityDirectories?: readonly string[];
+  readonly writableRoots?: readonly string[];
   readonly tools: readonly ExecutorToolName[];
   readonly network?: CapturedNetworkPolicy;
   readonly headers: Readonly<Record<string, string>>;
@@ -151,20 +190,42 @@ export class Environment<Context = any> {
   readonly transformResult?: EnvironmentOptions<Context>['transformResult'];
   readonly policyTimeout: number;
 
-  constructor(options: EnvironmentOptions<Context>) {
-    const url = new URL(options.url);
-    if (
-      url.protocol !== 'wss:' ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      // eslint-disable-next-line no-control-regex -- Transport metadata must exclude controls.
-      /[\s\x00-\x1f\x7f]/.test(options.url)
-    )
-      throw new TypeError(
-        'Executor URL must use wss:// without userinfo, query or fragment',
-      );
+  constructor(
+    options:
+      | EnvironmentOptions<Context>
+      | (LocalEnvironmentOptions<Context> & { local: true }),
+  ) {
+    this.kind = 'local' in options ? 'local' : 'remote';
+    if ('local' in options) {
+      if (
+        'url' in options ||
+        'headers' in options ||
+        'connectTimeout' in options
+      )
+        throw new TypeError(
+          'Local executor does not accept connection settings',
+        );
+    } else {
+      let url: URL;
+      try {
+        url = new URL(options.url);
+      } catch {
+        throw new TypeError('Invalid executor URL');
+      }
+      if (
+        url.protocol !== 'wss:' ||
+        url.username ||
+        url.password ||
+        url.search ||
+        url.hash ||
+        // eslint-disable-next-line no-control-regex -- Transport metadata must exclude controls.
+        /[\s\x00-\x1f\x7f]/.test(options.url)
+      )
+        throw new TypeError(
+          'Executor URL must use wss:// without userinfo, query or fragment',
+        );
+      this.#remoteUrl = options.url;
+    }
     const tools = [...(options.tools ?? [])];
     if (
       new Set(tools).size !== tools.length ||
@@ -178,15 +239,17 @@ export class Environment<Context = any> {
       throw new TypeError('write_stdin requires exec_command');
     if (options.network !== undefined && !tools.includes('exec_command'))
       throw new TypeError('Network policy requires exec_command');
+    const transport = 'local' in options ? undefined : options;
     if (
-      options.connectTimeout !== undefined &&
-      (!Number.isFinite(options.connectTimeout) || options.connectTimeout <= 0)
+      transport?.connectTimeout !== undefined &&
+      (!Number.isFinite(transport.connectTimeout) ||
+        transport.connectTimeout <= 0)
     )
       throw new TypeError(
         'Executor connectTimeout must be positive and finite',
       );
     const headers: Record<string, string> = {};
-    for (const [name, value] of Object.entries(options.headers ?? {})) {
+    for (const [name, value] of Object.entries(transport?.headers ?? {})) {
       const key = name.toLowerCase();
       if (
         !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
@@ -222,7 +285,6 @@ export class Environment<Context = any> {
       throw new TypeError(
         'Executor policyTimeout must be in (0, 3600] seconds',
       );
-    this.url = options.url;
     this.cwd = options.cwd;
     this.capabilityDirectories =
       options.capabilityDirectories === undefined
@@ -230,19 +292,22 @@ export class Environment<Context = any> {
         : Object.freeze(
             z.array(capabilityDirectory).parse(options.capabilityDirectories),
           );
+    this.writableRoots =
+      options.writableRoots === undefined
+        ? undefined
+        : Object.freeze(captureWritableRoots(options.writableRoots));
     this.tools = Object.freeze(tools);
     this.network =
       options.network === undefined
         ? undefined
         : captureNetworkPolicy(options.network);
     this.headers = Object.freeze(headers);
-    this.connectTimeout = options.connectTimeout;
+    this.connectTimeout = transport?.connectTimeout;
     this.approval = options.approval;
     this.transformArguments = options.transformArguments;
     this.transformResult = options.transformResult;
     environmentConfig(this);
     for (const name of [
-      'url',
       'headers',
       'approval',
       'transformArguments',
@@ -254,14 +319,18 @@ export class Environment<Context = any> {
 }
 
 /** @internal Construct transport settings from the current immutable declaration. */
-export function environmentConfig(environment: Environment): RemoteEnvironment {
-  const native = remoteEnvironmentSchema.parse({
-    url: environment.url,
+export function environmentConfig(environment: Environment): EnvironmentConfig {
+  const native = environmentSchema.parse({
+    ...(environment.kind === 'local'
+      ? { local: true }
+      : { url: environment.url, headers: environment.headers }),
     cwd: environment.cwd,
-    headers: environment.headers,
     ...(environment.capabilityDirectories === undefined
       ? {}
       : { capability_directories: environment.capabilityDirectories }),
+    ...(environment.writableRoots === undefined
+      ? {}
+      : { writable_roots: environment.writableRoots }),
     ...(environment.connectTimeout === undefined
       ? {}
       : { connect_timeout: environment.connectTimeout }),

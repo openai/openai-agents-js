@@ -265,8 +265,9 @@ pub(crate) async fn finish_confirmed_child_cancel(
     if cleanup.finish(manager).await.is_err() {
         return None;
     }
+    let local_exec_cancel_confirmed = cleanup.local_exec_cancel_confirmed();
     *retained = None;
-    Some(true)
+    local_exec_cancel_confirmed.then_some(true)
 }
 
 impl Instance {

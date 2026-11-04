@@ -917,9 +917,15 @@ impl ContextChange {
             ),
             descendant_models: Vec::new(),
         };
+        let runtime = environment::context_candidate_runtime(
+            &change.state.thread,
+            &change.state.engine.runtime_json,
+        )
+        .await
+        .map_err(native_error)?;
         let mut state = engine::EngineState::new_owned(
             serde_json::to_string(&config).map_err(native_error)?,
-            change.state.engine.runtime_json.clone(),
+            runtime,
             true,
             api_key,
             Some(&self.prospective),
@@ -2612,6 +2618,9 @@ impl NativeThread {
                 tools
                     .restore_schema_history(&mut projected)
                     .map_err(native_error)?;
+                // Compare portable projections. The store lease below still
+                // verifies the exact unredacted writer prefix.
+                checkpoint::redact_executor_observations(&mut projected);
                 if serde_json::to_value(projected).map_err(native_error)? != saved["history"] {
                     return Ok(serde_json::json!({"status":"not_ready"}).to_string());
                 }
@@ -2688,6 +2697,7 @@ impl NativeThread {
                 tools
                     .restore_schema_history(&mut history)
                     .map_err(native_error)?;
+                checkpoint::redact_executor_observations(&mut history);
                 saved["history"] = serde_json::to_value(history).map_err(native_error)?;
                 saved["agent_options"] = serde_json::json!({});
                 usage::checkpoint_to_wire(&mut saved).map_err(native_error)?;
@@ -3065,6 +3075,19 @@ impl NativeThread {
     #[napi(js_name = "_close_selected_environment")]
     pub async fn _close_selected_environment(&self) -> napi::Result<Option<String>> {
         self.close_owned(true).await
+    }
+
+    #[napi(js_name = "_stop_sampling_for_close")]
+    pub fn _stop_sampling_for_close(&self) -> napi::Result<()> {
+        if let Some(inner) = self.live()?
+            && let Some(root) = inner
+                .thread
+                .thread_extension_data()
+                .get::<native_interception::Control>()
+        {
+            root.graph().close_sampling.request();
+        }
+        Ok(())
     }
 }
 

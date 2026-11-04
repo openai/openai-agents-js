@@ -39,6 +39,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::environment::StrictExecutorWrites;
+
 const FAILURE: &str = "Native tool interception failed or was denied";
 const MAX_PENDING: usize = 128;
 const MAX_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
@@ -415,9 +417,17 @@ struct CommandAdmission {
 pub(crate) struct CapturedTurnStop {
     control: Arc<Control>,
     owner: Option<Arc<DirectTurn>>,
+    // A successor can replace the current native receipt while cleanup waits.
+    settlement: Option<Arc<crate::turn_settlement::Turn>>,
     sessions: Mutex<Vec<Arc<Session>>>,
 }
 impl CapturedTurnStop {
+    pub(crate) fn local_exec_cancel_confirmed(&self) -> bool {
+        self.settlement
+            .as_ref()
+            .is_some_and(|turn| turn.terminal() && !turn.local_exec_cancel_failed())
+    }
+
     // The caller already owns channel.state during an admitted policy claim.
     fn stop_locked(&self) {
         if let Some(owner) = &self.owner {
@@ -553,6 +563,7 @@ pub struct Control {
     root: bool,
     native_depth: usize,
     native_agents: std::sync::OnceLock<Arc<crate::native_agents::Policy>>,
+    strict_executor_writes: std::sync::OnceLock<()>,
     agent_role: std::sync::OnceLock<Option<String>>,
     managed_response: std::sync::OnceLock<bool>,
     // Core starts Review delegates directly, outside ThreadManager.
@@ -685,6 +696,7 @@ impl Control {
             root,
             native_depth: if root { 0 } else { usize::MAX },
             native_agents: std::sync::OnceLock::new(),
+            strict_executor_writes: std::sync::OnceLock::new(),
             agent_role: std::sync::OnceLock::new(),
             managed_response: std::sync::OnceLock::new(),
             review_delegate: std::sync::OnceLock::new(),
@@ -726,6 +738,7 @@ impl Control {
             root: false,
             native_depth: parent.native_depth.saturating_add(1),
             native_agents: parent.native_agents.clone(),
+            strict_executor_writes: std::sync::OnceLock::new(),
             agent_role: std::sync::OnceLock::new(),
             managed_response: std::sync::OnceLock::new(),
             review_delegate: std::sync::OnceLock::new(),
@@ -818,6 +831,7 @@ impl Control {
         }
         Some(Arc::new(CapturedTurnStop {
             control: self.clone(),
+            settlement: owner.as_ref().and_then(|owner| owner.settlement.upgrade()),
             owner,
             sessions: Mutex::new(sessions),
         }))
@@ -875,6 +889,10 @@ impl Control {
     // never grants the child its parent's turn or managed steering authority.
     pub(crate) fn managed_response(&self) -> bool {
         self.managed_response.get().copied().unwrap_or(false)
+    }
+
+    pub(crate) fn strict_executor_writes(&self) -> bool {
+        self.strict_executor_writes.get().is_some()
     }
 
     fn compile_rules(rules: Vec<ToolRule>) -> Result<Rules> {
@@ -1344,6 +1362,7 @@ impl Control {
             owner.core_task.as_ref()?;
             Some(HeldPolicyStop {
                 captured: Arc::new(CapturedTurnStop {
+                    settlement: owner.settlement.upgrade(),
                     owner: Some(owner),
                     control: pending.control.upgrade()?,
                     sessions: Mutex::default(),
@@ -2289,6 +2308,15 @@ impl ThreadLifecycleContributor<Config> for Boundary {
             // parent_thread_id is native and returns Some only for ThreadSpawn.
             // Start is awaited before the first turn, unlike UI creation notices.
             let parent = self.parent_control(input.session_source).await;
+            // The root's canonical cwd is authority for root write changes.
+            // A child carries receipt provenance, and Core reads its cwd and
+            // policy from the executor actually selected for each sample.
+            let strict_executor_writes = input.thread_store.get::<StrictExecutorWrites>().is_some()
+                || (matches!(input.environments, [selection]
+                    if matches!(selection.config, EnvironmentConfigState::Ready(_)))
+                    && parent.as_ref().is_some_and(|owner| {
+                        !owner.stopped.is_cancelled() && owner.strict_executor_writes()
+                    }));
             let has_parent = parent.is_some();
             let managed_response = input
                 .thread_store
@@ -2304,6 +2332,9 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     None => Control::new(id, root),
                 }
             });
+            if strict_executor_writes {
+                let _ = control.strict_executor_writes.set(());
+            }
             let _ = control.review_delegate.set(matches!(
                 input.session_source,
                 SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Review)
@@ -2472,7 +2503,11 @@ impl ContextContributor for Boundary {
                     &input.model_info.shell_type,
                 ) {
                     (Some(control), [selection], ConfigShellToolType::UnifiedExec)
-                        if selection.environment_id == codex_exec_server::REMOTE_ENVIRONMENT_ID =>
+                        if matches!(
+                            selection.environment_id.as_str(),
+                            codex_exec_server::LOCAL_ENVIRONMENT_ID
+                                | codex_exec_server::REMOTE_ENVIRONMENT_ID
+                        ) =>
                     {
                         match (&selection.config, control.command_tty.get()) {
                             (EnvironmentConfigState::Ready(environment), Some(tty)) => {

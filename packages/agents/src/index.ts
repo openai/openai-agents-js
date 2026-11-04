@@ -90,6 +90,7 @@ export type {
 } from './runtime/environment-source';
 export type {
   EnvironmentOptions,
+  LocalEnvironmentOptions,
   ExecutorContext,
 } from './runtime/environment';
 export { NativeAgents, NativeRole } from './runtime/native-agents';

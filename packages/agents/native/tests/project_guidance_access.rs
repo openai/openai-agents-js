@@ -158,7 +158,7 @@ fn owner(access: &FixtureAccess) -> (Arc<Rules>, Arc<AccessContext>) {
         canonical_root: root(),
         key: access.cache_key(),
     });
-    let rules = Arc::new(Rules::new(root()));
+    let rules = Arc::new(Rules::new(root(), "executor"));
     {
         let mut scope = rules.0.lock().unwrap();
         scope.turn = "turn".into();

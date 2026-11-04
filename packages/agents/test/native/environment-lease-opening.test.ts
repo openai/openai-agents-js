@@ -76,6 +76,7 @@ function scriptedEvents() {
         responded.resolve();
         return true;
       },
+      _stop_sampling_for_close: () => {},
       _close_report: close,
       _close_selected_environment: close,
     }),
@@ -95,6 +96,7 @@ beforeEach(() => {
   fixture.createEngine.mockResolvedValue({
     start_replaceable_thread: async () => ({
       id: 'source-test',
+      _stop_sampling_for_close: () => {},
       _close_report: fixture.retire,
       _close_selected_environment: fixture.retire,
     }),

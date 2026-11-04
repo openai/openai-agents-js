@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, ThreadManager};
 use codex_extension_api::{
     ContextContributor, ExtensionData, ExtensionFuture, TurnLifecycleContributor, TurnStartInput,
-    TurnStartPhase, WorldStateContributionInput, WorldStateSectionContribution,
+    TurnSamplingStop, TurnStartPhase, WorldStateContributionInput, WorldStateSectionContribution,
 };
 use codex_protocol::protocol::Op;
 use std::sync::Weak;
@@ -46,6 +46,9 @@ impl State {
 pub(crate) struct Graph {
     pub(crate) state: Mutex<State>,
     pub(crate) changed: watch::Sender<()>,
+    // Every turn in this channel sees close, including a turn admitted while
+    // the native shutdown still owns cleanup.
+    pub(crate) close_sampling: TurnSamplingStop,
 }
 
 impl Default for Graph {
@@ -53,6 +56,7 @@ impl Default for Graph {
         Self {
             state: Mutex::default(),
             changed: watch::channel(()).0,
+            close_sampling: TurnSamplingStop::default(),
         }
     }
 }
