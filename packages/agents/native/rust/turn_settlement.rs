@@ -133,6 +133,9 @@ impl Turn {
     pub(crate) fn stop_sampling(&self) {
         self.sampling_stop.request();
     }
+    pub(crate) fn sampling_stopped(&self) -> bool {
+        self.sampling_stop.requested()
+    }
     pub(crate) fn born_fenced(&self) -> bool {
         self.born_fenced
     }
