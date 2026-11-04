@@ -2,7 +2,7 @@
 
 import { TransportEvent, OpenAIRealtimeWebRTC } from '@openai/agents/realtime';
 import { useEffect, useRef, useState } from 'react';
-import { getToken } from '../server/token.action';
+import { getToken } from '../token';
 import { App } from '@/components/App';
 
 export default function Home() {
@@ -34,7 +34,10 @@ export default function Home() {
       connection.current?.close();
       setIsConnected(false);
     } else {
-      const token = await getToken();
+      const token = getToken();
+      if (!token) {
+        return;
+      }
       await connection.current?.connect({
         apiKey: token,
         model: 'gpt-realtime-2.1',

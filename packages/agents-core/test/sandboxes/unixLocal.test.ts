@@ -29,11 +29,11 @@ import {
   urlForExposedPort,
 } from '../../src/sandbox/local';
 import {
-  applyOwnershipRecursive,
   materializeLocalWorkspaceManifest,
   materializeLocalWorkspaceManifestMounts,
   pathExists,
 } from '../../src/sandbox/sandboxes/shared/localWorkspace';
+import { UnixLocalFiles } from '../../src/sandbox/sandboxes/shared/unixLocalFiles';
 import { rebindPersistedMountCredentials } from '../../src/sandbox/internal';
 
 const ONE_BY_ONE_PNG = Uint8Array.from(
@@ -431,9 +431,17 @@ describe('UnixLocalSandboxClient', () => {
     await writeFile(outsideFile, 'outside');
     await symlink(outsideFile, linkPath);
 
-    await expect(applyOwnershipRecursive(linkPath, 0, 0)).resolves.toBe(
-      undefined,
-    );
+    const files = new UnixLocalFiles();
+    await expect(
+      files.run(
+        { operation: 'chownRecursive', uid: 0, gid: 0 },
+        {
+          input: JSON.stringify([
+            { path: linkPath, accessPath: linkPath, preserveLeaf: true },
+          ]),
+        },
+      ),
+    ).resolves.toEqual(Buffer.alloc(0));
     expect((await lstat(linkPath)).isSymbolicLink()).toBe(true);
   });
 
