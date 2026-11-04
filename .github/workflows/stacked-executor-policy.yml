@@ -7,9 +7,11 @@ on:
       # Direct PRs already run the alpha package workflow.
       - '!feat/codex-harness'
     paths:
-      - packages/agents/native/rust/environment.rs
-      - packages/agents/test/native/fixtures/detached-child.c
-      - packages/agents/test/native/local-executor-policy-native.test.ts
+      - '.github/workflows/alpha-release-artifacts.yml'
+      - '.github/workflows/stacked-executor-policy.yml'
+      - 'packages/agents/native/**'
+      - 'packages/agents/src/**'
+      - 'packages/agents/test/native/**'
 
 permissions:
   contents: read
