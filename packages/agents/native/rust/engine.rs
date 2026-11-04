@@ -2898,9 +2898,13 @@ impl ThreadState {
                 }
             }
             tokio::time::timeout_at(shutdown_deadline, async {
-                // Core's per-thread join waits for loop exit. The exact tree also
-                // retains any cleanup failure recorded during that exit.
-                if let Err(error) = self.thread.request_agent_tree_shutdown().wait().await {
+                // Core's per-thread join waits for loop exit. Check managed process
+                // cleanup across the exact tree before releasing its ownership.
+                if let Err(error) = self
+                    .thread
+                    .shutdown_agent_tree_and_check_managed_processes()
+                    .await
+                {
                     ack_error = Some(match ack_error.take() {
                         Some(message) => format!("{message}; {error}"),
                         None => error.to_string(),

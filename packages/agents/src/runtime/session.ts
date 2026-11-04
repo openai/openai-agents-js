@@ -8182,6 +8182,13 @@ export class Session<OutputT = string, Context = unknown> {
     return undefined;
   }
 
+  /**
+   * Closes the session and releases its resources.
+   *
+   * The call that closes the session can reject if command termination is
+   * unconfirmed. A later call on an already closed session returns without
+   * rechecking command termination.
+   */
   close(): Promise<void> {
     return this.closeOwned();
   }
