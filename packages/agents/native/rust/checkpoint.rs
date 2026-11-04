@@ -402,6 +402,26 @@ pub async fn export(state: &ThreadState, pending: Option<&Value>) -> anyhow::Res
     export_inner(state, pending, false).await
 }
 
+fn redact_executor_observations(history: &mut [codex_history::RolloutItem]) {
+    for record in history {
+        if let codex_history::RolloutItem::TurnContext(context) = record
+            && let Some(receipt) = context
+                .sdk_receipt
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            receipt.remove("strict_executor_writes");
+            if receipt
+                .get("executors")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|value| !value.is_empty())
+            {
+                receipt.insert("executors".to_owned(), serde_json::Value::Null);
+            }
+        }
+    }
+}
+
 async fn export_inner(
     state: &ThreadState,
     pending: Option<&Value>,
@@ -541,6 +561,11 @@ async fn export_inner(
         .thread_extension_data()
         .get::<crate::response_control::ResponseControl>();
     let root_turn_budget = control.and_then(|control| control.checkpoint_budget());
+    let mut history = history;
+    redact_executor_observations(&mut history);
+    for child in &mut descendants {
+        redact_executor_observations(&mut child.history);
+    }
     let mut exported = serde_json::to_value(Checkpoint {
         format_version: if code_states.is_empty() { 2 } else { 4 },
         codex_revision: include_str!("../CODEX_REVISION").trim().to_owned(),

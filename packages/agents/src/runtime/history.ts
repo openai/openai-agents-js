@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import {
+  projectTurnReceipt,
+  repairTurnReceiptSchema,
+  type TurnReceipt,
+} from './turn-receipt';
+import {
   addTokenCounts,
   nonnegativeTokenCountWireSchema,
   parseTokenCount,
@@ -57,14 +62,16 @@ export type HistoryTurn = {
   completedAt: number | null;
   error: Failure | null;
   usage: RecordedTokenUsage | null;
+  receipt?: TurnReceipt;
 };
 export type RecordedTurn = HistoryTurn & {
   parentSessionId?: string;
   parentTurnId?: string;
 };
 /** JSON-safe observational turn data for history/receipt owners, not Core checkpoints. */
-export type RecordedTurnWire = Omit<RecordedTurn, 'usage'> & {
+export type RecordedTurnWire = Omit<RecordedTurn, 'usage' | 'receipt'> & {
   usage: RecordedTokenUsageWire | null;
+  receipt?: z.infer<typeof repairTurnReceiptSchema>;
 };
 
 /** @internal Passive terminal observations; never Core history or grants. */
@@ -106,10 +113,18 @@ export const repairTurnWireSchema = z
       })
       .strict()
       .nullable(),
+    receipt: repairTurnReceiptSchema.optional(),
     parentSessionId: z.string().min(1),
     parentTurnId: z.string().min(1),
   })
-  .strict() satisfies z.ZodType<RepairTurnWire>;
+  .strict()
+  .refine(
+    (turn) =>
+      turn.receipt === undefined ||
+      (turn.receipt.threadId === turn.sessionId &&
+        turn.receipt.turnId === turn.id),
+    'Repair receipt identity must match its recorded turn',
+  ) satisfies z.ZodType<RepairTurnWire>;
 export const repairItemWireSchema = z
   .object({
     parentSessionId: z.string().min(1),
@@ -144,8 +159,17 @@ function mapRecordedUsage<T>(
 }
 
 export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
+  const { receipt, ...wire } = turn;
   return {
-    ...turn,
+    ...wire,
+    ...(receipt
+      ? {
+          receipt: {
+            ...receipt,
+            executors: receipt.executors?.length === 0 ? [] : null,
+          },
+        }
+      : {}),
     usage:
       turn.usage === null
         ? null
@@ -205,6 +229,8 @@ export type SessionItem = ItemIdentity &
       }
     | {
         type: 'mcp_call';
+        threadId?: string;
+        callId?: string;
         serverLabel: string;
         name: string;
         arguments: JsonValue;
@@ -214,12 +240,24 @@ export type SessionItem = ItemIdentity &
       }
     | {
         type: 'command_execution';
+        threadId?: string;
+        callId?: string;
+        argv?: string[];
         command: string;
         cwd: string | null;
         status: ItemStatus;
         output: string | null;
         exitCode: number | null;
         durationMs: number | null;
+      }
+    | {
+        type: 'file_change';
+        threadId: string;
+        callId: string;
+        status: ItemStatus;
+        changes: Record<string, PatchChange>;
+        stdout: string | null;
+        stderr: string | null;
       }
     | {
         type: 'web_search_call';
@@ -248,6 +286,42 @@ export type SessionItem = ItemIdentity &
         recipientAgentId: string;
       }
   );
+const patchContentChanges = [
+  z.object({ type: z.literal('add'), content: z.string() }),
+  z.object({ type: z.literal('delete'), content: z.string() }),
+] as const;
+const patchChangeSchema = z.discriminatedUnion('type', [
+  ...patchContentChanges,
+  z.object({
+    type: z.literal('update'),
+    unifiedDiff: z.string(),
+    movePath: z.string().nullable(),
+  }),
+]);
+const nativePatchChangeSchema = z
+  .discriminatedUnion('type', [
+    ...patchContentChanges,
+    z.object({
+      type: z.literal('update'),
+      unified_diff: z.string(),
+      move_path: z.string().nullable(),
+    }),
+  ])
+  .transform((change) =>
+    change.type === 'update'
+      ? {
+          type: change.type,
+          unifiedDiff: change.unified_diff,
+          movePath: change.move_path,
+        }
+      : change,
+  );
+export type PatchChange = z.infer<typeof patchChangeSchema>;
+export type ExecutionItem = Extract<
+  SessionItem,
+  { type: 'command_execution' | 'file_change' | 'mcp_call' }
+> & { threadId: string; callId: string };
+
 /** The raw recorded source remains available to lower-level history consumers. */
 export type HistoryItem = SessionItem & { data: JsonObject };
 
@@ -302,6 +376,8 @@ const repairItemProjectionSchema = z.intersection(
     }),
     z.object({
       type: z.literal('mcp_call'),
+      threadId: z.string().optional(),
+      callId: z.string().optional(),
       serverLabel: z.string(),
       name: z.string(),
       arguments: jsonValue,
@@ -311,12 +387,24 @@ const repairItemProjectionSchema = z.intersection(
     }),
     z.object({
       type: z.literal('command_execution'),
+      threadId: z.string().optional(),
+      callId: z.string().optional(),
+      argv: z.array(z.string()).optional(),
       command: z.string(),
       cwd: z.string().nullable(),
       status: repairItemStatusSchema,
       output: z.string().nullable(),
       exitCode: z.number().nullable(),
       durationMs: z.number().nullable(),
+    }),
+    z.object({
+      type: z.literal('file_change'),
+      threadId: z.string(),
+      callId: z.string(),
+      status: repairItemStatusSchema,
+      changes: z.record(z.string(), patchChangeSchema),
+      stdout: z.string().nullable(),
+      stderr: z.string().nullable(),
     }),
     z.object({
       type: z.literal('web_search_call'),
@@ -600,6 +688,78 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     };
   return null;
 }
+export function projectExecutionItem(
+  value: JsonValue | undefined,
+  turnId: string,
+  threadId: string,
+  done = true,
+): ExecutionItem | null {
+  const raw = object(value);
+  if (!raw || typeof raw.id !== 'string' || !raw.id) return null;
+  const common = {
+    id: raw.id,
+    turnId,
+    threadId,
+    callId: raw.id,
+    status: status(raw.status, done),
+  };
+  switch (raw.type) {
+    case 'CommandExecution': {
+      const duration = object(raw.duration);
+      const argv = Array.isArray(raw.command)
+        ? raw.command.map(String)
+        : undefined;
+      const command = argv
+        ? argv
+            .map((value) =>
+              /^[\w@%+=:,./-]+$/.test(value)
+                ? value
+                : `'${value.replace(/'/g, `'"'"'`)}'`,
+            )
+            .join(' ')
+        : String(raw.command ?? '');
+      return {
+        ...common,
+        type: 'command_execution',
+        ...(argv ? { argv } : {}),
+        command,
+        cwd: text(raw.cwd),
+        output: text(raw.aggregated_output),
+        exitCode: number(raw.exit_code),
+        durationMs: duration
+          ? (number(duration.secs) ?? 0) * 1000 +
+            Math.floor((number(duration.nanos) ?? 0) / 1_000_000)
+          : null,
+      };
+    }
+    case 'FileChange': {
+      const changes = z
+        .record(z.string(), nativePatchChangeSchema)
+        .safeParse(raw.changes);
+      if (!changes.success) return null;
+      return {
+        ...common,
+        type: 'file_change',
+        changes: changes.data,
+        stdout: text(raw.stdout),
+        stderr: text(raw.stderr),
+      };
+    }
+    case 'McpToolCall':
+      return {
+        ...common,
+        type: 'mcp_call',
+        serverLabel: String(raw.server),
+        name: String(raw.tool),
+        arguments: raw.arguments ?? null,
+        output: raw.result ?? null,
+        error: raw.error ?? null,
+      };
+    default:
+      return null;
+  }
+}
+
 function nativeItems(
   raw: JsonObject,
   done: boolean,
@@ -701,45 +861,10 @@ function nativeItems(
       ];
     }
     case 'McpToolCall':
-      return [
-        {
-          ...common,
-          type: 'mcp_call',
-          serverLabel: String(raw.server),
-          name: String(raw.tool),
-          arguments: raw.arguments ?? null,
-          status: terminal,
-          output: raw.result ?? null,
-          error: raw.error ?? null,
-        },
-      ];
-    case 'CommandExecution': {
-      const duration = object(raw.duration);
-      const command = Array.isArray(raw.command)
-        ? raw.command
-            .map((arg) => {
-              const value = String(arg);
-              return /^[\w@%+=:,./-]+$/.test(value)
-                ? value
-                : `'${value.replace(/'/g, `'"'"'`)}'`;
-            })
-            .join(' ')
-        : String(raw.command ?? '');
-      return [
-        {
-          ...common,
-          type: 'command_execution',
-          command,
-          cwd: text(raw.cwd),
-          status: terminal,
-          output: text(raw.aggregated_output),
-          exitCode: number(raw.exit_code),
-          durationMs: duration
-            ? (number(duration.secs) ?? 0) * 1000 +
-              Math.floor((number(duration.nanos) ?? 0) / 1_000_000)
-            : null,
-        },
-      ];
+    case 'CommandExecution':
+    case 'FileChange': {
+      const item = projectExecutionItem(raw, turnId, sourceId, done);
+      return item ? [{ ...item, data: raw }] : [];
     }
     case 'WebSearch':
       return [
@@ -874,10 +999,19 @@ export function projectHistory(
     else if (output && call) call.output = occurrence;
     return occurrence;
   }
+  const receipts = new Map<string, TurnReceipt>();
   for (const { type, payload, metadata: recordedMetadata } of history) {
     if (type === 'compacted' || type === 'session_meta')
       pendingUser = undefined;
     if (type === 'turn_context' && typeof payload.turn_id === 'string') {
+      const receipt = projectTurnReceipt(payload.sdk_receipt, payload.turn_id);
+      if (receipt) receipts.set(payload.turn_id, receipt);
+      // The latest sample owns the receipt, even if its format is unsupported.
+      else if (
+        payload.sdk_receipt !== undefined &&
+        payload.sdk_receipt !== null
+      )
+        receipts.delete(payload.turn_id);
       if (current !== payload.turn_id) pendingUser = undefined;
       current = payload.turn_id;
       aborted = null;
@@ -1057,6 +1191,8 @@ export function projectHistory(
     }
   }
   for (const [id, turn] of turns) {
+    const receipt = receipts.get(id);
+    if (receipt) turn.receipt = receipt;
     const total = responseUsage.get(id);
     turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
   }

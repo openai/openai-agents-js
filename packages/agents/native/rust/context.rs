@@ -180,7 +180,17 @@ impl Change {
     }
 
     pub fn options(&self) -> Value {
-        json!({"instructions": self.instructions, "settings": self.settings})
+        let instruction_files = self
+            .state
+            .instructions
+            .accepted()
+            .map(|accepted| accepted.files)
+            .unwrap_or_default();
+        json!({
+            "instructions": self.instructions,
+            "instruction_files": instruction_files,
+            "settings": self.settings,
+        })
     }
 
     pub async fn validate_candidate(&self, candidate: &ThreadState) -> anyhow::Result<()> {

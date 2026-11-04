@@ -1,0 +1,36 @@
+diff --git a/codex-rs/core/src/session/step_context.rs b/codex-rs/core/src/session/step_context.rs
+index f3e6d4018a1ad40a96e75e2234eda6c3e6f71df2..a2bcc915ae333540d4c6365fe252763cded49d82 100644
+--- a/codex-rs/core/src/session/step_context.rs
++++ b/codex-rs/core/src/session/step_context.rs
+@@ -13,6 +13,7 @@ use crate::tools::router::ToolRouter;
+ use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
+ use codex_exec_server::ResolvedSelectedCapabilityRoot;
+ use codex_extension_api::ExtensionData;
++use codex_extension_api::SdkStepInstructionFiles;
+ use codex_extension_api::SdkTurnReceiptSeed;
+ use codex_file_system::EnvironmentAccess;
+ use codex_mcp::McpBinding;
+@@ -111,6 +112,9 @@ impl StepContext {
+         if let Some(instructions) = &self.loaded_agents_md {
+             files.extend(instructions.sdk_file_receipts(seed.sha256));
+         }
++        if let Some(instructions) = self.extension_data.get::<SdkStepInstructionFiles>() {
++            files.extend(instructions.0.iter().cloned());
++        }
+         let developer_sha256 = application
+             .map(|value| value.developer_sha256.clone())
+             .or_else(|| self.turn.developer_instructions.as_deref().map(seed.sha256));
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 135ab0ff561a870b810882b7d3ee70992a66fcb2..b0296a02035e9cb42587f0e608cf7f574ef10efe 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -134,6 +134,9 @@ pub struct SdkTurnReceiptSeed {
+     pub application: Option<SdkApplicationInstructions>,
+ }
+ 
++/// Other applied instruction files loaded by SDK context contributors in this step.
++pub struct SdkStepInstructionFiles(pub Vec<serde_json::Value>);
++
+ /// An accepted SDK instruction revision to verify against the model context.
+ pub struct SdkApplicationInstructions {
+     pub revision: String,

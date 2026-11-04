@@ -12,6 +12,7 @@ import type { JsonObject } from '../../src/runtime/binding';
 import {
   ObservationBuffer,
   type Observation,
+  type ObservationOptions,
 } from '../../src/runtime/observation';
 
 const original = {
@@ -31,6 +32,98 @@ async function events(buffer: ObservationBuffer): Promise<Observation[]> {
 }
 
 describe('repair observations', () => {
+  it('projects compact patch metadata and copies details independently for each opted-in reader', async () => {
+    const buffer = new ObservationBuffer('original-session');
+    const compact = buffer.events();
+    const full = buffer.events({ includeExecutionDetails: true });
+    const anotherFull = buffer.events({ includeExecutionDetails: true });
+    const inherited = buffer.events(
+      Object.create({ includeExecutionDetails: true }) as ObservationOptions,
+    );
+    buffer.append({
+      type: 'execution_item_completed',
+      ...original,
+      item: {
+        type: 'file_change',
+        id: 'patch-1',
+        callId: 'patch-1',
+        threadId: 'original-session',
+        turnId: original.turnId,
+        status: 'completed',
+        changes: {
+          'artifact.txt': { type: 'add', content: 'retained content' },
+        },
+        stdout: 'private output',
+        stderr: null,
+      },
+    });
+    buffer.finish('closed');
+    const { value: metadata } = await compact.next();
+    expect(metadata).toEqual({
+      type: 'execution_item_completed',
+      ...original,
+      sessionId: 'original-session',
+      sequence: 1,
+      item: {
+        type: 'file_change',
+        id: 'patch-1',
+        callId: 'patch-1',
+        threadId: 'original-session',
+        turnId: original.turnId,
+        status: 'completed',
+      },
+    });
+    expect((await inherited.next()).value).toEqual(metadata);
+    const result = await full.next();
+    if (result.done) throw new Error('Expected a retained completion');
+    const detailed = result.value;
+    if (
+      detailed.type !== 'execution_item_completed' ||
+      !('changes' in detailed.item)
+    )
+      throw new Error('Expected patch details');
+    expect(detailed.sequence).toBe(1);
+    detailed.item.changes['artifact.txt'] = {
+      type: 'add',
+      content: 'local edit',
+    };
+    expect((await anotherFull.next()).value).toMatchObject({
+      sequence: 1,
+      item: {
+        changes: {
+          'artifact.txt': { type: 'add', content: 'retained content' },
+        },
+        stdout: 'private output',
+      },
+    });
+  });
+
+  it('signals a gap when a retained execution completion exceeds the live budget', async () => {
+    const buffer = new ObservationBuffer('original-session');
+    buffer.append({
+      type: 'execution_item_completed',
+      ...original,
+      item: {
+        id: 'mcp-1',
+        callId: 'mcp-1',
+        threadId: 'original-session',
+        turnId: original.turnId,
+        type: 'mcp_call',
+        status: 'completed',
+        name: 'lookup',
+        serverLabel: 'fixture',
+        arguments: {},
+        output: { content: 'x'.repeat(70_000) },
+        error: null,
+      },
+    });
+    buffer.finish('closed');
+    expect((await events(buffer)).map((event) => event.type)).toEqual([
+      'gap',
+      'session_ended',
+    ]);
+  });
+
   it('links future submissions with real identities and parent stream order', async () => {
     const parent = new ObservationBuffer('original-session');
     const child = new ObservationBuffer('repair-session');
@@ -264,6 +357,62 @@ describe('repair turn projection', () => {
     expect(recordedTurnFromWire(recordedTurnToWire(ordinary))).toEqual(
       ordinary,
     );
+  });
+
+  it('redacts executor details and binds repair receipts to their turn', () => {
+    const wire = recordedTurnToWire({
+      id: repair.turnId,
+      object: 'agent.session.turn',
+      sessionId: 'repair-session',
+      subagentId: null,
+      status: 'completed',
+      createdAt: null,
+      startedAt: null,
+      completedAt: null,
+      error: null,
+      usage: null,
+      parentSessionId: 'original-session',
+      parentTurnId: original.turnId,
+      receipt: {
+        threadId: 'repair-session',
+        turnId: repair.turnId,
+        model: 'gpt-5',
+        reasoningEffort: null,
+        instructionRevision: null,
+        developerInstructionsSha256: 'a'.repeat(64),
+        instructionFiles: [],
+        userConfigApplied: false,
+        codexRevision: 'b'.repeat(40),
+        codexSourceTree: 'c'.repeat(40),
+        approvalPolicy: 'never',
+        executors: [
+          {
+            environmentId: 'private-executor',
+            transport: 'remote',
+            cwd: '/private/workspace',
+            writableRoots: ['/private/workspace'],
+            networkSandbox: 'restricted',
+            networkPolicy: null,
+          },
+        ],
+      },
+    });
+    expect(repairTurnWireSchema.parse(wire).receipt).toMatchObject({
+      turnId: repair.turnId,
+      executors: null,
+    });
+    expect(
+      repairTurnWireSchema.safeParse({
+        ...wire,
+        receipt: { ...wire.receipt, threadId: 'unrelated-session' },
+      }).success,
+    ).toBe(false);
+    expect(
+      repairTurnWireSchema.safeParse({
+        ...wire,
+        receipt: { ...wire.receipt, turnId: 'stale-turn' },
+      }).success,
+    ).toBe(false);
   });
 });
 

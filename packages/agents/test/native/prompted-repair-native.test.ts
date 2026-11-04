@@ -264,6 +264,23 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const result = await root.wait();
         expect(result.finalOutput).toEqual({ label: 'corrected' });
         expect(result.repairAttempts).toHaveLength(2);
+        for (const attempt of result.repairAttempts) {
+          expect(attempt.receipt).toMatchObject({
+            threadId: attempt.sessionId,
+            turnId: attempt.id,
+            model: 'gpt-5',
+            developerInstructionsSha256:
+              expect.stringMatching(/^[0-9a-f]{64}$/),
+            instructionFiles: [],
+            executors: [],
+          });
+        }
+        expect(
+          (await collect(source.turns())).filter(
+            (turn) =>
+              'parentTurnId' in turn && turn.parentTurnId === root.turnId,
+          ),
+        ).toEqual(result.repairAttempts);
         expect(effects).toEqual(['once']);
         expect(await root.wait()).toBe(result);
         expect(server.requests).toHaveLength(4);

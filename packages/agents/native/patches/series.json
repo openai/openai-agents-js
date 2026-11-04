@@ -95,7 +95,31 @@
     {
       "path": "0024-api-key-rate-limits.patch",
       "sha256": "7214955c12f507f0534a7813205eeba656265aa6d919aa3704ec5a47f3ea7d64"
+    },
+    {
+      "path": "0026-retained-execution-completions.patch",
+      "sha256": "c96852d1582d17b99e5ffaafa110c471fd3af697a7b384afa15e86955897af10"
+    },
+    {
+      "path": "0027-sdk-turn-receipts.patch",
+      "sha256": "84ce3642d995537a685899dd8647779ad5b2b6873b604887b26775b05a467def"
+    },
+    {
+      "path": "0029-retain-early-sandbox-denials.patch",
+      "sha256": "31eee8fd638f35abd56e216a18bbc70dad6b8b93f90fe2db16b2deaae1bd004f"
+    },
+    {
+      "path": "0030-sdk-project-guidance-receipts.patch",
+      "sha256": "006d3bb40ab0a4246068feef35b43996c7e89975ce6e9f8a4a61ad0b2b2a1560"
+    },
+    {
+      "path": "0031-sdk-child-instruction-receipts.patch",
+      "sha256": "9bcc68e416238a496cb17a7fcd9311482e6104273e1dd2a2d946baf26501ab87"
+    },
+    {
+      "path": "0033-sdk-sampling-context-replay.patch",
+      "sha256": "854e1cc69b0636638fa1b84989ee0841fa95f54840d7ebb0a531dbe2278a0d0d"
     }
   ],
-  "result_tree": "fa74ed80025deb5a9da3fbb5fcc3da9fbb6be38d"
+  "result_tree": "8603013bd6542ccfcfa43f56c4d3ec5f4b5e3bf1"
 }

@@ -1,0 +1,179 @@
+diff --git a/codex-rs/core/src/session/rollout_reconstruction.rs b/codex-rs/core/src/session/rollout_reconstruction.rs
+index 2e58389..4044125 100644
+--- a/codex-rs/core/src/session/rollout_reconstruction.rs
++++ b/codex-rs/core/src/session/rollout_reconstruction.rs
+@@ -4,6 +4,7 @@ use crate::context_manager::is_user_turn_boundary;
+ use codex_history::ResponseItemEnvelope;
+ use codex_protocol::protocol::SessionContextWindow;
+ use codex_protocol::protocol::ThreadHistoryMode;
++use serde::Deserialize;
+ use uuid::Uuid;
+ 
+ // Return value of `Session::reconstruct_history_from_rollout`, bundling the rebuilt history with
+@@ -165,6 +166,59 @@ fn finalize_active_segment<'a>(
+     }
+ }
+ 
++// A sampling record copies the frozen context for a turn whose canonical context
++// was already written. Live sampling may change summary, realtime, or the
++// effective settings inside the receipt. Those observations are not baselines.
++fn sdk_sampling_context_indexes(replay_items: &[RolloutItem]) -> HashSet<usize> {
++    let mut observations = HashSet::new();
++    let mut baseline: Option<&TurnContextItem> = None;
++    for (index, item) in replay_items.iter().enumerate() {
++        match item {
++            RolloutItem::TurnContext(context) => {
++                if baseline.is_some_and(|baseline| is_sdk_sampling_context(context, baseline)) {
++                    observations.insert(index);
++                } else {
++                    baseline = Some(context);
++                }
++            }
++            RolloutItem::Compacted(_)
++            | RolloutItem::EventMsg(
++                EventMsg::TurnStarted(_) | EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_),
++            ) => baseline = None,
++            _ => {}
++        }
++    }
++    observations
++}
++
++fn is_sdk_sampling_context(context: &TurnContextItem, baseline: &TurnContextItem) -> bool {
++    let Some(receipt) = context.sdk_receipt.as_ref() else {
++        return false;
++    };
++    if context.turn_id.is_none()
++        || context.turn_id != baseline.turn_id
++        || receipt.get("version").and_then(serde_json::Value::as_u64) != Some(1)
++        || !receipt
++            .get("thread_id")
++            .and_then(serde_json::Value::as_str)
++            .is_some_and(|id| ThreadId::from_string(id).is_ok())
++        || !receipt
++            .get("model")
++            .and_then(serde_json::Value::as_str)
++            .is_some_and(|model| !model.is_empty())
++        || !receipt
++            .get("approval_policy")
++            .is_some_and(|policy| AskForApproval::deserialize(policy).is_ok())
++    {
++        return false;
++    }
++    let mut baseline = baseline.clone();
++    baseline.sdk_receipt.clone_from(&context.sdk_receipt);
++    baseline.realtime_active = context.realtime_active;
++    baseline.summary = context.summary;
++    &baseline == context
++}
++
+ impl Session {
+     pub(super) async fn reconstruct_history_from_rollout(
+         &self,
+@@ -227,6 +281,7 @@ impl Session {
+         // we hit its matching `TurnStarted`, at which point the segment can be finalized.
+         let mut active_segment: Option<ActiveReplaySegment<'_>> = None;
+ 
++        let sdk_sampling_contexts = sdk_sampling_context_indexes(replay_items);
+         for (index, item) in replay_items.iter().enumerate().rev() {
+             match item {
+                 RolloutItem::Compacted(compacted) => {
+@@ -290,8 +345,7 @@ impl Session {
+                     active_segment.counts_as_user_turn = true;
+                 }
+                 RolloutItem::TurnContext(ctx) => {
+-                    if ctx.sdk_receipt.is_some() {
+-                        // SDK sampling evidence does not advance the context baseline.
++                    if sdk_sampling_contexts.contains(&index) {
+                         continue;
+                     }
+                     let active_segment =
+@@ -315,8 +369,10 @@ impl Session {
+                             active_segment.reference_context_item,
+                             TurnReferenceContextItem::NeverSet
+                         ) {
++                            let mut reference = ctx.clone();
++                            reference.sdk_receipt = None;
+                             active_segment.reference_context_item =
+-                                TurnReferenceContextItem::Latest(Box::new(ctx.clone()));
++                                TurnReferenceContextItem::Latest(Box::new(reference));
+                         }
+                     }
+                 }
+diff --git a/codex-rs/core/src/session/rollout_reconstruction_tests.rs b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+index d66d9c8..9feb079 100644
+--- a/codex-rs/core/src/session/rollout_reconstruction_tests.rs
++++ b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+@@ -578,6 +578,72 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
+     );
+ }
+ 
++#[tokio::test]
++async fn sdk_sampling_metadata_cannot_discard_the_durable_turn_context() {
++    let (session, turn_context) = make_session_and_context().await;
++    let canonical = turn_context.to_turn_context_item();
++    let turn_id = canonical.turn_id.clone().expect("native turn id");
++    let receipt = json!({
++        "version": 1,
++        "thread_id": ThreadId::new(),
++        "model": "step-model",
++        "reasoning_effort": null,
++        "instruction_revision": null,
++        "developer_instructions_sha256": null,
++        "instruction_files": [],
++        "user_config_applied": false,
++        "codex_revision": "a".repeat(40),
++        "codex_source_tree": "b".repeat(40),
++        "approval_policy": "never",
++        "executors": null,
++    });
++
++    for (attached, include_sample) in [
++        (Some(json!({"invalid": true})), false),
++        (Some(receipt.clone()), false),
++        (None, true),
++    ] {
++        let mut restored_context = canonical.clone();
++        restored_context.sdk_receipt = attached;
++        let mut rollout = vec![
++            RolloutItem::EventMsg(EventMsg::TurnStarted(
++                codex_protocol::protocol::TurnStartedEvent {
++                    turn_id: turn_id.clone(),
++                    root_turn_id: None,
++                    trace_id: None,
++                    started_at: None,
++                    model_context_window: Some(128_000),
++                    collaboration_mode_kind: ModeKind::Default,
++                },
++            )),
++            RolloutItem::EventMsg(EventMsg::UserMessage(
++                codex_protocol::protocol::UserMessageEvent {
++                    message: "seed".to_string(),
++                    ..Default::default()
++                },
++            )),
++            RolloutItem::TurnContext(restored_context),
++        ];
++        if include_sample {
++            let mut sampled = canonical.clone();
++            sampled.sdk_receipt = Some(receipt.clone());
++            sampled.realtime_active = Some(!turn_context.realtime_active);
++            rollout.push(RolloutItem::TurnContext(sampled));
++        }
++        let restored = session
++            .reconstruct_history_from_rollout(&turn_context, &rollout)
++            .await;
++        assert_eq!(restored.reference_context_item.as_ref(), Some(&canonical));
++        assert_eq!(
++            restored
++                .previous_turn_settings
++                .as_ref()
++                .map(|settings| settings.model.as_str()),
++            Some(canonical.model.as_str())
++        );
++    }
++}
++
+ #[tokio::test]
+ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_completed_turns() {
+     let (session, turn_context) = make_session_and_context().await;

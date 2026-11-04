@@ -12,7 +12,7 @@ import { NativeError, enrichNativeError } from './native-error';
 import type { FunctionCallOutput, UserInput } from './input';
 import type { ManualToolReply } from './manual';
 import { tokenUsageInfo } from './run-events';
-import type { Observation } from './observation';
+import type { Observation, ObservationOptions } from './observation';
 export const subagentSchema = z
   .object({
     id: z.string(),
@@ -112,9 +112,9 @@ export function issueChildTurn(
   callbacks: {
     beforeWait(): void;
     drain(): Promise<void>;
-    observations(options: {
-      after?: number;
-    }): AsyncIterableIterator<Observation>;
+    observations(
+      options: ObservationOptions,
+    ): AsyncIterableIterator<Observation>;
     requests?: TurnRequestWait<string>;
   },
 ): Turn<string> {
