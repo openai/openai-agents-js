@@ -1043,6 +1043,71 @@ it.skipIf(!supported).for(['sessions', 'dated sessions', 'archives'] as const)(
   },
 );
 
+it.skipIf(!supported)(
+  'keeps relocated dated sessions outside local grants on open and replacement (alternate spelling)',
+  { timeout: 45_000 },
+  async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-rollout-spelling-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const storage = localStorage(join(base, 'profile'));
+      const relocated = join(base, 'relocated-sessions');
+      const alternate = join(base, 'RELOCATED-SESSIONS');
+      const [year, month] = new Date().toISOString().slice(0, 7).split('-');
+      const grant = join(relocated, year!, month!);
+      await Promise.all([
+        mkdir(cwd),
+        mkdir(storage.path),
+        mkdir(grant, { recursive: true }),
+      ]);
+      // On a case-insensitive volume the alias uses another spelling of
+      // the same directory. Exercise ordinary containment on other volumes.
+      await symlink(
+        existsSync(alternate) ? alternate : relocated,
+        join(storage.path, 'sessions'),
+      );
+      const server = new ModelServer([[message('Persisted safely.')]]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      const open = (writableRoots: string[] = []) =>
+        agent.session({
+          environment: Environment.local({ cwd, writableRoots }),
+          storage,
+        });
+      await expect(async () => {
+        await using _session = await open([grant]);
+      }).rejects.toThrow(localStorageOverlap);
+      await using session = await open().catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          /could not establish the platform sandbox/.test(error.message) &&
+          process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+        ) {
+          context.skip('This host cannot launch a nested platform sandbox');
+        }
+        throw error;
+      });
+      await expect(
+        session.submit('Do not grant the directory for new rollouts.', {
+          writableRoots: [grant],
+        }),
+      ).rejects.toThrow(localStorageOverlap);
+      expect(server.requests).toHaveLength(0);
+      expect(await readdir(grant)).toEqual([]);
+      const turn = await session.submit('Persist with the disjoint grant.');
+      expect((await turn.wait()).finalOutput).toBe('Persisted safely.');
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
+
 it.skipIf(!supported).for(['file alias', 'recorded path'] as const)(
   'keeps a selected local rollout outside grants on resume and replacement (%s)',
   { timeout: 50_000 },
