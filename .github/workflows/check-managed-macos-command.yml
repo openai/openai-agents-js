@@ -1,418 +1,118 @@
-name: Check the managed local command on Apple Silicon
-on:
+name: Observe managed Darwin wrapper recovery from an installed package
+'on':
   push:
-    branches: [test/managed-macos-command-qualification-20261104]
-
+    branches:
+    - test/managed-macos-package-probes-20261104
+    paths:
+    - .github/workflows/check-managed-macos-command.yml
 permissions:
+  actions: read
   contents: read
-
 jobs:
-  package:
-    name: Build and test the exact JS SDK package
+  qualify:
+    name: Observe delayed managed Darwin wrapper cleanup
     runs-on: macos-15
-    timeout-minutes: 180
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
     env:
-      ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: darwin-arm64
       QUALIFIED_SDK_COMMIT: e652e7c0f4e68c8ded39dcde50c7aa36574758a6
       QUALIFIED_SDK_TREE: 10edee35289482253537c256c8fc6081ee4fdeb7
-      RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: '3'
-      CARGO_INCREMENTAL: '0'
-
+      PRODUCER_RUN: '41884309711'
+      PRODUCER_DRIVER: 9063c0145be619f23a214bbe29fb97ecddbc1f82
+      ARTIFACT_ID: '13354896244'
+      ARTIFACT_SHA256: f5cd7a5508dc2b1355c35c6d7bb3381a4dbbc71e7a8878898d91552fa8a38ce0
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: e652e7c0f4e68c8ded39dcde50c7aa36574758a6
-          persist-credentials: false
-      - name: Check exact source
-        run: |
-          test "$(git rev-parse HEAD)" = "$QUALIFIED_SDK_COMMIT"
-          test "$(git rev-parse HEAD^{tree})" = "$QUALIFIED_SDK_TREE"
-          sw_vers
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
-        with:
-          run_install: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
-        with:
-          node-version: '24'
-          cache: pnpm
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: e652e7c0f4e68c8ded39dcde50c7aa36574758a6
+        persist-credentials: false
+    - name: Check exact source
+      run: 'test "$(git rev-parse HEAD)" = "$QUALIFIED_SDK_COMMIT"
 
-      - name: Check runner platform
-        run: |
-          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+        test "$(git rev-parse HEAD^{tree})" = "$QUALIFIED_SDK_TREE"
 
-      - name: Install Rust
-        run: |
-          echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: Install macOS build tools
-        if: runner.os == 'macOS'
-        run: brew install cmake pkgconf protobuf openssl@3
-      - name: Restore the Rust downloads
-        id: rust-downloads
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry/index
-            ${{ env.CARGO_HOME }}/registry/cache
-            ${{ env.CARGO_HOME }}/git/db
-            packages/agents/native/.cache/v8
-          key: js-managed-macos-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/Cargo.lock') }}
-      - name: Build the SDK and native runtime
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
-          node packages/agents/scripts/native.mjs package
-      - name: Build the macOS WSS test fixture
-        if: runner.os == 'macOS'
-        working-directory: packages/agents/native
-        run: |
-          # Reuse the verified V8 files and target from native.mjs package.
-          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
-          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
-          cargo build --locked --release --example exec-server-fixture
-          fixture="$CARGO_TARGET_DIR/release/examples/exec-server-fixture"
-          test -x "$fixture"
-          echo "CODEX_EXEC_SERVER_TEST_BINARY=$fixture" >> "$GITHUB_ENV"
-      - name: Save the Rust downloads
-        if: ${{ !cancelled() && steps.rust-downloads.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry/index
-            ${{ env.CARGO_HOME }}/registry/cache
-            ${{ env.CARGO_HOME }}/git/db
-            packages/agents/native/.cache/v8
-          key: js-managed-macos-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/Cargo.lock') }}
-      - name: Check the portable sleep fixture on macOS
-        run: |
-          test -x /bin/sleep
-          /bin/sleep 0
-          PATH=/usr/bin:/bin /bin/sh -c 'command -v sleep; exec sleep 0'
-      - name: Qualify local executor grants on macOS
-        if: runner.os == 'macOS'
-        env:
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: >-
-          pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
-          -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|rejects a local executor grant to the runtime home'
-          --reporter=verbose
-      - name: Qualify native cancellation and model-step resume on macOS
-        run: |
-          pnpm test:native packages/agents/test/native/executor-stop-native.test.ts \
-            -t 'fences a direct result before native' --maxWorkers=1 --reporter=verbose
-          pnpm test:native packages/agents/test/native/model-preparation-cap.test.ts \
-            --maxWorkers=1 --reporter=verbose
-          pnpm test:native packages/agents/test/native/executor-receipt-resume-native.test.ts \
-            -t 'can attach a trusted implicit remote executor' --maxWorkers=1 --reporter=verbose
-          pnpm test:native \
-            packages/agents/test/native/embedded-commands.test.ts \
-            packages/agents/test/native/turn-controls.test.ts \
-            packages/agents/test/native/parity-child-manual.test.ts \
-            -t 'returns the actual native compact Turn|lets a graceful exact stop preserve|accepts a live child manual reply' \
-            --maxWorkers=1 --reporter=verbose
-          pnpm test:native packages/agents/test/native/compaction-late-admission-native.test.ts \
-            --maxWorkers=1 --reporter=verbose
-      - name: Create the release bundles
-        run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
-      - name: Test the extracted bundles
-        run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
-      - name: Verify launchd denial from the installed npm package
-        run: |
-          cat > "$RUNNER_TEMP/js-install.mjs" <<'INSTALL'
-          import assert from "node:assert/strict";
-          import { execFileSync } from "node:child_process";
-          import { cpSync, readFileSync, realpathSync } from "node:fs";
-          import { join, sep } from "node:path";
-          import { pathToFileURL } from "node:url";
+        sw_vers
 
-          const checkout = process.argv[2];
-          const { hashes, verifyArtifactDirectory } = await import(
-            pathToFileURL(join(checkout, "scripts/verify-alpha-package.mjs"))
-          );
-          const { verifyNativeReceipt, verifyStarterLock } = await import(
-            pathToFileURL(join(checkout, "scripts/alpha-package.mjs"))
-          );
-          const { ARTIFACT_DIRECTORY, PRODUCER_SDK, RECEIPT_SOURCE, RUNNER_TEMP } =
-            process.env;
-          assert.equal(process.platform + "-" + process.arch, "darwin-arm64");
-          const build = await verifyArtifactDirectory(ARTIFACT_DIRECTORY);
-          assert.equal(build.sourceCommit, PRODUCER_SDK);
-          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
-          for (const profile of ["starter", "app"]) {
-            const installed = readJson(
-              join(ARTIFACT_DIRECTORY, `installed-${profile}-darwin-arm64.json`),
-            );
-            assert.equal(installed.profile, profile);
-            assert(installed.verified.includes("native-receipt"));
-            for (const field of Object.keys(build))
-              assert.deepEqual(installed[field], build[field]);
-          }
+        '
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      with:
+        run_install: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+        cache: pnpm
+    - name: Check runner platform
+      run: 'node -e ''require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)''
 
-          execFileSync("/usr/bin/tar", [
-            "-xzf",
-            join(ARTIFACT_DIRECTORY, build.starter.archive),
-            "-C",
-            RUNNER_TEMP,
-          ]);
-          const consumer = join(RUNNER_TEMP, "agents-starter");
-          const manifest = readJson(join(consumer, "package.json"));
-          for (const [name, record] of Object.entries(build.packages)) {
-            assert.equal(
-              manifest.dependencies[name],
-              `file:vendor/agents/${record.archive}`,
-            );
-            assert.equal(
-              (await hashes(join(consumer, "vendor/agents", record.archive))).sha256,
-              record.sha256,
-            );
-          }
-          verifyStarterLock(
-            readJson(join(consumer, "package-lock.json")),
-            build.packages,
-          );
-          const npm = join(process.execPath, "../../lib/node_modules/npm/bin/npm-cli.js");
-          execFileSync(process.execPath, [npm, "ci", "--ignore-scripts"], {
-            cwd: consumer,
-            env: { ...process.env, NODE_PATH: "", PATH: "" },
-            stdio: "inherit",
-          });
+        '
+    - name: Install the locked test runner
+      run: pnpm install --frozen-lockfile --ignore-scripts
+    - name: Fetch the verified producer archive
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "set -euo pipefail\nrepo=\"repos/$GITHUB_REPOSITORY\"\nmetadata=\"$RUNNER_TEMP/wrapper-artifact.json\"\ngh api \"$repo/actions/artifacts/$ARTIFACT_ID\" > \"$metadata\"\njq -e --arg id \"$ARTIFACT_ID\" --arg run \"$PRODUCER_RUN\" --arg driver \"$PRODUCER_DRIVER\" --arg digest \"sha256:$ARTIFACT_SHA256\" \\\n  '(.id|tostring)==$id and (.workflow_run.id|tostring)==$run and .workflow_run.head_sha==$driver and .digest==$digest and .expired==false and .name==\"agents-alpha-darwin-arm64\"' \"$metadata\"\nmkdir \"$RUNNER_TEMP/agents-alpha\"\narchive=\"$RUNNER_TEMP/wrapper-artifact.zip\"\ngh api \"$repo/actions/artifacts/$ARTIFACT_ID/zip\" > \"$archive\"\nprintf '%s  %s\\n' \"$ARTIFACT_SHA256\" \"$archive\" | shasum -a 256 -c\nunzip -q \"$archive\" -d \"$RUNNER_TEMP/agents-alpha\"\n"
+    - id: install
+      name: Verify and install the exact archive
+      run: "cat > \"$RUNNER_TEMP/js-install.mjs\" <<'INSTALL'\nimport assert from \"node:assert/strict\";\nimport { execFileSync } from \"node:child_process\";\nimport { cpSync, readFileSync, realpathSync } from \"node:fs\";\nimport { join, sep } from \"node:path\";\nimport { pathToFileURL } from \"node:url\";\n\nconst checkout = process.argv[2];\nconst { hashes, verifyArtifactDirectory } = await import(\n  pathToFileURL(join(checkout, \"scripts/verify-alpha-package.mjs\"))\n);\nconst { verifyNativeReceipt, verifyStarterLock } = await import(\n  pathToFileURL(join(checkout, \"scripts/alpha-package.mjs\"))\n);\nconst { ARTIFACT_DIRECTORY, PRODUCER_SDK, RECEIPT_SOURCE, RUNNER_TEMP } =\n  process.env;\nassert.equal(process.platform + \"-\" + process.arch, \"darwin-arm64\");\nconst build = await verifyArtifactDirectory(ARTIFACT_DIRECTORY);\nassert.equal(build.sourceCommit, PRODUCER_SDK);\nconst readJson = (path) => JSON.parse(readFileSync(path, \"utf8\"));\nfor (const profile of [\"starter\", \"app\"]) {\n  const installed\
+        \ = readJson(\n    join(ARTIFACT_DIRECTORY, `installed-${profile}-darwin-arm64.json`),\n  );\n  assert.equal(installed.profile, profile);\n  assert(installed.verified.includes(\"native-receipt\"));\n  for (const field of Object.keys(build))\n    assert.deepEqual(installed[field], build[field]);\n}\n\nexecFileSync(\"/usr/bin/tar\", [\n  \"-xzf\",\n  join(ARTIFACT_DIRECTORY, build.starter.archive),\n  \"-C\",\n  RUNNER_TEMP,\n]);\nconst consumer = join(RUNNER_TEMP, \"agents-starter\");\nconst manifest = readJson(join(consumer, \"package.json\"));\nfor (const [name, record] of Object.entries(build.packages)) {\n  assert.equal(\n    manifest.dependencies[name],\n    `file:vendor/agents/${record.archive}`,\n  );\n  assert.equal(\n    (await hashes(join(consumer, \"vendor/agents\", record.archive))).sha256,\n    record.sha256,\n  );\n}\nverifyStarterLock(\n  readJson(join(consumer, \"package-lock.json\")),\n  build.packages,\n);\nconst npm = join(process.execPath, \"../../lib/node_modules/npm/bin/npm-cli.js\"\
+        );\nexecFileSync(process.execPath, [npm, \"ci\", \"--ignore-scripts\"], {\n  cwd: consumer,\n  env: { ...process.env, NODE_PATH: \"\", PATH: \"\" },\n  stdio: \"inherit\",\n});\n\nconst installed = realpathSync(join(consumer, \"node_modules/@openai/agents\"));\nassert(installed.startsWith(realpathSync(consumer) + sep));\nconst checked = join(RECEIPT_SOURCE, \"packages/agents\");\nconst nativeReceipt = readJson(join(installed, \"native/build-receipt.json\"));\nconst inputs = execFileSync(\n  \"git\",\n  [\n    \"ls-files\",\n    \"--\",\n    \"native/CODEX_REVISION\",\n    \"native/Cargo.toml\",\n    \"native/Cargo.lock\",\n    \"native/build.rs\",\n    \"native/tests/fixtures/exec_server.rs\",\n    \"native/rust\",\n    \"native/patches\",\n    \"native/rmcp-patches\",\n    \"scripts\",\n  ],\n  { cwd: join(checkout, \"packages/agents\"), encoding: \"utf8\" },\n)\n  .trim()\n  .split(\"\\n\");\nassert.deepEqual(Object.keys(nativeReceipt.inputs).sort(), inputs.sort());\ncpSync(\n  join(installed, \"native/build-receipt.json\"\
+        ),\n  join(checked, \"native/build-receipt.json\"),\n);\ncpSync(\n  join(installed, \"native/codex.node\"),\n  join(checked, \"native/codex.node\"),\n);\ncpSync(join(installed, \"bin\"), join(checked, \"bin\"), { recursive: true });\nconst { revision } = await verifyNativeReceipt(RECEIPT_SOURCE, build.platform);\nassert.equal(revision, build.codexRevision);\n\nexecFileSync(\n  process.execPath,\n  [\n    \"--input-type=module\",\n    \"-e\",\n    `\n  import assert from 'node:assert/strict';\n  import { createRequire } from 'node:module';\n  import { fileURLToPath } from 'node:url';\n  const root = process.env.INSTALLED_AGENT_ROOT;\n  const sdk = fileURLToPath(import.meta.resolve('@openai/agents'));\n  assert(sdk.startsWith(root + '/dist/'), sdk);\n  const { Environment } = await import('@openai/agents');\n  assert.equal(typeof Environment.local, 'function');\n  const require = createRequire(import.meta.url);\n  const native = root + '/native/codex.node';\n  assert.equal(typeof require(native).create_engine,\
+        \ 'function');\n  console.log('Loaded installed SDK and native addon', sdk, native);\n`,\n  ],\n  {\n    cwd: consumer,\n    env: { ...process.env, NODE_PATH: \"\", INSTALLED_AGENT_ROOT: installed },\n    stdio: \"inherit\",\n  },\n);\nconsole.log(\n  \"Verified native source, products and installed package\",\n  build.sourceCommit,\n  revision,\n);\nINSTALL\nTEST_FILE=packages/agents/test/native/local-executor-policy-native.test.ts\nset -euo pipefail\ncheckout=\"$PWD\"\nartifacts=\"$RUNNER_TEMP/agents-alpha\"\nstage=\"$RUNNER_TEMP/native-receipt-source\"\nmkdir \"$stage\"\ngit archive HEAD packages/agents | tar -x -C \"$stage\"\n\nexport ARTIFACT_DIRECTORY=\"$artifacts\" RECEIPT_SOURCE=\"$stage\"\nexport PRODUCER_SDK=\"$QUALIFIED_SDK_COMMIT\"\nnode \"$RUNNER_TEMP/js-install.mjs\" \"$checkout\"\n"
+    - name: Observe delayed Darwin wrapper cleanup through installed SDK
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        PROBE_SHA256: 421d097cdb929950a8b381b636236ef3bdda6428244cf71bca3c428b3f2676d9
+        PROBE_SLUG: wrapper
+        PROBE_TITLE: observes a published local command after close with its trusted wrapper paused
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nproduct_hashes() {\n  (cd \"$1/node_modules/@openai/agents\" && shasum -a 256 native/{codex.node,build-receipt.json} bin/codex-*)\n}\n\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\nfixture=\"$test_dir/managed-$PROBE_SLUG.test.ts\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$fixture\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nif [[ ! -e \"$consumer/node_modules/vitest\" ]]; then\n  ln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nfi\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\nprobe=\"$RUNNER_TEMP/$PROBE_SLUG-probe.ts\"\nbase64 -D >\"$probe\" <<'PROBE'\naXQuc2tpcElmKHByb2Nlc3MucGxhdGZvcm0gIT09ICdkYXJ3aW4nKSgKICAnb2JzZXJ2ZXMgYSBw\ndWJsaXNoZWQgbG9jYWwgY29tbWFuZCBhZnRlciBjbG9zZSB3aXRoIGl0cyB0cnVzdGVkIHdyYXBw\nZXIgcGF1c2VkJywKICBhc3luYyAoKSA9PiB7CiAgICBjb25zdCBkaXJlY3RvcnkgPSBhd2FpdCBy\nZWFscGF0aCgKICAgICAgYXdhaXQgbWtkdGVtcChqb2luKHRtcGRpcigpLCAnYWdlbnRzLWRhcndp\n\
+        bi13cmFwcGVyLScpKSwKICAgICk7CiAgICBjb25zdCBjd2QgPSBqb2luKGRpcmVjdG9yeSwgJ3dv\ncmtzcGFjZScpOwogICAgY29uc3QgZ3JhbnQgPSBqb2luKGRpcmVjdG9yeSwgJ2dyYW50Jyk7CiAg\nICBjb25zdCBtYXJrZXIgPSBqb2luKGdyYW50LCAnaGVhcnRiZWF0Jyk7CiAgICBjb25zdCBwaWRG\naWxlID0gam9pbihncmFudCwgJ3BheWxvYWQtcGlkJyk7CiAgICBjb25zdCBxdW90ZWQgPSAocGF0\naDogc3RyaW5nKSA9PiAiJyIgKyBwYXRoLnJlcGxhY2VBbGwoIiciLCAiJ1xcJyciKSArICInIjsK\nICAgIGNvbnN0IHNpemUgPSAoKSA9PiByZWFkRmlsZShtYXJrZXIsICd1dGY4JykudGhlbigodmFs\ndWUpID0+IHZhbHVlLmxlbmd0aCk7CiAgICBjb25zdCBoZWxwZXIgPSBhd2FpdCByZWFscGF0aCgK\nICAgICAgam9pbihwYWNrYWdlUm9vdCwgJ25vZGVfbW9kdWxlcy9Ab3BlbmFpL2FnZW50cy9iaW4v\nY29kZXgtc2RrLXJ1bnRpbWUnKSwKICAgICk7CiAgICBjb25zdCB3cmFwcGVyQ29tbWFuZCA9IGhl\nbHBlciArICcgLS1jb2RleC1zZGstZGFyd2luLWNvbW1hbmQgJzsKICAgIGNvbnN0IHByb2Nlc3NE\nZXRhaWxzID0gKHBpZDogbnVtYmVyKSA9PiB7CiAgICAgIGNvbnN0IHJlc3VsdCA9IHNwYXduU3lu\nYygKICAgICAgICAnL2Jpbi9wcycsCiAgICAgICAgWyctd3cnLCAnLXAnLCBTdHJpbmcocGlkKSwg\nJy1vJywgJ3N0YXQ9LGxzdGFydD0sY29tbWFuZD0nXSwKICAgICAgICB7IGVuY29kaW5nOiAndXRm\nOCcgfSwKICAgICAgKTsKICAgICAgaWYgKHJlc3VsdC5lcnJvcikgdGhyb3cgcmVzdWx0LmVycm9y\n\
+        OwogICAgICBpZiAocmVzdWx0LnN0YXR1cyA9PT0gMSkgcmV0dXJuIG51bGw7CiAgICAgIGV4cGVj\ndChyZXN1bHQuc3RhdHVzKS50b0JlKDApOwogICAgICBjb25zdCBbLCBzdGF0dXMsIGlkZW50aXR5\nXSA9CiAgICAgICAgL14oXFMrKVxzKyguKykkLy5leGVjKHJlc3VsdC5zdGRvdXQudHJpbSgpKSA/\nPyBbXTsKICAgICAgcmV0dXJuIHN0YXR1cyAmJiBpZGVudGl0eSA/IHsgc3RhdHVzLCBpZGVudGl0\neSB9IDogbnVsbDsKICAgIH07CiAgICBjb25zdCBwcm9jZXNzSWRlbnRpdHkgPSAocGlkOiBudW1i\nZXIpID0+CiAgICAgIHByb2Nlc3NEZXRhaWxzKHBpZCk/LmlkZW50aXR5ID8/IG51bGw7CiAgICBj\nb25zdCBmaW5kV3JhcHBlciA9ICgpID0+IHsKICAgICAgY29uc3Qgcm93cyA9IGV4ZWNGaWxlU3lu\nYygKICAgICAgICAnL2Jpbi9wcycsCiAgICAgICAgWyctYXh3dycsICctbycsICdwaWQ9LHBwaWQ9\nLGNvbW1hbmQ9J10sCiAgICAgICAgeyBlbmNvZGluZzogJ3V0ZjgnIH0sCiAgICAgICkuc3BsaXQo\nJ1xuJyk7CiAgICAgIGNvbnN0IG1hdGNoZXMgPSByb3dzCiAgICAgICAgLm1hcCgocm93KSA9PiAv\nXlxzKihcZCspXHMrKFxkKylccysoLiopJC8uZXhlYyhyb3cpKQogICAgICAgIC5maWx0ZXIoCiAg\nICAgICAgICAocm93KSA9PgogICAgICAgICAgICBOdW1iZXIocm93Py5bMl0pID09PSBwcm9jZXNz\nLnBpZCAmJgogICAgICAgICAgICByb3c/LlszXT8uc3RhcnRzV2l0aCh3cmFwcGVyQ29tbWFuZCks\nCiAgICAgICAgKTsKICAgICAgZXhwZWN0KG1hdGNoZXMpLnRvSGF2ZUxlbmd0aCgxKTsKICAgICAg\n\
+        cmV0dXJuIE51bWJlcihtYXRjaGVzWzBdPy5bMV0pOwogICAgfTsKICAgIGNvbnN0IHNlcnZlciA9\nIG5ldyBNb2RlbFNlcnZlcihbCiAgICAgIFsKICAgICAgICBjYWxsKAogICAgICAgICAgJ2V4ZWNf\nY29tbWFuZCcsCiAgICAgICAgICB7CiAgICAgICAgICAgIGNtZDoKICAgICAgICAgICAgICAncHJp\nbnRmICIlc1xcbiIgIiQkIiA+ICcgKwogICAgICAgICAgICAgIHF1b3RlZChwaWRGaWxlKSArCiAg\nICAgICAgICAgICAgJzsgaT0wOyB3aGlsZSBbICIkaSIgLWx0IDE4MCBdOyBkbyBwcmludGYgeCA+\nPiAnICsKICAgICAgICAgICAgICBxdW90ZWQobWFya2VyKSArCiAgICAgICAgICAgICAgJzsgL2Jp\nbi9zbGVlcCAwLjI1OyBpPSQoKGkgKyAxKSk7IGRvbmUnLAogICAgICAgICAgICB5aWVsZF90aW1l\nX21zOiAxMDAwLAogICAgICAgICAgfSwKICAgICAgICAgIHsgY2FsbElkOiAnc3RhcnQtbG9jYWwt\naGVhcnRiZWF0JyB9LAogICAgICAgICksCiAgICAgIF0sCiAgICAgIChyZXF1ZXN0KSA9PiB7CiAg\nICAgICAgZXhwZWN0KEpTT04uc3RyaW5naWZ5KHJlcXVlc3QuaW5wdXQpKS50b01hdGNoKAogICAg\nICAgICAgL1Byb2Nlc3MgcnVubmluZyB3aXRoIHNlc3Npb24gSUQgXGQrLywKICAgICAgICApOwog\nICAgICAgIHJldHVybiBbbWVzc2FnZSgnSGVhcnRiZWF0IHJ1bm5pbmcuJyldOwogICAgICB9LAog\nICAgXSk7CiAgICBsZXQgd3JhcHBlcjogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6IHN0cmluZyB9\nIHwgdW5kZWZpbmVkOwogICAgbGV0IHBheWxvYWQ6IHsgcGlkOiBudW1iZXI7IGlkZW50aXR5OiBz\n\
+        dHJpbmcgfSB8IHVuZGVmaW5lZDsKICAgIGxldCBjbG9zZVN0YXJ0ZWQgPSBmYWxzZTsKICAgIGNv\nbnN0IG1hdGNoZXNJZGVudGl0eSA9IChwcm9jZXNzSW5mbzogeyBwaWQ6IG51bWJlcjsgaWRlbnRp\ndHk6IHN0cmluZyB9KSA9PgogICAgICBwcm9jZXNzSWRlbnRpdHkocHJvY2Vzc0luZm8ucGlkKSA9\nPT0gcHJvY2Vzc0luZm8uaWRlbnRpdHk7CiAgICBjb25zdCBzdG9wcGVkID0gKHByb2Nlc3NJbmZv\nOiB7IHBpZDogbnVtYmVyOyBpZGVudGl0eTogc3RyaW5nIH0pID0+IHsKICAgICAgY29uc3QgZGV0\nYWlscyA9IHByb2Nlc3NEZXRhaWxzKHByb2Nlc3NJbmZvLnBpZCk7CiAgICAgIHJldHVybiAoCiAg\nICAgICAgZGV0YWlscz8uaWRlbnRpdHkgPT09IHByb2Nlc3NJbmZvLmlkZW50aXR5ICYmCiAgICAg\nICAgZGV0YWlscy5zdGF0dXMuc3RhcnRzV2l0aCgnVCcpCiAgICAgICk7CiAgICB9OwogICAgY29u\nc3Qgc2lnbmFsID0gKAogICAgICBwcm9jZXNzSW5mbzogeyBwaWQ6IG51bWJlcjsgaWRlbnRpdHk6\nIHN0cmluZyB9LAogICAgICBhY3Rpb246IE5vZGVKUy5TaWduYWxzLAogICAgKSA9PiB7CiAgICAg\nIGlmICghbWF0Y2hlc0lkZW50aXR5KHByb2Nlc3NJbmZvKSkgcmV0dXJuOwogICAgICB0cnkgewog\nICAgICAgIHByb2Nlc3Mua2lsbChwcm9jZXNzSW5mby5waWQsIGFjdGlvbik7CiAgICAgIH0gY2F0\nY2ggKGVycm9yKSB7CiAgICAgICAgaWYgKChlcnJvciBhcyBOb2RlSlMuRXJybm9FeGNlcHRpb24p\nLmNvZGUgIT09ICdFU1JDSCcpIHRocm93IGVycm9yOwogICAgICB9CiAgICB9OwogICAgdHJ5IHsK\n\
+        ICAgICAgYXdhaXQgUHJvbWlzZS5hbGwoW21rZGlyKGN3ZCksIG1rZGlyKGdyYW50KV0pOwogICAg\nICBhd2FpdCB1c2luZyBwcm92aWRlciA9IGF3YWl0IHByb3ZpZGVyRm9yKHNlcnZlcik7CiAgICAg\nIGNvbnN0IGFnZW50ID0gbmV3IEFnZW50KHsKICAgICAgICBwcm92aWRlciwKICAgICAgICBtb2Rl\nbDogJ2dwdC01JywKICAgICAgICBpbnN0cnVjdGlvbnM6ICdSdW4gdGhlIHNjcmlwdGVkIGxvY2Fs\nIGNvbW1hbmQuJywKICAgICAgfSk7CiAgICAgIGNvbnN0IHNlc3Npb24gPSBhd2FpdCBhZ2VudC5z\nZXNzaW9uKHsKICAgICAgICBlbnZpcm9ubWVudDogRW52aXJvbm1lbnQubG9jYWwoewogICAgICAg\nICAgY3dkLAogICAgICAgICAgd3JpdGFibGVSb290czogW2dyYW50XSwKICAgICAgICAgIHRvb2xz\nOiBbJ2V4ZWNfY29tbWFuZCddLAogICAgICAgIH0pLAogICAgICB9KTsKICAgICAgdHJ5IHsKICAg\nICAgICBjb25zdCB0dXJuID0gYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1N0YXJ0IHRoZSBib3VuZGVk\nIGhlYXJ0YmVhdC4nKTsKICAgICAgICBleHBlY3QoKGF3YWl0IHR1cm4ud2FpdCgpKS5maW5hbE91\ndHB1dCkudG9CZSgnSGVhcnRiZWF0IHJ1bm5pbmcuJyk7CiAgICAgICAgY29uc3Qgd3JhcHBlclBp\nZCA9IGZpbmRXcmFwcGVyKCk7CiAgICAgICAgY29uc3Qgd3JhcHBlcklkZW50aXR5ID0gcHJvY2Vz\nc0lkZW50aXR5KHdyYXBwZXJQaWQpOwogICAgICAgIGV4cGVjdCh3cmFwcGVySWRlbnRpdHkpLnRv\nQ29udGFpbih3cmFwcGVyQ29tbWFuZCk7CiAgICAgICAgd3JhcHBlciA9IHsgcGlkOiB3cmFwcGVy\n\
+        UGlkLCBpZGVudGl0eTogd3JhcHBlcklkZW50aXR5ISB9OwogICAgICAgIGNvbnN0IHBheWxvYWRQ\naWQgPSBOdW1iZXIoKGF3YWl0IHJlYWRGaWxlKHBpZEZpbGUsICd1dGY4JykpLnRyaW0oKSk7CiAg\nICAgICAgZXhwZWN0KE51bWJlci5pc1NhZmVJbnRlZ2VyKHBheWxvYWRQaWQpICYmIHBheWxvYWRQ\naWQgPiAxKS50b0JlKHRydWUpOwogICAgICAgIGNvbnN0IHBheWxvYWRJZGVudGl0eSA9IHByb2Nl\nc3NJZGVudGl0eShwYXlsb2FkUGlkKTsKICAgICAgICBleHBlY3QocGF5bG9hZElkZW50aXR5KS50\nb0NvbnRhaW4obWFya2VyKTsKICAgICAgICBwYXlsb2FkID0geyBwaWQ6IHBheWxvYWRQaWQsIGlk\nZW50aXR5OiBwYXlsb2FkSWRlbnRpdHkhIH07CgogICAgICAgIHNpZ25hbCh3cmFwcGVyLCAnU0lH\nU1RPUCcpOwogICAgICAgIGF3YWl0IHZpLndhaXRGb3IoKCkgPT4gZXhwZWN0KHN0b3BwZWQod3Jh\ncHBlciEpKS50b0JlKHRydWUpLCB7CiAgICAgICAgICB0aW1lb3V0OiAyMDAwLAogICAgICAgIH0p\nOwogICAgICAgIGNvbnN0IGJlZm9yZUNsb3NlID0gYXdhaXQgc2l6ZSgpOwogICAgICAgIGF3YWl0\nIHZpLndhaXRGb3IoYXN5bmMgKCkgPT4KICAgICAgICAgIGV4cGVjdChhd2FpdCBzaXplKCkpLnRv\nQmVHcmVhdGVyVGhhbihiZWZvcmVDbG9zZSksCiAgICAgICAgKTsKCiAgICAgICAgY29uc3Qgc3Rh\ncnRlZCA9IHBlcmZvcm1hbmNlLm5vdygpOwogICAgICAgIGNsb3NlU3RhcnRlZCA9IHRydWU7CiAg\nICAgICAgY29uc3QgdGltZW91dCA9IG5ldyBBYm9ydENvbnRyb2xsZXIoKTsKICAgICAgICBjb25z\n\
+        dCBjbG9zZSA9IHNlc3Npb24uY2xvc2UoKS50aGVuKAogICAgICAgICAgKCkgPT4gKHsgb3V0Y29t\nZTogJ3Jlc29sdmVkJywgbWVzc2FnZTogJycgfSksCiAgICAgICAgICAoZXJyb3I6IHVua25vd24p\nID0+ICh7IG91dGNvbWU6ICdyZWplY3RlZCcsIG1lc3NhZ2U6IFN0cmluZyhlcnJvcikgfSksCiAg\nICAgICAgKTsKICAgICAgICBjb25zdCBvYnNlcnZlZCA9IGF3YWl0IFByb21pc2UucmFjZShbCiAg\nICAgICAgICBjbG9zZSwKICAgICAgICAgIGRlbGF5KAogICAgICAgICAgICAxNl8wMDAsCiAgICAg\nICAgICAgIHsgb3V0Y29tZTogJ3RpbWVvdXQnLCBtZXNzYWdlOiAnJyB9LAogICAgICAgICAgICB7\nIHNpZ25hbDogdGltZW91dC5zaWduYWwgfSwKICAgICAgICAgICksCiAgICAgICAgXSkuZmluYWxs\neSgoKSA9PiB0aW1lb3V0LmFib3J0KCkpOwogICAgICAgIGNvbnN0IGNsb3NlTWlsbGlzZWNvbmRz\nID0gTWF0aC5yb3VuZChwZXJmb3JtYW5jZS5ub3coKSAtIHN0YXJ0ZWQpOwogICAgICAgIGNvbnN0\nIGF0Q2xvc2UgPSBhd2FpdCBzaXplKCk7CiAgICAgICAgY29uc3QgcGF5bG9hZEF0Q2xvc2UgPSBt\nYXRjaGVzSWRlbnRpdHkocGF5bG9hZCk7CiAgICAgICAgYXdhaXQgZGVsYXkoNjAwKTsKICAgICAg\nICBjb25zdCBiZWZvcmVSZXN1bWUgPSBhd2FpdCBzaXplKCk7CiAgICAgICAgY29uc3Qgd3JhcHBl\nclN0aWxsUGF1c2VkID0gc3RvcHBlZCh3cmFwcGVyKTsKICAgICAgICBjb25zb2xlLmluZm8oCiAg\nICAgICAgICAnW0RhcndpbiB3cmFwcGVyIHBhdXNlXScsCiAgICAgICAgICBKU09OLnN0cmluZ2lm\n\
+        eSh7CiAgICAgICAgICAgIGNsb3NlOiBvYnNlcnZlZCwKICAgICAgICAgICAgY2xvc2VNaWxsaXNl\nY29uZHMsCiAgICAgICAgICAgIHdyYXBwZXJTdGlsbFBhdXNlZCwKICAgICAgICAgICAgcGF5bG9h\nZEF0Q2xvc2UsCiAgICAgICAgICAgIGF0Q2xvc2UsCiAgICAgICAgICAgIGJlZm9yZVJlc3VtZSwK\nICAgICAgICAgICAgcG9zdENsb3NlV3JpdGVzOiBiZWZvcmVSZXN1bWUgPiBhdENsb3NlLAogICAg\nICAgICAgfSksCiAgICAgICAgKTsKCiAgICAgICAgc2lnbmFsKHdyYXBwZXIsICdTSUdDT05UJyk7\nCiAgICAgICAgYXdhaXQgdmkud2FpdEZvcigKICAgICAgICAgICgpID0+IHsKICAgICAgICAgICAg\nZXhwZWN0KG1hdGNoZXNJZGVudGl0eSh3cmFwcGVyISkpLnRvQmUoZmFsc2UpOwogICAgICAgICAg\nICBleHBlY3QobWF0Y2hlc0lkZW50aXR5KHBheWxvYWQhKSkudG9CZShmYWxzZSk7CiAgICAgICAg\nICB9LAogICAgICAgICAgeyB0aW1lb3V0OiA3MDAwIH0sCiAgICAgICAgKTsKICAgICAgICBjb25z\ndCBhZnRlclJlY292ZXJ5ID0gYXdhaXQgc2l6ZSgpOwogICAgICAgIGF3YWl0IGRlbGF5KDYwMCk7\nCiAgICAgICAgZXhwZWN0KGF3YWl0IHNpemUoKSkudG9CZShhZnRlclJlY292ZXJ5KTsKICAgICAg\nICBjb25zb2xlLmluZm8oCiAgICAgICAgICAnW0RhcndpbiB3cmFwcGVyIHJlY292ZXJ5XScsCiAg\nICAgICAgICBKU09OLnN0cmluZ2lmeSh7CiAgICAgICAgICAgIGFmdGVyUmVjb3ZlcnksCiAgICAg\nICAgICAgIHdyYXBwZXJFeGl0ZWQ6IHRydWUsCiAgICAgICAgICAgIHBheWxvYWRFeGl0ZWQ6IHRy\n\
+        dWUsCiAgICAgICAgICB9KSwKICAgICAgICApOwogICAgICAgIGV4cGVjdChvYnNlcnZlZC5vdXRj\nb21lKS50b0JlKCdyZWplY3RlZCcpOwogICAgICAgIGV4cGVjdChvYnNlcnZlZC5tZXNzYWdlKS50\nb0NvbnRhaW4oCiAgICAgICAgICAnYWdlbnQgdHJlZSBzaHV0ZG93biBkaWQgbm90IGNvbXBsZXRl\nIGNsZWFubHknLAogICAgICAgICk7CiAgICAgICAgZXhwZWN0KHdyYXBwZXJTdGlsbFBhdXNlZCku\ndG9CZSh0cnVlKTsKICAgICAgICBzZXJ2ZXIuYXNzZXJ0RXhoYXVzdGVkKCk7CiAgICAgIH0gZmlu\nYWxseSB7CiAgICAgICAgaWYgKHdyYXBwZXIpIHNpZ25hbCh3cmFwcGVyLCAnU0lHQ09OVCcpOwog\nICAgICAgIGlmIChwYXlsb2FkKSBzaWduYWwocGF5bG9hZCwgJ1NJR0tJTEwnKTsKICAgICAgICBp\nZiAoIWNsb3NlU3RhcnRlZCkgewogICAgICAgICAgYXdhaXQgUHJvbWlzZS5yYWNlKFtzZXNzaW9u\nLmNsb3NlKCkuY2F0Y2goKCkgPT4ge30pLCBkZWxheSg0MDAwKV0pOwogICAgICAgIH0KICAgICAg\nfQogICAgfSBmaW5hbGx5IHsKICAgICAgYXdhaXQgcm0oZGlyZWN0b3J5LCB7IHJlY3Vyc2l2ZTog\ndHJ1ZSwgZm9yY2U6IHRydWUgfSk7CiAgICB9CiAgfSwKICA1NV8wMDAsCik7Cg==\nPROBE\nprintf '%s  %s\\n' \"$PROBE_SHA256\" \"$probe\" | shasum -a 256 -c\ncat \"$probe\" >> \"$fixture\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nproduct_hashes\
+        \ \"$consumer\" | tee \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\"\nstatus=0\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/managed-$PROBE_SLUG.test.ts\" -t \"^$PROBE_TITLE$\" \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/$PROBE_SLUG-report.json\" \\\n  | tee \"$RUNNER_TEMP/$PROBE_SLUG-evidence.log\" || status=$?\nproduct_hashes \"$consumer\" > \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ncmp \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\" \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ntest \"$status\" = 0\njq -e --arg title \"$PROBE_TITLE\" \\\n  '[.testResults[].assertionResults[] | select(.status==\"passed\") | .fullName] == [$title]' \\\n  \"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\n"
+    - name: Observe hard-link grants through a cloned installed package
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        PROBE_SHA256: d8f108363b92da616ef2e504282d8fed55143f4bfa4015f32820c9168636d35e
+        PROBE_SLUG: helper-alias
+        PROBE_TITLE: qualifies native helper hard-link grants in an installed macOS package
+        OPENAI_AGENTS_EXPECT_HELPER_ALIAS_REJECT: '0'
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\nproduct_hashes() {\n  (cd \"$1/node_modules/@openai/agents\" && shasum -a 256 native/{codex.node,build-receipt.json} bin/codex-*)\n}\n\noriginal=\"$consumer\"\nconsumer=\"$RUNNER_TEMP/agents-alias-starter\"\nmkdir \"$consumer\"\ncp -RP \"$original/node_modules\" \"$original/package.json\" \"$consumer/\"\ncmp <(product_hashes \"$original\") <(product_hashes \"$consumer\")\n\ntest_dir=\"$consumer/test/native\"\nmkdir -p \"$test_dir\"\nfixture=\"$test_dir/managed-$PROBE_SLUG.test.ts\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$fixture\"\ncp -R packages/agents/test/native/fixtures \"$test_dir/\"\nif [[ ! -e \"$consumer/node_modules/vitest\" ]]; then\n  ln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\nfi\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\nprobe=\"$RUNNER_TEMP/$PROBE_SLUG-probe.ts\"\nbase64 -D >\"$probe\" <<'PROBE'\nCmltcG9ydCB7IGNvcHlGaWxlIGFzIGNvcHlEYXJ3aW5BbGlhc0ZpbGUsIGxpbmsgYXMgbGlua0Rh\n\
+        cndpbkFsaWFzRmlsZSwgcmVuYW1lIGFzIHJlbmFtZURhcndpbkFsaWFzRmlsZSwgc3RhdCBhcyBz\ndGF0RGFyd2luQWxpYXNGaWxlIH0gZnJvbSAnbm9kZTpmcy9wcm9taXNlcyc7CgppdCgncXVhbGlm\naWVzIG5hdGl2ZSBoZWxwZXIgaGFyZC1saW5rIGdyYW50cyBpbiBhbiBpbnN0YWxsZWQgbWFjT1Mg\ncGFja2FnZScsIGFzeW5jICgpID0+IHsKICBleHBlY3QocHJvY2Vzcy5wbGF0Zm9ybSkudG9CZSgn\nZGFyd2luJyk7CiAgY29uc3QgY29uc3VtZXIgPSBhd2FpdCByZWFscGF0aChwYWNrYWdlUm9vdCk7\nCiAgY29uc3QgaGVscGVyID0gYXdhaXQgcmVhbHBhdGgoam9pbihjb25zdW1lciwgJ25vZGVfbW9k\ndWxlcy9Ab3BlbmFpL2FnZW50cy9iaW4vY29kZXgtY29kZS1tb2RlLWhvc3QnKSk7CiAgZXhwZWN0\nKGhlbHBlci5zdGFydHNXaXRoKGNvbnN1bWVyICsgJy8nKSkudG9CZSh0cnVlKTsKICBjb25zdCB7\nIG1vZGUsIHNpemUgfSA9IGF3YWl0IHN0YXREYXJ3aW5BbGlhc0ZpbGUoaGVscGVyKTsKICBleHBl\nY3Qoc2l6ZSkudG9CZUdyZWF0ZXJUaGFuKDEwMDAwKTsKICBjb25zdCBzY3JhdGNoID0gYXdhaXQg\nbWtkdGVtcChqb2luKGNvbnN1bWVyLCAnZGFyd2luLWhlbHBlci1hbGlhcy0nKSk7CiAgY29uc3Qg\nc2F2ZWQgPSBqb2luKHNjcmF0Y2gsICdvcmlnaW5hbC1jb2RlLW1vZGUtaG9zdCcpOwogIGNvbnN0\nIHN0b3JlID0gam9pbihzY3JhdGNoLCAnc3RvcmUnKTsKICBjb25zdCBjd2QgPSBqb2luKHNjcmF0\nY2gsICdjd2QnKTsKICBjb25zdCBvdmVybGFwID0gam9pbihzY3JhdGNoLCAnb3ZlcmxhcCcpOwog\n\
+        IGNvbnN0IGRpc2pvaW50ID0gam9pbihzY3JhdGNoLCAnZGlzam9pbnQnKTsKICBjb25zdCBhbGlh\ncyA9IGpvaW4ob3ZlcmxhcCwgJ25hdGl2ZS1ob3N0LWFsaWFzJyk7CiAgY29uc3QgaW52b2tlZCA9\nIGpvaW4oc2NyYXRjaCwgJ2hvc3QtaW52b2tlZCcpOwogIGNvbnN0IGluc3RhbGxlZFNoaW0gPSBq\nb2luKHNjcmF0Y2gsICdjb25maWd1cmVkLWhvc3Qtc2hpbScpOwogIGNvbnN0IHF1b3RlID0gKHBh\ndGg6IHN0cmluZykgPT4gIiciICsgcGF0aC5yZXBsYWNlQWxsKCInIiwgIidcXCcnIikgKyAiJyI7\nCiAgY29uc3QgbWFya2VyID0gJ3IyMC1pbmVydC1oYXJkbGluay1tYXJrZXInOwogIGNvbnN0IHNo\naW0gPSBgIyEvYmluL3NoXG5wcmludGYgJXMgaW52b2tlZCA+ICR7cXVvdGUoaW52b2tlZCl9XG5l\neGVjICR7cXVvdGUoam9pbihzdG9yZSwgJ3JlYWwtaG9zdCcpKX0gIiRAIlxuIyBNYXJrZXI6IGA7\nCiAgY29uc3QgZml4ZWQgPSBwcm9jZXNzLmVudi5PUEVOQUlfQUdFTlRTX0VYUEVDVF9IRUxQRVJf\nQUxJQVNfUkVKRUNUID09PSAnMSc7CiAgYXdhaXQgUHJvbWlzZS5hbGwoW21rZGlyKHN0b3JlKSwg\nbWtkaXIoY3dkKSwgbWtkaXIob3ZlcmxhcCksIG1rZGlyKGRpc2pvaW50KV0pOwogIGF3YWl0IGNv\ncHlEYXJ3aW5BbGlhc0ZpbGUoaGVscGVyLCBqb2luKHN0b3JlLCAncmVhbC1ob3N0JykpOwogIGV4\ncGVjdChhd2FpdCByZWFkRmlsZShqb2luKHN0b3JlLCAncmVhbC1ob3N0JykpKS50b0VxdWFsKGF3\nYWl0IHJlYWRGaWxlKGhlbHBlcikpOwogIGF3YWl0IHdyaXRlRmlsZShpbnN0YWxsZWRTaGltLCBz\n\
+        aGltLCB7IG1vZGU6IG1vZGUgJiAwbzc3NyB9KTsKICBhd2FpdCByZW5hbWVEYXJ3aW5BbGlhc0Zp\nbGUoaGVscGVyLCBzYXZlZCk7CiAgdHJ5IHsKICAgIGF3YWl0IHJlbmFtZURhcndpbkFsaWFzRmls\nZShpbnN0YWxsZWRTaGltLCBoZWxwZXIpOwogICAgYXdhaXQgbGlua0RhcndpbkFsaWFzRmlsZSho\nZWxwZXIsIGFsaWFzKTsKICAgIGF3YWl0IGxpbmtEYXJ3aW5BbGlhc0ZpbGUoaGVscGVyLCBqb2lu\nKHN0b3JlLCAnb3RoZXItaW5zdGFsbC1saW5rJykpOwogICAgY29uc3QgcHJvdGVjdGVkU3RhdCA9\nIGF3YWl0IHN0YXREYXJ3aW5BbGlhc0ZpbGUoaGVscGVyLCB7IGJpZ2ludDogdHJ1ZSB9KTsKICAg\nIGNvbnN0IGFsaWFzU3RhdCA9IGF3YWl0IHN0YXREYXJ3aW5BbGlhc0ZpbGUoYWxpYXMsIHsgYmln\naW50OiB0cnVlIH0pOwogICAgZXhwZWN0KFthbGlhc1N0YXQuZGV2LCBhbGlhc1N0YXQuaW5vLCBh\nbGlhc1N0YXQubmxpbmtdKS50b0VxdWFsKFtwcm90ZWN0ZWRTdGF0LmRldiwgcHJvdGVjdGVkU3Rh\ndC5pbm8sIDNuXSk7CiAgICBjb25zb2xlLmxvZygnRGFyd2luIGhlbHBlciBpZGVudGl0eTonLCBT\ndHJpbmcocHJvdGVjdGVkU3RhdC5kZXYpLCBTdHJpbmcocHJvdGVjdGVkU3RhdC5pbm8pLCAnbmxp\nbms9MycpOwogICAgY29uc3QgZW52aXJvbm1lbnQgPSAocm9vdDogc3RyaW5nKSA9PgogICAgICBF\nbnZpcm9ubWVudC5sb2NhbCh7IGN3ZCwgd3JpdGFibGVSb290czogW3Jvb3RdLCB0b29sczogWydl\neGVjX2NvbW1hbmQnXSB9KTsKICAgIGNvbnN0IGRpcmVjdFdyaXRlID0gYHByaW50ZiAlcyBkaXJl\n\
+        Y3QtcGF0aC13cml0ZSA+PiAke3F1b3RlKGhlbHBlcil9YDsKICAgIGNvbnN0IGNvbnRyb2xQcm9v\nZiA9IGpvaW4oZGlzam9pbnQsICdvcmRpbmFyeS13cml0ZScpOwogICAgewogICAgICBjb25zdCBj\nb21tYW5kID0gYGlmICgke2RpcmVjdFdyaXRlfSk7IHRoZW4gZXhpdCAzNzsgZmk7IHByaW50ZiAl\ncyBvcmRpbmFyeSA+ICR7cXVvdGUoY29udHJvbFByb29mKX1gOwogICAgICBjb25zdCBzZXJ2ZXIg\nPSBuZXcgTW9kZWxTZXJ2ZXIoW1tjYWxsKCdleGVjX2NvbW1hbmQnLCB7IGNtZDogY29tbWFuZCB9\nLCB7IGNhbGxJZDogJ2Rpc2pvaW50JyB9KV0sIFttZXNzYWdlKCdkb25lJyldXSk7CiAgICAgIGF3\nYWl0IHVzaW5nIHByb3ZpZGVyID0gYXdhaXQgcHJvdmlkZXJGb3Ioc2VydmVyKTsKICAgICAgY29u\nc3QgYWdlbnQgPSBuZXcgQWdlbnQoeyBwcm92aWRlciwgbW9kZWw6ICdncHQtNScsIGluc3RydWN0\naW9uczogJ1dvcmsuJyB9KTsKICAgICAgYXdhaXQgdXNpbmcgc2Vzc2lvbiA9IGF3YWl0IGFnZW50\nLnNlc3Npb24oeyBlbnZpcm9ubWVudDogZW52aXJvbm1lbnQoZGlzam9pbnQpIH0pOwogICAgICBl\neHBlY3QoKGF3YWl0IChhd2FpdCBzZXNzaW9uLnN1Ym1pdCgnUnVuIHRoZSBjb21tYW5kLicpKS53\nYWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCdkb25lJyk7CiAgICAgIGV4cGVjdChhd2FpdCByZWFk\nRmlsZShjb250cm9sUHJvb2YsICd1dGY4JykpLnRvQmUoJ29yZGluYXJ5Jyk7CiAgICAgIGV4cGVj\ndChhd2FpdCByZWFkRmlsZShoZWxwZXIsICd1dGY4JykpLnRvQmUoc2hpbSk7CiAgICAgIGV4cGVj\n\
+        dChzZXJ2ZXIucmVxdWVzdHMpLnRvSGF2ZUxlbmd0aCgyKTsKICAgICAgY29uc29sZS5sb2coJ0Rp\nc2pvaW50IG9yZGluYXJ5IHdyaXRlIGFsbG93ZWQ7IGRpcmVjdCBoZWxwZXIgcGF0aCB3cml0ZSBk\nZW5pZWQuJyk7CiAgICB9CiAgICB7CiAgICAgIGNvbnN0IHByb29mID0gam9pbihvdmVybGFwLCAn\nb3JkaW5hcnktd3JpdGUnKTsKICAgICAgY29uc3Qgc3RhdHVzID0gam9pbihvdmVybGFwLCAnYWxp\nYXMtd3JpdGUtcmVzdWx0Jyk7CiAgICAgIGNvbnN0IGNvbW1hbmQgPSBgcHJpbnRmICVzIG9yZGlu\nYXJ5ID4gJHtxdW90ZShwcm9vZil9OyBpZiAocHJpbnRmICVzICR7cXVvdGUobWFya2VyKX0gPj4g\nJHtxdW90ZShhbGlhcyl9KTsgdGhlbiBwcmludGYgYWxsb3dlZDsgZWxzZSBwcmludGYgZGVuaWVk\nOyBmaSA+ICR7cXVvdGUoc3RhdHVzKX1gOwogICAgICBjb25zdCBzZXJ2ZXIgPSBuZXcgTW9kZWxT\nZXJ2ZXIoW1tjYWxsKCdleGVjX2NvbW1hbmQnLCB7IGNtZDogY29tbWFuZCB9LCB7IGNhbGxJZDog\nJ2FsaWFzJyB9KV0sIFttZXNzYWdlKCdkb25lJyldXSk7CiAgICAgIGF3YWl0IHVzaW5nIHByb3Zp\nZGVyID0gYXdhaXQgcHJvdmlkZXJGb3Ioc2VydmVyKTsKICAgICAgY29uc3QgYWdlbnQgPSBuZXcg\nQWdlbnQoeyBwcm92aWRlciwgbW9kZWw6ICdncHQtNScsIGluc3RydWN0aW9uczogJ1dvcmsuJywg\ncHJvZ3JhbW1hdGljVG9vbENhbGxpbmc6IGZhbHNlIH0pOwogICAgICBpZiAoZml4ZWQpIHsKICAg\nICAgICBhd2FpdCBleHBlY3QoYWdlbnQuc2Vzc2lvbih7IGVudmlyb25tZW50OiBlbnZpcm9ubWVu\n\
+        dChvdmVybGFwKSB9KSkucmVqZWN0cy50b1Rocm93KC9sb2NhbCBleGVjdXRvciB3cml0ZSByb290\ncyBtdXN0IG5vdCBjb250YWluIGluc3RhbGxlZCBzYW5kYm94IGhlbHBlcnMvKTsKICAgICAgICBl\neHBlY3Qoc2VydmVyLnJlcXVlc3RzKS50b0hhdmVMZW5ndGgoMCk7CiAgICAgICAgZXhwZWN0KGF3\nYWl0IHJlYWRGaWxlKGhlbHBlciwgJ3V0ZjgnKSkudG9CZShzaGltKTsKICAgICAgICBjb25zb2xl\nLmxvZygnQWxpYXNlZCBoZWxwZXIgZ3JhbnQgcmVqZWN0ZWQgYmVmb3JlIGFueSBtb2RlbCBjYWxs\nLicpOwogICAgICB9IGVsc2UgewogICAgICAgIGF3YWl0IHVzaW5nIHNlc3Npb24gPSBhd2FpdCBh\nZ2VudC5zZXNzaW9uKHsgZW52aXJvbm1lbnQ6IGVudmlyb25tZW50KG92ZXJsYXApIH0pOwogICAg\nICAgIGV4cGVjdCgoYXdhaXQgKGF3YWl0IHNlc3Npb24uc3VibWl0KCdSdW4gdGhlIGNvbW1hbmQu\nJykpLndhaXQoKSkuZmluYWxPdXRwdXQpLnRvQmUoJ2RvbmUnKTsKICAgICAgICBleHBlY3QoYXdh\naXQgcmVhZEZpbGUocHJvb2YsICd1dGY4JykpLnRvQmUoJ29yZGluYXJ5Jyk7CiAgICAgICAgY29u\nc3QgZGlzcG9zaXRpb24gPSBhd2FpdCByZWFkRmlsZShzdGF0dXMsICd1dGY4Jyk7CiAgICAgICAg\nZXhwZWN0KFsnYWxsb3dlZCcsICdkZW5pZWQnXSkudG9Db250YWluKGRpc3Bvc2l0aW9uKTsKICAg\nICAgICBleHBlY3QoYXdhaXQgcmVhZEZpbGUoaGVscGVyLCAndXRmOCcpKS50b0JlKHNoaW0gKyAo\nZGlzcG9zaXRpb24gPT09ICdhbGxvd2VkJyA/IG1hcmtlciA6ICcnKSk7CiAgICAgICAgZXhwZWN0\n\
+        KHNlcnZlci5yZXF1ZXN0cykudG9IYXZlTGVuZ3RoKDIpOwogICAgICAgIGNvbnNvbGUubG9nKCdQ\ncmUtZXhpc3RpbmcgaGVscGVyIGhhcmRsaW5rIHdyaXRlOicsIGRpc3Bvc2l0aW9uKTsKICAgICAg\nfQogICAgfQogICAgewogICAgICBjb25zdCBzZXJ2ZXIgPSBuZXcgTW9kZWxTZXJ2ZXIoW1t7IHR5\ncGU6ICdjdXN0b21fdG9vbF9jYWxsJywgbmFtZTogJ2V4ZWMnLCBpbnB1dDogJ3RleHQoIkRBUldJ\nTl9IT1NUX1NFTEVDVEVEIiknLCBjYWxsX2lkOiAnY29kZScgfV0sIFttZXNzYWdlKCdkb25lJyld\nXSk7CiAgICAgIGF3YWl0IHVzaW5nIHByb3ZpZGVyID0gYXdhaXQgcHJvdmlkZXJGb3Ioc2VydmVy\nKTsKICAgICAgY29uc3QgYWdlbnQgPSBuZXcgQWdlbnQoeyBwcm92aWRlciwgbW9kZWw6ICdncHQt\nNScsIGluc3RydWN0aW9uczogJ1dvcmsuJywgcHJvZ3JhbW1hdGljVG9vbENhbGxpbmc6IHRydWUg\nfSk7CiAgICAgIGF3YWl0IHVzaW5nIHNlc3Npb24gPSBhd2FpdCBhZ2VudC5zZXNzaW9uKHsgZW52\naXJvbm1lbnQ6IGVudmlyb25tZW50KGRpc2pvaW50KSB9KTsKICAgICAgZXhwZWN0KChhd2FpdCAo\nYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1J1biB0aGUgZ2VuZXJhdGVkIGNvZGUuJykpLndhaXQoKSku\nZmluYWxPdXRwdXQpLnRvQmUoJ2RvbmUnKTsKICAgICAgZXhwZWN0KEpTT04uc3RyaW5naWZ5KHNl\ncnZlci5yZXF1ZXN0c1sxXT8uaW5wdXQpKS50b0NvbnRhaW4oJ0RBUldJTl9IT1NUX1NFTEVDVEVE\nJyk7CiAgICAgIGV4cGVjdChhd2FpdCByZWFkRmlsZShpbnZva2VkLCAndXRmOCcpKS50b0JlKCdp\n\
+        bnZva2VkJyk7CiAgICAgIGNvbnNvbGUubG9nKCdBIGxhdGVyIGRpc2pvaW50IENvZGUgTW9kZSBz\nZXNzaW9uIGludm9rZWQgdGhlIHNlbGVjdGVkIHBhY2thZ2VkIGhvc3QuJyk7CiAgICB9CiAgICB7\nCiAgICAgIGF3YWl0IHdyaXRlRmlsZShpbnN0YWxsZWRTaGltLCBzaGltLCB7IG1vZGU6IG1vZGUg\nJiAwbzc3NyB9KTsKICAgICAgYXdhaXQgcmVuYW1lRGFyd2luQWxpYXNGaWxlKGluc3RhbGxlZFNo\naW0sIGhlbHBlcik7CiAgICAgIGV4cGVjdCgoYXdhaXQgc3RhdERhcndpbkFsaWFzRmlsZShoZWxw\nZXIpKS5ubGluaykudG9CZSgxKTsKICAgICAgY29uc3QgYmVmb3JlID0gYXdhaXQgcmVhZEZpbGUo\naGVscGVyLCAndXRmOCcpOwogICAgICBjb25zdCBmcmVzaEFsaWFzID0gam9pbihkaXNqb2ludCwg\nJ25ldy1oYXJkbGluaycpOwogICAgICBjb25zdCBzdGF0dXMgPSBqb2luKGRpc2pvaW50LCAnbmV3\nLWhhcmRsaW5rLXJlc3VsdCcpOwogICAgICBjb25zdCBuZXdNYXJrZXIgPSAncjIwLW5ldy1saW5r\nLWluZXJ0LW1hcmtlcic7CiAgICAgIGNvbnN0IGNvbW1hbmQgPSBbCiAgICAgICAgYGlmIHRlc3Qg\nLXIgJHtxdW90ZShoZWxwZXIpfTsgdGhlbiBwcmludGYgcmVhZGFibGU7IGVsc2UgcHJpbnRmIHVu\ncmVhZGFibGU7IGZpYCwKICAgICAgICBgaWYgL2Jpbi9sbiAke3F1b3RlKGhlbHBlcil9ICR7cXVv\ndGUoZnJlc2hBbGlhcyl9OyB0aGVuIHByaW50ZiA6bGlua2VkOyBlbHNlIHByaW50ZiA6cmVmdXNl\nZDsgZmlgLAogICAgICAgIGBpZiB0ZXN0IC1lICR7cXVvdGUoZnJlc2hBbGlhcyl9ICYmIChwcmlu\n\
+        dGYgJXMgJHtxdW90ZShuZXdNYXJrZXIpfSA+PiAke3F1b3RlKGZyZXNoQWxpYXMpfSk7IHRoZW4g\ncHJpbnRmIDp3cm90ZTsgZWxzZSBwcmludGYgOnVuY2hhbmdlZDsgZmlgLAogICAgICBdLmpvaW4o\nJzsgJyk7CiAgICAgIGNvbnN0IHNlcnZlciA9IG5ldyBNb2RlbFNlcnZlcihbW2NhbGwoJ2V4ZWNf\nY29tbWFuZCcsIHsgY21kOiBgeyAke2NvbW1hbmR9OyB9ID4gJHtxdW90ZShzdGF0dXMpfWAgfSwg\neyBjYWxsSWQ6ICdmcmVzaC1saW5rJyB9KV0sIFttZXNzYWdlKCdkb25lJyldXSk7CiAgICAgIGF3\nYWl0IHVzaW5nIHByb3ZpZGVyID0gYXdhaXQgcHJvdmlkZXJGb3Ioc2VydmVyKTsKICAgICAgY29u\nc3QgYWdlbnQgPSBuZXcgQWdlbnQoeyBwcm92aWRlciwgbW9kZWw6ICdncHQtNScsIGluc3RydWN0\naW9uczogJ1dvcmsuJyB9KTsKICAgICAgYXdhaXQgdXNpbmcgc2Vzc2lvbiA9IGF3YWl0IGFnZW50\nLnNlc3Npb24oeyBlbnZpcm9ubWVudDogZW52aXJvbm1lbnQoZGlzam9pbnQpIH0pOwogICAgICBl\neHBlY3QoKGF3YWl0IChhd2FpdCBzZXNzaW9uLnN1Ym1pdCgnUnVuIHRoZSBjb21tYW5kLicpKS53\nYWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCdkb25lJyk7CiAgICAgIGNvbnN0IGRpc3Bvc2l0aW9u\nID0gYXdhaXQgcmVhZEZpbGUoc3RhdHVzLCAndXRmOCcpOwogICAgICBleHBlY3QoZGlzcG9zaXRp\nb24pLnRvTWF0Y2goL14ocmVhZGFibGV8dW5yZWFkYWJsZSk6KGxpbmtlZHxyZWZ1c2VkKTood3Jv\ndGV8dW5jaGFuZ2VkKSQvKTsKICAgICAgZXhwZWN0KGF3YWl0IHJlYWRGaWxlKGhlbHBlciwgJ3V0\n\
+        ZjgnKSkudG9CZShiZWZvcmUgKyAoZGlzcG9zaXRpb24uZW5kc1dpdGgoJzp3cm90ZScpID8gbmV3\nTWFya2VyIDogJycpKTsKICAgICAgaWYgKGZpeGVkKSBleHBlY3QoZGlzcG9zaXRpb24pLm5vdC50\nb01hdGNoKC86d3JvdGUkLyk7CiAgICAgIGNvbnNvbGUubG9nKCdQb3N0LWFkbWlzc2lvbiBoZWxw\nZXIgaGFyZGxpbms6JywgZGlzcG9zaXRpb24pOwogICAgfQogIH0gZmluYWxseSB7CiAgICBhd2Fp\ndCByZW5hbWVEYXJ3aW5BbGlhc0ZpbGUoc2F2ZWQsIGhlbHBlcik7CiAgICBhd2FpdCBybShzY3Jh\ndGNoLCB7IHJlY3Vyc2l2ZTogdHJ1ZSwgZm9yY2U6IHRydWUgfSk7CiAgfQp9LCA5MF8wMDApOwo=\nPROBE\nprintf '%s  %s\\n' \"$PROBE_SHA256\" \"$probe\" | shasum -a 256 -c\ncat \"$probe\" >> \"$fixture\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nproduct_hashes \"$consumer\" | tee \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\"\nstatus=0\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  \"test/native/managed-$PROBE_SLUG.test.ts\" -t \"^$PROBE_TITLE$\" \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\
+        \ \\\n  | tee \"$RUNNER_TEMP/$PROBE_SLUG-evidence.log\" || status=$?\nproduct_hashes \"$consumer\" > \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ncmp \"$RUNNER_TEMP/$PROBE_SLUG-products.txt\" \"$RUNNER_TEMP/$PROBE_SLUG-products-after.txt\"\ntest \"$status\" = 0\njq -e --arg title \"$PROBE_TITLE\" \\\n  '[.testResults[].assertionResults[] | select(.status==\"passed\") | .fullName] == [$title]' \\\n  \"$RUNNER_TEMP/$PROBE_SLUG-report.json\"\n"
+      if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+    - if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: js-darwin-wrapper-qualification
+        path: '${{ runner.temp }}/wrapper-*.json
 
-          const installed = realpathSync(join(consumer, "node_modules/@openai/agents"));
-          assert(installed.startsWith(realpathSync(consumer) + sep));
-          const checked = join(RECEIPT_SOURCE, "packages/agents");
-          const nativeReceipt = readJson(join(installed, "native/build-receipt.json"));
-          const inputs = execFileSync(
-            "git",
-            [
-              "ls-files",
-              "--",
-              "native/CODEX_REVISION",
-              "native/Cargo.toml",
-              "native/Cargo.lock",
-              "native/build.rs",
-              "native/tests/fixtures/exec_server.rs",
-              "native/rust",
-              "native/patches",
-              "native/rmcp-patches",
-              "scripts",
-            ],
-            { cwd: join(checkout, "packages/agents"), encoding: "utf8" },
-          )
-            .trim()
-            .split("\n");
-          assert.deepEqual(Object.keys(nativeReceipt.inputs).sort(), inputs.sort());
-          cpSync(
-            join(installed, "native/build-receipt.json"),
-            join(checked, "native/build-receipt.json"),
-          );
-          cpSync(
-            join(installed, "native/codex.node"),
-            join(checked, "native/codex.node"),
-          );
-          cpSync(join(installed, "bin"), join(checked, "bin"), { recursive: true });
-          const { revision } = await verifyNativeReceipt(RECEIPT_SOURCE, build.platform);
-          assert.equal(revision, build.codexRevision);
+          ${{ runner.temp }}/wrapper-*.log
 
-          execFileSync(
-            process.execPath,
-            [
-              "--input-type=module",
-              "-e",
-              `
-            import assert from 'node:assert/strict';
-            import { createRequire } from 'node:module';
-            import { fileURLToPath } from 'node:url';
-            const root = process.env.INSTALLED_AGENT_ROOT;
-            const sdk = fileURLToPath(import.meta.resolve('@openai/agents'));
-            assert(sdk.startsWith(root + '/dist/'), sdk);
-            const { Environment } = await import('@openai/agents');
-            assert.equal(typeof Environment.local, 'function');
-            const require = createRequire(import.meta.url);
-            const native = root + '/native/codex.node';
-            assert.equal(typeof require(native).create_engine, 'function');
-            console.log('Loaded installed SDK and native addon', sdk, native);
-          `,
-            ],
-            {
-              cwd: consumer,
-              env: { ...process.env, NODE_PATH: "", INSTALLED_AGENT_ROOT: installed },
-              stdio: "inherit",
-            },
-          );
-          console.log(
-            "Verified native source, products and installed package",
-            build.sourceCommit,
-            revision,
-          );
-          INSTALL
-          TEST_FILE=packages/agents/test/native/local-executor-policy-native.test.ts
-          set -euo pipefail
-          checkout="$PWD"
-          artifacts="$RUNNER_TEMP/agents-alpha"
-          stage="$RUNNER_TEMP/native-receipt-source"
-          mkdir "$stage"
-          git archive HEAD packages/agents | tar -x -C "$stage"
+          ${{ runner.temp }}/wrapper-products*.txt
 
-          export ARTIFACT_DIRECTORY="$artifacts" RECEIPT_SOURCE="$stage"
-          export PRODUCER_SDK="$QUALIFIED_SDK_COMMIT"
-          node "$RUNNER_TEMP/js-install.mjs" "$checkout"
-          consumer="$RUNNER_TEMP/agents-starter"
-          test_dir="$consumer/test/native"
-          mkdir -p "$test_dir"
-          cp "$TEST_FILE" "$test_dir/"
-          cp -R packages/agents/test/native/fixtures "$test_dir/"
-          ln -s "$checkout/node_modules/vitest" "$consumer/node_modules/vitest"
-          printf 'export default {};\n' > "$consumer/vitest.config.mjs"
-          cd "$consumer"
-          unset NODE_PATH OPENAI_API_KEY
-          export OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1
-          node "$checkout/node_modules/vitest/vitest.mjs" run \
-            --pool=forks --maxWorkers=1 --root "$consumer" --config "$consumer/vitest.config.mjs" \
-            "test/native/${TEST_FILE##*/}" -t '^blocks delegation from a local command to launchd$' \
-            --reporter=verbose --reporter=json --outputFile.json="$RUNNER_TEMP/launchd.json"
+          ${{ runner.temp }}/helper-alias-*.json
 
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import { readFileSync, writeFileSync } from 'node:fs';
-          const report = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/launchd.json', 'utf8'));
-          const cases = report.testResults.flatMap(({ assertionResults }) =>
-            assertionResults.filter(({ status }) => status === 'passed')
-          );
-          assert.equal(cases.length, 1);
-          assert.equal(cases[0].fullName, 'blocks delegation from a local command to launchd');
-          const native = JSON.parse(readFileSync('node_modules/@openai/agents/native/build-receipt.json', 'utf8'));
-          const evidence = { sourceCommit: process.env.PRODUCER_SDK, platform: process.platform + '-' + process.arch,
-            test: cases[0].fullName, status: cases[0].status, products: native.products };
-          writeFileSync(process.env.ARTIFACT_DIRECTORY + '/acceptance-launchd-darwin-arm64.json',
-            JSON.stringify(evidence, null, 2) + '\n');
-          console.log('Verified installed npm regression', cases[0].fullName);
-          JS
-      - name: Check the installed package evidence
-        run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          import { readdirSync, readFileSync } from 'node:fs';
-          import { join } from 'node:path';
-          const output = join(process.env.RUNNER_TEMP, 'agents-alpha');
-          const records = readdirSync(output).filter((file) =>
-            /^(build|installed)-.*\.json$/.test(file),
-          );
-          assert(records.some((file) => file.startsWith('build-')));
-          assert(records.some((file) => file.startsWith('installed-')));
-          for (const record of records) {
-            const manifest = JSON.parse(readFileSync(join(output, record), 'utf8'));
-            assert.equal(manifest.sourceCommit, process.env.QUALIFIED_SDK_COMMIT);
-            assert.equal(manifest.platform, process.env.EXPECTED_PLATFORM);
-            console.log(record, manifest.sourceCommit, manifest.platform);
-          }
-          JS
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: agents-alpha-darwin-arm64
-          path: |
-            ${{ runner.temp }}/agents-alpha/*.tgz
-            ${{ runner.temp }}/agents-alpha/*.tar.gz
-            ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
-            ${{ runner.temp }}/agents-alpha/build-*.json
-            ${{ runner.temp }}/agents-alpha/installed-*.json
-            ${{ runner.temp }}/agents-alpha/acceptance-launchd-darwin-arm64.json
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
-      - name: Qualify grant replacement after managed network denial
-        env:
-          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: |
-          set -euo pipefail
-          fixture=packages/agents/test/native/local-executor-policy-native.test.ts
-          case_name='applies a per-turn write policy after a managed network denial'
-          probe_dir="$(mktemp -d "$RUNNER_TEMP/js-darwin-policy-probe.XXXXXX")"
-          patch="$probe_dir/private.patch"
-          node --input-type=module -e '
-            import { readFileSync, writeFileSync } from "node:fs";
-            writeFileSync(process.argv[1], Buffer.from(readFileSync(0, "utf8"), "base64"));
-          ' "$patch" <<'PRIVATE_PROBE_PATCH'
-          LS0tIGEvcGFja2FnZXMvYWdlbnRzL3Rlc3QvbmF0aXZlL2xvY2FsLWV4ZWN1dG9yLXBvbGljeS1u
-          YXRpdmUudGVzdC50cworKysgYi9wYWNrYWdlcy9hZ2VudHMvdGVzdC9uYXRpdmUvbG9jYWwtZXhl
-          Y3V0b3ItcG9saWN5LW5hdGl2ZS50ZXN0LnRzCkBAIC0xMjUzLDYgKzEyNTMsNzYgQEAKICAgMzBf
-          MDAwLAogKTsKIAoraXQuc2tpcElmKHByb2Nlc3MucGxhdGZvcm0gIT09ICdkYXJ3aW4nKSgKKyAg
-          J2FwcGxpZXMgYSBwZXItdHVybiB3cml0ZSBwb2xpY3kgYWZ0ZXIgYSBtYW5hZ2VkIG5ldHdvcmsg
-          ZGVuaWFsJywKKyAgYXN5bmMgKCkgPT4geworICAgIGNvbnN0IHRlbXBvcmFyeSA9IGF3YWl0IG1r
-          ZHRlbXAoam9pbih0bXBkaXIoKSwgJ2FnZW50cy1sb2NhbC1uZXQtZGVuaWFsLScpKTsKKyAgICB0
-          cnkgeworICAgICAgY29uc3QgZGlyZWN0b3J5ID0gYXdhaXQgcmVhbHBhdGgodGVtcG9yYXJ5KTsK
-          KyAgICAgIGNvbnN0IGN3ZCA9IGpvaW4oZGlyZWN0b3J5LCAnd29ya3NwYWNlJyk7CisgICAgICBj
-          b25zdCBzaWJsaW5nID0gam9pbihkaXJlY3RvcnksICdzaWJsaW5nJyk7CisgICAgICBhd2FpdCBQ
-          cm9taXNlLmFsbChbbWtkaXIoY3dkKSwgbWtkaXIoc2libGluZyldKTsKKyAgICAgIGNvbnN0IGRl
-          bmllZEhvc3QgPSAnYmxvY2tlZC5leGFtcGxlLmludmFsaWQnOworICAgICAgY29uc3Qgc2VydmVy
-          ID0gbmV3IE1vZGVsU2VydmVyKFsKKyAgICAgICAgWworICAgICAgICAgIGNhbGwoCisgICAgICAg
-          ICAgICAnZXhlY19jb21tYW5kJywKKyAgICAgICAgICAgIHsKKyAgICAgICAgICAgICAgY21kOgor
-          ICAgICAgICAgICAgICAgICd0ZXN0IC1uICIkSFRUUF9QUk9YWSIgfHwgZXhpdCAxMDsgJyArCisg
-          ICAgICAgICAgICAgICAgJy91c3IvYmluL2N1cmwgLS1zaWxlbnQgLS1zaG93LWVycm9yIC0tbWF4
-          LXRpbWUgMyAtLXByb3h5ICIkSFRUUF9QUk9YWSIgJyArCisgICAgICAgICAgICAgICAgYC0tbm9w
-          cm94eSAnJyAtLW91dHB1dCAvZGV2L251bGwgaHR0cDovLyR7ZGVuaWVkSG9zdH0vOyBleGVjIC9i
-          aW4vc2xlZXAgMzBgLAorICAgICAgICAgICAgfSwKKyAgICAgICAgICAgIHsgY2FsbElkOiAnZGVu
-          aWVkJyB9LAorICAgICAgICAgICksCisgICAgICAgIF0sCisgICAgICAgIChyZXF1ZXN0KSA9PiB7
-          CisgICAgICAgICAgY29uc3Qgb3V0cHV0ID0gKHJlcXVlc3QuaW5wdXQgYXMgSnNvbk9iamVjdFtd
-          KS5maW5kKAorICAgICAgICAgICAgKGl0ZW0pID0+CisgICAgICAgICAgICAgIGl0ZW0udHlwZSA9
-          PT0gJ2Z1bmN0aW9uX2NhbGxfb3V0cHV0JyAmJiBpdGVtLmNhbGxfaWQgPT09ICdkZW5pZWQnLAor
-          ICAgICAgICAgICk/Lm91dHB1dDsKKyAgICAgICAgICBleHBlY3Qob3V0cHV0KS50b01hdGNoKC9e
-          ZXhlY19jb21tYW5kIGZhaWxlZDogUHJvY2Vzc0ZhaWxlZC8pOworICAgICAgICAgIGV4cGVjdChv
-          dXRwdXQpLnRvQ29udGFpbihkZW5pZWRIb3N0KTsKKyAgICAgICAgICBleHBlY3Qob3V0cHV0KS50
-          b0NvbnRhaW4oJ3dhcyBibG9ja2VkOicpOworICAgICAgICAgIHJldHVybiBbbWVzc2FnZSgnbmV0
-          d29yayBkZW5pZWQnKV07CisgICAgICAgIH0sCisgICAgICAgIFsKKyAgICAgICAgICBjYWxsKAor
-          ICAgICAgICAgICAgJ2V4ZWNfY29tbWFuZCcsCisgICAgICAgICAgICB7IGNtZDogYHByaW50ZiBh
-          bGxvd2VkID4gIiR7am9pbihzaWJsaW5nLCAnbWFya2VyJyl9ImAgfSwKKyAgICAgICAgICAgIHsg
-          Y2FsbElkOiAncmVwbGFjZScgfSwKKyAgICAgICAgICApLAorICAgICAgICBdLAorICAgICAgICBb
-          bWVzc2FnZSgnd3JpdGUgYWxsb3dlZCcpXSwKKyAgICAgIF0pOworICAgICAgYXdhaXQgdXNpbmcg
-          cHJvdmlkZXIgPSBhd2FpdCBwcm92aWRlckZvcihzZXJ2ZXIpOworICAgICAgY29uc3QgYWdlbnQg
-          PSBuZXcgQWdlbnQoeworICAgICAgICBwcm92aWRlciwKKyAgICAgICAgbW9kZWw6ICdncHQtNScs
-          CisgICAgICAgIGluc3RydWN0aW9uczogJ1VzZSB0aGUgbG9jYWwgY29tbWFuZHMuJywKKyAgICAg
-          IH0pOworICAgICAgYXdhaXQgdXNpbmcgc2Vzc2lvbiA9IGF3YWl0IGFnZW50LnNlc3Npb24oewor
-          ICAgICAgICBlbnZpcm9ubWVudDogRW52aXJvbm1lbnQubG9jYWwoeworICAgICAgICAgIGN3ZCwK
-          KyAgICAgICAgICB0b29sczogWydleGVjX2NvbW1hbmQnXSwKKyAgICAgICAgICBuZXR3b3JrOiB7
-          IGRlbmllZERvbWFpbnM6IFtkZW5pZWRIb3N0XSB9LAorICAgICAgICB9KSwKKyAgICAgIH0pOwor
-          ICAgICAgY29uc3QgZGVuaWVkID0gYXdhaXQgc2Vzc2lvbi5zdWJtaXQoJ1Byb2JlIHRoZSBkZW5p
-          ZWQgaG9zdC4nKTsKKyAgICAgIGV4cGVjdCgoYXdhaXQgZGVuaWVkLndhaXQoKSkuZmluYWxPdXRw
-          dXQpLnRvQmUoJ25ldHdvcmsgZGVuaWVkJyk7CisgICAgICBjb25zdCByZXBsYWNlZCA9IGF3YWl0
-          IHNlc3Npb24uc3VibWl0KCdXcml0ZSBpbnRvIHRoZSBuZXcgcm9vdC4nLCB7CisgICAgICAgIHdy
-          aXRhYmxlUm9vdHM6IFtzaWJsaW5nXSwKKyAgICAgIH0pOworICAgICAgZXhwZWN0KChhd2FpdCBy
-          ZXBsYWNlZC53YWl0KCkpLmZpbmFsT3V0cHV0KS50b0JlKCd3cml0ZSBhbGxvd2VkJyk7CisgICAg
-          ICBleHBlY3QoYXdhaXQgcmVhZEZpbGUoam9pbihzaWJsaW5nLCAnbWFya2VyJyksICd1dGY4Jykp
-          LnRvQmUoJ2FsbG93ZWQnKTsKKyAgICAgIHNlcnZlci5hc3NlcnRFeGhhdXN0ZWQoKTsKKyAgICB9
-          IGZpbmFsbHkgeworICAgICAgYXdhaXQgcm0odGVtcG9yYXJ5LCB7IHJlY3Vyc2l2ZTogdHJ1ZSwg
-          Zm9yY2U6IHRydWUgfSk7CisgICAgfQorICB9LAorICAzMF8wMDAsCispOworCiBpdC5za2lwSWYo
-          IXN1cHBvcnRlZCkuZm9yKFsncG9ydGFibGUnLCAnbG9jYWwnXSBhcyBjb25zdCkoCiAgICdhcHBs
-          aWVzIGEgcGVyLXR1cm4gd3JpdGUgcG9saWN5IGFuZCByZXF1aXJlcyB0aGUgY3VycmVudCBwb2xp
-          Y3kgb24gJXMgcmVzdG9yZScsCiAgIHsgdGltZW91dDogNDVfMDAwIH0sCg==
-          PRIVATE_PROBE_PATCH
-          printf '%s  %s\n' '3b27bf5f198837312949cd8dceb99a6dfe5227996f241041a5b638c5e86ecacb' "$patch" | shasum -a 256 -c -
-          printf 'Private driver fixture patch %s on SDK %s\n' '3b27bf5f198837312949cd8dceb99a6dfe5227996f241041a5b638c5e86ecacb' "$QUALIFIED_SDK_COMMIT"
-          shasum -a 256 packages/agents/native/build-receipt.json
-          mkdir -p "$probe_dir/$(dirname "$fixture")"
-          cp "$fixture" "$probe_dir/$fixture"
-          (cd "$probe_dir" && git apply --no-index "$patch")
-          temporary_test="${fixture%.test.ts}.qualification.test.ts"
-          test ! -e "$temporary_test"
-          trap 'rm -f -- "$temporary_test"' EXIT
-          cp "$probe_dir/$fixture" "$temporary_test"
-          git diff --exit-code
-          pnpm test:native "$temporary_test" -t "$case_name" --maxWorkers=1 \
-            --reporter=verbose --reporter=json --outputFile "$probe_dir/result.json"
-          node --input-type=module - "$probe_dir/result.json" "$case_name" <<'JS'
-          import assert from 'node:assert/strict';
-          import { readFileSync } from 'node:fs';
-          const [, , path, name] = process.argv;
-          const report = JSON.parse(readFileSync(path, 'utf8'));
-          const cases = report.testResults.flatMap((file) => file.assertionResults)
-            .filter((test) => test.title === name);
-          assert.equal(cases.length, 1);
-          assert.equal(cases[0].status, 'passed');
-          console.log('Passed private driver fixture:', name);
-          JS
-          git diff --exit-code
+          ${{ runner.temp }}/helper-alias-*.log
+
+          ${{ runner.temp }}/helper-alias-products*.txt'
+        if-no-files-found: warn
