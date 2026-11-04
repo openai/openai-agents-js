@@ -205,6 +205,7 @@ it
     'identity missing',
     'identity malformed',
     'identity replaced',
+    'identity missing with only executor list',
   ] as const)(
   'rejects an incomplete durable receipt after a strict executor turn with %s',
   { timeout: 30_000 },
@@ -268,7 +269,13 @@ it
       if (identityCorrupt) {
         if (kind === 'identity missing') delete latest.thread_id;
         else if (kind === 'identity malformed') latest.thread_id = 42;
-        else latest.thread_id = '00000000-0000-4000-8000-000000000000';
+        else if (kind === 'identity replaced')
+          latest.thread_id = '00000000-0000-4000-8000-000000000000';
+        else {
+          delete latest.thread_id;
+          delete latest.codex_source_tree;
+          delete latest.strict_executor_writes;
+        }
       } else if (kind === 'policy fields missing') {
         delete latest.executors;
         delete latest.strict_executor_writes;

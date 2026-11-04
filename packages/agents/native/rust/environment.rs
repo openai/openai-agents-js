@@ -1163,6 +1163,12 @@ pub(crate) fn check_checkpoint_policy(
     Ok(())
 }
 
+fn has_executor_receipt_markers(receipt: &Value) -> bool {
+    ["codex_source_tree", "strict_executor_writes", "executors"]
+        .into_iter()
+        .any(|field| receipt.get(field).is_some())
+}
+
 fn validate_sdk_receipt_identities(history: &[RolloutItem], thread_id: &str) -> Result<()> {
     // Core writes sampling receipts into the producing thread's raw rollout.
     // Native forks and subagents may retain identified ancestor receipts.
@@ -1179,9 +1185,7 @@ fn validate_sdk_receipt_identities(history: &[RolloutItem], thread_id: &str) -> 
         let Some(receipt) = context.sdk_receipt.as_ref() else {
             continue;
         };
-        if receipt.get("codex_source_tree").is_some()
-            || receipt.get("strict_executor_writes").is_some()
-        {
+        if has_executor_receipt_markers(receipt) {
             ensure!(
                 receipt["thread_id"].as_str().is_some_and(|id| {
                     codex_protocol::ThreadId::from_string(id).is_ok()
@@ -1282,16 +1286,12 @@ impl LocalResumeExecutorPolicy {
                 return None;
             };
             let receipt = context.sdk_receipt.as_ref()?;
-            if receipt["thread_id"].as_str() != Some(id.as_str()) {
-                return None;
-            }
-            let executors = receipt.get("executors");
-            let strict_flag = receipt.get("strict_executor_writes");
-            // SDK sampling receipts have included the executor field since their introduction.
-            (executors.is_some()
-                || is_strict(strict_flag)
-                || receipt.get("codex_source_tree").is_some())
-            .then_some((executors, strict_flag))
+            (receipt["thread_id"].as_str() == Some(id.as_str())
+                && has_executor_receipt_markers(receipt))
+            .then_some((
+                receipt.get("executors"),
+                receipt.get("strict_executor_writes"),
+            ))
         });
         if let Some((previous, strict_flag)) = recorded.next() {
             let previous = previous
