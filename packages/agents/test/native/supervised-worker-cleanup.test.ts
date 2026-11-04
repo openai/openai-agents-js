@@ -11,6 +11,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   Agent,
   LocalRecoveryRequired,
@@ -41,7 +42,7 @@ function runWorker(
   directory: string,
   options?: Pick<
     Parameters<typeof superviseArtifact>[0],
-    'reconcile' | 'steer'
+    'reconcile' | 'startupMs' | 'steer'
   >,
 ) {
   const server = new BorrowedPeer();
@@ -55,6 +56,116 @@ function runWorker(
     ...options,
   });
 }
+
+it('journals a joined worker when reopening its profile times out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-worker-reopen-'));
+  let timeout: unknown;
+  const session = vi
+    .spyOn(Agent.prototype, 'session')
+    .mockImplementation(async (options) => {
+      const signal = options?.signal;
+      if (!signal) throw new Error('Expected a startup deadline.');
+      if (!signal.aborted)
+        await new Promise<void>((done) => {
+          signal.addEventListener('abort', () => done(), { once: true });
+        });
+      timeout = signal.reason;
+      throw timeout;
+    });
+  try {
+    await writeFile(
+      join(directory, 'snapshot.json'),
+      JSON.stringify({ threadId: 'thread', state: 'working' }),
+    );
+    const failure = await runWorker(directory, { startupMs: 20 }).catch(
+      (error: unknown) => error,
+    );
+    expect(timeout).toMatchObject({ name: 'TimeoutError' });
+    expect(failure).toBe(timeout);
+    await expect(readWorkerSnapshot(directory)).resolves.toMatchObject({
+      threadId: 'thread',
+      state: 'needs_attention',
+      attention: 'deadline',
+    });
+  } finally {
+    session.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  {
+    label: 'printed hash',
+    command: 'printf',
+    extraOutput: false,
+    accepted: false,
+  },
+  {
+    label: 'extra output',
+    command: 'sha256sum draft.md',
+    extraOutput: true,
+    accepted: false,
+  },
+  {
+    label: 'standalone hash',
+    command: 'sha256sum draft.md',
+    extraOutput: false,
+    accepted: true,
+  },
+])(
+  'checks native command evidence for $label',
+  async ({ command, extraOutput, accepted }) => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-worker-evidence-'));
+    const workspace = join(directory, 'workspace');
+    const draft = '# Release note\nExample draft.\n';
+    const sha256 = createHash('sha256').update(draft).digest('hex');
+    const hashLine = sha256 + '  draft.md';
+    const script =
+      command === 'printf'
+        ? `printf '%s\\n' '${hashLine}' # sha256sum draft.md`
+        : command;
+    const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+      id: 'thread',
+      async [Symbol.asyncDispose]() {},
+      async submit() {
+        return {
+          turnId: 'turn',
+          async *events() {},
+          async waitForAttention() {
+            return { finalOutput: { summary: 'Draft ready.', question: null } };
+          },
+        };
+      },
+      async *items() {
+        yield {
+          id: 'hash-evidence',
+          turnId: 'turn',
+          type: 'command_execution',
+          status: 'completed',
+          exitCode: 0,
+          cwd: pathToFileURL(await realpath(workspace)).href,
+          command: `/bin/bash -c '${script}'`,
+          argv: ['/bin/bash', '-c', script],
+          output: hashLine + '\n' + (extraOutput ? 'Other output.\n' : ''),
+        };
+      },
+    } as unknown as Session);
+    try {
+      await mkdir(workspace);
+      await writeFile(join(workspace, 'draft.md'), draft);
+      const snapshot = await runWorker(directory);
+      expect(snapshot.state).toBe(accepted ? 'accepted' : 'needs_review');
+      expect(snapshot.evidence).toBe(accepted ? 'hash-evidence' : undefined);
+      if (!accepted)
+        await expect(publishAcceptedDraft(directory)).rejects.toThrow(
+          'Publication requires an accepted draft.',
+        );
+    } finally {
+      session.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 it.each([
   { label: 'no reconciliation callback', reconcile: undefined },
@@ -318,8 +429,9 @@ it('saves a review snapshot when reading completed history fails', async () => {
         status: 'completed',
         exitCode: 0,
         cwd: await realpath(workspace),
-        command: 'sha256sum draft.md',
-        output: sha256 + '  draft.md',
+        command: "/bin/bash -c 'sha256sum draft.md'",
+        argv: ['/bin/bash', '-c', 'sha256sum draft.md'],
+        output: sha256 + '  draft.md\n',
       };
       throw error;
     },
