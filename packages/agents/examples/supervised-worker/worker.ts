@@ -462,6 +462,8 @@ export async function superviseArtifact(options: WorkerOptions) {
         await saveStatusAndThrow(snapshot, error);
       }
     }
+    if (snapshot.state !== 'accepted')
+      await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
     return snapshot;
   };
 
@@ -482,7 +484,8 @@ export async function superviseArtifact(options: WorkerOptions) {
     'Closing the worker failed.',
   );
   // Publication eligibility requires both owned resources to finish closing.
-  await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
+  if (snapshot.state === 'accepted')
+    await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
   return snapshot;
 }
 
