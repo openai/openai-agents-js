@@ -153,9 +153,21 @@
       "sha256": "0b73e08b9d932ab8aaaf273ed963ded0175267b637ce8d02f866b6092a48600c"
     },
     {
-      "path": "0039-stop-auto-compaction-after-sdk-stop.patch",
+      "path": "0039-protect-local-helper-mount-aliases.patch",
+      "sha256": "b269ec3e3a8d2a737494732696f4b9ecd94c2fbe0458c4a6eccdb543a6692059"
+    },
+    {
+      "path": "0040-join-published-linux-sandbox-shutdown.patch",
+      "sha256": "dd5462e2cc5407ac6bd8415302919d69120e612a51dcd121128f5ea0a4f09d46"
+    },
+    {
+      "path": "0041-stop-auto-compaction-after-sdk-stop.patch",
       "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0042-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
     }
   ],
-  "result_tree": "e8c5f267507f27c3060eccfec4e72aa286e42425"
+  "result_tree": "105d2f56ec72ef09e7075a35c0165389ba51efa7"
 }

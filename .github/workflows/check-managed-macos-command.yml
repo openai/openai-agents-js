@@ -17,8 +17,8 @@ jobs:
     env:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: darwin-arm64
-      QUALIFIED_SDK_COMMIT: 72ea7e63879ad0c0484d3114321304757cc0b845
-      QUALIFIED_SDK_TREE: 3bdc8b3538418aa1900b3a330e67ca47490f6ced
+      QUALIFIED_SDK_COMMIT: 7f05367f68c1ecc400235c1295827ba42ac9b7cf
+      QUALIFIED_SDK_TREE: 28d19036e6400b9927677be35edddb5a866548f5
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: '3'
       CARGO_INCREMENTAL: '0'
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 72ea7e63879ad0c0484d3114321304757cc0b845
+          ref: 7f05367f68c1ecc400235c1295827ba42ac9b7cf
           persist-credentials: false
       - name: Check exact source
         run: |
@@ -115,6 +115,8 @@ jobs:
             packages/agents/test/native/turn-controls.test.ts \
             packages/agents/test/native/parity-child-manual.test.ts \
             -t 'returns the actual native compact Turn|lets a graceful exact stop preserve|accepts a live child manual reply' \
+            --maxWorkers=1 --reporter=verbose
+          pnpm test:native packages/agents/test/native/compaction-late-admission-native.test.ts \
             --maxWorkers=1 --reporter=verbose
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
