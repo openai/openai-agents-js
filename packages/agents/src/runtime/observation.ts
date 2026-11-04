@@ -1,5 +1,6 @@
 import type { ManualToolRequest } from './manual';
 import type { TokenUsageInfo } from './run-events';
+import type { ApiRateLimits } from './api-rate-limits';
 
 type Event = Readonly<{ sessionId: string; sequence: number }>;
 type SubmissionEvent = Event &
@@ -15,6 +16,9 @@ type ToolIdentity = Readonly<{
   family: 'function' | 'mcp';
 }>;
 
+export type ApiRateLimitsUpdated = SubmissionEvent &
+  Readonly<{ type: 'api_rate_limits_updated'; snapshot: ApiRateLimits }>;
+
 export type Observation =
   | (Event & Readonly<{ type: 'warning'; message: string }>)
   | (SubmissionEvent & Readonly<{ type: 'turn_started' }>)
@@ -28,6 +32,7 @@ export type Observation =
       Readonly<{ type: 'output_text_delta'; itemId: string; delta: string }>)
   | (SubmissionEvent &
       Readonly<{ type: 'usage_updated'; usage: TokenUsageInfo | null }>)
+  | ApiRateLimitsUpdated
   | (SubmissionEvent & Readonly<{ type: 'context_compacted'; itemId: string }>)
   | (SubmissionEvent & ToolIdentity & Readonly<{ type: 'tool_started' }>)
   | (SubmissionEvent &

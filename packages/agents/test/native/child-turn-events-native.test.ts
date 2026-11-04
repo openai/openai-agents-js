@@ -16,6 +16,7 @@ import {
   type NativeThread,
 } from '../../src/runtime/binding';
 import { parseEvent, type NativeEvent } from '../../src/runtime/events';
+import { TurnAborted } from '../../src/runtime/session';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -541,8 +542,18 @@ describe('exact native child cancellation', () => {
         await expect(selected.tryCancel(sibling.turn)).rejects.toThrow(
           'Turn does not belong to this captured child instance',
         );
+        const attention = selected.turn.waitForAttention();
+        void attention.catch(() => {});
         await expect(selected.tryCancel(selected.turn)).resolves.toBe(true);
-        await expect(selected.turn.wait()).rejects.toBeInstanceOf(NativeError);
+        const error: unknown = await selected.turn
+          .wait()
+          .catch((cause: unknown) => cause);
+        expect(error).toBeInstanceOf(TurnAborted);
+        await expect(attention).resolves.toMatchObject({
+          type: 'needs_attention',
+          reason: 'interrupted',
+          error,
+        });
         await expect(selected.tryCancel(selected.turn)).resolves.toBe(false);
         let siblingFinished = false;
         const surviving = sibling.turn.wait().then((result) => {

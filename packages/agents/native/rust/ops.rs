@@ -289,6 +289,7 @@ params!(TurnParams {
     #[serde(default)] mode: Mode,
     expected_turn_id: Option<String>,
     expected_previous_turn_id: Option<String>,
+    #[serde(default)] exact_steering: bool,
 });
 
 fn rejection(reason: NotSubmittedReason) -> Value {
@@ -514,6 +515,11 @@ async fn start_with_params<'a>(
         &mut Option<tokio::sync::MutexGuard<'a, ()>>,
     )>,
 ) -> Result<Value> {
+    if p.exact_steering && !matches!(p.mode, Mode::Steer) {
+        return Err(pre_admission(anyhow::anyhow!(
+            "exact_steering requires steer mode"
+        )));
+    }
     let input = if p.input.is_array() {
         TurnInput::UserInput {
             content: decode::<Vec<UserInput>>(p.input).map_err(pre_admission)?,
@@ -626,15 +632,22 @@ async fn start_with_params<'a>(
             } else {
                 None
             };
+            if p.exact_steering && reserved.is_none() {
+                return Ok(rejection(NotSubmittedReason::NoActiveTurn));
+            }
             // Core can complete an accepted item before this await returns.
             // Rejections and dispatch errors must remove only their unused ID.
             let result = thread.steer_turn(request, expected).await;
             if !matches!(&result, Ok(SteerSubmission::Steered { .. }))
-                && let Some((turn, id)) = reserved
+                && let Some((turn, id)) = &reserved
             {
-                turn.discard_steering(&id);
+                turn.discard_steering(id);
             }
             Ok(match result? {
+                SteerSubmission::Steered { turn_id } if p.exact_steering => {
+                    let (_, input_id) = reserved.expect("exact steering reserved an input ID");
+                    json!({"status": "steered", "turn_id": turn_id, "input_id": input_id})
+                }
                 SteerSubmission::Steered { turn_id } => {
                     json!({"status": "steered", "turn_id": turn_id})
                 }

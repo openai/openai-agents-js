@@ -16,10 +16,17 @@ export type {
 } from './runtime/capabilities';
 export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
 export type { NativeErrorOptions } from './runtime/native-error';
-export { Turn, NativeError, InteractionRequired } from './runtime/session';
+export {
+  Turn,
+  NativeError,
+  InteractionRequired,
+  StaleTurnError,
+} from './runtime/session';
 export type {
   Completed,
   PendingRequests,
+  SteeringReceipt,
+  TurnNeedsAttention,
   RequestWaitOptions,
   InteractionWaitOptions,
   SubmitOptions,
@@ -101,7 +108,15 @@ export type {
 export type { ChecklistState, SessionState } from './runtime/state';
 export { parseSessionState, readSessionInstructions } from './runtime/state';
 export type { TokenUsage, TokenUsageInfo } from './runtime/run-events';
-export type { Observation, ObservedEvent } from './runtime/observation';
+export type {
+  Observation,
+  ObservedEvent,
+  ApiRateLimitsUpdated,
+} from './runtime/observation';
+export type {
+  ApiRateLimits,
+  ApiRateLimitWindow,
+} from './runtime/api-rate-limits';
 export type { Subagent } from './runtime/subagents';
 export type {
   SessionItem,

@@ -118,7 +118,23 @@ fn visit_event(message: &mut Value, counter: CounterVisitor) -> anyhow::Result<(
 }
 
 pub(crate) fn event_to_wire(message: &mut Value) -> anyhow::Result<()> {
-    visit_event(message, counter_to_wire)
+    visit_event(message, counter_to_wire)?;
+    if message["type"] == "token_count"
+        && let Some(limits) = message.get_mut("api_rate_limits")
+    {
+        for window in ["requests", "tokens", "project_tokens"] {
+            for field in ["limit", "remaining"] {
+                if let Some(count) = limits
+                    .get_mut(window)
+                    .and_then(|window| window.get_mut(field))
+                    && !count.is_null()
+                {
+                    counter_to_wire(count)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn visit_history(history: &mut Value, counter: CounterVisitor) -> anyhow::Result<()> {

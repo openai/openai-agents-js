@@ -8,7 +8,7 @@ use codex_core::context::{
 use codex_core_api::{CodexThread, ThreadManager, WithTurnExtensionData};
 use codex_protocol::ThreadId;
 use codex_protocol::models::{ContentItem, MessagePhase, ResponseItem};
-use codex_protocol::protocol::{Event, EventMsg, TokenUsageInfo};
+use codex_protocol::protocol::{Event, EventMsg, TokenUsageInfo, TurnAbortReason};
 use codex_protocol::turn_input::{
     NotSubmittedReason, StartIfIdleSubmission, SteerSubmission, TurnInput, TurnInputRequest,
     TurnInputSubmission,
@@ -102,6 +102,19 @@ impl Turn {
         usage: Option<TokenUsageInfo>,
     ) {
         self.finish_with_error(result, terminal, usage, None);
+    }
+
+    fn finish_aborted(&self, reason: &TurnAbortReason, usage: Option<TokenUsageInfo>) {
+        let (message, details) = match reason {
+            TurnAbortReason::Interrupted => (
+                "Native child turn was interrupted",
+                Some(serde_json::json!({"_sdk_child_interrupted": true})),
+            ),
+            TurnAbortReason::Replaced
+            | TurnAbortReason::ReviewEnded
+            | TurnAbortReason::BudgetLimited => ("Native child turn was aborted", None),
+        };
+        self.finish_with_error(Err(message.into()), true, usage, details);
     }
 
     fn finish_with_error(
@@ -400,7 +413,12 @@ impl Instance {
                     }
                 }
             }
-            EventMsg::TokenCount(count) if event.id == turn.turn_id => {
+            EventMsg::TokenCount(count)
+                if event.id == turn.turn_id
+                    && (count.api_rate_limits.is_none()
+                        || count.info.is_some()
+                        || count.rate_limits.is_some()) =>
+            {
                 self.usage = count.info.clone();
             }
             EventMsg::TurnComplete(end) if end.turn_id == turn.turn_id => {
@@ -437,11 +455,7 @@ impl Instance {
                     .map(|outcome| outcome.result.is_err());
             }
             EventMsg::TurnAborted(end) if end.turn_id.as_ref() == Some(&turn.turn_id) => {
-                turn.finish(
-                    Err("Native child turn was interrupted".into()),
-                    true,
-                    self.usage.clone(),
-                );
+                turn.finish_aborted(&end.reason, self.usage.clone());
             }
             EventMsg::ShutdownComplete => self.retire(),
             _ => {}
@@ -1042,9 +1056,36 @@ mod terminal_error_tests {
             json!({"final_output":"answer","usage":null})
         );
         assert!(success.terminal_error().is_none());
+        let retired = turn("retired");
+        retired.finish(
+            Err("Native child runtime closed or was replaced".into()),
+            false,
+            None,
+        );
+        assert!(retired.wait_with_usage().await.is_err());
+        assert!(retired.terminal_error().is_none());
+    }
+
+    #[tokio::test]
+    async fn only_interrupted_child_abort_publishes_the_interruption_marker() {
         let interrupted = turn("interrupted");
-        interrupted.finish(Err("Native child turn was interrupted".into()), true, None);
+        interrupted.finish_aborted(&TurnAbortReason::Interrupted, None);
         assert!(interrupted.wait_with_usage().await.is_err());
-        assert!(interrupted.terminal_error().is_none());
+        let details = interrupted.terminal_error().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&details).unwrap(),
+            json!({"_sdk_child_interrupted": true})
+        );
+
+        for reason in [
+            TurnAbortReason::Replaced,
+            TurnAbortReason::ReviewEnded,
+            TurnAbortReason::BudgetLimited,
+        ] {
+            let aborted = turn("aborted");
+            aborted.finish_aborted(&reason, None);
+            assert!(aborted.wait_with_usage().await.is_err());
+            assert!(aborted.terminal_error().is_none());
+        }
     }
 }

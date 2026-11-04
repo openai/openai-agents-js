@@ -82,7 +82,7 @@ describe('request wait handle contract', () => {
       async () => {},
       cancel,
       undefined,
-      { notify, wait: observe },
+      { notify, rateLimits: () => ({}), wait: observe },
     );
     const controller = new AbortController();
     const options = { until: 'request', signal: controller.signal } as const;
@@ -122,7 +122,7 @@ describe('request wait handle contract', () => {
       async () => {},
       async () => {},
       undefined,
-      { notify, wait: observe },
+      { notify, rateLimits: () => ({}), wait: observe },
     );
     const first = turn.wait({ until: 'request' });
     const second = turn.wait({ until: 'request' });
@@ -162,6 +162,7 @@ describe('request wait handle contract', () => {
       undefined,
       {
         notify,
+        rateLimits: () => ({}),
         async wait(_turn, _options, completion) {
           state = completion;
           return completion.promise;
