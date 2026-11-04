@@ -30,6 +30,25 @@ describe('explicit W3C trace carriers', () => {
     expect(captureTraceContext(context)).toBe(context);
   });
 
+  it('captures each accessor once and retains the validated header snapshot', () => {
+    let parentReads = 0;
+    let stateReads = 0;
+    const context = new TraceContext({
+      get traceparent() {
+        return ++parentReads === 1 ? parent : 'invalid-after-first-read';
+      },
+      get tracestate() {
+        return ++stateReads === 1 ? ' tenant=value ' : 'invalid';
+      },
+    });
+    expect(context.toHeaders()).toEqual({
+      traceparent: parent,
+      tracestate: 'tenant=value',
+    });
+    expect(parentReads).toBe(1);
+    expect(stateReads).toBe(1);
+  });
+
   it.each([
     parent.replace('11111111111111111111111111111111', '0'.repeat(32)),
     parent.replace('2222222222222222', '0'.repeat(16)),

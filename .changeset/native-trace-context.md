@@ -1,5 +1,6 @@
 ---
 '@openai/agents': patch
+'@openai/agents-core': patch
 ---
 
-feat: add explicit native W3C trace parents for sessions and roots, expose tool callback trace context, and accept fresh parents when resuming manual work.
+feat: add explicit native W3C trace parents and tool callback context with fresh resume parents; reduce archive-limit test overhead without changing coverage.

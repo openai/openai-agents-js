@@ -81,7 +81,7 @@ export class TraceContext {
         [...members].map(([key, value]) => `${key}=${value}`).join(',') ||
         undefined;
     }
-    this.#traceparent = headers.traceparent;
+    this.#traceparent = parent;
     this.#tracestate = state;
     Object.freeze(this);
   }
