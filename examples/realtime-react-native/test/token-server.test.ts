@@ -7,7 +7,7 @@ import { test } from 'vitest';
 
 const serverUrl = new URL('../scripts/token-server.mjs', import.meta.url).href;
 
-async function startServer(host: string) {
+async function startServer(host: string, configuredPort?: number) {
   const port = await new Promise<number>((resolve, reject) => {
     const reservation = createServer();
     reservation.once('error', reject);
@@ -17,6 +17,17 @@ async function startServer(host: string) {
     });
   });
   const script = `
+    import { Server } from 'node:http';
+    ${
+      configuredPort === undefined
+        ? ''
+        : `
+    // Exercise the configured authority without requiring a privileged listener.
+    const listen = Server.prototype.listen;
+    Server.prototype.listen = function (requestedPort, ...args) {
+      return listen.call(this, ${port}, ...args);
+    };`
+    }
     globalThis.fetch = async () => {
       console.log('UPSTREAM_REQUEST');
       return new Response(JSON.stringify({ value: 'test-client-secret', expires_at: 123 }), { status: 200 });
@@ -27,7 +38,7 @@ async function startServer(host: string) {
     env: {
       ...process.env,
       HOST: host,
-      PORT: String(port),
+      PORT: String(configuredPort ?? port),
       OPENAI_API_KEY: 'test-api-key',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -130,6 +141,10 @@ test('loopback token issuance requires pairing and an expected origin', async ()
 
     const headers = { Authorization: `Bearer ${server.pairingToken}` };
     assert.equal(
+      (await server.request({ ...headers, Host: '127.0.0.1' })).status,
+      403,
+    );
+    assert.equal(
       (
         await server.request({
           ...headers,
@@ -156,6 +171,57 @@ test('loopback token issuance requires pairing and an expected origin', async ()
       200,
     );
     assert.equal(server.output.match(/UPSTREAM_REQUEST/g)?.length, 2);
+  } finally {
+    server.stop();
+  }
+});
+
+test('HTTP port 80 accepts exact portless aliases and serialized origins while requiring pairing', async () => {
+  const server = await startServer('127.0.0.1', 80);
+  try {
+    assert.ok(server.pairingToken);
+    assert.equal((await server.request({ Host: '127.0.0.1' })).status, 401);
+    assert.equal(
+      (
+        await server.request({
+          Host: 'localhost',
+          Authorization: 'Bearer wrong',
+        })
+      ).status,
+      401,
+    );
+    const headers = { Authorization: `Bearer ${server.pairingToken}` };
+    for (const Host of ['unexpected.example', '127.0.0.1:81']) {
+      assert.equal((await server.request({ ...headers, Host })).status, 403);
+    }
+    assert.equal(
+      (
+        await server.request({
+          ...headers,
+          Host: 'localhost',
+          Origin: 'http://unexpected.example',
+        })
+      ).status,
+      403,
+    );
+    assert.equal(server.output.includes('UPSTREAM_REQUEST'), false);
+
+    for (const alias of ['127.0.0.1', 'localhost', '10.0.2.2']) {
+      for (const Host of [alias, `${alias}:80`]) {
+        const response = await server.request({
+          ...headers,
+          Host,
+          Origin: `http://${alias}`,
+        });
+        assert.equal(response.status, 200);
+        assert.equal((await response.json()).value, 'test-client-secret');
+      }
+    }
+    assert.equal(
+      (await server.request({ ...headers, Host: 'localhost' })).status,
+      429,
+    );
+    assert.equal(server.output.match(/UPSTREAM_REQUEST/g)?.length, 6);
   } finally {
     server.stop();
   }

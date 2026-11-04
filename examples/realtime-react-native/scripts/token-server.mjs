@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
+import { URL } from 'node:url';
 import console from 'node:console';
 import process from 'node:process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -37,9 +38,10 @@ const server = createServer(async (request, response) => {
   }
   const requestHost = request.headers.host;
   if (
-    !expectedHosts.includes(requestHost) ||
+    (!expectedHosts.includes(requestHost) &&
+      !(port === 80 && expectedHosts.includes(`${requestHost}:80`))) ||
     (request.headers.origin !== undefined &&
-      request.headers.origin !== `http://${requestHost}`)
+      request.headers.origin !== new URL(`http://${requestHost}`).origin)
   ) {
     sendJson(response, 403, { error: 'Unrecognized request origin.' });
     return;
