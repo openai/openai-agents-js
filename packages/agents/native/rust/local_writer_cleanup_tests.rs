@@ -9,6 +9,7 @@ async fn transferred_profile(home: &Path) -> (Arc<LocalChecklistStore>, ThreadId
             None,
             Arc::new(crate::options::ThreadInstructions::for_test(None, false)),
             Default::default(),
+            Vec::new(),
         )
         .await
         .unwrap();

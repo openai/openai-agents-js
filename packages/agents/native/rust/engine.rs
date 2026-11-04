@@ -484,7 +484,7 @@ impl EngineState {
 
     pub async fn start_with_tools(
         self: &Arc<Self>,
-        options: options::ThreadOptions,
+        mut options: options::ThreadOptions,
         specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     ) -> anyhow::Result<NativeThread> {
         let _guard = self.lifecycle.lock().await;
@@ -492,6 +492,11 @@ impl EngineState {
             options.validate_local_authority()?;
         }
         let resume = options.sdk_resume_thread_id;
+        let reconciled_calls = std::mem::take(&mut options.sdk_reconciled_calls);
+        ensure!(
+            reconciled_calls.is_empty() || resume.is_some(),
+            "reconciled calls require local resume"
+        );
         ensure!(
             config::sdk_resume_thread_id(&self.runtime_json)?.is_none_or(|id| Some(id) == resume),
             "SDK resume must match the current runtime admission"
@@ -519,7 +524,8 @@ impl EngineState {
                     .is_empty(),
                 "SDK resume cannot authorize saved startup tools"
             );
-            let executor_policy = crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
+            let executor_policy =
+                crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
             let InitialHistory::Resumed(history) = &mut startup.initial_history else {
                 anyhow::bail!("SDK resume requires the stored model context");
             };
@@ -547,6 +553,7 @@ impl EngineState {
                     saved.model,
                     instructions.clone(),
                     executor_policy,
+                    reconciled_calls,
                 )
                 .await?;
             let prepared = admission.prepared_params()?;
@@ -679,6 +686,15 @@ impl EngineState {
         let extension_events = self.extension_events.subscribe();
 
         let new_thread = self.manager.start_thread(startup).await?;
+        if let Some(admission) = local_resume_admission {
+            if let Some(guard) = new_thread
+                .thread
+                .thread_extension_data()
+                .get::<crate::recovery_guard::Guard>()
+            {
+                guard.set_reconciled(admission.protected_call_ids().clone());
+            }
+        }
         if let Some(store) = &self.local_checklist_store {
             let created = match store.canonical_creation_time(new_thread.thread_id).await {
                 Ok(created) => created,
@@ -3022,15 +3038,30 @@ mod question_lifecycle_tests {
                 duration_ms: None,
             }),
         };
-        assert!(question_ended(source, Some("original-turn"), source, &canceled));
-        assert!(!question_ended(source, Some("successor-turn"), source, &canceled));
+        assert!(question_ended(
+            source,
+            Some("original-turn"),
+            source,
+            &canceled
+        ));
+        assert!(!question_ended(
+            source,
+            Some("successor-turn"),
+            source,
+            &canceled
+        ));
         assert!(!question_ended(
             Some((child, 2)),
             Some("original-turn"),
             source,
             &canceled
         ));
-        assert!(!question_ended(None, Some("original-turn"), source, &canceled));
+        assert!(!question_ended(
+            None,
+            Some("original-turn"),
+            source,
+            &canceled
+        ));
         assert!(question_ended(None, Some("original-turn"), None, &canceled));
     }
 
@@ -3042,14 +3073,24 @@ mod question_lifecycle_tests {
             id: String::new(),
             msg: EventMsg::ShutdownComplete,
         };
-        assert!(question_ended(source, Some("original-turn"), source, &shutdown));
+        assert!(question_ended(
+            source,
+            Some("original-turn"),
+            source,
+            &shutdown
+        ));
         assert!(!question_ended(
             Some((child, 2)),
             Some("original-turn"),
             source,
             &shutdown
         ));
-        assert!(!question_ended(None, Some("original-turn"), source, &shutdown));
+        assert!(!question_ended(
+            None,
+            Some("original-turn"),
+            source,
+            &shutdown
+        ));
     }
 }
 
