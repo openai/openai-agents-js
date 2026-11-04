@@ -218,7 +218,9 @@ function matchesDraftHash(output: string | null, sha256: string): boolean {
 }
 
 export async function superviseArtifact(options: WorkerOptions) {
-  const { directory, task, reports } = options;
+  const { task, reports } = options;
+  await mkdir(options.directory, { recursive: true, mode: 0o700 });
+  const directory = await realpath(options.directory);
   const path = paths(directory);
   const saveStatusAndThrow = async (
     snapshot: WorkerSnapshot,
@@ -491,6 +493,12 @@ export async function superviseArtifact(options: WorkerOptions) {
 
 /** The supervisor calls this separately after the worker has joined. */
 export async function publishAcceptedDraft(directory: string) {
+  try {
+    directory = await realpath(directory);
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+    throw new Error('Publication requires an accepted draft.');
+  }
   const snapshot = await readWorkerSnapshot(directory);
   if (snapshot?.state !== 'accepted' || !snapshot.sha256)
     throw new Error('Publication requires an accepted draft.');
