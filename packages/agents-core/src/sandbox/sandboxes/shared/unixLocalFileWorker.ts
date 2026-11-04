@@ -101,8 +101,8 @@ def checked_path(spec):
     return resolved
 
 @contextmanager
-def parent(path, create=False):
-    fd = os.open("/", TRAVERSE)
+def parent(path, create=False, root_fd=None):
+    fd = os.open("/", TRAVERSE) if root_fd is None else os.dup(root_fd)
     try:
         parts = path.split("/")
         for name in parts[1:-1]:
@@ -336,7 +336,7 @@ def check_removal(directory, name):
     if parent_info.st_mode & stat.S_ISVTX and uid not in (0, parent_info.st_uid, entry_info.st_uid):
         raise PermissionError(errno.EPERM, "Source directory does not allow removal", name)
 
-def chown_recursive(directory, name, uid, gid):
+def chown_entry(directory, name, uid, gid):
     try:
         info = os.stat(name, dir_fd=directory, follow_symlinks=False)
     except FileNotFoundError:
@@ -360,11 +360,34 @@ def chown_recursive(directory, name, uid, gid):
         opened = os.fstat(fd)
         os.fchown(fd, uid, gid)
         if stat.S_ISDIR(opened.st_mode):
-            with os.scandir(fd) as entries:
-                for entry in entries:
-                    chown_recursive(fd, entry.name, uid, gid)
+            return os.dup(fd)
     finally:
         close(fd)
+
+def chown_recursive(path, uid, gid):
+    with parent(path) as (directory, name):
+        root_fd = chown_entry(directory, name, uid, gid)
+    if root_fd is None:
+        return
+    # Reopen descendants from the pinned root without retaining one fd per level.
+    try:
+        with os.scandir(root_fd) as entries:
+            pending = ["/" + entry.name for entry in entries]
+        while pending:
+            child_path = pending.pop()
+            try:
+                with parent(child_path, root_fd=root_fd) as (directory, name):
+                    child_fd = chown_entry(directory, name, uid, gid)
+            except FileNotFoundError:
+                continue
+            if child_fd is not None:
+                try:
+                    with os.scandir(child_fd) as entries:
+                        pending.extend(child_path + "/" + entry.name for entry in entries)
+                finally:
+                    close(child_fd)
+    finally:
+        close(root_fd)
 
 def run(request):
     operation = request["operation"]
@@ -375,11 +398,11 @@ def run(request):
         sys.stdout.write("ready")
         return
     select_identity(request.get("identity"))
-    path = checked_path(request["path"])
     if operation == "chownRecursive":
-        with parent(path) as (directory, name):
-            chown_recursive(directory, name, request["uid"], request["gid"])
+        for spec in json.load(sys.stdin):
+            chown_recursive(checked_path(spec), request["uid"], request["gid"])
         return
+    path = checked_path(request["path"])
     if operation == "create":
         write_new(path)
         return

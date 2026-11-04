@@ -433,12 +433,14 @@ describe('UnixLocalSandboxClient', () => {
 
     const files = new UnixLocalFiles();
     await expect(
-      files.run({
-        operation: 'chownRecursive',
-        path: { path: linkPath, accessPath: linkPath, preserveLeaf: true },
-        uid: 0,
-        gid: 0,
-      }),
+      files.run(
+        { operation: 'chownRecursive', uid: 0, gid: 0 },
+        {
+          input: JSON.stringify([
+            { path: linkPath, accessPath: linkPath, preserveLeaf: true },
+          ]),
+        },
+      ),
     ).resolves.toEqual(Buffer.alloc(0));
     expect((await lstat(linkPath)).isSymbolicLink()).toBe(true);
   });

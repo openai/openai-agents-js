@@ -96,6 +96,159 @@ describe.skipIf(process.platform === 'win32')(
 
     describe('manifest ownership traversal', () => {
       it.each(['materializeEntry', 'applyManifest'] as const)(
+        'owns a new local mount at its effective path during %s without following child symlinks',
+        async (entryPoint) => {
+          const source = join(root, 'ownership-source');
+          const sourceFile = join(source, 'note.txt');
+          const outsideFile = join(outside, 'note.txt');
+          await mkdir(source);
+          await writeFile(sourceFile, 'mounted\n');
+          await symlink(outsideFile, join(source, 'link.txt'));
+          const before = await stat(sourceFile, { bigint: true });
+          const outsideBefore = await stat(outsideFile, { bigint: true });
+          const entry = {
+            type: 'mount' as const,
+            source,
+            mountPath: '/workspace/effective-mount',
+            readOnly: false,
+            mountStrategy: { type: 'local_bind' as const },
+          };
+
+          if (entryPoint === 'materializeEntry') {
+            await session.materializeEntry({
+              path: 'mount-declaration',
+              entry,
+              runAs: userInfo().username,
+            });
+          } else {
+            await session.applyManifest(
+              new Manifest({ entries: { 'mount-declaration': entry } }),
+              userInfo().username,
+            );
+          }
+
+          expect(
+            (await stat(sourceFile, { bigint: true })).ctimeNs,
+          ).toBeGreaterThan(before.ctimeNs);
+          expect(
+            await session.readFile({ path: 'effective-mount/note.txt' }),
+          ).toEqual(Buffer.from('mounted\n'));
+          expect((await lstat(join(source, 'link.txt'))).isSymbolicLink()).toBe(
+            true,
+          );
+          expect((await stat(outsideFile, { bigint: true })).ctimeNs).toBe(
+            outsideBefore.ctimeNs,
+          );
+        },
+      );
+
+      it('rejects a local mount source replaced between materialization and ownership', async () => {
+        const source = join(root, 'ownership-source');
+        const moved = join(root, 'ownership-source-original');
+        const outsideFile = join(outside, 'note.txt');
+        await mkdir(source);
+        await writeFile(join(source, 'note.txt'), 'mounted\n');
+        const outsideBefore = await stat(outsideFile, { bigint: true });
+        const resolveEnvironment = Manifest.prototype.resolveEnvironment;
+        vi.spyOn(
+          Manifest.prototype,
+          'resolveEnvironment',
+        ).mockImplementationOnce(async function (this: Manifest) {
+          await rename(source, moved);
+          await symlink(outside, source);
+          return resolveEnvironment.call(this);
+        });
+
+        await expect(
+          session.applyManifest(
+            new Manifest({
+              entries: {
+                'mount-declaration': {
+                  type: 'mount',
+                  source,
+                  mountPath: '/workspace/effective-mount',
+                  readOnly: false,
+                  mountStrategy: { type: 'local_bind' },
+                },
+              },
+            }),
+            userInfo().username,
+          ),
+        ).rejects.toThrow(/Sandbox root changed during file validation/);
+        expect((await lstat(source)).isSymbolicLink()).toBe(true);
+        expect((await stat(outsideFile, { bigint: true })).ctimeNs).toBe(
+          outsideBefore.ctimeNs,
+        );
+        expect(await readFile(outsideFile, 'utf8')).toBe('outside\n');
+        expect(await readFile(join(moved, 'note.txt'), 'utf8')).toBe(
+          'mounted\n',
+        );
+      });
+
+      it('owns every manifest root with one ownership worker', async () => {
+        const spawn = vi.spyOn(childProcess, 'spawn');
+        const entries = {
+          'first.txt': { type: 'file' as const, content: 'first' },
+          'second.txt': { type: 'file' as const, content: 'second' },
+          'third.txt': { type: 'file' as const, content: 'third' },
+        };
+        await session.applyManifest(
+          new Manifest({ entries }),
+          userInfo().username,
+        );
+        const ownershipWorkers = spawn.mock.calls.filter(
+          ([, args]) =>
+            Array.isArray(args) &&
+            args.includes(UNIX_LOCAL_FILE_WORKER) &&
+            JSON.parse(args.at(-1)!).operation === 'chownRecursive',
+        );
+        expect(ownershipWorkers).toHaveLength(1);
+        for (const [path, entry] of Object.entries(entries)) {
+          expect(
+            await readFile(join(session.state.workspaceRootPath, path), 'utf8'),
+          ).toBe(entry.content);
+        }
+      });
+
+      it.skipIf(process.platform !== 'linux')(
+        'owns a tree deeper than the Python recursion limit',
+        async () => {
+          const tree = join(root, 'deep-ownership');
+          await mkdir(tree);
+          let deepest = tree;
+          for (let depth = 0; depth < 1_050; depth++) {
+            deepest = join(deepest, 'd');
+            await mkdir(deepest);
+          }
+          const leaf = join(deepest, 'note.txt');
+          await writeFile(leaf, 'deep\n');
+          const before = await stat(leaf, { bigint: true });
+          const files = new UnixLocalFiles();
+          try {
+            await files.run(
+              {
+                operation: 'chownRecursive',
+                uid: process.getuid!(),
+                gid: process.getgid!(),
+              },
+              {
+                input: JSON.stringify([
+                  { path: tree, accessPath: tree, preserveLeaf: true },
+                ]),
+              },
+            );
+          } finally {
+            await files.close();
+          }
+          expect((await stat(leaf, { bigint: true })).ctimeNs).toBeGreaterThan(
+            before.ctimeNs,
+          );
+          expect(await readFile(leaf, 'utf8')).toBe('deep\n');
+        },
+        15_000,
+      );
+
+      it.each(['materializeEntry', 'applyManifest'] as const)(
         'does not chown outside the workspace when an ancestor changes during %s',
         async (entryPoint) => {
           const workspace = session.state.workspaceRootPath;
