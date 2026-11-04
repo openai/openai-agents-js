@@ -179,7 +179,11 @@
     {
       "path": "0045-protect-reverse-local-bind-aliases.patch",
       "sha256": "1eb99a3ac7386544dcfc83df9977e88050dfdf5bc45011acf61405d6fa10174f"
+    },
+    {
+      "path": "0046-protect-macos-local-helper-hard-links.patch",
+      "sha256": "dd1f102c61a4d8bac29b72dfbce0bb334228b0c31e3212590ebeac8f0f39cf08"
     }
   ],
-  "result_tree": "fe0e93b9ae9648276e13de3fcc90369b0ab47993"
+  "result_tree": "6074b74bf7fa29bd97f0f700fe950d4b92f946b8"
 }
