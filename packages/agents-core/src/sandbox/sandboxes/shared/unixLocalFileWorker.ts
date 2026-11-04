@@ -336,16 +336,50 @@ def check_removal(directory, name):
     if parent_info.st_mode & stat.S_ISVTX and uid not in (0, parent_info.st_uid, entry_info.st_uid):
         raise PermissionError(errno.EPERM, "Source directory does not allow removal", name)
 
+def chown_recursive(directory, name, uid, gid):
+    try:
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        return
+    if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):
+        os.chown(name, uid, gid, dir_fd=directory, follow_symlinks=False)
+        return
+    try:
+        fd = os.open(name, DIRECTORY if stat.S_ISDIR(info.st_mode) else FILE_READ, dir_fd=directory)
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        if stat.S_ISDIR(info.st_mode):
+            raise
+        # chown does not require read access to an owned mode-000 file.
+        os.chown(name, uid, gid, dir_fd=directory, follow_symlinks=False)
+        return
+    try:
+        opened = os.fstat(fd)
+        os.fchown(fd, uid, gid)
+        if stat.S_ISDIR(opened.st_mode):
+            with os.scandir(fd) as entries:
+                for entry in entries:
+                    chown_recursive(fd, entry.name, uid, gid)
+    finally:
+        close(fd)
+
 def run(request):
     operation = request["operation"]
     if operation == "probe":
-        if not {os.open, os.stat, os.mkdir, os.rmdir, os.unlink, os.rename, os.access}.issubset(os.supports_dir_fd) or os.access not in os.supports_effective_ids or os.scandir not in os.supports_fd or os.stat not in os.supports_follow_symlinks or not all(hasattr(os, name) for name in ("fchdir", "fchown", "fchmod")):
+        if not {os.open, os.stat, os.chown, os.mkdir, os.rmdir, os.unlink, os.rename, os.access}.issubset(os.supports_dir_fd) or os.access not in os.supports_effective_ids or os.scandir not in os.supports_fd or not {os.stat, os.chown}.issubset(os.supports_follow_symlinks) or not all(hasattr(os, name) for name in ("fchdir", "fchown", "fchmod")):
             raise RuntimeError("Descriptor-relative file operations are unavailable")
         Path("/").resolve(strict=True)
         sys.stdout.write("ready")
         return
     select_identity(request.get("identity"))
     path = checked_path(request["path"])
+    if operation == "chownRecursive":
+        with parent(path) as (directory, name):
+            chown_recursive(directory, name, request["uid"], request["gid"])
+        return
     if operation == "create":
         write_new(path)
         return

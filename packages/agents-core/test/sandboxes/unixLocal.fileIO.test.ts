@@ -10,6 +10,7 @@ import {
   rename,
   rm,
   symlink,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -92,6 +93,77 @@ describe.skipIf(process.platform === 'win32')(
         return spawn(command, rewritten, options);
       }) as typeof childProcess.spawn);
     }
+
+    describe('manifest ownership traversal', () => {
+      it.each(['materializeEntry', 'applyManifest'] as const)(
+        'does not chown outside the workspace when an ancestor changes during %s',
+        async (entryPoint) => {
+          const workspace = session.state.workspaceRootPath;
+          const nested = join(workspace, 'attack');
+          const moved = join(workspace, 'attack-moved');
+          const target = join(nested, 'note.txt');
+          const outsideFile = join(outside, 'note.txt');
+          await mkdir(nested);
+          const outsideBefore = await stat(outsideFile, { bigint: true });
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          workerHook(`
+_checked_path = checked_path
+def checked_path(spec):
+    path = _checked_path(spec)
+    if path == ${JSON.stringify(target)}:
+        os.rename(${JSON.stringify(nested)}, ${JSON.stringify(moved)})
+        os.symlink(${JSON.stringify(outside)}, ${JSON.stringify(nested)})
+    return path`);
+
+          const entry = { type: 'file' as const, content: 'updated\n' };
+          const operation =
+            entryPoint === 'materializeEntry'
+              ? session.materializeEntry({
+                  path: 'attack/note.txt',
+                  entry,
+                  runAs: userInfo().username,
+                })
+              : session.applyManifest(
+                  new Manifest({ entries: { 'attack/note.txt': entry } }),
+                  userInfo().username,
+                );
+          await expect(operation).rejects.toThrow();
+          expect((await lstat(nested)).isSymbolicLink()).toBe(true);
+          const outsideAfter = await stat(outsideFile, { bigint: true });
+          expect(outsideAfter.uid).toBe(outsideBefore.uid);
+          expect(outsideAfter.gid).toBe(outsideBefore.gid);
+          expect(outsideAfter.ctimeNs).toBe(outsideBefore.ctimeNs);
+          expect(await readFile(outsideFile, 'utf8')).toBe('outside\n');
+          expect(await readFile(join(moved, 'note.txt'), 'utf8')).toBe(
+            'updated\n',
+          );
+        },
+      );
+    });
+
+    it('keeps recursive runAs ownership working for unreadable files', async () => {
+      const workspace = session.state.workspaceRootPath;
+      const restricted = join(workspace, 'nested', 'sealed.txt');
+      await writeFile(restricted, 'sealed\n');
+      await chmod(restricted, 0o000);
+      try {
+        await session.materializeEntry({
+          path: 'nested',
+          entry: { type: 'dir' },
+          runAs: userInfo().username,
+        });
+        await session.applyManifest(
+          new Manifest({ entries: { nested: { type: 'dir' } } }),
+          userInfo().username,
+        );
+        expect((await stat(restricted)).mode & 0o777).toBe(0);
+        expect((await stat(restricted)).uid).toBe(process.getuid?.());
+        expect((await stat(restricted)).gid).toBe(process.getgid?.());
+      } finally {
+        await chmod(restricted, 0o600);
+      }
+      expect(await readFile(restricted, 'utf8')).toBe('sealed\n');
+    });
 
     it('preserves binary reads, listings, image bytes and directory probes', async () => {
       expect(

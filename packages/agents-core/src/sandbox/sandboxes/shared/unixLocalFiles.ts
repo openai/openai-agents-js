@@ -45,11 +45,14 @@ type FileRequest = {
     | 'directoryExists'
     | 'create'
     | 'update'
-    | 'delete';
+    | 'delete'
+    | 'chownRecursive';
   path: LocalFilePath;
   destination?: LocalFilePath;
   unlinkPath?: LocalFilePath;
   limit?: number;
+  uid?: number;
+  gid?: number;
 };
 
 // Resolve from trusted host configuration, never the manifest's command environment.

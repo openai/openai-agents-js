@@ -59,7 +59,6 @@ import {
 } from '../workspacePaths';
 import type { LocalSandboxSnapshot, LocalSandboxSnapshotSpec } from './types';
 import {
-  applyOwnershipRecursive,
   assertLocalWorkspaceManifestMetadataSupported,
   materializeLocalWorkspaceManifest,
   materializeLocalWorkspaceManifestEntry,
@@ -533,11 +532,7 @@ export class UnixLocalSandboxSession<
       },
     );
     if (runAs) {
-      await applyOwnershipRecursive(
-        this.resolveSandboxPath(args.path),
-        runAs.uid,
-        runAs.gid,
-      );
+      await this.applyOwnershipRecursive(args.path, runAs);
     }
     this.state.manifest = mergeManifestEntryDelta(
       this.state.manifest,
@@ -575,11 +570,7 @@ export class UnixLocalSandboxSession<
     const environment = await manifest.resolveEnvironment();
     if (identity) {
       for (const path of Object.keys(manifest.entries)) {
-        await applyOwnershipRecursive(
-          this.resolveSandboxPath(path),
-          identity.uid,
-          identity.gid,
-        );
+        await this.applyOwnershipRecursive(path, identity);
       }
     }
     this.state.environment = {
@@ -686,6 +677,18 @@ export class UnixLocalSandboxSession<
       this.resolveSandboxPath(path, options);
     }
     return this.resolveHostPath(path, options, mode);
+  }
+
+  private async applyOwnershipRecursive(
+    path: string,
+    identity: UnixRunAsIdentity,
+  ): Promise<void> {
+    await this.files.run({
+      operation: 'chownRecursive',
+      path: this.resolveFilesystemPath(path, {}, 'entry'),
+      uid: identity.uid,
+      gid: identity.gid,
+    });
   }
 
   private resolveHostPath(
