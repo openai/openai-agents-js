@@ -377,7 +377,7 @@ export async function validateCurrentSnapshot({
   assert.equal(scope.run_attempt, attempt, 'Snapshot capture attempt changed');
   assert.equal(
     scope.source_sha,
-    context.payload.pull_request?.head.sha ?? context.sha,
+    context.sha,
     'Snapshot capture source changed',
   );
   assert.equal(

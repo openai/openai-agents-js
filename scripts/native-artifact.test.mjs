@@ -987,6 +987,146 @@ test('push scope captures a unique exact open PR before SDK execution and never 
   assert.equal((await capture()).kind, 'fork');
 });
 
+test('fork snapshots bind the compiled merge source and retain their PR identity', async () => {
+  const f = donorFixture();
+  f.context.eventName = 'pull_request';
+  f.context.runId = 20;
+  f.context.ref = 'refs/pull/9/merge';
+  f.context.sha = commit('e');
+  f.context.payload.pull_request = {
+    number: 9,
+    head: { repo: { id: 2 }, ref: 'fork-work', sha: commit('d') },
+    base: { repo: { id: 1 }, ref: 'feat/codex-harness' },
+  };
+  f.artifact.workflow_run.head_repository_id = 2;
+  const scope = await captureNativeScope({
+    github: f.github,
+    context: f.context,
+    attempt: 1,
+  });
+  assert.equal(scope.source_sha, f.context.sha);
+  assert.equal(scope.kind, 'fork');
+  assert.equal(scope.head_repository_id, 2);
+  assert.equal(scope.head_ref, 'fork-work');
+  assert.equal(scope.pr_number, 9);
+  const snapshot = {
+    artifact_id: '10',
+    artifact_digest: 'a'.repeat(64),
+    artifact_name: f.artifact.name,
+    provenance: JSON.stringify(scope),
+  };
+  const validate = () =>
+    validateCurrentSnapshot({
+      github: f.github,
+      context: f.context,
+      name: f.artifact.name,
+      platform: 'linux-x64',
+      snapshot,
+      consumerAttempt: 1,
+    });
+  assert.deepEqual(await validate(), { artifactId: 10, runId: 20 });
+  for (const source of [commit('d'), commit('f')]) {
+    snapshot.provenance = JSON.stringify({ ...scope, source_sha: source });
+    await assert.rejects(validate(), /Snapshot capture source changed/);
+  }
+});
+
+test('fork qualification includes base helpers and SDK/native changes in one merge tree', async () => {
+  const f = fixture();
+  const git = (...args) =>
+    execFileSync(
+      'git',
+      [
+        '-C',
+        f.repository,
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        ...args,
+      ],
+      { encoding: 'utf8' },
+    ).trim();
+  const commitAll = () => {
+    git('add', '.');
+    git('commit', '--quiet', '-m', 'fixture');
+    return git('rev-parse', 'HEAD');
+  };
+  try {
+    git('init', '--quiet', '--initial-branch=base');
+    git('config', 'core.autocrlf', 'false');
+    commitAll();
+    git('checkout', '--quiet', '-b', 'fork');
+    f.write('src/fork.ts', 'fork SDK change');
+    const head = commitAll();
+    assert.equal(
+      existsSync(join(f.packageRoot, 'scripts/native-scope.mjs')),
+      false,
+    );
+    git('checkout', '--quiet', 'base');
+    f.write(
+      'scripts/native-scope.mjs',
+      readFileSync(
+        new URL('../packages/agents/scripts/native-scope.mjs', import.meta.url),
+      ),
+    );
+    f.write('src/base.ts', 'base SDK change');
+    f.write('native/rust/lib.rs', 'base native change');
+    const base = commitAll();
+    const baseIdentity = nativeInputIdentity(f.packageRoot);
+    git('merge', '--quiet', '--no-ff', '--no-edit', 'fork');
+    const merged = git('rev-parse', 'HEAD');
+    assert.notEqual(merged, head);
+    execFileSync(process.execPath, [
+      join(f.packageRoot, 'scripts/native-scope.mjs'),
+    ]);
+    assert.equal(
+      readFileSync(join(f.packageRoot, 'src/base.ts'), 'utf8'),
+      'base SDK change',
+    );
+    assert.equal(
+      readFileSync(join(f.packageRoot, 'src/fork.ts'), 'utf8'),
+      'fork SDK change',
+    );
+    assert.equal(nativeInputIdentity(f.packageRoot), baseIdentity);
+    assert.equal(
+      committedNativeInputsMatch({
+        repository: f.repository,
+        from: base,
+        to: merged,
+      }),
+      true,
+    );
+    assert.equal(
+      committedNativeInputsMatch({
+        repository: f.repository,
+        from: head,
+        to: merged,
+      }),
+      false,
+    );
+    await assert.rejects(
+      verifyNativeReceipt(f.repository, fixturePlatform),
+      /Native input inventory changed/,
+    );
+    for (const workflow of [
+      'alpha-native-package.yml',
+      'alpha-sdk-package.yml',
+    ]) {
+      const source = readFileSync(
+        new URL('../.github/workflows/' + workflow, import.meta.url),
+        'utf8',
+      );
+      const refs = [...source.matchAll(/^\s+ref: \$\{\{ (.*?) \}\}/gm)].map(
+        (match) => match[1],
+      );
+      assert.deepEqual(refs, ['github.sha']);
+    }
+  } finally {
+    f.dispose();
+  }
+});
+
 test('captured provenance restricts branch snapshots to the original PR and repository without trusting later live associations', () => {
   const f = donorFixture();
   const record = { ...f.scope, source_sha: commit('b'), run_id: 20 };

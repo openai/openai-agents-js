@@ -67,7 +67,7 @@ export async function captureNativeScope({ github, context, attempt }) {
     format: 'native-snapshot-scope-v1',
     repository_id: id,
     head_repository_id: pr?.head.repo.id ?? id,
-    source_sha: pr?.head.sha ?? context.sha,
+    source_sha: context.sha,
     head_ref: pr?.head.ref ?? context.ref.replace(/^refs\/heads\//, ''),
     run_id: context.runId,
     run_attempt: attempt,
