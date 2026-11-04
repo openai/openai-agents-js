@@ -170,11 +170,19 @@ export async function loadInstructionFiles(
         throw new TypeError(`Instruction file changed while opening: ${path}`);
       bytes = await file.readFile({ signal });
     } catch (error) {
-      signal?.throwIfAborted();
-      throw error;
-    } finally {
-      await file.close();
+      const primary: unknown = signal?.aborted ? signal.reason : error;
+      try {
+        await file.close();
+      } catch (closeError) {
+        throw new AggregateError(
+          [primary, closeError],
+          'Reading and closing the instruction file failed',
+          { cause: primary },
+        );
+      }
+      throw primary;
     }
+    await file.close();
     signal?.throwIfAborted();
     try {
       parts.push(

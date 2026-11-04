@@ -185,3 +185,69 @@ it.each(['unsupported receipt', 'ordinary context'] as const)(
     server.assertExhausted();
   },
 );
+
+it.each(['forked', 'rolled-back'] as const)(
+  'projects late execution evidence correctly for a %s turn',
+  async (kind) => {
+    const server = new ModelServer([[message('Remembered')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'fixture',
+    });
+    const agent = new Agent({ instructions: 'Remember this.', provider });
+    const { state, turnId } = await (async () => {
+      await using session = await agent.session();
+      const turn = await session.submit('Remember this.');
+      await turn.wait();
+      return { state: await session.saveState(), turnId: turn.turnId };
+    })();
+    const threadId = state.source_session_id;
+    // A native execution completion can be recorded after the turn settles.
+    if (kind === 'rolled-back') {
+      state.history.push({
+        type: 'event_msg',
+        payload: { type: 'thread_rolled_back', num_turns: 1 },
+      });
+    }
+    state.history.push({
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        thread_id: threadId,
+        turn_id: turnId,
+        item: {
+          type: 'McpToolCall',
+          id: 'late-lookup',
+          server: 'fixture',
+          tool: 'lookup',
+          arguments: {},
+          status: 'completed',
+        },
+      },
+    });
+    await using restored = await agent.session({
+      state: parseSessionState(JSON.stringify(state)),
+    });
+    if (kind === 'rolled-back') {
+      expect(await Array.fromAsync(restored.turns())).toEqual([]);
+      expect(await Array.fromAsync(restored.items())).toEqual([]);
+    } else {
+      const fork = await restored.fork();
+      await using destination = await agent.session({ state: fork });
+      expect(destination.id).not.toBe(threadId);
+      const [turn] = await Array.fromAsync(destination.turns());
+      expect(turn?.receipt).toMatchObject({ threadId, turnId });
+      expect(await Array.fromAsync(destination.items())).toContainEqual(
+        expect.objectContaining({
+          type: 'mcp_call',
+          id: 'late-lookup',
+          threadId,
+          turnId,
+        }),
+      );
+    }
+    server.assertExhausted();
+  },
+);

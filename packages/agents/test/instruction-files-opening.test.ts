@@ -132,3 +132,50 @@ it('cancels instruction-file loading without resolving any remaining paths', asy
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it.each(['read error', 'abort reason'] as const)(
+  'preserves the %s when closing the instruction file also fails',
+  async (kind) => {
+    const fs =
+      await vi.importActual<typeof import('node:fs/promises')>(
+        'node:fs/promises',
+      );
+    const directory = await mkdtemp(
+      join(tmpdir(), 'agents-instructions-close-'),
+    );
+    const path = join(directory, 'selected.md');
+    const controller = new AbortController();
+    const readError = new Error('Instruction read failed');
+    const abortReason = new Error('Opening cancelled');
+    const closeError = new Error('Instruction close failed');
+    const primary = kind === 'abort reason' ? abortReason : readError;
+    try {
+      await writeFile(path, 'Selected instructions.');
+      vi.mocked(open).mockImplementationOnce(async (...args) => {
+        const file = await fs.open(...args);
+        const close = file.close.bind(file);
+        vi.spyOn(file, 'readFile').mockImplementationOnce(async () => {
+          if (kind === 'abort reason') controller.abort(abortReason);
+          throw readError;
+        });
+        vi.spyOn(file, 'close').mockImplementationOnce(async () => {
+          await close();
+          throw closeError;
+        });
+        return file;
+      });
+      await expect(
+        new Agent({ instructions: 'Answer.' }).session({
+          instructionFiles: [path],
+          signal: controller.signal,
+        }),
+      ).rejects.toMatchObject({
+        name: 'AggregateError',
+        cause: primary,
+        errors: [primary, closeError],
+      });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

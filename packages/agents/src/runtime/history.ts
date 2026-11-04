@@ -860,12 +860,6 @@ function nativeItems(
         },
       ];
     }
-    case 'McpToolCall':
-    case 'CommandExecution':
-    case 'FileChange': {
-      const item = projectExecutionItem(raw, turnId, sourceId, done);
-      return item ? [{ ...item, data: raw }] : [];
-    }
     case 'WebSearch':
       return [
         {
@@ -1094,6 +1088,29 @@ export function projectHistory(
       const id: string | null =
         text(payload.turn_id) ?? text(payload.turnId) ?? current;
       if (!id) continue;
+      const done = payload.type === 'item_completed';
+      const native =
+        done || payload.type === 'item_started'
+          ? object(payload.item)
+          : undefined;
+      if (
+        native?.type === 'McpToolCall' ||
+        native?.type === 'CommandExecution' ||
+        native?.type === 'FileChange'
+      ) {
+        // Late execution evidence belongs to a surviving turn and cannot
+        // change which turn owns subsequent response items.
+        if (turns.has(id)) {
+          const item = projectExecutionItem(
+            native,
+            id,
+            text(payload.thread_id) ?? subagentId ?? sessionId,
+            done,
+          );
+          if (item) remember({ ...item, data: native }, true);
+        }
+        continue;
+      }
       if (pendingUser?.item.turnId !== id) pendingUser = undefined;
       current = id;
       aborted = null;
@@ -1115,30 +1132,25 @@ export function projectHistory(
         }
       }
 
-      if (
-        payload.type === 'item_started' ||
-        payload.type === 'item_completed'
-      ) {
-        const native = object(payload.item);
-        if (native?.type === 'ContextCompaction') pendingUser = undefined;
-        if (native)
-          for (const item of nativeItems(
-            native,
-            payload.type === 'item_completed',
-            id,
-            subagentId ?? sessionId,
-          )) {
-            const seenNative = identities.get(
-              JSON.stringify([item.turnId, false, true, item.id]),
-            )?.native;
-            const occurrence = remember(item, true);
-            if (native.type === 'UserMessage' && !seenNative) {
-              // Core records each accepted input before its distinct native item.
-              if (pendingUser && occurrence !== pendingUser)
-                userAliases.add(pendingUser);
-              pendingUser = undefined;
-            }
+      if (native) {
+        if (native.type === 'ContextCompaction') pendingUser = undefined;
+        for (const item of nativeItems(
+          native,
+          done,
+          id,
+          subagentId ?? sessionId,
+        )) {
+          const seenNative = identities.get(
+            JSON.stringify([item.turnId, false, true, item.id]),
+          )?.native;
+          const occurrence = remember(item, true);
+          if (native.type === 'UserMessage' && !seenNative) {
+            // Core records each accepted input before its distinct native item.
+            if (pendingUser && occurrence !== pendingUser)
+              userAliases.add(pendingUser);
+            pendingUser = undefined;
           }
+        }
       }
       const started =
         payload.type === 'task_started' || payload.type === 'turn_started';
