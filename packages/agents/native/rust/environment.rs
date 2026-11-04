@@ -13,7 +13,7 @@ use codex_core::{
 };
 use codex_core_api::{
     Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
-    NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec,
+    NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec, SqliteConfig,
 };
 use codex_exec_server::{
     Environment, EnvironmentInfo, ExecParams, ExecProcessEvent, ExecServerError,
@@ -833,10 +833,12 @@ fn check_local_session_write_roots(
     roots: &LocalWriteRoots<'_>,
     storage: Option<&Path>,
 ) -> Result<()> {
+    let sqlite = config.sqlite_config();
     if let Some(storage) = storage {
         check_local_protected_path(
             roots,
             storage,
+            sqlite,
             "could not resolve local session storage",
             "Keep local session storage outside the executor cwd and writable roots",
         )?;
@@ -844,6 +846,7 @@ fn check_local_session_write_roots(
     check_local_protected_path(
         roots,
         config.codex_home.as_path(),
+        sqlite,
         "could not resolve the native runtime home",
         "Keep the native runtime home outside the executor cwd and writable roots",
     )
@@ -852,16 +855,119 @@ fn check_local_session_write_roots(
 fn check_local_protected_path(
     roots: &LocalWriteRoots<'_>,
     path: &Path,
+    sqlite: &SqliteConfig,
     resolve_error: &'static str,
     overlap_error: &'static str,
 ) -> Result<()> {
-    // Runtime and SQLite directories may be created after this check.
+    let resolved = resolve_local_protected_path(roots, path, resolve_error, overlap_error)?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let mut linked_files = linked_local_protected_files(&resolved).context(resolve_error)?;
+        if path == sqlite.home() {
+            linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
+        }
+        ensure!(
+            !roots
+                .contains_hard_link_to_any(&linked_files)
+                .context("could not check writable roots for private storage hard links")?,
+            "{overlap_error}; remove hard links to its files from the writable roots"
+        );
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = (resolved, sqlite);
+    Ok(())
+}
+
+fn resolve_local_protected_path(
+    roots: &LocalWriteRoots<'_>,
+    path: &Path,
+    resolve_error: &'static str,
+    overlap_error: &'static str,
+) -> Result<PathBuf> {
+    // Runtime and SQLite files may be created after this check.
     let resolved = resolve_local_path(path, true, resolve_error, |entry| {
         ensure!(!roots.contains_entry(entry)?, "{overlap_error}");
         Ok(())
     })?;
     ensure!(!roots.has_root_at_or_below(&resolved)?, "{overlap_error}");
-    Ok(())
+    Ok(resolved)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_relocated_sqlite_files(
+    roots: &LocalWriteRoots<'_>,
+    sqlite: &SqliteConfig,
+    overlap_error: &'static str,
+) -> Result<Vec<PathBuf>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let resolve_error = "could not inspect a native SQLite path";
+    let mut linked_files = Vec::new();
+    for db in sqlite.runtime_db_paths() {
+        let metadata = match db.path.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context(resolve_error),
+        };
+        if !metadata.is_symlink() {
+            continue;
+        }
+        // SQLite resolves its configured DB filename and keeps sidecars beside
+        // the resolved DB. Inspect those files without traversing external trees.
+        let db = resolve_local_protected_path(roots, &db.path, resolve_error, overlap_error)?;
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let mut path = db.as_os_str().to_os_string();
+            path.push(suffix);
+            let path = PathBuf::from(path);
+            let metadata = match path.symlink_metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error).context(resolve_error),
+            };
+            if metadata.is_file() {
+                ensure!(
+                    !roots.contains_entry(&path)? && !roots.has_root_at_or_below(&path)?,
+                    "{overlap_error}"
+                );
+                if metadata.nlink() > 1 {
+                    linked_files.push(path);
+                }
+            }
+        }
+    }
+    Ok(linked_files)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_local_protected_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+
+    let mut directories = vec![root.to_owned()];
+    let mut linked_files = Vec::new();
+    while let Some(directory) = directories.pop() {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            let entry = entry?;
+            // DirEntry::metadata does not follow symlinks. Native state can
+            // also disappear during a normal rename or cleanup.
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if metadata.is_dir() {
+                directories.push(entry.path());
+            } else if metadata.is_file() && metadata.nlink() > 1 {
+                linked_files.push(entry.path());
+            }
+        }
+    }
+    Ok(linked_files)
 }
 
 fn resolve_local_path(
