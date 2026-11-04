@@ -16,6 +16,7 @@ import {
   Agent,
   LocalRecoveryRequired,
   NativeError,
+  NativeProvider,
   type Session,
   type SteeringReceipt,
   type TurnNeedsAttention,
@@ -135,9 +136,10 @@ it.each([
     const script = forge
       ? `printf '%s\\n' '${hashLine}' # sha256sum draft.md`
       : 'sha256sum draft.md';
+    const close = vi.fn(async () => {});
     const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
       id: 'thread',
-      async [Symbol.asyncDispose]() {},
+      close,
       async submit() {
         return {
           turnId: 'turn',
@@ -167,6 +169,7 @@ it.each([
       const snapshot = await runWorker(directory);
       expect(snapshot.state).toBe(accepted ? 'accepted' : 'needs_review');
       expect(snapshot.evidence).toBe(accepted ? 'hash-evidence' : undefined);
+      expect(close).toHaveBeenCalledOnce();
       if (!accepted)
         await expect(publishAcceptedDraft(directory)).rejects.toThrow(
           'Publication requires an accepted draft.',
@@ -264,7 +267,7 @@ it('preserves a snapshot write failure when temporary file cleanup also fails', 
   const cleanup = new Error('Synthetic temporary file removal failure.');
   const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
     id: 'thread',
-    async [Symbol.asyncDispose]() {},
+    async close() {},
   } as unknown as Session);
   vi.mocked(rename).mockRejectedValueOnce(persistence);
   vi.mocked(rm).mockRejectedValueOnce(cleanup);
@@ -289,7 +292,7 @@ it('records attention before disposing the session when submission rejects', asy
   let snapshotAtDisposal: Awaited<ReturnType<typeof readWorkerSnapshot>>;
   const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
     id: 'thread',
-    async [Symbol.asyncDispose]() {
+    async close() {
       snapshotAtDisposal = await readWorkerSnapshot(directory);
     },
     async submit() {
@@ -307,6 +310,67 @@ it('records attention before disposing the session when submission rejects', asy
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it.each([false, true])(
+  'preserves the submission failure when close rejects (provider also rejects: %s)',
+  async (providerRejects) => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-worker-close-'));
+    const primary = new Error('Synthetic submission failure.');
+    const sessionFailure = new Error('Synthetic session close failure.');
+    const providerFailure = new Error('Synthetic provider close failure.');
+    const order: string[] = [];
+    let snapshotAtClose: Awaited<ReturnType<typeof readWorkerSnapshot>>;
+    const close = async () => {
+      order.push('session');
+      snapshotAtClose = await readWorkerSnapshot(directory);
+      throw sessionFailure;
+    };
+    const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+      id: 'thread',
+      close,
+      [Symbol.asyncDispose]: close,
+      async submit() {
+        throw primary;
+      },
+    } as unknown as Session);
+    const closeProvider = NativeProvider.prototype.close;
+    const provider = vi
+      .spyOn(NativeProvider.prototype, 'close')
+      .mockImplementation(async function (this: NativeProvider) {
+        order.push('provider');
+        if (providerRejects) throw providerFailure;
+        await closeProvider.call(this);
+      });
+    try {
+      const failure = await runWorker(directory).catch(
+        (error: unknown) => error,
+      );
+      expect(snapshotAtClose).toMatchObject({
+        threadId: 'thread',
+        state: 'needs_attention',
+      });
+      expect(order).toEqual(['session', 'provider']);
+      expect(failure).toMatchObject({
+        name: 'AggregateError',
+        cause: primary,
+        errors: [
+          primary,
+          providerRejects
+            ? expect.objectContaining({
+                cause: sessionFailure,
+                errors: [sessionFailure, providerFailure],
+              })
+            : sessionFailure,
+        ],
+      });
+      expect((failure as AggregateError).cause).toBe(primary);
+    } finally {
+      provider.mockRestore();
+      session.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 it('records attention before session disposal when cancelling active work fails', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'native-worker-cancel-'));
@@ -329,7 +393,7 @@ it('records attention before session disposal when cancelling active work fails'
   });
   const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
     id: 'thread',
-    [Symbol.asyncDispose]: dispose,
+    close: dispose,
     async submit() {
       return {
         async *events() {
@@ -384,7 +448,7 @@ it('preserves the classified error and saves its attention reason', async () => 
   });
   const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
     id: 'thread',
-    async [Symbol.asyncDispose]() {},
+    async close() {},
     async submit() {
       return {
         async *events() {},
@@ -422,7 +486,7 @@ it('saves a review snapshot when reading completed history fails', async () => {
   const claim = { summary: 'Draft ready.', question: null };
   const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
     id: 'thread',
-    async [Symbol.asyncDispose]() {},
+    async close() {},
     async submit() {
       return {
         turnId: 'turn',

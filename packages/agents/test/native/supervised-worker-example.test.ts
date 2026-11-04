@@ -167,16 +167,26 @@ sandboxTest(
         reportsToken: peer.issue('bob', recoveryTestTimeoutMs).token,
         task: 'Ask if you need the date.',
       };
-      function start(config: object, startupContext?: TestContext) {
-        const worker = launch(config, startupContext);
+      function start(
+        config: object,
+        startupContext?: TestContext,
+        watchdogMs?: number,
+      ) {
+        const worker = launch(config, startupContext, watchdogMs);
         workers.push(worker);
         return worker;
       }
-      const firstAlice = start({
-        ...aliceConfig,
-        steer: 'Keep it brief.',
-        stopAfterEffect: true,
-      });
+      // Alice waits for Bob and then pauses after recording the report.
+      const firstAlice = start(
+        {
+          ...aliceConfig,
+          steer: 'Keep it brief.',
+          stopAfterEffect: true,
+          turnMs: recoveryTestTimeoutMs,
+        },
+        undefined,
+        recoveryTestTimeoutMs,
+      );
       const firstBob = start(bobConfig, context);
       await firstBob.finish();
       await expect
