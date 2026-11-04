@@ -223,10 +223,21 @@ export async function superviseArtifact(options: WorkerOptions) {
 
   const submitted = performance.now();
   const deadline = AbortSignal.timeout(options.turnMs ?? 30_000);
-  const turn = await session.submit(task, {
-    ifBusy: 'reject',
-    writableRoots: [],
-  });
+  const turn = await session
+    .submit(task, { ifBusy: 'reject', writableRoots: [] })
+    .catch(async (error: unknown) => {
+      started.state = 'needs_attention';
+      try {
+        await atomicWrite(path.snapshot, JSON.stringify(started), true);
+      } catch (persistence) {
+        throw new AggregateError(
+          [error, persistence],
+          'Saving the worker status failed.',
+          { cause: error },
+        );
+      }
+      throw error;
+    });
   const followUpSubmissionMs = previous ? performance.now() - submitted : null;
   let firstToolMs: number | null = null;
   let steer = options.steer;
