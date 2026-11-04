@@ -108,7 +108,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const interrupted = later.wait().catch((error: unknown) => error);
       const state = parseSessionState(JSON.stringify(await source.suspend()));
       expect(await interrupted).toBeInstanceOf(InteractionRequired);
-      if (state.format_version !== 5)
+      if (state.kind !== 'manual')
         throw new Error('Expected output-aware manual state');
       expect(state.output_context).toMatchObject({
         mode: 'prompted',
@@ -169,7 +169,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       );
       expect(JSON.stringify(server.requests[4].input)).not.toContain(repaired);
       const recaptured = await restored.saveState();
-      if (recaptured.format_version !== 4)
+      if (recaptured.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(recaptured.repair_turns).toHaveLength(1);
       expect(recaptured.repair_items).toEqual(
@@ -216,7 +216,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(result.repairAttempts).toHaveLength(1);
       const attempt = result.repairAttempts[0];
       const before = await source.saveState();
-      if (before.format_version !== 4)
+      if (before.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(before.repair_turns).toHaveLength(1);
       expect(before.repair_items.length).toBeGreaterThan(0);
@@ -232,8 +232,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       );
       await source.compact({ summary: 'Supplied summary before fork.' });
       const fork = parseSessionState(JSON.stringify(await source.fork()));
-      if (fork.format_version !== 4)
-        throw new Error('Expected output-aware fork');
+      if (fork.kind !== 'idle') throw new Error('Expected output-aware fork');
       expect(fork.repair_turns).toEqual(
         before.repair_turns.map((row) => ({
           ...row,
@@ -254,7 +253,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       await using branch = await agent.session({ state: fork });
       await branch.compact({ summary: 'Supplied summary after fork.' });
       const final = parseSessionState(JSON.stringify(await branch.saveState()));
-      if (final.format_version !== 4)
+      if (final.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(final.repair_turns).toEqual(fork.repair_turns);
       expect(final.repair_items).toEqual(fork.repair_items);

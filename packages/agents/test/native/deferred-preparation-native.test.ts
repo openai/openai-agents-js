@@ -154,7 +154,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const [exact, bindings, context] = persist.mock.calls[0]!;
         const state = await session.suspend();
         expect(JSON.stringify(state)).toBe(exact);
-        if (!isManualSessionState(state) || state.format_version !== 5)
+        if (!isManualSessionState(state))
           throw new Error('Expected prompted manual state');
         expect(state.output_context.mode).toBe('prompted');
         expect(

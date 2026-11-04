@@ -1,3 +1,4 @@
+import { prepareOutput } from '../../src/runtime/output';
 import { describe, expect, it } from 'vitest';
 import {
   projectHistory,
@@ -58,7 +59,10 @@ const response = (
   },
 ];
 const receipt = (usage: unknown) => ({
-  format_version: 3,
+  kind: 'manual',
+  network_policy_digest: null,
+  output_context: prepareOutput(undefined).identity,
+  format_version: 2,
   codex_revision: CODEX_REVISION,
   source_session_id: 'session',
   history: [],
@@ -241,7 +245,7 @@ describe('exact observational counters', () => {
   });
 });
 
-describe('existing format-3 manual usage wire', () => {
+describe('manual checkpoint usage', () => {
   it('preserves a legacy safe numeric receipt and nullable usage', () => {
     const usage = runUsageToWire(
       addRunUsage(null, { input_tokens: 2, total_tokens: 3 }),
@@ -249,13 +253,13 @@ describe('existing format-3 manual usage wire', () => {
     const original = receipt(usage);
     const parsed = parseSessionState(JSON.stringify(original));
     expect(parsed).toMatchObject(original);
-    expect(parsed.format_version).toBe(3);
-    if (parsed.format_version !== 3) throw new Error('expected format3');
+    expect(parsed.kind).toBe('manual');
+    if (parsed.kind !== 'manual') throw new Error('expected manual checkpoint');
     expect(parsed.manual_context.usage).toEqual(usage);
     expect(JSON.stringify(parsed)).not.toContain('bigint');
     const missing = parseSessionState(JSON.stringify(receipt(null)));
     expect(
-      missing.format_version === 3 && missing.manual_context.usage,
+      missing.kind === 'manual' && missing.manual_context.usage,
     ).toBeNull();
   });
 
@@ -266,7 +270,7 @@ describe('existing format-3 manual usage wire', () => {
     });
     const encoded = encodeReceipt(receipt(runUsageToWire(usage)));
     const parsed = parseSessionState(encoded);
-    if (parsed.format_version !== 3) throw new Error('expected format3');
+    if (parsed.kind !== 'manual') throw new Error('expected manual checkpoint');
     const wire = parsed.manual_context.usage!;
     expect(wire.inputTokens).toBe(large);
     expect(wire.totalTokens).toBe(maxI64);

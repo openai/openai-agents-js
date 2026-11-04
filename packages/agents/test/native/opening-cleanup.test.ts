@@ -1,3 +1,4 @@
+import { prepareOutput } from '../../src/runtime/output';
 import { access } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -289,9 +290,35 @@ describe('native opening options without loading native code', () => {
     },
   );
 
+  it('rejects flat alpha checkpoints before opening the provider', async () => {
+    const selected = provider();
+    const acquire = vi.spyOn(selected, '_acquire');
+    try {
+      const flat = {
+        format_version: 4,
+        codex_revision: CODEX_REVISION,
+        source_session_id: 'old-root',
+        root_metadata: {},
+        history: [],
+        output_context: prepareOutput(undefined).identity,
+      };
+      await expect(
+        new Agent({ instructions: 'Answer.', provider: selected }).session({
+          state: flat as never,
+        }),
+      ).rejects.toThrow('SDK that saved');
+      expect(acquire).not.toHaveBeenCalled();
+    } finally {
+      await selected.close();
+    }
+  });
+
   it('restores using the selected current provider without adding opening fields to checkpoint state', async () => {
     const state = parseSessionState(
       JSON.stringify({
+        kind: 'idle',
+        network_policy_digest: null,
+        output_context: prepareOutput(undefined).identity,
         format_version: 2,
         codex_revision: CODEX_REVISION,
         source_session_id: 'saved-root',
@@ -416,6 +443,9 @@ describe('native opening options without loading native code', () => {
   it('forwards NativeAgents portable state to native model admission without requiring an Agent model', async () => {
     const state = parseSessionState(
       JSON.stringify({
+        kind: 'idle',
+        network_policy_digest: null,
+        output_context: prepareOutput(undefined).identity,
         format_version: 2,
         codex_revision: CODEX_REVISION,
         source_session_id: 'saved-root',

@@ -202,7 +202,7 @@ describe('declaration output modes', () => {
       expect(execute).toHaveBeenCalledTimes(1);
       expect(validate).toHaveBeenCalledTimes(2);
       const state = await session.saveState();
-      expect(state.format_version).toBe(4);
+      expect(state.kind).toBe('idle');
       await session.close();
       const requestsBeforeRestore = server.requests.length;
       await expect(new Agent(declaration).session({ state })).rejects.toThrow(

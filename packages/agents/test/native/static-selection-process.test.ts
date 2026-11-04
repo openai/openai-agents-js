@@ -155,7 +155,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(original.nativeTransforms).toBe(1);
         expect(originalBytes).toContain('checked-native-text');
         expect(originalBytes).not.toContain('raw-native');
-        expect(saved.format_version).toBe(11);
+        expect(saved.kind).toBe('manual');
         expect(saved.operation_tools).toEqual([
           { name: 'lookup', namespace: 'functions' },
           { name: 'exec', namespace: 'functions' },

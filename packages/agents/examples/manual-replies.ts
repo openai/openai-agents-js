@@ -48,15 +48,7 @@ export async function resumeLookup(
 ): Promise<string> {
   // Validate the full envelope first; a version number alone grants no authority.
   const state = parseSessionState(json);
-  if (
-    state.format_version !== 3 &&
-    state.format_version !== 5 &&
-    state.format_version !== 7 &&
-    state.format_version !== 9 &&
-    state.format_version !== 11 &&
-    state.format_version !== 13 &&
-    state.format_version !== 15
-  )
+  if (state.kind !== 'manual')
     throw new TypeError('Expected a pending manual checkpoint.');
   await using provider = new NativeProvider(options);
   const result = await createAgent(provider).run(null, {

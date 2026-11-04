@@ -230,20 +230,15 @@ const treeState = {
 const manualContinuationSchema = z.object({
   turn_id: z.string().min(1),
   reply_order: z.array(z.string().min(1)),
-  // Legacy format3 stored text function outputs; new checked receipts retain
-  // native content and custom output without another JS transform.
   accepted_replies: z.record(
     z.string(),
-    z.union([
-      z.string(),
-      z
-        .object({
-          type: z.enum(['function_call_output', 'custom_tool_call_output']),
-          call_id: z.string().min(1),
-          output: jsonValue,
-        })
-        .catchall(jsonValue),
-    ]),
+    z
+      .object({
+        type: z.enum(['function_call_output', 'custom_tool_call_output']),
+        call_id: z.string().min(1),
+        output: jsonValue,
+      })
+      .catchall(jsonValue),
   ),
   pending_manual: z
     .array(
@@ -290,38 +285,17 @@ const sdkOutputState = {
   repair_turns: z.array(repairTurnWireSchema).default([]),
   repair_items: z.array(repairItemWireSchema).default([]),
 };
-const checkpointTreeSchema = z.object({ ...rootState, ...treeState });
+const checkpointTreeSchema = z.object({
+  ...rootState,
+  ...treeState,
+  format_version: z.union([z.literal(2), z.literal(4)]),
+  root_memory_mode: z.enum(['enabled', 'disabled']).nullable().optional(),
+  managed_tool_specs: jsonValue.optional(),
+  agent_options: jsonObject.optional(),
+});
 const nativeCheckpointSchema = checkpointTreeSchema
-  .extend({ format_version: z.union([z.literal(2), z.literal(4)]) })
-  .catchall(jsonValue)
-  .superRefine((state, ctx) => {
-    validateCheckpointTree(state, ctx);
-    if (
-      [
-        'output_context',
-        'repair_turns',
-        'repair_items',
-        'manual_continuation',
-        'manual_context',
-        'operation_tools',
-        'default_tools',
-        'network_policy_digest',
-      ].some((key) => key in state)
-    )
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Expected a native checkpoint, not an SDK envelope',
-      });
-    if (
-      state.format_version === 2 &&
-      (state.root_code_mode != null ||
-        state.descendants.some((child) => child.code_mode != null))
-    )
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Native CodeMode state requires format_version=4',
-      });
-  });
+  .strict()
+  .superRefine(validateCheckpointTree);
 export type NativeCheckpoint = z.infer<typeof nativeCheckpointSchema>;
 
 /** @internal Decode only checkpoint payloads returned by the native owner. */
@@ -331,253 +305,66 @@ export function parseNativeCheckpoint(source: unknown): NativeCheckpoint {
   );
 }
 
+const checkpointFields = {
+  ...checkpointTreeSchema.shape,
+  ...sdkOutputState,
+  default_tools: checkpointSelectionFields.default_tools,
+  network_policy_digest: z
+    .string()
+    .regex(/^sha256:v1:[a-f0-9]{64}$/)
+    .nullable(),
+};
 export const sessionStateSchema = z
-  .discriminatedUnion('format_version', [
-    z
-      .object({
-        format_version: z.literal(12),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-        network_policy_digest: z.string().regex(/^sha256:v1:[a-f0-9]{64}$/),
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(13),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-        network_policy_digest: z.string().regex(/^sha256:v1:[a-f0-9]{64}$/),
+  .discriminatedUnion(
+    'kind',
+    [
+      z.strictObject({ kind: z.literal('idle'), ...checkpointFields }),
+      z.strictObject({
+        kind: z.literal('manual'),
+        ...checkpointFields,
         manual_continuation: manualContinuationSchema,
         manual_context: manualContextSchema,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(14),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-        network_policy_digest: z.string().regex(/^sha256:v1:[a-f0-9]{64}$/),
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(15),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-        network_policy_digest: z.string().regex(/^sha256:v1:[a-f0-9]{64}$/),
-        manual_continuation: manualContinuationSchema,
-        manual_context: manualContextSchema,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(8),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(9),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-        manual_continuation: manualContinuationSchema,
-        manual_context: manualContextSchema,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(10),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(11),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        ...checkpointSelectionFields,
-        manual_continuation: manualContinuationSchema,
-        manual_context: manualContextSchema,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(6),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(7),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        manual_continuation: manualContinuationSchema,
-        manual_context: manualContextSchema,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(2),
-        ...rootState,
-        ...treeState,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(4),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(5),
-        ...rootState,
-        ...treeState,
-        ...sdkOutputState,
-        manual_continuation: manualContinuationSchema,
-        manual_context: manualContextSchema,
-      })
-      .catchall(jsonValue),
-    z
-      .object({
-        format_version: z.literal(3),
-        ...rootState,
-        ...treeState,
-        manual_continuation: manualContinuationSchema,
-        manual_context: manualContextSchema,
-      })
-      .catchall(jsonValue),
-  ])
+        operation_tools: checkpointSelectionFields.operation_tools,
+      }),
+    ],
+    {
+      error:
+        'Expected an idle or manual checkpoint. Open older untagged checkpoints with the SDK that saved them.',
+    },
+  )
   .superRefine((state, ctx) => {
-    const aware = state.format_version !== 2 && state.format_version !== 3;
-    const network = state.format_version >= 12;
-    const selected = state.format_version >= 8 && state.format_version <= 11;
-    const hasSelection = 'operation_tools' in state || 'default_tools' in state;
-    if (!network && selected !== hasSelection)
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Selection metadata requires a selected checkpoint format',
-      });
-    if (!network && 'network_policy_digest' in state)
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Network policy identity requires a network checkpoint format',
-      });
-    if (
-      (state.format_version === 8 ||
-        state.format_version === 10 ||
-        state.format_version === 12 ||
-        state.format_version === 14) &&
-      'operation_tools' in state
-    )
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Operation selection requires a manual checkpoint',
-      });
-    if (
-      state.format_version !== 6 &&
-      state.format_version !== 7 &&
-      state.format_version !== 10 &&
-      state.format_version !== 11 &&
-      state.format_version !== 14 &&
-      state.format_version !== 15 &&
-      (state.root_code_mode != null ||
-        state.descendants.some((child) => child.code_mode != null))
-    )
-      ctx.addIssue({
-        code: 'custom',
-        message: 'CodeMode state requires a VM checkpoint format',
-      });
-    if (
-      !aware &&
-      ['output_context', 'repair_turns', 'repair_items'].some(
-        (key) => key in state,
-      )
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Output context requires an SDK checkpoint format',
-      });
-    }
-    if (aware) {
-      const turns = new Map<string, (typeof state.repair_turns)[number]>();
-      for (const turn of state.repair_turns) {
-        const key = JSON.stringify([turn.sessionId, turn.id]);
-        if (
-          turn.parentSessionId !== state.source_session_id ||
-          turn.sessionId === state.source_session_id ||
-          turns.has(key)
-        ) {
-          ctx.addIssue({
-            code: 'custom',
-            message: 'Invalid passive repair turn identity',
-          });
-        }
-        turns.set(key, turn);
+    validateCheckpointTree(state, ctx);
+    const turns = new Map<string, (typeof state.repair_turns)[number]>();
+    for (const turn of state.repair_turns) {
+      const key = JSON.stringify([turn.sessionId, turn.id]);
+      if (
+        turn.parentSessionId !== state.source_session_id ||
+        turn.sessionId === state.source_session_id ||
+        turns.has(key)
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid passive repair turn identity',
+        });
       }
-      for (const item of state.repair_items) {
-        const turn = turns.get(
-          JSON.stringify([item.sessionId, item.item.turnId]),
-        );
-        if (
-          !turn ||
-          item.parentSessionId !== state.source_session_id ||
-          item.parentTurnId !== turn.parentTurnId
-        ) {
-          ctx.addIssue({
-            code: 'custom',
-            message: 'Invalid passive repair item identity',
-          });
-        }
+      turns.set(key, turn);
+    }
+    for (const item of state.repair_items) {
+      const turn = turns.get(
+        JSON.stringify([item.sessionId, item.item.turnId]),
+      );
+      if (
+        !turn ||
+        item.parentSessionId !== state.source_session_id ||
+        item.parentTurnId !== turn.parentTurnId
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Invalid passive repair item identity',
+        });
       }
     }
-
-    if (
-      state.format_version !== 3 &&
-      state.format_version !== 5 &&
-      state.format_version !== 7 &&
-      state.format_version !== 9 &&
-      state.format_version !== 11 &&
-      state.format_version !== 13 &&
-      state.format_version !== 15 &&
-      ('manual_continuation' in state || 'manual_context' in state)
-    ) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'Manual continuations require a manual checkpoint format',
-      });
-    }
-    if (
-      state.format_version === 3 ||
-      state.format_version === 5 ||
-      state.format_version === 7 ||
-      state.format_version === 9 ||
-      state.format_version === 11 ||
-      state.format_version === 13 ||
-      state.format_version === 15
-    ) {
+    if (state.kind === 'manual') {
       const continuation = state.manual_continuation;
       const pending = continuation.pending_manual.map((call) => call.call_id);
       const keys = [...pending, ...Object.keys(continuation.accepted_replies)];
@@ -597,7 +384,7 @@ export const sessionStateSchema = z
       for (const [callId, receipt] of Object.entries(
         continuation.accepted_replies,
       )) {
-        if (typeof receipt !== 'string' && receipt.call_id !== callId) {
+        if (receipt.call_id !== callId) {
           ctx.addIssue({
             code: 'custom',
             message:
@@ -606,12 +393,20 @@ export const sessionStateSchema = z
         }
       }
     }
-    validateCheckpointTree(state, ctx);
   });
 function validateCheckpointTree(
   state: z.infer<typeof checkpointTreeSchema>,
   ctx: z.RefinementCtx,
 ): void {
+  if (
+    state.format_version === 2 &&
+    (state.root_code_mode != null ||
+      state.descendants.some((child) => child.code_mode != null))
+  )
+    ctx.addIssue({
+      code: 'custom',
+      message: 'Native CodeMode state requires format_version=4',
+    });
   if (
     state.root_checklist &&
     state.root_checklist.thread_id !== state.source_session_id
@@ -683,75 +478,18 @@ function validateCheckpointTree(
 }
 export type SessionState = z.infer<typeof sessionStateSchema>;
 
-/** Existing manual owner, with or without an SDK output envelope. */
-export type ManualSessionState = Extract<
-  SessionState,
-  { format_version: 3 | 5 | 7 | 9 | 11 | 13 | 15 }
->;
+export type ManualSessionState = Extract<SessionState, { kind: 'manual' }>;
 export function isManualSessionState(
   state: SessionState | null | undefined,
 ): state is ManualSessionState {
-  return (
-    state?.format_version === 3 ||
-    state?.format_version === 5 ||
-    state?.format_version === 7 ||
-    state?.format_version === 9 ||
-    state?.format_version === 11 ||
-    state?.format_version === 13 ||
-    state?.format_version === 15
-  );
-}
-export function isOutputAwareState(
-  state: SessionState | null | undefined,
-): state is Extract<
-  SessionState,
-  { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 }
-> {
-  return (
-    state?.format_version === 4 ||
-    state?.format_version === 5 ||
-    state?.format_version === 6 ||
-    state?.format_version === 7 ||
-    state?.format_version === 8 ||
-    state?.format_version === 9 ||
-    state?.format_version === 10 ||
-    state?.format_version === 11 ||
-    state?.format_version === 12 ||
-    state?.format_version === 13 ||
-    state?.format_version === 14 ||
-    state?.format_version === 15
-  );
-}
-/** @internal Read static SDK overlays only after the versioned state validator. */
-export function readCheckpointSelections(
-  state: SessionState | null | undefined,
-): CheckpointSelections {
-  if (
-    state?.format_version === 8 ||
-    state?.format_version === 9 ||
-    state?.format_version === 10 ||
-    state?.format_version === 11 ||
-    state?.format_version === 12 ||
-    state?.format_version === 13 ||
-    state?.format_version === 14 ||
-    state?.format_version === 15
-  )
-    return {
-      ...(state.default_tools === undefined
-        ? {}
-        : { default_tools: state.default_tools }),
-      ...(state.operation_tools === undefined
-        ? {}
-        : { operation_tools: state.operation_tools }),
-    };
-  return {};
+  return state?.kind === 'manual';
 }
 /** @internal Validate trusted current selection before acquiring provider resources. */
 export function assertOutputState(
   state: SessionState | undefined,
   identity: OutputIdentity,
 ): void {
-  if (!isOutputAwareState(state)) return;
+  if (!state) return;
   const saved = state.output_context;
   if (
     saved.version !== identity.version ||
@@ -762,128 +500,60 @@ export function assertOutputState(
     throw new TypeError('Checkpoint requires matching current output contract');
   }
 }
-/** @internal Attach passive SDK data; supplied repairs replace the prior snapshot. */
-export function withOutputState(
-  state: SessionState,
-  identity: OutputIdentity,
-  prior?: SessionState | null,
-  repairs?: {
-    readonly turns: readonly RepairTurnWire[];
-    readonly items: readonly RepairItemWire[];
-  },
-): SessionState {
-  const receipts = isOutputAwareState(prior)
-    ? prior
-    : isOutputAwareState(state)
-      ? state
-      : undefined;
-  return sessionStateSchema.parse({
-    ...state,
-    format_version:
-      state.format_version >= 8
-        ? state.format_version
-        : nativeCheckpoint(state).format_version === 4
-          ? isManualSessionState(state)
-            ? 7
-            : 6
-          : isManualSessionState(state)
-            ? 5
-            : 4,
-    ...outputStateFields(state.source_session_id, identity, receipts, repairs),
-  });
-}
-
-type OutputRepairs = {
-  readonly turns: readonly RepairTurnWire[];
-  readonly items: readonly RepairItemWire[];
-};
-function outputStateFields(
-  sessionId: string,
-  identity: OutputIdentity,
-  receipts:
-    | Extract<
-        SessionState,
-        { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 }
-      >
-    | undefined,
-  repairs: OutputRepairs | undefined,
-) {
-  return {
-    output_context: identity,
-    repair_turns: (repairs?.turns ?? receipts?.repair_turns ?? []).map(
-      (turn) => ({ ...turn, parentSessionId: sessionId }),
-    ),
-    repair_items: (repairs?.items ?? receipts?.repair_items ?? []).map(
-      (item) => ({ ...item, parentSessionId: sessionId }),
-    ),
-  };
-}
-
-/** @internal Assemble native data with the captured SDK output contract exactly once. */
+/** @internal Build the SDK envelope around the native codec payload. */
 export function fromNativeCheckpoint(
   state: NativeCheckpoint,
   identity: OutputIdentity,
-  prior?: SessionState | null,
-  repairs?: OutputRepairs,
-  manual?: { manual_continuation: unknown; manual_context: unknown },
-  selection: CheckpointSelections = {},
-  networkPolicy: string | undefined = undefined,
+  {
+    repairs,
+    manual,
+    selection,
+    networkPolicy,
+  }: {
+    repairs?: {
+      readonly turns: readonly RepairTurnWire[];
+      readonly items: readonly RepairItemWire[];
+    };
+    manual?: { manual_continuation: unknown; manual_context: unknown };
+    selection?: CheckpointSelections;
+    networkPolicy?: string;
+  } = {},
 ): SessionState {
   return sessionStateSchema.parse({
     ...state,
+    kind: manual ? 'manual' : 'idle',
     ...manual,
     ...selection,
-    format_version:
-      networkPolicy === undefined
-        ? (state.format_version === 4 ? 6 : 4) +
-          (manual ? 1 : 0) +
-          (selection.operation_tools !== undefined ||
-          selection.default_tools !== undefined
-            ? 4
-            : 0)
-        : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
-    ...(networkPolicy === undefined
-      ? {}
-      : { network_policy_digest: networkPolicy }),
-    ...outputStateFields(
-      state.source_session_id,
-      identity,
-      isOutputAwareState(prior) ? prior : undefined,
-      repairs,
-    ),
+    network_policy_digest: networkPolicy ?? null,
+    output_context: identity,
+    repair_turns:
+      repairs?.turns.map((turn) => ({
+        ...turn,
+        parentSessionId: state.source_session_id,
+      })) ?? [],
+    repair_items:
+      repairs?.items.map((item) => ({
+        ...item,
+        parentSessionId: state.source_session_id,
+      })) ?? [],
   });
 }
-/** @internal Strip SDK overlays while preserving the native VM codec version. */
-export function nativeCheckpoint(state: SessionState) {
-  const {
-    manual_continuation: _continuation,
-    manual_context: _context,
-    output_context: _output,
-    operation_tools: _operation,
-    default_tools: _defaults,
-    network_policy_digest: _network,
-    repair_turns: _turns,
-    repair_items: _items,
-    ...checkpoint
-  } = state;
-  return {
-    ...checkpoint,
-    format_version:
-      state.format_version === 6 ||
-      state.format_version === 7 ||
-      state.format_version === 10 ||
-      state.format_version === 11 ||
-      state.format_version === 14 ||
-      state.format_version === 15
-        ? 4
-        : 2,
-  };
+/** @internal Project a validated portable checkpoint onto the runtime wire schema. */
+export function toRuntimeCheckpoint(state: SessionState): NativeCheckpoint {
+  return checkpointTreeSchema.parse(state);
 }
-
+/** @internal Hide arbitrary saved keys reported by strict-object errors. */
+export function validateSessionState(input: unknown): SessionState {
+  const result = sessionStateSchema.safeParse(input);
+  if (result.success) return result.data;
+  if (result.error.issues.some((issue) => issue.code === 'unrecognized_keys'))
+    throw new TypeError('Checkpoint contains unexpected fields');
+  throw result.error;
+}
 /** Validate a serialized session checkpoint read from application storage. */
 export function parseSessionState(source: string): SessionState {
   try {
-    return sessionStateSchema.parse(parseNative(source));
+    return validateSessionState(parseNative(source));
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new SyntaxError('Invalid native session checkpoint JSON');
@@ -908,9 +578,7 @@ export function assertCheckpointNetworkPolicy(
   current: string | undefined,
 ): void {
   if (state == null) return;
-  const saved =
-    state.format_version >= 12 ? state.network_policy_digest : undefined;
-  if (saved !== current)
+  if (state.network_policy_digest !== (current ?? null))
     throw new TypeError(
       'Checkpoint and Environment must agree on the network policy',
     );

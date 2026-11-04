@@ -1,3 +1,4 @@
+import { toRuntimeCheckpoint } from '../src/runtime/state';
 import { describe, expect, it } from 'vitest';
 import { Environment, environmentConfig } from '../src/runtime/environment';
 import {
@@ -9,10 +10,8 @@ import {
   assertCheckpointNetworkPolicy,
   fromNativeCheckpoint,
   isManualSessionState,
-  nativeCheckpoint,
   parseNativeCheckpoint,
   parseSessionState,
-  readCheckpointSelections,
 } from '../src/runtime/state';
 import { prepareOutput } from '../src/runtime/output';
 
@@ -167,22 +166,15 @@ describe('checkpoint network authority', () => {
     'preserves native codec %i and manual frame identity',
     (codec) => {
       for (const pending of [undefined, manual]) {
-        const state = fromNativeCheckpoint(
-          native(codec),
-          identity,
-          undefined,
-          undefined,
-          pending,
-          {},
-          digest,
-        );
-        expect(state.format_version).toBe(
-          (codec === 4 ? 14 : 12) + (pending ? 1 : 0),
-        );
+        const state = fromNativeCheckpoint(native(codec), identity, {
+          manual: pending,
+          networkPolicy: digest,
+        });
+        expect(state.kind).toBe(pending ? 'manual' : 'idle');
         expect(isManualSessionState(state)).toBe(!!pending);
-        expect(nativeCheckpoint(state)).toEqual(native(codec));
+        expect(toRuntimeCheckpoint(state)).toEqual(native(codec));
         expect(parseSessionState(JSON.stringify(state))).toEqual(state);
-        if (pending)
+        if (pending && state.kind === 'manual')
           expect(state.manual_continuation).toEqual(
             pending.manual_continuation,
           );
@@ -198,32 +190,21 @@ describe('checkpoint network authority', () => {
 
   it('retains static selection metadata without requiring it for network-only checkpoints', () => {
     const selection = { default_tools: [] };
-    const state = fromNativeCheckpoint(
-      native(2),
-      identity,
-      undefined,
-      undefined,
-      undefined,
+    const state = fromNativeCheckpoint(native(2), identity, {
       selection,
-      digest,
-    );
-    expect(readCheckpointSelections(state)).toEqual(selection);
-    const withoutSelection = fromNativeCheckpoint(
-      native(2),
-      identity,
-      undefined,
-      undefined,
-      undefined,
-      {},
-      digest,
-    );
-    expect(readCheckpointSelections(withoutSelection)).toEqual({});
+      networkPolicy: digest,
+    });
+    expect(state.default_tools).toEqual(selection.default_tools);
+    const withoutSelection = fromNativeCheckpoint(native(2), identity, {
+      networkPolicy: digest,
+    });
+    expect(withoutSelection.default_tools).toBeUndefined();
   });
 
   it('keeps legacy/default state separate from explicit empty policy', () => {
     const state = fromNativeCheckpoint(native(2), identity);
-    expect(state.format_version).toBe(4);
-    expect(state).not.toHaveProperty('network_policy_digest');
+    expect(state.kind).toBe('idle');
+    expect(state.network_policy_digest).toBeNull();
     expect(() => assertCheckpointNetworkPolicy(state, undefined)).not.toThrow();
     expect(() => assertCheckpointNetworkPolicy(state, digest)).toThrow(
       'must agree',
@@ -231,23 +212,17 @@ describe('checkpoint network authority', () => {
   });
 
   it('requires the new envelope and its digest rather than accepting unknown legacy metadata', () => {
-    const state = fromNativeCheckpoint(
-      native(2),
-      identity,
-      undefined,
-      undefined,
-      undefined,
-      {},
-      digest,
-    );
+    const state = fromNativeCheckpoint(native(2), identity, {
+      networkPolicy: digest,
+    });
     const { network_policy_digest: _digest, ...missing } = state;
     expect(() => parseSessionState(JSON.stringify(missing))).toThrow();
     expect(() =>
-      parseSessionState(JSON.stringify({ ...state, format_version: 4 })),
-    ).toThrow('Network policy identity');
+      parseSessionState(JSON.stringify({ ...state, native: native(2) })),
+    ).toThrow();
     expect(() => parseNativeCheckpoint(state)).toThrow();
     expect(() =>
       parseNativeCheckpoint({ ...native(2), network_policy_digest: digest }),
-    ).toThrow('SDK envelope');
+    ).toThrow();
   });
 });

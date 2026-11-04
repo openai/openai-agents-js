@@ -228,7 +228,7 @@ it('resolves stale selectors to acknowledged bindings and keeps defaults and FIF
   expect(state.managed_tool_specs).toEqual([
     expect.objectContaining({ name: 'a', description: 'Current.' }),
   ]);
-  expect(state).toMatchObject({ format_version: 8, default_tools: [] });
+  expect(state).toMatchObject({ kind: 'idle', default_tools: [] });
   await session.close();
   await expect(
     new Agent({ instructions: 'Answer.', provider }).session({ state }),
@@ -769,7 +769,7 @@ it('retains hidden admitted bindings and narrowed defaults across supplied compa
     expect.objectContaining({ name: 'b' }),
   ]);
   expect(state).toMatchObject({
-    format_version: 8,
+    kind: 'idle',
     default_tools: [{ name: 'a', namespace: 'functions' }],
   });
   const selected = await session.submit('use hidden B', { tools: [b] });

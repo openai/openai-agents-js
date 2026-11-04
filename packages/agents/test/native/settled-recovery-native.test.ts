@@ -99,7 +99,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       await events.return?.();
       await original.close();
       expect(effects).toBe(1);
-      expect(state.format_version).toBe(5);
+      expect(state.kind).toBe('manual');
       if (!isManualSessionState(state))
         throw new Error('Expected pending manual state');
       expect(state.manual_continuation.turn_id).toBe(first.turnId);
@@ -224,8 +224,6 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           .wait()
           .catch((error: unknown) => error);
         const saved = await source.saveState();
-        if (!('interrupted_thread_ids' in saved))
-          throw new Error('Expected a portable graph checkpoint');
         expect(saved.source_session_id).toBe(source.id);
         expect(saved.interrupted_thread_ids).toContain(child.id);
         expect(saved.descendants).toHaveLength(1);
@@ -403,7 +401,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           releaseChild.resolve();
           expect((await child.turn.wait()).finalOutput).toBe('child settled');
           const saved = await source.saveState();
-          expect(saved.format_version).toBe(6);
+          expect(saved.kind).toBe('idle');
           expect(saved.descendants).toHaveLength(1);
           const descendant = saved.descendants[0]!;
           expect(descendant.thread_id).toBe(childId);
@@ -537,8 +535,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       ).toBe('stored');
       const saved = await source.saveState();
       const fork = await source.fork();
-      expect(saved.format_version).toBe(6);
-      expect(fork.format_version).toBe(6);
+      expect(saved.kind).toBe('idle');
+      expect(fork.kind).toBe('idle');
       expect(fork.source_session_id).not.toBe(saved.source_session_id);
       expect(fork.root_code_mode?.stored_values).toEqual(
         saved.root_code_mode?.stored_values,

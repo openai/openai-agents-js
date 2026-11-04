@@ -1,13 +1,11 @@
+import { toRuntimeCheckpoint } from '../../src/runtime/state';
 import { describe, expect, it } from 'vitest';
 import { inspect } from 'node:util';
 import {
   CODEX_REVISION,
   parseSessionState,
   fromNativeCheckpoint,
-  nativeCheckpoint,
   parseNativeCheckpoint,
-  readCheckpointSelections,
-  withOutputState,
 } from '../../src/runtime/state';
 import { z } from 'zod';
 import { manualTool } from '../../src/runtime/manual';
@@ -18,7 +16,7 @@ import {
   checkpointDefaultTools,
 } from '../../src/runtime/selection-state';
 describe('portable state authority', () => {
-  it.each(['invalid-history', 'invalid-json', 'invalid-token'])(
+  it.each(['invalid-history', 'invalid-json', 'invalid-token', 'unknown-key'])(
     'does not echo saved input in %s errors',
     (kind) => {
       const secret = 'S3CRET';
@@ -28,11 +26,15 @@ describe('portable state authority', () => {
           : kind === 'invalid-json'
             ? JSON.stringify({ message: secret }) + ' trailing'
             : JSON.stringify({
+                kind: 'idle',
+                ...(kind === 'unknown-key' ? { [secret]: true } : {}),
+                output_context: prepareOutput(undefined).identity,
+                network_policy_digest: null,
                 format_version: 2,
                 codex_revision: CODEX_REVISION,
                 source_session_id: 'saved-session',
                 root_metadata: {},
-                history: { message: secret },
+                history: kind === 'unknown-key' ? [] : { message: secret },
               });
       let caught: unknown;
       try {
@@ -46,18 +48,45 @@ describe('portable state authority', () => {
     },
   );
 
-  it('refuses legacy SDK RunState, wrong revisions and future versions before native startup', () => {
-    expect(() =>
-      parseSessionState('{"currentTurn":1,"generatedItems":[]}'),
-    ).toThrow();
+  it('rejects Classic RunState, numbered alpha checkpoints, and incompatible native revisions', () => {
+    const native = {
+      format_version: 2,
+      codex_revision: CODEX_REVISION,
+      source_session_id: 'a',
+      root_metadata: {},
+      history: [],
+    };
+    const output_context = prepareOutput(undefined).identity;
+    for (const older of [
+      { currentTurn: 1, generatedItems: [] },
+      { ...native, format_version: 4, output_context },
+    ]) {
+      expect(() => parseSessionState(JSON.stringify(older))).toThrow(
+        'SDK that saved',
+      );
+    }
+    const envelope = {
+      kind: 'idle',
+      ...native,
+      output_context,
+      network_policy_digest: null,
+    };
     expect(() =>
       parseSessionState(
-        '{"format_version":2,"codex_revision":"another","source_session_id":"a","history":[]}',
+        JSON.stringify({
+          ...envelope,
+          ...native,
+          codex_revision: 'other',
+        }),
       ),
     ).toThrow();
     expect(() =>
       parseSessionState(
-        '{"format_version":3,"codex_revision":"7c2ce90716335c889a5076ded9a630459f9c9899","source_session_id":"a","history":[]}',
+        JSON.stringify({
+          ...envelope,
+          ...native,
+          format_version: 99,
+        }),
       ),
     ).toThrow();
   });
@@ -71,6 +100,12 @@ describe('portable child graph', () => {
     history: [],
     root_metadata: {},
   };
+  const envelope = (native: object) => ({
+    kind: 'idle',
+    ...native,
+    output_context: prepareOutput(undefined).identity,
+    network_policy_digest: null,
+  });
   it('requires a rooted unique tree and rejects expired rights as callable state', () => {
     const cyclic = {
       ...root,
@@ -91,7 +126,7 @@ describe('portable child graph', () => {
         },
       ],
     };
-    expect(() => parseSessionState(JSON.stringify(cyclic))).toThrow(
+    expect(() => parseSessionState(JSON.stringify(envelope(cyclic)))).toThrow(
       'rooted tree',
     );
     const valid = {
@@ -107,10 +142,14 @@ describe('portable child graph', () => {
         },
       ],
     };
-    expect(parseSessionState(JSON.stringify(valid))).toMatchObject(valid);
+    expect(parseSessionState(JSON.stringify(envelope(valid)))).toMatchObject({
+      ...valid,
+    });
     expect(() =>
       parseSessionState(
-        JSON.stringify({ ...valid, interrupted_thread_ids: ['outside'] }),
+        JSON.stringify(
+          envelope({ ...valid, interrupted_thread_ids: ['outside'] }),
+        ),
       ),
     ).toThrow('outside');
   });
@@ -131,27 +170,35 @@ describe('retained planning data at the portable opening parser', () => {
       tokens_used: 1,
     },
   };
+  const envelope = (native: object) => ({
+    kind: 'idle',
+    ...native,
+    output_context: prepareOutput(undefined).identity,
+    network_policy_digest: null,
+  });
   it.each([
     { ...saved.root_goal, status: 'active' },
     { ...saved.root_goal, tokens_used: -1 },
     { ...saved.root_goal, thread_id: 'foreign' },
   ])('rejects invalid goal metadata before native restore', (root_goal) => {
     expect(() =>
-      parseSessionState(JSON.stringify({ ...saved, root_goal })),
+      parseSessionState(JSON.stringify(envelope({ ...saved, root_goal }))),
     ).toThrow();
   });
   it('rejects a foreign checklist root at opening', () => {
     expect(() =>
       parseSessionState(
-        JSON.stringify({
-          ...saved,
-          root_checklist: {
-            thread_id: 'foreign',
-            turn_id: 'historical',
-            explanation: null,
-            plan: [],
-          },
-        }),
+        JSON.stringify(
+          envelope({
+            ...saved,
+            root_checklist: {
+              thread_id: 'foreign',
+              turn_id: 'historical',
+              explanation: null,
+              plan: [],
+            },
+          }),
+        ),
       ),
     ).toThrow('checklist thread identity');
   });
@@ -183,89 +230,55 @@ describe('static selection checkpoint envelope', () => {
   const lookup = { name: 'lookup', namespace: 'functions' };
 
   it.each([2, 4] as const)(
-    'keeps native codec %i and rejects downgrade to an old reader',
+    'preserves native codec %i alongside manual selection',
     (codec) => {
-      const saved = fromNativeCheckpoint(
-        native(codec),
-        identity,
-        undefined,
-        undefined,
+      const saved = fromNativeCheckpoint(native(codec), identity, {
         manual,
-        {
+        selection: {
           operation_tools: [lookup],
           default_tools: [],
         },
-      );
-      expect(saved.format_version).toBe(codec === 2 ? 9 : 11);
-      expect(
-        readCheckpointSelections(parseSessionState(JSON.stringify(saved))),
-      ).toEqual({
+      });
+      expect(parseSessionState(JSON.stringify(saved))).toMatchObject({
+        kind: 'manual',
         operation_tools: [lookup],
         default_tools: [],
       });
-      // This is the exact version gate in the pre-selection reader, independently
-      // of its permissive inner objects and outer catchall fields.
-      const oldVersion = z.union([
-        z.literal(2),
-        z.literal(3),
-        z.literal(4),
-        z.literal(5),
-        z.literal(6),
-        z.literal(7),
-      ]);
-      expect(() => oldVersion.parse(saved.format_version)).toThrow();
-      expect(() =>
-        parseSessionState(
-          JSON.stringify({ ...saved, format_version: codec === 2 ? 5 : 7 }),
-        ),
-      ).toThrow('selected checkpoint format');
-      const payload = nativeCheckpoint(saved);
+      expect(saved.source_session_id).toBe('original-session');
+      expect(saved.history).toEqual([]);
+      expect(saved).not.toHaveProperty('native');
+      const payload = toRuntimeCheckpoint(saved);
       expect(payload.format_version).toBe(codec);
       expect(payload).not.toHaveProperty('operation_tools');
       expect(payload).not.toHaveProperty('default_tools');
       expect(parseNativeCheckpoint(payload)).toMatchObject(native(codec));
       expect(() =>
         parseNativeCheckpoint({ ...payload, operation_tools: [lookup] }),
-      ).toThrow('SDK envelope');
-      expect(withOutputState(saved, identity)).toEqual(saved);
+      ).toThrow();
     },
   );
 
   it('preserves an omitted selection separately from explicit empty managed defaults', () => {
-    const legacy = fromNativeCheckpoint(native(2), identity);
-    expect(legacy.format_version).toBe(4);
-    expect(readCheckpointSelections(legacy)).toEqual({});
-    const empty = fromNativeCheckpoint(
-      native(2),
-      identity,
-      undefined,
-      undefined,
-      undefined,
-      { default_tools: [] },
-    );
-    expect(empty.format_version).toBe(8);
-    expect(readCheckpointSelections(empty)).toEqual({ default_tools: [] });
-    const vm = fromNativeCheckpoint(
-      native(4),
-      identity,
-      undefined,
-      undefined,
-      undefined,
-      { default_tools: [] },
-    );
-    expect(vm.format_version).toBe(10);
-    expect(nativeCheckpoint(vm).format_version).toBe(4);
+    const unselected = fromNativeCheckpoint(native(2), identity);
+    expect(unselected.kind).toBe('idle');
+    expect(unselected.default_tools).toBeUndefined();
+    const empty = fromNativeCheckpoint(native(2), identity, {
+      selection: { default_tools: [] },
+    });
+    expect(empty.kind).toBe('idle');
+    expect(empty.default_tools).toEqual([]);
+    const vm = fromNativeCheckpoint(native(4), identity, {
+      selection: { default_tools: [] },
+    });
+    expect(vm.kind).toBe('idle');
+    expect(vm.format_version).toBe(4);
   });
 
   it('rejects duplicate references and operation metadata outside a manual checkpoint', () => {
-    const saved = fromNativeCheckpoint(
-      native(2),
-      identity,
-      undefined,
-      undefined,
+    const saved = fromNativeCheckpoint(native(2), identity, {
       manual,
-      { operation_tools: [lookup] },
-    );
+      selection: { operation_tools: [lookup] },
+    });
     expect(() =>
       parseSessionState(
         JSON.stringify({ ...saved, operation_tools: [lookup, lookup] }),
@@ -275,11 +288,10 @@ describe('static selection checkpoint envelope', () => {
       parseSessionState(
         JSON.stringify({
           ...fromNativeCheckpoint(native(2), identity),
-          format_version: 8,
           operation_tools: [],
         }),
       ),
-    ).toThrow('manual checkpoint');
+    ).toThrow('Checkpoint contains unexpected fields');
   });
 
   it('resolves defaults and operation authority independently against current declarations', () => {

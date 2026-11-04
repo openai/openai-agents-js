@@ -126,8 +126,8 @@ it('drains genuine usage after manual suspension overtakes the next native read'
     expect(heldRead).toBe(true);
     expect(sealReturned).toBe(true);
     expect(completedTurnId).toBe(turn.turnId);
-    expect(state.format_version).toBe(5);
-    if (state.format_version !== 5)
+    expect(state.kind).toBe('manual');
+    if (state.kind !== 'manual')
       throw new Error('Expected a manual suspension checkpoint');
     expect(state.manual_continuation.turn_id).toBe(turn.turnId);
     expect(await outcome).toBeInstanceOf(InteractionRequired);

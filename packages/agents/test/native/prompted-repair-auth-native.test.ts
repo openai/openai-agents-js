@@ -71,7 +71,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         'Bearer synthetic-late-original-key',
       );
       const state = await session.saveState();
-      if (state.format_version !== 4)
+      if (state.kind !== 'idle')
         throw new Error('Expected an output-aware idle checkpoint');
       expect(state.repair_turns).toEqual([]);
       expect(state.repair_items).toEqual([]);

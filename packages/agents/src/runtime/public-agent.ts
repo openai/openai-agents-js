@@ -1,4 +1,4 @@
-import { assertOutputState, sessionStateSchema } from './state';
+import { assertOutputState, validateSessionState } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
@@ -465,10 +465,15 @@ export class Agent<Context = undefined, Output = string> {
     const storage =
       descriptor === undefined ? undefined : localStoragePath(descriptor);
     // Capture mutable declarations before acquisition can invoke application code.
-    const stateResult =
-      suppliedState == null
-        ? undefined
-        : sessionStateSchema.safeParse(suppliedState);
+    if (
+      suppliedState != null &&
+      (storage !== undefined || resume !== undefined)
+    )
+      throw new TypeError(
+        'Portable state cannot be combined with local storage or resume',
+      );
+    const state =
+      suppliedState == null ? undefined : validateSessionState(suppliedState);
     const declaredOutput = this.outputTypeFor(options);
     const outputType =
       declaredOutput &&
@@ -501,15 +506,6 @@ export class Agent<Context = undefined, Output = string> {
         'NativeGoals reserves create_goal, get_goal and update_goal',
       );
     if (
-      suppliedState != null &&
-      (storage !== undefined || resume !== undefined)
-    )
-      throw new TypeError(
-        'Portable state cannot be combined with local storage or resume',
-      );
-    if (stateResult && !stateResult.success) throw stateResult.error;
-    const state = stateResult?.data;
-    if (
       resume !== undefined &&
       (storage === undefined || typeof resume !== 'string' || !resume)
     )
@@ -536,11 +532,7 @@ export class Agent<Context = undefined, Output = string> {
       );
     if (nativeAgents && !model && state == null)
       throw new TypeError('NativeAgents requires an explicit compatible model');
-    if (
-      Array.isArray(state?.descendants) &&
-      state.descendants.length > 0 &&
-      !nativeAgents
-    )
+    if (state && state.descendants.length > 0 && !nativeAgents)
       throw new TypeError(
         'Restoring child state requires current NativeAgents',
       );
@@ -559,13 +551,6 @@ export class Agent<Context = undefined, Output = string> {
     if (storage !== undefined && output.repair)
       throw new TypeError('Local storage does not support output repair');
     assertOutputState(state, activeOutput.identity);
-    if (
-      (activeOutput.prompt || activeOutput.schema != null) &&
-      state?.format_version === 3
-    )
-      throw new TypeError(
-        'Cannot restore a legacy pending manual checkpoint with structured or prompted output',
-      );
     const deferredSchemas =
       declarations.tools.some((tool) => tool.deferLoading) ||
       declarations.mcp.some((server) => server.deferLoading);

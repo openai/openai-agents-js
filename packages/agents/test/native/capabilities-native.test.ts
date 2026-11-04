@@ -13,7 +13,6 @@ import {
   checklist,
   localStorage,
   manualTool,
-  parseSessionState,
   readSessionInstructions,
   tool,
   type ActionRequested,
@@ -26,6 +25,10 @@ import {
   encodeReceipt,
   type NativeThread,
 } from '../../src/runtime/binding';
+import {
+  parseNativeCheckpoint,
+  type NativeCheckpoint,
+} from '../../src/runtime/state';
 import { parseEvent } from '../../src/runtime/events';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
@@ -512,7 +515,7 @@ describe('public live capabilities and checkpoint advice', () => {
     const thread = await observed.entered;
     const native = await binding();
     const original = native.NativeThread.prototype._export_checkpoint;
-    const probes: SessionState[] = [];
+    const probes: NativeCheckpoint[] = [];
     vi.spyOn(
       native.NativeThread.prototype,
       '_export_checkpoint',
@@ -522,14 +525,14 @@ describe('public live capabilities and checkpoint advice', () => {
         const envelope = JSON.parse(wire);
         expect(envelope.kind).toBe('snapshot');
         expect(typeof envelope.snapshot).toBe('string');
-        probes.push(parseSessionState(envelope.snapshot));
+        probes.push(parseNativeCheckpoint(envelope.snapshot));
       }
       return wire;
     });
     const openingText = thread._application_instructions();
     expect(openingText).toBe('CAPABILITY_ADVICE_MUST_NOT_PUBLISH');
     const opening = await session.saveState();
-    const receipts = (state: SessionState) =>
+    const receipts = (state: NativeCheckpoint) =>
       state.history.filter((row) => {
         const item = row.payload;
         return (
@@ -564,7 +567,9 @@ describe('public live capabilities and checkpoint advice', () => {
         ),
       ).toBe(true);
       expect(receipts(state)).toEqual(openingReceipts);
-      expect(await readSessionInstructions(state)).toBe(openingText);
+      expect(
+        await native._read_session_instructions(JSON.stringify(state.history)),
+      ).toBe(openingText);
     }
     expect(thread._application_instructions()).toBe(openingText);
     expect(execute).not.toHaveBeenCalled();
@@ -580,8 +585,8 @@ describe('public live capabilities and checkpoint advice', () => {
         'CAPABILITY_ADVICE_MUST_NOT_PUBLISH',
       ),
     ).toBe(true);
-    expect(saved.format_version).toBe(4);
-    expect('kind' in saved).toBe(false);
+    expect(saved.kind).toBe('idle');
+    expect(saved).not.toHaveProperty('snapshot');
     server.assertExhausted();
   });
 

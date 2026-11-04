@@ -138,7 +138,7 @@ export function parseJobJournal(
   const journal = journalSchema.parse(value);
   checkBinding(journal.binding, order);
   const state = parseSessionState(journal.checkpoint);
-  if (state.format_version !== 3 && state.format_version !== 5)
+  if (state.kind !== 'manual')
     throw new Error('Expected the original pending manual checkpoint.');
   const pending = state.manual_continuation.pending_manual;
   if (

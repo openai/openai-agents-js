@@ -598,7 +598,7 @@ describe('exact request waits with the native pending owner', () => {
         );
       expect(server.requests).toHaveLength(1);
       allowRetry.resolve();
-      expect((await suspending).format_version).toBe(5);
+      expect((await suspending).kind).toBe('manual');
       await expect(turn.wait()).rejects.toBeInstanceOf(InteractionRequired);
       server.assertExhausted();
     } finally {
@@ -1302,7 +1302,7 @@ describe('exact request waits with the native pending owner', () => {
       expect(settled).toBe(false);
       release.resolve();
       const state = await suspending;
-      expect(state.format_version).toBe(5);
+      expect(state.kind).toBe('manual');
       const failure = await waiting;
       expect(failure).toBeInstanceOf(InteractionRequired);
       expect(await turn.wait().catch((error: unknown) => error)).toBe(failure);
@@ -1345,7 +1345,7 @@ describe('exact request waits with the native pending owner', () => {
       expect(batch.requests).toHaveLength(2);
       oldReply = batch.requests[0].reply('old authority');
       state = await original.suspend();
-      expect(state.format_version).toBe(5);
+      expect(state.kind).toBe('manual');
     } finally {
       await original.close();
     }

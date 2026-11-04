@@ -139,7 +139,7 @@ async function main() {
       );
       const state = await session.suspend();
       assert((await outcome) instanceof InteractionRequired);
-      assert.equal(state.format_version, 7);
+      assert.equal(state.kind, 'manual');
       assert.deepEqual(state.root_code_mode.stored_values.value, {
         n: 7,
         a: [null, true, '雪'],

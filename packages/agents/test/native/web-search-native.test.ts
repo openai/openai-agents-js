@@ -902,7 +902,10 @@ it('uses explicit compatible config for a valid managed checkpoint without setti
     );
   });
   expect(history.length).toBeLessThan(saved.history.length);
-  const state: SessionState = { ...saved, history };
+  const state: SessionState = {
+    ...saved,
+    history,
+  };
   await using peer = await searchPeer([]);
   await using provider = providerAt(peer.url);
   await using session = await new Agent({
@@ -926,7 +929,10 @@ const wireUsageCases = [
 
 function usageHistory(state: SessionState, container: 'root' | 'descendant') {
   if (container === 'root')
-    return { history: state.history, threadId: state.source_session_id };
+    return {
+      history: state.history,
+      threadId: state.source_session_id,
+    };
   const child = state.descendants[0];
   if (!child) throw new Error('Missing saved descendant');
   return { history: child.history, threadId: child.thread_id };

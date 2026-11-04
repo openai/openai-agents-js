@@ -1,3 +1,4 @@
+import { toRuntimeCheckpoint } from '../../src/runtime/state';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, NativeProvider } from '../../src';
@@ -19,38 +20,61 @@ import {
   isManualSessionState,
   parseNativeCheckpoint,
   assertOutputState,
-  nativeCheckpoint,
   parseSessionState,
-  withOutputState,
   sessionStateSchema,
   type NativeCheckpoint,
   type SessionState,
 } from '../../src/runtime/state';
 
 const root = (id = 'root') =>
-  parseSessionState(
-    JSON.stringify({
+  fromNativeCheckpoint(
+    parseNativeCheckpoint({
       format_version: 2,
       codex_revision: CODEX_REVISION,
       source_session_id: id,
       history: [],
       root_metadata: {},
     }),
+    prepareOutput(undefined).identity,
   );
 const pending = () =>
-  parseSessionState(
-    JSON.stringify({
-      ...root(),
-      format_version: 3,
-      manual_continuation: {
-        turn_id: 'parent-turn',
-        reply_order: ['call'],
-        accepted_replies: {},
-        pending_manual: [{ call_id: 'call', name: 'lookup', arguments: '{}' }],
-      },
-      manual_context: { instructions: null, result_schemas: [], usage: null },
-    }),
-  );
+  sessionStateSchema.parse({
+    ...root(),
+    kind: 'manual',
+    manual_continuation: {
+      turn_id: 'parent-turn',
+      reply_order: ['call'],
+      accepted_replies: {},
+      pending_manual: [{ call_id: 'call', name: 'lookup', arguments: '{}' }],
+    },
+    manual_context: { instructions: null, result_schemas: [], usage: null },
+  });
+function withOutputState(
+  state: SessionState,
+  identity: SessionState['output_context'],
+  prior?: SessionState | null,
+  repairs?: NonNullable<Parameters<typeof fromNativeCheckpoint>[2]>['repairs'],
+) {
+  return fromNativeCheckpoint(toRuntimeCheckpoint(state), identity, {
+    repairs: repairs ?? {
+      turns: (prior ?? state).repair_turns,
+      items: (prior ?? state).repair_items,
+    },
+    manual:
+      state.kind === 'manual'
+        ? {
+            manual_context: state.manual_context,
+            manual_continuation: state.manual_continuation,
+          }
+        : undefined,
+    selection: {
+      ...(state.default_tools && { default_tools: state.default_tools }),
+      ...(state.kind === 'manual' &&
+        state.operation_tools && { operation_tools: state.operation_tools }),
+    },
+    networkPolicy: state.network_policy_digest ?? undefined,
+  });
+}
 const prompted = () =>
   prepareOutput({ mode: 'prompted', schema: z.object({ label: z.string() }) });
 const roundTrip = (value: unknown) => parseSessionState(JSON.stringify(value));
@@ -289,36 +313,15 @@ describe('portable output contract', () => {
     },
   );
 
-  it('preserves legacy formats and strips only SDK fields before native restore', () => {
-    for (const state of [root(), pending()]) {
-      expect(roundTrip(state)).toEqual(state);
-      expect(() => assertOutputState(state, prompted().identity)).not.toThrow();
-      const captured = withOutputState(state, prompted().identity);
-      expect(captured.format_version).toBe(state.format_version === 3 ? 5 : 4);
-      expect(nativeCheckpoint(captured)).toEqual(nativeCheckpoint(state));
-      expect(nativeCheckpoint(captured)).not.toHaveProperty('output_context');
-      expect(nativeCheckpoint(captured)).not.toHaveProperty(
-        'manual_continuation',
-      );
-      expect(nativeCheckpoint(captured)).not.toHaveProperty('repair_turns');
-    }
-  });
-
-  it('rejects output-aware fields in legacy envelopes', () => {
-    expect(() =>
-      roundTrip({ ...root(), output_context: prompted().identity }),
-    ).toThrow();
-  });
-
   it('retains the current native output contract for a pending manual continuation', () => {
     const output = prepareOutput({ mode: 'native', schema: z.number() });
     const state = withOutputState(pending(), output.identity);
-    expect(state.format_version).toBe(5);
+    expect(state.kind).toBe('manual');
     expect(() => assertOutputState(state, output.identity)).not.toThrow();
     expect(() =>
       assertOutputState(state, prepareOutput(undefined).identity),
     ).toThrow('matching current output');
-    expect(nativeCheckpoint(state)).toEqual(nativeCheckpoint(pending()));
+    expect(toRuntimeCheckpoint(state)).toEqual(toRuntimeCheckpoint(pending()));
   });
 });
 
@@ -372,20 +375,20 @@ describe('passive repair receipts', () => {
   it('round-trips exact and missing usage without placing attempt data in native history', () => {
     const state = receipt();
     expect(roundTrip(state)).toEqual(state);
-    if (state.format_version !== 4)
+    if (state.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(state.repair_turns[0].usage).toBeNull();
     expect(state.repair_turns[1].usage?.inputTokens).toBe('9007199254740993');
     expect(recordedTurnFromWire(state.repair_turns[1]).usage?.inputTokens).toBe(
       9007199254740993n,
     );
-    expect(nativeCheckpoint(state)).toEqual(nativeCheckpoint(root()));
+    expect(toRuntimeCheckpoint(state)).toEqual(toRuntimeCheckpoint(root()));
     expect(state.history).toEqual([]);
   });
 
   it('captures the complete current repair snapshot without duplicating prior receipts', () => {
     const prior = receipt();
-    if (prior.format_version !== 4)
+    if (prior.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     const repairs = {
       turns: [
@@ -418,7 +421,7 @@ describe('passive repair receipts', () => {
       prior,
       repairs,
     );
-    if (state.format_version !== 4)
+    if (state.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(state.repair_turns).toEqual(
       repairs.turns.map((turn) => ({
@@ -438,8 +441,8 @@ describe('passive repair receipts', () => {
     expect(state.repair_turns[1].usage?.totalTokens).toBe('9007199254740995');
     expect(state.repair_items[0].item.generation).toBe('9007199254740993');
     expect(roundTrip(state)).toEqual(state);
-    expect(nativeCheckpoint(state)).toEqual(
-      nativeCheckpoint(root('forked-root')),
+    expect(toRuntimeCheckpoint(state)).toEqual(
+      toRuntimeCheckpoint(root('forked-root')),
     );
     state.repair_turns[0].id = 'caller mutation';
     state.repair_items[0].item.text = 'caller mutation';
@@ -454,7 +457,7 @@ describe('passive repair receipts', () => {
       turns: [],
       items: [],
     });
-    if (state.format_version !== 4)
+    if (state.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(state.repair_turns).toEqual([]);
     expect(state.repair_items).toEqual([]);
@@ -462,7 +465,7 @@ describe('passive repair receipts', () => {
 
   it('preserves manual continuation fields when capturing current repairs', () => {
     const prior = receipt();
-    if (prior.format_version !== 4)
+    if (prior.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     const repairs = { turns: prior.repair_turns, items: prior.repair_items };
     for (const source of [
@@ -470,7 +473,7 @@ describe('passive repair receipts', () => {
       withOutputState(pending(), prompted().identity),
     ]) {
       const state = withOutputState(source, prompted().identity, null, repairs);
-      if (state.format_version !== 5)
+      if (state.kind !== 'manual')
         throw new Error('Expected output-aware manual state');
       expect(state).toMatchObject({
         manual_continuation: {
@@ -486,13 +489,13 @@ describe('passive repair receipts', () => {
         repair_items: prior.repair_items,
       });
       expect(roundTrip(state)).toEqual(state);
-      expect(nativeCheckpoint(state)).toEqual(nativeCheckpoint(source));
+      expect(toRuntimeCheckpoint(state)).toEqual(toRuntimeCheckpoint(source));
     }
   });
 
   it('validates supplied current receipts with the existing checkpoint rules', () => {
     const prior = receipt();
-    if (prior.format_version !== 4)
+    if (prior.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(() =>
       withOutputState(root(), prompted().identity, prior, {
@@ -510,7 +513,7 @@ describe('passive repair receipts', () => {
       prompted().identity,
       source,
     );
-    if (forked.format_version !== 4)
+    if (forked.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(forked.repair_turns.map((entry) => entry.parentSessionId)).toEqual([
       'forked-root',
@@ -527,14 +530,14 @@ describe('passive repair receipts', () => {
     });
     forked.repair_items[0].item.text = 'caller mutation';
     expect(JSON.stringify(source)).toBe(before);
-    expect(nativeCheckpoint(forked)).toEqual(
-      nativeCheckpoint(root('forked-root')),
+    expect(toRuntimeCheckpoint(forked)).toEqual(
+      toRuntimeCheckpoint(root('forked-root')),
     );
   });
 
   it('retains reused item IDs across legitimate turn and call/output scopes', () => {
     const state = receipt();
-    if (state.format_version !== 4)
+    if (state.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     const original = state.repair_items[0];
     const repeated = roundTrip({
@@ -565,7 +568,7 @@ describe('passive repair receipts', () => {
         },
       ],
     });
-    if (repeated.format_version !== 4)
+    if (repeated.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(repeated.repair_items).toHaveLength(4);
     expect(repeated.repair_items.map((entry) => entry.item.id)).toEqual([
@@ -574,12 +577,12 @@ describe('passive repair receipts', () => {
       'call-item',
       'call-item',
     ]);
-    expect(nativeCheckpoint(repeated)).toEqual(nativeCheckpoint(root()));
+    expect(toRuntimeCheckpoint(repeated)).toEqual(toRuntimeCheckpoint(root()));
   });
 
   it('rejects duplicate attempts, mismatched item ownership and inexact counters', () => {
     const state = receipt();
-    if (state.format_version !== 4)
+    if (state.kind !== 'idle')
       throw new Error('Expected output-aware idle state');
     expect(() =>
       roundTrip({
@@ -658,34 +661,17 @@ const vmNative = () => ({
 const vmPlain = prepareOutput(undefined);
 const readVm = (value: unknown) => parseNativeCheckpoint(encodeReceipt(value));
 
-it('refuses an unfingerprinted legacy manual checkpoint with a native output schema before provider acquisition', async () => {
-  const provider = new NativeProvider();
-  const acquire = vi.spyOn(provider, '_acquire');
-  const agent = new Agent({
-    instructions: 'Ask.',
-    provider,
-    outputType: {
-      mode: 'native',
-      schema: z.strictObject({ answer: z.string() }),
-    },
-  });
-  await expect(agent.session({ state: pending() })).rejects.toThrow(
-    'legacy pending manual',
-  );
-  expect(acquire).not.toHaveBeenCalled();
-});
-
 describe('settled checkpoint codec', () => {
   it('distinguishes native format4 from an SDK output envelope', () => {
     const saved = readVm(vmNative());
     expect(() => parseSessionState(encodeReceipt(vmNative()))).toThrow();
     const state = fromNativeCheckpoint(saved, vmPlain.identity);
-    expect(state.format_version).toBe(6);
+    expect(state.kind).toBe('idle');
     expect(state.output_context).toEqual(vmPlain.identity);
     expect(() => parseNativeCheckpoint(state)).toThrow();
     expect(() =>
       parseNativeCheckpoint(withOutputState(root(), vmPlain.identity)),
-    ).toThrow('SDK envelope');
+    ).toThrow();
     expect(() => assertOutputState(state, vmPlain.identity)).not.toThrow();
   });
 
@@ -696,7 +682,7 @@ describe('settled checkpoint codec', () => {
     const saved = readVm(input);
     const state = fromNativeCheckpoint(saved, vmPlain.identity);
     const restored = parseSessionState(JSON.stringify(state));
-    const raw = nativeCheckpoint(restored);
+    const raw = toRuntimeCheckpoint(restored);
     expect(raw.format_version).toBe(4);
     expect(readVm(raw)).toEqual(saved);
     expect(state.root_code_mode?.stored_values).toEqual(
@@ -705,7 +691,7 @@ describe('settled checkpoint codec', () => {
     expect(state.root_goal).toEqual(input.root_goal);
     expect(state.root_turn_budget).toEqual(input.root_turn_budget);
     expect(state.root_metadata).toEqual(input.root_metadata);
-    expect(withOutputState(restored, vmPlain.identity).format_version).toBe(6);
+    expect(withOutputState(restored, vmPlain.identity).kind).toBe('idle');
     expect(encodeReceipt(raw)).toContain('"next_cell_id":18446744073709551615');
     expect(encodeReceipt(raw)).toContain(
       '"application":{"next_cell_id":"9007199254740993","generation":7}',
@@ -722,30 +708,11 @@ describe('settled checkpoint codec', () => {
     expect(saved.root_turn_budget?.limit).toBe('9007199254740993');
   });
 
-  it.each([2, 3, 4, 5])(
-    'refuses VM data in legacy public format%s instead of dropping child state',
-    (format) => {
-      const base = format === 3 || format === 5 ? pending() : root();
-      const state =
-        format === 4 || format === 5
-          ? withOutputState(base, vmPlain.identity)
-          : base;
-      expect(state.format_version).toBe(format);
-      expect(() =>
-        parseSessionState(
-          JSON.stringify({ ...state, root_code_mode: vmSnapshot() }),
-        ),
-      ).toThrow('CodeMode state requires');
-      expect(() =>
-        parseSessionState(
-          JSON.stringify({ ...state, descendants: vmNative().descendants }),
-        ),
-      ).toThrow('CodeMode state requires');
-      expect(() => readVm({ ...vmNative(), format_version: 2 })).toThrow(
-        'requires format_version=4',
-      );
-    },
-  );
+  it('rejects VM state under the wrong native codec', () => {
+    expect(() => readVm({ ...vmNative(), format_version: 2 })).toThrow(
+      'requires format_version=4',
+    );
+  });
 
   it.each([
     [
@@ -810,13 +777,10 @@ describe('settled checkpoint codec', () => {
   );
 
   it('preserves manual call identity and the active output contract in a VM envelope', () => {
-    const legacy = parseSessionState(
+    const manual = parseSessionState(
       JSON.stringify({
-        format_version: 3,
-        codex_revision: CODEX_REVISION,
-        source_session_id: 'root',
-        history: [],
-        root_metadata: {},
+        ...root(),
+        kind: 'manual',
         manual_continuation: {
           turn_id: 'original-turn',
           reply_order: ['effect'],
@@ -828,27 +792,21 @@ describe('settled checkpoint codec', () => {
         manual_context: { instructions: null, result_schemas: [], usage: null },
       }),
     );
-    if (!isManualSessionState(legacy))
+    if (!isManualSessionState(manual))
       throw new Error('Expected manual fixture');
-    const state = fromNativeCheckpoint(
-      readVm(vmNative()),
-      vmPlain.identity,
-      undefined,
-      undefined,
-      {
-        manual_continuation: legacy.manual_continuation,
-        manual_context: legacy.manual_context,
+    const state = fromNativeCheckpoint(readVm(vmNative()), vmPlain.identity, {
+      manual: {
+        manual_continuation: manual.manual_continuation,
+        manual_context: manual.manual_context,
       },
-    );
-    expect(state.format_version).toBe(7);
+    });
+    expect(state.kind).toBe('manual');
     expect(isManualSessionState(state)).toBe(true);
-    expect(state.manual_continuation).toEqual(legacy.manual_continuation);
-    expect(nativeCheckpoint(state)).toEqual(
-      nativeCheckpoint(
-        fromNativeCheckpoint(readVm(vmNative()), vmPlain.identity),
-      ),
-    );
-    expect(withOutputState(state, vmPlain.identity).format_version).toBe(7);
+    if (state.kind !== 'manual')
+      throw new Error('Expected a manual checkpoint');
+    expect(state.manual_continuation).toEqual(manual.manual_continuation);
+    expect(toRuntimeCheckpoint(state)).toEqual(readVm(vmNative()));
+    expect(withOutputState(state, vmPlain.identity).kind).toBe('manual');
   });
 });
 
@@ -865,10 +823,7 @@ function expectOrdinaryPrototypes(value: JsonValue): void {
     for (const item of Object.values(value)) expectOrdinaryPrototypes(item);
   }
 }
-function vmStoredAt(
-  state: NativeCheckpoint | SessionState,
-  location: 'root' | 'descendant',
-) {
+function vmStoredAt(state: NativeCheckpoint, location: 'root' | 'descendant') {
   const stored =
     location === 'root'
       ? state.root_code_mode?.stored_values
@@ -895,7 +850,7 @@ describe('lossless VM stored JSON', () => {
       const decorated = withOutputState(state, vmPlain.identity);
       const parsed = sessionStateSchema.parse(decorated);
       const stored = parseSessionState(JSON.stringify(parsed));
-      const restored = readVm(nativeCheckpoint(stored));
+      const restored = readVm(toRuntimeCheckpoint(stored));
       for (const stage of [
         native,
         state,
@@ -950,25 +905,25 @@ describe('lossless VM stored JSON', () => {
     const envelope = z
       .object({ checkpoint: z.unknown(), manual_continuation: jsonObject })
       .parse(parseNative(wire));
-    const legacy = pending();
-    if (!isManualSessionState(legacy))
+    const manual = pending();
+    if (!isManualSessionState(manual))
       throw new Error('Expected manual fixture');
     const state = fromNativeCheckpoint(
       parseNativeCheckpoint(envelope.checkpoint),
       vmPlain.identity,
-      undefined,
-      undefined,
       {
-        manual_continuation: legacy.manual_continuation,
-        manual_context: legacy.manual_context,
+        manual: {
+          manual_continuation: manual.manual_continuation,
+          manual_context: manual.manual_context,
+        },
       },
     );
-    expect(state.format_version).toBe(7);
+    expect(state.kind).toBe('manual');
     const saved = parseSessionState(encodeReceipt(state));
-    const restored = readVm(nativeCheckpoint(saved));
+    const restored = readVm(toRuntimeCheckpoint(saved));
     const reencodedEnvelope = parseNative(
       encodeReceipt({
-        checkpoint: nativeCheckpoint(saved),
+        checkpoint: toRuntimeCheckpoint(saved),
         manual_continuation: {},
       }),
     ) as { checkpoint: unknown };

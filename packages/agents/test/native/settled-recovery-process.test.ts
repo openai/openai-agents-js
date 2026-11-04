@@ -280,7 +280,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             sourceActor: original.binding.sourceActor,
             closed: true,
           });
-          expect(saved.format_version).toBe(7);
+          expect(saved.kind).toBe('manual');
           expect(saved.manual_continuation).toMatchObject({
             turn_id: original.binding.turnId,
             reply_order: ['external-call'],

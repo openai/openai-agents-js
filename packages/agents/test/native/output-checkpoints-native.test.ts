@@ -94,7 +94,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(seal).toHaveBeenCalledTimes(1);
       expect(server.requests).toHaveLength(1);
       expect(server.requests[0]).not.toHaveProperty('text.format');
-      expect(recovered.format_version).toBe(5);
+      expect(recovered.kind).toBe('manual');
       const native = await binding();
       const create = vi.spyOn(native, 'create_checkpoint_engine');
       const restore = vi.spyOn(native.Engine.prototype, 'restore_checkpoint');
@@ -151,8 +151,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       await restored.respond(action.reply('accepted'));
       expect((await restored.wait()).finalOutput).toBe(7);
       const idle = await restored.saveState();
-      expect(idle.format_version).toBe(4);
-      if (idle.format_version !== 4)
+      expect(idle.kind).toBe('idle');
+      if (idle.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(idle.output_context.mode).toBe('prompted');
       server.assertExhausted();
@@ -174,7 +174,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(failure).toBeInstanceOf(InteractionRequired);
       if (!(failure instanceof InteractionRequired) || !failure.state)
         throw new Error('Expected automatic receipt');
-      expect(failure.state.format_version).toBe(5);
+      expect(failure.state.kind).toBe('manual');
       await using restored = await agent.session({
         state: parseSessionState(JSON.stringify(failure.state)),
       });
@@ -201,7 +201,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       await using initial = await agent.session();
       const originalTurn = await (await initial.submit('START')).wait();
       const state = await initial.saveState();
-      if (state.format_version !== 4)
+      if (state.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       state.repair_turns.push({
         id: 'attempt-turn',
@@ -238,8 +238,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       });
       await source.compact({ summary: 'Supplied before fork.' });
       const forked = await source.fork();
-      if (forked.format_version !== 4)
-        throw new Error('Expected output-aware fork');
+      if (forked.kind !== 'idle') throw new Error('Expected output-aware fork');
       expect(forked.repair_turns[0]).toMatchObject({
         sessionId: 'attempt-session',
         id: 'attempt-turn',
@@ -251,7 +250,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       await using branch = await agent.session({ state: forked });
       await branch.compact({ summary: 'Supplied after fork.' });
       const final = await branch.saveState();
-      if (final.format_version !== 4)
+      if (final.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(final.repair_turns).toEqual(forked.repair_turns);
       expect(final.repair_items).toEqual(forked.repair_items);

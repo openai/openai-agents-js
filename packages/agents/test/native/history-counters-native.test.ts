@@ -787,7 +787,7 @@ async function qualifyIdleCheckpoint(
     sessionId: session.id,
   });
   const saved = await session.saveState();
-  expect(saved.format_version).toBe(4);
+  expect(saved.kind).toBe('idle');
   assertCheckpointUsageGroups(saved, turnId, expected, initial, descendantId);
   const stored = parseSessionState(JSON.stringify(saved));
   assertCheckpointUsageGroups(stored, turnId, expected, initial, descendantId);
@@ -820,7 +820,7 @@ async function qualifyIdleCheckpoint(
     expect(child?.isLive).toBe(false);
   }
   const resaved = await restored.saveState();
-  expect(resaved.format_version).toBe(4);
+  expect(resaved.kind).toBe('idle');
   assertCheckpointUsageGroups(resaved, turnId, expected, initial, descendantId);
   expect(await readSessionInstructions(resaved)).toBe(agent.instructions);
   expect(server.requests).toHaveLength(before);
@@ -1527,8 +1527,8 @@ describe(
               return { provider, session, watching, pending };
             };
             const assertSidecar = (state: SessionState, continued: boolean) => {
-              if (state.format_version !== 5)
-                throw new Error('Expected a real format3 manual receipt');
+              if (state.kind !== 'manual')
+                throw new Error('Expected a manual receipt');
               const expected = usageOf(scenario, continued);
               const wire = Object.fromEntries(
                 Object.entries(expected).map(([key, value]) => [
@@ -1571,7 +1571,7 @@ describe(
               throw new Error('Source manual Turn unexpectedly completed');
             expect(suspended.error).toBeInstanceOf(InteractionRequired);
             const turnId =
-              state1.format_version === 5
+              state1.kind === 'manual'
                 ? state1.manual_continuation.turn_id
                 : '';
             expect(turnId).toBe(sourceTurn.turnId);

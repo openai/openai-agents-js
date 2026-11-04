@@ -299,13 +299,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             const saved = parseSessionState(
               JSON.stringify(await session.saveState()),
             );
-            if (saved.format_version !== 4)
+            if (saved.kind !== 'idle')
               throw new Error('Expected output-aware idle state');
             expect(saved.repair_turns).toEqual([attempt]);
             const fork = parseSessionState(
               JSON.stringify(await session.fork()),
             );
-            if (fork.format_version !== 4)
+            if (fork.kind !== 'idle')
               throw new Error('Expected output-aware fork');
             expect(fork.repair_turns).toEqual([
               {
@@ -445,14 +445,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect.objectContaining({ id: root.turnId, sessionId: session.id }),
       ]);
       const saved = await session.saveState();
-      if (saved.format_version !== 4)
+      if (saved.kind !== 'idle')
         throw new Error('Expected output-aware idle state');
       expect(saved.source_session_id).toBe(session.id);
       expect(saved.repair_turns).toEqual([]);
       expect(saved.repair_items).toEqual([]);
       const fork = await session.fork();
-      if (fork.format_version !== 4)
-        throw new Error('Expected output-aware fork');
+      if (fork.kind !== 'idle') throw new Error('Expected output-aware fork');
       expect(fork.repair_turns).toEqual([]);
       expect(fork.repair_items).toEqual([]);
       await session.compact({ summary: 'The original output was invalid.' });

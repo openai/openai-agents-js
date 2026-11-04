@@ -1,3 +1,4 @@
+import { prepareOutput } from '../../src/runtime/output';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -55,6 +56,9 @@ function exampleSessions() {
     };
   });
   const saveState = vi.fn(async () => ({
+    kind: 'idle',
+    network_policy_digest: null,
+    output_context: prepareOutput(undefined).identity,
     format_version: 2,
     codex_revision: CODEX_REVISION,
     source_session_id: 'example-session',
@@ -140,7 +144,11 @@ describe('conversation example ownership without native execution', () => {
     expect(writer).not.toHaveBeenCalled();
     expect(owned.detached).not.toHaveBeenCalled();
     expect(owned.opening.mock.calls[1][0]).toMatchObject({
-      state: { format_version: 2, source_session_id: 'example-session' },
+      state: {
+        kind: 'idle',
+        format_version: 2,
+        source_session_id: 'example-session',
+      },
     });
     expect(owned.calls).toEqual([
       'session.close',

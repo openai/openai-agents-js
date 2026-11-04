@@ -77,6 +77,12 @@ Implement the smallest supported behavior requested. Reuse existing sources of t
 
 When related findings repeatedly expand the same design, stop adding conditions, group root causes, and reassess the complete diff against the original requirement. A second related finding that adds another compatibility case, protocol hop, or test permutation triggers this reset. Prefer deleting unsupported branch-local machinery or rejecting unsupported inputs before side effects with an existing alternative. Follow `$implementation-strategy` for the detailed reset procedure; preserve released contracts and unrelated user changes.
 
+### Non-Classic alpha development
+
+For the Codex-backed alpha, prefer replacing or deleting obsolete code when that makes a change simpler. Small breaking changes to non-Classic APIs and checkpoint shapes are acceptable during alpha. Update the affected callers, tests, examples, and changeset together. Add a compatibility shim or a format version only for a concrete support requirement.
+
+Check with a human maintainer before a large break, such as invalidating existing saved sessions or removing a widely used API. Describe who is affected and how they can finish or migrate existing work. Classic APIs, Classic RunState, and shared surfaces used by Classic retain their compatibility requirements.
+
 ### ExecPlans
 
 When writing complex features or significant refactors, use an ExecPlan (as described in PLANS.md) from design to implementation. Store each ExecPlan file under `plans/` with a descriptive name, and create the directory if it does not exist. Call out compatibility risk only when the plan changes behavior shipped in the latest release tag or a released/otherwise supported durable format. Do not treat branch-local interface churn or unreleased post-tag changes on `main` as breaking by default; prefer direct replacement over compatibility layers in those cases. Confirm the approach when changes could impact package consumers or durable external data that is already supported outside the current branch.

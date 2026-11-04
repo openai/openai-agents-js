@@ -1,3 +1,4 @@
+import { prepareOutput } from '../../src/runtime/output';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseSessionState, type NativeProviderOptions } from '@openai/agents';
@@ -14,6 +15,9 @@ afterEach(() => ModelServer.closeAll());
 
 it('rejects an idle checkpoint before opening a pending lookup', async () => {
   const json = JSON.stringify({
+    kind: 'idle',
+    network_policy_digest: null,
+    output_context: prepareOutput(undefined).identity,
     format_version: 2,
     codex_revision: CODEX_REVISION,
     source_session_id: 'idle-lookup-session',
@@ -62,8 +66,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const options = await providerOptions(server);
       const json = await savePendingLookup(options);
       const state = parseSessionState(json);
-      expect(state.format_version).toBe(9);
-      if (state.format_version !== 9)
+      expect(state.kind).toBe('manual');
+      if (state.kind !== 'manual')
         throw new Error('Expected pending lookup state');
       expect(state.manual_continuation.pending_manual).toEqual([
         expect.objectContaining({

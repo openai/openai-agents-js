@@ -10,7 +10,6 @@ import {
   checkpointDefaultTools,
   type CheckpointSelections,
 } from './selection-state';
-import { readCheckpointSelections } from './state';
 import { nativeGoal, type NativeGoal } from './goals';
 import {
   NativeError,
@@ -154,7 +153,6 @@ import {
   fromNativeCheckpoint,
   type NativeCheckpoint,
   isManualSessionState,
-  isOutputAwareState,
   type ManualSessionState,
   readChecklist,
   type ChecklistState,
@@ -874,16 +872,15 @@ export class Session<OutputT = string, Context = unknown> {
   ) {
     this.defaultOutput = options.output ?? prepareOutput(undefined);
     this.openingCatalog = catalog;
-    const receipts = isOutputAwareState(restored) ? restored : undefined;
-    this.repairTurns = structuredClone(receipts?.repair_turns ?? []).map(
+    this.repairTurns = structuredClone(restored?.repair_turns ?? []).map(
       (turn) => ({ ...turn, parentSessionId: native.id }),
     );
-    this.repairItems = structuredClone(receipts?.repair_items ?? []).map(
+    this.repairItems = structuredClone(restored?.repair_items ?? []).map(
       (item) => ({ ...item, parentSessionId: native.id }),
     );
 
     this.defaultTools = checkpointDefaultTools(
-      readCheckpointSelections(restored).default_tools,
+      restored?.default_tools,
       catalog,
     );
     for (const tool of catalog.tools)
@@ -5154,32 +5151,35 @@ export class Session<OutputT = string, Context = unknown> {
             this.checkpointSelections(run),
           ),
           submissions.get(run)!.output.identity,
-          this.restored,
-          { turns: this.repairTurns, items: this.repairItems },
           {
-            manual_continuation: result.manual_continuation,
-            manual_context: {
-              ...(run.selection?.maxModelSteps === undefined
-                ? {}
-                : {
-                    remaining_model_steps:
-                      run.selection.maxModelSteps - run.selection.stepIndex,
-                  }),
-              instructions: this.threadOptions._managed_instructions
-                ? this.#native._application_instructions()
-                : (this.threadOptions.instructions ?? null),
-              result_schemas: this.catalog.tools
-                .filter((tool) => tool.kind === 'manual')
-                .map((tool) => ({
-                  name: tool.name,
-                  schema: manualResultSchema(tool),
-                })),
-              usage:
-                run.tokenUsage === null ? null : runUsageToWire(run.tokenUsage),
+            repairs: { turns: this.repairTurns, items: this.repairItems },
+            manual: {
+              manual_continuation: result.manual_continuation,
+              manual_context: {
+                ...(run.selection?.maxModelSteps === undefined
+                  ? {}
+                  : {
+                      remaining_model_steps:
+                        run.selection.maxModelSteps - run.selection.stepIndex,
+                    }),
+                instructions: this.threadOptions._managed_instructions
+                  ? this.#native._application_instructions()
+                  : (this.threadOptions.instructions ?? null),
+                result_schemas: this.catalog.tools
+                  .filter((tool) => tool.kind === 'manual')
+                  .map((tool) => ({
+                    name: tool.name,
+                    schema: manualResultSchema(tool),
+                  })),
+                usage:
+                  run.tokenUsage === null
+                    ? null
+                    : runUsageToWire(run.tokenUsage),
+              },
             },
+            selection: this.checkpointSelections(run),
+            networkPolicy: networkPolicyDigest(this.environment?.network),
           },
-          this.checkpointSelections(run),
-          networkPolicyDigest(this.environment?.network),
         );
 
         if (!this.current(run))
@@ -5217,7 +5217,7 @@ export class Session<OutputT = string, Context = unknown> {
     const run = new NativeTurn(() => this.assertCanWait(run));
 
     run.id = state.manual_continuation.turn_id;
-    const operation = readCheckpointSelections(state).operation_tools;
+    const operation = state.operation_tools;
     const remaining = state.manual_context.remaining_model_steps;
     if (operation !== undefined || remaining !== undefined)
       run.selection = {
@@ -7187,15 +7187,11 @@ export class Session<OutputT = string, Context = unknown> {
     this.requireCompleteRepairReceipts();
     state = this.checkpointCatalog(state, this.checkpointSelections());
     if (!this.restored || isManualSessionState(this.restored))
-      return fromNativeCheckpoint(
-        state,
-        this.defaultOutput.identity,
-        this.restored,
-        { turns: this.repairTurns, items: this.repairItems },
-        undefined,
-        this.checkpointSelections(),
-        networkPolicyDigest(this.environment?.network),
-      );
+      return fromNativeCheckpoint(state, this.defaultOutput.identity, {
+        repairs: { turns: this.repairTurns, items: this.repairItems },
+        selection: this.checkpointSelections(),
+        networkPolicy: networkPolicyDigest(this.environment?.network),
+      });
     const prior = this.restored.recovery;
     const decorated: NativeCheckpoint = {
       ...state,
@@ -7216,15 +7212,11 @@ export class Session<OutputT = string, Context = unknown> {
         ...state.root_tool_origins,
       },
     };
-    return fromNativeCheckpoint(
-      decorated,
-      this.defaultOutput.identity,
-      this.restored,
-      { turns: this.repairTurns, items: this.repairItems },
-      undefined,
-      this.checkpointSelections(),
-      networkPolicyDigest(this.environment?.network),
-    );
+    return fromNativeCheckpoint(decorated, this.defaultOutput.identity, {
+      repairs: { turns: this.repairTurns, items: this.repairItems },
+      selection: this.checkpointSelections(),
+      networkPolicy: networkPolicyDigest(this.environment?.network),
+    });
   }
 
   private async readMcpResults(): Promise<void> {

@@ -91,8 +91,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const originalResult = root.wait().catch((error: unknown) => error);
       const state = parseSessionState(JSON.stringify(await original.suspend()));
       expect(await originalResult).toBeInstanceOf(InteractionRequired);
-      expect(state.format_version).toBe(5);
-      if (state.format_version !== 5)
+      expect(state.kind).toBe('manual');
+      if (state.kind !== 'manual')
         throw new Error('Expected output-aware manual state');
       expect(state.manual_continuation.turn_id).toBe(root.turnId);
       expect(state.output_context.budget).toBe(2);

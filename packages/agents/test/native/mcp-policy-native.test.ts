@@ -354,7 +354,7 @@ it('joins registered MCP and interception readers across replacement and manual 
     // automatic no-handler checkpoint capability is a separate conservative gate.
     suspending = session.suspend();
     void suspending.catch(() => {});
-    await expect(suspending).resolves.toMatchObject({ format_version: 5 });
+    await expect(suspending).resolves.toMatchObject({ kind: 'manual' });
     await Promise.all([
       candidate.mcpNull.promise,
       candidate.interceptionNull.promise,

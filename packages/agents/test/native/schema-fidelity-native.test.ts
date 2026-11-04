@@ -287,7 +287,7 @@ async function restoreWebSocketCheckpoint(entry: string) {
     await session.close();
     await disconnected;
   }
-  assert(state?.format_version === 5);
+  assert(state?.kind === 'manual');
   expect(responses).toBe(1);
   const turnId = state.manual_continuation.turn_id;
   const answerLookup = (action: unknown) => {

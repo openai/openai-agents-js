@@ -108,12 +108,10 @@ export const codeModeCellKeysSchema = z.unknown().superRefine((value, ctx) => {
 });
 
 function checkpointPayload(value: unknown): unknown {
-  return typeof value === 'object' &&
-    value !== null &&
-    'checkpoint' in value &&
-    'manual_continuation' in value
-    ? value.checkpoint
-    : value;
+  if (typeof value !== 'object' || value === null) return value;
+  if ('checkpoint' in value && 'manual_continuation' in value)
+    return value.checkpoint;
+  return value;
 }
 function checkpointCodeStates(value: unknown): Record<string, unknown>[] {
   const checkpoint = checkpointPayload(value);
