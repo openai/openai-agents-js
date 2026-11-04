@@ -22,6 +22,7 @@ function session(read: () => Promise<string>) {
     {
       id: 'root',
       read_checklist: read,
+      _stop_sampling_for_close: () => {},
       _close_report: async () => null,
     } as unknown as NativeThread,
     captureTools([]),

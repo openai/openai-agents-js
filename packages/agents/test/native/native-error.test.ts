@@ -414,6 +414,7 @@ async function admissionSession(submit: () => Promise<string>) {
       _submit: submit,
       _next_session_event: () => ended.promise,
       _finish_child_event_reader: () => {},
+      _stop_sampling_for_close: () => {},
       _close_report: async () => {
         ended.reject(new Error('reader closed'));
         return null;

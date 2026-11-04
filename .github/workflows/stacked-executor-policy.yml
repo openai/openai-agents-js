@@ -1,0 +1,19 @@
+name: Stacked executor policy
+
+on:
+  pull_request:
+    branches:
+      - 'feat/**'
+      # Direct PRs already run the alpha package workflow.
+      - '!feat/codex-harness'
+    paths:
+      - packages/agents/native/rust/environment.rs
+      - packages/agents/test/native/fixtures/detached-child.c
+      - packages/agents/test/native/local-executor-policy-native.test.ts
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    uses: ./.github/workflows/alpha-release-artifacts.yml

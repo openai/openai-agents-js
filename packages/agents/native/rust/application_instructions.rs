@@ -455,16 +455,18 @@ impl ContextContributor for Contributor {
                 .thread_store
                 .get::<ThreadInstructions>()
                 .and_then(|owner| owner.accepted());
+            let control = input
+                .thread_store
+                .get::<crate::native_interception::Control>();
             input.step_store.insert(SdkTurnReceiptSeed {
                 codex_revision: include_str!("../CODEX_REVISION").trim(),
                 codex_source_tree: CODEX_SOURCE_TREE.as_str(),
                 sha256,
-                strict_executor_writes: false,
+                strict_executor_writes: control
+                    .as_ref()
+                    .is_some_and(|control| control.strict_executor_writes()),
                 inherited_application: if accepted.is_none() {
-                    input
-                        .thread_store
-                        .get::<crate::native_interception::Control>()
-                        .and_then(|control| control.inherited_instruction_files())
+                    control.and_then(|control| control.inherited_instruction_files())
                 } else {
                     None
                 },

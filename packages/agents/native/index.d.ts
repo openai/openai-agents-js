@@ -201,6 +201,7 @@ export class NativeThread {
   close(): Promise<void>;
   _close_report(): Promise<string | null>;
   _close_selected_environment(): Promise<string | null>;
+  _stop_sampling_for_close(): void;
   _request_graph_stop(
     scope: 'root' | 'thread_tree',
     mode: 'force' | 'graceful',

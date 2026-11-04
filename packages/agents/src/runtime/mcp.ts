@@ -328,11 +328,11 @@ function mcpServerConfig(
       if (!environment)
         throw new TypeError('Environment MCP requires a Session environment');
       const cwd = server.cwd ?? environment.cwd;
-      config.environment_id = 'remote';
-      config.env_vars = server.envVars.map((name) => ({
-        name,
-        source: 'remote',
-      }));
+      config.environment_id = environment.kind;
+      config.env_vars =
+        environment.kind === 'local'
+          ? [...server.envVars]
+          : server.envVars.map((name) => ({ name, source: 'remote' }));
       config.cwd = cwd.startsWith('file:') ? remoteFilePath(cwd) : cwd;
     } else {
       config.env_vars = [...server.envVars];

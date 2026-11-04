@@ -475,6 +475,7 @@ function startupFixture() {
     _finish_child_event_reader: vi.fn(),
     _next_native_mcp_result: vi.fn(() => mcpResult.promise),
     _revoke_native_mcp_results: vi.fn(),
+    _stop_sampling_for_close: vi.fn(),
     _close_report: vi.fn(async () => null),
   };
   const session = new Session(
