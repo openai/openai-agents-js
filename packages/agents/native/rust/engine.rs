@@ -229,11 +229,11 @@ impl EngineState {
             );
         }
         let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
-        // Check before opening SQLite or reading a stored thread.
-        if (goals_enabled || local_home.is_some())
-            && let Some(environment) = &environment_options
-        {
-            environment.check_local_storage(config.sqlite_config().home())?;
+        // Check before opening SQLite or launching the executor.
+        if let Some(environment) = &environment_options {
+            let storage =
+                (goals_enabled || local_home.is_some()).then(|| config.sqlite_config().home());
+            environment.check_local_session_paths(&config, storage)?;
         }
         let responses = Arc::new(crate::response_control::ResponseContributor::default());
         let services = &config;

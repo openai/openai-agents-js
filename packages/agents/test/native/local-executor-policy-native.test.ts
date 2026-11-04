@@ -798,6 +798,45 @@ it.skipIf(!supported)(
 
 const localStorageOverlap =
   /Keep local session storage outside the executor cwd and writable roots/;
+const runtimeHomeOverlap =
+  /Keep the native runtime home outside the executor cwd and writable roots/;
+
+it.skipIf(!supported).for(['cwd', 'aliased writable root'] as const)(
+  'rejects a local executor grant to the runtime home through %s',
+  { timeout: 20_000 },
+  async (kind) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-runtime-overlap-'));
+    try {
+      const base = await realpath(temporary);
+      const homes = join(base, 'runtime-homes');
+      const workspace = join(base, 'workspace');
+      const alias = join(base, 'homes-alias');
+      await Promise.all([mkdir(homes), mkdir(workspace)]);
+      await symlink(homes, alias);
+      vi.stubEnv('TMPDIR', homes);
+      const server = new ModelServer([]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      await expect(async () => {
+        await using _session = await agent.session({
+          environment: Environment.local({
+            cwd: kind === 'cwd' ? homes : workspace,
+            tools: ['exec_command'],
+            writableRoots: kind === 'cwd' ? [] : [alias],
+          }),
+        });
+      }).rejects.toThrow(runtimeHomeOverlap);
+      expect(await readdir(homes)).toEqual([]);
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
 
 it
   .skipIf(!supported)
@@ -1224,7 +1263,11 @@ it.skipIf(!supported).for(['portable', 'local'] as const)(
       const cwd = join(workspace, 'cwd');
       const previous = join(workspace, 'previous');
       const next = join(workspace, 'next');
-      await Promise.all([cwd, previous, next].map((path) => mkdir(path)));
+      const homes = join(workspace, 'runtime-homes');
+      await Promise.all(
+        [cwd, previous, next, homes].map((path) => mkdir(path)),
+      );
+      vi.stubEnv('TMPDIR', homes);
       const previousFile = join(previous, 'marker');
       const nextFile = join(next, 'marker');
       await writeFile(previousFile, 'previous');
@@ -1293,6 +1336,11 @@ it.skipIf(!supported).for(['portable', 'local'] as const)(
         ).rejects.toThrow(
           /local executor write roots must not contain installed sandbox helpers/,
         );
+        await expect(
+          session.submit('Reject runtime home overlap.', {
+            writableRoots: [homes],
+          }),
+        ).rejects.toThrow(runtimeHomeOverlap);
         if (storage) {
           await expect(
             session.submit('Reject profile overlap.', {
