@@ -1,3 +1,4 @@
+import { validateHeaderValue } from 'node:http';
 import { AgentCard } from '@a2a-js/sdk';
 import {
   ClientFactory,
@@ -244,7 +245,7 @@ export async function connectA2A(
             token = await options.authorization(operation);
             if (typeof token !== 'string' || !token || /[\r\n]/.test(token))
               throw new A2AError('authorization');
-            new Headers().set('Authorization', `Bearer ${token}`);
+            validateHeaderValue('Authorization', `Bearer ${token}`);
           } catch {
             throw new A2AError('authorization');
           }

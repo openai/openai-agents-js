@@ -309,6 +309,9 @@ it('rejects a card route mismatch before resolving credentials', async () => {
 it.each([
   ['embedded NUL', 'synthetic-\0-credential-sentinel'],
   ['invalid ByteString', 'synthetic-\u0100-credential-sentinel'],
+  ['HTTP control 0x01', 'synthetic-\u0001-credential-sentinel'],
+  ['HTTP control 0x1f', 'synthetic-\u001f-credential-sentinel'],
+  ['HTTP control 0x7f', 'synthetic-\u007f-credential-sentinel'],
 ])(
   'rejects %s credentials safely before reserving or sending an RPC',
   async (_kind, token) => {
