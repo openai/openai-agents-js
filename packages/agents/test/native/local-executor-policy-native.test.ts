@@ -1082,6 +1082,7 @@ it.skipIf(!supported)(
       await expect(async () => {
         await using _session = await open([grant]);
       }).rejects.toThrow(localStorageOverlap);
+      expect(await readdir(grant)).toEqual([]);
       await using session = await open().catch((error: unknown) => {
         if (
           error instanceof Error &&
@@ -1092,13 +1093,14 @@ it.skipIf(!supported)(
         }
         throw error;
       });
+      const beforeReplacement = await readdir(grant);
       await expect(
         session.submit('Do not grant the directory for new rollouts.', {
           writableRoots: [grant],
         }),
       ).rejects.toThrow(localStorageOverlap);
       expect(server.requests).toHaveLength(0);
-      expect(await readdir(grant)).toEqual([]);
+      expect(await readdir(grant)).toEqual(beforeReplacement);
       const turn = await session.submit('Persist with the disjoint grant.');
       expect((await turn.wait()).finalOutput).toBe('Persisted safely.');
       server.assertExhausted();
