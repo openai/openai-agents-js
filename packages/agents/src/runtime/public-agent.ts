@@ -37,6 +37,7 @@ import {
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
+import { captureReconciledCalls, type ReconciledCall } from './local-recovery';
 import { captureTools, toolIdentity, type Tool } from './tools';
 import type {
   Session as CoreSession,
@@ -67,6 +68,8 @@ export interface SessionOptions<Context = undefined> {
   modelSettings?: ModelSettings;
   storage?: LocalStorage;
   resume?: string;
+  /** Application-confirmed outcomes for unknown calls on this local resume. */
+  reconciledCalls?: readonly ReconciledCall[];
   environment?: Environment<Context> | EnvironmentSource<Context>;
   /**
    * Load trusted UTF-8 instruction files in the supplied order at opening.
@@ -86,7 +89,7 @@ export interface SessionOptions<Context = undefined> {
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionOptions<Context>,
-  'tools' | 'storage' | 'resume'
+  'tools' | 'storage' | 'resume' | 'reconciledCalls'
 > {
   returnState?: boolean;
   onNativeQuestion?: (
@@ -329,7 +332,7 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Run tool selection is not supported; use Agent.session({ tools })',
       );
-    for (const key of ['storage', 'resume'])
+    for (const key of ['storage', 'resume', 'reconciledCalls'])
       if (key in options)
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
@@ -471,6 +474,12 @@ export class Agent<Context = undefined, Output = string> {
 
     const storage =
       descriptor === undefined ? undefined : localStoragePath(descriptor);
+    const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
+    if (
+      reconciledCalls !== undefined &&
+      (storage === undefined || typeof resume !== 'string' || !resume)
+    )
+      throw new TypeError('reconciledCalls requires local storage and resume');
     // Capture mutable declarations before file reads or environment acquisition.
     const stateResult =
       suppliedState == null
@@ -795,6 +804,9 @@ export class Agent<Context = undefined, Output = string> {
           ...(projectGuidance ? { _canonical_rules: true } : {}),
           ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
           ...(resume === undefined ? {} : { _sdk_resume_thread_id: resume }),
+          ...(reconciledCalls?.length
+            ? { _sdk_reconciled_calls: reconciledCalls }
+            : {}),
           ...(nativeAgents
             ? {
                 _native_agent_roles: nativeAgents.additionalRoles.map(

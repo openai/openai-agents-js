@@ -6,4 +6,4 @@
 '@openai/agents-realtime': patch
 ---
 
-feat: Embed the Codex harness in `@openai/agents` and expose the classic Agent and Runner APIs at `@openai/agents/classic`. Native workers gain exact steering, attention and rate-limit signals, execution and instruction receipts, and local execution with per-turn writable roots on Linux and fixed writable roots on macOS. Keep native session storage outside local executor write roots.
+feat: Embed the Codex harness in `@openai/agents` and expose the classic Agent and Runner APIs at `@openai/agents/classic`. Native workers gain exact steering, attention and rate-limit signals, execution and instruction receipts, local execution with per-turn writable roots on Linux and fixed writable roots on macOS, and verified recovery for uncertain tool results. Keep native session storage outside local executor write roots.
