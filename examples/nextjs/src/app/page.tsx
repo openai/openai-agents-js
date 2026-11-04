@@ -12,7 +12,10 @@ export default function Home() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [accessToken, setAccessToken] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState<{
+    message: string;
+    status?: number;
+  } | null>(null);
   const [history, setHistory] = useState<AgentInputItem[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [approvals, setApprovals] = useState<
@@ -28,14 +31,14 @@ export default function Home() {
 
   async function signIn(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setError('');
+    setError(null);
     const response = await fetch('/api/session', {
       method: 'POST',
       body: JSON.stringify({ token: accessToken }),
     });
     if (!response.ok) {
       const data = await response.json();
-      setError(data.error ?? 'Could not start demo session');
+      setError({ message: data.error ?? 'Could not start demo session' });
       return;
     }
     setAccessToken('');
@@ -49,7 +52,7 @@ export default function Home() {
     message?: string;
     decisions?: Map<string, 'approved' | 'rejected'>;
   }) {
-    setError('');
+    setError(null);
     const messages = [...history];
 
     if (message) {
@@ -81,13 +84,16 @@ export default function Home() {
     const data = await response.json();
 
     if (!response.ok) {
-      setHistory(messages);
+      setHistory(response.status === 413 ? history : messages);
       if (response.status === 401) {
         setAuthenticated(false);
         setConversationId(null);
         setApprovals([]);
       }
-      setError(data.error ?? 'Request failed');
+      setError({
+        message: data.error ?? 'Request failed',
+        status: response.status,
+      });
       return;
     }
 
@@ -132,7 +138,7 @@ export default function Home() {
           <button type="submit" className="rounded border p-2">
             Start demo
           </button>
-          {error && <p role="alert">{error}</p>}
+          {error && <p role="alert">{error.message}</p>}
         </form>
       </main>
     );
@@ -140,7 +146,16 @@ export default function Home() {
 
   return (
     <>
-      {error && <p role="alert">{error}</p>}
+      {error && <p role="alert">{error.message}</p>}
+      {error?.status === 413 && (
+        <button
+          type="button"
+          className="underline"
+          onClick={() => window.location.reload()}
+        >
+          Start a new conversation
+        </button>
+      )}
       <App history={history} onSend={handleSend} />
       {/**
        * If we have any approvals, we will show the approvals component to allow the user to

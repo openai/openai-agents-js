@@ -18,6 +18,8 @@ Open [http://localhost:3000](http://localhost:3000), enter the demo access token
 
 The server keeps demo sessions and interrupted runs in memory. Sessions expire after one hour. Each session can start 20 model runs, and each server process admits at most 60 model runs per hour. Replace this demo token and in-memory store with your application's authentication and durable session storage when adapting the example for a deployed application.
 
+Chat requests can include up to 256 KiB of input and conversation history. If a request exceeds that limit, select **Start a new conversation** to clear the chat and keep using the same demo session.
+
 ## Endpoints
 
 - **`/`** – The basic example that actually handles receiving the approval requests and sending messages to the API. Code in `src/app/page.tsx`.

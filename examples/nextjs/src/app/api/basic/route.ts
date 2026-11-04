@@ -28,10 +28,15 @@ export async function POST(req: NextRequest) {
     );
   }
   try {
-    const body = await readLimitedJson(req, 16 * 1024);
+    const body = await readLimitedJson(req, 256 * 1024);
     if ('status' in body) {
       return NextResponse.json(
-        { error: 'Invalid request' },
+        {
+          error:
+            body.status === 413
+              ? 'Conversation exceeds 256 KiB'
+              : 'Invalid request',
+        },
         { status: body.status },
       );
     }
@@ -110,7 +115,14 @@ export async function POST(req: NextRequest) {
       input = messages;
     }
 
-    if (!reserveModelRun(session)) {
+    const reservation = reserveModelRun(session);
+    if (reservation === 'expired') {
+      return NextResponse.json(
+        { error: 'Demo session required' },
+        { status: 401 },
+      );
+    }
+    if (reservation === 'limited') {
       return NextResponse.json(
         { error: 'Model run limit reached' },
         { status: 429 },

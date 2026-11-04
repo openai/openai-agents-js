@@ -104,9 +104,74 @@ describe('billable demo route', () => {
       ).status,
     ).toBe(403);
     expect(
-      (await POST(request({ messages: ['x'.repeat(17_000)] }, cookie))).status,
+      (await POST(request({ messages: ['x'.repeat(256 * 1024)] }, cookie)))
+        .status,
     ).toBe(413);
     expect(model.run).not.toHaveBeenCalled();
+  });
+
+  it('continues a conversation with more than 16 KiB of accumulated history', async () => {
+    const cookie = await sessionCookie();
+    const history = [
+      ...messages,
+      {
+        type: 'message',
+        role: 'assistant',
+        content: 'Long reply '.repeat(2_000),
+      },
+    ];
+    model.run.mockResolvedValueOnce({
+      interruptions: [],
+      history,
+      finalOutput: history[1].content,
+    });
+    const first = await POST(request({ messages }, cookie));
+    expect(first.status).toBe(200);
+    const previous = await first.json();
+    const nextMessages = [
+      ...previous.history,
+      { type: 'message', role: 'user', content: 'Follow-up' },
+    ];
+    const second = await POST(
+      request(
+        { messages: nextMessages, conversationId: previous.conversationId },
+        cookie,
+      ),
+    );
+    expect(second.status).toBe(200);
+    expect(model.run).toHaveBeenLastCalledWith({}, nextMessages);
+  });
+
+  it('returns 401 when the session expires while reading the request', async () => {
+    const cookie = await sessionCookie();
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      const expiresAt = Date.now() + 60 * 60 * 1000;
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            clock.mockReturnValue(expiresAt);
+            controller.enqueue(
+              new TextEncoder().encode(JSON.stringify({ messages })),
+            );
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      const response = await POST(
+        new NextRequest(`${origin}/api/basic`, {
+          method: 'POST',
+          headers: { origin, cookie },
+          body,
+          duplex: 'half',
+        }),
+      );
+      expect(response.status).toBe(401);
+      expect(model.run).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('lets a session start and resume only its own interrupted run', async () => {

@@ -56,18 +56,20 @@ export function getDemoSession(req: NextRequest): string | undefined {
   return id;
 }
 
-export function reserveModelRun(id: string): boolean {
+export function reserveModelRun(
+  id: string,
+): 'reserved' | 'expired' | 'limited' {
   const session = store.sessions.get(id);
   const now = Date.now();
-  if (!session || session.expiresAt <= now) return false;
+  if (!session || session.expiresAt <= now) return 'expired';
   if (now >= store.globalResetAt) {
     store.globalRuns = 0;
     store.globalResetAt = now + hour;
   }
-  if (session.runs >= 20 || store.globalRuns >= 60) return false;
+  if (session.runs >= 20 || store.globalRuns >= 60) return 'limited';
   session.runs += 1;
   store.globalRuns += 1;
-  return true;
+  return 'reserved';
 }
 
 export async function readLimitedJson(
