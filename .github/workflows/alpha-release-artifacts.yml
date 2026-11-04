@@ -108,7 +108,7 @@ jobs:
             --reporter=verbose
           pnpm test:native \
             packages/agents/test/native/local-executor-policy-native.test.ts \
-            -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy' \
+            -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant' \
             --reporter=verbose
       - name: Build the macOS WSS test fixture
         if: runner.os == 'macOS'
