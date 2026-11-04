@@ -745,6 +745,23 @@ impl Control {
         }
     }
 
+    pub(crate) fn inherited_instruction_files(
+        &self,
+    ) -> Option<Arc<codex_extension_api::SdkInheritedApplicationInstructions>> {
+        self.native_ancestor.as_ref()?;
+        let policy = self.native_agents.get()?;
+        // Declared roles supply their own instructions, even when the bytes match.
+        if self
+            .agent_role
+            .get()?
+            .as_ref()
+            .is_some_and(|role| policy.roles.contains(role))
+        {
+            return None;
+        }
+        policy.inherited_instructions.clone()
+    }
+
     /// Capture is inert: a declined/failed conditional cancellation must not
     /// revoke callbacks. Retained cell owners also cover terminal delivery,
     /// which removes direct_turn before physical cleanup necessarily finishes.
@@ -6746,6 +6763,7 @@ mod tests {
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
                     max_depth: 1,
+                    inherited_instructions: None,
                     allowed: Default::default(),
                 }))
                 .is_ok()
@@ -7860,6 +7878,7 @@ mod mcp_policy_tests {
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
                     max_depth: 1,
+                    inherited_instructions: None,
                     allowed: Default::default(),
                 }))
                 .is_ok()

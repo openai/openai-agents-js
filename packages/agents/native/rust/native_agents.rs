@@ -1,7 +1,7 @@
 //! Native child role and tool admission, shared by direct and programmatic calls.
 use anyhow::{Context, ensure};
 use codex_core_api::{Config, Feature};
-use codex_extension_api::ToolPolicy;
+use codex_extension_api::{SdkInheritedApplicationInstructions, ToolPolicy};
 use codex_models_manager::manager::{RefreshStrategy, SharedModelsManager};
 use codex_protocol::openai_models::{ConfigShellToolType, ModelInfo, ReasoningEffort, ToolMode};
 use codex_tools::ToolName;
@@ -126,6 +126,7 @@ async fn validate_model(
 pub struct Policy {
     pub roles: Vec<String>,
     pub max_depth: usize,
+    pub inherited_instructions: Option<Arc<SdkInheritedApplicationInstructions>>,
     // Current startup policy is host authority. Core reads its own copy before
     // child lifecycle callbacks, so every direct dispatch checks this ceiling.
     pub allowed: OnceLock<Arc<ToolPolicy>>,

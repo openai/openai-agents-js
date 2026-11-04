@@ -6,4 +6,4 @@
 '@openai/agents-realtime': patch
 ---
 
-feat: Embed the Codex harness with worker controls in `@openai/agents` and expose the classic Agent and Runner APIs at `@openai/agents/classic`.
+feat: Embed the Codex harness in `@openai/agents` and expose the classic Agent and Runner APIs at `@openai/agents/classic`. Native workers gain exact steering, attention and rate-limit signals, and execution and instruction receipts.

@@ -9,6 +9,10 @@ import { NativeError } from './native-error';
 
 import { Environment } from './environment';
 import {
+  loadInstructionFiles,
+  type InstructionFileReceipt,
+} from './turn-receipt';
+import {
   acquireEnvironment,
   releaseEnvironmentBeforeProvider,
   type EnvironmentAcquisition,
@@ -64,6 +68,11 @@ export interface SessionOptions<Context = undefined> {
   storage?: LocalStorage;
   resume?: string;
   environment?: Environment<Context> | EnvironmentSource<Context>;
+  /**
+   * Load trusted UTF-8 instruction files in the supplied order at opening.
+   * Use files and parent directories that untrusted actors cannot modify.
+   */
+  instructionFiles?: readonly string[];
   /** Cancel opening and join cleanup. Agent.run retains this signal until completion. */
   signal?: AbortSignal;
   /**
@@ -98,6 +107,7 @@ interface CapturedOpening {
   readonly agent: Agent<any, any>;
   readonly factory: Agent<any, any>['session'];
   readonly instructions: string;
+  readonly instructionFiles: readonly InstructionFileReceipt[];
   readonly name?: string;
   readonly model?: string;
   readonly settings?: ModelSettings;
@@ -329,6 +339,7 @@ export class Agent<Context = undefined, Output = string> {
       context: options.context,
       state: options.state,
       environment: options.environment,
+      instructionFiles: options.instructionFiles,
       projectGuidance: options.projectGuidance,
       signal: options.signal,
       provider: options.provider,
@@ -376,7 +387,11 @@ export class Agent<Context = undefined, Output = string> {
         options.resume !== undefined)
     )
       throw new TypeError('Deferred opening requires a portable Session');
-    const { instructions, name, programmaticToolCalling } = opening ?? this;
+    const {
+      instructions: baseInstructions,
+      name,
+      programmaticToolCalling,
+    } = opening ?? this;
     const factory = opening ? opening.factory : this.session;
     const {
       provider: openingProvider,
@@ -456,7 +471,7 @@ export class Agent<Context = undefined, Output = string> {
 
     const storage =
       descriptor === undefined ? undefined : localStoragePath(descriptor);
-    // Capture mutable declarations before acquisition can invoke application code.
+    // Capture mutable declarations before file reads or environment acquisition.
     const stateResult =
       suppliedState == null
         ? undefined
@@ -469,6 +484,17 @@ export class Agent<Context = undefined, Output = string> {
         ? Object.freeze({ ...declaredOutput })
         : declaredOutput;
     const output = opening ? opening.output : prepareOutput(outputType);
+    const { instructions, files } =
+      !opening && options.instructionFiles !== undefined
+        ? await loadInstructionFiles(
+            baseInstructions,
+            options.instructionFiles,
+            options.signal,
+          )
+        : {
+            instructions: baseInstructions,
+            files: opening?.instructionFiles ?? [],
+          };
     const environmentOwner = await acquireEnvironment(
       environmentInput,
       options.signal,
@@ -767,6 +793,7 @@ export class Agent<Context = undefined, Output = string> {
         },
         threadOptions: {
           ...(projectGuidance ? { _canonical_rules: true } : {}),
+          ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
           ...(resume === undefined ? {} : { _sdk_resume_thread_id: resume }),
           ...(nativeAgents
             ? {
@@ -834,6 +861,7 @@ export class Agent<Context = undefined, Output = string> {
           agent: this,
           factory,
           instructions,
+          instructionFiles: files,
           name,
           model,
           settings,
