@@ -191,7 +191,19 @@
     {
       "path": "0048-protect-physical-local-write-roots.patch",
       "sha256": "8f6395a1b8d253170db019319cdaeff855ce1798efcc20eed704689fe070d994"
+    },
+    {
+      "path": "0049-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0050-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
+    },
+    {
+      "path": "0051-stop-token-budget-auto-compaction.patch",
+      "sha256": "f06a855f695a3514361a1044a7c9c31099cb548d19f81845845314ffd0ae5537"
     }
   ],
-  "result_tree": "5fd83382e0876a69a33d70550d218e1593e964a5"
+  "result_tree": "9b05f6f1d78afe7267b68d94c9d5481394652047"
 }

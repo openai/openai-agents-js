@@ -1,0 +1,194 @@
+diff --git a/codex-rs/core/src/compact_token_budget.rs b/codex-rs/core/src/compact_token_budget.rs
+index 3d97b6864ac824fb3a559914bd0322f5b44f014c..08427260a227a8a5423f057b7a700b97118ffce3 100644
+--- a/codex-rs/core/src/compact_token_budget.rs
++++ b/codex-rs/core/src/compact_token_budget.rs
+@@ -5,9 +5,12 @@ use crate::hook_runtime::PostCompactHookOutcome;
+ use crate::hook_runtime::PreCompactHookOutcome;
+ use crate::hook_runtime::run_post_compact_hooks;
+ use crate::hook_runtime::run_pre_compact_hooks;
++use crate::model_request::turn_sampling_stop;
++use crate::model_request::wait_if_sampling_stopped;
+ use crate::session::session::Session;
+ use crate::session::step_context::StepContext;
+ use codex_analytics::CompactionTrigger;
++use codex_extension_api::TurnSamplingStop;
+ use codex_protocol::error::CodexErr;
+ use codex_protocol::error::Result as CodexResult;
+ use codex_protocol::items::ContextCompactionItem;
+@@ -23,7 +26,14 @@ pub(crate) async fn run_manual_compact_task(
+     step_context: Arc<StepContext>,
+     world_state: Arc<WorldState>,
+ ) -> CodexResult<()> {
+-    run_compact_task_inner(&sess, &step_context, world_state, CompactionTrigger::Manual).await
++    run_compact_task_inner(
++        &sess,
++        &step_context,
++        world_state,
++        CompactionTrigger::Manual,
++        /*sampling_stop*/ None,
++    )
++    .await
+ }
+ 
+ /// Runs token-budget inline auto-compaction as a normal compaction lifecycle.
+@@ -36,7 +46,16 @@ pub(crate) async fn run_inline_auto_compact_task(
+     step_context: Arc<StepContext>,
+     world_state: Arc<WorldState>,
+ ) -> CodexResult<()> {
+-    run_compact_task_inner(&sess, &step_context, world_state, CompactionTrigger::Auto).await
++    let sampling_stop = turn_sampling_stop(&step_context.turn.extension_data);
++    wait_if_sampling_stopped(sampling_stop.as_deref()).await;
++    run_compact_task_inner(
++        &sess,
++        &step_context,
++        world_state,
++        CompactionTrigger::Auto,
++        sampling_stop.as_deref(),
++    )
++    .await
+ }
+ 
+ async fn run_compact_task_inner(
+@@ -44,6 +63,7 @@ async fn run_compact_task_inner(
+     step_context: &Arc<StepContext>,
+     world_state: Arc<WorldState>,
+     trigger: CompactionTrigger,
++    sampling_stop: Option<&TurnSamplingStop>,
+ ) -> CodexResult<()> {
+     let turn_context = &step_context.turn;
+     let pre_compact_outcome = run_pre_compact_hooks(sess, turn_context, trigger).await;
+@@ -52,6 +72,10 @@ async fn run_compact_task_inner(
+         PreCompactHookOutcome::Stopped => return Err(CodexErr::TurnAborted),
+     }
+ 
++    // The hook may have awaited while the host reserved a stop. No model request
++    // will check admission before this local reset.
++    wait_if_sampling_stopped(sampling_stop).await;
++
+     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
+     sess.emit_turn_item_started(turn_context, &compaction_item)
+         .await;
+diff --git a/codex-rs/core/tests/suite/token_budget.rs b/codex-rs/core/tests/suite/token_budget.rs
+index 9759d736365e45b325f6b421d59e94757bdb4640..ee8c0f7e925832b58534cc87f71dade5f206f7a2 100644
+--- a/codex-rs/core/tests/suite/token_budget.rs
++++ b/codex-rs/core/tests/suite/token_budget.rs
+@@ -2,9 +2,12 @@ use anyhow::Result;
+ use codex_config::types::McpServerConfig;
+ use codex_config::types::McpServerTransportConfig;
+ use codex_core::TurnInputRequest;
++use codex_core::WithTurnExtensionData;
+ use codex_core::config::Config;
+ use codex_core::config::TokenBudgetConfig;
++use codex_extension_api::ExtensionDataInit;
+ use codex_extension_api::ExtensionRegistryBuilder;
++use codex_extension_api::TurnSamplingStop;
+ use codex_features::Feature;
+ use codex_login::CodexAuth;
+ use codex_model_provider_info::built_in_model_providers;
+@@ -1301,6 +1304,106 @@ async fn token_budget_compaction_runs_compact_hooks() -> Result<()> {
+     Ok(())
+ }
+ 
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn token_budget_auto_compaction_respects_stop_during_pre_compact_hook() -> Result<()> {
++    skip_if_no_network!(Ok(()));
++
++    let server = start_mock_server().await;
++    let responses = mount_sse_sequence(
++        &server,
++        vec![sse(vec![
++            ev_response_created("resp-1"),
++            ev_function_call("remaining-call", "get_context_remaining", "{}"),
++            ev_completed_with_tokens("resp-1", /*total_tokens*/ 9_500),
++        ])],
++    )
++    .await;
++    let test = test_codex()
++        .with_pre_build_hook(|home| {
++            let script = home.join("hold_pre_compact.py");
++            let entered = home.join("pre_compact_entered");
++            let release = home.join("pre_compact_release");
++            std::fs::write(
++                &script,
++                format!(
++                    "import json, sys, time\nfrom pathlib import Path\njson.load(sys.stdin)\nPath({entered:?}).touch()\nwhile not Path({release:?}).exists(): time.sleep(0.01)\n"
++                ),
++            )
++            .expect("write blocking compact hook");
++            let hooks = json!({
++                "hooks": {
++                    "PreCompact": [{
++                        "matcher": "auto",
++                        "hooks": [{
++                            "type": "command",
++                            "command": python_hook_command(&script),
++                        }]
++                    }]
++                }
++            });
++            std::fs::write(home.join("hooks.json"), hooks.to_string()).expect("write hooks.json");
++        })
++        .with_config(|config| {
++            config.model_context_window = Some(10_000);
++            config.features.enable(Feature::TokenBudget).unwrap();
++            trust_discovered_hooks(config);
++        })
++        .build(&server)
++        .await?;
++    let mut extension_data = ExtensionDataInit::new();
++    extension_data.insert(TurnSamplingStop::default());
++    let stop = extension_data
++        .get::<TurnSamplingStop>()
++        .expect("sampling stop should be attached");
++    test.codex
++        .start_or_steer_turn(WithTurnExtensionData::new(
++            TurnInputRequest::user_input(vec![UserInput::Text {
++                text: "trigger automatic compaction".into(),
++                text_elements: Vec::new(),
++            }]),
++            extension_data,
++        ))
++        .await?;
++
++    let entered = test.codex_home_path().join("pre_compact_entered");
++    tokio::time::timeout(Duration::from_secs(10), async {
++        while !entered.exists() {
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++    })
++    .await?;
++    stop.request();
++    std::fs::write(test.codex_home_path().join("pre_compact_release"), [])?;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::HookCompleted(event) if event.run.event_name == HookEventName::PreCompact)
++    })
++    .await;
++
++    let started = tokio::time::timeout(Duration::from_secs(1), async {
++        loop {
++            let event = test.codex.next_event().await.expect("next event");
++            if matches!(
++                event.msg,
++                EventMsg::ItemStarted(ItemStartedEvent {
++                    item: TurnItem::ContextCompaction(_),
++                    ..
++                })
++            ) {
++                break;
++            }
++        }
++    })
++    .await;
++    test.codex.submit(Op::Interrupt).await?;
++    wait_for_event(&test.codex, |event| {
++        matches!(event, EventMsg::TurnAborted(_))
++    })
++    .await;
++    assert!(started.is_err(), "stopped turn started compaction");
++    assert_eq!(responses.requests().len(), 1);
++    Ok(())
++}
++
+ #[test_case(false; "token_budget_only")]
+ #[test_case(true; "with_client_developer_retention")]
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
