@@ -73,7 +73,17 @@ jobs:
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet
           sudo apt-get update
-          sudo apt-get install --yes clang cmake pkg-config protobuf-compiler libssl-dev
+          sudo apt-get install --yes --no-install-recommends \
+            apparmor-profiles bubblewrap clang cmake pkg-config protobuf-compiler libssl-dev
+          # Ubuntu supplies a profile for bwrap that keeps its children restricted.
+          if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
+            sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+              /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          fi
+          uname -sr
+          bwrap --version
+          bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
       - name: Install macOS build tools
         if: runner.os == 'macOS'
         run: brew install cmake pkgconf protobuf openssl@3
@@ -87,6 +97,19 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           node packages/agents/scripts/native.mjs package
+      - name: Qualify the Linux worker
+        if: runner.os == 'Linux'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          pnpm test:native \
+            packages/agents/test/native/supervised-worker-example.test.ts \
+            packages/agents/test/native/supervised-worker-cleanup.test.ts \
+            --reporter=verbose
+          pnpm test:native \
+            packages/agents/test/native/local-executor-policy-native.test.ts \
+            -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy' \
+            --reporter=verbose
       - name: Build the macOS WSS test fixture
         if: runner.os == 'macOS'
         working-directory: packages/agents/native

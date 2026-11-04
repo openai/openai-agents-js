@@ -224,6 +224,99 @@ it('preserves the exact opening namespace ceiling across normal updates', async 
   model.assertExhausted();
 });
 
+it('reopens a local profile with a current MCP selection and rejects denied calls before dispatch', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'selected-mcp-local-'));
+  profiles.push(home);
+  const storage = localStorage(join(home, 'profile'));
+  const model = new ModelServer([
+    [
+      call(
+        'lookup',
+        { value: 'original' },
+        { namespace: 'crm', callId: 'first' },
+      ),
+    ],
+    [message('saved')],
+    [
+      call(
+        'lookup',
+        { value: 'current' },
+        { namespace: 'crm', callId: 'second' },
+      ),
+    ],
+    [message('reopened')],
+    [call('lookup', { value: 'denied' }, { namespace: 'crm', callId: 'deny' })],
+  ]);
+  const provider = await providerFor(model);
+  async function agentFor(peer: BorrowedPeer, approvedId: string) {
+    peer.declarations.push(borrowedDeclaration('write'));
+    const tools = await selectMcpTools(
+      { name: 'crm', server: peer },
+      {
+        context: undefined,
+        toolNames: ['lookup'],
+        approval: ({ callId }) => callId === approvedId,
+      },
+    );
+    return new Agent({
+      instructions: 'Use only the selected CRM tools.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [...tools],
+    });
+  }
+
+  const original = new BorrowedPeer();
+  const first = await (await agentFor(original, 'first')).session({ storage });
+  sessions.push(first);
+  const id = first.id;
+  expect((await (await first.submit('Start.')).wait()).finalOutput).toBe(
+    'saved',
+  );
+  await first.close();
+
+  const current = new BorrowedPeer();
+  const second = await (
+    await agentFor(current, 'second')
+  ).session({ storage, resume: id });
+  sessions.push(second);
+  expect(second.id).toBe(id);
+  expect((await (await second.submit('Continue.')).wait()).finalOutput).toBe(
+    'reopened',
+  );
+  const denied = await second.submit('Request approval.');
+  await expect(denied.wait()).rejects.toThrow(
+    'Selected MCP call was not approved',
+  );
+  await second.close();
+
+  for (const request of [model.requests[0], model.requests[2]]) {
+    expect(
+      wireTools(request).filter((entry) => entry.namespace === 'crm'),
+    ).toEqual([
+      {
+        namespace: 'crm',
+        name: 'lookup',
+        parameters: original.declarations[0].inputSchema,
+      },
+    ]);
+  }
+  const history = z.array(jsonObject).parse(model.requests[2].input);
+  const priorResult = history.find(
+    (item) => item.type === 'function_call_output' && item.call_id === 'first',
+  );
+  expect(JSON.stringify(priorResult?.output)).toContain('original');
+  expect(
+    original.callTool.mock.calls.map(([name, args]) => [name, args]),
+  ).toEqual([['lookup', { value: 'original' }]]);
+  expect(
+    current.callTool.mock.calls.map(([name, args]) => [name, args]),
+  ).toEqual([['lookup', { value: 'current' }]]);
+  expect(original.close).not.toHaveBeenCalled();
+  expect(current.close).not.toHaveBeenCalled();
+  model.assertExhausted();
+});
+
 it('composes distinct namespace names with checklist and code-mode builtins', async () => {
   const peer = new BorrowedPeer();
   peer.declarations = ['update_plan', 'exec', 'wait'].map(borrowedDeclaration);
