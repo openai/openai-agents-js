@@ -29,11 +29,13 @@ The worker writes the native thread ID to `snapshot.json` before submitting mode
 
 Pass a supervisor's steering input while the original turn is active. The worker takes the native turn ID from `turn_started` and supplies it to `turn.steerExact`. It saves the resulting receipt in the snapshot. After a turn completes, pass review findings or an answer as the next task. The worker opens the same thread ID and starts a new turn.
 
-The worker checks the structured claim and reads the actual bytes of `draft.md`. It compares their SHA-256 digest with the successful command result from that turn. A missing draft, a missing matching command result, or a question leaves the draft for review. If the worker rejects an invalid draft, it saves `needs_review` before reporting the error. Set an artifact format and review rules that match your product.
+The worker checks the structured claim and reads the actual bytes of `draft.md`. It compares their SHA-256 digest with the result of a successful, standalone `sha256sum draft.md` command in the workspace on that turn. A missing draft, a missing matching command result, or a question leaves the draft for review. If the worker rejects an invalid draft, it saves `needs_review` before reporting the error. Set an artifact format and review rules that match your product.
 
 Call `publishAcceptedDraft` after the worker exits. It checks the accepted digest against the current bytes and writes a separate, content-keyed local file. Repeating the publication of the same bytes returns the same path. Production applications own the publication destination, access checks, and operation key.
 
 ## Reopen after a crash
+
+Wait for the previous process to exit before reopening its worker directory. If startup fails after that process left a `working` snapshot, the replacement saves `needs_attention` before reporting the error.
 
 Keep the local profile and native thread ID in durable application storage. A cold open can raise `LocalRecoveryRequired` when an original invocation has no saved result. Read `calls` for the original IDs, tool name, namespace, and arguments. Read `turns` and `items` for work that reached the profile. An `interrupted` turn has no recorded completion. Treat these fields as private application data.
 
