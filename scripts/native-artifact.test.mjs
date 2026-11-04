@@ -1219,3 +1219,44 @@ test('eligible push candidates still reject foreign artifact checkout ownership'
   f.run.head_repository.id = 2;
   await assert.rejects(f.resolve(), /Foreign artifact source/);
 });
+
+test('native production admits verified finished products and disables all Actions dependency caches', () => {
+  const native = readFileSync(
+    new URL('../.github/workflows/alpha-native-package.yml', import.meta.url),
+    'utf8',
+  );
+  const sdk = readFileSync(
+    new URL('../.github/workflows/alpha-sdk-package.yml', import.meta.url),
+    'utf8',
+  );
+  const actions = [...native.matchAll(/^\s*(?:-\s+)?uses:\s*([^\s#]+)/gm)].map(
+    (match) => match[1].split('@')[0],
+  );
+  const approved = new Set([
+    'actions/checkout',
+    'actions/setup-node',
+    'actions/github-script',
+    'actions/download-artifact',
+    'actions/upload-artifact',
+  ]);
+  assert.ok(
+    actions.length > 0 && actions.every((action) => approved.has(action)),
+    'Native production must not introduce cache actions or package-manager setup',
+  );
+  const nodeSteps = native
+    .split(/(?=^ {6}- )/m)
+    .filter((step) => step.includes('uses: actions/setup-node@'));
+  assert.ok(nodeSteps.length > 0);
+  for (const step of nodeSteps) {
+    assert.match(step, /package-manager-cache: false/);
+    assert.doesNotMatch(step, /^\s+cache:/m);
+  }
+  assert.doesNotMatch(
+    native,
+    /actions\/cache|Cache native build|Clear restored build timings/,
+  );
+  assert.match(native, /native-artifact\.mjs donor/);
+  assert.match(native, /native\.mjs package/);
+  assert.match(native, /name: Upload native build timings/);
+  assert.match(sdk, /cache: pnpm/);
+});

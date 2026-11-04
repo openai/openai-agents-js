@@ -152,26 +152,6 @@ jobs:
         shell: pwsh
         run: choco install protoc --yes --no-progress
 
-      - name: Cache native build inputs and outputs
-        if: steps.reuse.outputs.usable != 'true' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || github.ref == 'refs/heads/main')
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.
-        with:
-          # Keep credentials and Cargo configuration outside the cache.
-          # Preserve verified source timestamps so Cargo can reuse path dependencies.
-          path: |
-            ${{ runner.temp }}/agents-cargo/registry
-            ${{ runner.temp }}/agents-cargo/git
-            ${{ runner.temp }}/agents-target
-            packages/agents/native/.cache/v8
-            packages/agents/native/.upstream/reviewed-codex
-            packages/agents/native/.upstream/reviewed-rust-sdk
-          # Require the same native sources, toolchain, and workflow settings.
-          key: cargo-${{ steps.native.outputs.name }}
-
-      - name: Clear restored build timings
-        if: always() && steps.reuse.outputs.usable != 'true'
-        run: rm -rf "$RUNNER_TEMP/agents-target/cargo-timings" "$RUNNER_TEMP/agents-target/x86_64-pc-windows-msvc/cargo-timings"
-
       - name: Build native products
         if: steps.reuse.outputs.usable != 'true'
         run: |
