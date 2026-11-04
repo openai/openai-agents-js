@@ -605,7 +605,7 @@ it.skipIf(!supported)(
         [
           call(
             'exec_command',
-            { cmd: 'exec /usr/bin/sleep 120', tty: true, yield_time_ms: 1000 },
+            { cmd: 'exec /bin/sleep 120', tty: true, yield_time_ms: 1000 },
             { callId: 'withheld-background' },
           ),
         ],
