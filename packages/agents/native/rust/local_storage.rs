@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
+pub(crate) const CHECKLIST_DIRECTORY: &str = "sdk-checklists";
+
 pub(crate) struct LocalReceiptStore(pub Arc<LocalChecklistStore>);
 
 pub struct LocalChecklistStore {
@@ -363,7 +365,7 @@ impl LocalChecklistStore {
         home: PathBuf,
         graph: Arc<MemoryAgentGraph>,
     ) -> Self {
-        let checklist_directory = home.join("sdk-checklists");
+        let checklist_directory = home.join(CHECKLIST_DIRECTORY);
         let cleanup = checklist_directory.clone();
         let inner = inner.with_thread_data_cleanup(move |ids| {
             let directory = cleanup.clone();

@@ -24,6 +24,7 @@ import {
   NativeAgents,
   NativeProvider,
   StdioMCP,
+  checklist,
   localStorage,
   parseSessionState,
   type SessionState,
@@ -802,6 +803,153 @@ const localStorageOverlap =
   /Keep local session storage outside the executor cwd and writable roots/;
 const runtimeHomeOverlap =
   /Keep the native runtime home outside the executor cwd and writable roots/;
+
+it.skipIf(!supported)(
+  'keeps relocated checklist state outside local grants',
+  { timeout: 45_000 },
+  async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-checklist-alias-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'extra');
+      const storage = localStorage(join(base, 'profile'));
+      await Promise.all([mkdir(cwd), mkdir(extra)]);
+      const plan = [{ step: 'Inspect the workspace', status: 'completed' }];
+      const server = new ModelServer([
+        [call('update_plan', { plan }, { callId: 'seed-checklist' })],
+        [message('Saved the checklist.')],
+        [message('Used a disjoint grant.')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Maintain the checklist.',
+        tools: [checklist()],
+      });
+      const environment = Environment.local({ cwd, tools: ['exec_command'] });
+      let threadId: string;
+      {
+        await using seed = await agent
+          .session({ environment, storage })
+          .catch((error: unknown) => {
+            if (
+              error instanceof Error &&
+              /could not establish the platform sandbox/.test(error.message) &&
+              process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+            ) {
+              context.skip('This host cannot launch a nested platform sandbox');
+            }
+            throw error;
+          });
+        threadId = seed.id;
+        const turn = await seed.submit('Save the checklist.');
+        expect((await turn.wait()).finalOutput).toBe('Saved the checklist.');
+        expect(await seed.checklist()).toMatchObject({ plan });
+      }
+      const directory = join(storage.path, 'sdk-checklists');
+      const relocated = join(base, 'relocated-checklists');
+      await rename(directory, relocated);
+      await symlink(relocated, directory);
+      const backing = join(relocated, `${threadId}.json`);
+      const alias = join(extra, 'linked-checklist');
+      await link(backing, alias);
+      const open = (writableRoots: string[] = []) =>
+        agent.session({
+          environment: Environment.local({
+            cwd,
+            tools: ['exec_command'],
+            writableRoots,
+          }),
+          storage,
+          resume: threadId,
+        });
+      await expect(async () => {
+        await using _session = await open([extra]);
+      }).rejects.toThrow(localStorageOverlap);
+      await expect(async () => {
+        await using _session = await open([relocated]);
+      }).rejects.toThrow(localStorageOverlap);
+      expect(server.requests).toHaveLength(2);
+      await using resumed = await open();
+      expect(await resumed.checklist()).toMatchObject({ plan });
+      await expect(
+        resumed.submit('Do not grant the linked checklist.', {
+          writableRoots: [extra],
+        }),
+      ).rejects.toThrow(localStorageOverlap);
+      expect(server.requests).toHaveLength(2);
+      await rename(alias, join(base, 'disjoint-checklist-link'));
+      const turn = await resumed.submit('Use the disjoint grant.', {
+        writableRoots: [extra],
+      });
+      expect((await turn.wait()).finalOutput).toBe('Used a disjoint grant.');
+      expect(await resumed.checklist()).toMatchObject({ plan });
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(!supported)(
+  'rejects unverifiable directory aliases in the private native runtime home',
+  { timeout: 25_000 },
+  async (context) => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-runtime-alias-'));
+    try {
+      const base = await realpath(temporary);
+      const homes = join(base, 'runtime-homes');
+      const cwd = join(base, 'workspace');
+      await Promise.all([mkdir(homes), mkdir(cwd)]);
+      vi.stubEnv('TMPDIR', homes);
+      const server = new ModelServer([[message('Used a private runtime.')]]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      const environment = Environment.local({ cwd, tools: ['exec_command'] });
+      await using session = await agent
+        .session({ environment })
+        .catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            /could not establish the platform sandbox/.test(error.message) &&
+            process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+          ) {
+            context.skip('This host cannot launch a nested platform sandbox');
+          }
+          throw error;
+        });
+      const home = (await readdir(homes)).find((name) =>
+        name.startsWith('agents-session-'),
+      );
+      if (!home) throw new Error('The session has no private runtime home.');
+      const alias = join(homes, home, 'directory-alias');
+      for (const target of [base, alias]) {
+        await symlink(target, alias);
+        await expect(
+          session.submit('Keep the native runtime private.', {
+            writableRoots: [],
+          }),
+        ).rejects.toThrow(
+          'symbolic links inside the private native runtime home are unsupported',
+        );
+        await rm(alias);
+      }
+      expect(server.requests).toHaveLength(0);
+      const turn = await session.submit('Use the private runtime.');
+      expect((await turn.wait()).finalOutput).toBe('Used a private runtime.');
+      server.assertExhausted();
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
 
 it.skipIf(!supported).for(['sessions', 'dated sessions', 'archives'] as const)(
   'keeps relocated %s outside local grants on open and replacement',

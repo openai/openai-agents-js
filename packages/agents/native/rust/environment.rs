@@ -896,6 +896,7 @@ fn check_local_session_write_roots(
             sqlite,
             "could not resolve local session storage",
             LOCAL_STORAGE_OVERLAP,
+            /*private_runtime_home*/ false,
         )?;
     }
     check_local_protected_path(
@@ -904,6 +905,7 @@ fn check_local_session_write_roots(
         sqlite,
         "could not resolve the native runtime home",
         "Keep the native runtime home outside the executor cwd and writable roots",
+        /*private_runtime_home*/ true,
     )
 }
 
@@ -913,14 +915,17 @@ fn check_local_protected_path(
     sqlite: &SqliteConfig,
     resolve_error: &'static str,
     overlap_error: &'static str,
+    private_runtime_home: bool,
 ) -> Result<()> {
     let resolved = resolve_local_protected_path(roots, path, resolve_error, overlap_error)?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        let mut linked_files = linked_local_protected_files(&resolved).context(resolve_error)?;
+        let mut linked_files =
+            linked_local_protected_files(&resolved, private_runtime_home, resolve_error)?;
         if path == sqlite.home() {
             linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
             linked_files.extend(linked_relocated_rollout_files(roots, &resolved)?);
+            linked_files.extend(linked_relocated_checklist_files(roots, &resolved)?);
         }
         ensure!(
             !roots
@@ -930,7 +935,7 @@ fn check_local_protected_path(
         );
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let _ = (resolved, sqlite);
+    let _ = (resolved, sqlite, private_runtime_home);
     Ok(())
 }
 
@@ -948,13 +953,52 @@ fn resolve_local_rollout_path(roots: &LocalWriteRoots<'_>, path: &Path) -> Resul
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn linked_local_rollout_file(path: PathBuf) -> Result<Option<PathBuf>> {
+    linked_local_regular_file(path).context("could not inspect a native rollout file")
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_local_regular_file(path: PathBuf) -> std::io::Result<Option<PathBuf>> {
     use std::os::unix::fs::MetadataExt;
 
     match path.symlink_metadata() {
         Ok(metadata) => Ok((metadata.is_file() && metadata.nlink() > 1).then_some(path)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).context("could not inspect a native rollout file"),
+        Err(error) => Err(error),
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn linked_relocated_checklist_files(
+    roots: &LocalWriteRoots<'_>,
+    home: &Path,
+) -> Result<Vec<PathBuf>> {
+    let error = "could not inspect native checklist storage";
+    let directory = home.join(crate::local_storage::CHECKLIST_DIRECTORY);
+    let resolve =
+        |path: &Path| resolve_local_protected_path(roots, path, error, LOCAL_STORAGE_OVERLAP);
+    let resolved = resolve(&directory)?;
+    let entries = match std::fs::read_dir(&resolved) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(source).context(error),
+    };
+    let mut linked = Vec::new();
+    for entry in entries {
+        let entry = entry.context(error)?;
+        let name = entry.file_name();
+        let is_checklist = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".json"))
+            .and_then(|id| codex_protocol::ThreadId::from_string(id).ok())
+            .is_some();
+        // The store only uses <thread-id>.json, directly inside this directory.
+        if is_checklist && (resolved != directory || entry.file_type().context(error)?.is_symlink())
+        {
+            let path = resolve(&entry.path())?;
+            linked.extend(linked_local_regular_file(path).context(error)?);
+        }
+    }
+    Ok(linked)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1072,7 +1116,11 @@ fn linked_relocated_sqlite_files(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn linked_local_protected_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+fn linked_local_protected_files(
+    root: &Path,
+    private_runtime_home: bool,
+    resolve_error: &'static str,
+) -> Result<Vec<PathBuf>> {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
 
@@ -1082,17 +1130,23 @@ fn linked_local_protected_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
+            Err(error) => return Err(error).context(resolve_error),
         };
         for entry in entries {
-            let entry = entry?;
+            let entry = entry.context(resolve_error)?;
             // DirEntry::metadata does not follow symlinks. Native state can
             // also disappear during a normal rename or cleanup.
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
                 Err(error) if error.kind() == ErrorKind::NotFound => continue,
-                Err(error) => return Err(error),
+                Err(error) => return Err(error).context(resolve_error),
             };
+            // The SDK creates and owns this temporary directory. Public
+            // LocalStorage profiles instead allow relocations of known paths.
+            ensure!(
+                !private_runtime_home || !metadata.file_type().is_symlink(),
+                "symbolic links inside the private native runtime home are unsupported"
+            );
             if metadata.is_dir() {
                 directories.push(entry.path());
             } else if metadata.is_file() && metadata.nlink() > 1 {
