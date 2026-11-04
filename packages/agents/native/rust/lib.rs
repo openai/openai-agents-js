@@ -2,6 +2,7 @@
 
 #![recursion_limit = "256"]
 
+use napi::bindgen_prelude::Either;
 use napi_derive::napi;
 
 mod application_instructions;
@@ -16,6 +17,7 @@ mod environment;
 mod extensions;
 mod goals;
 mod graph_stop;
+mod local_reconciliation;
 mod local_storage;
 mod mcp_result_control;
 mod mcp_roster;
@@ -249,6 +251,20 @@ impl Engine {
 
     fn current(&self) -> napi::Result<RuntimeOwned<engine::EngineState>> {
         Self::current_owner(&self.inner)
+    }
+
+    async fn start_native_thread(
+        &self,
+        options_json: &str,
+        specs_json: &str,
+    ) -> anyhow::Result<NativeThread> {
+        let inner = self
+            .current()
+            .map_err(|error| anyhow::anyhow!(error.reason))?;
+        let options = config::decode(serde_json::from_str(options_json)?)?;
+        let specs = serde_json::from_str(specs_json)?;
+        let _context_operation = inner.operation(false)?;
+        inner.start_with_tools(options, specs).await
     }
 
     fn current_owner(
@@ -542,21 +558,28 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<NativeThread> {
-        let options_json = options_json.as_str();
-        let specs_json = specs_json.as_str();
+        self.start_native_thread(&options_json, &specs_json)
+            .await
+            .map_err(native_error)
+    }
 
-        let inner = self.current()?;
-        let options = config::decode(serde_json::from_str(options_json).map_err(native_error)?)
-            .map_err(native_error)?;
-        let specs = serde_json::from_str(specs_json).map_err(native_error)?;
-        (async move {
-            let _context_operation = inner.operation(false).map_err(native_error)?;
-            inner
-                .start_with_tools(options, specs)
-                .await
-                .map_err(native_error)
-        })
-        .await
+    #[napi(js_name = "_start_local_resume")]
+    pub async fn start_local_resume(
+        &self,
+        options_json: String,
+        specs_json: String,
+    ) -> napi::Result<Either<NativeThread, String>> {
+        match self.start_native_thread(&options_json, &specs_json).await {
+            Ok(thread) => Ok(Either::A(thread)),
+            Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
+                Ok(hold) => {
+                    let history = usage::history_to_wire(&hold.history).map_err(native_error)?;
+                    let snapshot = serde_json::json!({ "calls": hold.calls, "history": history });
+                    Ok(Either::B(snapshot.to_string()))
+                }
+                Err(error) => Err(native_error(error)),
+            },
+        }
     }
 
     #[napi(js_name = "close")]
