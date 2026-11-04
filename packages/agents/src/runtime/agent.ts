@@ -1,4 +1,5 @@
 import { networkPolicyDigest } from './network-policy';
+import { localRecoveryRequired } from './local-recovery';
 import { assertCheckpointNetworkPolicy } from './state';
 import { assertCheckpointSelections } from './selection-state';
 import { readCheckpointSelections } from './state';
@@ -99,8 +100,10 @@ export async function openSession(
     ...(model === undefined ? {} : { model }),
     ...(environment ? { environment: environmentConfig(environment) } : {}),
   };
+  const { _sdk_reconciled_calls, ...capturedThreadOptions } =
+    setup.threadOptions;
   const threadOptions: ThreadOptions = {
-    ...setup.threadOptions,
+    ...capturedThreadOptions,
     ...(options.localStorage
       ? {}
       : {
@@ -269,6 +272,20 @@ export async function openSession(
       catalog.specsJson,
       freshManual,
     );
+  } else if (threadOptions._sdk_resume_thread_id !== undefined) {
+    const opened = await engine._start_local_resume(
+      encode({
+        ...threadOptions,
+        config: initialConfig,
+        ...(_sdk_reconciled_calls === undefined
+          ? {}
+          : { _sdk_reconciled_calls }),
+      }),
+      catalog.specsJson,
+    );
+    if (typeof opened === 'string')
+      throw localRecoveryRequired(opened, threadOptions._sdk_resume_thread_id);
+    thread = opened;
   } else {
     thread = await engine.start_replaceable_thread(
       encode({ ...threadOptions, config: initialConfig }),
