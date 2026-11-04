@@ -159,7 +159,11 @@
     {
       "path": "0040-join-published-linux-sandbox-shutdown.patch",
       "sha256": "dd5462e2cc5407ac6bd8415302919d69120e612a51dcd121128f5ea0a4f09d46"
+    },
+    {
+      "path": "0041-confirm-darwin-terminal-release.patch",
+      "sha256": "088652777103735ac7aa73f1c121110d790db91c4b6fefdab9a9d6c2d7c7a249"
     }
   ],
-  "result_tree": "84d46645f94a5c6659f2fd09bfda1aa983a2bb5f"
+  "result_tree": "fb9f7b2acd1f4d3d0682c42c3eb33c73cc2e6ea6"
 }
