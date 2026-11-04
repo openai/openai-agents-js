@@ -12,7 +12,7 @@ This guide uses the experimental native API in `@openai/agents` on Node.js 24 wi
 
 ## Choose what the worker can do
 
-Open the session with `agent.session({ environment, storage })`. Create `storage` with `localStorage(path)` and choose both paths in trusted application code. Keep the profile and the application journal outside the executor workspace. Let only one worker write to a conversation at a time.
+Open the session with `agent.session({ environment, storage })`. Create `storage` with `localStorage(path)` and choose both paths in trusted application code. Keep the profile and the application journal outside the executor working directory and every additional writable root. Let only one worker write to a conversation at a time.
 
 Use `Environment.local({ cwd, tools, writableRoots })` for the bundled local executor on Linux or macOS. Choose the tools the worker needs from `exec_command`, `write_stdin`, and `apply_patch`. If the runtime cannot start the platform sandbox, session opening fails. On macOS, the bundled local executor also fails at session opening if the host lacks a per-user `launchd` domain or cannot signal processes by identity. The workspace and extra roots must resolve to existing directories below the executor's filesystem root. `cwd` is always a writable root. The sandbox protects metadata within writable roots and grants no implicit temporary directory.
 
