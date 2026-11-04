@@ -189,6 +189,15 @@ const sidebar = [
         ],
       },
       {
+        label: 'Supervise a native worker',
+        link: '/guides/native-workers',
+        translations: {
+          ja: 'ネイティブワーカーを監督する',
+          zh: '监督原生工作进程',
+          ko: '네이티브 워커 감독',
+        },
+      },
+      {
         label: 'Voice agents',
         translations: {
           ja: '音声エージェント',
