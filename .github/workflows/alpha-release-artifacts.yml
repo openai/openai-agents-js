@@ -44,8 +44,10 @@ jobs:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: '3'
+      # Evaluate eight workers on the 16-core runners; retain three elsewhere.
+      CARGO_BUILD_JOBS: ${{ github.repository == 'openai/openai-agents-js' && (matrix.platform == 'linux-x64' || matrix.platform == 'win32-x64') && '8' || '3' }}
       CARGO_INCREMENTAL: '0'
+      OPENAI_AGENTS_NATIVE_TIMINGS: '1'
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -82,6 +84,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: choco install protoc --yes --no-progress
+
+      - name: Cache native build inputs and outputs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.
+        with:
+          # Keep credentials and Cargo configuration outside the cache.
+          path: |
+            ${{ runner.temp }}/agents-cargo/registry
+            ${{ runner.temp }}/agents-cargo/git
+            ${{ runner.temp }}/agents-target
+            packages/agents/native/.cache/v8
+          # Require the same native sources, toolchain, and workflow settings.
+          key: native-v1-${{ matrix.platform }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('packages/agents/native/CODEX_REVISION', 'packages/agents/native/Cargo.toml', 'packages/agents/native/Cargo.lock', 'packages/agents/native/build.rs', 'packages/agents/native/rust/**', 'packages/agents/native/patches/**', 'packages/agents/native/rmcp-patches/**', 'packages/agents/native/tests/fixtures/exec_server.rs', 'packages/agents/scripts/**', '.github/workflows/alpha-release-artifacts.yml') }}
 
       - name: Build the SDK and native runtime
         run: |
