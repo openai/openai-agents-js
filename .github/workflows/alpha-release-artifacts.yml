@@ -8,6 +8,7 @@ on:
       - '**/*.mdx'
   pull_request:
     branches: [feat/codex-harness]
+  workflow_call:
 
 permissions:
   contents: read
@@ -86,6 +87,14 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           node packages/agents/scripts/native.mjs package
+      - name: Qualify local executor grants on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
+          -t 'joins a detached local child at|joins an interrupted local command|joins a yielded local process|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS'
+          --reporter=verbose
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles

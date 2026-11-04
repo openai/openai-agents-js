@@ -10,6 +10,7 @@ import {
   tool,
   type ToolContext,
 } from '../../../src/index';
+import { nativeDescendantModel } from './native-descendant-model';
 
 const config = JSON.parse(process.argv[2]) as {
   profile: string;
@@ -29,8 +30,7 @@ const provider = new NativeProvider({
 });
 const agent = new Agent<string>({
   instructions: 'Record the requested work using current declarations.',
-  // This pinned catalog entry advertises V2 collaboration to descendants.
-  model: 'gpt-5.6-terra',
+  model: nativeDescendantModel,
   provider,
   programmaticToolCalling: false,
   tools: [

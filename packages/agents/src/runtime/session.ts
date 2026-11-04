@@ -165,7 +165,7 @@ import {
 } from './state';
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
-import { Environment } from './environment';
+import { captureWritableRoots, Environment } from './environment';
 import {
   captureTools,
   toolIdentity,
@@ -264,6 +264,12 @@ export type OneShotOptions = {
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
+  /**
+   * Replace the current extra writable directories when a new root starts.
+   * For a WSS macOS executor, choose the directories when opening the Session.
+   * Change the grant after earlier executor work finishes.
+   */
+  writableRoots?: readonly string[];
   /** Omission uses Session defaults; an empty list selects no tools. */
   tools?: readonly ToolSelector<Context>[];
   /**
@@ -726,6 +732,7 @@ class NativeTurn {
   readonly toolCleanupErrors: unknown[] = [];
   readonly executing = new Set<string>();
   selection?: OperationSelection;
+  writableRoots?: readonly string[];
   preparation?: AbortController;
   id: string | null = null;
   usage: JsonValue | null = null;
@@ -934,6 +941,7 @@ export class Session<OutputT = string, Context = unknown> {
     (run?: NativeTurn, mode?: 'force' | 'graceful') => Promise<void>
   >();
   private childObservationProducer: ChildObservationProducer = { ended: false };
+  private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
   private readonly childCallbacks = new ChildCallbacks();
   private readonly childSelections = new WeakMap<
@@ -2352,7 +2360,15 @@ export class Session<OutputT = string, Context = unknown> {
     const parts = nativeInput(input);
     const output = prepareOutput(outputType);
     const selection = this.captureSelection(options);
-    const run = this.startTurn(parts, true, output, true, selection);
+    const run = this.startTurn(
+      parts,
+      true,
+      output,
+      true,
+      selection,
+      undefined,
+      options?.writableRoots,
+    );
     await afterSubmissionRetirement(run, run.accepted.promise);
     // This root's parser was prepared from the same OutputSpec<Next>.
     return this.#turnFor(run) as Turn<Next>;
@@ -2395,8 +2411,13 @@ export class Session<OutputT = string, Context = unknown> {
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
     const selection = this.captureSelection(options);
+    const writableRoots =
+      options?.writableRoots === undefined
+        ? undefined
+        : captureWritableRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
     run.selection = selection;
+    run.writableRoots = writableRoots;
     this.pendingRoots.push({ run, parts });
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
@@ -2461,6 +2482,8 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const parts = nativeInput(input as UserInput);
     if (ifBusy === 'steer' && this.lifecycle.kind === 'turn') {
+      if (options?.writableRoots !== undefined)
+        throw new TypeError('Writable roots require a new root turn');
       if (options?.tools !== undefined || options?.beforeStep !== undefined)
         throw new TypeError('Operation selection applies only to new roots');
       const run = this.rootRun(this.lifecycle.run);
@@ -2475,6 +2498,8 @@ export class Session<OutputT = string, Context = unknown> {
       this.defaultOutput,
       false,
       selection,
+      undefined,
+      options?.writableRoots,
     );
 
     await afterSubmissionRetirement(run, run.accepted.promise);
@@ -3032,6 +3057,7 @@ export class Session<OutputT = string, Context = unknown> {
     outputOverride = false,
     selection?: OperationSelection,
     callerSignal?: AbortSignal,
+    writableRoots?: readonly string[],
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -3041,7 +3067,12 @@ export class Session<OutputT = string, Context = unknown> {
       !this.canCheckpointManual(output)
     )
       throw new InteractionRequired();
+    const roots =
+      writableRoots === undefined
+        ? undefined
+        : captureWritableRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
+    run.writableRoots = roots;
     submissions.get(run)!.callerSignal =
       callerSignal ?? this.options.selectedModel?.callerSignal;
     run.selection = selection;
@@ -3067,6 +3098,9 @@ export class Session<OutputT = string, Context = unknown> {
           }
         : {}),
       mode: 'start_if_idle',
+      ...(run.writableRoots === undefined
+        ? {}
+        : { writable_roots: run.writableRoots }),
       input: output.prompt
         ? [...parts, { type: 'text', text: output.prompt }]
         : parts,
@@ -3149,6 +3183,7 @@ export class Session<OutputT = string, Context = unknown> {
               new TurnNotSubmitted(accepted.reason),
             );
           run.id = accepted.turn_id;
+          this.changedExecutorRoots ||= run.writableRoots !== undefined;
           this.#turnFor(run);
           this.observations.append({
             type: 'turn_started',
@@ -6897,11 +6932,16 @@ export class Session<OutputT = string, Context = unknown> {
         this.codeModeEnabled,
         this.mcpBindings,
       );
+      // The candidate owns the effective Environment, including changes
+      // accepted since the original opening declaration.
+      const { environment: _openingEnvironment, ...runtime } =
+        this.threadOptions.runtime ?? {};
       const options: ThreadOptions = {
         ...this.threadOptions,
         instructions: current.instructions,
         _sdk_instruction_files: current.instruction_files,
         config: { ...this.threadOptions.config, mcp_servers: servers },
+        runtime,
       };
       beforeRetirement();
       owner.creation = owner.change.createCandidateEngine(
@@ -7171,12 +7211,13 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Deferred start requires an original root request');
     const check = () => {
       if (
+        this.changedExecutorRoots ||
         this.catalog !== this.openingCatalog ||
         this.#native._application_instructions() !==
           this.threadOptions.instructions
       )
         throw new TypeError(
-          'Changed session tools or instructions require explicit preparation and restore',
+          'Changed session tools, instructions or writable roots require explicit preparation and restore',
         );
     };
     check();
