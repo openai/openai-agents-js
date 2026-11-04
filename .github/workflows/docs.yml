@@ -16,7 +16,8 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Fork-owned repositories retain access to standard GitHub-hosted runners.
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
     timeout-minutes: 15
     steps:
       - name: Checkout your repository using git

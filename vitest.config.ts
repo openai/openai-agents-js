@@ -120,6 +120,7 @@ function createProjects(reviewTestProfile: boolean) {
           'examples/tools/apply-patch.test.ts',
           'examples/tools/computer-use-hitl.test.ts',
           'examples/live/**/*.test.{ts,mjs}',
+          'examples/realtime-next/src/app/server/backendAgent.action.test.ts',
         ],
       },
     },
@@ -135,6 +136,20 @@ function createProjects(reviewTestProfile: boolean) {
       test: {
         ...baseTestConfig,
         name: 'ai-sdk-ui-example',
+        include: ['test/**/*.test.ts'],
+      },
+    },
+    {
+      root: resolve(rootDir, 'examples/nextjs'),
+      resolve: {
+        alias: {
+          ...testAliases,
+          '@': resolve(rootDir, 'examples/nextjs/src'),
+        },
+      },
+      test: {
+        ...baseTestConfig,
+        name: 'nextjs-example',
         include: ['test/**/*.test.ts'],
       },
     },

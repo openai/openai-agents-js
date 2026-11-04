@@ -203,7 +203,11 @@
     {
       "path": "0051-stop-token-budget-auto-compaction.patch",
       "sha256": "f06a855f695a3514361a1044a7c9c31099cb548d19f81845845314ffd0ae5537"
+    },
+    {
+      "path": "0052-scan-deep-helper-hard-links.patch",
+      "sha256": "dbdc0621cb4011fab3ca7ddd6812193c53c6b49851ddb4b24fdadb0cc0d93223"
     }
   ],
-  "result_tree": "9b05f6f1d78afe7267b68d94c9d5481394652047"
+  "result_tree": "e5f70961bc6059244bb9a6b62a8c7194a1689e2b"
 }
