@@ -21,6 +21,7 @@ const script = fileURLToPath(
 );
 const sandboxRequired = process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX === '1';
 const sandboxTest = it.skipIf(process.platform !== 'linux' && !sandboxRequired);
+const recoveryTestTimeoutMs = 120_000;
 
 function launch(
   options: object,
@@ -150,14 +151,14 @@ sandboxTest(
         directory: join(directory, 'alice'),
         modelUrl: await modelUrl(alice),
         reportsUrl: peer.url,
-        reportsToken: peer.issue('alice').token,
+        reportsToken: peer.issue('alice', recoveryTestTimeoutMs).token,
         task: 'Draft a release note.',
       };
       const bobConfig = {
         directory: join(directory, 'bob'),
         modelUrl: await modelUrl(bob),
         reportsUrl: peer.url,
-        reportsToken: peer.issue('bob').token,
+        reportsToken: peer.issue('bob', recoveryTestTimeoutMs).token,
         task: 'Ask if you need the date.',
       };
       function start(config: object, startupContext?: TestContext) {
@@ -254,7 +255,7 @@ sandboxTest(
       await rm(directory, { recursive: true, force: true });
     }
   },
-  120_000,
+  recoveryTestTimeoutMs,
 );
 
 sandboxTest(
