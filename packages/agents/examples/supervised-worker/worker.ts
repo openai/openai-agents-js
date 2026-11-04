@@ -9,7 +9,7 @@ import {
   rename,
   rm,
 } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,6 +25,8 @@ import {
   type UncertainCall,
 } from '@openai/agents';
 import { z } from 'zod';
+
+const verifyDraftCommand = 'sha256sum draft.md';
 
 const claim = z.strictObject({
   summary: z.string().min(1).max(512),
@@ -69,7 +71,7 @@ const snapshotSchema = z.strictObject({
 export type WorkerSnapshot = z.infer<typeof snapshotSchema>;
 
 type WorkerOptions = {
-  /** Use a different private directory for each worker. */
+  /** Use a private directory. Admit only one worker at a time and join it before reuse. */
   directory: string;
   provider: NativeProviderOptions & { apiKey: string };
   model: string;
@@ -210,69 +212,92 @@ export async function superviseArtifact(options: WorkerOptions) {
     }
     throw error;
   };
-  await mkdir(path.workspace, { recursive: true, mode: 0o700 });
-  const workspace = await realpath(path.workspace);
   const previous = await readWorkerSnapshot(directory);
   const startup = performance.now();
   const opening = AbortSignal.timeout(options.startupMs ?? 30_000);
-  // The caller owns the MCP client and connects it with a bounded transport.
-  // Approve only the explicitly selected report tool, which records a report.
-  const tools = await selectMcpTools(reports, {
-    context: undefined,
-    toolNames: ['report'],
-    approval: ({ toolName }) => toolName === 'report',
-    signal: opening,
-  });
-  const environment = Environment.local({
-    cwd: workspace,
-    tools: ['exec_command'],
-    writableRoots: [],
-  });
-  await using provider = new NativeProvider(options.provider);
-  const agent = new Agent({
-    provider,
-    model: options.model,
-    tools,
-    outputType: claim,
-    instructions:
-      'Use the selected report tool to prepare a synthetic release note. ' +
-      'Use exec_command to save draft.md in the workspace. Start the file with "# Release note". ' +
-      'Run sha256sum draft.md after saving so the application can check the exact bytes. ' +
-      'If you need information, return it in question. Return a brief summary. ' +
-      'The application reviews and publishes the draft.',
-  });
-  const config = {
-    storage: path.profile,
-    ...(previous === undefined ? {} : { resume: previous.threadId }),
-    environment,
-    projectGuidance: false,
-    signal: opening,
+  const recordStartupFailure = async (error: unknown): Promise<never> => {
+    // Admission guarantees the previous worker has exited.
+    if (previous?.state === 'working') {
+      return saveStatusAndThrow(
+        {
+          ...previous,
+          state: 'needs_attention',
+          attention:
+            opening.aborted && error === opening.reason
+              ? 'deadline'
+              : 'interrupted',
+        },
+        error,
+      );
+    }
+    throw error;
   };
+  const prepare = async () => {
+    await mkdir(path.workspace, { recursive: true, mode: 0o700 });
+    const workspace = await realpath(path.workspace);
+    // The caller owns the MCP client and connects it with a bounded transport.
+    // Approve only the explicitly selected report tool, which records a report.
+    const tools = await selectMcpTools(reports, {
+      context: undefined,
+      toolNames: ['report'],
+      approval: ({ toolName }) => toolName === 'report',
+      signal: opening,
+    });
+    const environment = Environment.local({
+      cwd: workspace,
+      tools: ['exec_command'],
+      writableRoots: [],
+    });
+    return {
+      workspace,
+      tools,
+      environment,
+      provider: new NativeProvider(options.provider),
+    };
+  };
+  const {
+    workspace,
+    tools,
+    environment,
+    provider: ownedProvider,
+  } = await prepare().catch(recordStartupFailure);
+  await using provider = ownedProvider;
   const openSession = async () => {
+    const agent = new Agent({
+      provider,
+      model: options.model,
+      tools,
+      outputType: claim,
+      instructions:
+        'Use the selected report tool to prepare a synthetic release note. ' +
+        'Use exec_command to save draft.md in the workspace. Start the file with "# Release note". ' +
+        `Run ${verifyDraftCommand} as a standalone exec_command without a terminal after saving. ` +
+        'If you need information, return it in question. Return a brief summary. ' +
+        'The application reviews and publishes the draft.',
+    });
+    const config = {
+      storage: path.profile,
+      ...(previous === undefined ? {} : { resume: previous.threadId }),
+      environment,
+      projectGuidance: false,
+      signal: opening,
+    };
     try {
       return await agent.session(config);
     } catch (error) {
-      if (!(error instanceof LocalRecoveryRequired)) throw error;
-      try {
-        if (!options.reconcile) throw error;
-        const receipts: ReconciledCall[] = [];
-        for (const call of error.calls) {
-          opening.throwIfAborted();
-          const receipt = await options.reconcile(call, opening);
-          if (!receipt) throw error;
-          receipts.push(receipt);
-        }
-        return await agent.session({ ...config, reconciledCalls: receipts });
-      } catch (recoveryError) {
-        if (previous?.state !== 'working') throw recoveryError;
-        return await saveStatusAndThrow(
-          { ...previous, state: 'needs_attention', attention: 'interrupted' },
-          recoveryError,
-        );
+      if (!(error instanceof LocalRecoveryRequired) || !options.reconcile)
+        throw error;
+      const receipts: ReconciledCall[] = [];
+      for (const call of error.calls) {
+        opening.throwIfAborted();
+        const receipt = await options.reconcile(call, opening);
+        if (!receipt) throw error;
+        receipts.push(receipt);
       }
+      return agent.session({ ...config, reconciledCalls: receipts });
     }
   };
-  await using session = await openSession();
+  await using session = await openSession().catch(recordStartupFailure);
   const startupMs = performance.now() - startup;
   const started: WorkerSnapshot = { threadId: session.id, state: 'working' };
   await atomicWrite(path.snapshot, JSON.stringify(started), true);
@@ -391,8 +416,11 @@ export async function superviseArtifact(options: WorkerOptions) {
           (item.cwd?.startsWith('file:')
             ? fileURLToPath(item.cwd)
             : item.cwd) === workspace &&
-          item.command.includes('sha256sum draft.md') &&
-          item.output?.includes(sha256 + '  draft.md')
+          item.argv?.length === 3 &&
+          ['bash', 'sh', 'zsh'].includes(basename(item.argv[0])) &&
+          item.argv[1] === '-c' &&
+          item.argv[2] === verifyDraftCommand &&
+          item.output === sha256 + '  draft.md\n'
         )
           evidence = item.id;
       }
