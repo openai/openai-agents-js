@@ -2,8 +2,8 @@
 use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, ThreadManager};
 use codex_extension_api::{
-    ContextContributor, ExtensionData, ExtensionFuture, TurnLifecycleContributor, TurnStartInput,
-    TurnSamplingStop, TurnStartPhase, WorldStateContributionInput, WorldStateSectionContribution,
+    ContextContributor, ExtensionData, ExtensionFuture, TurnLifecycleContributor, TurnSamplingStop,
+    TurnStartInput, TurnStartPhase, WorldStateContributionInput, WorldStateSectionContribution,
 };
 use codex_protocol::protocol::Op;
 use std::sync::Weak;

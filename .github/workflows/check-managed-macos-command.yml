@@ -17,8 +17,8 @@ jobs:
     env:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: darwin-arm64
-      QUALIFIED_SDK_COMMIT: 4dc9c03355cd7453ce3b8f85d10a64b6f261de22
-      QUALIFIED_SDK_TREE: aae0735c823654ee9a2598a0780a99bc23467b1c
+      QUALIFIED_SDK_COMMIT: ed30ff45fd2cdb0ff0f4dc487bfcd741db5e2d4b
+      QUALIFIED_SDK_TREE: 1bf6769afa875ce1455f06d759fa67e48204a196
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: '3'
       CARGO_INCREMENTAL: '0'
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 4dc9c03355cd7453ce3b8f85d10a64b6f261de22
+          ref: ed30ff45fd2cdb0ff0f4dc487bfcd741db5e2d4b
           persist-credentials: false
       - name: Check exact source
         run: |
@@ -68,6 +68,17 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           node packages/agents/scripts/native.mjs package
+      - name: Build the macOS WSS test fixture
+        if: runner.os == 'macOS'
+        working-directory: packages/agents/native
+        run: |
+          # Reuse the verified V8 files and target from native.mjs package.
+          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
+          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
+          cargo build --locked --release --example exec-server-fixture
+          fixture="$CARGO_TARGET_DIR/release/examples/exec-server-fixture"
+          test -x "$fixture"
+          echo "CODEX_EXEC_SERVER_TEST_BINARY=$fixture" >> "$GITHUB_ENV"
       - name: Save the Rust downloads
         if: ${{ !cancelled() && steps.rust-downloads.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -98,6 +109,177 @@ jobs:
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles
         run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
+      - name: Verify launchd denial from the installed npm package
+        run: |
+          cat > "$RUNNER_TEMP/js-install.mjs" <<'INSTALL'
+          import assert from "node:assert/strict";
+          import { execFileSync } from "node:child_process";
+          import { cpSync, readFileSync, realpathSync } from "node:fs";
+          import { join, sep } from "node:path";
+          import { pathToFileURL } from "node:url";
+
+          const checkout = process.argv[2];
+          const { hashes, verifyArtifactDirectory } = await import(
+            pathToFileURL(join(checkout, "scripts/verify-alpha-package.mjs"))
+          );
+          const { verifyNativeReceipt, verifyStarterLock } = await import(
+            pathToFileURL(join(checkout, "scripts/alpha-package.mjs"))
+          );
+          const { ARTIFACT_DIRECTORY, PRODUCER_SDK, RECEIPT_SOURCE, RUNNER_TEMP } =
+            process.env;
+          assert.equal(process.platform + "-" + process.arch, "darwin-arm64");
+          const build = await verifyArtifactDirectory(ARTIFACT_DIRECTORY);
+          assert.equal(build.sourceCommit, PRODUCER_SDK);
+          const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
+          for (const profile of ["starter", "app"]) {
+            const installed = readJson(
+              join(ARTIFACT_DIRECTORY, `installed-${profile}-darwin-arm64.json`),
+            );
+            assert.equal(installed.profile, profile);
+            assert(installed.verified.includes("native-receipt"));
+            for (const field of Object.keys(build))
+              assert.deepEqual(installed[field], build[field]);
+          }
+
+          execFileSync("/usr/bin/tar", [
+            "-xzf",
+            join(ARTIFACT_DIRECTORY, build.starter.archive),
+            "-C",
+            RUNNER_TEMP,
+          ]);
+          const consumer = join(RUNNER_TEMP, "agents-starter");
+          const manifest = readJson(join(consumer, "package.json"));
+          for (const [name, record] of Object.entries(build.packages)) {
+            assert.equal(
+              manifest.dependencies[name],
+              `file:vendor/agents/${record.archive}`,
+            );
+            assert.equal(
+              (await hashes(join(consumer, "vendor/agents", record.archive))).sha256,
+              record.sha256,
+            );
+          }
+          verifyStarterLock(
+            readJson(join(consumer, "package-lock.json")),
+            build.packages,
+          );
+          const npm = join(process.execPath, "../../lib/node_modules/npm/bin/npm-cli.js");
+          execFileSync(process.execPath, [npm, "ci", "--ignore-scripts"], {
+            cwd: consumer,
+            env: { ...process.env, NODE_PATH: "", PATH: "" },
+            stdio: "inherit",
+          });
+
+          const installed = realpathSync(join(consumer, "node_modules/@openai/agents"));
+          assert(installed.startsWith(realpathSync(consumer) + sep));
+          const checked = join(RECEIPT_SOURCE, "packages/agents");
+          const nativeReceipt = readJson(join(installed, "native/build-receipt.json"));
+          const inputs = execFileSync(
+            "git",
+            [
+              "ls-files",
+              "--",
+              "native/CODEX_REVISION",
+              "native/Cargo.toml",
+              "native/Cargo.lock",
+              "native/build.rs",
+              "native/tests/fixtures/exec_server.rs",
+              "native/rust",
+              "native/patches",
+              "native/rmcp-patches",
+              "scripts",
+            ],
+            { cwd: join(checkout, "packages/agents"), encoding: "utf8" },
+          )
+            .trim()
+            .split("\n");
+          assert.deepEqual(Object.keys(nativeReceipt.inputs).sort(), inputs.sort());
+          cpSync(
+            join(installed, "native/build-receipt.json"),
+            join(checked, "native/build-receipt.json"),
+          );
+          cpSync(
+            join(installed, "native/codex.node"),
+            join(checked, "native/codex.node"),
+          );
+          cpSync(join(installed, "bin"), join(checked, "bin"), { recursive: true });
+          const { revision } = await verifyNativeReceipt(RECEIPT_SOURCE, build.platform);
+          assert.equal(revision, build.codexRevision);
+
+          execFileSync(
+            process.execPath,
+            [
+              "--input-type=module",
+              "-e",
+              `
+            import assert from 'node:assert/strict';
+            import { createRequire } from 'node:module';
+            import { fileURLToPath } from 'node:url';
+            const root = process.env.INSTALLED_AGENT_ROOT;
+            const sdk = fileURLToPath(import.meta.resolve('@openai/agents'));
+            assert(sdk.startsWith(root + '/dist/'), sdk);
+            const { Environment } = await import('@openai/agents');
+            assert.equal(typeof Environment.local, 'function');
+            const require = createRequire(import.meta.url);
+            const native = root + '/native/codex.node';
+            assert.equal(typeof require(native).create_engine, 'function');
+            console.log('Loaded installed SDK and native addon', sdk, native);
+          `,
+            ],
+            {
+              cwd: consumer,
+              env: { ...process.env, NODE_PATH: "", INSTALLED_AGENT_ROOT: installed },
+              stdio: "inherit",
+            },
+          );
+          console.log(
+            "Verified native source, products and installed package",
+            build.sourceCommit,
+            revision,
+          );
+          INSTALL
+          TEST_FILE=packages/agents/test/native/local-executor-policy-native.test.ts
+          set -euo pipefail
+          checkout="$PWD"
+          artifacts="$RUNNER_TEMP/agents-alpha"
+          stage="$RUNNER_TEMP/native-receipt-source"
+          mkdir "$stage"
+          git archive HEAD packages/agents | tar -x -C "$stage"
+
+          export ARTIFACT_DIRECTORY="$artifacts" RECEIPT_SOURCE="$stage"
+          export PRODUCER_SDK="$QUALIFIED_SDK_COMMIT"
+          node "$RUNNER_TEMP/js-install.mjs" "$checkout"
+          consumer="$RUNNER_TEMP/agents-starter"
+          test_dir="$consumer/test/native"
+          mkdir -p "$test_dir"
+          cp "$TEST_FILE" "$test_dir/"
+          cp -R packages/agents/test/native/fixtures "$test_dir/"
+          ln -s "$checkout/node_modules/vitest" "$consumer/node_modules/vitest"
+          printf 'export default {};\n' > "$consumer/vitest.config.mjs"
+          cd "$consumer"
+          unset NODE_PATH OPENAI_API_KEY
+          export OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1
+          node "$checkout/node_modules/vitest/vitest.mjs" run \
+            --pool=forks --maxWorkers=1 --root "$consumer" --config "$consumer/vitest.config.mjs" \
+            "test/native/${TEST_FILE##*/}" -t '^blocks delegation from a local command to launchd$' \
+            --reporter=verbose --reporter=json --outputFile.json="$RUNNER_TEMP/launchd.json"
+
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const report = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/launchd.json', 'utf8'));
+          const cases = report.testResults.flatMap(({ assertionResults }) =>
+            assertionResults.filter(({ status }) => status === 'passed')
+          );
+          assert.equal(cases.length, 1);
+          assert.equal(cases[0].fullName, 'blocks delegation from a local command to launchd');
+          const native = JSON.parse(readFileSync('node_modules/@openai/agents/native/build-receipt.json', 'utf8'));
+          const evidence = { sourceCommit: process.env.PRODUCER_SDK, platform: process.platform + '-' + process.arch,
+            test: cases[0].fullName, status: cases[0].status, products: native.products };
+          writeFileSync(process.env.ARTIFACT_DIRECTORY + '/acceptance-launchd-darwin-arm64.json',
+            JSON.stringify(evidence, null, 2) + '\n');
+          console.log('Verified installed npm regression', cases[0].fullName);
+          JS
       - name: Check the installed package evidence
         run: |
           node --input-type=module <<'JS'
@@ -126,6 +308,7 @@ jobs:
             ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
             ${{ runner.temp }}/agents-alpha/build-*.json
             ${{ runner.temp }}/agents-alpha/installed-*.json
+            ${{ runner.temp }}/agents-alpha/acceptance-launchd-darwin-arm64.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

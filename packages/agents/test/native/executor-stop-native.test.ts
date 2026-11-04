@@ -743,6 +743,7 @@ it.each(['cancel', 'close'] as const)(
       const turn = await f.session.submit('Run the command.');
       const result = observe(turn.wait());
       let cancelling: ReturnType<typeof observe<void>> | undefined;
+      let cancelled: Awaited<typeof cancelling>;
       try {
         await bounded(
           transformEntered.promise,
@@ -766,11 +767,10 @@ it.each(['cancel', 'close'] as const)(
       } finally {
         releaseTransform.resolve();
         releaseSettle.resolve();
-        if (cancelling) {
-          const cancelled = await bounded(cancelling, 'native cancellation');
-          if (!cancelled.ok) throw cancelled.error;
-        }
+        if (cancelling)
+          cancelled = await bounded(cancelling, 'native cancellation');
       }
+      if (cancelled && !cancelled.ok) throw cancelled.error;
       const interrupted = await bounded(result, 'original turn result');
       expect(interrupted.ok).toBe(false);
       if (interrupted.ok)

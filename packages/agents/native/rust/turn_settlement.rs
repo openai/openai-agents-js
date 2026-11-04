@@ -549,7 +549,9 @@ impl TurnLifecycleContributor for Contributor {
                 .thread_store
                 .get::<crate::native_interception::Control>();
             if let Some(owner) = &owner {
-                input.turn_store.insert(owner.graph().close_sampling.clone());
+                input
+                    .turn_store
+                    .insert(owner.graph().close_sampling.clone());
             }
             let graph = owner
                 .as_ref()
