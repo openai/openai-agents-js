@@ -2,10 +2,7 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness]
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.mdx'
+    branches: ['**']
   pull_request:
     branches: [feat/codex-harness]
   workflow_call:
@@ -13,11 +10,50 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 concurrency:
-  group: alpha-release-artifacts-${{ github.ref }}
+  group: alpha-release-artifacts-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  package:
+  native_linux:
+    name: Route Linux native publication
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      ((github.event_name == 'push' && github.event.deleted != true) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
     uses: ./.github/workflows/alpha-native-package.yml
+    with:
+      platform: linux-x64
+      runner: ubuntu-24.04
+  native_macos:
+    name: Route macOS native publication
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      ((github.event_name == 'push' && github.event.deleted != true) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+    uses: ./.github/workflows/alpha-native-package.yml
+    with:
+      platform: darwin-arm64
+      runner: macos-15
+  native_windows:
+    name: Route Windows native publication
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      ((github.event_name == 'push' && github.event.deleted != true) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+    uses: ./.github/workflows/alpha-native-package.yml
+    with:
+      platform: win32-x64
+      runner: windows-2025
+  sdk:
+    name: Route SDK qualification
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      ((github.event_name == 'push' && github.event.deleted != true) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+    needs: [native_linux, native_macos, native_windows]
+    uses: ./.github/workflows/alpha-sdk-package.yml
+    with:
+      snapshots: ${{ toJSON(needs) }}

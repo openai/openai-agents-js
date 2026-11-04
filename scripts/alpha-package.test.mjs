@@ -1,3 +1,4 @@
+import process from 'node:process';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
@@ -19,7 +20,11 @@ import {
   verifyStarterLock,
 } from './alpha-package.mjs';
 
-import { nativeInputs } from '../packages/agents/scripts/native-receipt.mjs';
+import {
+  nativeInputs,
+  nativeHosts,
+  nativeHelpers,
+} from '../packages/agents/scripts/native-receipt.mjs';
 
 const version = '0.22.0-alpha.1';
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -116,16 +121,15 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
   const root = await mkdtemp(join(tmpdir(), 'agents-alpha-receipt-'));
   const packageRoot = join(root, 'packages/agents');
   const revision = 'a'.repeat(40);
+  const platform = `${process.platform}-${process.arch}`;
   const files = {
     'native/CODEX_REVISION': revision,
     'native/codex.node': 'addon',
-    'bin/codex-sdk-runtime': 'runtime',
-    'bin/codex-code-mode-host': 'code',
-    'bin/codex-linux-sandbox': 'sandbox',
-    'bin/codex-execve-wrapper': 'wrapper',
+    ...Object.fromEntries(nativeHelpers(platform).map((name) => [name, name])),
   };
   const series = JSON.stringify({ patches: [], result_tree: 'c'.repeat(40) });
   const nativeFiles = {
+    'native/index.js': 'native loader',
     'native/Cargo.toml': `rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "${revision}", version = "=3.3.0" }\n`,
     'native/Cargo.lock': 'lock',
     'native/build.rs': 'build',
@@ -148,7 +152,7 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
   const receipt = {
     format: 'reviewed-native-v1',
     release: true,
-    host: 'x86_64-unknown-linux-gnu',
+    host: nativeHosts[platform],
     sources: { codex: identity, 'rust-sdk': identity },
     inputs: { 'native/CODEX_REVISION': digest(revision) },
     products: Object.fromEntries(
@@ -167,7 +171,7 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
     receipt.inputs = nativeInputs(packageRoot);
     await writeFile(receiptPath, JSON.stringify(receipt));
     assert.equal(
-      (await verifyNativeReceipt(root, 'linux-x64')).revision,
+      (await verifyNativeReceipt(root, platform)).revision,
       revision,
     );
     await writeFile(
@@ -175,7 +179,7 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
       JSON.stringify({ ...receipt, release: false }),
     );
     await assert.rejects(
-      verifyNativeReceipt(root, 'linux-x64'),
+      verifyNativeReceipt(root, platform),
       /release native build/,
     );
     await writeFile(
@@ -189,12 +193,12 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
       }),
     );
     await assert.rejects(
-      verifyNativeReceipt(root, 'linux-x64'),
+      verifyNativeReceipt(root, platform),
       /product inventory/,
     );
     await writeFile(receiptPath, JSON.stringify(receipt));
     await writeFile(join(packageRoot, 'native/codex.node'), 'tampered');
-    await assert.rejects(verifyNativeReceipt(root, 'linux-x64'), /changed/);
+    await assert.rejects(verifyNativeReceipt(root, platform), /changed/);
     assert.equal(JSON.parse(await readFile(receiptPath, 'utf8')).release, true);
   } finally {
     await rm(root, { recursive: true, force: true });

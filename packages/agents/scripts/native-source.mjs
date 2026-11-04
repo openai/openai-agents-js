@@ -33,6 +33,7 @@ const gitEnvironment = () => ({
   GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
   GIT_ATTR_NOSYSTEM: '1',
   GIT_NO_REPLACE_OBJECTS: '1',
+  GIT_TERMINAL_PROMPT: '0',
 });
 export function git(args, options = {}) {
   const result = spawnSync('git', ['--no-replace-objects', ...args], {
@@ -118,8 +119,38 @@ export function sourceRepository(upstream, { source, name, url, revision }) {
       ],
       { env: gitEnvironment(), stdio: 'ignore' },
     );
-    if (present.status !== 0)
-      git(['-C', repository, 'fetch', '--depth=1', url, revision]);
+    if (present.status !== 0) {
+      console.log(
+        `Fetching pinned ${name} revision ${revision} (5 minute limit)`,
+      );
+      try {
+        git(
+          [
+            '-C',
+            repository,
+            '-c',
+            'http.lowSpeedLimit=1024',
+            '-c',
+            'http.lowSpeedTime=120',
+            'fetch',
+            '--progress',
+            '--depth=1',
+            url,
+            revision,
+          ],
+          {
+            timeout: 5 * 60 * 1000,
+            killSignal: 'SIGKILL',
+            stdio: ['ignore', 'inherit', 'inherit'],
+          },
+        );
+      } catch (cause) {
+        throw new Error(
+          `Fetching pinned ${name} revision ${revision} failed or exceeded the 5 minute deadline`,
+          { cause },
+        );
+      }
+    }
   }
   const commit = git(['-C', repository, 'cat-file', 'commit', revision]);
   if (digest('commit', commit) !== revision)

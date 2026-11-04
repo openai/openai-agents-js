@@ -39,6 +39,7 @@ function emptySeries(native: string, source: string, revision: string): void {
     join(native, 'Cargo.toml'),
     `rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "${revision}", version = "=3.3.0" }\n`,
   );
+  writeFileSync(join(native, 'index.js'), '// Fixture native loader.\n');
   writeFileSync(join(native, 'build.rs'), 'fn main() {}\n');
   mkdirSync(join(native, 'rust'));
   writeFileSync(join(native, 'rust/lib.rs'), '// Build input.\n');

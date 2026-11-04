@@ -1,41 +1,53 @@
-name: Alpha native package
+name: Alpha native publication
 
 on:
   workflow_call:
+    inputs:
+      platform:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+    outputs:
+      artifact_id:
+        value: ${{ jobs.native.outputs.artifact_id }}
+      artifact_digest:
+        value: ${{ jobs.native.outputs.artifact_digest }}
+      artifact_name:
+        value: ${{ jobs.native.outputs.artifact_name }}
+      provenance:
+        value: ${{ jobs.native.outputs.provenance }}
 
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 jobs:
-  package:
-    name: Package and test (${{ matrix.platform }})
+  native:
+    name: Native publication (${{ inputs.platform }})
     if: >-
       github.repository == 'openai/openai-agents-js' &&
-      (github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository)
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux-x64
-            runner: ubuntu-24.04
-          - platform: darwin-arm64
-            runner: macos-15
-          - platform: win32-x64
-            runner: windows-2025
+      ((github.event_name == 'push' && github.event.deleted != true) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+    outputs:
+      artifact_id: ${{ steps.publish.outputs['artifact-id'] }}
+      artifact_digest: ${{ steps.publish.outputs['artifact-digest'] }}
+      artifact_name: ${{ steps.native.outputs.name }}
+      provenance: ${{ steps.scope.outputs.provenance }}
     # Keep macOS on its ARM runner and preserve standard runners for fork-owned repositories.
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && inputs.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(inputs.runner)) }}
     timeout-minutes: 180
     defaults:
       run:
         shell: bash
     env:
       ALPHA_VERSION: 0.22.0-alpha.1
-      EXPECTED_PLATFORM: ${{ matrix.platform }}
+      EXPECTED_PLATFORM: ${{ inputs.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
       # Evaluate eight workers on the 16-core runners; retain three elsewhere.
-      CARGO_BUILD_JOBS: ${{ github.repository == 'openai/openai-agents-js' && (matrix.platform == 'linux-x64' || matrix.platform == 'win32-x64') && '8' || '3' }}
+      CARGO_BUILD_JOBS: ${{ github.repository == 'openai/openai-agents-js' && (inputs.platform == 'linux-x64' || inputs.platform == 'win32-x64') && '8' || '3' }}
       CARGO_INCREMENTAL: '0'
       OPENAI_AGENTS_NATIVE_TIMINGS: '1'
 
@@ -44,17 +56,26 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
-        with:
-          run_install: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Check runner platform
         run: |
           node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+
+      - name: Capture native snapshot scope
+        id: scope
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
+        with:
+          script: |
+            const { pathToFileURL } = require('node:url');
+            const { join } = require('node:path');
+            const { captureNativeScope } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'packages/agents/scripts/native-scope.mjs')).href);
+            const scope = await captureNativeScope({ github, context, attempt: Number(process.env.GITHUB_RUN_ATTEMPT) });
+            core.setOutput('provenance', JSON.stringify(scope));
 
       - name: Identify the executed workflow
         id: workflow
@@ -66,7 +87,7 @@ jobs:
             const { executedNativeRecipe } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'packages/agents/scripts/native-donor.mjs')).href);
             const { data: run } = await github.rest.actions.getWorkflowRun({ ...context.repo, run_id: context.runId });
             const recipe = await executedNativeRecipe({ github, repo: context.repo, run,
-              pullRequestNumber: context.payload.pull_request?.number });
+              workflowSha: process.env.GITHUB_WORKFLOW_SHA });
             core.setOutput('sha', recipe);
 
       - name: Identify native inputs
@@ -80,6 +101,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3
         env:
           NATIVE_ARTIFACT_NAME: ${{ steps.native.outputs.name }}
+          NATIVE_PROVENANCE: ${{ steps.scope.outputs.provenance }}
           NATIVE_WORKFLOW_BLOB: ${{ steps.workflow.outputs.sha }}
         with:
           script: |
@@ -89,9 +111,10 @@ jobs:
             const donor = await resolveNativeDonor({ github, context,
               name: process.env.NATIVE_ARTIFACT_NAME,
               recipe: process.env.NATIVE_WORKFLOW_BLOB,
-              platform: process.env.EXPECTED_PLATFORM });
+              platform: process.env.EXPECTED_PLATFORM, scope: JSON.parse(process.env.NATIVE_PROVENANCE) });
             core.setOutput('artifact_id', donor?.artifactId ?? '');
             core.setOutput('run_id', donor?.runId ?? '');
+            core.setOutput('expected_scope', JSON.stringify(donor?.expectedScope ?? null));
 
       - name: Download native donor
         if: steps.donor.outputs.artifact_id != ''
@@ -103,31 +126,34 @@ jobs:
           path: ${{ runner.temp }}/native-donor
 
       - name: Verify and restore native donor
+        id: reuse
+        env:
+          NATIVE_EXPECTED_PROVENANCE: ${{ steps.donor.outputs.expected_scope }}
         if: steps.donor.outputs.artifact_id != ''
-        run: node packages/agents/scripts/native-artifact.mjs restore "$RUNNER_TEMP/native-donor"
+        run: node packages/agents/scripts/native-artifact.mjs donor "$RUNNER_TEMP/native-donor"
 
       - name: Install Rust
-        if: steps.donor.outputs.artifact_id == ''
+        if: steps.reuse.outputs.usable != 'true'
         run: |
           echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Install Linux build tools
-        if: steps.donor.outputs.artifact_id == '' && runner.os == 'Linux'
+        if: steps.reuse.outputs.usable != 'true' && runner.os == 'Linux'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet
           sudo apt-get update
           sudo apt-get install --yes clang cmake pkg-config protobuf-compiler libssl-dev
       - name: Install macOS build tools
-        if: steps.donor.outputs.artifact_id == '' && runner.os == 'macOS'
+        if: steps.reuse.outputs.usable != 'true' && runner.os == 'macOS'
         run: brew install cmake pkgconf protobuf openssl@3
       - name: Install Windows build tools
-        if: steps.donor.outputs.artifact_id == '' && runner.os == 'Windows'
+        if: steps.reuse.outputs.usable != 'true' && runner.os == 'Windows'
         shell: pwsh
         run: choco install protoc --yes --no-progress
 
       - name: Cache native build inputs and outputs
-        if: steps.donor.outputs.artifact_id == ''
+        if: steps.reuse.outputs.usable != 'true' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || github.ref == 'refs/heads/main')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0.
         with:
           # Keep credentials and Cargo configuration outside the cache.
@@ -140,20 +166,24 @@ jobs:
             packages/agents/native/.upstream/reviewed-codex
             packages/agents/native/.upstream/reviewed-rust-sdk
           # Require the same native sources, toolchain, and workflow settings.
-          key: native-v1-${{ matrix.platform }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ steps.workflow.outputs.sha }}-${{ hashFiles('packages/agents/native/CODEX_REVISION', 'packages/agents/native/Cargo.toml', 'packages/agents/native/Cargo.lock', 'packages/agents/native/build.rs', 'packages/agents/native/rust/**', 'packages/agents/native/patches/**', 'packages/agents/native/rmcp-patches/**', 'packages/agents/native/tests/fixtures/exec_server.rs', 'packages/agents/scripts/**') }}
+          key: cargo-${{ steps.native.outputs.name }}
 
       - name: Clear restored build timings
-        if: always() && steps.donor.outputs.artifact_id == ''
+        if: always() && steps.reuse.outputs.usable != 'true'
         run: rm -rf "$RUNNER_TEMP/agents-target/cargo-timings" "$RUNNER_TEMP/agents-target/x86_64-pc-windows-msvc/cargo-timings"
 
       - name: Build native products
-        if: steps.donor.outputs.artifact_id == ''
+        if: steps.reuse.outputs.usable != 'true'
         run: |
           node packages/agents/scripts/native.mjs package
-          node packages/agents/scripts/native-artifact.mjs stage "$RUNNER_TEMP/native-production"
 
-      - name: Upload native products
-        if: steps.donor.outputs.artifact_id == ''
+      - name: Stage native snapshot
+        env:
+          NATIVE_PROVENANCE: ${{ steps.scope.outputs.provenance }}
+        run: node packages/agents/scripts/native-artifact.mjs stage "$RUNNER_TEMP/native-production"
+
+      - name: Publish native snapshot
+        id: publish
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ${{ steps.native.outputs.name }}
@@ -162,34 +192,11 @@ jobs:
           overwrite: true
           retention-days: 14
 
-      - name: Build SDK
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
-      - name: Test native artifact reuse
-        run: node --test scripts/native-artifact.test.mjs scripts/alpha-package.test.mjs
-
-      - name: Create the release bundles
-        run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
-      - name: Test the extracted bundles
-        run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: agents-alpha-${{ matrix.platform }}
-          path: |
-            ${{ runner.temp }}/agents-alpha/*.tgz
-            ${{ runner.temp }}/agents-alpha/*.tar.gz
-            ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
-            ${{ runner.temp }}/agents-alpha/build-*.json
-            ${{ runner.temp }}/agents-alpha/installed-*.json
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 14
       - name: Upload native build timings
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: native-build-timings-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
+          name: native-build-timings-${{ inputs.platform }}-attempt-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/agents-target/cargo-timings/*.html
             ${{ runner.temp }}/agents-target/*/cargo-timings/*.html

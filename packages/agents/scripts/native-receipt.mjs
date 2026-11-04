@@ -9,7 +9,7 @@ import {
   readFileSync,
   readdirSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { readSeries } from './native-source.mjs';
 
 export const nativeHosts = {
@@ -49,6 +49,20 @@ export function nativeSourceSpecs(packageRoot, { source, rmcpSource } = {}) {
 }
 
 export function nativeInputs(packageRoot) {
+  const repository = resolve(packageRoot, '../..');
+  for (let parent = join(packageRoot, 'native'); ; parent = dirname(parent)) {
+    for (const name of ['config', 'config.toml']) {
+      try {
+        lstatSync(join(parent, '.cargo', name));
+        assert.fail(
+          'Repository Cargo configuration is unsupported in native production',
+        );
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    if (parent === repository) break;
+  }
   for (const directory of [
     '',
     'native',
@@ -62,6 +76,7 @@ export function nativeInputs(packageRoot) {
   }
   const files = new Set([
     'native/CODEX_REVISION',
+    'native/index.js',
     'native/Cargo.toml',
     'native/Cargo.lock',
     'native/build.rs',
@@ -187,7 +202,13 @@ export async function verifyNativeReceipt(
       .map((name) => name.replaceAll('\\', '/'));
     assert.deepEqual(
       files.sort(),
-      [...products, 'native/build-receipt.json'].sort(),
+      [
+        ...products,
+        'native/build-receipt.json',
+        ...(existsSync(join(artifactRoot, 'native/snapshot-provenance.json'))
+          ? ['native/snapshot-provenance.json']
+          : []),
+      ].sort(),
       'Unexpected native artifact files',
     );
   }
