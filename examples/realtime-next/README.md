@@ -12,6 +12,12 @@ pnpm examples:realtime-next
 
 Open [http://localhost:3000](http://localhost:3000) in your browser and start talking.
 
+The refund tool runs only in local development. The development server binds to
+`127.0.0.1`, and the refund action allows 20 model calls per server process.
+Restart the development server to reset that limit. Each refund request accepts
+up to 2,000 characters and 30 history items (up to 12,000 serialized characters).
+The refund action is disabled in production builds.
+
 ## Endpoints
 
 - **`/`**. WebRTC voice demo with the `RealtimeSession` class. See `src/app/page.tsx`.
