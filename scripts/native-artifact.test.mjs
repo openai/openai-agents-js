@@ -1,3 +1,4 @@
+import { URL } from 'node:url';
 import process from 'node:process';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -235,9 +236,16 @@ function donorFixture() {
     head_repository: { id: 1 },
     path: '.github/workflows/alpha-release-artifacts.yml',
     pull_requests: [],
+    referenced_workflows: [
+      {
+        path: `openai/openai-agents-js/.github/workflows/alpha-native-package.yml@${commit('b')}`,
+        sha: commit('b'),
+        ref: 'refs/heads/feat/codex-harness',
+      },
+    ],
   };
   const job = {
-    name: 'Package and test (linux-x64)',
+    name: 'package / Package and test (linux-x64)',
     conclusion: 'success',
     steps: [
       { name: 'Build native products', conclusion: 'success' },
@@ -265,6 +273,12 @@ function donorFixture() {
           };
         },
         getContent: async () => ({ data: files }),
+        getCommit: async ({ ref }) => ({
+          data: {
+            sha: ref,
+            parents: [{ sha: commit('a') }, { sha: run.head_sha }],
+          },
+        }),
       },
       actions: {
         listArtifactsForRepo: async () => ({ data: listing }),
@@ -283,7 +297,7 @@ function donorFixture() {
       recipe: commit('e'),
       platform: 'linux-x64',
     });
-  return { context, artifact, run, job, files, listing, resolve };
+  return { context, artifact, run, job, files, listing, resolve, github };
 }
 
 test('canonical exact native donors require an ancestor and successful fresh producer', async () => {
@@ -293,10 +307,17 @@ test('canonical exact native donors require an ancestor and successful fresh pro
   assert.equal(await f.resolve(), undefined);
 });
 
-test('same-PR reuse requires current base containment and never promotes into push builds', async () => {
+test('same-PR reuse uses immutable execution identity and never promotes into push builds', async () => {
   const f = donorFixture();
   f.run.event = 'pull_request';
   f.run.head_sha = commit('c');
+  f.run.referenced_workflows = [
+    {
+      path: `openai/openai-agents-js/.github/workflows/alpha-native-package.yml@${commit('f')}`,
+      sha: commit('f'),
+      ref: 'refs/pull/9/merge',
+    },
+  ];
   f.run.pull_requests = [
     {
       number: 9,
@@ -312,7 +333,9 @@ test('same-PR reuse requires current base containment and never promotes into pu
   assert.equal(await f.resolve(), undefined);
   f.context.eventName = 'pull_request';
   f.context.payload.pull_request.base.sha = commit('e');
-  assert.equal(await f.resolve(), undefined);
+  f.run.pull_requests[0].head.sha = commit('d');
+  f.run.pull_requests[0].base.sha = commit('f');
+  assert.deepEqual(await f.resolve(), { artifactId: 10, runId: 20 });
 });
 
 test('missing, expired and unsuccessful donors fall back to a fresh build', async () => {
@@ -420,5 +443,114 @@ test('native identity rejects unsupported input file and directory aliases', () 
     } finally {
       f.dispose();
     }
+  }
+});
+
+function samePRExecutionFixture() {
+  const f = donorFixture();
+  f.run.event = 'pull_request';
+  f.run.head_sha = commit('c');
+  f.run.pull_requests = [
+    {
+      number: 9,
+      head: { sha: commit('d'), repo: { id: 1 } },
+      base: { sha: commit('f') },
+    },
+  ];
+  f.run.referenced_workflows = [
+    {
+      path: `openai/openai-agents-js/.github/workflows/alpha-native-package.yml@${commit('f')}`,
+      sha: commit('f'),
+      ref: 'refs/pull/9/merge',
+    },
+  ];
+  return f;
+}
+
+test('real advanced PR association metadata does not replace the immutable run head', async () => {
+  const observed = JSON.parse(
+    readFileSync(
+      new URL('./fixtures/native-run-live-pr.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.notEqual(observed.head_sha, observed.pull_requests[0].head.sha);
+  const f = samePRExecutionFixture();
+  Object.assign(f.run, observed, {
+    status: 'completed',
+    conclusion: 'success',
+    referenced_workflows: f.run.referenced_workflows,
+  });
+  const repositoryId = observed.repository.id;
+  f.context.payload.repository.id = repositoryId;
+  f.context.payload.pull_request = observed.pull_requests[0];
+  f.artifact.workflow_run.id = observed.id;
+  f.artifact.workflow_run.repository_id = repositoryId;
+  f.artifact.workflow_run.head_repository_id = repositoryId;
+  f.run.referenced_workflows[0].ref = `refs/pull/${observed.pull_requests[0].number}/merge`;
+  assert.deepEqual(await f.resolve(), { artifactId: 10, runId: observed.id });
+});
+
+test('a rewound live base cannot substitute a head-file recipe for the executed merge recipe', async () => {
+  const f = samePRExecutionFixture();
+  f.context.payload.pull_request.base.sha = commit('a');
+  f.run.pull_requests[0].base.sha = commit('a');
+  f.github.rest.repos.getContent = async ({ ref }) => ({
+    data: {
+      type: 'file',
+      sha: ref === commit('f') ? commit('f') : commit('e'),
+    },
+  });
+  await assert.rejects(f.resolve(), /recipe changed/);
+});
+
+test('native donors reject absent, ambiguous, foreign and wrong-ref execution references', async () => {
+  for (const invalid of [
+    'absent',
+    'ambiguous',
+    'foreign',
+    'wrong-ref',
+    'mutable-path',
+    'wrong-parent',
+    'not-merge',
+  ]) {
+    const f = samePRExecutionFixture();
+    if (invalid === 'absent') f.run.referenced_workflows = [];
+    if (invalid === 'ambiguous')
+      f.run.referenced_workflows.push({ ...f.run.referenced_workflows[0] });
+    if (invalid === 'foreign')
+      f.run.referenced_workflows[0].path = `other/repository/.github/workflows/alpha-native-package.yml@${commit('f')}`;
+    if (invalid === 'wrong-ref')
+      f.run.referenced_workflows[0].ref = 'refs/pull/8/merge';
+    if (invalid === 'mutable-path')
+      f.run.referenced_workflows[0].path =
+        'openai/openai-agents-js/.github/workflows/alpha-native-package.yml@refs/heads/main';
+    if (invalid === 'wrong-parent')
+      f.github.rest.repos.getCommit = async ({ ref }) => ({
+        data: {
+          sha: ref,
+          parents: [{ sha: commit('a') }, { sha: commit('b') }],
+        },
+      });
+    if (invalid === 'not-merge')
+      f.github.rest.repos.getCommit = async ({ ref }) => ({
+        data: { sha: ref, parents: [{ sha: f.run.head_sha }] },
+      });
+    await assert.rejects(f.resolve());
+  }
+});
+
+test('canonical producer execution must resolve to its immutable push commit and branch', async () => {
+  for (const invalid of ['commit', 'branch']) {
+    const f = donorFixture();
+    if (invalid === 'commit')
+      f.run.referenced_workflows[0] = {
+        path: `openai/openai-agents-js/.github/workflows/alpha-native-package.yml@${commit('f')}`,
+        sha: commit('f'),
+        ref: 'refs/heads/feat/codex-harness',
+      };
+    if (invalid === 'branch')
+      f.run.referenced_workflows[0].ref = 'refs/heads/other';
+    await assert.rejects(f.resolve());
   }
 });

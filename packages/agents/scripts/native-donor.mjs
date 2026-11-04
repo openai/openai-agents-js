@@ -1,8 +1,95 @@
 import assert from 'node:assert/strict';
 
 const workflowPath = '.github/workflows/alpha-release-artifacts.yml';
+const nativeWorkflowPath = '.github/workflows/alpha-native-package.yml';
 const shaPattern = /^[a-f0-9]{40}$/;
 const MAX_CANDIDATES = 20;
+
+export async function executedNativeRecipe({
+  github,
+  repo,
+  run,
+  pullRequestNumber,
+}) {
+  assert.equal(run.path, workflowPath, 'Unexpected producer workflow');
+  assert.match(run.head_sha, shaPattern);
+  assert.ok(
+    Array.isArray(run.referenced_workflows),
+    'Missing executed native workflow references',
+  );
+  const prefix = `${repo.owner}/${repo.repo}/${nativeWorkflowPath}@`;
+  const references = run.referenced_workflows.filter(
+    (reference) =>
+      typeof reference.path === 'string' && reference.path.startsWith(prefix),
+  );
+  assert.equal(
+    references.length,
+    1,
+    'Missing or ambiguous executed native workflow',
+  );
+  const reference = references[0];
+  assert.match(reference.sha, shaPattern);
+  assert.equal(
+    reference.path,
+    `${prefix}${reference.sha}`,
+    'Native workflow reference is not immutable',
+  );
+  if (run.event === 'push') {
+    assert.equal(
+      reference.ref,
+      `refs/heads/${run.head_branch}`,
+      'Wrong native workflow branch reference',
+    );
+    assert.equal(
+      reference.sha,
+      run.head_sha,
+      'Native workflow differs from producer push',
+    );
+  } else {
+    assert.equal(
+      run.event,
+      'pull_request',
+      'Unsupported native producer event',
+    );
+    assert.ok(
+      Number.isSafeInteger(pullRequestNumber),
+      'Missing producer PR number',
+    );
+    assert.equal(
+      reference.ref,
+      `refs/pull/${pullRequestNumber}/merge`,
+      'Wrong native workflow PR reference',
+    );
+    const { data: commit } = await github.rest.repos.getCommit({
+      ...repo,
+      ref: reference.sha,
+    });
+    assert.equal(commit.sha, reference.sha, 'Unexpected executed merge commit');
+    assert.ok(
+      Array.isArray(commit.parents) && commit.parents.length === 2,
+      'Executed workflow is not a PR merge',
+    );
+    assert.match(commit.parents[0].sha, shaPattern);
+    assert.equal(
+      commit.parents[1].sha,
+      run.head_sha,
+      'Executed workflow merge has a different producer head',
+    );
+  }
+  const { data: file } = await github.rest.repos.getContent({
+    ...repo,
+    path: nativeWorkflowPath,
+    ref: reference.sha,
+  });
+  assert.ok(
+    file &&
+      !Array.isArray(file) &&
+      file.type === 'file' &&
+      shaPattern.test(file.sha),
+    'Incomplete executed native recipe',
+  );
+  return file.sha;
+}
 
 export async function resolveNativeDonor({
   github,
@@ -45,8 +132,6 @@ export async function resolveNativeDonor({
     }
     return comparisons.get(key);
   }
-  // For PRs, the checked-out head must include the base that contributed to the executed workflow.
-  if (pr && !(await ancestor(pr.base.sha, currentHead))) return undefined;
   const { data } = await github.rest.actions.listArtifactsForRepo({
     ...repo,
     name,
@@ -118,17 +203,7 @@ export async function resolveNativeDonor({
         repositoryId,
         'Foreign producer PR source',
       );
-      assert.equal(
-        producerPR.head.sha,
-        run.head_sha,
-        'Producer PR head differs from run',
-      );
-      if (
-        !(await ancestor(run.head_sha, currentHead)) ||
-        !(await ancestor(pr.base.sha, run.head_sha)) ||
-        !(await ancestor(producerPR.base.sha, pr.base.sha))
-      )
-        continue;
+      if (!(await ancestor(run.head_sha, currentHead))) continue;
     } else continue;
     assert.equal(run.repository.id, repositoryId, 'Foreign producer run');
     assert.equal(
@@ -136,20 +211,13 @@ export async function resolveNativeDonor({
       repositoryId,
       'Foreign producer checkout',
     );
-    assert.equal(run.path, workflowPath, 'Unexpected producer workflow');
-    const { data: file } = await github.rest.repos.getContent({
-      ...repo,
-      path: workflowPath,
-      ref: run.head_sha,
+    const executedRecipe = await executedNativeRecipe({
+      github,
+      repo,
+      run,
+      pullRequestNumber: pr?.number,
     });
-    assert.ok(
-      file &&
-        !Array.isArray(file) &&
-        file.type === 'file' &&
-        shaPattern.test(file.sha),
-      'Incomplete producer recipe',
-    );
-    assert.equal(file.sha, recipe, 'Producer workflow recipe changed');
+    assert.equal(executedRecipe, recipe, 'Producer workflow recipe changed');
     const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
       ...repo,
       run_id: run.id,
@@ -170,7 +238,8 @@ export async function resolveNativeDonor({
     assert.ok(Number.isFinite(created), 'Missing artifact creation time');
     const qualified = jobs.jobs.some((job) => {
       if (
-        job.name !== `Package and test (${platform})` ||
+        (job.name !== `Package and test (${platform})` &&
+          !job.name.endsWith(` / Package and test (${platform})`)) ||
         job.conclusion !== 'success'
       )
         return false;

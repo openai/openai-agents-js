@@ -1,0 +1,42 @@
+{
+  "source": "https://api.github.com/repos/openai/openai-agents-js/actions/runs/41768510594",
+  "observed_utc": "2026-11-04 05:32:09 UTC",
+  "id": 41768510594,
+  "event": "pull_request",
+  "head_sha": "9c31e8207f2845b300177ceb986c68e7f71e6989",
+  "path": ".github/workflows/alpha-release-artifacts.yml",
+  "pull_requests": [
+    {
+      "url": "https://api.github.com/repos/openai/openai-agents-js/pulls/2119",
+      "id": 5147269572,
+      "number": 2119,
+      "head": {
+        "ref": "codex/faster-native-ci",
+        "sha": "bc27fe07b53714ef4562f495c2f020b397c1c518",
+        "repo": {
+          "id": 993521808,
+          "url": "https://api.github.com/repos/openai/openai-agents-js",
+          "name": "openai-agents-js"
+        }
+      },
+      "base": {
+        "ref": "feat/codex-harness",
+        "sha": "5478a15f604b1a079eef0cda8c2ee573720e2cd5",
+        "repo": {
+          "id": 993521808,
+          "url": "https://api.github.com/repos/openai/openai-agents-js",
+          "name": "openai-agents-js"
+        }
+      }
+    }
+  ],
+  "referenced_workflows": [],
+  "repository": {
+    "id": 993521808,
+    "full_name": "openai/openai-agents-js"
+  },
+  "head_repository": {
+    "id": 993521808,
+    "full_name": "openai/openai-agents-js"
+  }
+}
