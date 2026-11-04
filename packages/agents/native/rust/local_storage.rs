@@ -2,6 +2,7 @@
 //!
 //! Native LocalThreadStore owns paths, recorder lifetime and OS writer exclusion.
 //! This adapter orders acknowledged SDK receipts before Core's ordered drain.
+use crate::local_reconciliation::{self, Receipt};
 use crate::storage::{ChecklistState, MemoryAgentGraph, SpawnEdge};
 use codex_agent_graph_store::{AgentGraphStore, ThreadSpawnEdgeStatus};
 use codex_history::{ResponseItemEnvelope, RolloutItem};
@@ -80,6 +81,7 @@ struct ResumeExpectation {
     history: Arc<Vec<RolloutItem>>,
     instructions: Arc<crate::options::ThreadInstructions>,
     prepared: OnceLock<ResumeThreadParams>,
+    protected_call_ids: OnceLock<HashSet<String>>,
     retired: AtomicBool,
     transferred: AtomicBool,
 }
@@ -116,6 +118,13 @@ pub(crate) struct LocalResumeAdmission<'a> {
 }
 
 impl LocalResumeAdmission<'_> {
+    pub(crate) fn protected_call_ids(&self) -> &HashSet<String> {
+        self.expected
+            .protected_call_ids
+            .get()
+            .expect("local writer was prepared")
+    }
+
     pub(crate) fn prepared_params(&self) -> ThreadStoreResult<&ResumeThreadParams> {
         self.expected
             .prepared
@@ -185,7 +194,7 @@ fn checklist_error(error: impl std::fmt::Display) -> ThreadStoreError {
         message: format!("native local storage: {error}"),
     }
 }
-fn observe_turn(turn: &mut Option<String>, item: &RolloutItem) {
+pub(crate) fn observe_turn(turn: &mut Option<String>, item: &RolloutItem) {
     match item {
         RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => *turn = Some(start.turn_id.clone()),
         RolloutItem::EventMsg(EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) => *turn = None,
@@ -196,47 +205,7 @@ fn observe_turn(turn: &mut Option<String>, item: &RolloutItem) {
 // Refuse unknown effects rather than allow Core recovery to fabricate cancelled
 // outputs or automatically replay a callback after process loss.
 fn validate_settled(history: &[RolloutItem]) -> ThreadStoreResult<()> {
-    let mut pending = HashSet::new();
-    let mut seen = HashSet::new();
-    let mut turn = None;
-    for row in history {
-        observe_turn(&mut turn, row);
-        if let RolloutItem::ResponseItem(envelope) = row {
-            match &envelope.item {
-                ResponseItem::FunctionCall { call_id, .. }
-                | ResponseItem::CustomToolCall { call_id, .. } => {
-                    let identity = (turn.clone(), call_id.clone());
-                    if !seen.insert(identity.clone()) {
-                        return Err(checklist_error(
-                            "ambiguous tool call identity in local history",
-                        ));
-                    }
-                    pending.insert(identity);
-                }
-                ResponseItem::FunctionCallOutput {
-                    call_id: Some(call_id),
-                    internal_chat_message_metadata_passthrough,
-                    ..
-                } => {
-                    let owner = internal_chat_message_metadata_passthrough
-                        .as_ref()
-                        .and_then(|meta| meta.turn_id.clone())
-                        .or(turn.clone());
-                    pending.remove(&(owner, call_id.clone()));
-                }
-                ResponseItem::CustomToolCallOutput { call_id, .. } => {
-                    pending.remove(&(turn.clone(), call_id.clone()));
-                }
-                _ => {}
-            }
-        }
-    }
-    if !pending.is_empty() {
-        return Err(checklist_error(
-            "local history contains unknown tool effects; automatic replay is unsupported",
-        ));
-    }
-    Ok(())
+    local_reconciliation::validate_settled(history).map_err(checklist_error)
 }
 
 // This validates recorded data only. It does not grant child execution or acquire
@@ -436,6 +405,7 @@ impl LocalChecklistStore {
             history,
             instructions,
             prepared: OnceLock::new(),
+            protected_call_ids: OnceLock::new(),
             retired: AtomicBool::new(false),
             transferred: AtomicBool::new(false),
         });
@@ -455,7 +425,8 @@ impl LocalChecklistStore {
         model: Option<String>,
         instructions: Arc<crate::options::ThreadInstructions>,
         executor_policy: crate::environment::LocalResumeExecutorPolicy,
-    ) -> ThreadStoreResult<LocalResumeAdmission<'_>> {
+        receipts: Vec<Receipt>,
+    ) -> anyhow::Result<LocalResumeAdmission<'_>> {
         let history = params
             .history
             .clone()
@@ -468,7 +439,7 @@ impl LocalChecklistStore {
         // operation that can install a native recorder.
         tokio::spawn(async move {
             store
-                .prepare_writer(params, expected, executor_policy)
+                .prepare_writer(params, expected, executor_policy, receipts)
                 .await
         })
         .await
@@ -481,16 +452,17 @@ impl LocalChecklistStore {
         mut params: ResumeThreadParams,
         expected: Arc<ResumeExpectation>,
         executor_policy: crate::environment::LocalResumeExecutorPolicy,
-    ) -> ThreadStoreResult<()> {
+        receipts: Vec<Receipt>,
+    ) -> anyhow::Result<()> {
         let id = params.thread_id;
         let mut writers = self.writers.lock().await;
         if self.admissions_closed.load(Ordering::Acquire)
             || expected.retired.load(Ordering::Acquire)
         {
-            return Err(checklist_error("local resume preparation was retired"));
+            return Err(checklist_error("local resume preparation was retired").into());
         }
         if writers.contains_key(&id) {
-            return Err(checklist_error("local thread already has a native writer"));
+            return Err(checklist_error("local thread already has a native writer").into());
         }
         // Register responsibility BEFORE native acquisition. Cancellation of the
         // outer opening drops only its claim, never this retained cleanup owner.
@@ -502,14 +474,14 @@ impl LocalChecklistStore {
             },
         );
         let mut acquired = false;
-        let result = async {
+        let result: anyhow::Result<()> = async {
             #[cfg(test)]
             self.hold_startup_close_probe(Some(id), StartupClosePoint::BeforePreparedAcquire)
                 .await;
             if expected.retired.load(Ordering::Acquire) {
-                return Err(checklist_error("local resume preparation was retired"));
+                return Err(checklist_error("local resume preparation was retired").into());
             }
-            let history = self.inner.resume_thread(params.clone()).await?;
+            let mut history = self.inner.resume_thread(params.clone()).await?;
             acquired = true;
             #[cfg(test)]
             self.hold_startup_close_probe(Some(id), StartupClosePoint::PreparedNativeWriter)
@@ -523,26 +495,35 @@ impl LocalChecklistStore {
                 })
                 .await?;
             if current.model != expected.model {
-                return Err(checklist_error(
-                    "local model changed during resume admission",
-                ));
+                return Err(checklist_error("local model changed during resume admission").into());
             }
             let path = self.inner.live_rollout_path(id).await?;
-            let (complete, owner, errors) =
+            let (mut complete, owner, errors) =
                 codex_rollout::RolloutRecorder::load_rollout_items(&path)
                     .await
                     .map_err(checklist_error)?;
             if owner != Some(id) || errors != 0 {
                 return Err(checklist_error(
                     "cannot resume incomplete rollout or another thread's history",
-                ));
+                )
+                .into());
             }
             validate_root_header(id, &complete)?;
             validate_root_header(id, &history)?;
             executor_policy
                 .validate(&complete, id)
                 .map_err(checklist_error)?;
-            validate_settled(&complete)?;
+            let plan = match local_reconciliation::plan(id, &complete, &history, &receipts) {
+                Ok(plan) => plan,
+                Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
+                    Ok(mut hold) => {
+                        hold.history = complete;
+                        return Err(hold.into());
+                    }
+                    Err(error) => return Err(checklist_error(error).into()),
+                },
+            };
+            complete.extend(plan.append.iter().cloned());
             self.graph.hydrate(id).await.map_err(checklist_error)?;
             self.check_tree_settled_inner(id, &complete, &writers)
                 .await?;
@@ -564,8 +545,30 @@ impl LocalChecklistStore {
             if expected.retired.load(Ordering::Acquire)
                 || self.admissions_closed.load(Ordering::Acquire)
             {
-                return Err(checklist_error("local resume preparation was retired"));
+                return Err(checklist_error("local resume preparation was retired").into());
             }
+            if !plan.append.is_empty() {
+                self.inner
+                    .append_items(AppendThreadItemsParams {
+                        thread_id: id,
+                        items: plan.append.clone(),
+                    })
+                    .await?;
+                let persisted = self.load_owned_history_inner(id).await?;
+                let verified = local_reconciliation::plan(id, &persisted, &history, &receipts)
+                    .map_err(checklist_error)?;
+                if !verified.append.is_empty() {
+                    return Err(checklist_error(
+                        "reconciliation results were not confirmed in storage",
+                    )
+                    .into());
+                }
+                Arc::make_mut(&mut history).extend(plan.append);
+            }
+            expected
+                .protected_call_ids
+                .set(plan.protected_ids)
+                .map_err(|_| checklist_error("local replay guard already prepared"))?;
             // Core will use this canonical path and exact authoritative Arc.
             // Revision selection has already happened in the native acquisition.
             params.rollout_path = Some(path);
@@ -606,7 +609,7 @@ impl LocalChecklistStore {
                         .get_mut(&id)
                         .expect("retained local acquisition")
                         .failure = Some(failure.clone());
-                    Err(checklist_error(failure))
+                    Err(checklist_error(failure).into())
                 }
             };
         }
