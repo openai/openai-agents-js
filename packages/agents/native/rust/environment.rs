@@ -1163,6 +1163,37 @@ pub(crate) fn check_checkpoint_policy(
     Ok(())
 }
 
+fn validate_sdk_receipt_identities(history: &[RolloutItem], thread_id: &str) -> Result<()> {
+    // Core writes sampling receipts into the producing thread's raw rollout.
+    // Native forks and subagents may retain identified ancestor receipts.
+    let own_root = matches!(history.first(), Some(RolloutItem::SessionMeta(header))
+        if header.meta.id.to_string() == thread_id
+            && header.meta.source.parent_thread_id().is_none()
+            && header.meta.parent_thread_id.is_none()
+            && header.meta.forked_from_id.is_none()
+            && header.meta.history_base.is_none());
+    for item in history {
+        let RolloutItem::TurnContext(context) = item else {
+            continue;
+        };
+        let Some(receipt) = context.sdk_receipt.as_ref() else {
+            continue;
+        };
+        if receipt.get("codex_source_tree").is_some()
+            || receipt.get("strict_executor_writes").is_some()
+        {
+            ensure!(
+                receipt["thread_id"].as_str().is_some_and(|id| {
+                    codex_protocol::ThreadId::from_string(id).is_ok()
+                        && (!own_root || id == thread_id)
+                }),
+                "Local resume requires the recorded executor write and network policy"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn has_sampled_model(history: &[RolloutItem]) -> bool {
     history.iter().any(|item| match item {
         RolloutItem::EventMsg(EventMsg::TurnComplete(turn)) => {
@@ -1242,6 +1273,7 @@ impl LocalResumeExecutorPolicy {
         id: codex_protocol::ThreadId,
     ) -> Result<()> {
         let id = id.to_string();
+        validate_sdk_receipt_identities(history, &id)?;
         let is_strict = |flag: Option<&serde_json::Value>| {
             flag.is_some_and(|flag| flag.as_bool() != Some(false))
         };
@@ -1626,6 +1658,18 @@ mod tests {
             }))
             .unwrap()
         };
+        let parent = codex_protocol::ThreadId::new();
+        let fork = RolloutItem::SessionMeta(codex_protocol::protocol::SessionMetaLine {
+            meta: codex_protocol::protocol::SessionMeta {
+                id,
+                forked_from_id: Some(parent),
+                ..Default::default()
+            },
+            git: None,
+        });
+        let inherited = context(json!({ "codex_source_tree": "fixture", "thread_id": parent }));
+        assert!(validate_sdk_receipt_identities(&[fork, inherited], &id.to_string()).is_ok());
+
         let values = vec![json!({ "transport": "remote" })];
         let older = context(json!({
             "thread_id": id,

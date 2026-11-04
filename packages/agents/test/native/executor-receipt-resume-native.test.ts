@@ -202,6 +202,9 @@ it
     'flag erased',
     'executors missing',
     'policy fields missing',
+    'identity missing',
+    'identity malformed',
+    'identity replaced',
   ] as const)(
   'rejects an incomplete durable receipt after a strict executor turn with %s',
   { timeout: 30_000 },
@@ -261,14 +264,24 @@ it
       const latest = receipts.at(-1);
       expect(latest.strict_executor_writes).toBe(true);
       expect(latest.executors).toHaveLength(1);
-      if (kind === 'executors missing' || kind === 'policy fields missing') {
+      const identityCorrupt = kind.startsWith('identity ');
+      if (identityCorrupt) {
+        if (kind === 'identity missing') delete latest.thread_id;
+        else if (kind === 'identity malformed') latest.thread_id = 42;
+        else latest.thread_id = '00000000-0000-4000-8000-000000000000';
+      } else if (kind === 'policy fields missing') {
         delete latest.executors;
-      } else {
-        latest.executors = [];
-      }
-      if (kind === 'policy fields missing')
         delete latest.strict_executor_writes;
-      else latest.strict_executor_writes = kind !== 'flag erased';
+      } else {
+        if (kind === 'executors missing') delete latest.executors;
+        else latest.executors = [];
+        latest.strict_executor_writes = kind !== 'flag erased';
+      }
+      if (identityCorrupt || kind === 'policy fields missing') {
+        records = records.filter(
+          (record) => record.payload.sdk_receipt !== receipts[0],
+        );
+      }
       await writeFile(
         path,
         records.map((record) => JSON.stringify(record)).join('\n') + '\n',
@@ -284,7 +297,7 @@ it
                 ...connection,
                 cwd: executor.cwd,
                 writableRoots:
-                  kind === 'policy fields missing'
+                  identityCorrupt || kind === 'policy fields missing'
                     ? undefined
                     : kind === 'flag retained'
                       ? [next]
