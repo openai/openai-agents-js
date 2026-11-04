@@ -214,7 +214,8 @@ export async function connectA2A(
         fetchImpl: async (url, init) => {
           if (String(url) !== rpcUrl || typeof init?.body !== 'string')
             throw new A2AError('unsupported');
-          checkBytes(init.body, inputLimit);
+          if (Buffer.byteLength(init.body) > inputLimit)
+            throw new A2AError('limit');
           let rpc: {
             method: string;
             id: unknown;

@@ -396,6 +396,110 @@ it('refuses redirects and oversized discovery before credentials', async () => {
 });
 
 it.each(
+  [
+    { kind: 'quotes', character: '"' },
+    { kind: 'backslashes', character: '\\' },
+    { kind: 'multibyte text', character: 'é' },
+  ].flatMap((content) =>
+    [
+      { position: 'below', offset: 1 },
+      { position: 'equal to', offset: 0 },
+      { position: 'above', offset: -1 },
+    ].map((boundary) => ({ ...content, ...boundary })),
+  ),
+)(
+  'counts serialized UTF-8 request bytes for $kind $position the transport cap',
+  async ({ character, offset }) => {
+    const remote = await peer();
+    const request = (messageId: string) => ({
+      tenant: '',
+      metadata: undefined,
+      configuration: undefined,
+      message: {
+        ...Message.fromJSON({}),
+        messageId,
+        role: Role.ROLE_USER,
+        parts: [Part.fromJSON({ text: character.repeat(200) })],
+      },
+    });
+    let rawBytes = 0;
+    const calibration = await connectA2A(remote.endpoint, {
+      authorization: async () => 'synthetic',
+      limits: { inputBytes: 4096 },
+      fetch: async (url, init) => {
+        if (typeof init?.body === 'string')
+          rawBytes = Buffer.byteLength(init.body);
+        return fetch(url, init);
+      },
+    });
+    await calibration.sendMessage(request('calibration'));
+    expect(rawBytes).toBeGreaterThan(0);
+    remote.calls.length = 0;
+    let credentials = 0,
+      reservations = 0,
+      dispatchedBytes = 0;
+    const client = await connectA2A(remote.endpoint, {
+      authorization: async () => {
+        credentials++;
+        return 'synthetic';
+      },
+      reserve: async () => {
+        reservations++;
+      },
+      limits: { inputBytes: rawBytes + offset },
+      fetch: async (url, init) => {
+        if (typeof init?.body === 'string')
+          dispatchedBytes = Buffer.byteLength(init.body);
+        return fetch(url, init);
+      },
+    });
+    const operation = client.sendMessage(request('boundary-id'));
+    if (offset < 0) {
+      await expect(operation).rejects.toMatchObject({ reason: 'limit' });
+      expect(credentials).toBe(0);
+      expect(reservations).toBe(0);
+      expect(dispatchedBytes).toBe(0);
+      expect(remote.calls).toEqual([]);
+    } else {
+      expect(await operation).toHaveProperty('id');
+      expect(credentials).toBe(1);
+      expect(reservations).toBe(1);
+      expect(dispatchedBytes).toBe(rawBytes);
+      expect(remote.calls).toEqual(['SendMessage']);
+    }
+  },
+);
+
+it('keeps provider object admission before discovery and transport sizing', async () => {
+  const remote = await peer();
+  let credentials = 0,
+    reservations = 0;
+  const parts = [Part.fromJSON({ text: 'x'.repeat(1024) })];
+  expect(Buffer.byteLength(JSON.stringify(parts))).toBeGreaterThan(128);
+  const provider = new A2AJobProvider({
+    endpoint: remote.endpoint,
+    authorize: async () => {},
+    authorization: async () => {
+      credentials++;
+      return 'synthetic';
+    },
+    reserve: async () => {
+      reservations++;
+    },
+    encode: () => parts,
+    project: () => null,
+    limits: { inputBytes: 128 },
+  });
+  await expect(provider.start(claim(), null, context)).rejects.toMatchObject({
+    reason: 'limit',
+  });
+  expect(credentials).toBe(0);
+  expect(reservations).toBe(0);
+  expect(remote.headers).toEqual([]);
+  expect(remote.calls).toEqual([]);
+});
+
+it.each(
   ['discovery', 'poll'].flatMap((phase) =>
     [401, 429, 503].map((status) => ({ phase, status })),
   ),
