@@ -832,7 +832,14 @@ canonicalHeadingIds:
       const sourceHeadings = await canonicalHeadingIds(source);
       for (const locale of ['ja', 'ko', 'zh']) {
         const localizedPath = path.join(DOCS_ROOT, locale, relativePath);
-        const localized = await fs.readFile(localizedPath, 'utf8');
+        const localized = await fs
+          .readFile(localizedPath, 'utf8')
+          .catch((error: NodeJS.ErrnoException) => {
+            // An authored English page can land before its translations.
+            if (error.code === 'ENOENT') return undefined;
+            throw error;
+          });
+        if (localized === undefined) continue;
         const localizedHeadings = await canonicalHeadingIds(localized);
         const { content, frontmatter } = parseFrontmatter(localized);
         const rendered = await processor.render(content, {
