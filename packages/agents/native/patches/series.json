@@ -151,7 +151,15 @@
     {
       "path": "0038-stop-sampling-before-sdk-close.patch",
       "sha256": "0b73e08b9d932ab8aaaf273ed963ded0175267b637ce8d02f866b6092a48600c"
+    },
+    {
+      "path": "0039-protect-local-helper-mount-aliases.patch",
+      "sha256": "b269ec3e3a8d2a737494732696f4b9ecd94c2fbe0458c4a6eccdb543a6692059"
+    },
+    {
+      "path": "0040-join-published-linux-sandbox-shutdown.patch",
+      "sha256": "dd5462e2cc5407ac6bd8415302919d69120e612a51dcd121128f5ea0a4f09d46"
     }
   ],
-  "result_tree": "68feb74de7071446c37f26079d85c84793ed862f"
+  "result_tree": "84d46645f94a5c6659f2fd09bfda1aa983a2bb5f"
 }

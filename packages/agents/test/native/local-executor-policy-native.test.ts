@@ -1666,7 +1666,6 @@ it.skipIf(process.platform !== 'darwin')(
                 'exec_command',
                 {
                   cmd: `rc=0; ${command} || rc=$?; printf '${operation} exit %s\\n' "$rc"`,
-                  login: false,
                   yield_time_ms: 10_000,
                 },
                 { callId: operation },

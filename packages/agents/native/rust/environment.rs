@@ -12,13 +12,13 @@ use codex_core::{
     config::validate_environment_network_policy, windows_sandbox::WindowsSandboxLevelExt,
 };
 use codex_core_api::{
-    AbsolutePathBuf, Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
+    Config, EnvironmentManager, EnvironmentNetworkPolicy, NetworkDomainPermission,
     NetworkDomainPermissionEntry, NetworkDomainPermissions, NetworkProxySpec,
 };
 use codex_exec_server::{
     Environment, EnvironmentInfo, ExecParams, ExecProcessEvent, ExecServerError,
     ExecServerRuntimeOptions, FileSystemSandboxContext, GetMetadataOptions, LOCAL_ENVIRONMENT_ID,
-    ProcessId, REMOTE_ENVIRONMENT_ID, RemoteEnvironmentOptions,
+    LocalWriteRoots, ProcessId, REMOTE_ENVIRONMENT_ID, RemoteEnvironmentOptions,
 };
 use codex_protocol::capabilities::{CapabilityRootLocation, SelectedCapabilityRoot};
 use codex_protocol::config_types::{
@@ -327,6 +327,7 @@ impl EnvironmentOptions {
                     .context("could not resolve an executor write root")
             })
             .collect::<Result<Vec<_>>>()?;
+        let roots = LocalWriteRoots::new(&roots).context("could not verify local write roots")?;
         check_local_session_write_roots(config, &roots, storage)
     }
 
@@ -729,6 +730,8 @@ async fn strict_write_profile(
             .iter()
             .map(PathUri::to_abs_path)
             .collect::<Result<Vec<_>, _>>()?;
+        let local_roots =
+            LocalWriteRoots::new(&local_roots).context("could not verify local write roots")?;
         check_local_helper_write_roots(config, &local_roots)?;
         check_local_session_write_roots(config, &local_roots, local_storage)?;
         for entry in &mut filesystem_policy.entries {
@@ -765,7 +768,7 @@ async fn strict_write_profile(
     ))
 }
 
-fn check_local_helper_write_roots(config: &Config, roots: &[AbsolutePathBuf]) -> Result<()> {
+fn check_local_helper_write_roots(config: &Config, roots: &LocalWriteRoots<'_>) -> Result<()> {
     let code_mode = config
         .codex_self_exe
         .as_ref()
@@ -785,7 +788,7 @@ fn check_local_helper_write_roots(config: &Config, roots: &[AbsolutePathBuf]) ->
 }
 
 fn check_local_helper_paths<'a>(
-    roots: &[AbsolutePathBuf],
+    roots: &LocalWriteRoots<'_>,
     helpers: impl IntoIterator<Item = &'a Path>,
     system_search: impl IntoIterator<Item = &'a Path>,
 ) -> Result<()> {
@@ -796,7 +799,7 @@ fn check_local_helper_paths<'a>(
             "could not resolve a local sandbox helper path",
             |entry| {
                 ensure!(
-                    !roots.iter().any(|root| entry.starts_with(root.as_path())),
+                    !roots.contains_entry(entry)?,
                     "local executor write roots must not contain installed sandbox helpers"
                 );
                 Ok(())
@@ -821,7 +824,7 @@ fn check_local_helper_paths<'a>(
 
 fn check_local_session_write_roots(
     config: &Config,
-    roots: &[AbsolutePathBuf],
+    roots: &LocalWriteRoots<'_>,
     storage: Option<&Path>,
 ) -> Result<()> {
     if let Some(storage) = storage {
@@ -841,25 +844,17 @@ fn check_local_session_write_roots(
 }
 
 fn check_local_protected_path(
-    roots: &[AbsolutePathBuf],
+    roots: &LocalWriteRoots<'_>,
     path: &Path,
     resolve_error: &'static str,
     overlap_error: &'static str,
 ) -> Result<()> {
     // Runtime and SQLite directories may be created after this check.
     let resolved = resolve_local_path(path, true, resolve_error, |entry| {
-        ensure!(
-            !roots.iter().any(|root| entry.starts_with(root.as_path())),
-            "{overlap_error}"
-        );
+        ensure!(!roots.contains_entry(entry)?, "{overlap_error}");
         Ok(())
     })?;
-    ensure!(
-        !roots
-            .iter()
-            .any(|root| root.as_path().starts_with(&resolved)),
-        "{overlap_error}"
-    );
+    ensure!(!roots.has_root_at_or_below(&resolved)?, "{overlap_error}");
     Ok(())
 }
 
@@ -1417,6 +1412,8 @@ fn tls_cause(error: &rustls::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use codex_core_api::AbsolutePathBuf;
     use serde_json::json;
 
     #[test]
@@ -1478,7 +1475,7 @@ mod tests {
         let root = AbsolutePathBuf::from_absolute_path(workspace.canonicalize().unwrap()).unwrap();
         let check = || {
             check_local_helper_paths(
-                std::slice::from_ref(&root),
+                &LocalWriteRoots::new(std::slice::from_ref(&root)).unwrap(),
                 std::iter::empty(),
                 std::iter::once(system_bin.as_path()),
             )
@@ -1516,8 +1513,13 @@ mod tests {
         symlink("../workspace/bwrap-link", &bwrap).unwrap();
 
         let root = AbsolutePathBuf::from_absolute_path(workspace.canonicalize().unwrap()).unwrap();
-        let check =
-            |roots| check_local_helper_paths(roots, std::iter::empty(), [system_bin.as_path()]);
+        let check = |roots: &[AbsolutePathBuf]| {
+            check_local_helper_paths(
+                &LocalWriteRoots::new(roots).unwrap(),
+                std::iter::empty(),
+                [system_bin.as_path()],
+            )
+        };
         assert!(check(&[]).is_ok());
         assert_eq!(std::fs::read(&bwrap).unwrap(), b"trusted");
         let overlap = check(std::slice::from_ref(&root));
