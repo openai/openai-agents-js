@@ -10,7 +10,7 @@ import {
   ServerCallContext,
   type AgentExecutor,
 } from '@a2a-js/sdk/server';
-import { connectA2A } from '../src/a2a/client';
+import { A2AError, connectA2A } from '../src/a2a/client';
 import { A2AJobProvider } from '../src/a2a/provider';
 import type { JobClaim } from '../src/experimental/deferred';
 
@@ -141,6 +141,119 @@ function claim(
     },
   };
 }
+
+it('sanitizes initial host denials across provider operations before discovery or mutation effects', async () => {
+  const remote = await peer();
+  const sentinel = new Error('secret-host-denial-sentinel');
+  let denied = false,
+    authorizations = 0,
+    credentials = 0,
+    reservations = 0;
+  const provider = new A2AJobProvider({
+    endpoint: remote.endpoint,
+    authorize: async () => {
+      authorizations++;
+      if (denied) throw sentinel;
+    },
+    authorization: async () => {
+      credentials++;
+      return 'synthetic';
+    },
+    reserve: async () => {
+      reservations++;
+    },
+    encode: () => [Part.fromJSON({ text: 'hello' })],
+    project: () => null,
+  });
+  const receipt = await provider.start(claim(), null, context);
+  expect(receipt.status).toBe('completed');
+  const task = JSON.parse(receipt.receipt!);
+  const operations = [
+    (current: typeof context) => provider.start(claim(), null, current),
+    (current: typeof context) =>
+      provider.observe(claim('observe', receipt), current),
+    (current: typeof context) =>
+      provider.respond(
+        claim('respond', receipt),
+        {
+          taskId: task.taskId,
+          contextId: task.contextId,
+          challenge: 'challenge',
+          generation: 1,
+          result: true,
+        },
+        current,
+      ),
+    (current: typeof context) =>
+      provider.cancel(claim('cancel', receipt), current),
+  ];
+  denied = true;
+  authorizations = 0;
+  credentials = 0;
+  reservations = 0;
+  remote.calls.length = 0;
+  remote.headers.length = 0;
+  for (const operation of operations) {
+    const failure = await operation(context).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(A2AError);
+    expect(failure).toMatchObject({
+      reason: 'authorization',
+      message: 'A2A authorization',
+    });
+    expect(String(failure)).not.toContain(sentinel.message);
+    expect(failure).not.toHaveProperty('cause');
+  }
+  expect(authorizations).toBe(4);
+  const cancellation = new Error('caller canceled');
+  const controller = new AbortController();
+  controller.abort(cancellation);
+  for (const operation of operations)
+    await expect(operation({ signal: controller.signal })).rejects.toBe(
+      cancellation,
+    );
+  expect(authorizations).toBe(4);
+  expect(credentials).toBe(0);
+  expect(reservations).toBe(0);
+  expect(remote.calls).toEqual([]);
+  expect(remote.headers).toEqual([]);
+});
+
+it('preserves cancellation while awaiting the initial host authorization fence', async () => {
+  const remote = await peer();
+  const entered = Promise.withResolvers<void>(),
+    release = Promise.withResolvers<void>();
+  let credentials = 0,
+    reservations = 0;
+  const provider = new A2AJobProvider({
+    endpoint: remote.endpoint,
+    authorize: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+    authorization: async () => {
+      credentials++;
+      return 'synthetic';
+    },
+    reserve: async () => {
+      reservations++;
+    },
+    encode: () => [Part.fromJSON({ text: 'hello' })],
+    project: () => null,
+  });
+  const controller = new AbortController(),
+    cancellation = new Error('caller canceled during authorization');
+  const operation = provider.start(claim(), null, {
+    signal: controller.signal,
+  });
+  await entered.promise;
+  controller.abort(cancellation);
+  release.resolve();
+  await expect(operation).rejects.toBe(cancellation);
+  expect(credentials).toBe(0);
+  expect(reservations).toBe(0);
+  expect(remote.calls).toEqual([]);
+  expect(remote.headers).toEqual([]);
+});
 
 it('discovers two independently hosted selected targets from 500 entries and correlates each invocation', async () => {
   const peers = await Promise.all([peer(), peer()]);

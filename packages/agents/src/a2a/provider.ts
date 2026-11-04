@@ -106,7 +106,11 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       throw new A2AError('authorization');
     const current = async () => {
       context.signal.throwIfAborted();
-      await this.#options.authorize(claim, operation);
+      try {
+        await this.#options.authorize(claim, operation);
+      } catch {
+        throw new A2AError('authorization');
+      }
       context.signal.throwIfAborted();
     };
     await current();
