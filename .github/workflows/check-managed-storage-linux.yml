@@ -1,0 +1,127 @@
+name: Qualify private storage grants in the exact SDK package
+'on':
+  push:
+    branches:
+    - test/managed-storage-linux-qualification-20261104
+    paths:
+    - .github/workflows/check-managed-storage-linux.yml
+permissions:
+  contents: read
+jobs:
+  package:
+    name: Build and test private storage grants (linux-x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      ALPHA_VERSION: 0.22.0-alpha.1
+      EXPECTED_PLATFORM: linux-x64
+      RUSTUP_TOOLCHAIN: 1.95.0
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      QUALIFIED_SDK_COMMIT: 41008a519857bdea4576373fd56a374d62122851
+      QUALIFIED_SDK_TREE: d39ba82a368091d0bb12878ec5d3b2b6520ced23
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: 41008a519857bdea4576373fd56a374d62122851
+        persist-credentials: false
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      with:
+        run_install: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+        cache: pnpm
+    - name: Check runner platform
+      run: 'node -e ''require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)''
+
+        '
+    - name: Check the exact sealed SDK source
+      run: 'set -euo pipefail
+
+        test "$(git rev-parse HEAD)" = "$QUALIFIED_SDK_COMMIT"
+
+        test "$(git rev-parse HEAD^{tree})" = "$QUALIFIED_SDK_TREE"
+
+        '
+    - name: Install Rust
+      run: 'echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
+
+        echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
+
+        rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+
+        '
+    - name: Install Linux build tools
+      run: "sudo rm -rf /usr/local/lib/android /usr/share/dotnet\nsudo apt-get update\nsudo apt-get install --yes --no-install-recommends \\\n  apparmor-profiles bubblewrap clang cmake pkg-config protobuf-compiler libssl-dev\n# Ubuntu supplies a profile for bwrap that keeps its children restricted.\nif ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then\n  sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \\\n    /etc/apparmor.d/bwrap-userns-restrict\n  sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict\nfi\nuname -sr\nbwrap --version\nbwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true\n"
+    - name: Build the SDK and native runtime
+      run: 'pnpm install --frozen-lockfile
+
+        pnpm build
+
+        node packages/agents/scripts/native.mjs package
+
+        '
+    - name: Qualify the Linux worker
+      env:
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+      run: "pnpm test:native \\\n  packages/agents/test/native/supervised-worker-example.test.ts \\\n  packages/agents/test/native/supervised-worker-cleanup.test.ts \\\n  --reporter=verbose\npnpm test:native \\\n  packages/agents/test/native/local-executor-policy-native.test.ts \\\n  -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy' \\\n  --reporter=verbose\n"
+    - name: Create the release bundles
+      run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+    - name: Test the extracted bundles
+      run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: agents-alpha-linux-x64
+        path: '${{ runner.temp }}/agents-alpha/*.tgz
+
+          ${{ runner.temp }}/agents-alpha/*.tar.gz
+
+          ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
+
+          ${{ runner.temp }}/agents-alpha/build-*.json
+
+          ${{ runner.temp }}/agents-alpha/installed-*.json
+
+          '
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 14
+    - id: install
+      name: Verify and install this build's exact release archive
+      run: "cat > \"$RUNNER_TEMP/js-install.mjs\" <<'INSTALL'\nimport assert from \"node:assert/strict\";\nimport { execFileSync } from \"node:child_process\";\nimport { cpSync, readFileSync, realpathSync } from \"node:fs\";\nimport { join, sep } from \"node:path\";\nimport { pathToFileURL } from \"node:url\";\n\nconst checkout = process.argv[2];\nconst { hashes, verifyArtifactDirectory } = await import(\n  pathToFileURL(join(checkout, \"scripts/verify-alpha-package.mjs\"))\n);\nconst { verifyNativeReceipt, verifyStarterLock } = await import(\n  pathToFileURL(join(checkout, \"scripts/alpha-package.mjs\"))\n);\nconst { ARTIFACT_DIRECTORY, PRODUCER_SDK, RECEIPT_SOURCE, RUNNER_TEMP } =\n  process.env;\nassert.equal(process.platform + \"-\" + process.arch, \"linux-x64\");\nconst build = await verifyArtifactDirectory(ARTIFACT_DIRECTORY);\nassert.equal(build.sourceCommit, PRODUCER_SDK);\nconst readJson = (path) => JSON.parse(readFileSync(path, \"utf8\"));\nfor (const profile of [\"starter\", \"app\"]) {\n  const installed\
+        \ = readJson(\n    join(ARTIFACT_DIRECTORY, `installed-${profile}-linux-x64.json`),\n  );\n  assert.equal(installed.profile, profile);\n  assert(installed.verified.includes(\"native-receipt\"));\n  for (const field of Object.keys(build))\n    assert.deepEqual(installed[field], build[field]);\n}\n\nexecFileSync(\"/usr/bin/tar\", [\n  \"-xzf\",\n  join(ARTIFACT_DIRECTORY, build.starter.archive),\n  \"-C\",\n  RUNNER_TEMP,\n]);\nconst consumer = join(RUNNER_TEMP, \"agents-starter\");\nconst manifest = readJson(join(consumer, \"package.json\"));\nfor (const [name, record] of Object.entries(build.packages)) {\n  assert.equal(\n    manifest.dependencies[name],\n    `file:vendor/agents/${record.archive}`,\n  );\n  assert.equal(\n    (await hashes(join(consumer, \"vendor/agents\", record.archive))).sha256,\n    record.sha256,\n  );\n}\nverifyStarterLock(\n  readJson(join(consumer, \"package-lock.json\")),\n  build.packages,\n);\nconst npm = join(process.execPath, \"../../lib/node_modules/npm/bin/npm-cli.js\");\n\
+        execFileSync(process.execPath, [npm, \"ci\", \"--ignore-scripts\"], {\n  cwd: consumer,\n  env: { ...process.env, NODE_PATH: \"\", PATH: \"\" },\n  stdio: \"inherit\",\n});\n\nconst installed = realpathSync(join(consumer, \"node_modules/@openai/agents\"));\nassert(installed.startsWith(realpathSync(consumer) + sep));\nconst checked = join(RECEIPT_SOURCE, \"packages/agents\");\nconst nativeReceipt = readJson(join(installed, \"native/build-receipt.json\"));\nconst inputs = execFileSync(\n  \"git\",\n  [\n    \"ls-files\",\n    \"--\",\n    \"native/CODEX_REVISION\",\n    \"native/Cargo.toml\",\n    \"native/Cargo.lock\",\n    \"native/build.rs\",\n    \"native/tests/fixtures/exec_server.rs\",\n    \"native/rust\",\n    \"native/patches\",\n    \"native/rmcp-patches\",\n    \"scripts\",\n  ],\n  { cwd: join(checkout, \"packages/agents\"), encoding: \"utf8\" },\n)\n  .trim()\n  .split(\"\\n\");\nassert.deepEqual(Object.keys(nativeReceipt.inputs).sort(), inputs.sort());\ncpSync(\n  join(installed, \"native/build-receipt.json\"\
+        ),\n  join(checked, \"native/build-receipt.json\"),\n);\ncpSync(\n  join(installed, \"native/codex.node\"),\n  join(checked, \"native/codex.node\"),\n);\ncpSync(join(installed, \"bin\"), join(checked, \"bin\"), { recursive: true });\nconst { revision } = await verifyNativeReceipt(RECEIPT_SOURCE, build.platform);\nassert.equal(revision, build.codexRevision);\n\nexecFileSync(\n  process.execPath,\n  [\n    \"--input-type=module\",\n    \"-e\",\n    `\n  import assert from 'node:assert/strict';\n  import { createRequire } from 'node:module';\n  import { fileURLToPath } from 'node:url';\n  const root = process.env.INSTALLED_AGENT_ROOT;\n  const sdk = fileURLToPath(import.meta.resolve('@openai/agents'));\n  assert(sdk.startsWith(root + '/dist/'), sdk);\n  const { Environment } = await import('@openai/agents');\n  assert.equal(typeof Environment.local, 'function');\n  const require = createRequire(import.meta.url);\n  const native = root + '/native/codex.node';\n  assert.equal(typeof require(native).create_engine,\
+        \ 'function');\n  console.log('Loaded installed SDK and native addon', sdk, native);\n`,\n  ],\n  {\n    cwd: consumer,\n    env: { ...process.env, NODE_PATH: \"\", INSTALLED_AGENT_ROOT: installed },\n    stdio: \"inherit\",\n  },\n);\nconsole.log(\n  \"Verified native source, products and installed package\",\n  build.sourceCommit,\n  revision,\n);\nINSTALL\nset -euo pipefail\ncheckout=\"$PWD\"\nexport ARTIFACT_DIRECTORY=\"$RUNNER_TEMP/agents-alpha\"\nexport RECEIPT_SOURCE=\"$RUNNER_TEMP/native-receipt-source\"\nexport PRODUCER_SDK=\"$QUALIFIED_SDK_COMMIT\"\nmkdir \"$RECEIPT_SOURCE\"\ngit archive HEAD packages/agents | tar -x -C \"$RECEIPT_SOURCE\"\nnode \"$RUNNER_TEMP/js-install.mjs\" \"$checkout\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ntestdir=\"$consumer/packages/agents/test/native\"\nmkdir -p \"$testdir\"\ncp -R packages/agents/test/native/fixtures \"$testdir/\"\ncp packages/agents/test/native/local-executor-policy-native.test.ts \"$testdir/\"\nln -s \"$checkout/node_modules/vitest\" \"$consumer/node_modules/vitest\"\
+        \nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\n"
+    - name: Qualify private database aliases in the installed SDK
+      env:
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+      run: "set -euo pipefail\ncheckout=\"$PWD\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  packages/agents/test/native/local-executor-policy-native.test.ts \\\n  -t 'rejects a profile database hard link|applies a per-turn write policy and requires the current policy on local restore' \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/storage-alias-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/storage-alias.log\"\njq -e '([.testResults[].assertionResults[] | select(.fullName|test(\"rejects a profile database hard link\")) | select(.status==\"passed\")]|length)==4 and ([.testResults[].assertionResults[] | select(.fullName|test(\"applies a per-turn write policy and requires the current policy on local restore\")) | select(.status==\"passed\")]|length)==1 and .numFailedTests==0' \\\n  \"$RUNNER_TEMP/storage-alias-vitest.json\"\
+        \n"
+    - name: Run exact maintained worker tests against the installed SDK
+      env:
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+      run: "set -euo pipefail\ncheckout=\"$GITHUB_WORKSPACE\"\nconsumer=\"$RUNNER_TEMP/agents-starter\"\ncat > \"$RUNNER_TEMP/worker-source-paths.txt\" <<'PATHS'\npackages/agents/examples/supervised-worker/worker.ts\npackages/agents/examples/web-starter/mcp-peer.ts\npackages/agents/examples/web-starter/protocol.ts\npackages/agents/test/native/fixtures/model-server.ts\npackages/agents/test/native/fixtures/supervised-worker.ts\npackages/agents/test/native/supervised-worker-example.test.ts\nPATHS\nwhile IFS= read -r path; do\n  mkdir -p \"$consumer/$(dirname \"$path\")\"\n  cp \"$checkout/$path\" \"$consumer/$path\"\n  cmp \"$checkout/$path\" \"$consumer/$path\"\n  sha256sum \"$path\"\ndone < \"$RUNNER_TEMP/worker-source-paths.txt\" | tee \"$RUNNER_TEMP/worker-source-inputs.txt\"\nln -s \"$checkout/node_modules/tsx\" \"$consumer/node_modules/tsx\"\nprintf 'export default {};\\n' > \"$consumer/vitest.config.mjs\"\ncd \"$consumer\"\nunset NODE_PATH OPENAI_API_KEY\ntest \"$(id -u)\" != 0\nlocale -a\nnative=\"node_modules/@openai/agents\"\
+        \nsha256sum \"$native\"/native/{codex.node,build-receipt.json} \"$native\"/bin/* | tee \"$RUNNER_TEMP/worker-installed-products.txt\"\nnode \"$checkout/node_modules/vitest/vitest.mjs\" run \\\n  --pool=forks --maxWorkers=1 --root \"$consumer\" --config \"$consumer/vitest.config.mjs\" \\\n  packages/agents/test/native/supervised-worker-example.test.ts \\\n  --reporter=verbose --reporter=json --outputFile.json=\"$RUNNER_TEMP/worker-vitest.json\" \\\n  2>&1 | tee \"$RUNNER_TEMP/worker-qualification.log\"\nsha256sum -c \"$RUNNER_TEMP/worker-installed-products.txt\"\njq -e '.numTotalTests==4 and .numPassedTests==4 and .numFailedTests==0 and .numPendingTests==0' \\\n  \"$RUNNER_TEMP/worker-vitest.json\"\n"
+      if: always() && steps.install.outcome == 'success'
+    - if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: js-installed-storage-evidence-linux-x64
+        path: '${{ runner.temp }}/storage-alias-*.json
+
+          ${{ runner.temp }}/storage-alias.log
+
+          ${{ runner.temp }}/worker-*.json
+
+          ${{ runner.temp }}/worker-*.log
+
+          ${{ runner.temp }}/worker-*.txt'
+        if-no-files-found: warn
