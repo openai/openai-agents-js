@@ -324,22 +324,30 @@ describe('public native local profiles', () => {
   }, 45000);
 
   it.each([
-    ['hold-before', 'beforeEffect', 'not_applied'],
-    ['hold-effect', 'effect', 'applied'],
+    [
+      'managed call before effect',
+      'hold-before',
+      'beforeEffect',
+      'not_applied',
+    ],
+    ['managed call after effect', 'hold-effect', 'effect', 'applied'],
+    ['selected MCP after effect', 'hold-effect', 'effect', 'applied', 'worker'],
   ])(
-    'requires a verified result after process loss in %s',
-    async (mode, milestone, outcome) => {
+    'requires a verified result after process loss during %s',
+    async (_scenario, mode, milestone, outcome, namespace?: string) => {
       const p = await profile();
+      const selectedMcp = namespace !== undefined;
       const server = new ModelServer([
-        [call('record', {}, { callId: 'unknown-call' })],
+        [call('record', {}, { callId: 'unknown-call', namespace })],
         [message('Recovered the original conversation.')],
-        [call('record', {}, { callId: 'unknown-call' })],
+        [call('record', {}, { callId: 'unknown-call', namespace })],
       ]);
       const first = await worker(server, {
         profile: p.storage.path,
         effects: p.effects,
         label: 'source',
         mode,
+        selectedMcp,
       });
       const { id } = await first.wait('opened');
       await first.wait(milestone);
@@ -353,6 +361,7 @@ describe('public native local profiles', () => {
           label: 'destination',
           mode: 'run',
           resume: id,
+          selectedMcp,
           ...options,
         });
       const next = await reopen();
@@ -364,7 +373,7 @@ describe('public native local profiles', () => {
           turnId: expect.any(String),
           callId: 'unknown-call',
           name: 'record',
-          namespace: null,
+          namespace: namespace ?? null,
           arguments: '{}',
         },
       ]);
