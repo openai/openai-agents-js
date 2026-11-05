@@ -1,4 +1,4 @@
-import { Agent, NativeProvider, fileSessionStore } from '@openai/agents-codex';
+import { Agent, NativeProvider, fileSessionStore } from '@openai/agents';
 
 /** Retain directory and conversation ID to resume with a fresh process. */
 export async function runCustomStorage(directory: string, resume?: string) {
