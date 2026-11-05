@@ -87,6 +87,8 @@ await signals.refreshQuota({
 
 The notification prompts a fresh read. Its sparse fields do not refresh cached values or identify an account.
 
+The watcher orders observations by `observedAt`. For equal timestamps, it uses when a direct `updateQuota` call arrives or when a `refreshQuota` read starts. An older concurrent refresh that finishes late cannot replace a newer accepted read with the same timestamp.
+
 Read `signals.quotaResponse` for a copy of the last accepted full service response, including fields the watcher does not recognize. Use `signals.quota.fresh` to check the observation's age. An unrecognized limit reason stays visible in the full response and cannot trigger a stop on its own.
 
 Read `signals.quota` for the selected bucket's available windows, reset times, and usable credits. Missing fields appear as `null`. The credit flags determine availability. The balance is for display. Fresh, current observations block when the service reports a reached limit or spend control, or when it disallows ordinary usage and confirms there are no usable credits. A rounded percentage or elapsed reset time cannot make that decision. A terminal provider quota stop still needs attention when a prior observation showed credits. The standard API-key worker runs without a feed.

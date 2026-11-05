@@ -143,6 +143,96 @@ it('preserves the full quota response without treating unknown fields as a block
   expect(signals.quotaResponse).toBeUndefined();
 });
 
+it.each([true, false])(
+  'accepts the later same-time refresh when initial usable credits are %s',
+  async (usableCredits) => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    const signals = new WorkerSignals({
+      accountId: 'fixture-a',
+      generation: 1,
+    });
+    const first = Promise.withResolvers<AccountQuotaObservation['response']>();
+    const second = Promise.withResolvers<AccountQuotaObservation['response']>();
+    const firstRefresh = signals.refreshQuota({
+      generation: 1,
+      maxAgeSeconds: 60,
+      read: () => first.promise,
+    });
+    const secondRefresh = signals.refreshQuota({
+      generation: 1,
+      maxAgeSeconds: 60,
+      read: () => second.promise,
+    });
+    first.resolve(quotaRead({ usableCredits }).response);
+    await firstRefresh;
+    expect(signals.quota).toMatchObject({
+      observedAt: 1_800_000_000,
+      blocked: !usableCredits,
+    });
+
+    const latest = quotaRead({ usableCredits: !usableCredits }).response;
+    second.resolve(latest);
+    await secondRefresh;
+    expect(signals.quota).toMatchObject({
+      observedAt: 1_800_000_000,
+      blocked: usableCredits,
+    });
+    expect(signals.quotaResponse).toEqual(latest);
+  },
+);
+
+it('accepts repeated delivered quota updates with the same rounded timestamp', () => {
+  const now = 1_800_000_000;
+  vi.spyOn(Date, 'now').mockReturnValue(now * 1000 + 500);
+  const signals = new WorkerSignals({ accountId: 'fixture-a', generation: 1 });
+  const healthy = quotaRead({ observedAt: now, usableCredits: true });
+  const blocked = quotaRead({ observedAt: now });
+  signals.updateQuota(healthy);
+  expect(signals.quota?.blocked).toBe(false);
+  signals.updateQuota(blocked);
+  expect(signals.quota?.blocked).toBe(true);
+  signals.updateQuota(healthy);
+  expect(signals.quota?.blocked).toBe(false);
+  expect(signals.quotaResponse).toEqual(healthy.response);
+});
+
+it.each([0, 1_000])(
+  'rejects an older quota refresh that finishes last after starting %s ms earlier',
+  async (gapMs) => {
+    const now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const signals = new WorkerSignals({
+      accountId: 'fixture-a',
+      generation: 1,
+    });
+    const changes = vi.fn();
+    signals.onChange(changes, new AbortController().signal);
+    const delayed =
+      Promise.withResolvers<AccountQuotaObservation['response']>();
+    const older = signals.refreshQuota({
+      generation: 1,
+      maxAgeSeconds: 60,
+      read: () => delayed.promise,
+    });
+
+    clock.mockReturnValue(now + gapMs);
+    const latest = quotaRead({ usableCredits: true }).response;
+    await signals.refreshQuota({
+      generation: 1,
+      maxAgeSeconds: 60,
+      read: async () => latest,
+    });
+    delayed.resolve(quotaRead().response);
+    await older;
+    expect(signals.quota).toMatchObject({
+      observedAt: (now + gapMs) / 1000,
+      blocked: false,
+    });
+    expect(signals.quotaResponse).toEqual(latest);
+    expect(changes).toHaveBeenCalledTimes(1);
+  },
+);
+
 it('waits across an ordinary tool and advisory quota for a live question, then completion', async () => {
   const continued = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();

@@ -88,11 +88,13 @@ export class WorkerSignals {
   readonly #changes = new EventTarget();
   readonly #limitId: string;
   #attachment: Attachment;
+  #observationOrder = 0;
   #snapshot:
     | {
         details: Omit<AccountQuota, 'fresh' | 'blocked'>;
         response: AccountQuotaObservation['response'];
         acceptedAt: number | null;
+        order: number;
       }
     | undefined;
 
@@ -133,21 +135,32 @@ export class WorkerSignals {
       return;
     }
     const observedAt = Date.now() / 1000;
+    const order = ++this.#observationOrder;
     const response = await read();
-    this.updateQuota({
-      generation,
-      observedAt,
-      expiresAt: observedAt + maxAgeSeconds,
-      response,
-    });
+    this.#updateQuota(
+      {
+        generation,
+        observedAt,
+        expiresAt: observedAt + maxAgeSeconds,
+        response,
+      },
+      order,
+    );
   }
 
-  updateQuota({
-    generation,
-    observedAt = null,
-    expiresAt = null,
-    response,
-  }: AccountQuotaObservation): void {
+  updateQuota(observation: AccountQuotaObservation): void {
+    this.#updateQuota(observation, ++this.#observationOrder);
+  }
+
+  #updateQuota(
+    {
+      generation,
+      observedAt = null,
+      expiresAt = null,
+      response,
+    }: AccountQuotaObservation,
+    order: number,
+  ): void {
     const { accountId, ordinaryUsageAllowed, rateLimits, rateLimitsByLimitId } =
       response;
     if (
@@ -159,9 +172,14 @@ export class WorkerSignals {
     }
 
     const acceptedAt = isFresh(observedAt, expiresAt) ? observedAt : null;
-    // Keep the last accepted timestamp even after its quota expires.
-    const previous = this.#snapshot?.acceptedAt;
-    if (previous != null && (acceptedAt === null || acceptedAt <= previous)) {
+    // Keep the last accepted position even after its quota expires.
+    const previous = this.#snapshot;
+    if (
+      previous?.acceptedAt != null &&
+      (acceptedAt === null ||
+        acceptedAt < previous.acceptedAt ||
+        (acceptedAt === previous.acceptedAt && order < previous.order))
+    ) {
       return;
     }
 
@@ -185,6 +203,7 @@ export class WorkerSignals {
     }
     this.#snapshot = {
       acceptedAt,
+      order,
       response: structuredClone(response),
       details: {
         accountId,
