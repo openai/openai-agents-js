@@ -1,8 +1,9 @@
 import { redirect } from 'next/navigation';
-import { OpenAIConversationsSession } from '@openai/agents-openai';
+import { headers } from 'next/headers';
+import { demoAccessResponse } from '@/app/lib/demoAccess';
 import ChatView from '@/app/components/ChatView';
 import { toUiMessages } from '@/app/lib/messageConverters';
-import { findSession, getOwnerId } from '@/app/lib/session';
+import { findSession, getOwnerId, readSessionHistory } from '@/app/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,6 +23,9 @@ function readSessionId(
 }
 
 export default async function Page({ searchParams }: PageProps) {
+  if (demoAccessResponse(await headers())) {
+    return <p>Open this demo URL directly in your browser to sign in.</p>;
+  }
   const resolvedSearchParams = await Promise.resolve(searchParams);
   const sessionId = readSessionId(resolvedSearchParams);
 
@@ -31,10 +35,7 @@ export default async function Page({ searchParams }: PageProps) {
     redirect('/api/session');
   }
 
-  const session = new OpenAIConversationsSession({
-    conversationId: entry.conversationId,
-  });
-  const historyItems = await session.getItems(10);
+  const historyItems = await readSessionHistory(sessionId, entry);
   const initialMessages = toUiMessages(historyItems);
 
   return (

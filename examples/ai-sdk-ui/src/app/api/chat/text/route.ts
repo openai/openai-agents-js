@@ -1,9 +1,15 @@
+import { demoAccessResponse } from '@/app/lib/demoAccess';
 import { Agent, run } from '@openai/agents/classic';
 import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 import type { UIMessage } from 'ai';
 
 import { toAgentInput } from '@/app/lib/messageConverters';
-import { findSession, getOwnerId } from '@/app/lib/session';
+import {
+  findSession,
+  getOwnerId,
+  readLimitedJson,
+  reserveModelRun,
+} from '@/app/lib/session';
 
 const textAgent = new Agent({
   name: 'Sky Guide',
@@ -17,7 +23,17 @@ const textAgent = new Agent({
 });
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
+  const denied = demoAccessResponse(req.headers);
+  if (denied) return denied;
+  const parsed = await readLimitedJson(req);
+  if ('status' in parsed) {
+    return new Response('Invalid request.', { status: parsed.status });
+  }
+  const body = parsed.value as {
+    messages?: unknown;
+    sessionId?: unknown;
+    id?: unknown;
+  } | null;
   const messages = Array.isArray(body?.messages)
     ? (body.messages as UIMessage[])
     : [];
@@ -44,9 +60,19 @@ export async function POST(req: Request) {
     return new Response('Missing messages.', { status: 400 });
   }
 
+  const reservation = reserveModelRun(sessionId, entry);
+  if ('status' in reservation) {
+    return new Response('Conversation unavailable.', {
+      status: reservation.status,
+    });
+  }
   const stream = await run(textAgent, input, {
     stream: true,
     conversationId: entry.conversationId,
+  }).catch((error: unknown) => {
+    reservation.release();
+    throw error;
   });
+  void stream.completed.finally(reservation.release).catch(() => {});
   return createAiSdkTextStreamResponse(stream);
 }
