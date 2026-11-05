@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "skipLibCheck": false,
+    "types": ["node"],
+    "paths": {
+      "@openai/agents-core/_shims": [
+        "../agents-core/dist/shims/shims-node.d.ts"
+      ],
+      "@openai/agents-realtime/_shims": [
+        "../agents-realtime/dist/shims/shims-node.d.ts"
+      ],
+      "@openai/agents-core/_shims/runtime": [
+        "../agents-core/dist/shims/platform-node.d.ts"
+      ]
+    },
+    "lib": ["ESNext", "DOM"]
+  },
+  "include": ["./dist/**/*.d.ts"],
+  "exclude": []
+}

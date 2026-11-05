@@ -62,10 +62,14 @@ async function restore() {
   const products = ['native/codex.node', 'native/build-receipt.json', 'bin'];
   if (platform === 'darwin-arm64')
     products.push('native/test-bin/exec-server-fixture');
-  execFileSync('tar', ['-xzf', '-', '-C', 'packages/agents', ...products], {
-    input: archive,
-    stdio: ['pipe', 'inherit', 'inherit'],
-  });
+  execFileSync(
+    'tar',
+    ['-xzf', '-', '-C', 'packages/agents-codex', ...products],
+    {
+      input: archive,
+      stdio: ['pipe', 'inherit', 'inherit'],
+    },
+  );
   console.log(
     'Restored verified native artifact ' + asset.id + ' for ' + platform,
   );

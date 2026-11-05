@@ -17,7 +17,7 @@ The default OpenAI provider requires credentials for requests. Custom Models can
 
 ## Use a selected Modal sandbox
 
-The [selected sandbox example](examples/selected-modal-sandbox.ts) binds an application-supplied, pre-created Modal handle through `SandboxClient` and `SandboxSessionLike`. Use a `SandboxAgent` with only `capabilities: [shell()]`, imported from `@openai/agents/classic/sandbox`. The example accepts one blocking `python -V` probe with `login: false`. It suppresses command output and returns the exit code. It does not create or look up a sandbox, change its proxy configuration, or implement a general Modal backend.
+The [selected sandbox example](../agents-codex/examples/selected-modal-sandbox.ts) binds an application-supplied, pre-created Modal handle through `SandboxClient` and `SandboxSessionLike`. Use a `SandboxAgent` with only `capabilities: [shell()]`, imported from `@openai/agents/classic/sandbox`. The example accepts one blocking `python -V` probe with `login: false`. It suppresses command output and returns the exit code. It does not create or look up a sandbox, change its proxy configuration, or implement a general Modal backend.
 
 Pass `borrowSelectedModalProbe(selected)` as `sandbox.session` to retain application ownership. Pass `ownSelectedModalProbe(selected, disposeSelected)` as `sandbox.client` only when the SDK should dispose of that selected resource. SDK-owned shutdown waits for the admitted probe, then calls the supplied disposal action once.
 
@@ -27,7 +27,7 @@ No extra credentials or live proxy are needed for the controlled selection tests
 
 For retained sessions, guardrails, tracing, and Realtime, use the [classic SDK guides](https://openai.github.io/openai-agents-js/). Translate their `@openai/agents` imports to `@openai/agents/classic`, and `@openai/agents/realtime` imports to `@openai/agents/classic/realtime`. The native package root has a different API.
 
-See the packaged [testing guide](TESTING.md) for `ScriptedModel`, `ScriptedRealtimeTransport`, and `scriptedSandboxSession`. SDK-backed classic MCP clients require your application to install the optional `@modelcontextprotocol/client` dependency. The matched core package declares version `2.4.0`.
+See the packaged [testing guide](../agents-codex/TESTING.md) for `ScriptedModel`, `ScriptedRealtimeTransport`, and `scriptedSandboxSession`. SDK-backed classic MCP clients require your application to install the optional `@modelcontextprotocol/client` dependency. The matched core package declares version `2.4.0`.
 
 Use `@openai/agents/classic` for classic `Agent`, `Runner`, `run`, tools, handoffs, guardrails, tracing, `RunState`, and session stores. Use `/classic/realtime` for `RealtimeAgent`, `RealtimeSession`, and OpenAI audio transports. Use `/classic/testing` and `/classic/realtime/testing` for deterministic model and transport doubles. Sandbox APIs remain under `/classic/sandbox` and `/classic/sandbox/local`, and utilities under `/classic/utils`. The matching classic packages supply these implementations and optional integration requirements. Realtime keeps its existing API without a new audio runtime.
 
@@ -47,7 +47,7 @@ An `Agent.asTool()` call starts a separate nested Runner. That Runner does not i
 
 ### Prepare model declarations
 
-To edit model-facing instructions, history, or tool declarations, use the application-owned wrapper in the [prepared Model declarations example](examples/prepared-model-declarations/README.md). It clones request data before editing it. Set the wrapper as the Agent's `model`, or pass `new Runner({ modelOverride: wrappedModel })` to select it across a classic run's handoffs.
+To edit model-facing instructions, history, or tool declarations, use the application-owned wrapper in the [prepared Model declarations example](../agents-codex/examples/prepared-model-declarations/README.md). It clones request data before editing it. Set the wrapper as the Agent's `model`, or pass `new Runner({ modelOverride: wrappedModel })` to select it across a classic run's handoffs.
 
 The Runner still uses the original registered tools, schemas, and approval policy for execution. Editing a sampled declaration cannot enable a disabled tool or expand its executable arguments.
 
@@ -240,15 +240,15 @@ The application owns storage durability and concurrent access. Another applicati
 
 ### Reopen an application-owned file Session
 
-The [file Session example](examples/migration-session.ts) combines this completed-history contract with a selected public `ScriptedModel` and a small application-owned JSON store. It exports `openFileSession(path, sessionId)` and `runMigrationSessionPhase(phase, session, effectsPath)` outside the SDK API. The store loads history into the public `MemorySession` and awaits a file write after each mutation. `MemorySession` supplies cloning and chronological reads.
+The [file Session example](../agents-codex/examples/migration-session.ts) combines this completed-history contract with a selected public `ScriptedModel` and a small application-owned JSON store. It exports `openFileSession(path, sessionId)` and `runMigrationSessionPhase(phase, session, effectsPath)` outside the SDK API. The store loads history into the public `MemorySession` and awaits a file write after each mutation. `MemorySession` supplies cloning and chronological reads.
 
 From the checkout root, use Node.js 24 after building the classic packages and matching native addon/runtime helpers. No model API key is needed. Create a private directory and run the three commands sequentially, once each. Each command starts a separate process with the same session identity and history path.
 
 ```sh
 SESSION_DIRECTORY=$(mktemp -d)
-pnpm exec tsx packages/agents/examples/migration-session.ts classic "$SESSION_DIRECTORY/history.json" "$SESSION_DIRECTORY/effects.txt" example-session
-pnpm exec tsx packages/agents/examples/migration-session.ts native "$SESSION_DIRECTORY/history.json" "$SESSION_DIRECTORY/effects.txt" example-session
-pnpm exec tsx packages/agents/examples/migration-session.ts restarted "$SESSION_DIRECTORY/history.json" "$SESSION_DIRECTORY/effects.txt" example-session
+pnpm exec tsx packages/agents-codex/examples/migration-session.ts classic "$SESSION_DIRECTORY/history.json" "$SESSION_DIRECTORY/effects.txt" example-session
+pnpm exec tsx packages/agents-codex/examples/migration-session.ts native "$SESSION_DIRECTORY/history.json" "$SESSION_DIRECTORY/effects.txt" example-session
+pnpm exec tsx packages/agents-codex/examples/migration-session.ts restarted "$SESSION_DIRECTORY/history.json" "$SESSION_DIRECTORY/effects.txt" example-session
 ```
 
 The stored item counts are 4, 8, then 10. The native continuation adds its function-call/result pair. The final process restores history without another effect. The effects file contains exactly `old` and `new` on separate lines. The application owns the directory and removes it when finished.
@@ -275,7 +275,7 @@ Object output uses `SDKRunner.run()`, including buffered `modelInvocation: 'stre
 
 ### Live Model events and accepted semantic replay
 
-Call `await SDKRunner.stream(agent, input, options)` with the same supported Agent, input and context. This additional entrypoint selects the Model's streaming method. It rejects an explicit `modelInvocation: 'response'` before execution. Ordinary `SDKRunner.run()` and the separate classic `Runner.run(..., { stream: true })` route keep their behavior. See [the complete streaming example](examples/migration-stream.ts), which runs without model credentials.
+Call `await SDKRunner.stream(agent, input, options)` with the same supported Agent, input and context. This additional entrypoint selects the Model's streaming method. It rejects an explicit `modelInvocation: 'response'` before execution. Ordinary `SDKRunner.run()` and the separate classic `Runner.run(..., { stream: true })` route keep their behavior. See [the complete streaming example](../agents-codex/examples/migration-stream.ts), which runs without model credentials.
 
 #### Tentative raw events
 
@@ -323,7 +323,7 @@ Agent listeners run before run listeners for `agent_start`. Run listeners run fi
 
 `agent_end` signals that final output guardrails passed. A later listener or cleanup error can still reject the run.
 
-See [the guarded migration example](examples/migration-guardrails.ts) for a scripted Model, function guardrails, and lifecycle listeners without API credentials.
+See [the guarded migration example](../agents-codex/examples/migration-guardrails.ts) for a scripted Model, function guardrails, and lifecycle listeners without API credentials.
 
 ### Hold one function for approval
 
@@ -345,7 +345,7 @@ Pass an AbortSignal when the application may cancel. Cancellation revokes the pe
 
 #### Approval scope
 
-This is an in-process SDK function consent boundary over an actual native-held call. It is not a native `ApprovalRequest` or `NativeQuestion`, and it does not change the native approval policy for other tool families. The carrier is neither a portable checkpoint nor legacy RunState. Start this route with fresh native input. Keep pending legacy work on its original runtime until it settles. Agent tools and handoffs cannot use this approval opt-in. See [the complete held-function example](examples/migration-approvals.ts), which demonstrates approval and rejection without model credentials.
+This is an in-process SDK function consent boundary over an actual native-held call. It is not a native `ApprovalRequest` or `NativeQuestion`, and it does not change the native approval policy for other tool families. The carrier is neither a portable checkpoint nor legacy RunState. Start this route with fresh native input. Keep pending legacy work on its original runtime until it settles. Agent tools and handoffs cannot use this approval opt-in. See [the complete held-function example](../agents-codex/examples/migration-approvals.ts), which demonstrates approval and rejection without model credentials.
 
 ### Choose the full classic runtime
 

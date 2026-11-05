@@ -3,12 +3,6 @@
   "compilerOptions": {
     "noEmit": true,
     "paths": {
-      "@hyperjump/json-schema/experimental": [
-        "../../node_modules/@hyperjump/json-schema/lib/experimental"
-      ],
-      "@hyperjump/json-schema/instance/experimental": [
-        "../../node_modules/@hyperjump/json-schema/lib/instance"
-      ],
       "@openai/agents": ["./src/index.ts"],
       "@openai/agents/testing": ["./src/testing/index.ts"],
       "@openai/agents/classic": ["./src/classic/index.ts"],
@@ -39,6 +33,6 @@
     "lib": ["ESNext", "DOM"],
     "moduleResolution": "bundler"
   },
-  "include": ["src/**/*.ts", "examples/**/*.ts", "test/**/*.ts"],
-  "exclude": ["dist/**", "native/**"]
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["dist/**"]
 }

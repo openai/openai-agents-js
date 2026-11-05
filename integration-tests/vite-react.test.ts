@@ -69,6 +69,9 @@ describe('Vite React', () => {
     const browser = await chromium.launch();
     const page = await browser.newPage();
     await page.goto('http://localhost:9999/');
+    expect(await page.getByTestId('realtime-agent').textContent()).toBe(
+      'Browser Realtime Agent',
+    );
     const root = await page.$('#root');
     const span = await root?.waitForSelector('span[data-testid="response"]', {
       state: 'attached',

@@ -121,7 +121,8 @@ When writing complex features or significant refactors, use an ExecPlan (as desc
 
 The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
 
-- `packages/agents`: A convenience bundle exporting core and OpenAI packages.
+- `packages/agents` provides the public SDK imports and initializes classic agents.
+- `packages/agents-codex` contains the embedded Codex runtime, native helpers, and Codex examples.
 - `packages/agents-core`: Core abstractions and runtime for agent workflows.
 - `packages/agents-openai`: OpenAI-specific bindings and implementations.
 - `packages/agents-realtime`: Realtime bindings and implementations.
