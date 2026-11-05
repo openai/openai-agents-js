@@ -346,7 +346,10 @@ impl ThreadOptions {
             let max_depth = self.native_agent_max_depth.unwrap_or(1);
             anyhow::ensure!(max_depth > 0, "NativeAgents max_depth must be positive");
             let inherited_instructions = self.instructions.as_deref().and_then(|text| {
-                (!self.instruction_files.is_empty()
+                // Core trims configured subagent instructions before applying them to children.
+                let text = text.trim();
+                (!text.is_empty()
+                    && !self.instruction_files.is_empty()
                     && options
                         .config
                         .multi_agent_v2
