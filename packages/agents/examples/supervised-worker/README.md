@@ -51,4 +51,8 @@ The SDK fences replay of the reconciled call IDs. Use an application operation k
 
 The startup signal covers selected-tool discovery and native opening. Reconciliation callbacks and MCP transports must also honor their own deadline. For each turn, the worker waits for completion or attention with a separate signal. It cancels the turn and joins cleanup before saving a `needs_attention` status. The status records the reason, such as a deadline, rate limit, or unexpected interaction. Wait for the worker to exit before reopening its profile. Cleanup can take longer than the wait.
 
-Use the snapshot timings to track startup, follow-up submission, first managed tool, and completion separately. The first-tool value is empty if the worker sees no managed tool event. Native commands report their own duration in history. Treat the synthetic run as evidence for the reference workflow. Measure production latency and check real artifacts, permissions, and recovery behavior in the adopting application.
+Use the snapshot timings to track startup, follow-up submission, the first tool result, and completion separately. The legacy `firstToolMs` field measures time from submission to the first observed managed tool start. It is null if the worker sees no managed tool start.
+
+`firstToolResultMs` measures time from submission to the first result the worker observes in that turn. It counts managed tool finishes and native execution completions with a completed or failed status. A native command can return a result before any managed tool starts. Cancelled or incomplete work does not count. The field is null when the worker observes no result, including when a gap hides it. Older snapshots can omit the field. The worker writes new timing values when it gets a final model output.
+
+Treat the synthetic run as evidence for the reference workflow. Measure production latency and check real artifacts, permissions, and recovery behavior in the adopting application.
