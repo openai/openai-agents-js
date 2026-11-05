@@ -131,7 +131,7 @@ async fn compact_retains_engine_thread_goal_service_and_local_writer() {
         let id = before.id;
         drop(before);
         let receipt: serde_json::Value =
-            serde_json::from_str(&native._compact(None).await.unwrap()).unwrap();
+            serde_json::from_str(&native._compact(None, None).await.unwrap()).unwrap();
         assert_eq!(receipt["status"], "started");
         assert!(receipt["turn_id"].is_string());
         terminal(&native, receipt["turn_id"].as_str().unwrap()).await;
@@ -179,7 +179,7 @@ async fn compact_pending_mutation_retains_context_exclusion_until_drop() {
         let memory_without_goals =
             owner.engine.local_checklist_store.is_none() && owner.engine.goals.is_none();
         let mutation = owner.mutations.lock().await;
-        let mut compacting = Box::pin(native._compact(None));
+        let mut compacting = Box::pin(native._compact(None, None));
         // Poll through uncontended admission without a cooperative-budget yield.
         let pending =
             futures_util::poll!(tokio::task::unconstrained(compacting.as_mut())).is_pending();
@@ -220,7 +220,7 @@ async fn engine_close_before_queued_compact_rejects_without_a_request() {
             result = &mut closing => panic!("close passed lifecycle hold: {result:?}"),
             _ = tokio::task::yield_now() => {}
         }
-        let mut compacting = Box::pin(native._compact(None));
+        let mut compacting = Box::pin(native._compact(None, None));
         tokio::select! { biased;
             result = &mut compacting => panic!("compact passed lifecycle hold: {result:?}"),
             _ = tokio::task::yield_now() => {}
@@ -250,7 +250,7 @@ async fn thread_close_before_queued_compact_rejects_without_a_request() {
             result = &mut closing => panic!("close passed mutations hold: {result:?}"),
             _ = tokio::task::yield_now() => {}
         }
-        let mut compacting = Box::pin(native._compact(None));
+        let mut compacting = Box::pin(native._compact(None, None));
         tokio::select! { biased;
             result = &mut compacting => panic!("compact passed mutations hold: {result:?}"),
             _ = tokio::task::yield_now() => {}
@@ -274,7 +274,7 @@ async fn compact_health_wait_retains_admission_and_releases_it_before_close() {
         let state = engine.current().unwrap();
         let store = state.local_checklist_store.as_ref().unwrap();
         let health = store.writers.lock().await;
-        let mut compacting = Box::pin(native._compact(None));
+        let mut compacting = Box::pin(native._compact(None, None));
         tokio::select! { biased;
             result = &mut compacting => panic!("compact passed health hold: {result:?}"),
             _ = tokio::task::yield_now() => {}
@@ -314,7 +314,7 @@ async fn compact_rejects_a_known_sticky_writer_failure_before_model_work() {
             .unwrap()
             .failure = Some("injected sticky compact writer failure".into());
         drop(owner);
-        let error = native._compact(None).await.unwrap_err();
+        let error = native._compact(None, None).await.unwrap_err();
         assert!(
             error
                 .reason
@@ -338,7 +338,7 @@ async fn compact_refuses_a_reserved_native_graph_stop_without_a_request() {
         let stop = native
             .request_graph_stop("root".into(), "force".into())
             .unwrap();
-        let error = native._compact(None).await.unwrap_err();
+        let error = native._compact(None, None).await.unwrap_err();
         assert!(error.reason.contains("stopping"), "{}", error.reason);
         assert_eq!(provider.request_count(), 0);
         stop.settle().await.unwrap();
@@ -367,7 +367,7 @@ async fn accepted_compact_reports_a_persistence_failure_after_model_activity() {
         let (provider, _profile, _home, engine, native) = setup_with_provider(provider).await;
         let seed_id = seed(&native).await;
         let receipt: serde_json::Value =
-            serde_json::from_str(&native._compact(None).await.unwrap()).unwrap();
+            serde_json::from_str(&native._compact(None, None).await.unwrap()).unwrap();
         assert_eq!(receipt["status"], "started");
         let turn_id = receipt["turn_id"].as_str().unwrap();
         assert_ne!(turn_id, seed_id);
@@ -481,7 +481,7 @@ async fn close_during_terminal_health_wait_rejects_success_and_joins() {
         let (provider, _profile, _home, engine, native) = setup().await;
         let seed_id = seed(&native).await;
         let receipt: serde_json::Value =
-            serde_json::from_str(&native._compact(None).await.unwrap()).unwrap();
+            serde_json::from_str(&native._compact(None, None).await.unwrap()).unwrap();
         let turn_id = receipt["turn_id"].as_str().unwrap();
         assert_eq!(receipt["status"], "started");
         assert_ne!(turn_id, seed_id);

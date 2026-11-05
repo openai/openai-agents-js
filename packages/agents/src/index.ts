@@ -17,7 +17,10 @@ export type {
   CheckpointStatus,
 } from './runtime/capabilities';
 export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
-export type { NativeErrorOptions } from './runtime/native-error';
+export type {
+  NativeErrorOptions,
+  ResponseIntegrityReason,
+} from './runtime/native-error';
 export {
   Turn,
   NativeError,
@@ -144,6 +147,11 @@ export type {
   Exporter,
   OtelTlsConfig,
   TelemetryOptions,
+  TraceOptions,
+  SpanContext,
+  TraceEvent,
+  TraceProcessor,
+  FlushResult,
 } from './runtime/telemetry';
 
 export { nativeGoals } from './runtime/goals';

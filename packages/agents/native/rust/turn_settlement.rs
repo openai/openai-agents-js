@@ -34,6 +34,7 @@ enum Admission {
 }
 
 pub(crate) struct Turn {
+    pub(crate) tracing: Option<Arc<codex_otel::sdk_trace::ContextLease>>,
     id: String,
     accepted: AtomicBool,
     delivered: AtomicBool,
@@ -66,6 +67,10 @@ struct Steering {
 }
 
 impl Turn {
+    pub(crate) fn permits_integrity_reason(&self) -> bool {
+        !self.same_id_recovery
+    }
+
     fn capture_provider_error(
         &self,
         category: codex_protocol::protocol::CodexErrorInfo,
@@ -84,6 +89,11 @@ impl Turn {
         error: &codex_protocol::protocol::ErrorEvent,
     ) -> serde_json::Value {
         let mut value = serde_json::to_value(error).expect("serializable native error");
+        if self.permits_integrity_reason()
+            && let Some(reason) = error.response_integrity_reason
+        {
+            value["_sdk_response_integrity_reason"] = serde_json::json!(reason);
+        }
         if let Some((category, metadata)) = self
             .provider_error
             .lock()
@@ -553,6 +563,9 @@ impl ThreadLifecycleContributor<Config> for Contributor {
 impl TurnLifecycleContributor for Contributor {
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            let tracing = input
+                .turn_store
+                .get_or_init(codex_otel::sdk_trace::CapturedContext::capture);
             let settlement = input.thread_store.get_or_init(Settlement::default);
             let own_instructions = input
                 .thread_store
@@ -593,6 +606,7 @@ impl TurnLifecycleContributor for Contributor {
                 .is_some_and(|turn| turn.id == input.turn_id);
             // Even same-ID recovery receives a new native lifecycle receipt.
             input.turn_store.insert(Turn {
+                tracing: tracing.context.clone(),
                 id: input.turn_id.to_owned(),
                 accepted: AtomicBool::new(false),
                 delivered: AtomicBool::new(false),
@@ -891,6 +905,51 @@ mod provider_error_tests {
             })
             .await;
         turn.get::<Turn>().unwrap()
+    }
+
+    #[tokio::test]
+    async fn integrity_reason_uses_its_event_and_is_absent_for_same_id_recovery() {
+        use codex_protocol::error::ResponseIntegrityReason;
+        let thread = ExtensionData::new("thread");
+        let first_store = ExtensionData::new("same-id");
+        let first = start(&thread, &first_store, "same-id").await;
+        let first_error = CodexErr::InvalidRequest("safe".into())
+            .with_response_integrity_reason(ResponseIntegrityReason::UndecodableOutputItem)
+            .to_error_event(None);
+        let other_error = CodexErr::InvalidRequest("safe".into())
+            .with_response_integrity_reason(ResponseIntegrityReason::UnfinishedAssistantItem)
+            .to_error_event(None);
+        assert_eq!(first_error.codex_error_info, other_error.codex_error_info);
+        assert_eq!(
+            first.error_json(&first_error)["_sdk_response_integrity_reason"],
+            "undecodable_output_item"
+        );
+        assert_eq!(
+            first.error_json(&other_error)["_sdk_response_integrity_reason"],
+            "unfinished_assistant_item"
+        );
+        assert!(
+            first
+                .error_json(&CodexErr::InvalidRequest("safe".into()).to_error_event(None))
+                .get("_sdk_response_integrity_reason")
+                .is_none()
+        );
+        let second_store = ExtensionData::new("same-id");
+        let second = start(&thread, &second_store, "same-id").await;
+        assert!(!second.permits_integrity_reason());
+        assert!(
+            thread
+                .get::<Settlement>()
+                .unwrap()
+                .observed("same-id")
+                .is_none()
+        );
+        assert!(
+            second
+                .error_json(&first_error)
+                .get("_sdk_response_integrity_reason")
+                .is_none()
+        );
     }
 
     #[tokio::test]

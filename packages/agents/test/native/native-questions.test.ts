@@ -2253,3 +2253,100 @@ it('keeps opening unpublished until its real publication boundary reaches the so
     }
   }
 }, 30_000);
+
+it('keeps original child tracing through question reply and physical handler cleanup', async () => {
+  const telemetry = await import('../../src/runtime/telemetry');
+  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+  try {
+    for (const disabled of [false, true]) {
+      const executor = await startPublicExecutor();
+      const release = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<{
+        request: import('../../src/runtime/native-questions').NativeQuestion;
+        reply: import('../../src/runtime/native-questions').NativeQuestionReply;
+      }>();
+      const f = await fixture({
+        childQuestion: true,
+        childAgents: new NativeAgents({ interactions: true }),
+      });
+      let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
+      const original = f.agent.session.bind(f.agent);
+      vi.spyOn(f.agent, 'session').mockImplementation(async (...args) => {
+        session = await original(...args);
+        return session;
+      });
+      let workflow: Awaited<ReturnType<typeof telemetry.startTrace>>;
+      let result: ReturnType<typeof f.agent.run>;
+      let calls = 0;
+      const check = () => {
+        const span = telemetry.getCurrentSpan()!;
+        expect(span).toBeDefined();
+        expect(telemetry.getCurrentTrace()).toBe(workflow);
+        expect(span.context.disabled).toBe(disabled);
+        expect(span.context.includeSensitiveData).toBe(false);
+      };
+      try {
+        await telemetry.withTrace(
+          { name: 'original.question.workflow', includeSensitiveData: true },
+          (value) => {
+            workflow = value;
+            result = f.agent.run('Delegate lookup', {
+              tracing: { disabled, includeSensitiveData: false },
+              environment: new Environment({
+                url: executor.url,
+                cwd: executor.cwd,
+                headers: executor.headers,
+                tools: ['exec_command', 'write_stdin', 'apply_patch'],
+              }),
+              onNativeQuestion: async (request) => {
+                if (request.type !== 'elicitation_request')
+                  throw new Error('Expected child form');
+                expect(request.subagentId).not.toBeNull();
+                check();
+                calls++;
+                const reply = request.reply(null);
+                entered.resolve({ request, reply });
+                await release.promise;
+                check();
+                await telemetry.withSpan(
+                  { parent: null, disabled: false, includeSensitiveData: true },
+                  (span) => {
+                    expect(span.context.disabled).toBe(disabled);
+                    expect(span.context.includeSensitiveData).toBe(false);
+                  },
+                );
+                return reply;
+              },
+            });
+            result.catch(() => {});
+          },
+        );
+        await f.childToolEntered;
+        f.releaseChildForm();
+        const issued = await entered.promise;
+        await telemetry.withTrace(
+          { name: 'unrelated.question.workflow', includeSensitiveData: true },
+          async () => {
+            await session!.respond(issued.reply);
+            await f.childFormReply;
+            release.resolve();
+            f.releaseChildModel();
+            expect((await result!).finalOutput).toBe('root done');
+          },
+        );
+        expect(calls).toBe(1);
+        expect(f.formReplies).toHaveLength(1);
+      } finally {
+        release.resolve();
+        f.releaseChildForm();
+        f.releaseChildFinal();
+        f.releaseChildModel();
+        await session?.close();
+        await f.close();
+        await executor.close();
+      }
+    }
+  } finally {
+    await telemetry.shutdown();
+  }
+}, 60_000);

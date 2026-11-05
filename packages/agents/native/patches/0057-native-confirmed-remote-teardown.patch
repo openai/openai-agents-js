@@ -181,10 +181,10 @@ index ba7896a2533635a63324a2f58dd4724d9dcf125a..258b670961950f71e3a8dc29edb8a961
  pub use session::owned_turn_stop::OwnedTurnStop;
  pub use session::owned_turn_stop::OwnedTurnTask;
 diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
-index dccc2da3cde466c70ea3688d17dfcd355dbba29c..d3dd5518434eb1b847e6b40fa073c4b0bbf7b754 100644
+index ae32eac33a093d535792d4aa82d072dc089e09d0..f6fcf14f3e061609508353cb37d5315c8c5e7709 100644
 --- a/codex-rs/core/src/session/handlers.rs
 +++ b/codex-rs/core/src/session/handlers.rs
-@@ -320,17 +320,9 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+@@ -321,17 +321,9 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
      sess.hooks().shutdown().await;
      sess.async_hook_results.close();
      while sess.async_hook_results.try_recv().is_ok() {}

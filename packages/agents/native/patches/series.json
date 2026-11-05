@@ -217,8 +217,28 @@
       "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
     },
     {
+      "path": "0054-native-context-metadata.patch",
+      "sha256": "9703fe0286b3ff967ad8b926d6af5b464cd8e04db5b2234162b6ef27894f09d1"
+    },
+    {
+      "path": "0055-native-documented-defaults.patch",
+      "sha256": "e9364e66af36741d0bf03430de9ca1d02b4659d81fff8639ebf55165c544f8dc"
+    },
+    {
+      "path": "0056-sdk-native-tracing.patch",
+      "sha256": "417c24b71ae57e8af5657bcadd763f9a758473f2a5a877d7360380616bcccd8a"
+    },
+    {
+      "path": "0057-sdk-workflow-identity.patch",
+      "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
+    },
+    {
+      "path": "0054-native-response-integrity-reasons.patch",
+      "sha256": "006be27601ea216c750b5df1c0f9b0f9f4259b9206e1f33869400cf4ff61ea7a"
+    },
+    {
       "path": "0054-native-history-durability.patch",
-      "sha256": "eacf5a47baddfe9858cc5b6460b0c8ce4df6516e1bff66fa7ef2b77a9d15b003"
+      "sha256": "cda109edea1cb5a669e8be466c49b44259f7e1b0e6c79f0598005a1e4c176ca8"
     },
     {
       "path": "0055-native-history-write-reconciliation.patch",
@@ -226,16 +246,16 @@
     },
     {
       "path": "0056-native-tree-finalization-before-store-close.patch",
-      "sha256": "b38578d7eb0b27840117ce5529909ffb543d32578c05903923013bf88b071f56"
+      "sha256": "af72648c78ad7efadae0054ef540090933138172b6bcbaf1e2b8dbdbd851eaa6"
     },
     {
       "path": "0057-native-confirmed-remote-teardown.patch",
-      "sha256": "c0774adde40e8d1ebf986df62de7293b629ff5babe9d2da12ecbd45005fe5d94"
+      "sha256": "0dbfe2124d7bf0a0330dce01653a9607225fcb4b4c6246f0d1e46c2f821e4f0e"
     },
     {
       "path": "0058-native-metadata-durability.patch",
       "sha256": "10136a8852249737dbf7974c579cb84faf0d36fc495fcbaeeafe66a3dfa7e3d6"
     }
   ],
-  "result_tree": "45788feb35c2729358f3d1d764ed6725e4846df8"
+  "result_tree": "27c4cff205494536c4b3556c247814fb8598f547"
 }

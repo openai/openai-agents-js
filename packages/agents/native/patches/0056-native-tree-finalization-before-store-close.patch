@@ -103,10 +103,10 @@ index 6f035271936b4fec7c9c315ade6e052fd4e2d9e7..23de453fd6955ce690bf79a0fc3bcdcd
 +        .expect("session teardown finishes separately");
 +}
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
-index 9c70ba9f1e57bb5371cddb966157bb8483e5dc36..10926b40ccfb44657688ec4939562bcca8ec7b48 100644
+index f256cdbee29c9994cadab422d478ccd938f09745..6ac61350b3122fbd7bba6948de275cbdf54a2088 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
 +++ b/codex-rs/core/src/agent/control_tests.rs
-@@ -5804,3 +5804,134 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
+@@ -5806,3 +5806,134 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
          .await
          .expect("tree shutdown after partial subtree resume should succeed");
  }
@@ -242,10 +242,10 @@ index 9c70ba9f1e57bb5371cddb966157bb8483e5dc36..10926b40ccfb44657688ec4939562bcc
 +    }
 +}
 diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
-index dbaa1091216719e825d6601aa0368401c648e3a7..dccc2da3cde466c70ea3688d17dfcd355dbba29c 100644
+index 6d9ef6062d18204471842512af5b0c01baa04bf1..ae32eac33a093d535792d4aa82d072dc089e09d0 100644
 --- a/codex-rs/core/src/session/handlers.rs
 +++ b/codex-rs/core/src/session/handlers.rs
-@@ -297,6 +297,21 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+@@ -298,6 +298,21 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
      }
      let _ = sess.conversation.shutdown().await;
      sess.abort_all_tasks(TurnAbortReason::Interrupted).await;

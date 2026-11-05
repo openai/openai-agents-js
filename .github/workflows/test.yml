@@ -112,6 +112,9 @@ jobs:
 
   test:
     needs: changes
+    permissions:
+      contents: read
+      actions: read
     # Fork-owned repositories retain access to standard GitHub-hosted runners.
     runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
     timeout-minutes: 25
@@ -131,6 +134,23 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          fetch-depth: 2
+      - name: Verify a proposed native bundle pin
+        if: ${{ needs.changes.outputs.run_ci == 'true' && github.repository == 'openai/openai-agents-js' && github.event_name == 'pull_request' && matrix.node-version == '22' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIN_PROPOSAL_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ -f .github/native-bundle.json ]] && ! git diff --quiet HEAD^1 HEAD -- .github/native-bundle.json; then
+            proposal="$RUNNER_TEMP/native-pin-proposal"
+            if ! git cat-file -e "$PIN_PROPOSAL_SHA^{commit}"; then
+              git fetch --no-tags --depth=1 https://github.com/openai/openai-agents-js.git "$PIN_PROPOSAL_SHA"
+            fi
+            git worktree add --detach "$proposal" "$PIN_PROPOSAL_SHA"
+            cmp .github/native-bundle.json "$proposal/.github/native-bundle.json"
+            cd "$proposal"
+            node scripts/pin-native-bundle.mjs --check
+          fi
       - name: Prepare Docker test image
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         shell: bash

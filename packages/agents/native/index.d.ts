@@ -155,11 +155,15 @@ export class NativeThread {
   _submit(params_json: string): Promise<string>;
   _validate_hosted_search_model(): Promise<void>;
   _update_model_settings(settings_json: string): Promise<boolean>;
-  _compact(traceJson?: string | null): Promise<string>;
+  _compact(
+    traceJson?: string | null,
+    tracing_context?: string,
+  ): Promise<string>;
   _execute_command(
     name: string,
     arguments_: string,
     traceJson?: string | null,
+    tracing_context?: string,
   ): Promise<string>;
   _reply_step(response_json: string): void;
   _check_step(response_json: string): boolean;
@@ -186,12 +190,16 @@ export class NativeThread {
   _end_manual_checkpoint_wait(token: string): void;
   _manual_checkpoint_ready(validated_requests_json: string): Promise<boolean>;
   _seal_manual_checkpoint(validated_requests_json: string): Promise<string>;
-  _restore_manual_continuation(continuation_json: string): Promise<string>;
+  _restore_manual_continuation(
+    continuation_json: string,
+    tracing_context?: string,
+  ): Promise<string>;
   _respond_manual_continuation(request_and_output_json: string): Promise<void>;
   _complete_manual_continuation(
     outputSchemaJson?: string,
     selectionJson?: string,
     traceJson?: string,
+    tracing_context?: string,
   ): Promise<string>;
   read_thread_history(subagent_id: string | null): Promise<string>;
   read_checklist(subagent_id?: string | null): Promise<string>;
@@ -307,7 +315,22 @@ export function create_checkpoint_engine(
   application_apps_json?: string | null,
 ): Promise<Engine>;
 export function configure_telemetry(config_json: string): Promise<void>;
-export function shutdown_telemetry(): Promise<void>;
+export function shutdown_telemetry(timeout_ms?: number): Promise<void>;
+export function start_trace_span(options_json: string): string;
+export function end_trace_span(handle: string, outcome_json: string): void;
+export function retain_trace_context(handle: string): string;
+export function release_trace_context(context: string): void;
+export function trace_span_context(handle: string): string;
+export function release_trace_span(handle: string): void;
+export function force_flush_telemetry(timeout_ms: number): Promise<string>;
+export function set_trace_routes(options_json: string): number;
+export function drain_trace_events(max_count: number): Promise<string>;
+export function ack_trace_events(
+  through_sequence: number,
+  failed_deliveries: number,
+): void;
+export function register_trace_credentials(headers_json: string): string;
+export function release_trace_credentials(ref: string): void;
 export function _embedded_commands(): string;
 export const CODEX_REVISION: string;
 
@@ -333,6 +356,18 @@ declare const binding: {
   reconcile_thread_store: typeof reconcile_thread_store;
   create_checkpoint_engine: typeof create_checkpoint_engine;
   configure_telemetry: typeof configure_telemetry;
+  start_trace_span: typeof start_trace_span;
+  end_trace_span: typeof end_trace_span;
+  retain_trace_context: typeof retain_trace_context;
+  release_trace_context: typeof release_trace_context;
+  trace_span_context: typeof trace_span_context;
+  release_trace_span: typeof release_trace_span;
+  force_flush_telemetry: typeof force_flush_telemetry;
+  set_trace_routes: typeof set_trace_routes;
+  drain_trace_events: typeof drain_trace_events;
+  ack_trace_events: typeof ack_trace_events;
+  register_trace_credentials: typeof register_trace_credentials;
+  release_trace_credentials: typeof release_trace_credentials;
   shutdown_telemetry: typeof shutdown_telemetry;
   _embedded_commands: typeof _embedded_commands;
   CODEX_REVISION: typeof CODEX_REVISION;

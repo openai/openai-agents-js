@@ -1,3 +1,5 @@
+import { captureTracing } from './tracing-context';
+import type { TraceOptions } from './telemetry';
 import {
   captureTraceContext,
   type TraceContext,
@@ -65,7 +67,12 @@ export interface AgentOptions<Context = undefined, Output = string> {
 }
 
 export interface SessionOptions<Context = undefined> {
-  /** Explicit native parent; never read from ambient tracing or persisted state. */
+  tracing?: TraceOptions;
+  /**
+   * Explicit native parent; never read from ambient tracing or persisted state.
+   * Combined SDK scoped tracing must identify the same native parent; an active
+   * SDK scope can therefore conflict with an explicit external parent.
+   */
   parentTrace?: TraceContext | TraceContextHeaders | null;
   context?: Context;
   state?: SessionState;
@@ -292,6 +299,7 @@ export class Agent<Context = undefined, Output = string> {
       parentTrace: captureTraceContext(args[0]?.parentTrace),
     };
     options.signal?.throwIfAborted();
+    let tracingCapture = captureTracing(options.tracing);
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
     try {
@@ -304,7 +312,20 @@ export class Agent<Context = undefined, Output = string> {
           providerOwnsCleanup = true;
         },
       );
+      let openingError: unknown;
       try {
+        session.tracingCapture = tracingCapture;
+        const originalClose = session.onClose;
+        session.onClose = async () => {
+          try {
+            await originalClose?.();
+          } finally {
+            const capture = tracingCapture;
+            tracingCapture = undefined;
+            if (openingError !== undefined) capture?.finish(openingError);
+          }
+        };
+        await tracingCapture?.ready;
         environmentOwner.signal.throwIfAborted();
         const opened = await openSession(
           setup,
@@ -319,9 +340,11 @@ export class Agent<Context = undefined, Output = string> {
         lease.openingSucceeded();
         return opened as CoreSession<Output, Context>;
       } catch (error) {
-        return lease.failOpening(error);
+        openingError = error ?? null;
+        return await lease.failOpening(error);
       }
     } catch (error) {
+      tracingCapture?.finish(error ?? null);
       if (acquiredEnvironment && !providerOwnsCleanup) {
         try {
           await acquiredEnvironment.dispose();
@@ -359,6 +382,7 @@ export class Agent<Context = undefined, Output = string> {
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
       context: options.context,
+      tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
       state: options.state,
       environment: options.environment,

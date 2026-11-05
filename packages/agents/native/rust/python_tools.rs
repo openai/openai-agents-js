@@ -91,6 +91,7 @@ pub(crate) struct ManualOwner {
 }
 
 struct PendingCall {
+    _tracing: Option<codex_otel::sdk_trace::ContextLease>,
     sender: oneshot::Sender<DynamicToolResponse>,
     manual_request: Option<Value>,
 }
@@ -814,6 +815,7 @@ impl PythonTools {
                 runtime_tool_call_id,
             } => json!({"cell_id":cell_id, "nested_call_id":runtime_tool_call_id}),
         };
+        let tracing = codex_otel::sdk_trace::ContextLease::capture();
         let mut request = json!({
             "id": call,
             "msg": {
@@ -824,6 +826,9 @@ impl PythonTools {
                 "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
+        if let Some(context) = &tracing {
+            request["msg"]["tracing_context"] = json!(context.token());
+        }
         if let Some(instance) = &self.instance {
             request["subagent_id"] = json!(thread);
             request["subagent_incarnation"] = json!(instance);
@@ -838,6 +843,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    _tracing: tracing,
                     sender,
                     manual_request: key.reply.manual_grant.as_ref().map(|_| request.clone()),
                 },
@@ -1451,12 +1457,16 @@ impl ToolContributor for PythonContributor {
                 tools: tools.clone(),
                 id,
             };
+            let tracing = codex_otel::sdk_trace::ContextLease::capture();
             let mut request = json!({"id": active.turn, "msg": {
                 "type": "_sdk_select_step", "turn_id": turn.level_id(),
                 "thread": thread.level_id(), "native_step": step.level_id(),
                 "request_id": id.to_string(), "generation": active.generation.id.to_string(),
                 "candidates": allowed
             }});
+            if let Some(context) = &tracing {
+                request["msg"]["tracing_context"] = json!(context.token());
+            }
             if let Some(instance) = &tools.instance {
                 request["subagent_id"] = json!(thread.level_id());
                 request["subagent_incarnation"] = json!(instance);

@@ -102,8 +102,8 @@ it.each([
 ])(
   'attributes files to a child by instruction source (role $role)',
   async ({ role, inherits }) => {
-    const instructions = 'Use the child fixture.';
-    const combined = `Delegate.\n\n${instructions}`;
+    const instructions = 'Use the child fixture.\r\n';
+    const combined = 'Delegate.\n\nUse the child fixture.';
     let childRequest: JsonObject | undefined;
     const server = childServer(
       [
@@ -149,8 +149,15 @@ it.each([
       );
       const { child, turn } = await oneChild(session);
       expect((await turn.wait()).finalOutput).toBe('child final');
-      expect(JSON.stringify(childRequest?.input)).toContain(
-        JSON.stringify(combined).slice(1, -1),
+      expect(childRequest?.input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'developer',
+            content: expect.arrayContaining([
+              { type: 'input_text', text: combined },
+            ]),
+          }),
+        ]),
       );
       const recorded = (
         await Array.fromAsync(session.turns({ subagentId: child.id }))
@@ -640,6 +647,7 @@ describe('exact native child cancellation', () => {
           .wait()
           .catch((cause: unknown) => cause);
         expect(error).toBeInstanceOf(TurnAborted);
+        expect((error as NativeError).responseIntegrityReason).toBeNull();
         await expect(attention).resolves.toMatchObject({
           type: 'needs_attention',
           reason: 'interrupted',
@@ -894,3 +902,134 @@ describe('exact native child cancellation', () => {
     30_000,
   );
 });
+
+it('keeps child tracing policy for explicit starts and active steering', async () => {
+  const telemetry = await import('../../src/runtime/telemetry');
+  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+  try {
+    for (const disabled of [false, true]) {
+      let rootId: string | undefined;
+      let roots = 0;
+      let childModels = 0;
+      let steps = 0;
+      let approvals = 0;
+      let workflow: Awaited<ReturnType<typeof telemetry.startTrace>>;
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const check = () => {
+        const span = telemetry.getCurrentSpan()!;
+        expect(span).toBeDefined();
+        expect(telemetry.getCurrentTrace()).toBe(workflow);
+        expect(span.context.disabled).toBe(disabled);
+        expect(span.context.includeSensitiveData).toBe(false);
+      };
+      const respond = (request: JsonObject) => {
+        const id = String(
+          JSON.parse(
+            (request.client_metadata as Record<string, string>)[
+              'x-codex-turn-metadata'
+            ],
+          ).thread_id,
+        );
+        rootId ??= id;
+        if (id === rootId)
+          return ++roots === 1
+            ? [
+                call(
+                  'spawn_agent',
+                  {
+                    task_name: 'policy-child',
+                    message: 'Do the scripted work.',
+                  },
+                  { namespace: 'collaboration', callId: 'spawn-policy' },
+                ),
+              ]
+            : [message('root done')];
+        childModels++;
+        return childModels === 1
+          ? [message('initial child done')]
+          : childModels === 2
+            ? [
+                call(
+                  'exec_command',
+                  { cmd: 'printf denied' },
+                  { callId: 'denied-command' },
+                ),
+              ]
+            : [message('explicit child done')];
+      };
+      const model = new ModelServer(Array.from({ length: 5 }, () => respond));
+      const executor = await startPublicExecutor();
+      try {
+        await using provider = await providerFor(model);
+        await using session = await new Agent({
+          instructions: 'Delegate.',
+          model: 'gpt-5.5',
+          provider,
+          tools: [
+            new NativeAgents({
+              beforeStep: async () => {
+                check();
+                if (++steps === 2) {
+                  entered.resolve();
+                  await release.promise;
+                  check();
+                }
+                return undefined;
+              },
+            }),
+          ],
+        }).session({
+          tracing: { disabled, includeSensitiveData: false },
+          environment: new Environment({
+            url: executor.url,
+            cwd: executor.cwd,
+            headers: executor.headers,
+            tools: ['exec_command', 'write_stdin', 'apply_patch'],
+            approval: () => {
+              check();
+              approvals++;
+              return false;
+            },
+          }),
+        });
+        await telemetry.withTrace(
+          { name: 'original.workflow', includeSensitiveData: true },
+          async (original) => {
+            workflow = original;
+            expect(
+              (await (await session.submit('delegate')).wait()).finalOutput,
+            ).toBe('root done');
+          },
+        );
+        const { child, turn } = await oneChild(session);
+        expect((await turn.wait()).finalOutput).toBe('initial child done');
+        await telemetry.withTrace(
+          {
+            name: 'unrelated.workflow',
+            includeSensitiveData: true,
+            disabled: false,
+          },
+          async () => {
+            const second = await child.submit('new child turn');
+            await entered.promise;
+            expect(await child.submit('steer active child')).toBe(second);
+            release.resolve();
+            expect((await second.wait()).finalOutput).toBe(
+              'explicit child done',
+            );
+          },
+        );
+        expect(approvals).toBe(1);
+        expect(childModels).toBe(3);
+        expect(steps).toBeGreaterThanOrEqual(3);
+        model.assertExhausted();
+      } finally {
+        release.resolve();
+        await executor.close();
+      }
+    }
+  } finally {
+    await telemetry.shutdown();
+  }
+}, 60_000);

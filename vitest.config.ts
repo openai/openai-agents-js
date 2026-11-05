@@ -110,6 +110,7 @@ function createProjects(reviewTestProfile: boolean) {
           'helpers/vitest/workspacePackageAliases.test.ts',
           'scripts/update-rclone-pin.test.mjs',
           'scripts/released-api-contract.test.mjs',
+          'scripts/restore-native-bundle.test.mjs',
           'scripts/run-integration-tests-managed.test.mjs',
           'scripts/workflow-contracts.test.mjs',
           'docs/src/scripts/headingAnchors.test.ts',
