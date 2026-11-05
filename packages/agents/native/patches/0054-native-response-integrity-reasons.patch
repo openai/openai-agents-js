@@ -411,13 +411,13 @@ index dbaa109..6d9ef60 100644
                                          message,
                                          codex_error_info: Some(CodexErrorInfo::BadRequest),
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 5cab6ca..fa6d176 100644
+index 7d2938c..d5ee490 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -13769,3 +13769,62 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
-         "rejection must not permit same-name ordinary-auth replacement in this session"
-     );
- }
+@@ -13785,3 +13785,62 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
+ 
+ #[path = "context_metadata_tests.rs"]
+ mod context_metadata_tests;
 +
 +#[tokio::test]
 +async fn response_integrity_reason_tracks_the_originating_terminal_error_event() {
@@ -478,7 +478,7 @@ index 5cab6ca..fa6d176 100644
 +    );
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index d156b94..7c46bdf 100644
+index 6612270..7bbeb0e 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -819,6 +819,7 @@ pub(crate) async fn run_turn(
@@ -490,10 +490,10 @@ index d156b94..7c46bdf 100644
                      message: "Invalid image in your last message. Please remove it and try again."
                          .to_string(),
 diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
-index 0b00915..6d14721 100644
+index 83910c5..66a076c 100644
 --- a/codex-rs/core/src/session/turn_context.rs
 +++ b/codex-rs/core/src/session/turn_context.rs
-@@ -1243,6 +1243,7 @@ impl Session {
+@@ -1249,6 +1249,7 @@ impl Session {
                  self.send_event_raw(Event {
                      id: sub_id,
                      msg: EventMsg::Error(ErrorEvent {

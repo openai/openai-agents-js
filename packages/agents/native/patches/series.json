@@ -217,9 +217,17 @@
       "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
     },
     {
+      "path": "0054-native-context-metadata.patch",
+      "sha256": "9703fe0286b3ff967ad8b926d6af5b464cd8e04db5b2234162b6ef27894f09d1"
+    },
+    {
+      "path": "0055-native-documented-defaults.patch",
+      "sha256": "e9364e66af36741d0bf03430de9ca1d02b4659d81fff8639ebf55165c544f8dc"
+    },
+    {
       "path": "0054-native-response-integrity-reasons.patch",
-      "sha256": "9e6eccd6a55cd342cff2b3c89839d4f87ab69873df9f21f9ed020c4deb8ea13d"
+      "sha256": "006be27601ea216c750b5df1c0f9b0f9f4259b9206e1f33869400cf4ff61ea7a"
     }
   ],
-  "result_tree": "e7a3a7278ea18940a52f9b9ada8589f3406a6155"
+  "result_tree": "af600313b9a7cc3e470c6cf75614170b4953a13a"
 }
