@@ -1,0 +1,109 @@
+# Temporary sizing experiment; never a production native bundle donor.
+name: Experimental Windows js sizing
+'on':
+  push:
+    branches:
+    - ci/benchmark-windows-js-20261105
+permissions:
+  contents: read
+jobs:
+  benchmark:
+    name: Cold Windows js 16 cores sample 1
+    runs-on:
+      group: codex-runners
+      labels: codex-windows-x64
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      ALPHA_VERSION: 0.22.0-alpha.1
+      EXPECTED_PLATFORM: win32-x64
+      RUSTUP_TOOLCHAIN: 1.95.0
+      CARGO_INCREMENTAL: '0'
+      OPENAI_AGENTS_NATIVE_TIMINGS: '1'
+      CARGO_BUILD_JOBS: '16'
+      BENCHMARK_SAMPLE: '1'
+      BENCHMARK_SOURCE_SHA: 2324cf345efdad65ca6d87907939bae22444961e
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: 2324cf345efdad65ca6d87907939bae22444961e
+        fetch-depth: '2'
+        persist-credentials: 'false'
+    - name: Record machine and begin low-rate sampling
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $cpu = Get-CimInstance Win32_Processor
+        $os = Get-CimInstance Win32_OperatingSystem
+        if ((git rev-parse HEAD) -ne $env:BENCHMARK_SOURCE_SHA) { throw 'Source SHA mismatch' }
+        $logical = ($cpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum
+        if ($logical -ne [int]$env:CARGO_BUILD_JOBS) { throw 'Unexpected runner CPU size' }
+        foreach ($directory in @('agents-cargo', 'agents-native-target', 'agents-target', 'agents-native-uv')) {
+          if (Test-Path "$env:RUNNER_TEMP/$directory") { throw "Unexpected preexisting cache: $directory" }
+        }
+        @{ logical_cpus = [int]($cpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum; ram_kib = $os.TotalVisibleMemorySize; cargo_jobs = $env:CARGO_BUILD_JOBS; source_sha = (git rev-parse HEAD); sample = $env:BENCHMARK_SAMPLE } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP/benchmark-machine.json"
+        Get-Content "$env:RUNNER_TEMP/benchmark-machine.json"
+        $script = @'
+        while ($true) {
+          $cpu = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'"
+          $memory = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+          $disk = Get-CimInstance Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'"
+          $processes = @(Get-Process -Name rustc,cargo,link,lld-link -ErrorAction SilentlyContinue | Select-Object ProcessName,CPU,WorkingSet64)
+          @{ timestamp = [DateTime]::UtcNow.ToString('o'); cpu_percent = $cpu.PercentProcessorTime; available_mb = $memory.AvailableMBytes; disk_bytes_sec = $disk.DiskBytesPersec; processes = $processes } | ConvertTo-Json -Compress -Depth 4 | Add-Content "$env:RUNNER_TEMP/benchmark-samples.jsonl"
+          Start-Sleep -Seconds 30
+        }
+        '@
+        $script | Set-Content "$env:RUNNER_TEMP/benchmark-sampler.ps1"
+        $child = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', "`"$env:RUNNER_TEMP/benchmark-sampler.ps1`"") -PassThru
+        $child.Id | Set-Content "$env:RUNNER_TEMP/benchmark-sampler.pid"
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+        package-manager-cache: 'false'
+    - name: Check runner platform
+      run: |
+        node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+    - name: Install Rust
+      run: |
+        echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
+        echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
+        rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+    - name: Install Windows build tools
+      shell: pwsh
+      run: choco install protoc --yes --no-progress
+    - name: Build the native runtime
+      run: node packages/agents-codex/scripts/native.mjs package
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      with:
+        run_install: 'false'
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+    - name: Build the current SDK
+      run: |
+        pnpm install --frozen-lockfile
+        pnpm build
+    - name: Create the release bundles
+      run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+    - name: Test the extracted bundles
+      run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
+    - name: Stop sampler
+      if: always()
+      shell: pwsh
+      run: |
+        $path = "$env:RUNNER_TEMP/benchmark-sampler.pid"
+        if (Test-Path $path) { Stop-Process -Id ([int](Get-Content $path)) -ErrorAction SilentlyContinue }
+    - name: Share experimental measurements only
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: experimental-windows-js-16-sample-1
+        path: |
+          ${{ runner.temp }}/benchmark-machine.json
+          ${{ runner.temp }}/benchmark-samples.jsonl
+          ${{ runner.temp }}/agents-target/cargo-timings/*.html
+          ${{ runner.temp }}/agents-target/**/cargo-timings/*.html
+        if-no-files-found: warn
+        retention-days: '3'
