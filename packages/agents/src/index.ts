@@ -1,3 +1,5 @@
+export { TraceContext } from './runtime/trace-context';
+export type { TraceContextHeaders } from './runtime/trace-context';
 export { Agent, Runner } from './runtime/public-agent';
 export type {
   AgentOptions,
