@@ -367,37 +367,61 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       30000,
     );
 
-    it('publishes validated structured output with the shared result wrapper', async () => {
-      await withScriptedResponses([[text('{"value":7}')]], async (model) => {
-        const store = new FileA2AStore();
-        const agent = new Agent({
-          instructions: 'Return a value.',
-          model: 'gpt-5.5',
-          provider: model.provider,
-          outputType: z.strictObject({ value: z.number().int() }),
-        });
-        const remote = await host(
-          store,
-          new NativeA2AExecutor({
-            store,
-            agentFactory: async () => ({ agent, context: undefined }),
-          }),
-        );
-        try {
-          const created = await remote.client.sendMessage(
-            input([Part.fromJSON({ text: 'begin' })]),
-          );
-          if (!('id' in created)) throw new Error();
-          const completed = await settled(remote.client, created);
-          expect(completed.artifacts[0].parts[0].content).toEqual({
-            $case: 'data',
-            value: { result: { value: 7 } },
+    class FormattedValue {
+      constructor(readonly localValue: number) {}
+
+      toJSON() {
+        return { value: this.localValue };
+      }
+    }
+
+    const valueSchema = z.strictObject({ value: z.number().int() });
+    it.each([
+      { name: 'native object', outputType: valueSchema },
+      {
+        name: 'prompted object with a JSON serializer',
+        outputType: {
+          mode: 'prompted' as const,
+          schema: valueSchema.transform(
+            ({ value }) => new FormattedValue(value),
+          ),
+        },
+      },
+    ])(
+      'publishes the JSON result of a $name over HTTP',
+      async ({ outputType }) => {
+        await withScriptedResponses([[text('{"value":7}')]], async (model) => {
+          const store = new FileA2AStore();
+          const agent = new Agent<undefined, unknown>({
+            instructions: 'Return a value.',
+            model: 'gpt-5.5',
+            provider: model.provider,
+            outputType,
           });
-        } finally {
-          await remote.close();
-        }
-      });
-    }, 30_000);
+          const remote = await host(
+            store,
+            new NativeA2AExecutor({
+              store,
+              agentFactory: async () => ({ agent, context: undefined }),
+            }),
+          );
+          try {
+            const created = await remote.client.sendMessage(
+              input([Part.fromJSON({ text: 'begin' })]),
+            );
+            if (!('id' in created)) throw new Error();
+            const completed = await settled(remote.client, created);
+            expect(completed.artifacts[0].parts[0].content).toEqual({
+              $case: 'data',
+              value: { result: { value: 7 } },
+            });
+          } finally {
+            await remote.close();
+          }
+        });
+      },
+      30_000,
+    );
 
     it('exports each remote native dispatch beneath the original coordinator tool span across HTTP', async () => {
       type Span = {
