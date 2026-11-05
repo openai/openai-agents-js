@@ -21,6 +21,7 @@ import {
   type Session,
   type SteeringReceipt,
   type TurnNeedsAttention,
+  type Observation,
 } from '@openai/agents';
 import { expect, it, vi } from 'vitest';
 import {
@@ -44,7 +45,7 @@ function runWorker(
   directory: string,
   options?: Pick<
     Parameters<typeof superviseArtifact>[0],
-    'reconcile' | 'startupMs' | 'steer'
+    'reconcile' | 'startupMs' | 'steer' | 'turnMs'
   >,
 ) {
   const server = new BorrowedPeer();
@@ -58,6 +59,97 @@ function runWorker(
     ...options,
   });
 }
+
+it.each([
+  { status: 'failed', hasResult: true },
+  { status: 'cancelled', hasResult: false },
+] as const)(
+  'records a result for a $status tool when available',
+  async ({ status, hasResult }) => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-worker-timings-'));
+    const identity = {
+      sessionId: 'thread',
+      submissionId: 'submission',
+      turnId: 'turn',
+    };
+    const tool = {
+      callId: 'tool',
+      name: 'report',
+      namespace: 'reports',
+      family: 'mcp',
+    } as const;
+    const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+      id: identity.sessionId,
+      async close() {},
+      async submit() {
+        return {
+          async *events(): AsyncGenerator<Observation> {
+            yield { ...identity, ...tool, type: 'tool_started', sequence: 1 };
+            yield {
+              ...identity,
+              type: 'execution_item_completed',
+              sequence: 2,
+              item: {
+                type: 'command_execution',
+                id: 'command',
+                callId: 'command',
+                threadId: 'thread',
+                turnId: 'turn',
+                status: 'incomplete',
+              },
+            };
+            yield {
+              ...identity,
+              ...tool,
+              type: 'tool_finished',
+              sequence: 3,
+              status,
+            };
+          },
+          async waitForAttention() {
+            return {
+              finalOutput: { summary: 'A question.', question: 'Which date?' },
+            };
+          },
+        };
+      },
+    } as unknown as Session);
+    try {
+      await runWorker(directory);
+      await expect(readWorkerSnapshot(directory)).resolves.toMatchObject({
+        timings: {
+          firstToolMs: expect.any(Number),
+          firstToolResultMs: hasResult ? expect.any(Number) : null,
+        },
+      });
+    } finally {
+      session.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+it('reads older timing snapshots', async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), 'native-worker-legacy-timings-'),
+  );
+  try {
+    const previous = {
+      threadId: 'thread',
+      state: 'needs_review',
+      timings: {
+        startupMs: 5,
+        followUpSubmissionMs: null,
+        firstToolMs: 10,
+        completionMs: 50,
+      },
+    };
+    await writeFile(join(directory, 'snapshot.json'), JSON.stringify(previous));
+    await expect(readWorkerSnapshot(directory)).resolves.toEqual(previous);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it('creates a new canonical worker directory before opening its session', async () => {
   const parent = await mkdtemp(join(tmpdir(), 'native-worker-new-'));
@@ -592,12 +684,79 @@ it('records attention before disposing the session when submission rejects', asy
   } as unknown as Session);
   try {
     await expect(runWorker(directory)).rejects.toBe(error);
-    expect(snapshotAtDisposal).toMatchObject({
+    expect(snapshotAtDisposal).toEqual({
       threadId: 'thread',
       state: 'needs_attention',
     });
   } finally {
     session.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('records the deadline and closes the worker while submission is still pending', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-worker-admission-'));
+  const deadline = new AbortController();
+  const timeout = new DOMException('Synthetic turn deadline.', 'TimeoutError');
+  const timeoutSignal = vi
+    .spyOn(AbortSignal, 'timeout')
+    .mockReturnValueOnce(new AbortController().signal)
+    .mockReturnValueOnce(deadline.signal);
+  const submitting = Promise.withResolvers<void>();
+  const admission = Promise.withResolvers<object>();
+  const close = vi.fn(async () => {});
+  const events = vi.fn(async function* () {});
+  const turn = {
+    events,
+    async waitForAttention() {
+      deadline.signal.throwIfAborted();
+    },
+    async cancel() {},
+  };
+  const submit = vi.fn(() => {
+    submitting.resolve();
+    return admission.promise;
+  });
+  const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+    id: 'thread',
+    submit,
+    close,
+  } as unknown as Session);
+  let exited = false;
+  const failure = runWorker(directory, { turnMs: 50 }).catch(
+    (error: unknown) => {
+      exited = true;
+      return error;
+    },
+  );
+  try {
+    await submitting.promise;
+    expect(timeoutSignal).toHaveBeenLastCalledWith(50);
+    deadline.abort(timeout);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(close).toHaveBeenCalledOnce();
+    await vi.waitFor(async () => {
+      expect(await readWorkerSnapshot(directory)).toEqual({
+        threadId: 'thread',
+        state: 'needs_attention',
+        attention: 'deadline',
+      });
+    });
+    expect(exited).toBe(false);
+
+    admission.resolve(turn);
+    expect(await failure).toBe(timeout);
+    expect(events).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    await expect(publishAcceptedDraft(directory)).rejects.toThrow(
+      'Publication requires an accepted draft.',
+    );
+  } finally {
+    admission.resolve(turn);
+    await failure;
+    session.mockRestore();
+    timeoutSignal.mockRestore();
     await rm(directory, { recursive: true, force: true });
   }
 });
