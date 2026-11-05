@@ -7,10 +7,10 @@ import {
 /**
  * An adapter transport for Cloudflare Workers (workerd) environments.
  *
- * Cloudflare Workers cannot open outbound client WebSockets using the global `WebSocket`
- * constructor. Instead, a `fetch()` request with `Upgrade: websocket` must be performed and the
- * returned `response.webSocket` must be `accept()`ed. This transport encapsulates that pattern and
- * plugs into the Realtime SDK via the factory-based `createWebSocket` option.
+ * This transport opens an outbound WebSocket with a `fetch()` request containing
+ * `Upgrade: websocket`, then calls `accept()` on the returned `response.webSocket`.
+ * Use it in workerd runtimes that provide these APIs. It plugs into the Realtime SDK
+ * via the factory-based `createWebSocket` option.
  *
  * It behaves like `OpenAIRealtimeWebSocket`, but establishes the connection using `fetch()` and
  * sets `skipOpenEventListeners: true` since workerd sockets do not emit a traditional `open`

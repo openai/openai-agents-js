@@ -29,7 +29,18 @@ node hello.mjs
 
 The example makes a live model request and prints a greeting. npm installs the SDK packages from the bundle and downloads third-party dependencies from your configured registry. Keep the lockfile and bundled packages together.
 
-If `npm ci` reports `ETARGET`, your registry may be missing a version from the lockfile. Ask your registry administrator to sync that version, or follow the [existing application setup](#add-the-sdk-to-an-existing-application) in a new directory to resolve compatible dependencies. Copy `hello.mjs` there and run `node hello.mjs` with `OPENAI_API_KEY` set.
+### If your registry is missing a dependency
+
+If `npm ci` reports `ETARGET`, ask your registry administrator to sync the version named in the error.
+
+To try the starter immediately, copy `package.json`, `hello.mjs`, and the entire `vendor/` directory into a new directory. Install and run the starter from there.
+
+```sh
+npm install --ignore-scripts
+node hello.mjs
+```
+
+npm uses the four bundled SDK packages and resolves their third-party dependencies from your registry. Keep the new `package-lock.json` for later installs.
 
 ## Add the SDK to an existing application
 

@@ -56,7 +56,7 @@ Code orchestration makes tasks more deterministic and their speed, cost, and per
 - Run a task agent in a `while` loop with an evaluator agent that provides feedback. Repeat until the evaluator says the output meets the criteria.
 - Run multiple agents in parallel with JavaScript features such as `Promise.all`. This improves speed when tasks don't depend on each other.
 
-See examples in [`examples/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns).
+See examples in [`examples/agent-patterns`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/agent-patterns).
 
 ## Related guides
 

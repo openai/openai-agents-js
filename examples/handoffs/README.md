@@ -1,6 +1,8 @@
 # Agent Handoffs
 
-This example shows how one agent can transfer control to another. The `index.ts` script sets up two English speaking assistants and a Spanish assistant. The second agent is configured with a handoff so that if the user requests Spanish replies it hands off to the Spanish agent. A message filter strips out tool messages and the first two history items before the handoff occurs. Run it with:
+`index.ts` sets up two English-speaking assistants and a Spanish-speaking assistant. The second assistant hands a Spanish request to the Spanish-speaking assistant.
+
+The receiving agent gets the full history when `isGpt5Default()` identifies a GPT-5 reasoning model. For other defaults, the filter removes tool-related messages. Build the workspace packages with `pnpm build`, set `OPENAI_API_KEY`, and run the example from the repository root.
 
 ```bash
 pnpm -F handoffs start
