@@ -1859,6 +1859,13 @@ impl NativeThread {
         let params_json = params_json.as_str();
 
         let params: Value = serde_json::from_str(params_json).map_err(input_error)?;
+        let context = params
+            .get("tracing_context")
+            .and_then(Value::as_str)
+            .map(codex_otel::sdk_trace::context)
+            .transpose()
+            .map_err(input_error)?
+            .unwrap_or_default();
         let inner = self.current()?;
         (async move {
             let _context_operation = inner.engine.operation(false).map_err(native_error)?;
@@ -1888,6 +1895,7 @@ impl NativeThread {
             })?;
             serde_json::to_string(&result).map_err(native_error)
         })
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -1995,7 +2003,7 @@ impl NativeThread {
             serde_json::to_string(&serde_json::json!({"status": "started", "turn_id": turn_id}))
                 .map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -2054,7 +2062,7 @@ impl NativeThread {
             };
             serde_json::to_string(&receipt).map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -2866,7 +2874,7 @@ impl NativeThread {
                 .map_err(native_error)?;
             serde_json::to_string(&events).map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -2973,7 +2981,7 @@ impl NativeThread {
             }
             serde_json::to_string(&result).map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -3795,6 +3803,17 @@ impl std::fmt::Display for TraceIngressError {
     }
 }
 
+fn lease_context(
+    lease: Option<&codex_otel::sdk_trace::ContextLease>,
+) -> anyhow::Result<opentelemetry::Context> {
+    let context = lease
+        .map(|lease| codex_otel::sdk_trace::context(lease.token()))
+        .transpose()
+        .map_err(anyhow::Error::msg)?
+        .unwrap_or_default();
+    Ok(codex_otel::sdk_trace::explicit_submission_context(context))
+}
+
 fn trace_identity(
     carrier: &codex_protocol::protocol::W3cTraceContext,
 ) -> Result<(opentelemetry::trace::TraceId, opentelemetry::trace::SpanId), TraceIngressError> {
@@ -3819,8 +3838,7 @@ fn resolve_trace_parent(
     {
         return Err(TraceIngressError::Conflict);
     }
-    // Matching identities retain private policy through the existing native map;
-    // preserve the caller's explicit sampling flags and tracestate.
+    // The native token carries policy independently. Preserve explicit wire flags and tracestate.
     Ok(explicit.or(scoped))
 }
 
@@ -3958,7 +3976,9 @@ mod native_trace_merge_tests {
         assert_eq!(matching["trace"]["tracestate"], "fixture=explicit");
         assert!(matching.get("tracing_context").is_none());
         let parsed = codex_otel::context_from_w3c_trace_context(&explicit).unwrap();
-        let restored = codex_otel::sdk_trace::policy_for_context(&parsed).unwrap();
+        assert!(codex_otel::sdk_trace::policy_for_context(&parsed).is_none());
+        let _caller = codex_otel::sdk_trace::context(token).unwrap().attach();
+        let restored = codex_otel::sdk_trace::current_scope_policy().unwrap();
         let original = codex_otel::sdk_trace::policy_for_context(
             &codex_otel::sdk_trace::context(token).unwrap(),
         )
