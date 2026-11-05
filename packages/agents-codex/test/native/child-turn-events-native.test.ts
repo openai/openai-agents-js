@@ -907,7 +907,12 @@ it('keeps child tracing policy for explicit starts and active steering', async (
   const telemetry = await import('../../src/runtime/telemetry');
   await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
   try {
-    for (const disabled of [false, true]) {
+    for (const { disabled, programmaticToolCalling } of [
+      { disabled: false, programmaticToolCalling: false },
+      { disabled: true, programmaticToolCalling: false },
+      { disabled: false, programmaticToolCalling: true },
+      { disabled: true, programmaticToolCalling: true },
+    ]) {
       let rootId: string | undefined;
       let roots = 0;
       let childModels = 0;
@@ -951,11 +956,19 @@ it('keeps child tracing policy for explicit starts and active steering', async (
           ? [message('initial child done')]
           : childModels === 2
             ? [
-                call(
-                  'exec_command',
-                  { cmd: 'printf denied' },
-                  { callId: 'denied-command' },
-                ),
+                programmaticToolCalling
+                  ? {
+                      type: 'custom_tool_call',
+                      name: 'exec',
+                      call_id: 'traced-command',
+                      input:
+                        "text(await tools.exec_command({cmd:'printf traced'}));",
+                    }
+                  : call(
+                      'exec_command',
+                      { cmd: 'printf traced' },
+                      { callId: 'traced-command' },
+                    ),
               ]
             : [message('explicit child done')];
       };
@@ -967,6 +980,7 @@ it('keeps child tracing policy for explicit starts and active steering', async (
           instructions: 'Delegate.',
           model: 'gpt-5.5',
           provider,
+          programmaticToolCalling,
           tools: [
             new NativeAgents({
               beforeStep: async (context) => {
@@ -992,10 +1006,13 @@ it('keeps child tracing policy for explicit starts and active steering', async (
             cwd: executor.cwd,
             headers: executor.headers,
             tools: ['exec_command', 'write_stdin', 'apply_patch'],
-            approval: () => {
+            approval: (context) => {
               check();
+              expect(context.call?.route).toBe(
+                programmaticToolCalling ? 'code' : 'direct',
+              );
               approvals++;
-              return false;
+              return true;
             },
           }),
         });
@@ -1027,8 +1044,10 @@ it('keeps child tracing policy for explicit starts and active steering', async (
                 );
               }),
             ]);
-            expect(await child.submit('steer active child')).toBe(second);
-            release.resolve();
+            const steered = await child
+              .submit('steer active child')
+              .finally(release.resolve);
+            expect(steered).toBe(second);
             expect((await finished).finalOutput).toBe('explicit child done');
           },
         );
