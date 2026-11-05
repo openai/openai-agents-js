@@ -314,7 +314,15 @@ it.for([false, true])(
   },
 );
 
-it.for(['none', 'session', 'provider', 'both', 'review', 'retarget'] as const)(
+it.for([
+  'none',
+  'session',
+  'provider',
+  'both',
+  'review',
+  'retarget',
+  'status',
+] as const)(
   'accepts and publishes only after owned cleanup succeeds (%s)',
   async (failureAt, context) => {
     if (failureAt === 'retarget' && process.platform === 'win32')
@@ -329,6 +337,9 @@ it.for(['none', 'session', 'provider', 'both', 'review', 'retarget'] as const)(
     const sha256 = createHash('sha256').update(draft).digest('hex');
     const sessionFailure = new Error('Synthetic session close failure.');
     const providerFailure = new Error('Synthetic provider close failure.');
+    const persistenceFailure = new Error(
+      'Synthetic attention persistence failure.',
+    );
     const order: string[] = [];
     const states: (string | undefined)[] = [];
     const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
@@ -339,6 +350,10 @@ it.for(['none', 'session', 'provider', 'both', 'review', 'retarget'] as const)(
         if (failureAt === 'retarget') {
           await rm(directoryLink);
           await symlink(other, directoryLink, 'dir');
+        }
+        if (failureAt === 'status') {
+          vi.mocked(rename).mockRejectedValueOnce(persistenceFailure);
+          throw sessionFailure;
         }
         if (
           failureAt === 'session' ||
@@ -406,7 +421,13 @@ it.for(['none', 'session', 'provider', 'both', 'review', 'retarget'] as const)(
         const published = await publishAcceptedDraft(directory);
         await expect(readFile(published, 'utf8')).resolves.toBe(draft);
       } else {
-        if (failureAt === 'both')
+        if (failureAt === 'status')
+          expect(result).toMatchObject({
+            name: 'AggregateError',
+            cause: sessionFailure,
+            errors: [sessionFailure, persistenceFailure],
+          });
+        else if (failureAt === 'both')
           expect(result).toMatchObject({
             name: 'AggregateError',
             cause: sessionFailure,
@@ -431,8 +452,22 @@ it.for(['none', 'session', 'provider', 'both', 'review', 'retarget'] as const)(
           state: 'needs_review',
           claim: { question: 'What date should I use?' },
         });
-      } else expect(states).toEqual(['working', 'working']);
+      } else {
+        expect(states).toEqual(['working', 'working']);
+        if (['session', 'provider', 'both'].includes(failureAt)) {
+          const saved = await readWorkerSnapshot(directory);
+          expect(saved).toMatchObject({
+            threadId: 'thread',
+            state: 'needs_attention',
+            attention: 'interrupted',
+            claim: { summary: 'Draft ready.', question: null },
+          });
+          expect(saved?.sha256).toBeUndefined();
+          expect(saved?.evidence).toBeUndefined();
+        }
+      }
     } finally {
+      vi.mocked(rename).mockReset();
       provider.mockRestore();
       session.mockRestore();
       await rm(directoryLink, { force: true });
@@ -787,3 +822,64 @@ it('saves a review snapshot when reading completed history fails', async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it.each(['matching', 'different'] as const)(
+  'retries publication directory sync for existing bytes (%s)',
+  async (contents) => {
+    const directory = await realpath(
+      await mkdtemp(join(tmpdir(), 'native-worker-publish-sync-')),
+    );
+    const draft = Buffer.from('# Release note\nDurable draft.\n');
+    const sha256 = createHash('sha256').update(draft).digest('hex');
+    const failure = new Error('Synthetic directory sync failure.');
+    const fs =
+      await vi.importActual<typeof import('node:fs/promises')>(
+        'node:fs/promises',
+      );
+    let attempts = 0;
+    try {
+      await mkdir(join(directory, 'workspace'));
+      await writeFile(join(directory, 'workspace', 'draft.md'), draft);
+      await writeFile(
+        join(directory, 'snapshot.json'),
+        JSON.stringify({ threadId: 'thread', state: 'accepted', sha256 }),
+      );
+      vi.mocked(open).mockImplementation(async (path, flags, mode) => {
+        const file = await fs.open(path, flags, mode);
+        if (path !== directory) return file;
+        const close = file.close.bind(file);
+        return Object.assign(Object.create(file), {
+          async sync() {
+            attempts++;
+            if (attempts < 3) throw failure;
+            await file.sync();
+          },
+          close,
+        });
+      });
+      const destination = join(directory, 'published-' + sha256 + '.md');
+      await expect(publishAcceptedDraft(directory)).rejects.toBe(failure);
+      await expect(readFile(destination)).resolves.toEqual(draft);
+      if (contents === 'different') {
+        await writeFile(destination, 'Other publication');
+        await expect(publishAcceptedDraft(directory)).rejects.toMatchObject({
+          code: 'EEXIST',
+        });
+        expect(attempts).toBe(1);
+        await expect(readFile(destination, 'utf8')).resolves.toBe(
+          'Other publication',
+        );
+      } else {
+        await expect(publishAcceptedDraft(directory)).rejects.toBe(failure);
+        expect(attempts).toBe(2);
+        await expect(publishAcceptedDraft(directory)).resolves.toBe(
+          destination,
+        );
+        expect(attempts).toBe(3);
+      }
+    } finally {
+      vi.mocked(open).mockReset();
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
