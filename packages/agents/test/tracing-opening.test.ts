@@ -99,3 +99,45 @@ it.each([
       .status,
   ).toBe(phase === 'success' ? 'ok' : 'error');
 });
+
+it('rejects invalid trace startup before native Session construction', async () => {
+  const error = new Error('invalid native tracing options');
+  fixture.native.start_trace_span.mockImplementationOnce(() => {
+    throw error;
+  });
+  const agent = new Agent({ instructions: 'synthetic', model: 'gpt-5.5' });
+  const failed = vi.fn(async (cause: unknown): Promise<never> => {
+    throw cause;
+  });
+  vi.spyOn(
+    agent as unknown as { prepare: (...args: unknown[]) => Promise<unknown> },
+    'prepare',
+  ).mockResolvedValue({
+    setup: {},
+    session: {},
+    lease: { failOpening: failed },
+    environmentOwner: { signal: new AbortController().signal },
+  });
+  fixture.open.mockResolvedValue({});
+  await expect(agent.session({ tracing: { name: '' } })).rejects.toBe(error);
+  expect(fixture.open).not.toHaveBeenCalled();
+  expect(failed).toHaveBeenCalledWith(error);
+});
+
+it('records an undefined opening rejection as error without replacing it', async () => {
+  const agent = new Agent({ instructions: 'synthetic', model: 'gpt-5.5' });
+  vi.spyOn(
+    agent as unknown as { prepare: (...args: unknown[]) => Promise<unknown> },
+    'prepare',
+  ).mockRejectedValue(undefined);
+  await expect(
+    agent.session({ tracing: { name: 'undefined rejection' } }),
+  ).rejects.toBeUndefined();
+  await vi.waitFor(() =>
+    expect(fixture.native.end_trace_span).toHaveBeenCalledTimes(1),
+  );
+  expect(
+    JSON.parse(fixture.native.end_trace_span.mock.calls[0]![1] as string)
+      .status,
+  ).toBe('error');
+});

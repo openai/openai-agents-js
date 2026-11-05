@@ -202,6 +202,10 @@ async function contextCase(batches: unknown[]) {
         }),
       ],
     });
+    await assert.rejects(
+      agent.session({ tracing: { name: '' } }),
+      /Tracing span name/,
+    );
     await using session = await agent.session();
     let first: Awaited<ReturnType<typeof session.submit>> | undefined;
     let queued: Awaited<ReturnType<typeof session.enqueue>> | undefined;
@@ -265,6 +269,15 @@ async function contextCase(batches: unknown[]) {
         /^\$\.history\.\d+\.payload\.trace_id$/.test(path),
       ),
     );
+    await session.close();
+    for (const record of (
+      session as unknown as {
+        issuedRuns: Map<string, { tracing?: unknown; issuedTracing?: unknown }>;
+      }
+    ).issuedRuns.values()) {
+      assert.equal(record.tracing, undefined);
+      assert.equal(record.issuedTracing, undefined);
+    }
     server.assertExhausted();
     await flush();
     const spans = decoded(batches);

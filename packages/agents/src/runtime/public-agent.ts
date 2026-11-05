@@ -284,7 +284,7 @@ export class Agent<Context = undefined, Output = string> {
   ): Promise<Session<Output, Context>> {
     const options = { ...(args[0] ?? {}) };
     options.signal?.throwIfAborted();
-    const tracingCapture = captureTracing(options.tracing);
+    let tracingCapture = captureTracing(options.tracing);
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
     try {
@@ -305,9 +305,12 @@ export class Agent<Context = undefined, Output = string> {
           try {
             await originalClose?.();
           } finally {
-            tracingCapture?.finish(openingError);
+            const capture = tracingCapture;
+            tracingCapture = undefined;
+            capture?.finish(openingError);
           }
         };
+        await tracingCapture?.ready;
         environmentOwner.signal.throwIfAborted();
         const opened = await openSession(
           setup,
@@ -322,11 +325,11 @@ export class Agent<Context = undefined, Output = string> {
         lease.openingSucceeded();
         return opened as CoreSession<Output, Context>;
       } catch (error) {
-        openingError = error;
+        openingError = error ?? null;
         return await lease.failOpening(error);
       }
     } catch (error) {
-      tracingCapture?.finish(error);
+      tracingCapture?.finish(error ?? null);
       if (acquiredEnvironment && !providerOwnsCleanup) {
         try {
           await acquiredEnvironment.dispose();

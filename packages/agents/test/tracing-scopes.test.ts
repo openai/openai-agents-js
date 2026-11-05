@@ -428,6 +428,7 @@ async function rootFixture(
   events?: ReturnType<typeof Promise.withResolvers<string>>[],
   nativeOverrides: Partial<import('../src/runtime/binding').NativeThread> = {},
   tools: readonly import('../src/runtime/tools').SessionTool[] = [],
+  oneShot?: import('../src/runtime/session').OneShotOptions,
 ) {
   const { Session } = await import('../src/runtime/session');
   const { captureTools } = await import('../src/runtime/tools');
@@ -453,6 +454,10 @@ async function rootFixture(
     captureTools(tools),
     options,
     threadOptions,
+    undefined,
+    undefined,
+    undefined,
+    oneShot,
   );
   if (events) await session._start();
   return session;
@@ -462,10 +467,12 @@ it.each([
   { shared: false, callback: 'step' },
   { shared: true, callback: 'step' },
   { shared: true, callback: 'tool' },
+  { shared: true, callback: 'manual' },
 ])(
   'restores a late first child $callback callback (shared trace ID: $shared)',
   async ({ shared, callback }) => {
     const { tool } = await import('../src/runtime/tools');
+    const { manualTool } = await import('../src/runtime/manual');
     const { z } = await import('zod');
     const { NativeAgents } = await import('../src/runtime/native-agents');
     const events = Array.from({ length: 3 }, () =>
@@ -491,14 +498,26 @@ it.each([
       await withSpan({}, () => expect(getCurrentTrace()).toBe(observed));
       return undefined;
     };
-    const probe = tool({
+    const manual = manualTool({
       name: 'probe',
-      parameters: z.object({}),
-      execute: async () => {
-        await observe();
-        return 'done';
-      },
+      description: 'manual tracing probe',
+      parameters: z.object({}).superRefine(() => {
+        expect(getCurrentTrace()).toBe(original);
+        expect(getCurrentSpan()).toBeDefined();
+      }),
+      result: z.string(),
     });
+    const probe =
+      callback === 'manual'
+        ? manual
+        : tool({
+            name: 'probe',
+            parameters: z.object({}),
+            execute: async () => {
+              await observe();
+              return 'done';
+            },
+          });
     const session = await rootFixture(
       async (wire) => {
         submitted.push(JSON.parse(wire));
@@ -523,6 +542,10 @@ it.each([
           interceptions.resolve('null');
         },
         _finish_native_interception_reader: () => {},
+        _manual_tool_current: () => true,
+        _configure_manual_tools: () => {},
+        _manual_checkpoint_config_supported: async () => false,
+        _pending_manual_tools: () => '[]',
         _check_python_tool: () => {},
         _respond_python_tool: async () => {
           replied.resolve();
@@ -535,6 +558,16 @@ it.each([
         },
       },
       [probe],
+      callback === 'manual'
+        ? {
+            input: 'run',
+            onRequiredAction: async (action) => {
+              await observe();
+              const request = manual.match(action)!;
+              return request.reply('done');
+            },
+          }
+        : undefined,
     );
     let childToken: string | undefined;
     try {
@@ -591,6 +624,7 @@ it.each([
                     instance: '1',
                     generation: '0',
                     slot: 0,
+                    ...(callback === 'manual' ? { manual_grant: 'grant' } : {}),
                   },
                   tool: 'probe',
                   namespace: null,
@@ -1126,10 +1160,13 @@ it.each([false, true])(
     const events = Array.from({ length: 2 }, () =>
       Promise.withResolvers<string>(),
     );
+    const opening = captureTracing({})!;
     const session = await rootFixture(
       async () => JSON.stringify({ status: 'started', turn_id: 'root' }),
       {
+        tracingCapture: opening,
         onClose: async () => {
+          opening.finish();
           if (hookFails) throw new Error('synthetic close failure');
         },
       },
@@ -1151,6 +1188,15 @@ it.each([false, true])(
     if (hookFails)
       await expect(session.close()).rejects.toThrow('synthetic close failure');
     else await session.close();
+    const issued = (
+      session as unknown as {
+        issuedRuns: Map<string, { tracing?: unknown; issuedTracing?: unknown }>;
+      }
+    ).issuedRuns;
+    for (const record of issued.values()) {
+      expect(record.tracing).toBeUndefined();
+      expect(record.issuedTracing).toBeUndefined();
+    }
     const child = await startSpan({ parent: workflow! });
     expect(child.context.parentSpanId).toBe(workflow!.context.spanId);
     child.close();

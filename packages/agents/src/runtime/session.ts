@@ -3206,7 +3206,7 @@ export class Session<OutputT = string, Context = unknown> {
       () => run.tracing?.finish(),
       (error: unknown) =>
         run.tracing?.finish(
-          error,
+          error ?? null,
           error instanceof TurnAborted,
           error instanceof OutputValidationError
             ? 'validation_error'
@@ -5114,7 +5114,11 @@ export class Session<OutputT = string, Context = unknown> {
         throw error;
       }
     };
-    const admission = this.trackOwnedCallback(run, invoke);
+    const admission = this.trackOwnedCallback(
+      run,
+      invoke,
+      typeof msg.tracing_context === 'string' ? msg.tracing_context : undefined,
+    );
     void admission.then(reservation.resolve, reservation.reject).finally(() => {
       if (this.manualAdmissions.get(key) === reservation.promise)
         this.manualAdmissions.delete(key);
@@ -5161,35 +5165,44 @@ export class Session<OutputT = string, Context = unknown> {
           run,
           JSON.stringify(['one-shot-manual', key]),
           answer,
+          typeof event.msg.tracing_context === 'string'
+            ? event.msg.tracing_context
+            : undefined,
         );
         // Do not hold Core's model-completion callbacks; termination aborts
         // entered handlers before joining them.
         this.track(run, invocation, run.toolInvocations);
       } else {
-        this.trackOwnedCallback(run, async () => {
-          try {
-            await answer();
-          } catch (error) {
-            if (
-              !run.controller.signal.aborted ||
-              error !== run.controller.signal.reason
-            ) {
-              if (this.current(root) && root.failure === undefined) {
-                root.failure = error;
-                // Child cleanup is joined by close, never from the callback
-                // that close itself must drain.
-                toolInvocation.exit(() => {
-                  void this.#cancel(root).catch((cause) =>
-                    this.readerFailed(cause),
-                  );
-                });
-              } else if (error !== root.failure) {
-                this.oneShotChildCleanupErrors.push(error);
+        this.trackOwnedCallback(
+          run,
+          async () => {
+            try {
+              await answer();
+            } catch (error) {
+              if (
+                !run.controller.signal.aborted ||
+                error !== run.controller.signal.reason
+              ) {
+                if (this.current(root) && root.failure === undefined) {
+                  root.failure = error;
+                  // Child cleanup is joined by close, never from the callback
+                  // that close itself must drain.
+                  toolInvocation.exit(() => {
+                    void this.#cancel(root).catch((cause) =>
+                      this.readerFailed(cause),
+                    );
+                  });
+                } else if (error !== root.failure) {
+                  this.oneShotChildCleanupErrors.push(error);
+                }
               }
+              throw error;
             }
-            throw error;
-          }
-        });
+          },
+          typeof event.msg.tracing_context === 'string'
+            ? event.msg.tracing_context
+            : undefined,
+        );
       }
       return;
     }
@@ -5641,7 +5654,7 @@ export class Session<OutputT = string, Context = unknown> {
         ),
       );
     } catch (error) {
-      tracing?.finish(error);
+      tracing?.finish(error ?? null);
       throw error;
     }
     const restoredOutput = this.options.restoredOutput ?? {
@@ -8641,36 +8654,51 @@ export class Session<OutputT = string, Context = unknown> {
         phase = 'provider';
       }
       if (phase === 'provider') {
-        if (!this.environmentDisposalFinished) {
-          try {
-            await this.options.environmentOwner?.dispose(async (dispose) => {
-              const scope = { session: this, active: true };
-              try {
-                await toolInvocation.run(scope, dispose);
-              } finally {
-                scope.active = false;
-              }
-            });
-          } catch (error) {
-            // Automatic source retirement may have no current waiter. Keep its
-            // failed close joinable after all remaining owners have retired.
-            this.environmentCloseFailure ??= done.promise;
-            acknowledgmentFailure = new NativeError(
-              'Environment lease cleanup failed',
-              {
-                cause: acknowledgmentFailure
-                  ? new AggregateError(
-                      [acknowledgmentFailure, error],
-                      'Session and environment cleanup failed',
-                    )
-                  : error,
-              },
-            );
-          } finally {
-            this.environmentDisposalFinished = true;
+        try {
+          if (!this.environmentDisposalFinished) {
+            try {
+              await this.options.environmentOwner?.dispose(async (dispose) => {
+                const scope = { session: this, active: true };
+                try {
+                  await toolInvocation.run(scope, dispose);
+                } finally {
+                  scope.active = false;
+                }
+              });
+            } catch (error) {
+              // Automatic source retirement may have no current waiter. Keep its
+              // failed close joinable after all remaining owners have retired.
+              this.environmentCloseFailure ??= done.promise;
+              acknowledgmentFailure = new NativeError(
+                'Environment lease cleanup failed',
+                {
+                  cause: acknowledgmentFailure
+                    ? new AggregateError(
+                        [acknowledgmentFailure, error],
+                        'Session and environment cleanup failed',
+                      )
+                    : error,
+                },
+              );
+            } finally {
+              this.environmentDisposalFinished = true;
+            }
+          }
+          await this.options.onClose?.();
+        } finally {
+          // Native, readers and child callbacks have joined; late discovery is now impossible.
+          this.options.tracingCapture = undefined;
+          for (const owned of [
+            run,
+            this.lastRun,
+            ...this.issuedRuns.values(),
+          ]) {
+            if (owned) {
+              owned.tracing = undefined;
+              owned.issuedTracing = undefined;
+            }
           }
         }
-        await this.options.onClose?.();
       }
       this.observations.finish('closed');
       if (run) this.finishObservation(run);
