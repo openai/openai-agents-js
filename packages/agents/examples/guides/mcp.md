@@ -116,6 +116,8 @@ Binding a method does not freeze its receiver's credentials. Before unsafe reaut
 
 The bridge preserves raw input schemas and uses the existing managed function callback path. It forwards the per-call abort signal and calls the server once. The bridge preserves structured-content preference and peer error results. It does not add private result metadata to model text. Custom tool metadata resolvers, extractors, error handlers and guardrails are currently unsupported and fail before authentication. Existing classic MCP APIs remain available for those features.
 
+For a [local native profile](./state.md#local-native-profiles), use `selectMcpTools` with an explicit `toolNames` list and your application's approval policy. Pass the returned tools alongside `storage` when you open the Session. When you reopen, select the tools again using the current client, allowlist, and policy. The profile records managed calls and their results. Denial fails the turn before the call reaches the client. A call without a recorded result follows the profile's recovery rules. Your application owns the client, including its credentials and cleanup.
+
 ### Await observations on borrowed MCP calls
 
 Configure `onToolStart` and `onToolEnd` in the SDK `MCPServer` options before materializing tools. `selectMcpTools` captures one callback per phase and accepts a separate per-call `approval` callback. Approval must return `true` before start or invocation. Start observes detached arguments; end observes the normalized MCP envelope before projection or serialization. Returned values never replace arguments or results.
