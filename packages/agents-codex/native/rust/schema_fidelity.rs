@@ -190,6 +190,8 @@ impl Receipts {
             if let Some(owner) = &owner {
                 let originals = functions(&owner.generation.specs);
                 tool.description = originals[owner.slot].1.description.clone();
+                // Core's projection omits raw JSON Schema keywords.
+                tool.parameters = originals[owner.slot].1.input_schema.clone();
             }
             managed.push(owner);
         }
@@ -225,6 +227,10 @@ impl Receipts {
             let public = &captured.data.tools[index];
             let description_changed = tool.description != public.description;
             let parameters_changed = tool.parameters != public.parameters;
+            if !parameters_changed {
+                // Return the unchanged declaration in Core's original form.
+                tool.parameters = captured.original[index].parameters.clone();
+            }
             if !description_changed && !parameters_changed {
                 tool.description = captured.original[index].description.clone();
                 continue;
@@ -621,6 +627,10 @@ mod prepared_tests {
             let view = receipts.prepared(data).unwrap();
             assert_eq!(view.data.tools[0].description, "Original description.");
             assert!(!view.data.tools[0].description.contains(MARKER.as_str()));
+            assert_eq!(
+                view.data.tools[0].parameters,
+                functions(&original.specs)[0].1.input_schema
+            );
             let mut edited = view.data.clone();
             if description_changed {
                 edited.tools[0].description = "Edited description.".into();
@@ -630,7 +640,16 @@ mod prepared_tests {
             }
             let returned_parameters = edited.tools[0].parameters.clone();
             let metadata = receipts.reconcile_prepared(&view, &mut edited).unwrap();
-            assert_eq!(edited.tools[0].parameters, returned_parameters);
+            if parameters_changed {
+                let projected_parameters: codex_tools::JsonSchema =
+                    serde_json::from_value(returned_parameters.clone()).unwrap();
+                assert_eq!(
+                    edited.tools[0].parameters,
+                    serde_json::to_value(projected_parameters).unwrap()
+                );
+            } else {
+                assert_eq!(edited.tools[0].parameters, view.original[0].parameters);
+            }
             assert_eq!(
                 metadata.is_some(),
                 description_changed || parameters_changed
@@ -659,6 +678,27 @@ mod prepared_tests {
                 assert!(receipts.restore(&mut stale).is_err());
             }
         }
+    }
+    #[test]
+    fn partial_parameter_edits_keep_original_raw_keywords() {
+        let receipts = Receipts::default();
+        let (original, data) = fixture(&receipts);
+        let view = receipts.prepared(data).unwrap();
+        assert_eq!(
+            view.data.tools[0].parameters["properties"]["key"]["minLength"],
+            json!(3)
+        );
+        let mut edited = view.data.clone();
+        edited.tools[0].parameters["properties"]["key"]["maxLength"] = json!(9);
+        let expected = edited.tools[0].parameters.clone();
+        let _metadata = receipts.reconcile_prepared(&view, &mut edited).unwrap();
+        let mut request = wire(&edited);
+        receipts.restore(&mut request).unwrap();
+        assert_eq!(request["tools"][0]["parameters"], expected);
+        assert_eq!(
+            functions(&original.specs)[0].1.input_schema["properties"]["key"]["maxLength"],
+            Value::Null
+        );
     }
     #[test]
     fn managed_schema_projection_keeps_immutable_identity_for_core() {

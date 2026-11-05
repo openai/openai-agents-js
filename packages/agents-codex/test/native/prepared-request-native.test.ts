@@ -257,6 +257,57 @@ it('combines prepared edits, argument correction and result shaping through publ
   expect(reserve.description).toBe('Original declaration.');
 });
 
+it.each(['none', 'description', 'partial'] as const)(
+  'preserves raw managed schemas through %s preparation',
+  async (edit) => {
+    const execute = vi.fn(() => 'unused');
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Original lookup.',
+      parameters: z.object({ value: z.string().min(3) }),
+      execute,
+    });
+    const server = new ModelServer([[message('done')]]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      model: 'fixture-standard',
+      instructions: 'Answer.',
+      provider,
+      tools: [lookup],
+    });
+    const result = await agent.run('go', {
+      prepareRequest({ request }) {
+        expect(request.tools[0].parameters).toMatchObject({
+          properties: { value: { minLength: 3 } },
+        });
+        if (edit === 'description')
+          request.tools[0].description = 'Edited lookup.';
+        if (edit === 'partial') {
+          const properties = jsonObject.parse(
+            request.tools[0].parameters.properties,
+          );
+          request.tools[0].parameters = {
+            ...request.tools[0].parameters,
+            properties: {
+              ...properties,
+              value: { ...jsonObject.parse(properties.value), maxLength: 9 },
+            },
+          };
+        }
+        return request;
+      },
+    });
+    expect(result.finalOutput).toBe('done');
+    expect(server.requests).toHaveLength(1);
+    const declarations = JSON.stringify(server.requests[0].tools);
+    expect(declarations).toContain('"minLength":3');
+    if (edit === 'partial') expect(declarations).toContain('"maxLength":9');
+    if (edit === 'description')
+      expect(declarations).toContain('Edited lookup.');
+    expect(execute).not.toHaveBeenCalled();
+  },
+);
+
 it('keeps the original function validator when a sampled enum is widened', async () => {
   const execute = vi.fn(() => 'effect');
   const reserve = tool({
