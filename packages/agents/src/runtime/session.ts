@@ -1641,7 +1641,7 @@ export class Session<OutputT = string, Context = unknown> {
       typeof event.msg._sdk_question_id === 'string'
         ? event.msg._sdk_question_id
         : undefined;
-    return this.trackOwnedCallback(run, async () => {
+    const callback = async () => {
       if (context === undefined || questionId === undefined)
         return this.admitNativeQuestion(run, event);
       const pending = async () =>
@@ -1665,7 +1665,17 @@ export class Session<OutputT = string, Context = unknown> {
         if (!entered && !(await pending())) return;
         throw error;
       }
-    });
+    };
+    if (
+      run instanceof NativeTurn &&
+      context !== undefined &&
+      questionId !== undefined
+    ) {
+      const pending = Promise.resolve().then(callback);
+      this.track(run, pending, run.toolInvocations);
+      return pending;
+    }
+    return this.trackOwnedCallback(run, callback);
   }
 
   private trackQuestionCallback(

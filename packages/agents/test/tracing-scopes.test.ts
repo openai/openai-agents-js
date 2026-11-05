@@ -1636,19 +1636,14 @@ it.each(['expired', 'live', 'entered'] as const)(
     const internals = session as unknown as {
       issuedRuns: Map<string, unknown>;
       trackNativeQuestion: (owner: never, event: never) => Promise<void>;
-      trackOwnedCallback: (
-        owner: unknown,
-        callback: () => Promise<void>,
-      ) => Promise<void>;
+      track: () => void;
       admitNativeQuestion: (...args: unknown[]) => Promise<void>;
     };
     const failure = new Error('entered question callback failure');
     const admit = vi
       .spyOn(internals, 'admitNativeQuestion')
       .mockRejectedValue(failure);
-    vi.spyOn(internals, 'trackOwnedCallback').mockImplementation(
-      (_owner, callback) => callback(),
-    );
+    vi.spyOn(internals, 'track').mockImplementation(() => {});
     try {
       const event = parseEvent(
         JSON.stringify({
@@ -1735,3 +1730,69 @@ it('retains nested question callback context after admission and grant release',
     await session.close();
   }
 });
+
+it.each([true, false])(
+  'creates one root question callback span only while pending: %s',
+  async (live) => {
+    const { parseEvent } = await import('../src/runtime/events');
+    let carrier: string;
+    const session = await rootFixture(
+      async (wire) => {
+        carrier = JSON.parse(wire).tracing_context;
+        return JSON.stringify({ status: 'started', turn_id: 'root' });
+      },
+      {},
+      {},
+      undefined,
+      { _native_question_pending: async () => live },
+    );
+    let workflow: Awaited<ReturnType<typeof startTrace>>;
+    await withTrace({}, async (span) => {
+      workflow = span;
+      await session.submit('run');
+    });
+    const internals = session as unknown as {
+      issuedRuns: Map<string, { toolInvocations: Set<Promise<void>> }>;
+      trackNativeQuestion: (owner: never, event: never) => Promise<void>;
+      admitNativeQuestion: () => Promise<void>;
+    };
+    const owner = internals.issuedRuns.get('root')!;
+    const admit = vi
+      .spyOn(internals, 'admitNativeQuestion')
+      .mockImplementation(async () => {
+        expect(getCurrentTrace()).toBe(workflow!);
+      });
+    const before = harness.starts.length;
+    const ended = harness.native.end_trace_span.mock.calls.length;
+    try {
+      const event = parseEvent(
+        JSON.stringify({
+          id: 'root',
+          msg: {
+            type: 'exec_approval_request',
+            turn_id: 'root',
+            _sdk_question_id: 'question',
+            tracing_context: carrier!,
+          },
+        }),
+      );
+      const pending = withoutTracing(() =>
+        internals.trackNativeQuestion(owner as never, event as never),
+      );
+      expect(owner.toolInvocations.has(pending)).toBe(true);
+      await pending;
+      expect(owner.toolInvocations.size).toBe(0);
+      const callbacks = harness.starts
+        .slice(before)
+        .filter((span) => span.name === 'host.callback');
+      expect(callbacks).toHaveLength(live ? 1 : 0);
+      if (live) expect(callbacks[0].parent).toBe(carrier!);
+      expect(harness.native.end_trace_span.mock.calls.length - ended).toBe(
+        live ? 1 : 0,
+      );
+      expect(admit).toHaveBeenCalledTimes(live ? 1 : 0);
+    } finally {
+      await session.close();
+    }
+  },
+);
