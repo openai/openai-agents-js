@@ -255,7 +255,11 @@
     {
       "path": "0058-native-metadata-durability.patch",
       "sha256": "10136a8852249737dbf7974c579cb84faf0d36fc495fcbaeeafe66a3dfa7e3d6"
+    },
+    {
+      "path": "0059-sdk-queued-trace-policy.patch",
+      "sha256": "1ec311d0ba35b0d41dba0ee319b85729039a55800f7477f4c5cb5e457462ffc5"
     }
   ],
-  "result_tree": "7f082be8686f215dff9ee18b226ba21281a561e4"
+  "result_tree": "61a4406bf7acc950e4914f68a759059293a90457"
 }

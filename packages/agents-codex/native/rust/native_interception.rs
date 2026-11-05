@@ -3340,7 +3340,12 @@ impl DirectRequest {
             // web/image, missing ids and malformed search are not client calls.
             _ => return Ok((item, false)),
         };
-        let tracing = codex_otel::sdk_trace::ContextLease::capture();
+        // The model stream can deliver this item on a different task. Its
+        // executor approval belongs to the turn retained by this request.
+        let tracing = match &self.owner.settlement {
+            Some(receipt) => receipt.upgrade().and_then(|turn| turn.tracing.clone()),
+            None => codex_otel::sdk_trace::ContextLease::capture().map(Arc::new),
+        };
         let request = Request {
             tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "before",
