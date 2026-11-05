@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
+  copyFile,
   link,
   mkdir,
   mkdtemp,
@@ -13,6 +14,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -27,6 +29,7 @@ import {
   checklist,
   localStorage,
   parseSessionState,
+  type Session,
   type SessionState,
 } from '@openai/agents';
 import type { JsonObject } from '../../src/runtime/binding';
@@ -2356,4 +2359,265 @@ it.skipIf(process.platform !== 'darwin')(
     }
   },
   45_000,
+);
+
+it.skipIf(!supported).for(['portable', 'local'] as const)(
+  'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
+  { timeout: 120_000 },
+  async (route) => {
+    const base = await realpath(
+      await mkdtemp(join(tmpdir(), 'agents-linked-policy-')),
+    );
+    const origin = join(base, 'origin');
+    const linked = join(base, 'linked');
+    const sibling = join(base, 'sibling');
+    const cache = join(base, 'cache');
+    const locks = join(base, 'locks');
+    const outside = join(base, 'outside');
+    const peer = createServer((request, response) => {
+      hits.push(request.url!);
+      response.end(`boundary-peer ${request.url}`);
+    });
+    const hits: string[] = [];
+    try {
+      await Promise.all([mkdir(origin), mkdir(cache), mkdir(locks)]);
+      // Apple's /usr/bin/git is an xcrun shim. Execute the real Git binary in
+      // the sandbox without granting an Xcode installation write access.
+      const gitBinary =
+        process.platform === 'darwin' ? join(cache, 'git') : '/usr/bin/git';
+      if (process.platform === 'darwin') {
+        await copyFile(
+          execFileSync('/usr/bin/xcrun', ['--find', 'git'], {
+            encoding: 'utf8',
+          }).trim(),
+          gitBinary,
+        );
+      }
+      const git = (cwd: string, ...args: string[]) =>
+        execFileSync(gitBinary, ['-C', cwd, ...args], {
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: '/dev/null',
+            GIT_CONFIG_NOSYSTEM: '1',
+          },
+        }).trim();
+      git(origin, 'init', '-q');
+      git(
+        origin,
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'initial',
+      );
+      git(origin, 'worktree', 'add', '-q', '-b', 'linked', linked);
+      git(origin, 'worktree', 'add', '-q', '-b', 'sibling', sibling);
+      const first = [
+        git(linked, 'rev-parse', '--absolute-git-dir'),
+        join(origin, '.git'),
+        cache,
+      ];
+      // A common-dir grant alone does not grant another worktree's private gitdir.
+      const expanded = [
+        ...first,
+        sibling,
+        git(sibling, 'rev-parse', '--absolute-git-dir'),
+        locks,
+      ];
+      const linkedHead = git(linked, 'rev-parse', 'HEAD');
+      const siblingHead = git(sibling, 'rev-parse', 'HEAD');
+      await writeFile(outside, 'protected');
+      await writeFile(join(sibling, 'sentinel'), 'ungranted');
+      await writeFile(join(locks, 'sentinel'), 'ungranted');
+      await new Promise<void>((resolve, reject) => {
+        peer.once('error', reject);
+        peer.listen(0, '127.0.0.1', resolve);
+      });
+      const address = peer.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing HTTP fixture address');
+      const network = {
+        allowedDomains: ['127.0.0.1'],
+        deniedDomains: ['localhost'],
+        allowAllUnixSockets: process.platform === 'linux',
+        allowLocalBinding: true,
+      };
+      const quote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
+      // Force both names for the same peer through the managed proxy. A fresh
+      // Agent avoids Node's automatic environment proxy applying a second time.
+      const request = (host: string, stage: string) =>
+        `${quote(process.execPath)} -e ${quote(`
+        const http = require('node:http');
+        const target = 'http://${host}:${address.port}/${stage}';
+        const proxy = new URL(process.env.HTTP_PROXY || process.env.http_proxy);
+        const req = http.get(proxy, {path: target, headers: {host: new URL(target).host}, agent: new http.Agent()}, response => {
+          let body = '';
+          response.on('data', chunk => body += chunk);
+          response.on('end', () => {console.log(response.statusCode + ' ' + body); if (response.statusCode !== 200) process.exitCode = 42;});
+        });
+        req.setTimeout(5000, () => req.destroy(new Error('HTTP probe timed out')));
+        req.on('error', error => {console.error(error.message); process.exitCode = 43;});
+      `)}`;
+      const commit = `export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1; ${quote(gitBinary)} add result.txt; ${quote(gitBinary)} -c user.name=Fixture -c user.email=fixture@example.invalid -c gc.auto=0 commit -qm boundary`;
+      const commands = [
+        `set -e; printf initial > result.txt; printf initial > ${quote(join(cache, 'marker'))}; (printf denied > ${quote(outside)}) 2>/dev/null || true; (printf denied > ${quote(join(sibling, 'sentinel'))}) 2>/dev/null || true; (printf denied > ${quote(join(locks, 'sentinel'))}) 2>/dev/null || true; ${commit}`,
+        `set -e; printf expanded > ${quote(join(sibling, 'result.txt'))}; printf expanded > ${quote(join(locks, 'request.lock'))}; printf expanded >> ${quote(join(cache, 'marker'))}; (printf denied > ${quote(outside)}) 2>/dev/null || true; cd ${quote(sibling)}; ${commit}`,
+        `set -e; printf resumed >> result.txt; printf resumed >> ${quote(join(sibling, 'result.txt'))}; printf resumed >> ${quote(join(locks, 'request.lock'))}; printf resumed >> ${quote(join(cache, 'marker'))}; (printf denied > ${quote(outside)}) 2>/dev/null || true`,
+      ];
+      const stages = ['initial', 'expanded', 'resumed'];
+      const server = new ModelServer(
+        stages.flatMap((stage, index) => [
+          [
+            call(
+              'exec_command',
+              { cmd: commands[index] },
+              { callId: `${stage}-files` },
+            ),
+          ],
+          [
+            call(
+              'exec_command',
+              { cmd: request('127.0.0.1', stage) },
+              { callId: `${stage}-allow` },
+            ),
+          ],
+          [
+            call(
+              'exec_command',
+              { cmd: request('localhost', stage) },
+              { callId: `${stage}-deny` },
+            ),
+          ],
+          [message(stage)],
+        ]),
+      );
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      const storage =
+        route === 'local' ? localStorage(join(base, 'storage')) : undefined;
+      const environment = (roots: string[]) =>
+        Environment.local({
+          cwd: linked,
+          writableRoots: roots,
+          tools: ['exec_command'],
+          network,
+        });
+      const run = async (session: Session, stage: string, roots?: string[]) => {
+        expect(
+          (
+            await (
+              await session.submit(stage, roots ? { writableRoots: roots } : {})
+            ).wait()
+          ).finalOutput,
+        ).toBe(stage);
+        const items = await Array.fromAsync(session.items());
+        expect(items).toContainEqual(
+          expect.objectContaining({
+            type: 'command_execution',
+            callId: `${stage}-files`,
+            exitCode: 0,
+            status: 'completed',
+          }),
+        );
+        expect(items).toContainEqual(
+          expect.objectContaining({
+            type: 'command_execution',
+            callId: `${stage}-allow`,
+            exitCode: 0,
+            status: 'completed',
+            output: expect.stringContaining(`200 boundary-peer /${stage}`),
+          }),
+        );
+        const denied = items
+          .filter((item) => 'callId' in item && item.callId === `${stage}-deny`)
+          .map((item) => ('output' in item ? item.output : ''))
+          .join('\n');
+        expect(denied).toMatch(/blocked|denied|403/i);
+        expect(await readFile(outside, 'utf8')).toBe('protected');
+        const receipt = (await Array.fromAsync(session.turns())).at(-1)?.receipt
+          ?.executors?.[0];
+        expect(receipt?.networkPolicy?.domains).toEqual({
+          '127.0.0.1': 'allow',
+          localhost: 'deny',
+        });
+        return receipt;
+      };
+      await using session = await agent.session({
+        environment: environment(first),
+        ...(storage ? { storage } : {}),
+      });
+      const initial = await run(session, 'initial');
+      expect(await readFile(join(sibling, 'sentinel'), 'utf8')).toBe(
+        'ungranted',
+      );
+      expect(await readFile(join(locks, 'sentinel'), 'utf8')).toBe('ungranted');
+      const updated = await run(session, 'expanded', expanded);
+      const restore = storage
+        ? { storage, resume: session.id }
+        : { state: await session.saveState() };
+      await session.close();
+      const count = server.requests.length;
+      await expect(
+        agent.session({ ...restore, environment: environment(first) }),
+      ).rejects.toThrow(
+        /recorded executor write and network policy|applied executor policy/,
+      );
+      await expect(
+        agent.session({
+          ...restore,
+          environment: Environment.local({
+            cwd: linked,
+            writableRoots: expanded,
+            tools: ['exec_command'],
+            network: { ...network, allowedDomains: ['different.invalid'] },
+          }),
+        }),
+      ).rejects.toThrow(
+        /recorded executor write and network policy|applied executor policy|network policy/,
+      );
+      expect(server.requests).toHaveLength(count);
+      await using resumed = await agent.session({
+        ...restore,
+        environment: environment(expanded),
+      });
+      const reopened = await run(resumed, 'resumed');
+      expect(new Set(initial?.writableRoots)).toEqual(
+        new Set([linked, ...first].map((path) => pathToFileURL(path).href)),
+      );
+      expect(new Set(updated?.writableRoots)).toEqual(
+        new Set([linked, ...expanded].map((path) => pathToFileURL(path).href)),
+      );
+      expect(reopened).toEqual(updated);
+      expect(hits).toEqual(['/initial', '/expanded', '/resumed']);
+      expect(git(linked, 'rev-parse', 'HEAD')).not.toBe(linkedHead);
+      expect(git(sibling, 'rev-parse', 'HEAD')).not.toBe(siblingHead);
+      expect(git(sibling, 'show', 'HEAD:result.txt')).toBe('expanded');
+      expect(await readFile(join(sibling, 'result.txt'), 'utf8')).toBe(
+        'expandedresumed',
+      );
+      expect(await readFile(join(locks, 'request.lock'), 'utf8')).toBe(
+        'expandedresumed',
+      );
+      expect(await readFile(join(cache, 'marker'), 'utf8')).toBe(
+        'initialexpandedresumed',
+      );
+      server.assertExhausted();
+    } finally {
+      peer.closeAllConnections();
+      if (peer.listening)
+        await new Promise<void>((resolve, reject) =>
+          peer.close((error) => (error ? reject(error) : resolve())),
+        );
+      await rm(base, { recursive: true, force: true });
+    }
+  },
 );
