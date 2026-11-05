@@ -68,12 +68,15 @@ function sourcePathForExport(
     );
   }
   if (
-    workspacePackage.name === '@openai/agents' &&
+    workspacePackage.name === '@openai/agents-codex' &&
     exportPath === './experimental/mcp-tasks'
   ) {
     distTarget = './dist/experimental/mcp-tasks/index.mjs';
   }
-  if (workspacePackage.name === '@openai/agents' && exportPath === './a2a') {
+  if (
+    workspacePackage.name === '@openai/agents-codex' &&
+    exportPath === './a2a'
+  ) {
     distTarget = './dist/a2a/index.mjs';
   }
   if (!distTarget.startsWith('./dist/')) {

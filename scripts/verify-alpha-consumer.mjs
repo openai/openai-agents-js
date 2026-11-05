@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createReadStream } from 'node:fs';
-import { readFile, realpath } from 'node:fs/promises';
+import { access, readFile, realpath } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { join, resolve, sep } from 'node:path';
@@ -62,7 +62,47 @@ for (const [path, entry] of Object.entries(lock.packages)) {
 }
 assert.deepEqual(locked.sort(), names.sort());
 
-const agentRoot = installed['@openai/agents'];
+// Each facade export must retain the runtime owner's object identity in both
+// module systems, including constructors, symbols, and experimental helpers.
+for (const esm of [false, true]) {
+  for (const suffix of [
+    '',
+    '/testing',
+    '/migration',
+    '/experimental/deferred',
+    '/experimental/mcp-tasks',
+    '/a2a',
+  ]) {
+    const facade = esm
+      ? await import(`@openai/agents${suffix}`)
+      : require(`@openai/agents${suffix}`);
+    const runtime = esm
+      ? await import(`@openai/agents-codex${suffix}`)
+      : require(`@openai/agents-codex${suffix}`);
+    const keys = (module) =>
+      Object.keys(module)
+        .filter((key) => key !== 'default')
+        .sort();
+    assert.deepEqual(
+      keys(facade),
+      keys(runtime),
+      `Forwarded exports: ${suffix}`,
+    );
+    for (const key of keys(runtime))
+      assert.equal(
+        facade[key],
+        runtime[key],
+        `Forwarded identity: ${suffix}:${key}`,
+      );
+  }
+}
+const agentRoot = installed['@openai/agents-codex'];
+for (const path of ['native', 'bin', 'licenses']) {
+  await access(join(agentRoot, path));
+  await assert.rejects(access(join(installed['@openai/agents'], path)), {
+    code: 'ENOENT',
+  });
+}
 const native = require(join(agentRoot, 'native/index.js'));
 assert.equal(native.CODEX_REVISION, receipt.codexRevision);
 assert.equal(
@@ -232,6 +272,7 @@ await withModel(
       assert.deepEqual(calls, [[19, 23]]);
       return [message('The answer is 42.')];
     },
+    [message('The same session answered again.')],
   ],
   async (baseUrl) => {
     const provider = new NativeProvider({
@@ -255,10 +296,19 @@ await withModel(
           }),
         ],
       });
-      assert.equal(
-        (await agent.run('Add 19 and 23.')).finalOutput,
-        'The answer is 42.',
-      );
+      const session = await agent.session();
+      try {
+        assert.equal(
+          (await (await session.submit('Add 19 and 23.')).wait()).finalOutput,
+          'The answer is 42.',
+        );
+        assert.equal(
+          (await (await session.submit('Answer again.')).wait()).finalOutput,
+          'The same session answered again.',
+        );
+      } finally {
+        await session.close();
+      }
     } finally {
       await provider.close();
     }
@@ -296,5 +346,5 @@ for (const esm of [false, true]) {
   assert.equal(model.calls.length, 2);
 }
 console.log(
-  'Verified local SDK locks, CJS/ESM imports, native products/helpers, bundled hello, native tool, and classic sessions.',
+  'Verified local SDK locks, CJS/ESM imports, native products/helpers, forwarded facade exports, runtime payload ownership, bundled hello, native tool/sessions, and classic sessions.',
 );

@@ -24,6 +24,7 @@ import {
   setDefaultOpenAIKey,
   withTrace,
 } from '@openai/agents/classic';
+import { RealtimeAgent } from '@openai/agents/realtime';
 import { aisdk } from '@openai/agents-extensions/ai-sdk';
 
 export default {
@@ -31,6 +32,11 @@ export default {
     try {
       setDefaultOpenAIKey(env.OPENAI_API_KEY!);
       const url = new URL(request.url);
+
+      if (url.pathname === '/realtime') {
+        const agent = new RealtimeAgent({ name: 'Workerd Realtime Agent' });
+        return Response.json({ name: agent.name });
+      }
 
       if (url.pathname === '/aisdk') {
         // AISDK-backed fake model used to validate context propagation without

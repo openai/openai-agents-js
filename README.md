@@ -10,7 +10,7 @@ Use the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/ov
 
 ## Install
 
-Use Node.js 24. The `0.22.0-alpha.1` starter bundles include the built SDK, the compiled Codex runtime, and a JavaScript example. Follow the [installation guide](packages/agents/examples/guides/installation.md) to choose a bundle and run the example, or [add the SDK to an existing application](packages/agents/examples/guides/installation.md#add-the-sdk-to-an-existing-application).
+Use Node.js 24. The `0.22.0-alpha.1` starter bundles include the built SDK, the compiled Codex runtime, and a JavaScript example. Follow the [installation guide](packages/agents-codex/examples/guides/installation.md) to choose a bundle and run the example, or [add the SDK to an existing application](packages/agents-codex/examples/guides/installation.md#add-the-sdk-to-an-existing-application).
 
 ## Example
 
@@ -53,30 +53,30 @@ The example makes a live model request. When the model asks for the greeting too
 
 ## SDK guides
 
-Start with the [native SDK overview](packages/agents/README.md), or choose a topic below.
+Start with the [native SDK overview](packages/agents-codex/README.md), or choose a topic below.
 
 | Guide | What you can do |
 | --- | --- |
-| [Agents and sessions](packages/agents/examples/guides/sessions.md) | Set instructions and a provider, stream events, and cancel turns. |
-| [Tools and input](packages/agents/examples/guides/tools.md) | Declare functions and select tools for a turn. |
-| [Output contracts](packages/agents/examples/guides/output.md) | Return plain text or validated structured output. |
-| [MCP tools](packages/agents/examples/guides/mcp.md) | Connect tools from native or application-owned MCP servers. |
-| [Remote executors](packages/agents/examples/guides/executors.md) | Connect a workspace and admit child agents. |
-| [Session history and state](packages/agents/examples/guides/state.md) | Read conversation history and restore saved state. |
-| [Native interactions](packages/agents/examples/guides/interactions.md) | Handle approvals, forms, and verification. |
-| [Native API guide](packages/agents/NATIVE.md) | Browse all native SDK topics. |
+| [Agents and sessions](packages/agents-codex/examples/guides/sessions.md) | Set instructions and a provider, stream events, and cancel turns. |
+| [Tools and input](packages/agents-codex/examples/guides/tools.md) | Declare functions and select tools for a turn. |
+| [Output contracts](packages/agents-codex/examples/guides/output.md) | Return plain text or validated structured output. |
+| [MCP tools](packages/agents-codex/examples/guides/mcp.md) | Connect tools from native or application-owned MCP servers. |
+| [Remote executors](packages/agents-codex/examples/guides/executors.md) | Connect a workspace and admit child agents. |
+| [Session history and state](packages/agents-codex/examples/guides/state.md) | Read conversation history and restore saved state. |
+| [Native interactions](packages/agents-codex/examples/guides/interactions.md) | Handle approvals, forms, and verification. |
+| [Native API guide](packages/agents-codex/NATIVE.md) | Browse all native SDK topics. |
 
 For the classic Agent and Runner APIs, see the [classic guide](packages/agents/CLASSIC.md).
 
 ## More examples
 
-Use examples from the same release as your installed SDK. The [example guide](packages/agents/examples/README.md) covers setup and commands. Examples that call a model need `OPENAI_API_KEY`.
+Use examples from the same release as your installed SDK. The [example guide](packages/agents-codex/examples/README.md) covers setup and commands. Examples that call a model need `OPENAI_API_KEY`.
 
-- [Function tools](packages/agents/examples/basic.ts). Call a greeting function.
-- [Typed application context](packages/agents/examples/typed-context.ts). Use application context and return structured output.
-- [Conversation and streaming](packages/agents/examples/conversation.ts). Stream a conversation and restore saved state.
-- [Validated artifacts](packages/agents/examples/validated-artifact.ts). Validate an artifact before writing it.
-- [All examples](packages/agents/examples/README.md). Find more workflows and their setup requirements.
+- [Function tools](packages/agents-codex/examples/basic.ts). Call a greeting function.
+- [Typed application context](packages/agents-codex/examples/typed-context.ts). Use application context and return structured output.
+- [Conversation and streaming](packages/agents-codex/examples/conversation.ts). Stream a conversation and restore saved state.
+- [Validated artifacts](packages/agents-codex/examples/validated-artifact.ts). Validate an artifact before writing it.
+- [All examples](packages/agents-codex/examples/README.md). Find more workflows and their setup requirements.
 
 ## Get help
 
@@ -84,4 +84,4 @@ Use [GitHub issues](https://github.com/openai/openai-agents-js/issues) for quest
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and tests. The [source build instructions](packages/agents/examples/guides/building.md) cover the native runtime and SDK packages.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and tests. The [source build instructions](packages/agents-codex/examples/guides/building.md) cover the native runtime and SDK packages.
