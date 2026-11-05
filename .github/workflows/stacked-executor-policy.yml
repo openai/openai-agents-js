@@ -10,12 +10,16 @@ on:
       - '.github/workflows/alpha-release-artifacts.yml'
       - '.github/workflows/stacked-executor-policy.yml'
       - 'packages/agents-codex/native/**'
+      - 'packages/agents-codex/scripts/**'
+      - 'scripts/**'
+      - '.github/native-bundle.json'
       - 'packages/agents-codex/src/**'
       - 'packages/agents/src/**'
       - 'packages/agents-codex/test/native/**'
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   package:
