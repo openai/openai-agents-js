@@ -124,6 +124,7 @@ sandboxTest(
     );
     const workers: ReturnType<typeof launch>[] = [];
     const steer = Promise.withResolvers<void>();
+    const reportDelayMs = 250;
     const reports: StoredReport[] = [];
     const peer = await startReportPeer({
       storeReport(report) {
@@ -187,7 +188,7 @@ sandboxTest(
         undefined,
         recoveryTestTimeoutMs,
       );
-      const firstBob = start(bobConfig, context);
+      const firstBob = start({ ...bobConfig, reportDelayMs }, context);
       await firstBob.finish();
       await expect
         .poll(
@@ -205,8 +206,13 @@ sandboxTest(
       expect(bobQuestion).toMatchObject({
         state: 'needs_review',
         claim: { question: 'What date should I use?' },
-        timings: { firstToolMs: expect.any(Number) },
+        timings: {
+          firstToolMs: expect.any(Number),
+          firstToolResultMs: expect.any(Number),
+        },
       });
+      const { firstToolMs, firstToolResultMs } = bobQuestion!.timings!;
+      expect(firstToolResultMs!).toBeGreaterThan(firstToolMs! + 200);
       expect(aliceLive?.threadId).not.toBe(bobQuestion?.threadId);
 
       steer.resolve();
@@ -247,6 +253,8 @@ sandboxTest(
           timings: {
             startupMs: expect.any(Number),
             followUpSubmissionMs: expect.any(Number),
+            firstToolMs: null,
+            firstToolResultMs: expect.any(Number),
             completionMs: expect.any(Number),
           },
         });
@@ -302,6 +310,7 @@ sandboxTest(
       expect(await readWorkerSnapshot(directory)).toMatchObject({
         state: 'needs_review',
         claim: { summary: 'Draft ready.', question: null },
+        timings: { firstToolMs: null, firstToolResultMs: null },
       });
       await expect(publishAcceptedDraft(directory)).rejects.toThrow(
         'Publication requires an accepted draft.',

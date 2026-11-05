@@ -155,8 +155,12 @@ export class NativeThread {
   _submit(params_json: string): Promise<string>;
   _validate_hosted_search_model(): Promise<void>;
   _update_model_settings(settings_json: string): Promise<boolean>;
-  _compact(): Promise<string>;
-  _execute_command(name: string, arguments_: string): Promise<string>;
+  _compact(traceJson?: string | null): Promise<string>;
+  _execute_command(
+    name: string,
+    arguments_: string,
+    traceJson?: string | null,
+  ): Promise<string>;
   _reply_step(response_json: string): void;
   _check_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
@@ -187,6 +191,7 @@ export class NativeThread {
   _complete_manual_continuation(
     outputSchemaJson?: string,
     selectionJson?: string,
+    traceJson?: string,
     observationSubmissionId?: string,
   ): Promise<string>;
   read_thread_history(subagent_id: string | null): Promise<string>;

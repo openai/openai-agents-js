@@ -52,6 +52,8 @@ export class ToolOutput {
 }
 
 export interface ToolCallContext<Context = unknown> {
+  /** Exact issuing native span, when native tracing has an active context. */
+  readonly traceContext?: import('./trace-context').TraceContext;
   /** SDK-issued contexts include frozen observed metadata. */
   readonly call?: ToolCallInfo;
   readonly context: Context;

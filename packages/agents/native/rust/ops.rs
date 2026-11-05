@@ -553,8 +553,15 @@ async fn continue_managed<'a>(
     }
     init.insert(selection);
     let value = submission(
-        crate::turn_settlement::continue_retained(state, mutation, &previous_id, p.start, init)
-            .await?,
+        crate::turn_settlement::continue_retained(
+            state,
+            mutation,
+            &previous_id,
+            p.trace,
+            p.start,
+            init,
+        )
+        .await?,
     );
     Ok(value)
 }
@@ -566,6 +573,7 @@ pub async fn recover_prepared(
     thread_settings: ThreadSettingsOverrides,
     final_output_json_schema: Option<Value>,
     selection: Option<crate::python_tools::OperationSelection>,
+    trace: Option<W3cTraceContext>,
     observation_submission_id: Option<String>,
 ) -> Result<Value> {
     let thread = &state.thread;
@@ -584,7 +592,7 @@ pub async fn recover_prepared(
                     turn_id: turn_id.clone(),
                     thread_settings,
                     final_output_json_schema,
-                    trace: None,
+                    trace,
                     cyber_access_program: None,
                 },
                 init,

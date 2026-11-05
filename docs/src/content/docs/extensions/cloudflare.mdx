@@ -6,13 +6,13 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
 import cloudflareBasicExample from '../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
 
-Cloudflare Workers and other workerd runtimes cannot open outbound WebSockets using the global `WebSocket` constructor. The extensions package provides a dedicated transport that connects Voice Agents from these environments through a `fetch()`-based upgrade.
+The `CloudflareRealtimeTransportLayer` connects a `RealtimeSession` through a `fetch()` request with `Upgrade: websocket`. Use it in Cloudflare Workers or another workerd runtime that provides `response.webSocket` and the socket's `accept()` method.
 
 <Aside type="caution">
   This adapter is still in beta. You may run into edge case issues or bugs.
   Please report any issues via [GitHub
   issues](https://github.com/openai/openai-agents-js/issues) and we'll fix
-  quickly. For Node.js-style APIs in Workers, consider enabling `nodejs_compat`.
+  quickly.
 </Aside>
 
 ## Setup
@@ -21,20 +21,18 @@ Cloudflare Workers and other workerd runtimes cannot open outbound WebSockets us
 
 1. [Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/examples/guides/installation.md#run-the-classic-extensions).
 
-2. **Create a transport and attach it to your session.**
+2. Enable the `nodejs_compat` compatibility flag in your Worker configuration. The SDK uses Node.js APIs provided by this flag.
+
+3. **Create and connect your session inside a Worker request handler.** Call `connectVoiceAgent` with an API key from your application's secret binding. The helper returns the connected `RealtimeSession`.
 
    <Code lang="typescript" code={cloudflareBasicExample} />
 
-3. **Connect your `RealtimeSession`.**
-
-   ```typescript
-   await session.connect({ apiKey: 'your-openai-ephemeral-or-server-key' });
-   ```
+4. Keep the returned session alive while your application handles messages and audio. Call `session.close()` when that work ends.
 
 </Steps>
 
 ## Notes
 
 - The Cloudflare transport uses `fetch()` with `Upgrade: websocket` and skips waiting for a socket `open` event, matching the workerd APIs.
-- All `RealtimeSession` features (tools, guardrails, etc.) work as usual when using this transport.
+- Your application handles messages, supplies audio input, and plays audio output over this WebSocket transport. Keep ownership of the returned session until that work ends.
 - Use `DEBUG=openai-agents*` to inspect detailed logs during development.

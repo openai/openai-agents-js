@@ -8,6 +8,7 @@ import {
   manualTool,
   type ActionRequested,
   NativeProvider,
+  TraceContext,
   tool,
   type ModelRequestDispatching,
   type ModelResponseLinked,
@@ -376,7 +377,10 @@ for (const restore of [false, true]) {
         }),
       ],
     });
-    const source = await agent.session();
+    const parentTrace = new TraceContext({
+      traceparent: '00-11111111111111111111111111111111-2222222222222222-01',
+    });
+    const source = await agent.session({ parentTrace });
     let owner = source;
     try {
       const original = await source.submit('read A');
@@ -398,7 +402,7 @@ for (const restore of [false, true]) {
         expect(encoded).not.toContain('observation_submission_id');
         expect(encoded).not.toContain(original.submissionId);
         await source.close();
-        owner = await agent.session({ state: saved });
+        owner = await agent.session({ state: saved, parentTrace });
         action = undefined;
         for await (const event of owner.events()) {
           if (event.type === 'action_requested') {
