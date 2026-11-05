@@ -102,8 +102,8 @@ it.each([
 ])(
   'attributes files to a child by instruction source (role $role)',
   async ({ role, inherits }) => {
-    const instructions = 'Use the child fixture.';
-    const combined = `Delegate.\n\n${instructions}`;
+    const instructions = 'Use the child fixture.\r\n';
+    const combined = 'Delegate.\n\nUse the child fixture.';
     let childRequest: JsonObject | undefined;
     const server = childServer(
       [
@@ -149,8 +149,15 @@ it.each([
       );
       const { child, turn } = await oneChild(session);
       expect((await turn.wait()).finalOutput).toBe('child final');
-      expect(JSON.stringify(childRequest?.input)).toContain(
-        JSON.stringify(combined).slice(1, -1),
+      expect(childRequest?.input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            role: 'developer',
+            content: expect.arrayContaining([
+              { type: 'input_text', text: combined },
+            ]),
+          }),
+        ]),
       );
       const recorded = (
         await Array.fromAsync(session.turns({ subagentId: child.id }))
