@@ -3,4 +3,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: preserve the originating workflow's trace context and privacy settings in native child callbacks
+fix: preserve each queued native submission's trace and privacy settings when another workflow is active

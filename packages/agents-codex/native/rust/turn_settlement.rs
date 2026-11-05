@@ -563,27 +563,29 @@ impl ThreadLifecycleContributor<Config> for Contributor {
 impl TurnLifecycleContributor for Contributor {
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
-            let tracing = input
-                .turn_store
-                .get_or_init(codex_otel::sdk_trace::CapturedContext::capture);
+            let owner = input
+                .thread_store
+                .get::<crate::native_interception::Control>();
+            let tracing = input.turn_store.get_or_init(|| {
+                owner
+                    .as_ref()
+                    .map_or_else(codex_otel::sdk_trace::CapturedContext::capture, |control| {
+                        control.tracing_context()
+                    })
+            });
             let settlement = input.thread_store.get_or_init(Settlement::default);
             let own_instructions = input
                 .thread_store
                 .get::<crate::options::ThreadInstructions>()
                 .is_some_and(|instructions| instructions.managed());
             let managed_response = own_instructions
-                || input
-                    .thread_store
-                    .get::<crate::native_interception::Control>()
+                || owner
+                    .as_ref()
                     .is_some_and(|control| control.managed_response());
             let managed_steering = own_instructions
-                || input
-                    .thread_store
-                    .get::<crate::native_interception::Control>()
+                || owner
+                    .as_ref()
                     .is_some_and(|control| control.has_native_agents());
-            let owner = input
-                .thread_store
-                .get::<crate::native_interception::Control>();
             let sampling_stop = owner
                 .as_ref()
                 .map(|owner| owner.graph().close_sampling.for_turn())
