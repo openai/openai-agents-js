@@ -105,6 +105,7 @@ export function committedNativeInputsMatch({ repository, from, to }) {
       (path) =>
         path.startsWith('docs/') ||
         path.startsWith('examples/') ||
+        /^\.changeset\/[^/]+\.md$/.test(path) ||
         /^packages\/[^/]+\/(?:src|test)\//.test(path) ||
         /^[^/]+\.(?:md|mdx)$/.test(path),
     );

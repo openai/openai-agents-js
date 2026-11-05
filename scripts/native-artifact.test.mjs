@@ -624,7 +624,7 @@ test('full caller content prevents a reverted extra job from donating products',
   assert.equal(await f.resolve(), undefined);
 });
 
-test('complete committed input comparison allows SDK changes but rejects reverted producer policy and Cargo configuration', () => {
+test('complete committed input comparison allows SDK changes with release notes but rejects configuration and producer changes', () => {
   const root = mkdtempSync(join(tmpdir(), 'native-committed-inputs-'));
   const git = (...args) =>
     execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
@@ -650,11 +650,33 @@ test('complete committed input comparison allows SDK changes but rejects reverte
     mkdirSync(join(root, 'packages/agents/src'), { recursive: true });
     writeFileSync(join(root, 'packages/agents/src/index.ts'), 'current SDK');
     writeFileSync(join(root, 'CONTRIBUTING.md'), 'SDK documentation');
+    mkdirSync(join(root, '.changeset'));
+    writeFileSync(
+      join(root, '.changeset/sdk-fix.md'),
+      '---\n"@openai/agents": patch\n---\n\nfix: Update SDK behavior\n',
+    );
     const sdk = commitAll();
     assert.equal(
       committedNativeInputsMatch({ repository: root, from: base, to: sdk }),
       true,
     );
+    for (const name of ['config.json', 'publish.mjs', 'nested/note.md']) {
+      const path = join(root, '.changeset', name);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, 'not a changeset release note');
+      const changed = commitAll();
+      assert.equal(
+        committedNativeInputsMatch({
+          repository: root,
+          from: sdk,
+          to: changed,
+        }),
+        false,
+        `${name} must require a fresh native build`,
+      );
+      rmSync(path);
+      commitAll();
+    }
     writeFileSync(join(root, 'packages/agents/src/relocated.mjs'), 'producer');
     rmSync(join(root, 'packages/agents/scripts/native.mjs'));
     const renamed = commitAll();
