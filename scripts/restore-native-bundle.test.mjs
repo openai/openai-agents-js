@@ -65,6 +65,7 @@ test('the selected artifact ID and digest must both come from the platform uploa
   ).toThrow();
 });
 
+// Allow time for Git, Node, and tar subprocesses in parallel CI runs.
 test('native reuse requires unchanged inputs and the exact bytes authorized by the PR base', () => {
   const temp = mkdtempSync(join(tmpdir(), 'agents-native-pin-'));
   onTestFinished(() => rmSync(temp, { recursive: true, force: true }));
@@ -208,4 +209,4 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
   expect(/^inputs=(.+)$/m.exec(changed)[1]).not.toBe(
     /^inputs=(.+)$/m.exec(configured)[1],
   );
-});
+}, 30_000);
