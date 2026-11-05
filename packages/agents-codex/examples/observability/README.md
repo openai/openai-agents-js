@@ -1,41 +1,49 @@
 # Inspect one synthetic run
 
-Run this lesson from the matching source checkout with built workspace packages and the native runtime. The package archive includes this directory through the recursive examples rule. Use Node.js 24 or later. You need no external provider credentials, telemetry backend, or extra collector package.
+Use this walkthrough to compare what the native runtime exported with what your application observed. From the repository root, use Node.js 24 and the [matching built packages and native runtime](../guides/building.md). The example uses scripted model responses and a loopback OpenTelemetry receiver. It needs no model API key or telemetry service.
+
+Create a private output directory in a POSIX shell and run the failed-tool-result scenario. Keep this shell open for the remaining commands.
 
 ```sh
-pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario tool-error --output /private/task/tool-error.json
+TRACE_DIRECTORY=$(mktemp -d)
+pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario tool-error --output "$TRACE_DIRECTORY/tool-error.json"
 ```
 
-Create the private output directory first. The command starts a loopback HTTP receiver, configures native OTLP JSON traces and logs, and runs one local synthetic scenario. It closes the Session and scripted provider before flushing telemetry. It then closes the receiver and writes the artifact. Run each scenario in a new process. Native telemetry configuration belongs to the process and must precede its first Session attempt.
+The command prints a run ID, the application outcome, and a batch count. It configures telemetry before opening its first Session, closes the Session and scripted provider, flushes the exporter, and writes the received data. Start a fresh process for each scenario because native telemetry configuration belongs to the process.
 
-The console prints a synthetic run ID, application outcome and received batch count. Inspect the output file's three separate views:
+The JSON gives you three ways to inspect the run.
 
-- `batches` contains the JSON actually received on `/v1/traces` and `/v1/logs`. The receiver retains no HTTP headers.
-- `receipt` records explicit application callback activity, Turn settlement, observed native error fields and public history.
-- `runId` is supplied as `example.run_id` when configuring telemetry. It helps locate this synthetic run among startup records.
+| Field | What it records |
+| --- | --- |
+| `batches` | The JSON received on `/v1/traces` and `/v1/logs`. The receiver discards HTTP headers. |
+| `receipt` | Application callbacks, Turn settlement, observed native error fields, and public history. |
+| `runId` | The value sent as `example.run_id`, which identifies this scenario among startup records. |
 
-A successful command means the lesson collected both signals and handled its selected scenario. It does not mean the callback or final output succeeded. Unexpected fixture, exporter-receipt, file or cleanup failures fail the command.
+A zero exit status means the example collected both signals and handled the selected scenario. Read the application receipt to determine whether the callback and final output succeeded.
 
 ## Compare four outcomes
 
+Run the other three scenarios in the same shell.
+
 ```sh
-pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario tool --output /private/task/tool.json
-pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario validation --output /private/task/validation.json
-pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario provider --output /private/task/provider.json
+pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario tool --output "$TRACE_DIRECTORY/tool.json"
+pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario validation --output "$TRACE_DIRECTORY/validation.json"
+pnpm exec tsx packages/agents-codex/examples/observability/trace-walkthrough.ts --scenario provider --output "$TRACE_DIRECTORY/provider.json"
 ```
 
-| Scenario | Application receipt | Distinction to inspect |
-| --- | --- | --- |
-| `tool-error` | Callback records `A`, returns a failed `ToolOutput`; application outcome is `tool_returned_error` while the Turn completes with the scripted explanation. | A completed Turn or recorded function result does not establish tool success. |
-| `tool` | Callback records `A` and throws the synthetic callback error; settlement rejects. | The successful model HTTP exchange does not establish callback success. |
-| `validation` | Prompted count JSON violates the output schema; settlement rejects with `OutputValidationError`. | Provider success does not establish application output validity. |
-| `provider` | The synthetic peer rejects HTTP with 400; settlement rejects with `NativeError`. | Inspect its recorded nullable fields without inventing a category or assuming missing metadata permits retries. The peer request count is separate application evidence. |
+| Scenario | What to look for in the receipt |
+| --- | --- |
+| `tool-error` | The callback records `A` and returns a failed `ToolOutput`. The application records `tool_returned_error`. The Turn completes with the scripted explanation. |
+| `tool` | The model HTTP exchange succeeds. The callback records `A`, throws, and causes settlement to reject. |
+| `validation` | The provider returns JSON whose count violates the output schema. Settlement rejects with `OutputValidationError`. |
+| `provider` | The synthetic peer returns HTTP 400. Settlement rejects with `NativeError`. Read its observed fields and the peer's request count before deciding how to handle the failure. |
 
-To inspect the JSON, find `batches` entries with `signal: "traces"`. Their `data.resourceSpans[].scopeSpans[].spans[]` arrays contain spans. Look for a `run_turn` span whose attributes include the artifact's `example.run_id`. Its `traceId` links spans in that native operation. Startup records can belong to other trace IDs.
+### Find the matching spans and logs
 
-For `signal: "logs"`, inspect `data.resourceLogs[].scopeLogs[].logRecords[]`. Look for the `event.name` attribute `codex.api_request` and compare its `conversation.id` with `receipt.sessionId`. Use the receipt's `turnId` to identify the submitted Turn after settlement.
+1. In a `traces` batch, read `data.resourceSpans[].scopeSpans[].spans[]`. Find a `run_turn` span with the matching `example.run_id`. Its `traceId` connects spans for that operation. Startup records can have other trace IDs.
+2. In a `logs` batch, read `data.resourceLogs[].scopeLogs[].logRecords[]`. Find the `codex.api_request` event and compare its `conversation.id` with `receipt.sessionId`. Use `receipt.turnId` to identify the submitted Turn after settlement.
 
-The native test inspects received `run_turn` spans, `example.run_id`, and `codex.api_request` log records for this build. These are tested observations, not a stable exporter schema. A native span status is not the application's callback or output-validation classifier. Do not assume every log has a trace ID, every span has a Session ID, or that Python-only error metadata exists in JS.
+These fields describe the build used by the walkthrough. Some logs lack trace IDs and some spans lack Session IDs. Use the application receipt for callback and validation outcomes.
 
 ## Read supported history
 
@@ -49,13 +57,27 @@ History and telemetry do not reconstruct approvals, all passive events, private 
 
 ## Collector and data limits
 
-The standard-library receiver binds only `127.0.0.1` on an ephemeral port. It admits at most 16 requests and 4 MiB per request, then rejects excess input without keeping a partial batch. It accepts only the two demonstration signal paths. It has no authentication, persistent store, viewer or production hardening. Keep the output local. Native payloads may contain paths, tool arguments, and other details even when prompt and response text switches are off. Use synthetic data only.
+The receiver binds to `127.0.0.1` on an ephemeral port and accepts only the two example signal paths. It limits input to 16 requests and 4 MiB per request. Excess input is rejected before the receiver retains a partial batch.
 
-Keep direct loopback routing stable for the scripted peer and exporter. Empty signal receipts fail the command. A successful application result alone does not prove delivery. Export flush runs before receiver close. Close also destroys owned sockets and joins body handlers so an incomplete request cannot keep the command alive. This example does not promise reliable telemetry delivery or reconnect/retry behavior.
+Use synthetic data and keep the files private. Paths and tool arguments can appear even when prompt and response text logging is off. The receiver keeps data in memory and provides no authentication or persistent store.
 
-Focused acceptance, after the matching build and native products are available:
+The command requires direct loopback routing for its scripted peer and exporter. An empty signal receipt fails the command. Cleanup flushes the exporter, closes owned sockets, and joins pending body handlers. Delivery and reconnect behavior depend on your production exporter and collector.
+
+Run the focused acceptance checks after building the matching native products.
 
 ```sh
-OPENAI_AGENTS_NATIVE_TESTS=1 pnpm exec vitest run --project @openai/agents-codex packages/agents-codex/test/native/observability-example.test.ts
+pnpm test:native packages/agents-codex/test/native/observability-example.test.ts
 pnpm exec tsc -p packages/agents-codex/tsconfig.test.json --noEmit
 ```
+
+## Record four local outcomes
+
+The smaller [native telemetry example](../native-telemetry.ts) runs four scripted outcomes in a fresh process with one loopback JSON trace receiver.
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/native-telemetry.ts
+```
+
+Compare a successful run, a failed tool result that lets the Turn continue, a thrown callback, and invalid structured output. Each application receipt includes its Session ID, Turn ID, and settled history. The summary adds the span IDs and attributes that the receiver observed.
+
+The command closes its Sessions and providers, shuts down native telemetry, and closes the receiver. Classic trace processors have their own lifecycle. Prompt, response, and tool-result logging are disabled for this walkthrough. Other fields, including tool arguments, can still carry application data. Use synthetic inputs.

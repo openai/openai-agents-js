@@ -4,7 +4,13 @@ Build the SDK from a checkout when you need to develop the SDK or run its source
 
 ## Build from source
 
-Use Node.js 24, Rust 1.95, and the pnpm version pinned in `package.json`. Install Git, a C/C++ compiler and linker, CMake, and protoc. On Linux, install pkg-config and the OpenSSL development libraries. Run these commands from the repository root.
+Before building, install the tools for your host:
+
+- Node.js 24, Rust 1.95, and the pnpm version pinned in `package.json`.
+- Git, a C/C++ compiler and linker, CMake, and protoc.
+- On Linux, pkg-config and the OpenSSL development libraries.
+
+Run the following sequence from the repository root. Preparation downloads the pinned native source; the native build compiles it for your host, and the final build compiles the workspace packages.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -13,7 +19,9 @@ pnpm native:build
 pnpm build
 ```
 
-Preparation downloads the exact revision in `packages/agents-codex/native/CODEX_REVISION`. The build produces the Node-API addon and helper binaries for the current host. `pnpm native:audit` checks prepared source against its pin.
+The native source pin lives in `packages/agents-codex/native/CODEX_REVISION`. The native build produces the Node-API addon and helper binaries for the current host. Use `pnpm native:audit` to check prepared source against that pin.
+
+To try the build, set `OPENAI_API_KEY` and run `pnpm exec tsx packages/agents-codex/examples/basic.ts` from the repository root. The [greeting example](../basic.ts) asks the model to call a local tool and prints the final answer.
 
 ## Run the native tests
 

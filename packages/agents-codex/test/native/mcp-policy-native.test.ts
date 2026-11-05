@@ -1,7 +1,15 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
-import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -16,6 +24,7 @@ import {
   type Session,
 } from '../../src';
 import { TurnAborted } from '../../src/runtime/session';
+import * as telemetry from '../../src/runtime/telemetry';
 import {
   ChildCallbacks,
   type ChildObservationProducer,
@@ -27,6 +36,14 @@ import {
 } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
+
+beforeAll(async () => {
+  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+});
+
+afterAll(async () => {
+  await telemetry.shutdown();
+});
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -1928,9 +1945,7 @@ it('rejects a revoked late stop and preserves cancellation and successor effects
 }, 20_000);
 
 it('restores the native MCP carrier with Session-only tracing and strict restrictions', async () => {
-  const telemetry = await import('../../src/runtime/telemetry');
   const native = await binding();
-  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
   const original = native.NativeThread.prototype._next_native_mcp_result;
   let expectedParent: string | undefined;
   const notices: JsonObject[] = [];
@@ -1999,6 +2014,5 @@ it('restores the native MCP carrier with Session-only tracing and strict restric
   } finally {
     reader.mockRestore();
     await telemetry.forceFlush();
-    await telemetry.shutdown();
   }
 });

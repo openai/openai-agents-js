@@ -6,7 +6,7 @@ The two embedded synthetic excerpts describe cobalt roofs reducing summer heat a
 
 ## Run from a built checkout
 
-Configure these values before running the command:
+Use Node.js 24 and [build the SDK and matching native helpers](../guides/building.md). Provision the trusted WSS executor before running this example; the command does not start one. Configure these values:
 
 | Environment variable | Meaning |
 | --- | --- |
@@ -25,7 +25,13 @@ The command uses the configured model service and a real WSS executor. You need 
 
 ## Call and observe the example
 
-`researchInParallel({sources, model, providerOptions, executorOptions, onProgress})` accepts exactly two sources selected by the application. Give each source a distinct ID, a title, and a nonempty `text` excerpt of at most 8,000 UTF-16 code units. Select trusted sources and configure the provider and executor before opening resources. Do not let a model choose URLs, filesystem paths, credentials, or a new source catalog. Pass `providerOptions.apiKey` or set `OPENAI_API_KEY` before calling. The function captures a nonblank key before opening resources.
+To call `researchInParallel({sources, model, providerOptions, executorOptions, onProgress})` from your application:
+
+1. Select exactly two trusted sources. Give each a distinct ID, title, and nonempty `text` excerpt of at most 8,000 UTF-16 code units.
+2. Configure the model provider and provisioned executor. Pass `providerOptions.apiKey` or set `OPENAI_API_KEY`; the function captures a nonblank key before opening resources.
+3. Optionally supply a synchronous `onProgress` callback, then await the function and inspect its retained parent and child results.
+
+Keep source selection, URLs, filesystem paths, and credentials in application code. A model must not choose a new source catalog.
 
 The example approves only the two exact child assignments and parent collaboration waits. Each child starts with `fork_turns: 'none'` and may read only its assigned excerpt through `read_source`. Each assignment carries a fresh key. The callback binds that key to one actual child and checks the Session, turn, submission, and selected source before returning text.
 
@@ -33,7 +39,7 @@ The key stays out of result receipts and CLI output. Receipts retain the real ac
 
 NativeAgents requires an Environment that declares `exec_command`, `write_stdin`, and `apply_patch`. The example supplies all three names and sets `approval: () => false`, denying executor effect dispatch. An empty Environment tool list does not satisfy NativeAgents admission. Denial does not remove the requirement for a real executor.
 
-The optional synchronous `onProgress` callback receives actual observations and captured child snapshots. Snapshots do not update themselves. The result retains both issued child Turns and their completions. It verifies that each completion refers to its issued Turn and exposes the parent's exact completion as `result.parent`. Printed IDs, names, observations, and saved JSON do not grant control over another child incarnation or restore a live graph.
+The optional synchronous `onProgress` callback receives actual observations and captured child snapshots. Each snapshot describes the child when captured; it does not update itself. The result retains both issued child Turns and their completions. It verifies that each completion refers to its issued Turn and exposes the parent's exact completion as `result.parent`. Printed IDs, names, observations, and saved JSON do not grant control over another child incarnation or restore a live graph.
 
 ## Ownership and limits
 

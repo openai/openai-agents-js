@@ -41,13 +41,12 @@ async function main() {
       ? [process.env.EXECUTOR_CAPABILITIES]
       : [],
   });
-  console.log(
-    await runRemoteTask(
-      process.argv.slice(2).join(' ') || 'Inspect the assigned workspace.',
-      environment,
-      { baseUrl: process.env.OPENAI_BASE_URL },
-    ),
+  const result = await runRemoteTask(
+    process.argv.slice(2).join(' ') || 'Inspect the assigned workspace.',
+    environment,
+    { baseUrl: process.env.OPENAI_BASE_URL },
   );
+  console.log(JSON.stringify(result, null, 2));
 }
 
 if (typeof require !== 'undefined' && require.main === module) {

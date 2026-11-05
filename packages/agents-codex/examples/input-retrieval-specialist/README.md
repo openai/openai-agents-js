@@ -1,21 +1,51 @@
 # Native input, retrieval and specialist tools
 
-Run these examples from a matching source checkout with Node.js 24, the checkout's pinned pnpm version, installed dependencies, and qualified native products:
+These three examples run local scripted Responses through `@openai/agents/testing`. Use Node.js 24 and [build the matching workspace and native runtime](../guides/building.md). Run each command from the repository root. The scripted examples need no model API key.
+
+## Send an inline image
 
 ```sh
 pnpm exec tsx packages/agents-codex/examples/input-retrieval-specialist/image-input.ts
+```
+
+The example creates a red PNG, reads its bytes into an inline image data URL, and submits that URL alongside text. It validates the scripted final answer. This checks request transport and output validation. Use a live model to assess image understanding. Supply inline image data for this input. Paths, remote URLs, file IDs, and PDFs cannot serve as image bytes.
+
+## Check retrieved source IDs
+
+```sh
 pnpm exec tsx packages/agents-codex/examples/input-retrieval-specialist/retrieval.ts
+```
+
+The application supplies decoded text and selects the tenant through typed context. The model supplies a query. The tool returns up to two passages per search, each capped at 240 JavaScript string code units.
+
+The application records returned IDs across searches in the same run. It rejects a final citation outside that set, including a foreign tenant ID. The `found` flag must agree with whether the answer cites a source. Each ID must identify a passage within its tenant. Assessing whether the text supports the answer requires a separate content check.
+
+## Call a specialist from a tool
+
+```sh
 pnpm exec tsx packages/agents-codex/examples/input-retrieval-specialist/specialist-tool.ts
 ```
 
-The commands use local scripted Responses through the public `@openai/agents/testing` helpers. They make no live model requests. Imports start no work. The callback owns each testing provider. Every run or explicitly owned Session closes before the callback returns. Application functions borrow the supplied provider.
+The ordinary `consult` tool opens a Session for a separately configured Agent. The application gives that Agent its own catalog context, tool list, output schema, and borrowed provider. The summary title is bounded to 240 JavaScript string code units.
 
-`image-input.ts` writes a synthetic red PNG into a temporary directory, reads its bytes into an inline image data URL alongside text, and consumes the validated final answer. Paths, remote URLs, file IDs and PDFs are not image inputs. Scripted answers demonstrate request transport and final validation. They do not demonstrate image understanding.
+The tool closes the nested Session on success, failure, or parent cancellation and joins cleanup before returning. The testing callback owns the provider. Other callers retain ownership of their Sessions. An application closure keeps the authority granted to it even when its TypeScript fields are readonly. For child tracking within the same Session, see [native child agents](../guides/executors.md#native-child-agents).
 
-`retrieval.ts` searches a small application-supplied decoded-text corpus. The application selects the tenant through typed context; the model supplies only a query. Each search returns at most two passages, each capped at 240 JavaScript string code units. The map accumulates returned sources across searches in the same run. Each call records its actual returned IDs and rejects final citations outside that set, including foreign tenant IDs. The `found` flag must agree with whether citations exist.
+## Retrieve and check sources with a live model
 
-Source membership does not prove that a passage supports the answer. This recipe assumes that application-assigned source IDs identify passages within a tenant. It does not parse files or provide a vector database.
+The standalone [retrieval example](../retrieval.ts) uses a live model and a fixed tenant-scoped corpus. Set `OPENAI_API_KEY` and, for a different Responses endpoint, `OPENAI_BASE_URL`. Run it from the checkout root.
 
-`specialist-tool.ts` calls a separately configured Agent from an ordinary `consult` tool. The specialist receives its own explicit catalog context, tool list, output schema and provider. Its summary title is bounded to 240 JavaScript string code units. The tool owns a nested Session and disposes it on success, failure or parent cancellation, joining cleanup before returning. It borrows the specialist provider and leaves other callers' Sessions open.
+```sh
+pnpm exec tsx packages/agents-codex/examples/retrieval.ts
+```
 
-This composition does not provide native child tracking, handoff or nested checkpoint parity. TypeScript readonly fields and separate tool lists do not isolate the authority of application closures.
+The tool accepts a bounded query and records up to two passages per call, each capped at 240 Unicode code points. After structured output settles, `checkSources` verifies that each cited ID appeared in the results and that `found` agrees with the citations. Unknown citations reject the result. Provider failures reject the request.
+
+## Run the standalone specialist
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/specialist-agent.ts
+```
+
+The [standalone specialist](../specialist-agent.ts) uses scripted providers and checks both tool receipts. Its outer `consult` tool opens an independent specialist Session with a selected read-only catalog value, one `read_catalog` tool, and a summary schema.
+
+Cancellation closes and joins the nested Session even during opening or submission. Callback and output-validation failures reject the outer run. Observe its cleanup errors as well as the Session close result. The application chooses trusted tools and data for each Session. Native children share their parent's Session and follow [different lifecycle rules](../guides/executors.md#native-child-agents).

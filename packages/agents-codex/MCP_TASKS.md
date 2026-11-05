@@ -25,13 +25,23 @@ The peer must support protocol `2026-07-28` and the `io.modelcontextprotocol/tas
 
 ## Keep authority in the application
 
-Construct the provider with a fixed `endpoint`, `tool` and trusted `fetch`. The endpoint must use HTTPS, or HTTP on localhost, 127.0.0.1 or ::1. Model arguments cannot select another endpoint or tool.
+Before admitting a job, configure the provider and its host policies:
 
-`authorize(claim, operation, context)` must check the current principal, binding and journal generation. Return the current bearer token without its `Bearer ` prefix. Authorization runs at operation entry and before each HTTP request. Honor `context.signal`. Configure the host's outbound network access before admitting a job. The adapter does not choose a proxy or alternate route. It refuses redirects. `timeoutMs` defaults to 10,000 milliseconds per adapter operation, including host callbacks that have started and network work. Cooperative cleanup can outlast the deadline. The enclosing `DeferredTools` call has its own timeout.
+1. Fix the `endpoint`, `tool`, and trusted `fetch` in application configuration. Use HTTPS, or HTTP on localhost, 127.0.0.1, or ::1. Model arguments cannot select a different endpoint or tool.
+2. Configure host outbound access. The adapter does not choose a proxy or alternate route and refuses redirects.
+3. Implement current authorization, pending-state admission, result admission, and any enabled mutation reservations described below.
+
+`authorize(claim, operation, context)` must check the current principal, binding and journal generation. Return the current bearer token without its `Bearer ` prefix. Authorization runs at operation entry and before each HTTP request. Honor `context.signal`. `timeoutMs` defaults to 10,000 milliseconds per adapter operation, including host callbacks that have started and network work. Cooperative cleanup can outlast the deadline. The enclosing `DeferredTools` call has its own timeout.
 
 Register the provider with `requireReconciliation: false` only for approved, low-impact work. The protocol cannot prove whether a lost creation request took effect. A lost creation reply leaves the job `unknown`, without a receipt. Preserve the journal's start reservation and original checkpoint. Do not start another job to recover that order.
 
-Keep tokens, task receipts, form prompts, answers, order IDs and database paths in private application storage. Do not put them in model arguments, tool descriptions or public metadata. `admitPending(claim, taskId, requestsJson)` must synchronously return exactly `true` before the adapter retains a new task ID or form. `requestsJson` is `null` at creation, or the full form mapping encoded as canonical JSON. Check task IDs, keys, prompts, and schemas against trusted per-job data. A refused creation becomes `unknown` without a receipt. A refused form keeps its accepted receipt. Restore that policy after restart and verify or quarantine old journal rows.
+Keep tokens, task receipts, form prompts, answers, order IDs and database paths in private application storage. Do not put them in model arguments, tool descriptions or public metadata.
+
+`admitPending(claim, taskId, requestsJson)` must synchronously return exactly `true` before the adapter retains a new task ID or form. `requestsJson` is `null` at creation, or the full form mapping encoded as canonical JSON. Check task IDs, keys, prompts, and schemas against trusted per-job data.
+
+A refused creation becomes `unknown` without a receipt. A refused form keeps its accepted receipt. Restore that policy after restart and verify or quarantine old journal rows.
+
+### Admit model-visible results
 
 By default, the adapter withholds completed peer content. `admitResult` may return host-verified finite JSON under `structuredContent`. Use the registered `project` function to choose the final model-visible fields. `DeferredTools` validates, bounds and saves that public result before delivery.
 
@@ -41,7 +51,11 @@ The application schedules future advances. Pending updates carry a private wall-
 
 Before creation, tool discovery reads at most 32 pages. If page 32 has a continuation cursor, the adapter refuses creation before `tools/call`.
 
-Input replies default to disabled. Enable `allowInputReplies` only for a target that permanently binds request keys to immutable requests and rejects retired or satisfied keys. Construct `MCPInputReply` from the exact saved `challenge` and host-approved `responses`. `MCPInputReply` captures detached action and content values. Submit it through `jobs.advance` with `operation: 'respond'` and `response: reply`. A changed challenge returns current task truth without sending the obsolete answer. The saved `inputRequired` update carries `value.requests` and `value.challenge`. Supported forms contain flat strings, booleans, finite numbers, and string arrays, including enum choices. Nested forms and other validation constraints are refused.
+### Approve an input reply
+
+Input replies default to disabled. Enable `allowInputReplies` only for a target that permanently binds request keys to immutable requests and rejects retired or satisfied keys. Construct `MCPInputReply` from the exact saved `challenge` and host-approved `responses`. `MCPInputReply` captures detached action and content values. Submit it through `jobs.advance` with `operation: 'respond'` and `response: reply`. A changed challenge returns current task truth without sending the obsolete answer.
+
+The saved `inputRequired` update carries `value.requests` and `value.challenge`. Supported forms contain flat strings, booleans, finite numbers, and string arrays, including enum choices. Nested forms and other validation constraints are refused.
 
 For example, after validating the saved challenge and approving its `audience` request in host code:
 
@@ -59,6 +73,8 @@ const outcome = await jobs.advance(restored, request, {
 ```
 
 Here `audience` is the exact admitted request key, and its content must match that request's saved schema. `restored` and `request` are the restored Session and freshly matched deferred request. This fragment also requires an enabled reply policy and the durable mutation callback below. To request cancellation, call `jobs.advance(restored, request, { operation: 'cancel' })`. Both mutations re-read the remote task's current state before dispatch, even before its next poll time.
+
+### Reserve mutations before dispatch
 
 Both replies and cancellation require `reserveMutation(claim, reply, context)`. The `reply` is the captured `MCPInputReply`, or `null` for cancellation. After obtaining the final current credential, the adapter asks this callback to commit a durable reservation immediately before dispatch. The host must check the full binding, generation and approval, and reserve all selected keys atomically. The adapter dispatches only if the callback returns exactly `true`.
 

@@ -4,7 +4,7 @@ Pass text or an inline image to the agent. Use this guide to declare tools, choo
 
 ## Input, tools, and output
 
-Input is a string or a Responses-shaped user message. Content can contain `input_text` and inline base64 `input_image` parts. Remote image URLs, file IDs, local paths, and nondefault image detail are unsupported.
+Input is a string or a Responses-shaped user message. For images, send an inline base64 `input_image` part alongside any `input_text`. This route does not accept remote image URLs, file IDs, local paths, or nondefault image detail.
 
 ### Function tools
 
@@ -24,7 +24,12 @@ On supported Code Mode models, native search replaces the initial request's defe
 
 Use `ToolOutput.image(imageDataUrl)` to return one inline image. It requires an image data URL such as `data:image/png;base64,...` with a nonempty payload; remote URLs, file IDs and local paths throw a `TypeError`. The helper checks the data URL envelope. The native engine decodes and processes the image bytes. Use the constructor to combine an image with text or other content items.
 
-Return `new ToolOutput([{ type: 'inputText', text: 'Record unavailable' }], false)` for an expected failure that the model can handle. The failed tool reply can let the same Turn continue. Throwing an application exception or failing the tool's result schema instead fails the owning Turn after its callback cleanup. Neither path rolls back earlier effects. Repeating `turn.wait()` observes the same outcome; submitting a new prompt starts new work that may repeat effects.
+Choose how to report a tool failure:
+
+- For an expected failure that the model can handle, return `new ToolOutput([{ type: 'inputText', text: 'Record unavailable' }], false)`. The failed tool reply can let the same Turn continue.
+- Throwing an application exception or failing the tool's result schema fails the owning Turn after its callback cleanup.
+
+Neither path rolls back earlier effects. Repeating `turn.wait()` observes the same outcome. Submitting a new prompt starts new work that may repeat effects.
 
 ### Tool call identity
 
@@ -36,9 +41,22 @@ SDK-issued function, collaboration, and executor callback contexts include froze
 
 `manualTool()` creates a declaration whose `ActionRequested` events require an application reply. Call `request.reply(value)` and submit that reply to the session. Validation occurs on submission, so an invalid reply does not consume the request. For one-shot runs, `onInteraction` supplies replies.
 
-Use `turn.wait({ until: 'request' })` to wait for either the captured turn's completion or its current manual request batch. Check `'requests' in outcome` to distinguish the frozen batch from `Completed`. Match each request with its `manualTool` declaration, then deliver `request.reply(value)` through `session.respond()`. A later wait omits answered requests. The batch does not reserve reply authority. Another observer may reply before you do.
+To answer manual tools in an explicit Session:
 
-Every manual request pending for that exact owner at the final native snapshot must pass current declaration and argument validation before a batch returns. Malformed current input fails the owner's normal completion. The SDK does not expose valid sibling requests in that case. Requests arriving after that snapshot belong to a later scan. The SDK parses each full native grant once even when waiters and the normal event reader overlap; a callback tool still runs through its ordinary reader path.
+1. Await `turn.wait({ until: 'request' })` for the captured turn's completion or current request batch.
+2. Check `'requests' in outcome` to distinguish the frozen batch from `Completed`.
+3. Match each request with its `manualTool` declaration, construct `request.reply(value)`, and deliver it through `session.respond()`.
+4. Wait again to observe the next batch or final result. Answered requests leave later batches.
+
+A batch does not reserve reply authority. Another observer may answer a request before you do.
+
+Before returning a batch, the SDK validates every manual request pending for that exact owner at the final native snapshot:
+
+- Each request must pass current declaration and argument validation.
+- Malformed current input fails the owner's normal completion. The SDK does not expose valid sibling requests in that case.
+- Requests arriving after that snapshot belong to a later scan.
+
+The SDK parses each full native grant once even when waiters and the normal event reader overlap. A callback tool still runs through its ordinary reader path.
 
 `session.wait({ until: 'request' })` captures the current logical root at call entry, including pending admission and restored manual roots. A later independent submission cannot retarget that wait. Keep an overridden root's issued Turn, as with ordinary waits. Queued Turns retain their nullable IDs, and an exact child Turn exposes only its own current requests. Root waits exclude child requests. Waits without arguments still return only `Completed`.
 

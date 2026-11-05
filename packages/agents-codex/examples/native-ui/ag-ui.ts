@@ -9,7 +9,7 @@ import {
   type Frame,
   type ViewSession,
   type ViewTurn,
-} from './projection';
+} from './projection.js';
 
 /** Pass the actual opening/submit output declaration; never infer it from deltas. */
 export function agUiResponse<T>(

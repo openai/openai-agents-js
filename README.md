@@ -1,20 +1,16 @@
 # OpenAI Agents SDK
 
-Build agents with the Codex harness in JavaScript and TypeScript. Define instructions, connect your tools, and run agents in your application. Codex runs model turns and keeps conversation history.
+Build agents in TypeScript with an embedded Codex runtime. Give an Agent instructions and tools, run a model turn, and read its result. Open a Session when your application needs a conversation, streamed events, or saved state.
 
-## Build agents in TypeScript
-
-Connect your functions and application data. The SDK validates tool arguments, calls your functions, and parses structured results into typed values. You can also connect tools from MCP servers.
-
-Use the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview) when you want OpenAI to run the agent and manage sessions and recovery.
+<a name="build-agents-in-typescript"></a>Use `@openai/agents` for the native SDK. Existing Agent and Runner applications can use the [classic API](packages/agents/CLASSIC.md). For OpenAI-managed sessions and recovery, see the [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview).
 
 ## Install
 
-Use Node.js 24. The `0.22.0-alpha.1` starter bundles include the built SDK, the compiled Codex runtime, and a JavaScript example. Follow the [installation guide](packages/agents-codex/examples/guides/installation.md) to choose a bundle and run the example, or [add the SDK to an existing application](packages/agents-codex/examples/guides/installation.md#add-the-sdk-to-an-existing-application).
+Use Node.js 24. Follow the [installation guide](packages/agents-codex/examples/guides/installation.md) to run the `0.22.0-alpha.1` starter for your platform or [add its packages to an existing application](packages/agents-codex/examples/guides/installation.md#add-the-sdk-to-an-existing-application). The starter includes the compiled runtime and a JavaScript example.
 
 ## Example
 
-Add Zod 4 to your project with `npm install zod@4`, then save this as `greeting.ts`.
+After installing the SDK in your application, set `OPENAI_API_KEY` in the server environment. Install Zod 4 with `npm install zod@4` and save the following file as `greeting.ts`.
 
 ```ts
 import { Agent, NativeProvider, tool } from '@openai/agents';
@@ -47,36 +43,24 @@ main().catch((error: unknown) => {
 });
 ```
 
-Set `OPENAI_API_KEY` in your environment. From your project directory, run `npx tsx greeting.ts`.
-
-The example makes a live model request. When the model asks for the greeting tool, the SDK calls your function and sends the result back to the model. The script prints a greeting such as `Hello, Ada!`.
+Run `npx tsx greeting.ts` from your application directory. The model requests the greeting tool. The SDK calls your function and sends the result back to the model. The script prints the final answer, such as `Hello, Ada!`.
 
 ## SDK guides
 
-Start with the [native SDK overview](packages/agents-codex/README.md), or choose a topic below.
-
-| Guide | What you can do |
+| Task | Guide |
 | --- | --- |
-| [Agents and sessions](packages/agents-codex/examples/guides/sessions.md) | Set instructions and a provider, stream events, and cancel turns. |
-| [Tools and input](packages/agents-codex/examples/guides/tools.md) | Declare functions and select tools for a turn. |
-| [Output contracts](packages/agents-codex/examples/guides/output.md) | Return plain text or validated structured output. |
-| [MCP tools](packages/agents-codex/examples/guides/mcp.md) | Connect tools from native or application-owned MCP servers. |
-| [Remote executors](packages/agents-codex/examples/guides/executors.md) | Connect a workspace and admit child agents. |
-| [Session history and state](packages/agents-codex/examples/guides/state.md) | Read conversation history and restore saved state. |
-| [Native interactions](packages/agents-codex/examples/guides/interactions.md) | Handle approvals, forms, and verification. |
-| [Native API guide](packages/agents-codex/NATIVE.md) | Browse all native SDK topics. |
+| Start a conversation, stream events, or cancel a Turn | [Agents and sessions](packages/agents-codex/examples/guides/sessions.md) |
+| Choose a model, configure its provider, or compact model context | [Session configuration](packages/agents-codex/examples/guides/session-configuration.md) |
+| Declare functions, select tools, or validate output | [Tools and input](packages/agents-codex/examples/guides/tools.md) and [output contracts](packages/agents-codex/examples/guides/output.md) |
+| Connect an MCP server or a remote workspace | [MCP tools](packages/agents-codex/examples/guides/mcp.md) and [remote executors](packages/agents-codex/examples/guides/executors.md) |
+| Restore a conversation or handle a pending request | [Session history and state](packages/agents-codex/examples/guides/state.md) and [native interactions](packages/agents-codex/examples/guides/interactions.md) |
+| Supervise a worker or connect a remote Agent | [Supervised workers](packages/agents-codex/examples/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md) use the current [source build](packages/agents-codex/examples/guides/building.md). |
 
-For the classic Agent and Runner APIs, see the [classic guide](packages/agents/CLASSIC.md).
+The [native SDK overview](packages/agents-codex/README.md) shows a minimal run. The [native guide index](packages/agents-codex/NATIVE.md) links to individual API topics.
 
 ## More examples
 
-Use examples from the same release as your installed SDK. The [example guide](packages/agents-codex/examples/README.md) covers setup and commands. Examples that call a model need `OPENAI_API_KEY`.
-
-- [Function tools](packages/agents-codex/examples/basic.ts). Call a greeting function.
-- [Typed application context](packages/agents-codex/examples/typed-context.ts). Use application context and return structured output.
-- [Conversation and streaming](packages/agents-codex/examples/conversation.ts). Stream a conversation and restore saved state.
-- [Validated artifacts](packages/agents-codex/examples/validated-artifact.ts). Validate an artifact before writing it.
-- [All examples](packages/agents-codex/examples/README.md). Find more workflows and their setup requirements.
+Use [the examples catalog](packages/agents-codex/examples/README.md) to choose a runnable program or a helper to import. Start with a [function tool](packages/agents-codex/examples/basic.ts), [typed application context](packages/agents-codex/examples/typed-context.ts), a [streamed conversation](packages/agents-codex/examples/conversation.ts), or a [validated artifact](packages/agents-codex/examples/validated-artifact.ts).
 
 ## Get help
 

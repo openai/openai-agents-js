@@ -9,7 +9,7 @@ import {
   type Frame,
   type ViewSession,
   type ViewTurn,
-} from './projection';
+} from './projection.js';
 
 /** Fresh plain-text view; caller must retain its actual plain output declaration. */
 function createVercelResponse(

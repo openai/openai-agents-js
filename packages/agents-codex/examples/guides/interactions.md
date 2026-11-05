@@ -4,12 +4,14 @@ Answer native approvals and forms, handle URL consent, or reply to a verificatio
 
 ## Native questions
 
-Use `onNativeQuestion` during `agent.run()` or read `session.interactions()` in an explicit Session.
+Use `onNativeQuestion` during `agent.run()` or read `session.interactions()` in an explicit Session. Match the request's type before preparing its reply.
 
-- Approvals accept `allow_once` or `deny`. They cannot grant persistent permission.
-- Forms accept a JSON object or `null` to decline.
-- URL requests require explicit consent. Use `reply(null)` to decline.
-- A `user_verification_request` accepts a proof or `null`. See [verification setup](#explicit-verification-and-personal-apps).
+| Request | Reply |
+| --- | --- |
+| Approval | `allow_once` or `deny`; approval grants no persistent permission. |
+| Form | A JSON object matching the offered schema, or `null` to decline. |
+| URL | Explicit consent through `replyUrlAccept()`, or `reply(null)` to decline. |
+| `user_verification_request` | A proof from your configured backend, or `null`. See [verification setup](#explicit-verification-and-personal-apps). |
 
 This handler denies approvals and declines forms and URLs:
 
@@ -48,7 +50,11 @@ Each schema read returns a detached copy. Changing that copy cannot relax valida
 
 Root and child approvals and forms belong to the native turn that originally requested them. Their `turnId` and `submissionId` identify that owner; child requests also expose `subagentId`. The native turn's captured authority controls replies. An active server, a later turn, or matching request IDs cannot grant that authority. The request's `call` remains `null`. Do not infer a tool-call identity from the server name.
 
-A child request belongs to that child's original running instance and turn. If the child stops, restarts, or moves to a later turn, its old request and any prepared reply expire. Forms expire when their owning turn is cancelled. Approvals needed by work already in progress can remain usable during graceful cancellation. Force cancellation, root completion, or Session close expires requests owned by that root. A delayed request or reply cannot authorize a later turn or another child, even when the server reuses its request ID.
+A child request belongs to that child's original running instance and turn. If the child stops, restarts, or moves to a later turn, its old request and any prepared reply expire.
+
+Forms expire when their owning turn is cancelled. Approvals needed by work already in progress can remain usable during graceful cancellation.
+
+Force cancellation, root completion, or Session close expires requests owned by that root. A delayed request or reply cannot authorize a later turn or another child, even when the server reuses its request ID.
 
 ### Read pending interactions
 
@@ -72,9 +78,15 @@ Opening starts with an empty native MCP roster, starts the sole event reader, th
 
 ### Explicit URL consent and completion
 
-Use the request's `mode` to distinguish a form from a URL request. Form answers still use `request.reply(values)` or `request.reply(null)`. URL decline also uses `reply(null)`. To consent to an issued URL request, collect an explicit application decision, prepare `request.replyUrlAccept()`, and deliver that exact reply with `await session.respond(reply)`. Constructing the reply alone sends nothing.
+Use `request.mode` to distinguish a form from a URL request. Form answers use `request.reply(values)` or `request.reply(null)`. Decline a URL with `reply(null)`.
 
-After delivering consent, await `waitForCompletion({ timeoutMs, signal })` on the same request. `timeoutMs` must be positive and finite. A timeout retires the request. A waiter's signal cancels that waiter alone.
+To accept a URL request from an application-owned Session reader:
+
+1. Collect an explicit application decision to consent.
+2. Construct `request.replyUrlAccept()` and deliver that exact reply with `await session.respond(reply)`. Constructing it alone sends nothing.
+3. Await `request.waitForCompletion({ timeoutMs, signal })` on the same issued request.
+
+`timeoutMs` must be positive and finite. A timeout retires the request. A waiter's signal cancels that waiter alone.
 
 Run this flow in an application-owned Session reader. In `onNativeQuestion`, return the prepared reply for SDK delivery. Waiting for completion inside the callback would block consent delivery.
 

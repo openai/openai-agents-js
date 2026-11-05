@@ -52,46 +52,32 @@ The sample uses an API key and starts with the SDK's default local network polic
 
 The worker writes the native thread ID to `snapshot.json` before submitting model work. A status reader can call `readWorkerSnapshot` while the process is active or after it exits. The read uses the application journal and takes no SDK writer. Reconnecting a status reader has no effect on the active turn.
 
+Use the saved state to choose the supervisor's next action:
+
+| Snapshot state | Meaning |
+| --- | --- |
+| `working` | Last recorded active-work state. Check the worker process before treating this snapshot as evidence that work is still running. |
+| `needs_attention` | The worker recorded a failure or a decision it cannot handle. Inspect the recorded reason and worker error, then join the worker before reopening. |
+| `needs_review` | The model returned a claim, but the application has not accepted the artifact. Review the question or missing evidence. |
+| `accepted` | The artifact passed the sample's checks and owned resources closed. Publication is a separate application step. |
+
 While the turn runs, give the worker the supervisor's steering input. The worker takes the native turn ID from `turn_started`, passes it to `turn.steerExact`, and saves the receipt in the snapshot.
 
 After the turn completes, pass review findings or an answer as the next task. The worker opens the same thread ID and starts a new turn. Wait for the old worker process to exit before starting its replacement.
 
 ### Wait for work that needs attention
 
-For a worker that owns a root `Turn`, call `waitForWorkerAttention(turn, { signal, signals })`. A result can be a completed turn, live requests, a native stop, or an account quota block. A settled native result takes precedence over an account block. Ordinary tool events stay inside the worker. For a live request, use the matching request's reply and deliver it through the owning session. Aborting the wait leaves the turn running.
+Use [`waitForWorkerAttention`](supervision.ts) when your application owns a root Turn. The wait returns a completed Turn, live requests, a native stop, or an account quota block. A settled native result takes precedence over an account block. Ordinary tool events stay inside the worker.
 
-`superviseArtifact` uses this wait internally. Its release-note question is in `snapshot.claim.question`. Pass the answer as the next task after the worker exits. When the wait reports an attention stop, the stock worker cancels its owned turn and closes the session before exiting. Use the passive wait directly if you own the session and need to answer a live request on the same turn.
+Choose the next action from the result.
 
-A native `connection_lost` result calls for reconnect. Join the old worker before reopening its durable session, and decide which work to submit next. The example records a known native stop in `snapshot.attention` and leaves scheduling and retries to the application.
+- **Live request.** Send the matching reply through the Session that owns the Turn. Aborting the wait leaves the Turn running.
+- **Native stop.** The example saves a known stop in `snapshot.attention`. For `connection_lost`, wait for the old worker to exit, reopen its durable Session, and decide what to submit next.
+- **Account quota block.** If your supervisor already reads a trusted account service, [attach its quota feed](account-quota.md). The standard API-key worker runs without a feed.
 
-If you already have a trusted account service, create a `WorkerSignals` with the current `accountId` and attachment `generation`. Pass it as `signals` to `superviseArtifact` or the wait, and call `updateQuota` with a full account rate-limit response:
+`superviseArtifact` uses the wait internally. When it reports an attention stop, the example cancels its Turn and closes the Session before exiting. Use the wait directly when you need to answer a live request on that same Turn.
 
-```ts
-import { WorkerSignals } from './signals.js';
-
-const signals = new WorkerSignals({ accountId, generation });
-signals.updateQuota({ generation, observedAt, expiresAt, response });
-```
-
-The application supplies `observedAt` and `expiresAt` in Unix seconds. Keep the generation from when the read began. Call `signals.attach({ accountId, generation })` with a higher generation when the account changes or the supervisor reconnects. This clears the previous quota observation. The account feed accepts full-read responses with an explicit matching account ID.
-
-When your account transport delivers a sparse `account/rateLimits/updated` notification, call `refreshQuota` from that handler with the subscription's generation and your existing full-read function. It checks the generation before and after the read and starts the freshness interval when the read begins.
-
-```ts
-await signals.refreshQuota({
-  generation,
-  maxAgeSeconds: 30,
-  read: readAccountQuota,
-});
-```
-
-The notification prompts a fresh read. Its sparse fields do not refresh cached values or identify an account.
-
-The watcher orders observations by `observedAt`. For equal timestamps, it uses when a direct `updateQuota` call arrives or when a `refreshQuota` read starts. An older concurrent refresh that finishes late cannot replace a newer accepted read with the same timestamp.
-
-Read `signals.quotaResponse` for a copy of the last accepted full service response, including fields the watcher does not recognize. Use `signals.quota.fresh` to check the observation's age. An unrecognized limit reason stays visible in the full response and cannot trigger a stop on its own.
-
-Read `signals.quota` for the selected bucket's available windows, reset times, and usable credits. Missing fields appear as `null`. The credit flags determine availability. The balance is for display. Fresh, current observations block when the service reports a reached limit or spend control, or when it disallows ordinary usage and confirms there are no usable credits. A rounded percentage or elapsed reset time cannot make that decision. A terminal provider quota stop still needs attention when a prior observation showed credits. The standard API-key worker runs without a feed.
+The release-note review question is in `snapshot.claim.question`. Pass the answer as the next task after the worker exits.
 
 ### Verify and publish the draft
 
@@ -115,7 +101,11 @@ Check the effect using an independent record, such as a provider receipt or an a
 
 For selected MCP calls, `onToolStart` receives the native call ID before the client dispatches. Store its link to your application operation key before the call can take effect. A start record alone leaves the outcome unknown.
 
-Return a `ReconciledCall` with the exact IDs, the confirmed outcome `applied` or `not_applied`, and result text safe for the model. The SDK validates every receipt under the native local writer. It saves the results and confirms they can be read before it admits the session. A later open can reuse an identical receipt. Different values for a saved result fail.
+After confirming the effect:
+
+1. Return a `ReconciledCall` with the original IDs, the confirmed outcome `applied` or `not_applied`, and result text safe for the model.
+2. Let the SDK validate the receipt under the native local writer, save the result, and confirm it can be read before admitting the Session.
+3. Retain the same receipt for later reopening. An identical receipt can be reused; different values for an already saved result fail.
 
 The SDK fences replay of the reconciled call IDs. Use an application operation key to prevent duplicate effects across new call IDs. The example handles root calls. An unfinished descendant still blocks cold recovery.
 

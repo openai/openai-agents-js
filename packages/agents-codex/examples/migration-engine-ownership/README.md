@@ -14,11 +14,13 @@ JavaScript exposes Realtime audio through its existing session and transport API
 
 ## Source-checkout acceptance
 
-After building the SDK, run the maintained acceptance case:
+Use Node.js 24. From the repository root, run `pnpm install` and `pnpm build`, then run the maintained acceptance case:
 
 ```sh
 pnpm exec vitest run packages/agents-codex/test/classic/migration-engine-isolation.test.ts
 ```
+
+A successful command reports a passing Vitest case and exits. It runs offline without an API key.
 
 The case uses public package imports in one Node.js process. It retains module identity and existing instances across migration import, exercises classic dispatch, and runs an offline Realtime session with `ScriptedRealtimeTransport`. Audio bytes travel through `RealtimeSession.sendAudio` and its `audio` event. It also checks native-adapter refusal followed by an explicit successful classic run.
 

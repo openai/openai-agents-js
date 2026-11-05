@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -21,6 +29,7 @@ import {
 } from '../../src/runtime/binding';
 import { parseEvent, type NativeEvent } from '../../src/runtime/events';
 import { TurnAborted } from '../../src/runtime/session';
+import * as telemetry from '../../src/runtime/telemetry';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -90,6 +99,14 @@ async function collect(reader: AsyncIterable<Observation>) {
   for await (const event of reader) events.push(event);
   return events;
 }
+
+beforeAll(async () => {
+  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+});
+
+afterAll(async () => {
+  await telemetry.shutdown();
+});
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -904,8 +921,6 @@ describe('exact native child cancellation', () => {
 });
 
 it('keeps child tracing policy for explicit starts and active steering', async () => {
-  const telemetry = await import('../../src/runtime/telemetry');
-  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
   try {
     const modes = [false, true].flatMap((disabled) => [
       { disabled, programmaticToolCalling: false, approve: true },
@@ -1072,6 +1087,6 @@ it('keeps child tracing policy for explicit starts and active steering', async (
       }
     }
   } finally {
-    await telemetry.shutdown();
+    await telemetry.forceFlush();
   }
 }, 60_000);
