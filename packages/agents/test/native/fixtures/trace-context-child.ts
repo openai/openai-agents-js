@@ -52,7 +52,10 @@ async function compact() {
     });
     assert.equal((await first.wait()).finalOutput, 'before');
     await session.compact();
-    await session.executeCommand('/compact');
+    const command = await session.executeCommand('/compact');
+    if (command.command !== 'compact')
+      throw new Error('Missing compact receipt');
+    await command.turn.wait();
     const after = await session.submit('after');
     assert.equal((await after.wait()).finalOutput, 'after');
     const turns = [];
