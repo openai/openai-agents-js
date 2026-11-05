@@ -1,46 +1,11 @@
-# Native Agents SDK for TypeScript
+# OpenAI Agents SDK for TypeScript
 
-`@openai/agents` runs agents through an embedded Codex runtime. Give an Agent instructions and tools, then run it to get an answer. Use a Session when you need follow-up messages, streamed output, or a saved conversation.
+`@openai/agents` provides the public SDK entry points. Its native Agent and Session APIs run through the embedded Codex runtime owned by `@openai/agents-codex`.
 
-## Install
+Applications continue to import from `@openai/agents` and its supported subpaths, including `@openai/agents/testing`, `@openai/agents/migration`, and `@openai/agents/experimental/*`. The public package forwards those imports to `@openai/agents-codex`.
 
-[Install the native SDK](examples/guides/installation.md) to run the release starter or add the SDK to an existing application. See [Build from source](examples/guides/building.md) if you work on the SDK itself.
-
-## Run an agent
-
-After installing the SDK, set `OPENAI_API_KEY` in your environment and save this example as `hello.ts` in your application.
-
-```ts
-import { Agent, NativeProvider } from '@openai/agents';
-
-async function main() {
-  await using provider = new NativeProvider();
-  const agent = new Agent({ instructions: 'Answer clearly.', provider });
-  const result = await agent.run('Hello');
-  console.log(result.finalOutput);
-}
-
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
-```
-
-From your application directory, run the example.
-
-```sh
-npx tsx hello.ts
-```
-
-The script makes a live model request and prints the reply. `agent.run()` creates and closes its own Session, and `await using` closes the provider.
-
-Try the [greeting](examples/basic.ts) and [typed-context](examples/typed-context.ts) examples.
-
-## SDK guides
-
-- [Native API guide](NATIVE.md). Find the reference for sessions, output, tools, and native interactions.
-- <a name="sessions"></a>[Sessions](examples/guides/sessions.md). Open a session, choose its tools, and run multiple turns.
-- [Session history and state](examples/guides/state.md). Save a checkpoint or reopen a local profile.
-- [Examples](examples/README.md). Find runnable workflows and their setup requirements.
-- [Testing](TESTING.md). Run scripted responses without model credentials.
-- [Classic API](CLASSIC.md). Use the classic Agent and Runner APIs.
+- [Native SDK overview](../agents-codex/README.md). Install the SDK and run your first Agent.
+- [Native API guide](../agents-codex/NATIVE.md). Find sessions, tools, output, and native interactions.
+- [Examples](../agents-codex/examples/README.md). Run native and migration workflows.
+- [Scripted native tests](../agents-codex/TESTING.md). Exercise application behavior without model credentials.
+- [Classic API](CLASSIC.md). Use the classic Agent, Runner, Realtime, and sandbox APIs through the `@openai/agents/classic` subpaths.

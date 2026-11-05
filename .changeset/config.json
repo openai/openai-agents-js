@@ -6,6 +6,7 @@
   "fixed": [
     [
       "@openai/agents",
+      "@openai/agents-codex",
       "@openai/agents-core",
       "@openai/agents-openai",
       "@openai/agents-realtime",

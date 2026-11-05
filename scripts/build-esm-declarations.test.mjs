@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
+  copyFileSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import process from 'node:process';
 import test from 'node:test';
+import { fileURLToPath, URL } from 'node:url';
 import { buildEsmDeclarations } from './build-esm-declarations.mjs';
 
 test('ESM declarations follow emitted modules without rewriting literal types or CommonJS imports', () => {
@@ -51,6 +56,44 @@ export type Literal = './value';
 export type Self = import('./index.mjs').Root;
 `,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the standalone generator emits declarations for every configured package', () => {
+  const root = mkdtempSync(join(tmpdir(), 'agents-standalone-declarations-'));
+  try {
+    const script = join(root, 'scripts', 'build-esm-declarations.mjs');
+    mkdirSync(dirname(script));
+    copyFileSync(
+      new URL('./build-esm-declarations.mjs', import.meta.url),
+      script,
+    );
+    const config = join(root, 'tsc-multi.json');
+    copyFileSync(new URL('../tsc-multi.json', import.meta.url), config);
+    symlinkSync(
+      fileURLToPath(new URL('../node_modules', import.meta.url)),
+      join(root, 'node_modules'),
+      'junction',
+    );
+    const { projects } = JSON.parse(readFileSync(config, 'utf8'));
+    const outputs = projects.map((project) =>
+      join(root, dirname(project), 'dist'),
+    );
+    const declaration = 'export type Value = string;\n';
+    for (const output of outputs) {
+      mkdirSync(output, { recursive: true });
+      writeFileSync(join(output, 'index.d.ts'), declaration);
+    }
+
+    execFileSync(process.execPath, [script]);
+    for (const output of outputs) {
+      assert.equal(
+        readFileSync(join(output, 'index.d.mts'), 'utf8'),
+        declaration,
+      );
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

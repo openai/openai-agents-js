@@ -119,7 +119,7 @@ jobs:
     runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
     timeout-minutes: 25
     env:
-      NODE_OPTIONS: "--max_old_space_size=6144"
+      NODE_OPTIONS: '--max_old_space_size=6144'
     strategy:
       matrix:
         # https://nodejs.org/en/about/previous-releases
@@ -234,7 +234,7 @@ jobs:
     runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || '"windows-latest"') }}
     timeout-minutes: 15
     env:
-      CI: "1"
+      CI: '1'
       NODE_ENV: test
     steps:
       - name: Skip CI for docs/meta-only changes
@@ -280,7 +280,7 @@ jobs:
     runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || '"ubuntu-latest"') }}
     timeout-minutes: 15
     env:
-      NODE_OPTIONS: "--max_old_space_size=6144"
+      NODE_OPTIONS: '--max_old_space_size=6144'
     steps:
       - name: Skip CI for docs/meta-only changes
         if: ${{ needs.changes.outputs.run_ci != 'true' }}
@@ -339,8 +339,8 @@ jobs:
 
           // Standard CI runs without the native binary. Report native coverage
           // separately while preserving the released SDK's existing floors.
-          // The former root/testing implementations remain covered under classic/.
-          const nativeSource = /^packages\/agents\/src\/(?:runtime\/|migration\/|experimental\/|(?:index|testing\/index)\.ts$)/;
+          // The convenience facade and classic implementations retain released coverage.
+          const nativeSource = /^packages\/agents-codex\/src\//;
           const cohorts = { released: {}, native: {} };
           for (const [file, coverage] of Object.entries(summary)) {
             if (file === 'total') continue;

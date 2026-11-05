@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   mkdirSync,
@@ -69,7 +70,7 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
   onTestFinished(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
   const output = join(temp, 'output');
-  const native = join(repo, 'packages/agents/native');
+  const native = join(repo, 'packages/agents-codex/native');
   mkdirSync(native, { recursive: true });
   mkdirSync(join(repo, '.github'));
   const git = (...args) =>
@@ -89,11 +90,17 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
     );
     return git('rev-parse', 'HEAD');
   }
-  function restore(base, status = 200) {
+  function restore(base, status = 200, bytes) {
     writeFileSync(output, '');
     // Run the real CLI with a controlled artifact response.
     const mock =
-      'globalThis.fetch = async () => new Response("wrong bytes", {status: ' +
+      'globalThis.fetch = async () => new Response(' +
+      (bytes
+        ? 'Buffer.from(' +
+          JSON.stringify(bytes.toString('base64')) +
+          ', "base64")'
+        : '"wrong bytes"') +
+      ', {status: ' +
       status +
       '})';
     const cli = fileURLToPath(
@@ -126,7 +133,27 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
   expect(cold.output).toContain('restored=false');
   const inputs = /^inputs=([a-f0-9]{64})$/m.exec(cold.output)[1];
   const platform = process.platform + '-' + process.arch;
-  const asset = { id: 1, sha256: '0'.repeat(64) };
+  const bundle = join(temp, 'bundle');
+  const products = [
+    'native/codex.node',
+    'native/build-receipt.json',
+    'bin/helper',
+  ];
+  if (platform === 'darwin-arm64')
+    products.push('native/test-bin/exec-server-fixture');
+  for (const product of products) {
+    mkdirSync(dirname(join(bundle, product)), { recursive: true });
+    writeFileSync(join(bundle, product), product + '\n');
+  }
+  const archive = execFileSync(
+    'tar',
+    ['-czf', '-', '-C', bundle, 'native', 'bin'],
+    { stdio: 'pipe' },
+  );
+  const asset = {
+    id: 1,
+    sha256: createHash('sha256').update(archive).digest('hex'),
+  };
   const pin = join(repo, '.github/native-bundle.json');
   writeFileSync(
     pin,
@@ -143,6 +170,13 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
   expect(corrupt.status).toBe(1);
   expect(corrupt.error).toContain('Native bundle checksum mismatch');
   expect(restore(base, 410).output).toContain('restored=false');
+  const restored = restore(base, 200, archive);
+  expect(restored.status).toBe(0);
+  expect(restored.output).toContain('restored=true');
+  for (const product of products)
+    expect(
+      readFileSync(join(repo, 'packages/agents-codex', product), 'utf8'),
+    ).toBe(product + '\n');
 
   writeFileSync(
     pin,
@@ -152,9 +186,9 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
   expect(restore(base).output).toContain('restored=false');
   git('checkout', base, '--', '.github/native-bundle.json');
   for (const path of [
-    'packages/agents/native/new.rs',
+    'packages/agents-codex/native/new.rs',
     'Cargo.toml',
-    'packages/agents/bin/extra',
+    'packages/agents-codex/bin/extra',
   ]) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), 'new tracked build input\n');
