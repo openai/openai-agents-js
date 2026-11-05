@@ -92,6 +92,7 @@ const auth = new DemoAuthStore({
 const server = createApiServer({ appOrigin, auth, controller, sessions });
 
 const cleanupTimer = setInterval(() => {
+  auth.removeExpired();
   void sessions.closeExpired(30 * 60 * 1000);
 }, 60_000);
 cleanupTimer.unref();
