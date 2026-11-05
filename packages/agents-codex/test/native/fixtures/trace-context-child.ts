@@ -4,6 +4,8 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  NativeAgents,
+  fileSessionStore,
   TraceContext,
   telemetry,
   tool,
@@ -143,6 +145,173 @@ async function definedFlags(flags: string) {
   assert(callback);
   server.assertExhausted();
   return { callback, turn: result.turn.turnId };
+}
+
+async function storeReopen(path: string) {
+  const callbacks: ReturnType<TraceContext['toHeaders']>[] = [];
+  const server = new ModelServer(
+    Array.from({ length: 3 }, (_, index) => [
+      [call('observe', {}, { callId: `store-${index}` })],
+      [final('stored')],
+    ]).flat(),
+  );
+  const agent = new Agent({
+    instructions: 'Call observe.',
+    model: 'gpt-5',
+    provider: await providerFor(server),
+    tools: [
+      tool({
+        name: 'observe',
+        parameters: z.object({}),
+        execute: (_args, context) => {
+          assert(context.traceContext);
+          callbacks.push(context.traceContext.toHeaders());
+          return 'accepted';
+        },
+      }),
+    ],
+  });
+  const storage = fileSessionStore(path + '.store');
+  let id: string | undefined;
+  const turns: string[] = [];
+  for (const carrier of [
+    PARENT.slice(0, -2) + '03',
+    WORKER.slice(0, -2) + '03',
+    undefined,
+  ]) {
+    const session = await agent.session({
+      storage,
+      resume: id,
+      parentTrace: carrier ? parent(carrier) : undefined,
+    });
+    try {
+      id ??= session.id;
+      assert.equal(session.id, id);
+      const turn = await session.submit('observe after opening');
+      assert.equal((await turn.wait()).finalOutput, 'stored');
+      turns.push(turn.turnId!);
+    } finally {
+      await session.close();
+    }
+  }
+  assert.equal(callbacks.length, 3);
+  server.assertExhausted();
+  return { id, turns, callbacks };
+}
+
+async function ownedChildren(flags: string) {
+  const callbacks: ReturnType<TraceContext['toHeaders']>[] = [];
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let workflow: Awaited<ReturnType<typeof telemetry.startTrace>>;
+  let rootId: string | undefined;
+  let roots = 0;
+  let children = 0;
+  let policyChecks = 0;
+  const check = () => {
+    const span = telemetry.getCurrentSpan();
+    assert(span);
+    assert.equal(telemetry.getCurrentTrace(), workflow);
+    assert.equal(span.context.disabled, false);
+    assert.equal(span.context.includeSensitiveData, false);
+    policyChecks++;
+  };
+  const respond = (request: Record<string, unknown>) => {
+    const metadata = request.client_metadata as Record<string, string>;
+    const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
+    rootId ??= id;
+    if (id === rootId)
+      return ++roots === 1
+        ? [
+            call(
+              'spawn_agent',
+              { task_name: 'trace-child', message: 'Call observe.' },
+              { namespace: 'collaboration', callId: 'spawn-trace-child' },
+            ),
+          ]
+        : [final('root done')];
+    return ++children % 2 === 1
+      ? [call('observe', {}, { callId: `child-observe-${children}` })]
+      : [final('child done')];
+  };
+  const server = new ModelServer(Array.from({ length: 6 }, () => respond));
+  const agent = new Agent({
+    instructions: 'Delegate.',
+    model: 'gpt-5.5',
+    provider: await providerFor(server),
+    tools: [
+      new NativeAgents({
+        beforeStep: () => {
+          check();
+          return undefined;
+        },
+      }),
+      tool({
+        name: 'observe',
+        parameters: z.object({}),
+        execute: async (_args, context) => {
+          check();
+          assert(context.traceContext);
+          callbacks.push(context.traceContext.toHeaders());
+          if (callbacks.length === 1) {
+            entered.resolve();
+            await release.promise;
+            check();
+          }
+          return 'accepted';
+        },
+      }),
+    ],
+  });
+  let traceId: string | undefined;
+  const session = await telemetry.withTrace(
+    { name: 'carrier.owner', includeSensitiveData: false },
+    async (original) => {
+      workflow = original;
+      const identity = telemetry.getCurrentSpan()!.context;
+      traceId = identity.traceId;
+      const opened = await agent.session({
+        parentTrace: parent(
+          `00-${identity.traceId}-${identity.spanId}-${flags}`,
+        ),
+        tracing: { includeSensitiveData: false },
+      });
+      try {
+        assert.equal(
+          (await (await opened.submit('delegate')).wait()).finalOutput,
+          'root done',
+        );
+        return opened;
+      } catch (error) {
+        release.resolve();
+        await opened.close();
+        throw error;
+      }
+    },
+  );
+  try {
+    await entered.promise;
+    const owned = await Array.fromAsync(session.subagents());
+    assert.equal(owned.length, 1);
+    const child = owned[0]!;
+    assert(child.turn);
+    release.resolve();
+    assert.equal((await child.turn.wait()).finalOutput, 'child done');
+    await telemetry.withTrace(
+      { name: 'unrelated.caller', includeSensitiveData: true },
+      async () => {
+        const later = await child.submit('call observe again');
+        assert.equal((await later.wait()).finalOutput, 'child done');
+      },
+    );
+    assert.equal(callbacks.length, 2);
+    assert(policyChecks >= 4);
+    server.assertExhausted();
+    return { flags, traceId, callbacks, policyChecks };
+  } finally {
+    release.resolve();
+    await session.close();
+  }
 }
 
 async function graph() {
@@ -326,13 +495,17 @@ async function main() {
   try {
     const result = mode?.startsWith('flags-')
       ? await definedFlags(mode.slice(6))
-      : mode === 'graph'
-        ? await graph()
-        : mode === 'compact'
-          ? await compact()
-          : mode === 'review'
-            ? await review()
-            : await manual(mode!, path!);
+      : mode === 'store-reopen'
+        ? await storeReopen(path!)
+        : mode?.startsWith('owned-children-')
+          ? await ownedChildren(mode.slice('owned-children-'.length))
+          : mode === 'graph'
+            ? await graph()
+            : mode === 'compact'
+              ? await compact()
+              : mode === 'review'
+                ? await review()
+                : await manual(mode!, path!);
     console.log(JSON.stringify(result));
   } finally {
     await telemetry.shutdown();

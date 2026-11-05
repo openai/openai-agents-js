@@ -101,6 +101,29 @@ it('exports isolated root and compaction parents, queued snapshots, exact callba
       if (flags === '03')
         expectParent(dispatch(receipt.turn), PARENT.slice(0, -2) + flags);
     }
+    for (const flags of ['02', '03']) {
+      const owned = await run('owned-children-' + flags);
+      expect(owned.callbacks).toHaveLength(2);
+      for (const callback of owned.callbacks) {
+        expect(callback.traceparent.slice(3, 35)).toBe(owned.traceId);
+        expect(callback.traceparent.endsWith('-' + flags)).toBe(true);
+      }
+      expect(owned.policyChecks).toBeGreaterThanOrEqual(4);
+    }
+    const reopened = await run('store-reopen');
+    expectParent(dispatch(reopened.turns[0]), PARENT);
+    expectParent(dispatch(reopened.turns[1]), WORKER);
+    for (const [index, expected] of [PARENT, WORKER].entries()) {
+      expect(reopened.callbacks[index].traceparent.slice(3, 35)).toBe(
+        expected.slice(3, 35),
+      );
+      expect(reopened.callbacks[index].traceparent.endsWith('-03')).toBe(true);
+    }
+    const fresh = reopened.callbacks[2].traceparent;
+    expect([PARENT.slice(3, 35), WORKER.slice(3, 35)]).not.toContain(
+      fresh.slice(3, 35),
+    );
+    expect(Number.parseInt(fresh.slice(-2), 16) & 2).toBe(0);
     const compact = await run('compact');
     expectParent(dispatch(compact.first), OVERRIDE);
     expectParent(dispatch(compact.compact), PARENT);
