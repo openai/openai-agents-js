@@ -22,6 +22,7 @@ canonicalHeadingIds:
     id: 'observability-and-debugging'
     aliases:
       - 'オブザーバビリティとデバッグ'
+      - '可観測性とデバッグ'
   - depth: 3
     id: 'tracing'
     aliases:
@@ -46,19 +47,19 @@ import setTracingDisabledExample from '../../../../../../examples/docs/config/se
 import getLoggerExample from '../../../../../../examples/docs/config/getLogger.ts?raw';
 import setSensitiveDataLoggingEnabledExample from '../../../../../../examples/docs/config/setSensitiveDataLoggingEnabled.ts?raw';
 
-このページでは、デフォルトの OpenAI クライアント、トランスポート、トレーシングのエクスポートキー、デバッグログの動作など、通常はアプリの起動時に一度だけ設定する **SDK 全体のデフォルト設定** について説明します。これらの設定は、デフォルトでプロセス全体に適用されるため、エージェント単位や実行単位の調整ではなく、全体共通の設定に適しています。
+このページでは、デフォルトの OpenAI クライアント、トランスポート、トレースのエクスポート用キー、デバッグログの動作など、通常はアプリの起動時に一度だけ設定する **SDK 全体のデフォルト設定** について説明します。これらの設定はデフォルトでプロセス全体に適用されるため、エージェントごとや実行ごとの調整ではなく、全体に共通する設定に適しています。
 
-特定の `Agent`、`Runner`、または `run()` 呼び出しを設定する必要がある場合は、以下を参照してください。
+特定の `Agent`、`Runner`、または `run()` 呼び出しを設定する場合は、次のページをご覧ください。
 
-- `Runner` と実行単位のオプションについては、[エージェントの実行](/openai-agents-js/ja/guides/running-agents)
-- エージェントレベルおよび Runner レベルのモデル設定については、[モデル](/openai-agents-js/ja/guides/models)
-- 実行固有のトレーシング設定とエクスポーターの動作については、[トレーシング](/openai-agents-js/ja/guides/tracing)
+- [エージェントの実行](/openai-agents-js/ja/guides/running-agents)：`Runner` と実行ごとのオプション
+- [モデル](/openai-agents-js/ja/guides/models)：エージェントレベルと Runner レベルのモデル設定
+- [トレーシング](/openai-agents-js/ja/guides/tracing)：実行ごとのトレーシング設定とエクスポーターの動作
 
 ## OpenAI クライアントとトランスポート
 
 ### API キーとクライアント
 
-デフォルトでは、SDK は OpenAI クライアントの作成が必要になった時点で、`OPENAI_API_KEY` を遅延解決します。環境変数を設定できない場合は、`setDefaultOpenAIKey()` を手動で呼び出してください。
+デフォルトでは、SDK は OpenAI クライアントの作成が必要になった時点で `OPENAI_API_KEY` を遅延解決します。環境変数を設定できない場合は、`setDefaultOpenAIKey()` を手動で呼び出してください。
 
 <Code
   lang="typescript"
@@ -66,7 +67,7 @@ import setSensitiveDataLoggingEnabledExample from '../../../../../../examples/do
   title="デフォルトの OpenAI キーの設定"
 />
 
-独自の `OpenAI` クライアントインスタンスを渡すこともできます。渡さない場合、SDK はデフォルトのキーを使用してクライアントを自動的に作成します。
+独自の `OpenAI` クライアントインスタンスを渡すこともできます。渡さない場合、SDK はデフォルトのキーを使って自動的にインスタンスを作成します。
 
 <Code
   lang="typescript"
@@ -76,7 +77,7 @@ import setSensitiveDataLoggingEnabledExample from '../../../../../../examples/do
 
 ### API の選択
 
-Responses API と Chat Completions API を切り替えることもできます。
+また、Responses API と Chat Completions API を切り替えることもできます。
 
 <Code lang="typescript" code={setOpenAIAPIExample} title="OpenAI API の設定" />
 
@@ -90,24 +91,24 @@ Responses API を使用している場合は、OpenAI プロバイダーのト�
   title="Responses トランスポートの設定"
 />
 
-WebSocket トランスポートを有効にするには `setOpenAIResponsesTransport('websocket')` を使用し、HTTP に戻すには `setOpenAIResponsesTransport('http')` を使用します。WebSocket トラフィックをプロキシまたはゲートウェイ経由でルーティングする場合は、`OPENAI_WEBSOCKET_BASE_URL` を設定するか、`OpenAIProvider` の `websocketBaseURL` を設定してください。
+WebSocket トランスポートを有効にするには `setOpenAIResponsesTransport('websocket')` を、HTTP に戻すには `setOpenAIResponsesTransport('http')` を使用します。WebSocket トラフィックをプロキシやゲートウェイ経由でルーティングする場合は、`OPENAI_WEBSOCKET_BASE_URL` を設定してください（または `OpenAIProvider` の `websocketBaseURL` を設定してください）。
 
-このプロセス全体のデフォルト設定は、後からデフォルトの OpenAI プロバイダーを介して解決されるモデルにのみ影響します。具体的な `Model` インスタンスまたはカスタムの `modelProvider` を渡す場合は、そこでトランスポートを設定してください。[モデル](/openai-agents-js/ja/guides/models#responses-websocket-transport)を参照してください。
+このプロセス全体に適用されるデフォルト設定は、設定後にデフォルトの OpenAI プロバイダーを通じて解決されるモデルにのみ影響します。具体的な `Model` インスタンスやカスタムの `modelProvider` を渡す場合は、そちらでトランスポートを設定してください。[モデル](/openai-agents-js/ja/guides/models#responses-websocket-transport)をご覧ください。
 
-## オブザーバビリティとデバッグ
+## 可観測性とデバッグ
 
 ### トレーシング
 
-サポートされているサーバーランタイムでは、トレーシングがデフォルトで有効です。ブラウザーおよび `NODE_ENV=test` の場合は、デフォルトで無効になります。
+トレーシングは、サポートされているサーバーランタイムではデフォルトで有効です。ブラウザーや `NODE_ENV=test` の場合は、デフォルトで無効です。
 
-デフォルトでは、トレースのエクスポートに上記のセクションと同じ OpenAI キーが使用されます。
+デフォルトでは、トレースのエクスポートに上記のセクションと同じ OpenAI キーを使用します。
 
-別のキーは `setTracingExportApiKey()` で設定できます。
+`setTracingExportApiKey()` を使って別のキーを設定できます。
 
 <Code
   lang="typescript"
   code={setTracingExportApiKeyExample}
-  title="トレーシングのエクスポート用 API キーの設定"
+  title="トレースのエクスポート用 API キーの設定"
 />
 
 トレーシングを完全に無効にすることもできます。
@@ -118,25 +119,25 @@ WebSocket トランスポートを有効にするには `setOpenAIResponsesTrans
   title="トレーシングの無効化"
 />
 
-トレーシング機能の詳細については、[トレーシング](/openai-agents-js/ja/guides/tracing)を参照してください。
+トレーシング機能について詳しくは、[トレーシング](/openai-agents-js/ja/guides/tracing)をご覧ください。
 
 ### デバッグログ
 
-SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを表示するには、`DEBUG` 環境変数を `openai-agents*` に設定します。
+SDK はデバッグログに [`debug`](https://www.npmjs.com/package/debug) パッケージを使用します。詳細なログを表示するには、環境変数 `DEBUG` を `openai-agents*` に設定してください。
 
 ```bash
 export DEBUG=openai-agents*
 ```
 
-セッションの永続化処理をログに記録するには、`OPENAI_AGENTS__DEBUG_SAVE_SESSION=1` を設定します。
+セッションの永続化処理をログに記録するには、`OPENAI_AGENTS__DEBUG_SAVE_SESSION=1` を設定してください。
 
-`@openai/agents` の `getLogger(namespace)` を使用すると、独自のモジュール向けに名前空間付きロガーを取得できます。
+`@openai/agents` の `getLogger(namespace)` を使って、独自のモジュール用に名前空間付きのロガーを取得できます。
 
 <Code lang="typescript" code={getLoggerExample} title="ロガーの取得" />
 
 #### ログ内の機密データ
 
-関連するエラーオブジェクトや詳細を含むモデルおよびツールのデータは、デフォルトではログに含まれません。デバッグ中にこれらの詳細が必要な場合は、プロセスの機密データのログ記録を明示的に有効にできます。
+モデルやツールのデータは、関連するエラーオブジェクトや詳細情報を含め、デフォルトではログに記録されません。デバッグ中にこれらの詳細情報が必要な場合は、プロセス全体で機密データのログ記録を明示的に有効にできます。
 
 <Code
   lang="typescript"
@@ -144,13 +145,13 @@ export DEBUG=openai-agents*
   title="機密データのログ記録の有効化"
 />
 
-ログが安全に処理される環境でのみ有効にしてください。プログラムによる設定はモデルとツールの両方のデータを制御し、以下の環境変数より優先されます。機密データのログ記録を再び無効にするには、`setSensitiveDataLoggingEnabled(false)` を呼び出します。
+ログが安全に扱われる環境でのみ有効にしてください。このプログラムによる設定は、モデルとツールの両方のデータを制御し、以下の環境変数よりも優先されます。機密データのログ記録を再び無効にするには、`setSensitiveDataLoggingEnabled(false)` を呼び出してください。
 
-環境変数を使用して、モデルとツールのデータを個別に有効にすることもできます。対応する `OPENAI_AGENTS_DONT_LOG_*` 変数を `0` または `false` に設定します。
+環境変数を使って、モデルとツールのデータのログ記録を個別に有効にすることもできます。対応する `OPENAI_AGENTS_DONT_LOG_*` 変数を `0` または `false` に設定してください。
 
 ```bash
 export OPENAI_AGENTS_DONT_LOG_MODEL_DATA=0
 export OPENAI_AGENTS_DONT_LOG_TOOL_DATA=0
 ```
 
-いずれかの変数を `1` または `true` に設定すると、対応するデータと関連するエラーの詳細はマスキングされたままになります。未設定または認識されない値の場合も、安全なデフォルト設定が使用され、機密データはログに含まれません。
+いずれかの変数を `1` または `true` に設定すると、対応するデータと関連するエラーの詳細情報は引き続きマスキングされます。未設定の場合や値が認識されない場合も、安全なデフォルト設定が使用され、機密データはログに記録されません。
