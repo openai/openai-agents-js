@@ -40,40 +40,20 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Record the synthetic spawn reply and tracing context
+      - name: Apply the fixture correction
         run: |
           python3 - <<'PY'
           from pathlib import Path
           path = Path("packages/agents-codex/test/native/child-turn-events-native.test.ts")
           source = path.read_text()
-          marker = "it('keeps child tracing policy for explicit starts and active steering'"
-          before, case = source.split(marker, 1)
-          insertions = {
-              "        rootId ??= id;": """        for (const item of Array.isArray(request.input) ? request.input : []) {
-                    if (item?.call_id === 'spawn-policy' && String(item.type).endsWith('output')) {
-                      console.log('TRACE_PROBE_SPAWN_OUTCOME', JSON.stringify(item.output).slice(0, 1600));
-                    }
-                  }""",
-              "        const span = telemetry.getCurrentSpan()!;": """        console.log('TRACE_PROBE_CONTEXT', JSON.stringify({
-                    hasSpan: Boolean(span), sameTrace: telemetry.getCurrentTrace() === workflow,
-                    expectedDisabled: disabled, actualDisabled: span?.context.disabled,
-                    includeSensitiveData: span?.context.includeSensitiveData,
-                  }));""",
-              "        const { child, turn } = await oneChild(session);": """        console.log('TRACE_PROBE_COUNTS', JSON.stringify({disabled, roots, childModels, steps}));""",
-          }
-          for needle, extra in insertions.items():
-              assert case.count(needle) == 1, needle
-              if "oneChild" in needle:
-                  case = case.replace(needle, extra + "\n" + needle)
-              else:
-                  case = case.replace(needle, needle + "\n" + extra)
-          path.write_text(before + marker + case)
+          before = "task_name: 'policy-child'"
+          assert source.count(before) == 1
+          path.write_text(source.replace(before, "task_name: 'policy_child'"))
           PY
-      - name: Reproduce the original assertion three times
+      - name: Run both original Mac child-tracing checks twice
         run: |
-          status=0
-          for attempt in 1 2 3; do
-            echo "Trial $attempt"
-            pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering' --reporter=verbose || status=1
+          for trial in 1 2; do
+            echo "Trial $trial"
+            pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering'
+            pnpm test:native packages/agents-codex/test/native/native-questions.test.ts -t 'keeps original child tracing through question reply and physical handler cleanup'
           done
-          exit "$status"
