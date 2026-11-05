@@ -149,7 +149,7 @@ impl Drop for Provider {
 }
 
 // The hold is inside the existing SDK test ThreadStore, after the actual
-// provider response. No synthetic event can credit this native receipt.
+// provider request. No synthetic event can credit this native receipt.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn managed_root_continues_only_its_own_successfully_settled_tail() {
     tokio::time::timeout(Duration::from_secs(60), async {
@@ -192,12 +192,32 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
                 json!({})
             };
             let params = json!({"mode":"start_if_idle", "input":[{"type":"text","text":"begin"}],
-                "start":start});
+                "start":start, "observation_submission_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"});
             let started: Value = serde_json::from_str(&native._submit(params.to_string()).await.unwrap()).unwrap();
             assert_eq!(started["status"], "started");
             let first = started["turn_id"].as_str().unwrap();
-            hold.entered.acquire().await.unwrap().forget();
-            assert_eq!(provider.requests.lock().unwrap().len(), 1);
+            loop {
+                hold.entered.acquire().await.unwrap().forget();
+                let post_response = engine
+                    .load_checkpoint_history(state.id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|item| matches!(item,
+                        codex_history::RolloutItem::EventMsg(EventMsg::TokenCount(event))
+                            if event.info.as_ref().is_some_and(|info|
+                                info.last_token_usage.input_tokens == 1
+                                    && info.last_token_usage.output_tokens == 1
+                                    && info.last_token_usage.total_tokens == 2)));
+                if post_response {
+                    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+                    break;
+                }
+                // Skip the initial and post-tool durability barriers. The
+                // response's actual usage precedes the finalization flush.
+                *store.next_flush_hold.lock().unwrap() = Some(hold.clone());
+                hold.release.add_permits(1);
+            }
             for text in ["retained-first-unique", "retained-second-unique"] {
                 assert_eq!(
                     serde_json::from_str::<Value>(&native._submit(
@@ -220,8 +240,12 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
             } else {
                 hold.release.add_permits(1);
             }
+            let mut metadata = Vec::new();
             let original = loop {
                 let event = state.next_session_event().await.unwrap();
+                if event["msg"]["type"] == "_sdk_request_metadata" {
+                    metadata.push(event.clone());
+                }
                 if matches!(
                     event["msg"]["type"].as_str(),
                     Some("task_complete" | "turn_complete" | "turn_aborted")
@@ -259,7 +283,7 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
             }
             let submit =
                 json!({"mode":"continue_if_idle", "expected_previous_turn_id":first, "input":[],
-                    "start":start});
+                    "start":start, "observation_submission_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"});
             let continued: Value =
                 serde_json::from_str(&native._submit(submit.to_string()).await.unwrap()).unwrap();
             if route == "replaceable" {
@@ -269,7 +293,36 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
                 assert_eq!(continued["status"], "started");
                 let next_id = continued["turn_id"].as_str().unwrap();
                 assert_ne!(next_id, first);
-                let next = session_terminal(&state, next_id).await.unwrap();
+                let next = loop {
+                    let event = state.next_session_event().await.unwrap();
+                    if event["msg"]["type"] == "_sdk_request_metadata" {
+                        metadata.push(event.clone());
+                    }
+                    if matches!(event["msg"]["type"].as_str(), Some("task_complete" | "turn_complete")) {
+                        assert_eq!(event["id"], next_id);
+                        break event;
+                    }
+                };
+                while let Some(notice) = state.request_metadata.try_next() {
+                    metadata.push(notice);
+                }
+                for (turn_id, submission_id) in [
+                    (first, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                    (next_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                ] {
+                    let owned: Vec<_> = metadata.iter().filter(|notice| notice["msg"]["submission_id"] == submission_id).collect();
+                    assert_eq!(owned.len(), 2, "missing dispatch/link metadata for {submission_id}");
+                    let dispatch = &owned[0]["msg"]["observation"];
+                    let linked = &owned[1]["msg"]["observation"];
+                    assert_eq!(dispatch["type"], "model_request_dispatching");
+                    assert_eq!(linked["type"], "model_response_linked");
+                    assert_eq!(dispatch["turn_id"], turn_id);
+                    assert_eq!(linked["turn_id"], turn_id);
+                    assert_eq!(dispatch["thread_id"], state.id.to_string());
+                    assert_eq!(linked["request_id"], dispatch["request_id"]);
+                    assert!(linked["response_observation_id"].as_str().is_some_and(|id| !id.is_empty()));
+                }
+                assert_ne!(metadata[0]["msg"]["observation"]["request_id"], metadata[2]["msg"]["observation"]["request_id"]);
                 assert_eq!(next["sdk_unsampled_steering"], false);
                 assert_eq!(next["msg"]["last_agent_message"], output);
                 let requests = provider.requests.lock().unwrap();
@@ -625,6 +678,92 @@ impl Fixture {
         self.state.close().await.unwrap();
         self.engine.close().await.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_submit_waits_for_its_passive_native_turn_to_release_the_slot() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let provider = Provider::start().await;
+        let (_home, engine) = provider.engine().await;
+        let session = engine.start_with_tools(Default::default(), Vec::new()).await.unwrap();
+        let parent = session.current().unwrap();
+        let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent.id,
+            depth: 1,
+            agent_path: Some(codex_protocol::AgentPath::root().join("settlement").unwrap()),
+            agent_nickname: None,
+            agent_role: None,
+        });
+        let options = serde_json::from_value(json!({
+            "session_source":source, "thread_source":ThreadSource::Subagent,
+        })).unwrap();
+        let child = {
+            let _lifecycle = engine.lifecycle.lock().await;
+            let (mut startup, _) = engine.build_startup(options).await.unwrap();
+            startup.thread_extension_init.insert(crate::native_agents::Policy {
+                roles: Vec::new(), max_depth: 1, inherited_instructions: None,
+                allowed: Default::default(),
+            });
+            // The parent remains the only SDK event owner for this native child.
+            engine.manager.start_thread(startup).await.unwrap()
+        };
+        let hold = Arc::new(CompletionHold {
+            parent: parent.id, entered: Semaphore::new(0), release: Semaphore::new(0),
+        });
+        let store = engine.store.as_any().downcast_ref::<crate::storage::MemoryThreadStore>().unwrap();
+        *store.completion_hold.lock().unwrap() = Some(hold.clone());
+        let StartIfIdleSubmission::Started { turn_id: previous } = child.thread
+            .start_turn_if_idle(request("first input")).await.unwrap() else {
+            panic!("passive child did not start");
+        };
+        hold.entered.acquire().await.unwrap().forget();
+        let settlement = child.thread.thread_extension_data().get::<Settlement>().unwrap();
+        loop {
+            let event = child.thread.next_event().await.unwrap();
+            if matches!(&event.msg, EventMsg::TurnComplete(done) if done.turn_id == previous) {
+                settlement.delivered(&event.msg);
+                break;
+            }
+        }
+        {
+            let mut events = parent.events.lock().await;
+            parent.discover_children(&mut events).await.unwrap();
+        }
+        let (instance, _, _) = crate::subagents::instance(&parent, child.thread_id)
+            .await.unwrap().expect("passive child must be an owned descendant");
+        let control = child.thread.thread_extension_data()
+            .get::<crate::native_interception::Control>().unwrap();
+        assert!(control.active_turn_id().is_none());
+        assert!(settlement.completed_child().is_some());
+        let id = child.thread_id;
+        let owner = parent.clone();
+        let mut submit = tokio::spawn(async move {
+            Box::pin(crate::subagents::submit(&owner, id, instance, json!({
+                "input":[{"type":"text", "text":"second input", "text_elements":[]}]
+            }))).await
+        });
+        tokio::select! {
+            permit = settlement.waiting.acquire() => permit.unwrap().forget(),
+            result = &mut submit => {
+                panic!("child submission returned before its native slot became idle: {}", result.is_ok());
+            }
+        }
+        assert!(parent.mutations.try_lock().is_err(), "child admission must retain its serialization");
+        assert_eq!(provider.child_requests(id), 1);
+        *store.completion_hold.lock().unwrap() = None;
+        hold.release.add_permits(1);
+        let turn = submit.await.unwrap().unwrap();
+        assert_ne!(turn.turn_id, previous);
+        loop {
+            let event = child.thread.next_event().await.unwrap();
+            if matches!(&event.msg, EventMsg::TurnComplete(done) if done.turn_id == turn.turn_id) {
+                break;
+            }
+        }
+        assert_eq!(provider.child_requests(id), 2);
+        parent.close().await.unwrap();
+        engine.close().await.unwrap();
+    }).await.expect("passive child admission did not settle");
 }
 
 #[tokio::test]

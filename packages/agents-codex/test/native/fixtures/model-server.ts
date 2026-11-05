@@ -4,7 +4,9 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { JsonObject, JsonValue } from '../../../src/runtime/binding';
 import type { NativeConfig } from '../../../src/runtime/config';
 
-type ResponseValue = JsonObject[] | { status: number; body: string };
+type ResponseValue =
+  | JsonObject[]
+  | { status: number; body: string; headers?: Record<string, string> };
 type Response =
   | ResponseValue
   | ((request: JsonObject) => ResponseValue | Promise<ResponseValue>);
@@ -65,7 +67,7 @@ export class ModelServer {
       const output =
         typeof selected === 'function' ? await selected(requestBody) : selected;
       if (!Array.isArray(output)) {
-        response.writeHead(output.status).end(output.body);
+        response.writeHead(output.status, output.headers).end(output.body);
         return;
       }
       const id = `response-${requestIndex + 1}`;

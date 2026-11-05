@@ -2111,6 +2111,21 @@ impl NativeThread {
             .map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_prepared_request")]
+    pub fn _reply_prepared_request(&self, response_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::prepared_requests::Reply = serde_json::from_str(&response_json)
+            .map_err(|_| input_error("Invalid prepared request reply"))?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Prepared request requires managed Session"))?;
+        tools
+            .reply_prepared(&inner.id.to_string(), response)
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_step")]
     pub fn _reply_step(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;
@@ -2890,6 +2905,7 @@ impl NativeThread {
         selection_json: Option<String>,
         trace_json: Option<String>,
         tracing_context: Option<String>,
+        observation_submission_id: Option<String>,
     ) -> napi::Result<String> {
         let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
             .map_err(input_error)?;
@@ -2911,6 +2927,14 @@ impl NativeThread {
                 .transpose()?;
             // A restored root can use step preparation to enforce its remaining
             // SDK budget. The SDK never serializes an application callback.
+            if selection
+                .as_ref()
+                .is_some_and(|selection| selection.prepare_request)
+            {
+                return Err(native_error(
+                    "manual continuation recovery cannot restore request preparation",
+                ));
+            }
             let inner = self.current()?;
             let _operation = inner.engine.operation(false).map_err(native_error)?;
             inner
@@ -2943,13 +2967,14 @@ impl NativeThread {
                     .map_err(native_error)?;
             }
             let result = ops::recover_prepared(
-                &inner.thread,
+                &inner,
                 frame.turn_id,
                 frame.reply_order,
                 settings,
                 output_schema,
                 selection,
                 trace,
+                observation_submission_id,
             )
             .await
             .map_err(native_error)?;
@@ -3982,3 +4007,5 @@ mod native_trace_merge_tests {
         codex_otel::sdk_trace::release_trace_span(token);
     }
 }
+
+mod request_metadata;

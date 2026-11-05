@@ -119,6 +119,8 @@ export type {
   ObservationOptions,
   ExecutionItemSummary,
   ObservedEvent,
+  ModelRequestDispatching,
+  ModelResponseLinked,
   ApiRateLimitsUpdated,
 } from './runtime/observation';
 export type {
@@ -140,7 +142,15 @@ export { OutputValidationError } from './runtime/output';
 export type { OutputSpec } from './runtime/output';
 
 export type { ToolRef, ToolSelector } from './runtime/tools';
-export type { OperationOptions, BeforeStepContext } from './runtime/session';
+export type {
+  PreparedRequestData,
+  PreparedToolPresentation,
+} from './runtime/prepared-request';
+export type {
+  OperationOptions,
+  BeforeStepContext,
+  PrepareRequestContext,
+} from './runtime/session';
 
 export * as telemetry from './runtime/telemetry';
 export type {

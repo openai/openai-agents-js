@@ -1,4 +1,9 @@
 import {
+  capturePreparedRequest,
+  preparedRequestFromNative,
+  type PreparedRequestData,
+} from './prepared-request';
+import {
   captureTracing,
   getCurrentSpan,
   withoutTracing,
@@ -13,6 +18,7 @@ import {
   type TraceContext,
   type TraceContextHeaders,
 } from './trace-context';
+import { decodeRequestMetadata } from './request-metadata';
 import { networkPolicyDigest } from './network-policy';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
@@ -274,6 +280,7 @@ export interface ManualCheckpointEntry {
 /** Options used by an owned Agent.run Session to drive manual replies. */
 export type OneShotOptions = {
   input: string | JsonValue[] | null;
+  prepareRequest?: OperationOptions<any>['prepareRequest'];
   onNativeQuestion?: (
     request: NativeQuestion,
     signal: AbortSignal,
@@ -307,6 +314,20 @@ export interface OperationOptions<Context = unknown> {
   /** Omission uses Session defaults; an empty list selects no tools. */
   tools?: readonly ToolSelector<Context>[];
   /**
+   * Edit detached native sampling data; original tools and history retain authority.
+   * Requires a standard Responses (non-Lite) model, explicit HTTP, and eager root function/MCP tools.
+   * Unselected deferred tools may remain in the opening catalog. beforeStep may narrow a mixed ceiling.
+   * Undefined keeps the original.
+   * Recovery may prepare again; avoid business effects in this callback. Active checkpoints refuse it.
+   * Pre-turn or mid-turn automatic compaction fails the operation before any hidden request.
+   * Shorten the input or start a new operation without this callback. Earlier tool effects remain.
+   * Post-turn compaction is also refused, but the operation keeps its completed answer.
+   */
+  prepareRequest?: (
+    context: PrepareRequestContext<Context>,
+  ) =>
+    PreparedRequestData | undefined | Promise<PreparedRequestData | undefined>;
+  /**
    * Select a subset of the operation ceiling before each model preparation.
    * Returning undefined uses that ceiling. Indices start at zero.
    */
@@ -316,6 +337,14 @@ export interface OperationOptions<Context = unknown> {
     | readonly ToolSelector<Context>[]
     | undefined
     | Promise<readonly ToolSelector<Context>[] | undefined>;
+}
+export interface PrepareRequestContext<Context = unknown> extends Omit<
+  BeforeStepContext<Context>,
+  'stepIndex'
+> {
+  readonly request: PreparedRequestData;
+  readonly preparationIndex: number;
+  readonly recoveryAttempt: number;
 }
 export interface BeforeStepContext<Context = unknown> {
   readonly context: Context;
@@ -342,6 +371,8 @@ interface OperationSelection {
   readonly names: readonly ReturnType<typeof toolIdentity>[] | undefined;
   readonly maxModelSteps?: number;
   readonly beforeStep?: OperationOptions<any>['beforeStep'];
+  readonly prepareRequest?: OperationOptions<any>['prepareRequest'];
+  preparationIndex: number;
   generation?: bigint;
   stepIndex: number;
 }
@@ -874,6 +905,7 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private readonly issuedRuns = new Map<string, NativeTurn>();
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
+  private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
   private defaultTools: readonly SessionTool[];
   private readonly admittedDeclarations = new Map<string, WeakSet<object>>();
@@ -2486,7 +2518,10 @@ export class Session<OutputT = string, Context = unknown> {
       false,
       undefined,
       false,
-      this.captureSelection({ maxModelSteps }),
+      this.captureSelection({
+        maxModelSteps,
+        prepareRequest: this.oneShot?.prepareRequest,
+      }),
       callerSignal,
     );
 
@@ -2504,7 +2539,7 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('submitWithOutput requires an output contract');
     const parts = nativeInput(input);
     const output = prepareOutput(outputType);
-    const selection = this.captureSelection(options);
+    const selection = this.captureSelection(options, output);
     const parentTrace =
       captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
     const run = this.startTurn(
@@ -2559,7 +2594,7 @@ export class Session<OutputT = string, Context = unknown> {
     const parts = nativeInput(input);
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
-    const selection = this.captureSelection(options);
+    const selection = this.captureSelection(options, output);
     const parentTrace =
       captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
     const writableRoots =
@@ -2646,6 +2681,7 @@ export class Session<OutputT = string, Context = unknown> {
         options?.tools !== undefined ||
         options?.beforeStep !== undefined ||
         options?.maxModelSteps !== undefined ||
+        options?.prepareRequest !== undefined ||
         options?.tracing !== undefined
       )
         throw new TypeError('Operation selection applies only to new roots');
@@ -2729,20 +2765,48 @@ export class Session<OutputT = string, Context = unknown> {
 
   private captureSelection(
     options?: OperationOptions<Context>,
+    output = this.defaultOutput,
   ): OperationSelection | undefined {
     if (
       options?.tools === undefined &&
       options?.beforeStep === undefined &&
-      options?.maxModelSteps === undefined
+      options?.maxModelSteps === undefined &&
+      options?.prepareRequest === undefined
     )
       return;
+    if (options.prepareRequest !== undefined) {
+      if (typeof options.prepareRequest !== 'function')
+        throw new TypeError('prepareRequest must be callable');
+      if (output.repair)
+        throw new TypeError(
+          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
+        );
+      if (this.options.websocketsAllowed !== false)
+        throw new TypeError(
+          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
+        );
+      if (
+        this.options.nativeAgents ||
+        this.codeModeEnabled ||
+        this.environment ||
+        this.options.webSearch ||
+        this.options.nativeGoals ||
+        this.options.checklist ||
+        this.openingMcpTools.some(isHostedRegistration)
+      )
+        throw new TypeError(
+          'prepareRequest supports only direct root eager function and ordinary MCP tools',
+        );
+    }
     return {
+      prepareRequest: options.prepareRequest,
       names:
         options.tools === undefined
           ? undefined
           : this.selectionNames([...options.tools]),
       maxModelSteps: validateMaxModelSteps(options.maxModelSteps),
       beforeStep: options.beforeStep,
+      preparationIndex: 0,
       stepIndex: 0,
     };
   }
@@ -3239,7 +3303,7 @@ export class Session<OutputT = string, Context = unknown> {
       !interactive &&
       this.defaultTools.some((tool) => tool.kind === 'manual') &&
       !this.oneShot?.onRequiredAction &&
-      !this.canCheckpointManual(output)
+      !this.canCheckpointManual(output, selection)
     )
       throw new InteractionRequired();
     const roots =
@@ -3276,6 +3340,10 @@ export class Session<OutputT = string, Context = unknown> {
   private dispatchStart(run: NativeTurn, parts: JsonValue[]): void {
     const { output } = submissions.get(run)!;
     const selection = run.selection;
+    if (selection?.prepareRequest && output.repair)
+      throw new TypeError(
+        'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
+      );
     if (selection) selection.generation = this.catalog.generation;
     const wire = encode({
       ...(selection
@@ -3286,6 +3354,7 @@ export class Session<OutputT = string, Context = unknown> {
               before_step:
                 selection.beforeStep !== undefined ||
                 selection.maxModelSteps !== undefined,
+              prepare_request: selection.prepareRequest !== undefined,
             },
           }
         : {}),
@@ -3294,6 +3363,7 @@ export class Session<OutputT = string, Context = unknown> {
       ...(run.writableRoots === undefined
         ? {}
         : { writable_roots: run.writableRoots }),
+      observation_submission_id: this.submissionIds.get(run)!,
       input: output.prompt
         ? [...parts, { type: 'text', text: output.prompt }]
         : parts,
@@ -3343,11 +3413,21 @@ export class Session<OutputT = string, Context = unknown> {
         ),
     );
     this.submissionIds.set(run, randomUUID());
+    this.registerRequestObservationRoute(run);
     return run;
   }
 
+  private registerRequestObservationRoute(run: NativeTurn): void {
+    const routeId = this.submissionIds.get(run)!;
+    this.requestObservationRoutes.set(routeId, run);
+    const retire = () => {
+      this.requestObservationRoutes.delete(routeId);
+    };
+    run.completion.promise.then(retire, retire);
+  }
+
   private begin(
-    submit: (tracingContext?: string) => Promise<string>,
+    submit: (run: NativeTurn, tracingContext?: string) => Promise<string>,
     output = this.defaultOutput,
     outputOverride = false,
     selection?: OperationSelection,
@@ -3362,13 +3442,13 @@ export class Session<OutputT = string, Context = unknown> {
       : this.captureRootTracing(tracing);
     if (continuedFrom) continuedFrom.tracing = undefined;
     this.dispatchRun(run, () => {
-      if (!run.tracing) return submit();
+      if (!run.tracing) return submit(run);
       return this.tracingContext(run).then((context) => {
         if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
           throw new TurnAborted(
             'Tracing admission stopped before native submission',
           );
-        return submit(context);
+        return submit(run, context);
       });
     });
     return run;
@@ -3794,7 +3874,7 @@ export class Session<OutputT = string, Context = unknown> {
         // Native still decides admission from the exact managed Turn, never from
         // this event hint. Input is already in history and is not resubmitted.
         const next = this.begin(
-          (tracingContext) =>
+          (nextRun, tracingContext) =>
             this.#native._submit(
               encode({
                 ...(tracingContext ? { tracing_context: tracingContext } : {}),
@@ -3803,6 +3883,7 @@ export class Session<OutputT = string, Context = unknown> {
                 ...(run.parentTrace
                   ? { trace: run.parentTrace.toHeaders() }
                   : {}),
+                observation_submission_id: this.submissionIds.get(nextRun)!,
                 expected_previous_turn_id: run.id,
                 ...(submission.output.schema === undefined
                   ? {}
@@ -3880,12 +3961,23 @@ export class Session<OutputT = string, Context = unknown> {
           throw error;
         }
         if (!this.isOpen || this.#native !== native) return;
-        const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
         const msg = event.msg;
         if (msg.type === 'token_count') {
           const snapshot = apiRateLimits(msg.api_rate_limits);
           if (snapshot) this.apiRateLimitState.snapshot = snapshot;
         }
+        if (msg.type === '_sdk_request_metadata') {
+          const route =
+            typeof msg.submission_id === 'string'
+              ? this.requestObservationRoutes.get(msg.submission_id)
+              : undefined;
+          if (route) {
+            if (route.id === null) route.pending.push(event);
+            else this.observeRequestMetadata(route, event);
+          }
+          continue;
+        }
+        const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
         if (msg.type === 'elicitation_status') {
           await this.observeNativeUrlStatus(native, event);
           continue;
@@ -4477,7 +4569,33 @@ export class Session<OutputT = string, Context = unknown> {
     } else this.observations.gap();
   }
 
+  private observeRequestMetadata(run: NativeTurn, event: NativeEvent): void {
+    const msg = event.msg;
+    if (
+      run.controller.signal.aborted ||
+      typeof msg.submission_id !== 'string' ||
+      this.requestObservationRoutes.get(msg.submission_id) !== run
+    )
+      return;
+    const observation = decodeRequestMetadata(
+      msg.observation,
+      msg.submission_id,
+    );
+    if (
+      observation &&
+      'threadId' in observation &&
+      observation.threadId === this.id &&
+      observation.turnId === event.id &&
+      run.id === observation.turnId
+    )
+      this.observations.append(observation);
+  }
+
   private process(run: NativeTurn, event: NativeEvent): void {
+    if (event.msg.type === '_sdk_request_metadata') {
+      this.observeRequestMetadata(run, event);
+      return;
+    }
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     const msg = event.msg;
     const kind = msg.type;
@@ -4490,6 +4608,11 @@ export class Session<OutputT = string, Context = unknown> {
       ].includes(kind)
     ) {
       void this.trackNativeQuestion(run, event).catch(() => {});
+      return;
+    }
+    if (kind === '_sdk_prepare_request') {
+      if (msg.turn_id !== run.id) return;
+      this.track(run, this.prepareRequest(run, event));
       return;
     }
     if (kind === '_sdk_select_step') {
@@ -4725,6 +4848,81 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
   }
+  private prepareRequest(run: NativeTurn, event: NativeEvent): Promise<void> {
+    const msg = event.msg;
+    const selection = run.selection;
+    const preparation = new AbortController();
+    const signal = AbortSignal.any([run.controller.signal, preparation.signal]);
+    run.preparation = preparation;
+    return this.invokeCallback(
+      run,
+      async () => {
+        let replied = false;
+        const reply = (data: string | undefined, failed: boolean) => {
+          if (replied) return;
+          replied = true;
+          // The replacement was captured before this boundary; never stringify an application object here.
+          const receipt = `{"thread":${JSON.stringify(this.id)},"turn_id":${JSON.stringify(msg.turn_id)},"generation":${JSON.stringify(msg.generation)},"request_id":${JSON.stringify(msg.request_id)},"failed":${failed},"data":${data ?? 'null'}}`;
+          if (failed) {
+            try {
+              this.#native._reply_prepared_request(receipt);
+            } catch {
+              /* Already revoked. */
+            }
+          } else this.#native._reply_prepared_request(receipt);
+        };
+        const abort = () => reply(undefined, true);
+        signal.addEventListener('abort', abort, { once: true });
+        try {
+          if (
+            !selection?.prepareRequest ||
+            !this.current(run) ||
+            msg.turn_id !== run.id ||
+            msg.generation !== this.catalog.generation.toString() ||
+            selection.generation !== this.catalog.generation
+          )
+            throw new NativeError('Expired prepared request owner');
+          signal.throwIfAborted();
+          if (this.graphStops.size)
+            throw new TurnAborted('Request preparation stopped');
+          const returned = selection.prepareRequest({
+            context: this.options.context as Context,
+            submission: this.#turnFor(this.rootRun(run)),
+            preparationIndex: selection.preparationIndex++,
+            recoveryAttempt: msg.recovery_attempt as number,
+            signal,
+            request: preparedRequestFromNative(msg.data),
+          });
+          const replacement =
+            returned &&
+            typeof (returned as Promise<PreparedRequestData>).then ===
+              'function'
+              ? await returned
+              : returned;
+          // Capture immediately after settlement, before cancellation/owner checks or another await.
+          const captured =
+            replacement === undefined
+              ? undefined
+              : capturePreparedRequest(replacement);
+          signal.throwIfAborted();
+          if (
+            !this.current(run) ||
+            selection.generation !== this.catalog.generation
+          )
+            throw new NativeError('Prepared request is no longer active');
+          reply(captured, false);
+        } catch (error) {
+          reply(undefined, true);
+          throw error;
+        } finally {
+          signal.removeEventListener('abort', abort);
+          if (run.preparation === preparation) run.preparation = undefined;
+        }
+      },
+      signal,
+    );
+  }
+
   private selectStep(run: NativeTurn, event: NativeEvent): Promise<void> {
     const msg = event.msg;
     const selection = run.selection;
@@ -4821,6 +5019,7 @@ export class Session<OutputT = string, Context = unknown> {
       selection = {
         names: undefined,
         generation: this.catalog.generation,
+        preparationIndex: 0,
         stepIndex: 0,
       };
       this.childSelections.set(owner, selection);
@@ -5432,6 +5631,7 @@ export class Session<OutputT = string, Context = unknown> {
               ? encode(this.options.parentTrace.toHeaders())
               : undefined,
             tracingContext,
+            this.submissionIds.get(run)!,
           );
           const submission = decode(submissionSchema, wire);
           if (submission.status !== 'started' || submission.turn_id !== run.id)
@@ -5486,8 +5686,12 @@ export class Session<OutputT = string, Context = unknown> {
       .catch((error) => this.readerFailed(error));
   }
 
-  private canCheckpointManual(output = this.defaultOutput): boolean {
+  private canCheckpointManual(
+    output = this.defaultOutput,
+    selection?: OperationSelection,
+  ): boolean {
     return (
+      selection?.prepareRequest === undefined &&
       !output.prompt &&
       this.nativeManualCheckpoint &&
       supportsManualCheckpoint(this.threadOptions, !!this.environment)
@@ -5499,7 +5703,10 @@ export class Session<OutputT = string, Context = unknown> {
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
   ): Promise<SessionState> {
-    if (run.selection?.beforeStep !== undefined)
+    if (
+      run.selection?.beforeStep !== undefined ||
+      run.selection?.prepareRequest !== undefined
+    )
       return Promise.reject(
         new NativeError('Cannot capture a callback-selected operation'),
       );
@@ -5826,6 +6033,7 @@ export class Session<OutputT = string, Context = unknown> {
               ),
         maxModelSteps: remaining,
         generation: this.catalog.generation,
+        preparationIndex: 0,
         stepIndex: 0,
       };
     this.#turnFor(run);
@@ -7009,7 +7217,7 @@ export class Session<OutputT = string, Context = unknown> {
     const previous = this.lastRun;
     const parentTrace = this.options.parentTrace;
     const run = this.begin(
-      (context) =>
+      (_run, context) =>
         this.#native._compact(
           parentTrace ? encode(parentTrace.toHeaders()) : null,
           context,
@@ -7051,7 +7259,7 @@ export class Session<OutputT = string, Context = unknown> {
         );
       const parentTrace = this.options.parentTrace;
       const run = this.begin(
-        (context) =>
+        (_run, context) =>
           native._execute_command(
             'review',
             command.arguments,
@@ -7222,7 +7430,10 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.lifecycle.kind !== 'turn')
       return checkpointStatus('notReady', 'No settled pending manual boundary');
     const run = this.lifecycle.run;
-    if (run.selection?.beforeStep !== undefined)
+    if (
+      run.selection?.beforeStep !== undefined ||
+      run.selection?.prepareRequest !== undefined
+    )
       return checkpointStatus(
         'notReady',
         'Cannot capture a callback-selected operation',

@@ -261,9 +261,21 @@
       "sha256": "7bbc86c06556a9c21550cec75f2da1316fa69f37fb56510249704cf01c0c70ab"
     },
     {
+      "path": "0059-terminal-authentication-retry.patch",
+      "sha256": "2064b337e86352296df7ac5bde428a11ad145ca568478f977dcfb2ef3a87cff8"
+    },
+    {
+      "path": "0054-native-prepared-request.patch",
+      "sha256": "2b56a9551dcdd687e5aef834109d9ff5b4ab3914fde2eae81f4b42c54caaa21d"
+    },
+    {
+      "path": "0059-native-request-metadata.patch",
+      "sha256": "00fb1ca9eff806e34ebd56521d4367c4905e6be285b773a2c32cc8ec617f17ae"
+    },
+    {
       "path": "0058-w3c-defined-trace-flags.patch",
       "sha256": "1c689d4839940e41ceb5f47c3c65d02a51608a02c63230ed435997a1c751b6ed"
     }
   ],
-  "result_tree": "177ca675dfd6ed721641e2a69fd93b642c8c3610"
+  "result_tree": "33f02a27c20200ade6c74d1cdc56967927cefdfb"
 }

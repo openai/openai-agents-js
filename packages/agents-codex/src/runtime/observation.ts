@@ -36,7 +36,41 @@ type ExecutionObservation = SubmissionEvent &
 export type ApiRateLimitsUpdated = SubmissionEvent &
   Readonly<{ type: 'api_rate_limits_updated'; snapshot: ApiRateLimits }>;
 
+/** SDK-resolved root sampling fields immediately before client invocation.
+ * Encoding and socket writes may not occur. Null means omitted, not a server default.
+ * Internal transport retries share requestId; later client invocations get new IDs.
+ * Separate correction roots retain their own thread/submission IDs and existing
+ * parentSubmissionId. Native children, warmup, compaction and background/reviewer
+ * requests are outside coverage. Restored manual roots emit fresh events for
+ * resumed work; previously observed request/link events are not replayed.
+ */
+export type ModelRequestDispatching = SubmissionEvent &
+  Readonly<{
+    type: 'model_request_dispatching';
+    requestId: string;
+    threadId: string;
+    model: string;
+    reasoningEffort: string | number | bigint | null;
+    reasoningSummary: string | null;
+    serviceTier: string | null;
+    wire: 'responses' | 'responses_lite';
+    transport: 'http_sse' | 'websocket';
+  }>;
+
+/** Best-effort link to a retained terminal occurrence. Retirement can drop a
+ * link after history retention; absence does not establish absence of a terminal.
+ */
+export type ModelResponseLinked = SubmissionEvent &
+  Readonly<{
+    type: 'model_response_linked';
+    requestId: string;
+    threadId: string;
+    responseObservationId: string;
+  }>;
+
 export type Observation =
+  | ModelRequestDispatching
+  | ModelResponseLinked
   | (Event & Readonly<{ type: 'warning'; message: string }>)
   | (SubmissionEvent & Readonly<{ type: 'turn_started' }>)
   | (SubmissionEvent &

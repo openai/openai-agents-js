@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
@@ -28,8 +29,10 @@ async function startServer(host: string, configuredPort?: number) {
       return listen.call(this, ${port}, ...args);
     };`
     }
+    let upstreamRequests = 0;
+    process.on('message', () => process.send(upstreamRequests));
     globalThis.fetch = async () => {
-      console.log('UPSTREAM_REQUEST');
+      upstreamRequests++;
       return new Response(JSON.stringify({ value: 'test-client-secret', expires_at: 123 }), { status: 200 });
     };
     await import(${JSON.stringify(serverUrl)});
@@ -41,7 +44,7 @@ async function startServer(host: string, configuredPort?: number) {
       PORT: String(configuredPort ?? port),
       OPENAI_API_KEY: 'test-api-key',
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
   let output = '';
   await new Promise((resolve, reject) => {
@@ -63,8 +66,11 @@ async function startServer(host: string, configuredPort?: number) {
   });
   return {
     port,
-    get output() {
-      return output;
+    async upstreamRequests() {
+      const reply = once(child, 'message');
+      child.send('upstreamRequests');
+      const [count] = await reply;
+      return count as number;
     },
     pairingToken: output.match(/Pairing token: ([A-Za-z0-9_-]+)/)?.[1],
     request: (headers?: Record<string, string>) =>
@@ -95,7 +101,7 @@ test('LAN token issuance requires pairing and limits each client', async () => {
       (await server.request({ Authorization: 'Bearer wrong' })).status,
       401,
     );
-    assert.equal(server.output.includes('UPSTREAM_REQUEST'), false);
+    assert.equal(await server.upstreamRequests(), 0);
 
     assert.ok(server.pairingToken);
     const headers = { Authorization: `Bearer ${server.pairingToken}` };
@@ -105,7 +111,7 @@ test('LAN token issuance requires pairing and limits each client', async () => {
       assert.equal((await response.json()).value, 'test-client-secret');
     }
     assert.equal((await server.request(headers)).status, 429);
-    assert.equal(server.output.match(/UPSTREAM_REQUEST/g)?.length, 6);
+    assert.equal(await server.upstreamRequests(), 6);
   } finally {
     server.stop();
   }
@@ -137,7 +143,7 @@ test('loopback token issuance requires pairing and an expected origin', async ()
   try {
     assert.ok(server.pairingToken);
     assert.equal((await server.request()).status, 401);
-    assert.equal(server.output.includes('UPSTREAM_REQUEST'), false);
+    assert.equal(await server.upstreamRequests(), 0);
 
     const headers = { Authorization: `Bearer ${server.pairingToken}` };
     assert.equal(
@@ -162,7 +168,7 @@ test('loopback token issuance requires pairing and an expected origin', async ()
       ).status,
       403,
     );
-    assert.equal(server.output.includes('UPSTREAM_REQUEST'), false);
+    assert.equal(await server.upstreamRequests(), 0);
 
     assert.equal((await server.request(headers)).status, 200);
     assert.equal(
@@ -170,7 +176,7 @@ test('loopback token issuance requires pairing and an expected origin', async ()
         .status,
       200,
     );
-    assert.equal(server.output.match(/UPSTREAM_REQUEST/g)?.length, 2);
+    assert.equal(await server.upstreamRequests(), 2);
   } finally {
     server.stop();
   }
@@ -204,7 +210,7 @@ test('HTTP port 80 accepts exact portless aliases and serialized origins while r
       ).status,
       403,
     );
-    assert.equal(server.output.includes('UPSTREAM_REQUEST'), false);
+    assert.equal(await server.upstreamRequests(), 0);
 
     for (const alias of ['127.0.0.1', 'localhost', '10.0.2.2']) {
       for (const Host of [alias, `${alias}:80`]) {
@@ -221,7 +227,7 @@ test('HTTP port 80 accepts exact portless aliases and serialized origins while r
       (await server.request({ ...headers, Host: 'localhost' })).status,
       429,
     );
-    assert.equal(server.output.match(/UPSTREAM_REQUEST/g)?.length, 6);
+    assert.equal(await server.upstreamRequests(), 6);
   } finally {
     server.stop();
   }

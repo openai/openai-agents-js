@@ -863,6 +863,7 @@ impl EngineState {
         let (publication_boundaries, boundary_requests) = mpsc::channel(1);
         let native_dequeued = Arc::new(AtomicBool::new(false));
         let state = Arc::new(ThreadState {
+            request_metadata: Arc::new(crate::request_metadata::Queue::default()),
             id: new.thread_id,
             thread: new.thread.clone(),
             engine: self.clone(),
@@ -1713,6 +1714,7 @@ impl ModelsManager for ConfiguredModels {
 }
 
 pub struct ThreadState {
+    pub(crate) request_metadata: Arc<crate::request_metadata::Queue>,
     pub id: ThreadId,
     pub thread: Arc<CodexThread>,
     pub engine: Arc<EngineState>,
@@ -2748,6 +2750,9 @@ impl ThreadState {
             return self.root_event(event, None);
         }
         loop {
+            if let Some(metadata) = self.request_metadata.try_next() {
+                return Ok(metadata);
+            }
             if let Some((event, turn)) = &events.session_terminal {
                 tokio::select! {
                     _ = closing.changed() => anyhow::bail!("Codex thread is closed"),
@@ -2865,6 +2870,7 @@ impl ThreadState {
                 .is_none_or(|prefix| prefix.extensions > 0);
             tokio::select! {
                 _ = closing.changed() => anyhow::bail!("Codex thread is closed"),
+                metadata = self.request_metadata.next() => return Ok(metadata),
                 request = async {
                     python_tools.as_ref().expect("guarded JavaScript channel").next_request().await
                 }, if python_tools.is_some() && !bounded => {

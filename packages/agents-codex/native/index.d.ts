@@ -165,6 +165,7 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _check_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
@@ -200,6 +201,7 @@ export class NativeThread {
     selectionJson?: string,
     traceJson?: string,
     tracing_context?: string,
+    observationSubmissionId?: string,
   ): Promise<string>;
   read_thread_history(subagent_id: string | null): Promise<string>;
   read_checklist(subagent_id?: string | null): Promise<string>;
