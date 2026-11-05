@@ -207,7 +207,11 @@
     {
       "path": "0052-scan-deep-helper-hard-links.patch",
       "sha256": "dbdc0621cb4011fab3ca7ddd6812193c53c6b49851ddb4b24fdadb0cc0d93223"
+    },
+    {
+      "path": "0053-serialize-token-budget-context-commit.patch",
+      "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
     }
   ],
-  "result_tree": "e5f70961bc6059244bb9a6b62a8c7194a1689e2b"
+  "result_tree": "049bf9bbdd75072a30a7739245d79bd05391eda8"
 }
