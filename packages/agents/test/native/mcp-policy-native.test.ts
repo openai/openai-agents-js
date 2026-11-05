@@ -122,6 +122,7 @@ async function open(
   responses: ConstructorParameters<typeof ModelServer>[0],
   children = false,
   programmaticToolCalling = false,
+  tracing?: import('../../src/runtime/telemetry').TraceOptions,
 ) {
   const executor = children ? await startPublicExecutor() : undefined;
   if (executor) cleanup.push(() => executor.close());
@@ -151,7 +152,7 @@ async function open(
             tools: ['exec_command', 'write_stdin', 'apply_patch'],
           }),
         }
-      : {},
+      : { tracing },
   );
   cleanup.push(() => session.close());
   return { model, session, provider };
@@ -1925,3 +1926,79 @@ it('rejects a revoked late stop and preserves cancellation and successor effects
     await result.catch(() => {});
   }
 }, 20_000);
+
+it('restores the native MCP carrier with Session-only tracing and strict restrictions', async () => {
+  const telemetry = await import('../../src/runtime/telemetry');
+  const native = await binding();
+  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+  const original = native.NativeThread.prototype._next_native_mcp_result;
+  let expectedParent: string | undefined;
+  const notices: JsonObject[] = [];
+  const reader = vi
+    .spyOn(native.NativeThread.prototype, '_next_native_mcp_result')
+    .mockImplementation(async function (this: NativeThread) {
+      const wire = await original.call(this);
+      if (wire !== 'null') {
+        const notice = JSON.parse(wire) as JsonObject;
+        notices.push(notice);
+        expect(typeof notice.tracing_context).toBe('string');
+        expectedParent = (
+          JSON.parse(
+            native.trace_span_context(notice.tracing_context as string),
+          ) as { span_id: string }
+        ).span_id;
+      }
+      return wire;
+    });
+  try {
+    for (const disabled of [false, true]) {
+      const held = Promise.withResolvers<void>();
+      const remote = await peer('lookup', held.promise);
+      let callbacks = 0;
+      const descriptor = new HttpMCP({
+        name: 'fixture',
+        url: remote.url,
+        tools: ['lookup'],
+        approvalMode: 'approve',
+        async transformResult(context, result) {
+          callbacks++;
+          expect(context).not.toHaveProperty('tracing_context');
+          const current = telemetry.getCurrentSpan()!;
+          expect(current.context.parentSpanId).toBe(expectedParent);
+          expect(current.context.traceId).toBe('a'.repeat(32));
+          expect(current.context.disabled).toBe(disabled);
+          const nested = await telemetry.startSpan({
+            includeSensitiveData: true,
+            disabled: false,
+          });
+          expect(nested.context.disabled).toBe(disabled);
+          expect(nested.context.includeSensitiveData).toBe(false);
+          nested.close();
+          return result;
+        },
+      });
+      const f = await open(
+        descriptor,
+        [[lookup()], [message('done')]],
+        false,
+        false,
+        { traceId: 'a'.repeat(32), disabled, includeSensitiveData: false },
+      );
+      const turn = await f.session.submit('Call lookup.');
+      await telemetry.withTrace({ name: 'unrelated ambient' }, async () => {
+        held.resolve();
+        expect((await turn.wait()).finalOutput).toBe('done');
+      });
+      expect(callbacks).toBe(1);
+      expect(JSON.stringify(await f.session.saveState())).not.toContain(
+        'tracing_context',
+      );
+      await f.session.close();
+    }
+    expect(notices).toHaveLength(2);
+  } finally {
+    reader.mockRestore();
+    await telemetry.forceFlush();
+    await telemetry.shutdown();
+  }
+});
