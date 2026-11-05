@@ -1,0 +1,19 @@
+{
+  "run": 42002742502,
+  "source": "58b720ac1d8af2e6c8b91ff2e99e159fc9c110d9",
+  "inputs": "79195487b391904d9dbcf08b2e6b371a74788f7c7f44f6e84ec86b4776952a36",
+  "platforms": {
+    "darwin-arm64": {
+      "id": 13404377997,
+      "sha256": "63f829fcedcba0147d74e7a2bad24d85ba5348ab02bdf5ec51e2a15949511ef8"
+    },
+    "linux-x64": {
+      "id": 13403277370,
+      "sha256": "fdca6111ebc05c856760ba80d8023c3c7ad287d6c2c206403029a2554b0742d5"
+    },
+    "win32-x64": {
+      "id": 13404936575,
+      "sha256": "bdf2d745f195cf5e2b3ab79521be124c67e14ed912b85735d30648bc3d151360"
+    }
+  }
+}
