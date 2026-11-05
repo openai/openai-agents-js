@@ -1,10 +1,16 @@
+import { demoAccessResponse } from '@/app/lib/demoAccess';
 import { run, type Agent } from '@openai/agents/classic';
 import { createAiSdkUiMessageStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 import type { UIMessage } from 'ai';
 
 import { agent, customerSupportAgent } from './agents';
 import { toAgentInput } from '@/app/lib/messageConverters';
-import { findSession, getOwnerId, saveSession } from '@/app/lib/session';
+import {
+  findSession,
+  getOwnerId,
+  readLimitedJson,
+  reserveModelRun,
+} from '@/app/lib/session';
 
 const agentRegistry = new Map<string, Agent<any, any>>([
   [agent.name, agent],
@@ -12,7 +18,17 @@ const agentRegistry = new Map<string, Agent<any, any>>([
 ]);
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => null);
+  const denied = demoAccessResponse(req.headers);
+  if (denied) return denied;
+  const parsed = await readLimitedJson(req);
+  if ('status' in parsed) {
+    return new Response('Invalid request.', { status: parsed.status });
+  }
+  const body = parsed.value as {
+    messages?: unknown;
+    sessionId?: unknown;
+    id?: unknown;
+  } | null;
   const messages = Array.isArray(body?.messages)
     ? (body.messages as UIMessage[])
     : [];
@@ -41,6 +57,12 @@ export async function POST(req: Request) {
 
   const activeAgentName = entry.activeAgentName ?? agent.name;
   const activeAgent = agentRegistry.get(activeAgentName) ?? agent;
+  const reservation = reserveModelRun(sessionId, entry);
+  if ('status' in reservation) {
+    return new Response('Conversation unavailable.', {
+      status: reservation.status,
+    });
+  }
 
   try {
     const stream = await run(activeAgent, input, {
@@ -49,16 +71,14 @@ export async function POST(req: Request) {
     });
     void stream.completed
       .then(() => {
-        const nextAgentName = stream.currentAgent?.name ?? activeAgentName;
-        saveSession(sessionId, {
-          ...entry,
-          activeAgentName: nextAgentName,
-        });
+        entry.activeAgentName = stream.currentAgent?.name ?? activeAgentName;
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(reservation.release);
 
     return createAiSdkUiMessageStreamResponse(stream);
   } catch (error) {
+    reservation.release();
     const message =
       error instanceof Error
         ? error.message

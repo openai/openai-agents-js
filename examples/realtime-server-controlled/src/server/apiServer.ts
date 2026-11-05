@@ -3,7 +3,11 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http';
-import type { DemoAuthStore, DemoPrincipal } from './demoAuth';
+import {
+  DemoAuthCapacityError,
+  type DemoAuthStore,
+  type DemoPrincipal,
+} from './demoAuth';
 import { MAX_SDP_BYTES, SdpPolicyError, assertAudioOnlySdp } from './sdpPolicy';
 import {
   SessionCapacityError,
@@ -258,6 +262,8 @@ export function createApiServer(options: {
       } else if (error instanceof SessionConflictError) {
         sendJson(response, 409, { error: error.message });
       } else if (error instanceof SessionCapacityError) {
+        sendJson(response, 503, { error: error.message });
+      } else if (error instanceof DemoAuthCapacityError) {
         sendJson(response, 503, { error: error.message });
       } else {
         sendJson(response, 502, {
