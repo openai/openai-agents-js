@@ -193,17 +193,33 @@
       "sha256": "8f6395a1b8d253170db019319cdaeff855ce1798efcc20eed704689fe070d994"
     },
     {
+      "path": "0049-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0050-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
+    },
+    {
+      "path": "0051-stop-token-budget-auto-compaction.patch",
+      "sha256": "f06a855f695a3514361a1044a7c9c31099cb548d19f81845845314ffd0ae5537"
+    },
+    {
       "path": "0052-scan-deep-helper-hard-links.patch",
       "sha256": "dbdc0621cb4011fab3ca7ddd6812193c53c6b49851ddb4b24fdadb0cc0d93223"
     },
     {
-      "path": "0053-sdk-native-tracing.patch",
+      "path": "0053-serialize-token-budget-context-commit.patch",
+      "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
+    },
+    {
+      "path": "0054-sdk-native-tracing.patch",
       "sha256": "2324b54958b3cc18b3ffe7226e30b8618e8278b64f0d9d74c2165af2d269b934"
     },
     {
-      "path": "0054-sdk-workflow-identity.patch",
+      "path": "0055-sdk-workflow-identity.patch",
       "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
     }
   ],
-  "result_tree": "4968f77a9d9b103a8a5ecfc5fc8daa4e6a51119f"
+  "result_tree": "2d0c3cf5f8f4cf1d979d09789a47987652545509"
 }

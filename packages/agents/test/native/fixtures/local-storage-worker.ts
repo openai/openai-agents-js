@@ -1,11 +1,13 @@
 import { appendFile } from 'node:fs/promises';
 import { inspect } from 'node:util';
+import type { MCPServer } from '@openai/agents-core';
 import { z } from 'zod';
 import {
   Agent,
   LocalRecoveryRequired,
   NativeProvider,
   localStorage,
+  selectMcpTools,
   tool,
   type ReconciledCall,
   type ToolContext,
@@ -20,44 +22,81 @@ const config = JSON.parse(process.argv[2]) as {
   reconciledCalls?: ReconciledCall[];
   resume?: string;
   apiKey?: string;
+  selectedMcp?: boolean;
 };
 const provider = new NativeProvider({
   baseUrl: config.url,
   apiKey: config.apiKey ?? `synthetic-${config.label}`,
   supportsWebsockets: false,
 });
-const agent = new Agent<{ label: string }>({
-  instructions:
-    'Use the current managed record tool. Preserve conversation history.',
-  model: 'gpt-5',
-  provider,
-  tools: [
+const context = { label: config.label };
+async function record(label: string) {
+  if (config.mode === 'hold-before') {
+    process.send?.({ type: 'beforeEffect' });
+    await new Promise(() => {});
+  }
+  await appendFile(config.effects, label + '\n');
+  process.send?.({ type: 'effect' });
+  if (config.mode === 'hold-effect') await new Promise(() => {});
+  return label;
+}
+
+async function recordTools() {
+  if (config.selectedMcp) {
+    const server: MCPServer = {
+      name: 'worker-peer',
+      cacheToolsList: false,
+      connect: async () => {},
+      close: async () => {},
+      invalidateToolsCache: async () => {},
+      listTools: async () => [
+        {
+          name: 'record',
+          description: 'Record one application effect.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+            additionalProperties: false,
+          },
+        },
+      ],
+      callTool: async () => [
+        { type: 'text', text: await record(context.label) },
+      ],
+    };
+    return selectMcpTools(
+      { name: 'worker', server },
+      { context, toolNames: ['record'], approval: () => true },
+    );
+  }
+  return [
     tool({
       name: 'record',
       description: 'Record one application effect.',
       parameters: z.object({}),
-      execute: async (_args, { context }: ToolContext<{ label: string }>) => {
-        if (config.mode === 'hold-before') {
-          process.send?.({ type: 'beforeEffect' });
-          await new Promise(() => {});
-        }
-        await appendFile(config.effects, context.label + '\n');
-        process.send?.({ type: 'effect' });
-        if (config.mode === 'hold-effect') await new Promise(() => {});
-        return context.label;
-      },
+      execute: (_args, { context }: ToolContext<{ label: string }>) =>
+        record(context.label),
     }),
-  ],
-});
+  ];
+}
+
 async function main() {
   try {
+    const agent = new Agent<{ label: string }>({
+      instructions:
+        'Use the current managed record tool. Preserve conversation history.',
+      model: config.selectedMcp ? 'gpt-5.5' : 'gpt-5',
+      provider,
+      tools: [...(await recordTools())],
+    });
     const session = await agent.session({
       storage: localStorage(config.profile),
       ...(config.resume === undefined ? {} : { resume: config.resume }),
       ...(config.reconciledCalls === undefined
         ? {}
         : { reconciledCalls: config.reconciledCalls }),
-      context: { label: config.label },
+      context,
     });
     const history = async () => {
       const items = [];

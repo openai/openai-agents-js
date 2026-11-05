@@ -1,0 +1,603 @@
+diff --git a/codex-rs/core/src/compact_token_budget.rs b/codex-rs/core/src/compact_token_budget.rs
+index 08427260a227a8a5423f057b7a700b97118ffce3..1f799e951356c56bcb04bb09414020f06c7f94db 100644
+--- a/codex-rs/core/src/compact_token_budget.rs
++++ b/codex-rs/core/src/compact_token_budget.rs
+@@ -79,8 +79,19 @@ async fn run_compact_task_inner(
+     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
+     sess.emit_turn_item_started(turn_context, &compaction_item)
+         .await;
+-    sess.start_new_context_window(step_context, world_state)
+-        .await;
++    if let Some(stop) = sampling_stop {
++        if sess
++            .start_new_context_window_with_stop(step_context, world_state, Some(stop))
++            .await
++            .is_none()
++        {
++            wait_if_sampling_stopped(Some(stop)).await;
++            return Err(CodexErr::TurnAborted);
++        }
++    } else {
++        sess.start_new_context_window(step_context, world_state)
++            .await;
++    }
+     sess.emit_turn_item_completed(turn_context, compaction_item)
+         .await;
+ 
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index bd4bc5a7fb83a9cc3746c626321692c948d27984..e9322686224188d92d77c21f7bc8de5c9fddf6f0 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -4048,11 +4048,29 @@ impl Session {
+ 
+     pub(crate) async fn replace_compacted_history(
+         &self,
+-        mut items: Vec<ResponseItemEnvelope>,
++        items: Vec<ResponseItemEnvelope>,
+         reference_context_item: TurnContextItem,
+         world_state_baseline: WorldStateSnapshot,
+         metadata: CompactedHistoryMetadata,
+     ) {
++        self.replace_compacted_history_with_commit(
++            items,
++            reference_context_item,
++            world_state_baseline,
++            None,
++            |_| metadata,
++        )
++        .await;
++    }
++
++    async fn replace_compacted_history_with_commit(
++        &self,
++        mut items: Vec<ResponseItemEnvelope>,
++        reference_context_item: TurnContextItem,
++        world_state_baseline: WorldStateSnapshot,
++        stop: Option<&codex_extension_api::TurnSamplingStop>,
++        metadata: impl FnOnce(&mut SessionState) -> CompactedHistoryMetadata,
++    ) -> Option<u64> {
+         for envelope in &mut items {
+             Self::assign_missing_response_item_id(&mut envelope.item);
+         }
+@@ -4066,74 +4084,83 @@ impl Session {
+                     revision
+                 })
+             });
+-        if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
+-            matches!(
+-                envelope.item,
+-                ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
+-            )
+-        }) {
+-            checkpoint
+-                .metadata
+-                .get_or_insert_default()
+-                .compaction_model_hash = metadata.compaction_model_hash;
+-        }
+         // Wait for accepted updates to finish persisting, then keep later updates from
+         // overtaking the current settings snapshot while its checkpoint is written.
+         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
+         let world_state_item = WorldStateItem::full(world_state_baseline.clone().into_object());
+         let compacted_item = {
+             let mut state = self.state.lock().await;
+-            // Goal edits are published outside the running task. Keep edits accepted after
+-            // the compaction input snapshot, in their original order, after its replacement.
+-            let replacement_goal_ids = crate::context::UserGoalUpdate::message_ids(
+-                items.iter().map(|envelope| &envelope.item),
+-            );
+-            items.extend(
+-                state
+-                    .history
+-                    .annotated_items()
+-                    .iter()
+-                    .filter(|envelope| {
+-                        crate::context::UserGoalUpdate::message_text(&envelope.item).is_some()
+-                            && envelope.item.id().is_some_and(|id| {
+-                                !metadata.input_goal_ids.contains(id)
+-                                    && !replacement_goal_ids.contains(id)
+-                            })
+-                    })
+-                    .cloned(),
+-            );
+-            let replacement_history = items.clone();
+-            state.replace_annotated_history(
+-                items,
+-                Some(reference_context_item.clone()),
+-                HistoryReplacement::Compaction {
+-                    reviewer_compaction_hash: metadata.reviewer_compaction_hash,
+-                },
+-            );
+-            state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+-            state.history.set_world_state_baseline(world_state_baseline);
+-            CompactedItem {
+-                message: metadata.message,
+-                replacement_history: Some(replacement_history),
+-                guardian_history: state.history.guardian_history_checkpoint(),
+-                retained_context: Some(state.history.retained_context().clone()),
+-                mcp_resource_origins: self.services.mcp_runtime.resource_origin_checkpoint(),
+-                window_number: Some(metadata.window_number),
+-                first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
+-                previous_window_id: metadata
+-                    .window_ids
+-                    .previous_window_id
+-                    .map(|id| id.to_string()),
+-                window_id: Some(metadata.window_ids.window_id.to_string()),
+-                compaction_response_id: metadata.compaction_response_id,
+-                latest_token_usage_record: state.latest_token_usage_record.clone(),
+-                resume_metadata: Some(CompactionResumeMetadata {
+-                    multi_agent_version: self.multi_agent_version(),
+-                    last_started_turn_id: state.last_started_turn_id.clone(),
+-                    previous_turn_settings: state.previous_turn_settings(),
+-                }),
+-            }
++            let mcp_resource_origins = self.services.mcp_runtime.resource_origin_checkpoint();
++            let commit = || {
++                let metadata = metadata(&mut state);
++                if let Some(checkpoint) = items.iter_mut().rev().find(|envelope| {
++                    matches!(
++                        envelope.item,
++                        ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. }
++                    )
++                }) {
++                    checkpoint
++                        .metadata
++                        .get_or_insert_default()
++                        .compaction_model_hash = metadata.compaction_model_hash;
++                }
++                // Goal edits are published outside the running task. Keep edits accepted after
++                // the compaction input snapshot, in their original order, after its replacement.
++                let replacement_goal_ids = crate::context::UserGoalUpdate::message_ids(
++                    items.iter().map(|envelope| &envelope.item),
++                );
++                items.extend(
++                    state
++                        .history
++                        .annotated_items()
++                        .iter()
++                        .filter(|envelope| {
++                            crate::context::UserGoalUpdate::message_text(&envelope.item).is_some()
++                                && envelope.item.id().is_some_and(|id| {
++                                    !metadata.input_goal_ids.contains(id)
++                                        && !replacement_goal_ids.contains(id)
++                                })
++                        })
++                        .cloned(),
++                );
++                let replacement_history = items.clone();
++                state.replace_annotated_history(
++                    items,
++                    Some(reference_context_item.clone()),
++                    HistoryReplacement::Compaction {
++                        reviewer_compaction_hash: metadata.reviewer_compaction_hash,
++                    },
++                );
++                state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
++                state.history.set_world_state_baseline(world_state_baseline);
++                CompactedItem {
++                    message: metadata.message,
++                    replacement_history: Some(replacement_history),
++                    guardian_history: state.history.guardian_history_checkpoint(),
++                    retained_context: Some(state.history.retained_context().clone()),
++                    mcp_resource_origins,
++                    window_number: Some(metadata.window_number),
++                    first_window_id: Some(metadata.window_ids.first_window_id.to_string()),
++                    previous_window_id: metadata
++                        .window_ids
++                        .previous_window_id
++                        .map(|id| id.to_string()),
++                    window_id: Some(metadata.window_ids.window_id.to_string()),
++                    compaction_response_id: metadata.compaction_response_id,
++                    latest_token_usage_record: state.latest_token_usage_record.clone(),
++                    resume_metadata: Some(CompactionResumeMetadata {
++                        multi_agent_version: self.multi_agent_version(),
++                        last_started_turn_id: state.last_started_turn_id.clone(),
++                        previous_turn_settings: state.previous_turn_settings(),
++                    }),
++                }
++            };
++            match stop {
++                Some(stop) => stop.try_commit(commit),
++                None => Some(commit()),
++            }?
+         };
++        let window_number = compacted_item.window_number;
+ 
+         let rollout_items = [
+             RolloutItem::Compacted(compacted_item),
+@@ -4153,6 +4180,7 @@ impl Session {
+             let mut state = self.state.lock().await;
+             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
+         }
++        window_number
+     }
+ 
+     pub fn enabled(&self, feature: Feature) -> bool {
+@@ -4244,6 +4272,16 @@ impl Session {
+         &self,
+         step_context: &StepContext,
+         world_state: &WorldState,
++    ) -> (Vec<ResponseItem>, WorldStateSnapshot) {
++        self.build_initial_context_with_window(step_context, world_state, None)
++            .await
++    }
++
++    async fn build_initial_context_with_window(
++        &self,
++        step_context: &StepContext,
++        world_state: &WorldState,
++        window_ids: Option<AutoCompactWindowIds>,
+     ) -> (Vec<ResponseItem>, WorldStateSnapshot) {
+         let turn_context = step_context.turn.as_ref();
+         let mut developer_sections = Vec::<RenderedFragment>::with_capacity(8);
+@@ -4254,7 +4292,7 @@ impl Session {
+             let state = self.state.lock().await;
+             (
+                 state.session_configuration.session_source.clone(),
+-                state.auto_compact_window_ids(),
++                window_ids.unwrap_or_else(|| state.auto_compact_window_ids()),
+             )
+         };
+         let separate_guardian_developer_message =
+@@ -4575,6 +4613,17 @@ impl Session {
+         step_context: &StepContext,
+         world_state: Arc<WorldState>,
+     ) -> u64 {
++        self.start_new_context_window_with_stop(step_context, world_state, None)
++            .await
++            .expect("unguarded context commit")
++    }
++
++    pub(crate) async fn start_new_context_window_with_stop(
++        &self,
++        step_context: &StepContext,
++        world_state: Arc<WorldState>,
++        stop: Option<&codex_extension_api::TurnSamplingStop>,
++    ) -> Option<u64> {
+         let turn_context = step_context.turn.as_ref();
+         let history = self.clone_history().await;
+         let input_goal_ids = crate::context::UserGoalUpdate::message_ids(history.raw_items());
+@@ -4594,13 +4643,10 @@ impl Session {
+             } else {
+                 Vec::new()
+             };
+-        let window = {
+-            let mut state = self.state.lock().await;
+-            state.start_new_context_window()
+-        };
+-        let (window_number, window_ids) = window;
++        // Render with the next IDs without changing the live window or its prefill.
++        let (_, window_ids) = self.state.lock().await.preview_new_context_window();
+         let (context_items, world_state_snapshot) = self
+-            .build_initial_context_with_world_state(step_context, world_state.as_ref())
++            .build_initial_context_with_window(step_context, world_state.as_ref(), Some(window_ids))
+             .await;
+         let context_items = context_items
+             .into_iter()
+@@ -4608,23 +4654,29 @@ impl Session {
+             .chain(retained_client_developer_messages)
+             .collect();
+         let turn_context_item = step_context.to_turn_context_item();
+-        self.replace_compacted_history(
+-            context_items,
+-            turn_context_item,
+-            world_state_snapshot,
+-            CompactedHistoryMetadata {
+-                input_goal_ids,
+-                message: String::new(),
+-                window_number,
+-                window_ids,
+-                compaction_response_id: None,
+-                compaction_model_hash: None,
+-                reviewer_compaction_hash: None,
+-            },
+-        )
+-        .await;
++        let committed = self
++            .replace_compacted_history_with_commit(
++                context_items,
++                turn_context_item,
++                world_state_snapshot,
++                stop,
++                |state| {
++                    let (window_number, window_ids) =
++                        state.start_new_context_window(window_ids.window_id);
++                    CompactedHistoryMetadata {
++                        input_goal_ids,
++                        message: String::new(),
++                        window_number,
++                        window_ids,
++                        compaction_response_id: None,
++                        compaction_model_hash: None,
++                        reviewer_compaction_hash: None,
++                    }
++                },
++            )
++            .await?;
+         self.recompute_token_usage(turn_context).await;
+-        window_number
++        Some(committed)
+     }
+ 
+     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index 9b2639ee5753887b0cb53dedfd95c2e21c1aa138..9922682886a851cf5bd8466404ff22803f882820 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -4007,6 +4007,161 @@ async fn record_initial_history_reconstructs_forked_transcript() {
+     );
+ }
+ 
++struct HeldContextWindow {
++    entered: Arc<tokio::sync::Notify>,
++    release: Arc<tokio::sync::Notify>,
++}
++
++impl codex_extension_api::ContextContributor for HeldContextWindow {
++    fn contribute_turn_context<'a>(
++        &'a self,
++        _input: codex_extension_api::TurnContextContributionInput<'a>,
++    ) -> std::pin::Pin<
++        Box<dyn std::future::Future<Output = Vec<codex_extension_api::PromptFragment>> + Send + 'a>,
++    > {
++        Box::pin(async move {
++            self.entered.notify_one();
++            self.release.notified().await;
++            Vec::new()
++        })
++    }
++}
++
++#[tokio::test]
++async fn token_budget_context_commit_respects_late_stop() {
++    for stopped in [false, true] {
++        let (mut session, turn_context, events) =
++            make_session_and_context_with_auth_and_config_and_rx(
++                CodexAuth::from_api_key("Test API Key"),
++                Vec::new(),
++                |config| {
++                    config.features.enable(Feature::TokenBudget).unwrap();
++                    config.model_context_window = Some(10_000);
++                },
++            )
++            .await;
++        let rollout_path =
++            attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
++        let entered = Arc::new(tokio::sync::Notify::new());
++        let release = Arc::new(tokio::sync::Notify::new());
++        let mut registry = codex_extension_api::ExtensionRegistryBuilder::new();
++        registry.prompt_contributor(Arc::new(HeldContextWindow {
++            entered: entered.clone(),
++            release: release.clone(),
++        }));
++        Arc::get_mut(&mut session)
++            .expect("unique session")
++            .services
++            .extensions = Arc::new(registry.build());
++        turn_context
++            .extension_data
++            .insert(codex_extension_api::TurnSamplingStop::default());
++        let stop = turn_context
++            .extension_data
++            .get::<codex_extension_api::TurnSamplingStop>()
++            .unwrap();
++        let step = session
++            .capture_step_context(turn_context.clone(), &CancellationToken::new())
++            .await
++            .unwrap();
++        let world = Arc::new(session.build_world_state_for_step(&step).await.unwrap());
++        let before = {
++            let mut state = session.state.lock().await;
++            state.set_auto_compact_window_estimated_prefill(123);
++            (
++                state.auto_compact_window_ids(),
++                state.auto_compact_window_number(),
++                state.auto_compact_window_snapshot(),
++                raw_history_items(&state.clone_history()),
++            )
++        };
++        let task = tokio::spawn(crate::compact_token_budget::run_inline_auto_compact_task(
++            session.clone(),
++            step,
++            world,
++        ));
++        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
++            .await
++            .unwrap();
++        let mut started = false;
++        while let Ok(event) = events.try_recv() {
++            started |= matches!(
++                event.msg,
++                EventMsg::ItemStarted(codex_protocol::protocol::ItemStartedEvent {
++                    item: TurnItem::ContextCompaction(_),
++                    ..
++                })
++            );
++        }
++        assert!(started, "context build must follow compaction start");
++        if stopped {
++            stop.request();
++        }
++        release.notify_one();
++        if stopped {
++            assert!(
++                tokio::time::timeout(std::time::Duration::from_millis(100), async {
++                    while !task.is_finished() {
++                        tokio::task::yield_now().await;
++                    }
++                })
++                .await
++                .is_err(),
++                "stopped reset completed before interrupt"
++            );
++            let state = session.state.lock().await;
++            assert_eq!(state.auto_compact_window_ids(), before.0);
++            assert_eq!(state.auto_compact_window_number(), before.1);
++            assert_eq!(state.auto_compact_window_snapshot(), before.2);
++            assert_eq!(raw_history_items(&state.clone_history()), before.3);
++            drop(state);
++            while let Ok(event) = events.try_recv() {
++                assert!(!matches!(
++                    event.msg,
++                    EventMsg::ItemCompleted(codex_protocol::protocol::ItemCompletedEvent {
++                        item: TurnItem::ContextCompaction(_),
++                        ..
++                    })
++                ));
++            }
++            task.abort();
++            assert!(task.await.unwrap_err().is_cancelled());
++        } else {
++            tokio::time::timeout(std::time::Duration::from_secs(5), task)
++                .await
++                .unwrap()
++                .unwrap()
++                .unwrap();
++            let state = session.state.lock().await;
++            assert_eq!(state.auto_compact_window_number(), before.1 + 1);
++            let ids = state.auto_compact_window_ids();
++            assert_ne!(ids.window_id, before.0.window_id);
++            assert_eq!(ids.previous_window_id, Some(before.0.window_id));
++            let text = developer_input_texts(&raw_history_items(&state.clone_history())).join("\n");
++            assert!(
++                text.contains(&ids.window_id.to_string()),
++                "rendered context must use committed window ID"
++            );
++        }
++        session.flush_rollout().await.unwrap();
++        let InitialHistory::Resumed(persisted) =
++            RolloutRecorder::get_rollout_history(&rollout_path)
++                .await
++                .unwrap()
++        else {
++            panic!("expected persisted session");
++        };
++        assert_eq!(
++            persisted
++                .history
++                .iter()
++                .filter(|item| matches!(item, RolloutItem::Compacted(_)))
++                .count(),
++            usize::from(!stopped)
++        );
++    }
++}
++
+ #[tokio::test]
+ async fn start_new_context_window_persists_checkpoint_state() {
+     let (mut session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+diff --git a/codex-rs/core/src/state/auto_compact_window.rs b/codex-rs/core/src/state/auto_compact_window.rs
+index 2571749ed63b205e9e77f217cfc2fc79ddd91d02..f086638ed395f3c9b35fffb5ed60b1bc3d6c3ef3 100644
+--- a/codex-rs/core/src/state/auto_compact_window.rs
++++ b/codex-rs/core/src/state/auto_compact_window.rs
+@@ -75,9 +75,13 @@ impl AutoCompactWindow {
+     }
+ 
+     pub(super) fn advance(&mut self) -> (u64, AutoCompactWindowIds) {
++        self.advance_with_id(Uuid::now_v7())
++    }
++
++    pub(super) fn advance_with_id(&mut self, window_id: Uuid) -> (u64, AutoCompactWindowIds) {
+         self.window_number = self.window_number.saturating_add(1);
+         self.ids.previous_window_id = Some(self.ids.window_id);
+-        self.ids.window_id = Uuid::now_v7();
++        self.ids.window_id = window_id;
+         self.new_context_window_requested = false;
+         self.token_budget_reminder_delivered = false;
+         self.auto_compact_fallback_delivered = false;
+diff --git a/codex-rs/core/src/state/session.rs b/codex-rs/core/src/state/session.rs
+index 6a93e160a4773ee6368cce41b63a418151b7adab..698e8f578b204af65e163fe472a734538bf63682 100644
+--- a/codex-rs/core/src/state/session.rs
++++ b/codex-rs/core/src/state/session.rs
+@@ -314,8 +314,16 @@ impl SessionState {
+         self.auto_compact_window.take_new_context_window_request()
+     }
+ 
+-    pub(crate) fn start_new_context_window(&mut self) -> (u64, AutoCompactWindowIds) {
+-        let window = self.auto_compact_window.advance();
++    pub(crate) fn preview_new_context_window(&self) -> (u64, AutoCompactWindowIds) {
++        let mut window = self.auto_compact_window;
++        window.advance()
++    }
++
++    pub(crate) fn start_new_context_window(
++        &mut self,
++        window_id: uuid::Uuid,
++    ) -> (u64, AutoCompactWindowIds) {
++        let window = self.auto_compact_window.advance_with_id(window_id);
+         self.auto_compact_window.clear_prefill();
+         window
+     }
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 68b1c19203c69835d2d6e61ad2c617a726f90988..5263f85cd4517aa8b72186b02ac91d9c08d0b2e2 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -14,6 +14,7 @@ use std::sync::atomic::Ordering;
+ pub struct TurnSamplingStop {
+     requested: Arc<AtomicBool>,
+     graph: Option<Arc<AtomicBool>>,
++    commit: Arc<std::sync::Mutex<()>>,
+ }
+ 
+ impl TurnSamplingStop {
+@@ -22,10 +23,15 @@ impl TurnSamplingStop {
+         Self {
+             requested: Arc::default(),
+             graph: Some(Arc::clone(&self.requested)),
++            commit: Arc::clone(&self.commit),
+         }
+     }
+ 
+     pub fn request(&self) {
++        let _commit = self
++            .commit
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
+         self.requested.store(true, Ordering::Release);
+     }
+ 
+@@ -36,6 +42,16 @@ impl TurnSamplingStop {
+                 .as_ref()
+                 .is_some_and(|stop| stop.load(Ordering::Acquire))
+     }
++
++    /// Serialize a synchronous context commit with stop reservation.
++    /// The callback must not block, await, or call back into the host.
++    pub fn try_commit<T>(&self, commit: impl FnOnce() -> T) -> Option<T> {
++        let _commit = self
++            .commit
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        (!self.requested()).then(commit)
++    }
+ }
+ 
+ /// Model response events owned by an interceptor or its downstream consumer.
+@@ -97,3 +113,28 @@ pub trait ModelResponseInterceptor: Send + Sync {
+     /// The returned stream must own request state and propagate cancellation by dropping upstream.
+     fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream;
+ }
++
++#[cfg(test)]
++mod sampling_stop_tests {
++    use super::TurnSamplingStop;
++
++    #[test]
++    fn context_commit_respects_turn_and_parent_stops() {
++        let parent = TurnSamplingStop::default();
++        let turn = parent.for_turn();
++        let sibling = parent.for_turn();
++        assert_eq!(turn.try_commit(|| 1), Some(1));
++        turn.clone().request();
++        assert_eq!(
++            turn.try_commit(|| panic!("stopped turn committed")),
++            None::<()>
++        );
++        assert_eq!(sibling.try_commit(|| 2), Some(2));
++        parent.request();
++        assert_eq!(
++            sibling.try_commit(|| panic!("stopped parent committed")),
++            None::<()>
++        );
++        assert_eq!(TurnSamplingStop::default().try_commit(|| 3), Some(3));
++    }
++}
