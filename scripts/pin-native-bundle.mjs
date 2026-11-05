@@ -69,6 +69,7 @@ function pinForRun(runId) {
     execFileSync('git', [
       'fetch',
       '--no-tags',
+      '--depth=1',
       'https://github.com/' + repo + '.git',
       run.head_sha,
     ]);
@@ -88,14 +89,12 @@ function pinForRun(runId) {
   if (run.head_branch.startsWith('ci/native-bundle/')) {
     // An off-branch build also executes SDK setup and qualification code.
     // Compare its complete checkout with the proposed commit before trusting its uploads.
-    const proposal = process.env.PIN_PROPOSAL_SHA ?? 'HEAD';
-    if (proposal !== 'HEAD') assert.match(proposal, /^[a-f0-9]{40}$/);
     assert.equal(
       spawnSync('git', [
         'diff',
         '--quiet',
         run.head_sha,
-        proposal,
+        'HEAD',
         '--',
         '.',
         ':(exclude).github/native-bundle.json',

@@ -98,7 +98,7 @@ CI for `feat/codex-harness` builds and tests the current SDK on Linux, macOS and
 
 To update the pin, choose a successful Alpha push build on `feat/codex-harness` that compiled all three platforms. To build before merge or renew an expiring pin, commit the proposed changes on a branch with the manifest removed and push it to `ci/native-bundle/<name>`. The producer branch must match the complete proposed tree except for the manifest. The artifacts expire after 90 days.
 
-Run `node scripts/pin-native-bundle.mjs RUN_ID` from the repository root and commit the generated manifest. It records the producer commit and checks each artifact against the platform's upload step. CI runs `node scripts/pin-native-bundle.mjs --check` when a PR proposes a pin, including hand-edited manifests.
+Run `node scripts/pin-native-bundle.mjs RUN_ID` from the repository root and commit the generated manifest. It records the producer commit and checks each artifact against the platform's upload step. When a PR proposes a pin, CI verifies the merged manifest matches the proposal and runs `node scripts/pin-native-bundle.mjs --check` at the proposal commit.
 
 ### Code style
 

@@ -142,6 +142,13 @@ jobs:
           PIN_PROPOSAL_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [[ -f .github/native-bundle.json ]] && ! git diff --quiet HEAD^1 HEAD -- .github/native-bundle.json; then
+            proposal="$RUNNER_TEMP/native-pin-proposal"
+            if ! git cat-file -e "$PIN_PROPOSAL_SHA^{commit}"; then
+              git fetch --no-tags --depth=1 https://github.com/openai/openai-agents-js.git "$PIN_PROPOSAL_SHA"
+            fi
+            git worktree add --detach "$proposal" "$PIN_PROPOSAL_SHA"
+            cmp .github/native-bundle.json "$proposal/.github/native-bundle.json"
+            cd "$proposal"
             node scripts/pin-native-bundle.mjs --check
           fi
       - name: Prepare Docker test image
