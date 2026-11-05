@@ -700,6 +700,8 @@ pub async fn submit(
     instance_id: u64,
     value: serde_json::Value,
 ) -> anyhow::Result<Arc<Turn>> {
+    use codex_otel::sdk_trace::FutureExt as _;
+
     let input: ChildInput = crate::config::decode(value)?;
     ensure!(
         !input.input.is_empty()
@@ -751,6 +753,7 @@ pub async fn submit(
         content: input.input,
         client_id: None,
     });
+    let creation_tracing = control.creation_tracing();
     request.trace = control.creation_trace()?;
     let settlement = thread
         .thread_extension_data()
@@ -791,6 +794,7 @@ pub async fn submit(
     init.insert(seed.clone());
     let turn_id = match thread
         .start_turn_if_idle(WithTurnExtensionData::new(request.clone(), init))
+        .with_context(crate::lease_context(creation_tracing.as_deref())?)
         .await?
     {
         StartIfIdleSubmission::Started { turn_id } => {
@@ -841,7 +845,11 @@ pub async fn submit(
                     "Native child turn ownership changed"
                 );
             }
-            match thread.steer_turn(request, expected).await {
+            match thread
+                .steer_turn(request, expected)
+                .with_context(crate::lease_context(receipt.tracing.as_deref())?)
+                .await
+            {
                 Ok(SteerSubmission::Steered { turn_id }) => {
                     receipt.confirm_admission();
                     turn_id
@@ -893,6 +901,8 @@ pub async fn continue_retained(
     state: &Arc<ThreadState>,
     turn: &Arc<Turn>,
 ) -> anyhow::Result<Option<Arc<Turn>>> {
+    use codex_otel::sdk_trace::FutureExt as _;
+
     ensure!(
         Weak::ptr_eq(&turn.owner, &Arc::downgrade(state)),
         "Child turn belongs to another Session"
@@ -982,6 +992,7 @@ pub async fn continue_retained(
             WithTurnExtensionData::new(request, init),
             turn.turn_id.clone(),
         )
+        .with_context(crate::lease_context(receipt.tracing.as_deref())?)
         .await?;
     let turn_id = match submitted {
         TurnInputSubmission::Started { turn_id } => {
