@@ -13,7 +13,7 @@ import {
 import { type Agent, type Session } from '../runtime/public-agent';
 import {
   manualResultSchema,
-  validateManualResult,
+  prepareManualResult,
   type ManualTool,
 } from '../runtime/manual';
 import { isManualSessionState, type SessionState } from '../runtime/state';
@@ -213,6 +213,7 @@ export class NativeA2AExecutor<
           | Pick<A2AInputReply, 'challenge' | 'generation' | 'result'>
           | undefined;
         let manual: ManualTool | undefined;
+        let preparedResult: unknown;
         if (record) {
           const parts = context.userMessage.parts;
           if (parts.length !== 1 || parts[0].content?.$case !== 'data')
@@ -245,7 +246,7 @@ export class NativeA2AExecutor<
             declaration(manual) !== record.pending.declaration
           )
             throw new A2AError('authorization');
-          validateManualResult(manual, reply.result);
+          preparedResult = prepareManualResult(manual, reply.result);
         }
         const publish = async (
           state: NativeA2ATask['state'],
@@ -318,7 +319,7 @@ export class NativeA2AExecutor<
               !manual?.match(pending[0])
             )
               throw new A2AError('authorization');
-            await session.respond(pending[0].reply(reply.result));
+            await session.respond(pending[0].reply(preparedResult));
           } else {
             await session.submit(input!);
           }

@@ -501,6 +501,96 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       30000,
     );
 
+    it('converts a resumed manual answer once and preserves invalid-answer retry', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      await withScriptedResponses(
+        [
+          [toolCall('decision', {}, { callId: 'decision' })],
+          [text('accepted')],
+        ],
+        async (model) => {
+          let conversions = 0;
+          const decision = manualTool({
+            name: 'decision',
+            description: 'Choose.',
+            parameters: z.strictObject({}),
+            result: z
+              .number()
+              .min(1)
+              .transform(() => `admitted-result-${++conversions}`),
+          });
+          const store = new FileA2AStore();
+          const agent = new Agent({
+            instructions: 'Ask.',
+            model: 'gpt-5.5',
+            provider: model.provider,
+            tools: [decision],
+          });
+          const remote = await host(
+            store,
+            new NativeA2AExecutor({
+              store,
+              agentFactory: async () => ({ agent, context: undefined }),
+            }),
+          );
+          try {
+            const created = await remote.client.sendMessage(
+              input([Part.fromJSON({ text: 'begin' })]),
+            );
+            if (!('id' in created)) throw new Error('Expected task');
+            const waiting = await settled(remote.client, created);
+            const proposal = inputProposal(waiting)!;
+            const before = store.record(waiting.id, context)!;
+            const answer = (result: number) =>
+              remote.client.sendMessage(
+                input(
+                  [
+                    Part.fromJSON({
+                      data: {
+                        challenge: proposal.challenge,
+                        generation: proposal.generation,
+                        result,
+                      },
+                    }),
+                  ],
+                  waiting.id,
+                  waiting.contextId,
+                ),
+              );
+            await expect(answer(0)).rejects.toThrow();
+            expect(store.record(waiting.id, context)).toEqual(before);
+            expect(conversions).toBe(0);
+            expect(model.requests).toHaveLength(1);
+            const updated = await answer(3);
+            if (!('id' in updated)) throw new Error('Expected task');
+            const done = await settled(remote.client, updated);
+            expect(done.status?.state).toBe(TaskState.TASK_STATE_COMPLETED);
+            expect(conversions).toBe(1);
+            expect(model.requests).toHaveLength(2);
+            const outputs = model.requests[1].input as {
+              type?: string;
+              call_id?: string;
+              output?: unknown;
+            }[];
+            const delivered = outputs.find(
+              (item) =>
+                item.type === 'function_call_output' &&
+                item.call_id === 'decision',
+            );
+            expect(delivered).toBeDefined();
+            expect(JSON.stringify(delivered!.output)).toContain(
+              'admitted-result-1',
+            );
+            expect(JSON.stringify(delivered!.output)).not.toContain(
+              'admitted-result-2',
+            );
+          } finally {
+            await remote.close();
+          }
+        },
+      );
+    }, 30000);
+
     it('rejects multiple pending manual requests without saving a resumable checkpoint', async () => {
       await withScriptedResponses(
         [

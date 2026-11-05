@@ -51,6 +51,10 @@ const replies = new WeakMap<
   object,
   { authority: RequestAuthority; value: unknown }
 >();
+const preparedResults = new WeakMap<
+  object,
+  { definition: Definition; output: ToolResponse }
+>();
 
 function isObject(value: unknown): value is object {
   return (
@@ -140,10 +144,14 @@ export function manualResultSchema(tool: ManualTool): JsonValue {
   return jsonValue.parse(tool[manualDefinition].resultSchema);
 }
 
-/** @internal Validate against the current captured declaration before a durable claim. */
-export function validateManualResult(tool: ManualTool, value: unknown): void {
+/** @internal Parse once; only a live request for this declaration may consume the result. */
+export function prepareManualResult(tool: ManualTool, value: unknown): unknown {
   try {
-    tool[manualDefinition].parseResult(value);
+    const definition = tool[manualDefinition];
+    const output = definition.parseResult(value);
+    const prepared = Object.freeze({});
+    preparedResults.set(prepared, { definition, output });
+    return prepared;
   } catch {
     throw new TypeError('Manual tool result failed validation');
   }
@@ -225,7 +233,12 @@ export function createManualRequest<Input, Result>(
       if (found?.authority !== authority) return undefined;
       let output: ToolResponse;
       try {
-        output = definition.parseResult(found.value);
+        const prepared = isObject(found.value)
+          ? preparedResults.get(found.value)
+          : undefined;
+        if (prepared && prepared.definition !== definition)
+          throw new TypeError('Manual result declaration does not match');
+        output = prepared?.output ?? definition.parseResult(found.value);
       } catch {
         throw new TypeError('Manual tool result failed validation');
       }
