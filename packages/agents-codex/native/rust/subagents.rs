@@ -6,7 +6,6 @@ use codex_core::context::{
     ContextualUserFragment, InternalContextSource, InternalModelContextFragment,
 };
 use codex_core_api::{CodexThread, ThreadManager, WithTurnExtensionData};
-use codex_otel::sdk_trace::FutureExt as _;
 use codex_protocol::ThreadId;
 use codex_protocol::models::{ContentItem, MessagePhase, ResponseItem};
 use codex_protocol::protocol::{Event, EventMsg, TokenUsageInfo, TurnAbortReason};
@@ -701,6 +700,8 @@ pub async fn submit(
     instance_id: u64,
     value: serde_json::Value,
 ) -> anyhow::Result<Arc<Turn>> {
+    use codex_otel::sdk_trace::FutureExt as _;
+
     let input: ChildInput = crate::config::decode(value)?;
     ensure!(
         !input.input.is_empty()
@@ -903,6 +904,8 @@ pub async fn continue_retained(
     state: &Arc<ThreadState>,
     turn: &Arc<Turn>,
 ) -> anyhow::Result<Option<Arc<Turn>>> {
+    use codex_otel::sdk_trace::FutureExt as _;
+
     ensure!(
         Weak::ptr_eq(&turn.owner, &Arc::downgrade(state)),
         "Child turn belongs to another Session"
