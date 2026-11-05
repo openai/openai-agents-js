@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createServer } from 'node:http';
+import { URL } from 'node:url';
 import console from 'node:console';
 import process from 'node:process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -8,10 +9,7 @@ const apiKey = process.env.OPENAI_API_KEY;
 const model = process.env.OPENAI_REALTIME_MODEL ?? 'gpt-realtime-2.1';
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '127.0.0.1';
-const pairingToken =
-  host === '127.0.0.1' || host === '::1' || host === 'localhost'
-    ? null
-    : randomBytes(24).toString('base64url');
+const pairingToken = randomBytes(24).toString('base64url');
 const tokenRequests = new Map();
 
 if (!apiKey) {
@@ -27,16 +25,35 @@ const server = createServer(async (request, response) => {
     sendJson(response, 404, { error: 'Not found.' });
     return;
   }
-  if (pairingToken) {
-    const expected = Buffer.from(`Bearer ${pairingToken}`);
-    const supplied = Buffer.from(request.headers.authorization ?? '');
-    if (
-      supplied.length !== expected.length ||
-      !timingSafeEqual(supplied, expected)
-    ) {
-      sendJson(response, 401, { error: 'Pairing token required.' });
-      return;
-    }
+  const localHost = request.socket.localAddress.replace(/^::ffff:/, '');
+  const authority = (name) =>
+    `${name.includes(':') ? `[${name}]` : name}:${port}`;
+  const expectedHosts = [authority(host), authority(localHost)];
+  if (localHost === '127.0.0.1' || localHost === '::1') {
+    expectedHosts.push(
+      authority('127.0.0.1'),
+      authority('localhost'),
+      authority('10.0.2.2'),
+    );
+  }
+  const requestHost = request.headers.host;
+  if (
+    (!expectedHosts.includes(requestHost) &&
+      !(port === 80 && expectedHosts.includes(`${requestHost}:80`))) ||
+    (request.headers.origin !== undefined &&
+      request.headers.origin !== new URL(`http://${requestHost}`).origin)
+  ) {
+    sendJson(response, 403, { error: 'Unrecognized request origin.' });
+    return;
+  }
+  const expected = Buffer.from(`Bearer ${pairingToken}`);
+  const supplied = Buffer.from(request.headers.authorization ?? '');
+  if (
+    supplied.length !== expected.length ||
+    !timingSafeEqual(supplied, expected)
+  ) {
+    sendJson(response, 401, { error: 'Pairing token required.' });
+    return;
   }
 
   const client = request.socket.remoteAddress;
@@ -100,9 +117,7 @@ if (host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') {
 }
 
 server.listen(port, host, () => {
-  if (pairingToken) {
-    console.log(`Pairing token: ${pairingToken}`);
-  }
+  console.log(`Pairing token: ${pairingToken}`);
   console.log(`Realtime token server listening on http://${host}:${port}`);
 });
 
