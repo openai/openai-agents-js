@@ -34,7 +34,8 @@ jobs:
             runner: macos-15
           - platform: win32-x64
             runner: windows-2025
-    runs-on: ${{ matrix.runner }}
+    # Keep macOS on its ARM runner and preserve standard runners for fork-owned repositories.
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
     timeout-minutes: 180
     defaults:
       run:

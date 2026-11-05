@@ -101,8 +101,8 @@ def checked_path(spec):
     return resolved
 
 @contextmanager
-def parent(path, create=False):
-    fd = os.open("/", TRAVERSE)
+def parent(path, create=False, root_fd=None):
+    fd = os.open("/", TRAVERSE) if root_fd is None else os.dup(root_fd)
     try:
         parts = path.split("/")
         for name in parts[1:-1]:
@@ -336,15 +336,72 @@ def check_removal(directory, name):
     if parent_info.st_mode & stat.S_ISVTX and uid not in (0, parent_info.st_uid, entry_info.st_uid):
         raise PermissionError(errno.EPERM, "Source directory does not allow removal", name)
 
+def chown_entry(directory, name, uid, gid):
+    try:
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        return
+    if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):
+        os.chown(name, uid, gid, dir_fd=directory, follow_symlinks=False)
+        return
+    try:
+        fd = os.open(name, DIRECTORY if stat.S_ISDIR(info.st_mode) else FILE_READ, dir_fd=directory)
+    except FileNotFoundError:
+        return
+    except PermissionError:
+        if stat.S_ISDIR(info.st_mode):
+            raise
+        # chown does not require read access to an owned mode-000 file.
+        os.chown(name, uid, gid, dir_fd=directory, follow_symlinks=False)
+        return
+    try:
+        opened = os.fstat(fd)
+        os.fchown(fd, uid, gid)
+        if stat.S_ISDIR(opened.st_mode):
+            return os.dup(fd)
+    finally:
+        close(fd)
+
+def chown_recursive(path, uid, gid):
+    with parent(path) as (directory, name):
+        root_fd = chown_entry(directory, name, uid, gid)
+    if root_fd is None:
+        return
+    # Reopen descendants from the pinned root without retaining one fd per level.
+    try:
+        with os.scandir(root_fd) as entries:
+            pending = ["/" + entry.name for entry in entries]
+        while pending:
+            child_path = pending.pop()
+            try:
+                with parent(child_path, root_fd=root_fd) as (directory, name):
+                    child_fd = chown_entry(directory, name, uid, gid)
+            except FileNotFoundError:
+                continue
+            if child_fd is not None:
+                try:
+                    with os.scandir(child_fd) as entries:
+                        pending.extend(child_path + "/" + entry.name for entry in entries)
+                finally:
+                    close(child_fd)
+    finally:
+        close(root_fd)
+
 def run(request):
     operation = request["operation"]
     if operation == "probe":
-        if not {os.open, os.stat, os.mkdir, os.rmdir, os.unlink, os.rename, os.access}.issubset(os.supports_dir_fd) or os.access not in os.supports_effective_ids or os.scandir not in os.supports_fd or os.stat not in os.supports_follow_symlinks or not all(hasattr(os, name) for name in ("fchdir", "fchown", "fchmod")):
+        if not {os.open, os.stat, os.chown, os.mkdir, os.rmdir, os.unlink, os.rename, os.access}.issubset(os.supports_dir_fd) or os.access not in os.supports_effective_ids or os.scandir not in os.supports_fd or not {os.stat, os.chown}.issubset(os.supports_follow_symlinks) or not all(hasattr(os, name) for name in ("fchdir", "fchown", "fchmod")):
             raise RuntimeError("Descriptor-relative file operations are unavailable")
         Path("/").resolve(strict=True)
         sys.stdout.write("ready")
         return
     select_identity(request.get("identity"))
+    if operation == "chownRecursive":
+        for spec in json.load(sys.stdin):
+            chown_recursive(checked_path(spec), request["uid"], request["gid"])
+        return
     path = checked_path(request["path"])
     if operation == "create":
         write_new(path)
