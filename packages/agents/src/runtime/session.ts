@@ -1,3 +1,9 @@
+import {
+  captureTraceContext,
+  nativeTraceContext,
+  type TraceContext,
+  type TraceContextHeaders,
+} from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
@@ -204,12 +210,14 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  parentTrace?: TraceContext;
   openCorrection?: (
     model: string,
     modelSettings: ModelSettings,
     retainOpening: (owner: {
       readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
     }) => void,
+    parentTrace?: TraceContext,
   ) => Promise<Session<string>>;
   selectedModel?: {
     readonly callerSignal?: AbortSignal;
@@ -230,6 +238,7 @@ export interface SessionOptions {
     state: SessionState,
     output: PreparedOutput,
     outputOverride: boolean,
+    parentTrace?: TraceContext,
   ) => Promise<Session<any, any>>;
   /** @internal Active restored output can differ from the opening default. */
   restoredOutput?: { output: PreparedOutput; outputOverride: boolean };
@@ -265,6 +274,8 @@ export type OneShotOptions = {
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
+  /** Explicit parent for this new root; omission or null inherits the Session parent. */
+  parentTrace?: TraceContext | TraceContextHeaders | null;
   /**
    * Maximum root model preparations for this submission. Zero blocks the first
    * preparation. Manual suspension retains the remaining budget. Provider
@@ -737,6 +748,7 @@ function continuationWasSuperseded(error: unknown): boolean {
 }
 
 class NativeTurn {
+  parentTrace?: TraceContext;
   readonly accepted = Promise.withResolvers<AcceptedSubmission>();
   readonly completion = Promise.withResolvers<NativeRunResult>();
   readonly controller = new AbortController();
@@ -2385,6 +2397,8 @@ export class Session<OutputT = string, Context = unknown> {
     const parts = nativeInput(input);
     const output = prepareOutput(outputType);
     const selection = this.captureSelection(options);
+    const parentTrace =
+      captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
     const run = this.startTurn(
       parts,
       true,
@@ -2392,6 +2406,7 @@ export class Session<OutputT = string, Context = unknown> {
       true,
       selection,
       undefined,
+      parentTrace,
       options?.writableRoots,
     );
     await afterSubmissionRetirement(run, run.accepted.promise);
@@ -2436,11 +2451,14 @@ export class Session<OutputT = string, Context = unknown> {
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
     const selection = this.captureSelection(options);
+    const parentTrace =
+      captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
     const writableRoots =
       options?.writableRoots === undefined
         ? undefined
         : captureWritableRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
+    run.parentTrace = parentTrace;
     run.selection = selection;
     run.writableRoots = writableRoots;
     this.pendingRoots.push({ run, parts });
@@ -2491,6 +2509,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('submit to');
     if (options && 'outputType' in options)
       throw new TypeError('Use submitWithOutput to select an output contract');
+    const parentTrace = captureTraceContext(options?.parentTrace);
     const ifBusy = options?.ifBusy ?? 'steer';
     if (ifBusy !== 'steer' && ifBusy !== 'reject')
       throw new TypeError('ifBusy must be steer or reject');
@@ -2507,6 +2526,10 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const parts = nativeInput(input as UserInput);
     if (ifBusy === 'steer' && this.lifecycle.kind === 'turn') {
+      if (parentTrace)
+        throw new TypeError(
+          'Cannot reparent an active turn; submit a new root',
+        );
       if (options?.writableRoots !== undefined)
         throw new TypeError('Writable roots require a new root turn');
       if (
@@ -2528,6 +2551,7 @@ export class Session<OutputT = string, Context = unknown> {
       false,
       selection,
       undefined,
+      parentTrace ?? this.options.parentTrace,
       options?.writableRoots,
     );
 
@@ -3091,6 +3115,7 @@ export class Session<OutputT = string, Context = unknown> {
     outputOverride = false,
     selection?: OperationSelection,
     callerSignal?: AbortSignal,
+    parentTrace = this.options.parentTrace,
     writableRoots?: readonly string[],
   ): NativeTurn {
     this.idle('submit');
@@ -3106,6 +3131,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : captureWritableRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
+    run.parentTrace = parentTrace;
     run.writableRoots = roots;
     submissions.get(run)!.callerSignal =
       callerSignal ?? this.options.selectedModel?.callerSignal;
@@ -3133,6 +3159,7 @@ export class Session<OutputT = string, Context = unknown> {
             },
           }
         : {}),
+      ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
       mode: 'start_if_idle',
       ...(run.writableRoots === undefined
         ? {}
@@ -3387,9 +3414,14 @@ export class Session<OutputT = string, Context = unknown> {
       throw new NativeError('This Session does not support output repair');
     for (let index = 0; index < prepared.repair!.maxRetries; index++) {
       check(true);
-      repair.session = await open(accepted.data.model, settings, (owner) => {
-        repair.opening = owner;
-      });
+      repair.session = await open(
+        accepted.data.model,
+        settings,
+        (owner) => {
+          repair.opening = owner;
+        },
+        run.parentTrace,
+      );
       repair.opening = undefined;
       const correction = repair.session;
       // A correction uses the owning session's model provider and reports into
@@ -3587,6 +3619,9 @@ export class Session<OutputT = string, Context = unknown> {
               encode({
                 input: [],
                 mode: 'continue_if_idle',
+                ...(run.parentTrace
+                  ? { trace: run.parentTrace.toHeaders() }
+                  : {}),
                 expected_previous_turn_id: run.id,
                 ...(submission.output.schema === undefined
                   ? {}
@@ -3601,6 +3636,7 @@ export class Session<OutputT = string, Context = unknown> {
           submission.outputOverride,
           run.selection,
         );
+        next.parentTrace = run.parentTrace;
         submission.next = next;
         const successor = submissions.get(next)!;
         successor.previous = run;
@@ -5115,20 +5151,19 @@ export class Session<OutputT = string, Context = unknown> {
         this.manualRestoring = false;
         try {
           const schema = submissions.get(run)!.output.schema;
-          const wire = run.selection
-            ? await this.#native._complete_manual_continuation(
-                schema == null ? undefined : encodeReceipt(schema),
-                encode({
+          const wire = await this.#native._complete_manual_continuation(
+            schema == null ? undefined : encodeReceipt(schema),
+            run.selection
+              ? encode({
                   generation: this.catalog.generation.toString(),
                   names: run.selection.names ?? null,
                   before_step: run.selection.maxModelSteps !== undefined,
-                }),
-              )
-            : schema == null
-              ? await this.#native._complete_manual_continuation()
-              : await this.#native._complete_manual_continuation(
-                  encodeReceipt(schema),
-                );
+                })
+              : undefined,
+            this.options.parentTrace
+              ? encode(this.options.parentTrace.toHeaders())
+              : undefined,
+          );
           const submission = decode(submissionSchema, wire);
           if (submission.status !== 'started' || submission.turn_id !== run.id)
             throw new NativeError(
@@ -5488,6 +5523,7 @@ export class Session<OutputT = string, Context = unknown> {
     );
     const run = new NativeTurn(() => this.assertCanWait(run));
 
+    run.parentTrace = this.options.parentTrace;
     run.id = state.manual_continuation.turn_id;
     const operation = readCheckpointSelections(state).operation_tools;
     const remaining = state.manual_context.remaining_model_steps;
@@ -5577,6 +5613,9 @@ export class Session<OutputT = string, Context = unknown> {
         ? this.#turnFor(owner)
         : await this.childSubmission(owner);
       const context = {
+        traceContext: nativeTraceContext(
+          msg._sdk_trace_context as TraceContextHeaders | null | undefined,
+        ),
         context: this.options.context,
         submission,
         call: managedCallInfo(
@@ -6661,7 +6700,13 @@ export class Session<OutputT = string, Context = unknown> {
 
   private beginCompaction(): NativeTurn {
     const previous = this.lastRun;
-    const run = this.begin(() => this.#native._compact());
+    const parentTrace = this.options.parentTrace;
+    const run = this.begin(() =>
+      this.#native._compact(
+        parentTrace ? encode(parentTrace.toHeaders()) : null,
+      ),
+    );
+    run.parentTrace = parentTrace;
     this.lastRun = previous;
     submissions.get(run)!.compaction = true;
     return run;
@@ -6688,11 +6733,18 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TypeError(
           'Native review is unavailable for a selected Model; use a NativeProvider-backed Session',
         );
+      const parentTrace = this.options.parentTrace;
       const run = this.begin(
-        () => native._execute_command('review', command.arguments),
+        () =>
+          native._execute_command(
+            'review',
+            command.arguments,
+            parentTrace ? encode(parentTrace.toHeaders()) : null,
+          ),
         prepareOutput(undefined),
         true,
       );
+      run.parentTrace = parentTrace;
       submissions.get(run)!.review = true;
       await afterSubmissionRetirement(run, run.accepted.promise);
       return Object.freeze({
@@ -7282,7 +7334,8 @@ export class Session<OutputT = string, Context = unknown> {
     check();
     return {
       check,
-      open: (state) => reopen(state, active.output, active.outputOverride),
+      open: (state) =>
+        reopen(state, active.output, active.outputOverride, run.parentTrace),
     };
   }
 

@@ -1,16 +1,14 @@
 import { CloudflareRealtimeTransportLayer } from '@openai/agents-extensions';
 import { RealtimeAgent, RealtimeSession } from '@openai/agents/realtime';
 
-const agent = new RealtimeAgent({
-  name: 'My Agent',
-});
+// Call this from a Worker request handler with an application-owned API key.
+export async function connectVoiceAgent(apiKey: string) {
+  const agent = new RealtimeAgent({ name: 'My Agent' });
+  const transport = new CloudflareRealtimeTransportLayer({
+    url: 'wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1',
+  });
+  const session = new RealtimeSession(agent, { transport });
 
-// Create a transport that connects to OpenAI Realtime via Cloudflare/workerd's fetch-based upgrade.
-const cfTransport = new CloudflareRealtimeTransportLayer({
-  url: 'wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1',
-});
-
-const session = new RealtimeSession(agent, {
-  // Set your own transport.
-  transport: cfTransport,
-});
+  await session.connect({ apiKey });
+  return session;
+}

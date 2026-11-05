@@ -206,7 +206,7 @@ index dccc2da3cde466c70ea3688d17dfcd355dbba29c..d3dd5518434eb1b847e6b40fa073c4b0
          sess.services.local_agent_runtime.record_shutdown_failure();
          warn!("failed to shutdown code mode session: {err}");
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index f4663fbfadf7f31e8c2de7407d5e3e640eea70e1..2fc788d2ce377ef09fbdef585f500b2ce2908bb9 100644
+index 6d8a9a49837f2054019683123a1199504ae16204..8f48e3c77a9a75b9b1c8ef41a5b3372ec77b7095 100644
 --- a/codex-rs/core/src/session/session.rs
 +++ b/codex-rs/core/src/session/session.rs
 @@ -1718,6 +1718,9 @@ impl Session {

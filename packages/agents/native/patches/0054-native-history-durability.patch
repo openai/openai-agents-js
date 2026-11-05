@@ -1,8 +1,8 @@
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 59bee0fec40f983672f626b31111a7175917206b..6caf74268d82df87945bc5083ad72ef9994a96d0 100644
+index 07aacade1a01b6fc41cffc22492545f2bf70f28c..4d5dc21baf91aad49f2b29fc91663ca9cd5ef12e 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
-@@ -748,6 +748,7 @@ async fn drain_to_completed(
+@@ -751,6 +751,7 @@ async fn drain_to_completed(
      prompt: &Prompt,
      phase: CompactionPhase,
  ) -> CodexResult<CompactionResponse> {
@@ -11,10 +11,10 @@ index 59bee0fec40f983672f626b31111a7175917206b..6caf74268d82df87945bc5083ad72ef9
          .stream(
              prompt,
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index e20b0a7f5cf5f6d4c5f8bc701facfb785aa900c0..6e4187502b5c4d414d1648a8964d0cd3b93f539f 100644
+index f1af831d1467f1a550c47031e765f9938f522ac1..bdce7a664ed83f325db4fc8641776eb1d6a77cfa 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
-@@ -387,6 +387,7 @@ async fn run_remote_compaction_request_v2(
+@@ -393,6 +393,7 @@ async fn run_remote_compaction_request_v2(
          .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
      let mut retry_state = ResponsesStreamRetryState::default();
      loop {
@@ -23,7 +23,7 @@ index e20b0a7f5cf5f6d4c5f8bc701facfb785aa900c0..6e4187502b5c4d414d1648a8964d0cd3
              .stream(
                  prompt,
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index e9322686224188d92d77c21f7bc8de5c9fddf6f0..5840dd32e7c4a2f048c9b4e23f99cdb24fefcb91 100644
+index bb847ed7716c49f1955acf9f1b09f4036cdecbfa..7073ec62b69ab4186e3238254b2b4544b07fe109 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -1463,6 +1463,20 @@ impl Session {
@@ -48,10 +48,10 @@ index e9322686224188d92d77c21f7bc8de5c9fddf6f0..5840dd32e7c4a2f048c9b4e23f99cdb2
          &self,
          context: PersistContext,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 6995888c4fff7fd6fd135db322e85db302c09462..9462a406c3c0d17b83a81f40d16dd66d8bad49c6 100644
+index d156b9478a861df94ddd509055ca43674f788dd9..b8c48a006ea39ef24a39735ad51fa356a06019f0 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -2509,9 +2509,7 @@ async fn drain_in_flight(
+@@ -2514,9 +2514,7 @@ async fn drain_in_flight(
                  sess.record_tool_result(turn_context, &step_context.settings.model_info, result)
                      .await;
              }
@@ -62,7 +62,7 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..9462a406c3c0d17b83a81f40d16dd66d
          }
      }
      Ok(())
-@@ -2611,6 +2609,8 @@ async fn try_run_sampling_request(
+@@ -2616,6 +2614,8 @@ async fn try_run_sampling_request(
              turn_context.extension_data.insert(LastSdkReceipt(receipt));
          }
      }
@@ -71,7 +71,7 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..9462a406c3c0d17b83a81f40d16dd66d
      let request = client_session
          .stream(
              prompt,
-@@ -3218,6 +3218,9 @@ async fn try_run_sampling_request(
+@@ -3237,6 +3237,9 @@ async fn try_run_sampling_request(
          drain_in_flight(&mut in_flight, sess.clone(), &step_context).await?;
      }
  

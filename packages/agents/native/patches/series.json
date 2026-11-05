@@ -213,25 +213,29 @@
       "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
     },
     {
+      "path": "0024-native-response-observations.patch",
+      "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
+    },
+    {
       "path": "0054-native-history-durability.patch",
-      "sha256": "3827223728bcee81ea77abb4d5682b6075f80739671a2977f436c94412d9a08e"
+      "sha256": "eacf5a47baddfe9858cc5b6460b0c8ce4df6516e1bff66fa7ef2b77a9d15b003"
     },
     {
       "path": "0055-native-history-write-reconciliation.patch",
-      "sha256": "e8da877bf23d570c3cde2bc5a776e7cf5945b854245288137ab765376baa6647"
+      "sha256": "b37fa326977162283daf992214bc54bf13c19d6bd00221e77ea4c4c0933528ab"
     },
     {
       "path": "0056-native-tree-finalization-before-store-close.patch",
-      "sha256": "3001b286ecaf94bde058069bf82539be1fe361712479a1706aff8b78beab9008"
+      "sha256": "b38578d7eb0b27840117ce5529909ffb543d32578c05903923013bf88b071f56"
     },
     {
       "path": "0057-native-confirmed-remote-teardown.patch",
-      "sha256": "78b4d111fa5675b7dcbf2d47bb6f1fd174d0cddfc4ecf9d641891aadd5eb3649"
+      "sha256": "c0774adde40e8d1ebf986df62de7293b629ff5babe9d2da12ecbd45005fe5d94"
     },
     {
       "path": "0058-native-metadata-durability.patch",
       "sha256": "10136a8852249737dbf7974c579cb84faf0d36fc495fcbaeeafe66a3dfa7e3d6"
     }
   ],
-  "result_tree": "cff59c7966c1415f80cae24a7982744f15753d95"
+  "result_tree": "45788feb35c2729358f3d1d764ed6725e4846df8"
 }

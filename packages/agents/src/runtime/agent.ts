@@ -1,3 +1,4 @@
+import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
 import { assertCheckpointNetworkPolicy } from './state';
@@ -100,9 +101,11 @@ export async function openSession(
     ...(model === undefined ? {} : { model }),
     ...(environment ? { environment: environmentConfig(environment) } : {}),
   };
+  const parentTrace = captureTraceContext(options.parentTrace);
   const { _sdk_reconciled_calls, ...capturedThreadOptions } =
     setup.threadOptions;
   const threadOptions: ThreadOptions = {
+    ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
     ...(options.localStorage
       ? {}

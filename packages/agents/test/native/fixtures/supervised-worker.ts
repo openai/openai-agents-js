@@ -1,3 +1,4 @@
+import { setTimeout } from 'node:timers/promises';
 import { MCPServerStreamableHttp } from '@openai/agents/classic';
 import type { ReconciledCall } from '@openai/agents';
 import { superviseArtifact } from '../../../examples/supervised-worker/worker';
@@ -10,6 +11,7 @@ const config = JSON.parse(process.argv[2]) as {
   task: string;
   steer?: string;
   stopAfterEffect?: boolean;
+  reportDelayMs?: number;
   turnMs?: number;
   confirmedCallId?: string;
 };
@@ -23,6 +25,8 @@ async function main() {
       headers: { Authorization: 'Bearer ' + config.reportsToken },
     },
     onToolEnd: async ({ callId }) => {
+      if (config.reportDelayMs !== undefined)
+        await setTimeout(config.reportDelayMs);
       if (!config.stopAfterEffect) return;
       process.send?.({ type: 'effect', callId });
       // Stop exactly after the peer recorded the effect but before the SDK

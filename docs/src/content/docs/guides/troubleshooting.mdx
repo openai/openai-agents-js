@@ -18,7 +18,7 @@ The OpenAI Agents SDK supports these server environments:
 - Enable `nodejs_compat`.
 - Flush traces at the end of the request. [See the tracing guide](/openai-agents-js/guides/tracing#export-loop-lifecycle) for details.
 - Cloudflare Workers' limited support for `AsyncLocalStorage` can make some traces inaccurate.
-- Outbound WebSocket connections must use a fetch-based upgrade (not the global `WebSocket` constructor). For Realtime, use the Cloudflare transport in `@openai/agents-extensions` (`CloudflareRealtimeTransportLayer`).
+- For Realtime voice, use [`CloudflareRealtimeTransportLayer`](/openai-agents-js/extensions/cloudflare) from `@openai/agents-extensions`. The adapter opens a WebSocket with a `fetch()` upgrade.
 
 #### Responses API WebSocket transport
 
@@ -35,7 +35,7 @@ The core SDK can be bundled for browser use, but tracing is disabled by default 
 
 - `@openai/agents-core` and `@openai/agents-realtime` provide React Native package conditions for portable shims, but the built-in `OpenAIRealtimeWebRTC` remains browser-only.
 - Realtime apps must provide an app-owned transport backed by a native WebRTC implementation such as `react-native-webrtc`, and the app remains responsible for permissions, audio routing, and transport lifecycle.
-- Expo Go cannot load native WebRTC modules. Use an Expo development build or a native React Native project. See the [`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) example.
+- Expo Go cannot load native WebRTC modules. Use an Expo development build or a native React Native project. See the [`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/realtime-react-native) example.
 
 #### v8 isolates
 
@@ -47,7 +47,7 @@ The core SDK can be bundled for browser use, but tracing is disabled by default 
 To investigate SDK problems, enable debug logging. Set the `DEBUG` environment variable to `openai-agents:*`.
 
 ```bash
-DEBUG=openai-agents:*
+export DEBUG=openai-agents:*
 ```
 
 Model and tool data remains redacted by default. If you need those details, see [Sensitive data in logs](/openai-agents-js/guides/config#sensitive-data-in-logs) and only opt in where logs are handled securely.

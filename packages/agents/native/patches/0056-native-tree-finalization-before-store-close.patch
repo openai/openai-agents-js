@@ -103,10 +103,10 @@ index 6f035271936b4fec7c9c315ade6e052fd4e2d9e7..23de453fd6955ce690bf79a0fc3bcdcd
 +        .expect("session teardown finishes separately");
 +}
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
-index 1acd116f119642a1556a78d84cc70c2a3f857c4c..09148a57d87eb2f2b9aebf2410b8eec25eb99b28 100644
+index 9c70ba9f1e57bb5371cddb966157bb8483e5dc36..10926b40ccfb44657688ec4939562bcca8ec7b48 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
 +++ b/codex-rs/core/src/agent/control_tests.rs
-@@ -5801,3 +5801,134 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
+@@ -5804,3 +5804,134 @@ async fn resume_agent_from_rollout_skips_descendants_when_parent_resume_fails()
          .await
          .expect("tree shutdown after partial subtree resume should succeed");
  }

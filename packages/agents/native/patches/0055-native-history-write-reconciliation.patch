@@ -1,5 +1,5 @@
 diff --git a/codex-rs/rollout/src/recorder.rs b/codex-rs/rollout/src/recorder.rs
-index 7422c7f4e761c72a2c547d6a55e49a58502a939d..d030901fd09c60955d3cbd72016b2177e14a049a 100644
+index ea61f5a709082b1b6ff542cce005435c8813d475..78edb878291446656e2f01ee18fb0ce7d9e416ec 100644
 --- a/codex-rs/rollout/src/recorder.rs
 +++ b/codex-rs/rollout/src/recorder.rs
 @@ -976,6 +976,7 @@ impl RolloutRecorder {
