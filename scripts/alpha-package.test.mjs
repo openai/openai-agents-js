@@ -29,7 +29,11 @@ test('stages a matched alpha dependency graph without changing source manifests'
     version: '0.21.0',
     scripts: { prepack: 'never-run' },
     devDependencies: { test: '*' },
-    dependencies: { '@openai/agents-core': 'workspace:*', openai: '^7.2.0' },
+    dependencies: {
+      '@openai/agents-codex': 'workspace:*',
+      '@openai/agents-core': 'workspace:*',
+      openai: '^7.2.0',
+    },
   };
   const before = clone(source);
   const result = alphaManifest(source, version, 'linux-x64');
@@ -37,6 +41,7 @@ test('stages a matched alpha dependency graph without changing source manifests'
   assert.equal(result.version, version);
   assert.equal(result.private, true);
   assert.equal(result.dependencies['@openai/agents-core'], version);
+  assert.equal(result.dependencies['@openai/agents-codex'], version);
   assert.equal(result.dependencies.openai, '^7.2.0');
   assert.equal(result.scripts, undefined);
   assert.equal(result.devDependencies, undefined);
@@ -89,7 +94,11 @@ test('starter lock rejects registry fallback and duplicate SDK installations', (
     '$@openai/agents-core',
   );
   assert.equal(manifest.dependencies.zod, '^4.3.5');
-  assert.equal(Object.keys(manifest.dependencies).length, 5);
+  assert.equal(Object.keys(manifest.dependencies).length, 6);
+  assert.equal(
+    manifest.overrides['@openai/agents-codex'],
+    '$@openai/agents-codex',
+  );
   const proxy = clone(lock);
   proxy.packages['node_modules/third-party'] = {
     version: '1.0.0',
@@ -112,7 +121,7 @@ test('starter lock rejects registry fallback and duplicate SDK installations', (
 
 test('release receipt rejects debug builds, changed binaries, and fixture payloads', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agents-alpha-receipt-'));
-  const packageRoot = join(root, 'packages/agents');
+  const packageRoot = join(root, 'packages/agents-codex');
   const revision = 'a'.repeat(40);
   const files = {
     'native/CODEX_REVISION': revision,

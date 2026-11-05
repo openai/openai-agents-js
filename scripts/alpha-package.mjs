@@ -22,6 +22,7 @@ import { execaSync } from 'execa';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const packageNames = [
   'agents',
+  'agents-codex',
   'agents-core',
   'agents-openai',
   'agents-realtime',
@@ -141,7 +142,7 @@ export function verifyStarterLock(lock, packages) {
 
 export async function verifyNativeReceipt(repository, platform) {
   assert.ok(hosts[platform], 'Unsupported alpha artifact platform');
-  const packageRoot = join(repository, 'packages/agents');
+  const packageRoot = join(repository, 'packages/agents-codex');
   const receipt = await json(join(packageRoot, 'native/build-receipt.json'));
   assert.equal(receipt.format, 'reviewed-native-v1');
   assert.equal(
@@ -234,7 +235,7 @@ async function stagePackage(
     version,
     platform,
   );
-  if (name === 'agents') {
+  if (name === 'agents-codex') {
     manifest.publishConfig = {
       ...manifest.publishConfig,
       executableFiles: helpers.map((file) => `./${file}`),
@@ -338,7 +339,7 @@ export async function produceAlpha({ repository = root, version, output }) {
         join(vendor, record.archive),
       );
     const { dependencies } = await json(
-      join(repository, 'packages/agents/package.json'),
+      join(repository, 'packages/agents-codex/package.json'),
     );
     await writeJson(
       join(starter, 'package.json'),
@@ -350,7 +351,7 @@ export async function produceAlpha({ repository = root, version, output }) {
     );
     await writeFile(
       join(starter, 'README.md'),
-      `# Agents SDK alpha ${version}\n\nUse Node.js 24 and its bundled npm on ${platform}. Linux requires glibc 2.39 or newer and OpenSSL 3.\n\nRun \`npm ci --ignore-scripts\`, set OPENAI_API_KEY, then run \`node hello.mjs\`. The example sends a live API request. npm downloads third-party dependencies. Keep package.json, package-lock.json and all four vendor archives together.\n`,
+      `# Agents SDK alpha ${version}\n\nUse Node.js 24 and its bundled npm on ${platform}. Linux requires glibc 2.39 or newer and OpenSSL 3.\n\nRun \`npm ci --ignore-scripts\`, set OPENAI_API_KEY, then run \`node hello.mjs\`. The example sends a live API request. npm downloads third-party dependencies. Keep package.json, package-lock.json and all five vendor archives together.\n`,
     );
     run(
       'npm',
@@ -407,7 +408,7 @@ export async function produceAlpha({ repository = root, version, output }) {
     ]) {
       await copyFile(join(artifacts, file), join(output, file));
     }
-    console.log(`Created ${archive} and four matched SDK archives.`);
+    console.log(`Created ${archive} and five matched SDK archives.`);
     return receipt;
   } finally {
     await rm(staging, { recursive: true, force: true });

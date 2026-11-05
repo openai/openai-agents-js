@@ -14,7 +14,10 @@ export const mcpServerUrl =
 
 export function assertInstalledPackageBoundary() {
   const resolved = import.meta.resolve('@openai/agents/classic');
-  assert.match(resolved, /node_modules\/@openai\/agents\/dist\/index\.mjs$/);
+  assert.match(
+    resolved,
+    /node_modules\/@openai\/agents\/dist\/classic\/index\.mjs$/,
+  );
   assert.doesNotMatch(resolved, /packages\/agents\/src/);
 }
 

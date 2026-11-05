@@ -20,6 +20,8 @@ import ts from 'typescript';
 
 import {
   PUBLIC_PACKAGES,
+  WORKSPACE_PACKAGES,
+  packageNames,
   inspectPackageSet,
   comparePackageSets,
   normalizeSelectedPublicObjectProperties,
@@ -2082,6 +2084,13 @@ test('the CLI validates complete selections in package profiles and promotion be
     webSearchDeclaration(),
     async ({ inspect, packages, contract, root }) => {
       const surfaces = await inspect();
+      const owner = '@openai/agents-codex';
+      packages[owner] = globalThis.structuredClone(
+        packages['@openai/agents-core'],
+      );
+      surfaces[owner] = globalThis.structuredClone(
+        surfaces['@openai/agents-core'],
+      );
       const agents = packages['@openai/agents'];
       agents.manifest.exports = {
         ...agents.manifest.exports,
@@ -2093,7 +2102,7 @@ test('the CLI validates complete selections in package profiles and promotion be
         ...entry,
         fields: [entry.fields[0]],
       }));
-      for (const [command, hasBaseline, invalid] of [
+      for (const [command, hasBaseline, invalid, hasOwner = true] of [
         ['source', true, true],
         ['dist', true, true],
         ['package', true, true],
@@ -2102,7 +2111,10 @@ test('the CLI validates complete selections in package profiles and promotion be
         ['promote', true, true],
         ['promote', false, false],
         ['promote', true, false],
+        ['promote', false, false, false],
       ]) {
+        const candidatePackages = { ...packages };
+        if (!hasOwner) delete candidatePackages[owner];
         const input = {
           ...contract,
           packages: hasBaseline ? contract.packages : {},
@@ -2112,14 +2124,15 @@ test('the CLI validates complete selections in package profiles and promotion be
         };
         const artifact = path.join(
           root,
-          `contract-${command}-${hasBaseline}-${invalid}.json`,
+          `contract-${command}-${hasBaseline}-${invalid}-${hasOwner}.json`,
         );
         const inspections = [];
+        const runtimeFilters = [];
         const cleaned = vi.fn();
         const loaded = {
           roots: {},
           packed: Object.fromEntries(
-            PUBLIC_PACKAGES.map(([name]) => [
+            WORKSPACE_PACKAGES.map(([name]) => [
               name,
               { integrity: 'fixture-integrity' },
             ]),
@@ -2141,7 +2154,7 @@ test('the CLI validates complete selections in package profiles and promotion be
         vi.doMock('./released-api-contract-surface.mjs', () => ({
           ...contractSurface,
           readJson: async () => input,
-          loadPackageSet: async () => packages,
+          loadPackageSet: async () => candidatePackages,
           inspectPackageSet: async (...args) => {
             inspections.push(args);
             return surfaces;
@@ -2151,10 +2164,19 @@ test('the CLI validates complete selections in package profiles and promotion be
         }));
         vi.doMock('./released-api-contract-execution.mjs', () => ({
           ...contractExecution,
+          releasedPackageSpec: async (version) =>
+            Object.fromEntries(
+              (hasOwner ? WORKSPACE_PACKAGES : PUBLIC_PACKAGES).map(
+                ([name]) => [name, { version }],
+              ),
+            ),
           materializePublished: async () => loaded,
           installFromRegistry: async () => loaded,
           installOptionalPeers: async () => {},
-          validateRuntime: async () => [],
+          validateRuntime: async (_packages, _surfaces, filter) => {
+            runtimeFilters.push(filter);
+            return [];
+          },
           validatePublicSpecifiers: async () => [],
           execFile: async () => ({ stdout: 'fixture-commit' }),
         }));
@@ -2192,10 +2214,49 @@ test('the CLI validates complete selections in package profiles and promotion be
             );
           } else {
             expect(error).not.toHaveBeenCalled();
-            expect(
-              JSON.parse(await readFile(artifact, 'utf8'))
-                .selectedPublicObjectProperties,
-            ).toEqual(imagePolicies);
+            const promoted = JSON.parse(await readFile(artifact, 'utf8'));
+            expect(promoted.selectedPublicObjectProperties).toEqual(
+              imagePolicies,
+            );
+            if (hasOwner) {
+              expect(promoted.packages[owner]).toMatchObject({
+                version: '1.0.0',
+                integrity: 'fixture-integrity',
+                exports: packages[owner].manifest.exports,
+              });
+              expect(
+                contractSurface.comparePackageSets(
+                  promoted,
+                  surfaces,
+                  {
+                    ...packages,
+                    [owner]: { ...packages[owner], manifest: { exports: {} } },
+                  },
+                  surfaces,
+                  true,
+                ),
+              ).toContain(`${owner} export path was removed`);
+            } else {
+              expect(promoted.packages).not.toHaveProperty(owner);
+              expect(Object.keys(promoted.packages)).toHaveLength(5);
+            }
+          }
+          if (command === 'promote') {
+            for (const name of ['@openai/agents', owner]) {
+              expect(runtimeFilters[0](name, '.')).toBe(true);
+              expect(runtimeFilters[0](name, './a2a')).toBe(false);
+              expect(runtimeFilters[0](name, './experimental/mcp-tasks')).toBe(
+                false,
+              );
+            }
+            expect(runtimeFilters[1]).toBeUndefined();
+          } else if (command === 'package') {
+            for (const name of ['@openai/agents', owner]) {
+              expect(runtimeFilters[0](name, './a2a')).toBe(true);
+              expect(runtimeFilters[0](name, './experimental/mcp-tasks')).toBe(
+                true,
+              );
+            }
           }
           for (const args of inspections)
             expect(args[3]).toEqual(input.selectedPublicObjectProperties);
@@ -2259,7 +2320,7 @@ test.each(['source', 'dist', 'package', 'promote'])(
 );
 
 describe('native entry points with released classic contracts', () => {
-  test('compares released root and testing paths to classic without changing promotion defaults', () => {
+  test('compares historical roots to classic and promoted roots to their pinned native surface', () => {
     const exportNode = {
       types: './dist/index.d.ts',
       require: './dist/index.js',
@@ -2296,6 +2357,29 @@ describe('native entry points with released classic contracts', () => {
     expect(compare()).toContain(
       '@openai/agents/testing [types].ScriptedModel was removed',
     );
+    const promoted = {
+      packages: {
+        ...contract.packages,
+        [name]: { exports: packages[name].manifest.exports, optionalPeers: [] },
+      },
+    };
+    expect(contractSurface.usesClassicCompatibility(contract)).toBe(true);
+    expect(contractSurface.usesClassicCompatibility(promoted)).toBe(false);
+    const promotedSurfaces = globalThis.structuredClone(surfaces);
+    expect(
+      comparePackageSets(promoted, promotedSurfaces, packages, surfaces, true, {
+        classicCompatibility:
+          contractSurface.usesClassicCompatibility(promoted),
+      }),
+    ).toEqual([]);
+    surfaces[name]['.'].types = [];
+    expect(
+      comparePackageSets(promoted, promotedSurfaces, packages, surfaces, true, {
+        classicCompatibility:
+          contractSurface.usesClassicCompatibility(promoted),
+      }),
+    ).toContain('@openai/agents [types].NativeOnly was removed');
+    surfaces[name]['.'].types = [record('NativeOnly')];
     surfaces[name]['./classic/testing'].types = [];
     expect(compare({ classicCompatibility: true })).toContain(
       '@openai/agents/testing [types].ScriptedModel was removed',
@@ -2496,6 +2580,176 @@ describe('native entry points with released classic contracts', () => {
       );
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('release-specific package membership', () => {
+  const historical = () =>
+    Object.fromEntries(
+      PUBLIC_PACKAGES.map(([name]) => [name, { version: '0.20.0' }]),
+    );
+
+  test('discovers owners from the published facade without querying absent historical owners', async () => {
+    for (const split of [false, true]) {
+      const inspect = vi.fn(async () =>
+        JSON.stringify(split ? { '@openai/agents-codex': '0.21.0' } : {}),
+      );
+      const spec = await contractExecution.releasedPackageSpec(
+        '0.21.0',
+        'http://registry.test',
+        inspect,
+      );
+      expect(Object.keys(spec)).toEqual(
+        (split ? WORKSPACE_PACKAGES : PUBLIC_PACKAGES).map(([name]) => name),
+      );
+      expect(inspect).toHaveBeenCalledExactlyOnceWith(
+        [
+          'view',
+          '@openai/agents@0.21.0',
+          'dependencies',
+          '--json',
+          '--registry',
+          'http://registry.test',
+        ],
+        contractSurface.repoRoot,
+      );
+    }
+  });
+
+  test('propagates registry errors rather than treating the owner as unpublished', async () => {
+    for (const message of [
+      'E404 missing facade release',
+      'E401 unauthorized',
+      'ECONNRESET',
+    ]) {
+      await expect(
+        contractExecution.releasedPackageSpec(
+          '0.21.0',
+          'http://registry.test',
+          async () => {
+            throw new Error(message);
+          },
+        ),
+      ).rejects.toThrow(message);
+    }
+  });
+
+  test('requires historical packages and retains explicitly pinned owners', async () => {
+    const records = historical();
+    expect(packageNames(records)).toHaveLength(5);
+    records['@openai/agents-codex'] = {
+      version: '0.21.0',
+      integrity: 'owner-integrity',
+    };
+    expect(packageNames(records)).toHaveLength(6);
+    delete records['@openai/agents-core'];
+    expect(() => packageNames(records)).toThrow(
+      'Missing required API contract package @openai/agents-core',
+    );
+    await expect(
+      contractExecution.materializePublished(records, 'http://registry.test'),
+    ).rejects.toThrow('Missing required API contract package');
+    expect(packageNames({ ...historical(), unknown: {} })).toHaveLength(5);
+    expect(() =>
+      packageNames({ ...historical(), '@openai/agents-codex': null }),
+    ).toThrow('Invalid API contract package @openai/agents-codex');
+  });
+
+  test('loads historical and split source/dist roots and rejects deleted owner APIs', async () => {
+    await withObjectFixture(
+      webSearchDeclaration(),
+      async ({ packages, contract, root }) => {
+        const roots = {};
+        for (const [name, info] of Object.entries(packages)) {
+          roots[name] = info.packageRoot;
+          await writeFile(
+            path.join(info.packageRoot, 'package.json'),
+            JSON.stringify(info.manifest),
+          );
+        }
+        const owner = '@openai/agents-codex';
+        const ownerRoot = path.join(root, 'agents-codex');
+        for (const [mode, suffix] of [
+          ['src', '.ts'],
+          ['dist', '.d.ts'],
+        ]) {
+          await mkdir(path.join(ownerRoot, mode), { recursive: true });
+          await writeFile(
+            path.join(ownerRoot, mode, `index${suffix}`),
+            'export declare const ownerApi: number;',
+          );
+        }
+        const ownerManifest = {
+          exports: {
+            '.': { types: './dist/index.d.ts', import: './dist/index.mjs' },
+          },
+        };
+        await writeFile(
+          path.join(ownerRoot, 'package.json'),
+          JSON.stringify(ownerManifest),
+        );
+        for (const mode of ['source', 'dist']) {
+          expect(
+            Object.keys(await contractSurface.loadPackageSet(roots, mode)),
+          ).toHaveLength(5);
+          const split = await contractSurface.loadPackageSet(
+            { ...roots, [owner]: ownerRoot },
+            mode,
+          );
+          const surfaces = await inspectPackageSet(
+            split,
+            mode,
+            [],
+            imagePolicies,
+          );
+          expect(surfaces[owner]['.'].types.map(({ name }) => name)).toEqual([
+            'ownerApi',
+          ]);
+          expect(
+            comparePackageSets(contract, surfaces, split, surfaces, true),
+          ).toEqual([]);
+          const promoted = {
+            ...contract,
+            packages: {
+              ...contract.packages,
+              [owner]: { exports: ownerManifest.exports, optionalPeers: [] },
+            },
+          };
+          const removed = {
+            ...split,
+            [owner]: { ...split[owner], manifest: { exports: {} } },
+          };
+          expect(
+            comparePackageSets(promoted, surfaces, removed, surfaces, true),
+          ).toContain(`${owner} export path was removed`);
+          const absent = { ...split };
+          delete absent[owner];
+          expect(
+            comparePackageSets(promoted, surfaces, absent, surfaces, true),
+          ).toContain(`${owner} package was removed`);
+          const broken = { ...surfaces, [owner]: { '.': { types: [] } } };
+          expect(
+            comparePackageSets(promoted, surfaces, split, broken, true),
+          ).toContain(`${owner} [types].ownerApi was removed`);
+        }
+        await expect(
+          contractSurface.loadPackageSet(
+            { ...roots, [owner]: path.join(root, 'missing') },
+            'dist',
+          ),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      },
+    );
+  });
+
+  test('checks facade and owner MCP Tasks when registry installs include optional dependencies', () => {
+    for (const name of ['@openai/agents', '@openai/agents-codex']) {
+      expect(isSafeWithoutOptionalPeers(name, '.')).toBe(true);
+      expect(isSafeWithoutOptionalPeers(name, './testing')).toBe(true);
+      expect(isSafeWithoutOptionalPeers(name, './experimental/mcp-tasks')).toBe(
+        true,
+      );
     }
   });
 });

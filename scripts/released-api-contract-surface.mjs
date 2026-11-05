@@ -13,6 +13,27 @@ export const PUBLIC_PACKAGES = [
   ['@openai/agents', 'agents'],
 ];
 
+// Historical releases require the original five packages; candidates include every current owner.
+export const WORKSPACE_PACKAGES = [
+  ...PUBLIC_PACKAGES,
+  ['@openai/agents-codex', 'agents-codex'],
+];
+
+// Use the pinned release membership for baselines and the supplied roots for candidates.
+export function packageNames(records) {
+  for (const [name] of PUBLIC_PACKAGES) {
+    if (!Object.hasOwn(records, name))
+      throw new Error(`Missing required API contract package ${name}`);
+  }
+  const names = WORKSPACE_PACKAGES.map(([name]) => name).filter((name) =>
+    Object.hasOwn(records, name),
+  );
+  for (const name of names) {
+    if (!records[name]) throw new Error(`Invalid API contract package ${name}`);
+  }
+  return names;
+}
+
 export const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -1022,7 +1043,7 @@ function symbolOwnedByRoots(symbol, ownedRoots) {
 function createProgram(rootNames, sourceMode = false) {
   const paths = sourceMode
     ? Object.fromEntries(
-        PUBLIC_PACKAGES.flatMap(([name, directory]) => [
+        WORKSPACE_PACKAGES.flatMap(([name, directory]) => [
           [name, [`packages/${directory}/src/index.ts`]],
           [`${name}/*`, [`packages/${directory}/src/*`]],
         ]),
@@ -1141,7 +1162,7 @@ function sourceTarget(packageRoot, declarationTarget) {
 
 export async function loadPackageSet(roots, mode) {
   const packages = {};
-  for (const [name] of PUBLIC_PACKAGES) {
+  for (const name of packageNames(roots)) {
     const packageRoot = roots[name];
     const manifest = await readJson(path.join(packageRoot, 'package.json'));
     const entries = {};
@@ -1634,6 +1655,10 @@ function classicSelectionPolicies(policies) {
   }));
 }
 
+export function usesClassicCompatibility(contract) {
+  return !contract.packages['@openai/agents']?.exports?.['./classic'];
+}
+
 export function classicContractView(packages, surfaces) {
   const name = '@openai/agents';
   const candidate = packages[name];
@@ -1667,9 +1692,13 @@ export function comparePackageSets(
     candidateSurfaces = view.surfaces;
   }
   const errors = [];
-  for (const [name] of PUBLIC_PACKAGES) {
+  for (const name of packageNames(contract.packages)) {
     const baselinePackage = contract.packages[name];
     const candidatePackage = candidatePackages[name];
+    if (!candidatePackage) {
+      errors.push(`${name} package was removed`);
+      continue;
+    }
     errors.push(
       ...compareOptionalPeers(baselinePackage, candidatePackage.manifest, name),
     );
