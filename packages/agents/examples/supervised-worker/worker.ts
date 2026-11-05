@@ -126,6 +126,15 @@ async function withCleanup<Result>(
 
 const writeCleanupFailure = 'Cleaning up the worker write failed.';
 
+async function syncParentDirectory(path: string) {
+  const directory = await open(dirname(path), 'r');
+  await withCleanup(
+    () => directory.sync(),
+    () => directory.close(),
+    writeCleanupFailure,
+  );
+}
+
 async function atomicWrite(
   path: string,
   data: string | Buffer,
@@ -145,12 +154,7 @@ async function atomicWrite(
       );
       if (replace) await rename(temporary, path);
       else await link(temporary, path);
-      const directory = await open(dirname(path), 'r');
-      await withCleanup(
-        () => directory.sync(),
-        () => directory.close(),
-        writeCleanupFailure,
-      );
+      await syncParentDirectory(path);
     },
     () => rm(temporary, { force: true }),
     writeCleanupFailure,
@@ -470,10 +474,12 @@ export async function superviseArtifact(options: WorkerOptions) {
   };
 
   let session: Session<z.infer<typeof claim>> | undefined;
+  let completed: WorkerSnapshot | undefined;
   const snapshot = await withCleanup(
     async () => {
       session = await openSession().catch(recordStartupFailure);
-      return runSession(session);
+      completed = await runSession(session);
+      return completed;
     },
     () =>
       withCleanup(
@@ -484,7 +490,19 @@ export async function superviseArtifact(options: WorkerOptions) {
         'Closing the worker provider failed.',
       ),
     'Closing the worker failed.',
-  );
+  ).catch((error: unknown) => {
+    if (completed?.state === 'accepted') {
+      const attention: WorkerSnapshot = {
+        ...completed,
+        state: 'needs_attention',
+        attention: 'interrupted',
+      };
+      delete attention.sha256;
+      delete attention.evidence;
+      return saveStatusAndThrow(attention, error);
+    }
+    throw error;
+  });
   // Publication eligibility requires both owned resources to finish closing.
   if (snapshot.state === 'accepted')
     await atomicWrite(path.snapshot, JSON.stringify(snapshot), true);
@@ -517,6 +535,7 @@ export async function publishAcceptedDraft(directory: string) {
       !(await readFile(destination)).equals(draft)
     )
       throw error;
+    await syncParentDirectory(destination);
   }
   return destination;
 }
