@@ -217,9 +217,17 @@
       "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
     },
     {
-      "path": "0055-w3c-defined-trace-flags.patch",
+      "path": "0054-native-context-metadata.patch",
+      "sha256": "9703fe0286b3ff967ad8b926d6af5b464cd8e04db5b2234162b6ef27894f09d1"
+    },
+    {
+      "path": "0055-native-documented-defaults.patch",
+      "sha256": "e9364e66af36741d0bf03430de9ca1d02b4659d81fff8639ebf55165c544f8dc"
+    },
+    {
+      "path": "0056-w3c-defined-trace-flags.patch",
       "sha256": "e18ef85b7d975a646b65e9ea43473af9dc046bd8d650117fcaee3fbf52d6ee33"
     }
   ],
-  "result_tree": "8c2b54f417db0c2bbfc2be8e4891dcd0d538ea38"
+  "result_tree": "e8a3b8596623664fec67b6d28e4bc787c93086c7"
 }
