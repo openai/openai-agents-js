@@ -149,7 +149,7 @@ impl Drop for Provider {
 }
 
 // The hold is inside the existing SDK test ThreadStore, after the actual
-// provider response. No synthetic event can credit this native receipt.
+// provider request. No synthetic event can credit this native receipt.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn managed_root_continues_only_its_own_successfully_settled_tail() {
     tokio::time::timeout(Duration::from_secs(60), async {
@@ -196,8 +196,18 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
             let started: Value = serde_json::from_str(&native._submit(params.to_string()).await.unwrap()).unwrap();
             assert_eq!(started["status"], "started");
             let first = started["turn_id"].as_str().unwrap();
-            hold.entered.acquire().await.unwrap().forget();
-            assert_eq!(provider.requests.lock().unwrap().len(), 1);
+            loop {
+                hold.entered.acquire().await.unwrap().forget();
+                let requests = provider.requests.lock().unwrap().len();
+                if requests != 0 {
+                    assert_eq!(requests, 1);
+                    break;
+                }
+                // Initial durability barriers precede the model request. Keep
+                // the same hold armed until sampling has actually started.
+                *store.next_flush_hold.lock().unwrap() = Some(hold.clone());
+                hold.release.add_permits(1);
+            }
             for text in ["retained-first-unique", "retained-second-unique"] {
                 assert_eq!(
                     serde_json::from_str::<Value>(&native._submit(
