@@ -6,7 +6,7 @@
     "@openai/agents-openai": "workspace:*",
     "chalk": "^6.0.1",
     "openai": "^7.2.0",
-    "zod": "^4.3.5"
+    "zod": "^4.6.6"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
