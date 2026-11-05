@@ -27,7 +27,7 @@ Discovery sends no credentials. After the card passes admission, the adapter res
 
 The returned client is the official A2A `Client`. Direct callers must treat an uncertain mutation acknowledgment as an unknown outcome; message IDs do not make creation idempotent. This profile supports `sendMessage`, `getTask`, and `cancelTask`. It uses polling rather than streaming, push notifications, extended cards, or remote callback execution. Native input supports text and inline PNG, JPEG, GIF, and WebP images. File URLs, arbitrary URIs, and other file types fail before native admission. Result validation remains the application's responsibility.
 
-`A2ALimits` sets `bodyBytes`, `inputBytes`, `checkpointBytes`, and `timeoutMs`. Defaults are 2 MiB, 1 MiB, 8 MiB, and 30 seconds. The HTTP reader stops before buffering more than `bodyBytes`. These bounds are adapter defaults, not service quotas. The host should also bound incoming HTTP bodies before protocol parsing.
+`A2ALimits` sets `bodyBytes`, `inputBytes`, `checkpointBytes`, and `timeoutMs`. Defaults are 2 MiB, 1 MiB, 8 MiB, and 30 seconds. The adapter requests identity HTTP encoding and cancels responses that declare another encoding before reading their bodies. `bodyBytes` limits the chunks the adapter retains. A custom `fetch` must preserve response encoding headers and body cancellation. The transport controls its own internal buffers. These bounds are adapter defaults, not service quotas. The host should also bound incoming HTTP bodies before protocol parsing.
 
 ## Deferred remote work
 
