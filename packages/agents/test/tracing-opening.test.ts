@@ -29,6 +29,24 @@ vi.mock('../src/runtime/agent', () => ({
   runOwnedSession: vi.fn(),
 }));
 import { Agent } from '../src/runtime/public-agent';
+import { Session, type SessionOptions } from '../src/runtime/session';
+import { captureTools } from '../src/runtime/tools';
+
+function openedSession(options: SessionOptions, report: string | null = null) {
+  return new Session(
+    {
+      _close_report: async () => null,
+    } as unknown as import('../src/runtime/binding').Engine,
+    {
+      id: 'opening-fixture',
+      _stop_sampling_for_close() {},
+      _close_report: async () => report,
+    } as unknown as import('../src/runtime/binding').NativeThread,
+    captureTools([]),
+    options,
+    {},
+  );
+}
 
 beforeEach(() => vi.clearAllMocks());
 it.each([
@@ -45,7 +63,7 @@ it.each([
       if (phase === 'cleanup failure') throw cleanupError;
     }),
   };
-  const session = { close: () => sessionOptions.onClose() };
+  const session = openedSession(sessionOptions);
   const agent = new Agent({ instructions: 'synthetic', model: 'gpt-5.5' });
   const prepare = vi.spyOn(
     agent as unknown as { prepare: (...args: unknown[]) => Promise<unknown> },
@@ -141,3 +159,67 @@ it('records an undefined opening rejection as error without replacing it', async
       .status,
   ).toBe('error');
 });
+
+it.each([
+  'native report',
+  'environment disposal',
+  'provider release',
+  'success',
+] as const)(
+  'settles the opened lifetime from final close outcome: %s',
+  async (phase) => {
+    const cleanupError = new Error('synthetic close failure');
+    const onClose = vi.fn(async () => {
+      if (phase === 'provider release') throw cleanupError;
+    });
+    const sessionOptions: SessionOptions = {
+      onClose,
+      ...(phase === 'environment disposal'
+        ? {
+            environmentOwner: {
+              dispose: async () => {
+                throw cleanupError;
+              },
+            } as unknown as NonNullable<SessionOptions['environmentOwner']>,
+          }
+        : {}),
+    };
+    const session = openedSession(
+      sessionOptions,
+      phase === 'native report' ? 'synthetic native close failure' : null,
+    );
+    const agent = new Agent({ instructions: 'synthetic', model: 'gpt-5.5' });
+    vi.spyOn(
+      agent as unknown as { prepare: (...args: unknown[]) => Promise<unknown> },
+      'prepare',
+    ).mockResolvedValue({
+      setup: {},
+      session: sessionOptions,
+      lease: { openingSucceeded() {} },
+      environmentOwner: { signal: new AbortController().signal, opened() {} },
+    });
+    fixture.open.mockResolvedValue(session);
+    expect(await agent.session({ tracing: { name: 'lifetime' } })).toBe(
+      session,
+    );
+    expect(fixture.native.end_trace_span).not.toHaveBeenCalled();
+    if (phase === 'success') await session.close();
+    else if (phase === 'provider release')
+      await expect(session.close()).rejects.toBe(cleanupError);
+    else
+      await expect(session.close()).rejects.toThrow(
+        phase === 'native report'
+          ? 'synthetic native close failure'
+          : 'Environment lease cleanup failed',
+      );
+    expect(onClose).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() =>
+      expect(fixture.native.end_trace_span).toHaveBeenCalledTimes(1),
+    );
+    expect(
+      JSON.parse(fixture.native.end_trace_span.mock.calls[0]![1] as string)
+        .status,
+    ).toBe(phase === 'success' ? 'ok' : 'error');
+    expect(fixture.native.release_trace_span).toHaveBeenCalledTimes(1);
+  },
+);

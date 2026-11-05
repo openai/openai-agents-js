@@ -307,7 +307,7 @@ export class Agent<Context = undefined, Output = string> {
           } finally {
             const capture = tracingCapture;
             tracingCapture = undefined;
-            capture?.finish(openingError);
+            if (openingError !== undefined) capture?.finish(openingError);
           }
         };
         await tracingCapture?.ready;

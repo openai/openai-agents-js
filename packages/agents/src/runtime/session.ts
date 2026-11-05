@@ -8552,6 +8552,13 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.starting)
       this.failStartup(new TurnAborted('Session closed while opening'));
     const done = Promise.withResolvers<void>();
+    const tracingCapture = this.options.tracingCapture;
+    void done.promise
+      .then(
+        () => tracingCapture?.finish(),
+        (error: unknown) => tracingCapture?.finish(error ?? null),
+      )
+      .catch(() => {});
     const run =
       state.kind === 'turn' || state.kind === 'retired' ? state.run : undefined;
     if (run && submissions.get(run)!.observation !== 'ended')
