@@ -1916,3 +1916,121 @@ it.each([false, true])(
     }
   },
 );
+
+it.each(['live', 'expired', 'missing carrier'] as const)(
+  'traces root MCP result transformation once after validity: %s',
+  async (state) => {
+    const { HttpMCP } = await import('../src/runtime/mcp');
+    let submitted: Record<string, unknown> = {};
+    const released = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const result = { content: [{ type: 'text', text: 'transformed' }] };
+    let workflow: Awaited<ReturnType<typeof startTrace>>;
+    const transform = vi.fn(async () => {
+      expect(getCurrentTrace()).toBe(workflow!);
+      expect(() => session.close()).toThrow('cannot close its own session');
+      await expect(session.submit('reentrant')).rejects.toThrow(
+        'cannot submit to its own session',
+      );
+      entered.resolve();
+      await release.promise;
+      return result;
+    });
+    const next = vi.fn();
+    const resolve = vi.fn(() => true);
+    const fail = vi.fn(() => true);
+    const releaseNotice = vi.fn(() => {
+      released.resolve();
+      return true;
+    });
+    const session = await rootFixture(
+      async (wire) => {
+        submitted = JSON.parse(wire);
+        return JSON.stringify({ status: 'started', turn_id: 'root' });
+      },
+      {
+        mcpTools: [
+          new HttpMCP({
+            name: 'records',
+            tools: ['read'],
+            url: 'http://127.0.0.1:1/mcp',
+            transformResult: transform,
+          }),
+        ],
+      },
+      {},
+      undefined,
+      {
+        _next_native_mcp_result: next,
+        _handoff_native_mcp_result: () => true,
+        _check_native_mcp_result: () => state !== 'expired',
+        _resolve_native_mcp_result: resolve,
+        _fail_native_mcp_result: fail,
+        _release_native_mcp_result: releaseNotice,
+        _revoke_native_interception() {},
+      },
+    );
+    await withTrace({}, async (span) => {
+      workflow = span;
+      await session.submit('run');
+    });
+    const internals = session as unknown as {
+      readMcpResults: () => Promise<void>;
+      issuedRuns: Map<string, { toolInvocations: Set<Promise<void>> }>;
+    };
+    next
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          nonce: 'notice',
+          thread_id: 'trace-fixture',
+          turn_id: 'root',
+          call_id: 'mcp-call',
+          source: 'config',
+          server_name: 'records',
+          tool_name: 'read',
+          callable_namespace: 'mcp__records',
+          callable_name: 'read',
+          arguments: {},
+          result: {},
+          generation: '0',
+          ...(state === 'missing carrier'
+            ? {}
+            : { tracing_context: submitted.tracing_context }),
+        }),
+      )
+      .mockResolvedValue('null');
+    const before = harness.starts.length;
+    const ended = harness.native.end_trace_span.mock.calls.length;
+    try {
+      await withoutTracing(() => internals.readMcpResults());
+      if (state !== 'expired') {
+        await entered.promise;
+        expect(
+          internals.issuedRuns.get('root')!.toolInvocations.size,
+        ).toBeGreaterThan(0);
+        release.resolve();
+      }
+      await released.promise;
+      await vi.waitFor(() =>
+        expect(internals.issuedRuns.get('root')!.toolInvocations.size).toBe(0),
+      );
+      const callbacks = harness.starts
+        .slice(before)
+        .filter((span) => span.name === 'host.callback');
+      expect(callbacks).toHaveLength(state === 'expired' ? 0 : 1);
+      if (state === 'live')
+        expect(callbacks[0].parent).toBe(submitted.tracing_context);
+      expect(harness.native.end_trace_span.mock.calls.length - ended).toBe(
+        state === 'expired' ? 0 : 1,
+      );
+      expect(transform).toHaveBeenCalledTimes(state === 'expired' ? 0 : 1);
+      expect(resolve).toHaveBeenCalledTimes(state === 'expired' ? 0 : 1);
+      expect(fail).toHaveBeenCalledTimes(1);
+      expect(releaseNotice).toHaveBeenCalledTimes(1);
+    } finally {
+      release.resolve();
+      await session.close();
+    }
+  },
+);

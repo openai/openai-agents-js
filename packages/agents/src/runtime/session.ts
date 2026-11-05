@@ -7903,7 +7903,7 @@ export class Session<OutputT = string, Context = unknown> {
         native._release_native_mcp_result(notice.nonce);
         continue;
       }
-      this.trackOwnedCallback(owner, async () => {
+      const callback = async () => {
         try {
           if (owner instanceof NativeTurn) await owner.accepted.promise;
           if (
@@ -7916,22 +7916,39 @@ export class Session<OutputT = string, Context = unknown> {
             )
           )
             return;
-          const response = await withNativeCallbackContext(
-            tracing_context,
-            async () =>
-              transformMcpResult(
-                this.mcpTools,
-                this.mcpGeneration,
-                this.options.context,
-                owner instanceof NativeTurn
-                  ? this.#turnFor(owner)
-                  : await this.childSubmission(owner),
-                { ...notice, generation: notice.generation ?? '' },
-              ),
-            owner.controller.signal,
-            (traceId, workflowSpanId) =>
-              this.workflowForTrace(traceId, workflowSpanId),
-          );
+          const transform = async () =>
+            transformMcpResult(
+              this.mcpTools,
+              this.mcpGeneration,
+              this.options.context,
+              owner instanceof NativeTurn
+                ? this.#turnFor(owner)
+                : await this.childSubmission(owner),
+              { ...notice, generation: notice.generation ?? '' },
+            );
+          let response: unknown;
+          if (owner instanceof NativeTurn && tracing_context !== undefined) {
+            await this.invokeCallback(
+              owner,
+              async () => {
+                try {
+                  response = await transform();
+                } catch {
+                  throw new NativeError('Native MCP result policy failed');
+                }
+              },
+              owner.controller.signal,
+              tracing_context,
+            );
+          } else {
+            response = await withNativeCallbackContext(
+              tracing_context,
+              transform,
+              owner.controller.signal,
+              (traceId, workflowSpanId) =>
+                this.workflowForTrace(traceId, workflowSpanId),
+            );
+          }
           if (this.current(owner)) {
             native._resolve_native_mcp_result(
               notice.nonce,
@@ -7960,7 +7977,13 @@ export class Session<OutputT = string, Context = unknown> {
             native._release_native_mcp_result(notice.nonce);
           }
         }
-      });
+      };
+      if (owner instanceof NativeTurn && tracing_context !== undefined) {
+        const pending = Promise.resolve().then(callback);
+        this.track(owner, pending, owner.toolInvocations);
+      } else {
+        this.trackOwnedCallback(owner, callback);
+      }
     }
   }
   private callbackOwner(
