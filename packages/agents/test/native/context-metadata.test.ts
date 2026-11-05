@@ -126,14 +126,24 @@ it('clears a prior limit only on new usage and preserves null through restore an
   }
 });
 
-it('keeps a child limit tied to its own model instead of the parent model', async () => {
+it('reports the model context used for child compaction and sampling', async () => {
   const childEntered = Promise.withResolvers<void>();
   const releaseChild = Promise.withResolvers<void>();
   let rootId: string | undefined;
   let rootRequests = 0;
-  const respond = async (request: JsonObject) => {
+  const turnMetadata = (request: JsonObject) => {
     const metadata = request.client_metadata as Record<string, string>;
-    const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
+    return JSON.parse(metadata['x-codex-turn-metadata']) as {
+      thread_id: string;
+      request_kind: string;
+    };
+  };
+  const respond = async (request: JsonObject) => {
+    const turn = turnMetadata(request);
+    if (turn.request_kind === 'compaction') {
+      return [message('Summarized inherited context')];
+    }
+    const id = turn.thread_id;
     rootId ??= id;
     if (id === rootId) {
       if (++rootRequests === 1)
@@ -155,8 +165,14 @@ it('keeps a child limit tied to its own model instead of the parent model', asyn
     return [message('child finished')];
   };
   const server = new ModelServer(
-    Array.from({ length: 3 }, () => respond),
-    [USAGE, USAGE, USAGE],
+    Array.from({ length: 4 }, () => respond),
+    Array.from(
+      { length: 4 },
+      () => (request: JsonObject) =>
+        turnMetadata(request).request_kind === 'compaction'
+          ? '{"input_tokens":2,"output_tokens":1,"total_tokens":3}'
+          : USAGE,
+    ),
   );
   const executor = await startPublicExecutor();
   try {
@@ -198,14 +214,21 @@ it('keeps a child limit tied to its own model instead of the parent model', asyn
       expect(result.finalOutput).toBe('child finished');
       expect(result.usage?.modelContextWindow).toBe(353_400);
       expect(result.usage?.lastTokenUsage.totalTokens).toBe(24);
-      let observed = 0;
+      const childUsage = [];
       for await (const event of child.events()) {
-        if (event.type !== 'usage_updated') continue;
-        observed++;
-        if (event.usage !== null)
-          expect(event.usage.modelContextWindow).toBe(353_400);
+        if (event.type === 'usage_updated' && event.usage !== null) {
+          childUsage.push(event.usage);
+        }
       }
-      expect(observed).toBeGreaterThan(0);
+      // Inherited history is compacted with the parent model before the child samples.
+      expect(childUsage[0]).toMatchObject({
+        modelContextWindow: 258_400,
+        lastTokenUsage: { totalTokens: 3 },
+      });
+      for (const usage of childUsage.slice(1)) {
+        expect(usage.modelContextWindow).toBe(353_400);
+      }
+      expect(childUsage.at(-1)).toEqual(result.usage);
       const parentUsage = [];
       for await (const event of root.events()) {
         if (event.type !== 'usage_updated') continue;
