@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
+pub(crate) const CHECKLIST_DIRECTORY: &str = "sdk-checklists";
+
 pub(crate) struct LocalReceiptStore(pub Arc<LocalChecklistStore>);
 
 pub struct LocalChecklistStore {
@@ -343,6 +345,10 @@ fn validate_local_tree(
 }
 
 impl LocalChecklistStore {
+    pub(crate) async fn live_rollout_path(&self, id: ThreadId) -> ThreadStoreResult<PathBuf> {
+        self.inner.live_rollout_path(id).await
+    }
+
     pub fn new(
         inner: LocalThreadStore,
         state: Arc<codex_state::StateRuntime>,
@@ -359,7 +365,7 @@ impl LocalChecklistStore {
         home: PathBuf,
         graph: Arc<MemoryAgentGraph>,
     ) -> Self {
-        let checklist_directory = home.join("sdk-checklists");
+        let checklist_directory = home.join(CHECKLIST_DIRECTORY);
         let cleanup = checklist_directory.clone();
         let inner = inner.with_thread_data_cleanup(move |ids| {
             let directory = cleanup.clone();
@@ -454,6 +460,7 @@ impl LocalChecklistStore {
         params: ResumeThreadParams,
         model: Option<String>,
         instructions: Arc<crate::options::ThreadInstructions>,
+        executor_policy: crate::environment::LocalResumeExecutorPolicy,
     ) -> ThreadStoreResult<LocalResumeAdmission<'_>> {
         let history = params
             .history
@@ -465,9 +472,13 @@ impl LocalChecklistStore {
         let store = self.clone();
         // The admission guard is registered before spawning or awaiting any
         // operation that can install a native recorder.
-        tokio::spawn(async move { store.prepare_writer(params, expected).await })
-            .await
-            .map_err(checklist_error)??;
+        tokio::spawn(async move {
+            store
+                .prepare_writer(params, expected, executor_policy)
+                .await
+        })
+        .await
+        .map_err(checklist_error)??;
         Ok(admission)
     }
 
@@ -475,6 +486,7 @@ impl LocalChecklistStore {
         &self,
         mut params: ResumeThreadParams,
         expected: Arc<ResumeExpectation>,
+        executor_policy: crate::environment::LocalResumeExecutorPolicy,
     ) -> ThreadStoreResult<()> {
         let id = params.thread_id;
         let mut writers = self.writers.lock().await;
@@ -533,6 +545,9 @@ impl LocalChecklistStore {
             }
             validate_root_header(id, &complete)?;
             validate_root_header(id, &history)?;
+            executor_policy
+                .validate(&complete, id)
+                .map_err(checklist_error)?;
             validate_settled(&complete)?;
             self.graph.hydrate(id).await.map_err(checklist_error)?;
             self.check_tree_settled_inner(id, &complete, &writers)

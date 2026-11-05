@@ -60,6 +60,7 @@ function reader() {
     }),
     _submit: vi.fn(() => accepted.promise),
     _finish_child_event_reader: vi.fn(),
+    _stop_sampling_for_close: vi.fn(),
     _close_report: vi.fn(async () => {
       closed = true;
       changed.resolve();

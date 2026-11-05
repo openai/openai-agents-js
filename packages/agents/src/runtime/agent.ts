@@ -83,6 +83,15 @@ export async function openSession(
     saved,
     networkPolicyDigest(environment?.network),
   );
+  if (
+    saved !== null &&
+    saved.executor_policy_digest === undefined &&
+    (environment?.kind === 'local' || environment?.writableRoots !== undefined)
+  ) {
+    throw new TypeError(
+      'Restore requires the recorded executor write and network policy',
+    );
+  }
   const native = await binding();
   const runtime: RuntimeOptions = {
     ...native._packaged_runtime(),
