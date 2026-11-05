@@ -28,6 +28,9 @@ import {
 } from '@openai/agents';
 import { z } from 'zod';
 
+import type { WorkerSignals } from './signals.js';
+import { waitForWorkerAttention } from './supervision.js';
+
 const verifyDraftCommand = 'sha256sum draft.md';
 
 const claim = z.strictObject({
@@ -84,6 +87,8 @@ type WorkerOptions = {
   steer?: string;
   startupMs?: number;
   turnMs?: number;
+  /** Optional trusted account observations supplied by the application. */
+  signals?: WorkerSignals;
   /** Verify effects in independent application records. Unknown stays blocked. */
   reconcile?: (
     call: UncertainCall,
@@ -402,11 +407,20 @@ export async function superviseArtifact(options: WorkerOptions) {
       let attention: WorkerSnapshot['attention'];
       try {
         const outcome = await Promise.race([
-          turn.waitForAttention({ signal: deadline }),
+          waitForWorkerAttention(turn, {
+            signal: deadline,
+            signals: options.signals,
+          }),
           observerFailure.promise,
         ]);
         if (!('finalOutput' in outcome)) {
           if ('type' in outcome) {
+            if (outcome.type === 'account_quota_blocked') {
+              attention = 'quota_blocked';
+              throw new Error(
+                'Account quota prevents the worker from continuing.',
+              );
+            }
             attention = outcome.reason;
             throw outcome.error;
           }
