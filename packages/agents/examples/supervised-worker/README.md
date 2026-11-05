@@ -56,6 +56,39 @@ While the turn runs, give the worker the supervisor's steering input. The worker
 
 After the turn completes, pass review findings or an answer as the next task. The worker opens the same thread ID and starts a new turn. Wait for the old worker process to exit before starting its replacement.
 
+### Wait for work that needs attention
+
+For a worker that owns a live `Turn`, call `waitForWorkerAttention(turn, { signal, signals })`. A result can be a completed turn, live requests, a native stop, or an account quota block. Ordinary tool events stay inside the worker. For a live request, use the matching request's reply and deliver it through the owning session. Aborting the wait leaves the turn running.
+
+`superviseArtifact` uses this wait internally. Its release-note question is in `snapshot.claim.question`. Pass the answer as the next task after the worker exits. When the wait reports an attention stop, the stock worker cancels its owned turn and closes the session before exiting. Use the passive wait directly if you own the session and need to answer a live request on the same turn.
+
+A native `connection_lost` result calls for reconnect. Join the old worker before reopening its durable session, and decide which work to submit next. The example records a known native stop in `snapshot.attention` and leaves scheduling and retries to the application.
+
+If you already have a trusted account service, create a `WorkerSignals` with the current `accountId` and attachment `generation`. Pass it as `signals` to `superviseArtifact` or the wait, and call `updateQuota` with a full account rate-limit response:
+
+```ts
+import { WorkerSignals } from './signals.js';
+
+const signals = new WorkerSignals({ accountId, generation });
+signals.updateQuota({ generation, observedAt, expiresAt, response });
+```
+
+The application supplies `observedAt` and `expiresAt` in Unix seconds. Keep the generation from when the read began. Call `signals.attach({ accountId, generation })` with a higher generation when the account changes or the supervisor reconnects. This clears the previous quota observation. The account feed accepts full-read responses with an explicit matching account ID.
+
+When your account transport delivers a sparse `account/rateLimits/updated` notification, call `refreshQuota` from that handler with the subscription's generation and your existing full-read function. It checks the generation before and after the read and starts the freshness interval when the read begins.
+
+```ts
+await signals.refreshQuota({
+  generation,
+  maxAgeSeconds: 30,
+  read: readAccountQuota,
+});
+```
+
+The notification prompts a fresh read. Its sparse fields do not refresh cached values or identify an account.
+
+Read `signals.quota` for the selected bucket's available windows, reset times, and usable credits. Missing fields appear as `null`. The credit flags determine availability. The balance is for display. Fresh, current observations block when the service reports a reached limit or spend control, or when it disallows ordinary usage and confirms there are no usable credits. A rounded percentage or elapsed reset time cannot make that decision. A terminal provider quota stop still needs attention when a prior observation showed credits. The standard API-key worker runs without a feed.
+
 ### Verify and publish the draft
 
 The submitted task asks the agent to run `sha256sum draft.md` as a standalone command. Before accepting the draft, the worker checks three things.
