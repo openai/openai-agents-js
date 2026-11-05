@@ -1,5 +1,26 @@
 import { encode } from './binding';
 
+/** Safe cause captured for the selected model-output failure, when known. */
+export type ResponseIntegrityReason =
+  | 'undecodable_output_item'
+  | 'provider_owned_tool_receipt'
+  | 'unfinished_assistant_item'
+  | 'missing_supported_terminal_output';
+
+function responseIntegrityReason(
+  value: unknown,
+): ResponseIntegrityReason | null {
+  return typeof value === 'string' &&
+    [
+      'undecodable_output_item',
+      'provider_owned_tool_receipt',
+      'unfinished_assistant_item',
+      'missing_supported_terminal_output',
+    ].includes(value)
+    ? (value as ResponseIntegrityReason)
+    : null;
+}
+
 /** Observed native failure details. Missing values do not imply safe replay. */
 export interface NativeErrorOptions extends ErrorOptions {
   statusCode?: number | null;
@@ -12,6 +33,7 @@ export interface NativeErrorOptions extends ErrorOptions {
 
 type Metadata = {
   readonly effects: 'unknown' | 'notStarted' | 'recorded';
+  readonly responseIntegrityReason: ResponseIntegrityReason | null;
   readonly statusCode: number | null;
   readonly code: string | null;
   readonly requestId: string | null;
@@ -29,6 +51,7 @@ export class NativeError extends Error {
     this.name = new.target.name;
     metadata.set(this, {
       effects: 'unknown',
+      responseIntegrityReason: null,
       statusCode: options?.statusCode ?? null,
       code: options?.code ?? null,
       requestId: options?.requestId ?? null,
@@ -41,6 +64,11 @@ export class NativeError extends Error {
   /** Effects of this failed operation only; never permission to replay earlier work. */
   get effects(): 'unknown' | 'notStarted' | 'recorded' {
     return metadata.get(this)!.effects;
+  }
+
+  /** Absent for restored or unowned errors; never permission to replay work. */
+  get responseIntegrityReason(): ResponseIntegrityReason | null {
+    return metadata.get(this)!.responseIntegrityReason;
   }
 
   get statusCode(): number | null {
@@ -169,6 +197,7 @@ export function enrichNativeError(error: NativeError, value: unknown): void {
   const retryAfterMs = provider?.retry_after_ms;
   metadata.set(error, {
     effects: metadata.get(error)!.effects,
+    responseIntegrityReason: metadata.get(error)!.responseIntegrityReason,
     statusCode:
       typeof status === 'number' &&
       Number.isInteger(status) &&
@@ -205,11 +234,19 @@ export function nativeError(
   const fallback = publicError
     ? Object.fromEntries(
         Object.entries(publicError).filter(
-          ([key]) => key !== '_sdk_provider_error',
+          ([key]) =>
+            key !== '_sdk_provider_error' &&
+            key !== '_sdk_response_integrity_reason',
         ),
       )
     : value;
   const error = new NativeError(message ?? encode(fallback), options);
+  metadata.set(error, {
+    ...metadata.get(error)!,
+    responseIntegrityReason: responseIntegrityReason(
+      publicError?._sdk_response_integrity_reason,
+    ),
+  });
   enrichNativeError(error, value);
   return error;
 }

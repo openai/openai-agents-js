@@ -37,15 +37,16 @@ import { startPublicExecutor } from './fixtures/public-executor';
 // These are raw JSON integer tokens, never large JavaScript numbers.
 const CAPACITY = '90071992547409930';
 const LARGE_RAW =
-  '{"input_tokens":9007199254740993,"input_tokens_details":{"cached_tokens":9007199254740990},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":9007199254741000}';
+  '{"input_tokens":9007199254740993,"input_tokens_details":{"cached_tokens":9007199254740990,"cache_write_tokens":0},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":9007199254741000}';
 const SAFE_RAW =
-  '{"input_tokens":17,"input_tokens_details":{"cached_tokens":3},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":24}';
+  '{"input_tokens":17,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":0},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":24}';
 const NEXT_RAW =
-  '{"input_tokens":7,"input_tokens_details":{"cached_tokens":1},"output_tokens":2,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":9}';
+  '{"input_tokens":7,"input_tokens_details":{"cached_tokens":1,"cache_write_tokens":0},"output_tokens":2,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":9}';
 const FINAL_RAW =
-  '{"input_tokens":5,"input_tokens_details":{"cached_tokens":1},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":6}';
+  '{"input_tokens":5,"input_tokens_details":{"cached_tokens":1,"cache_write_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":6}';
 // Zero parent usage isolates child counters even if Core carries a parent prefix.
-const ROOT_RAW = '{"input_tokens":0,"output_tokens":0,"total_tokens":0}';
+const ROOT_RAW =
+  '{"input_tokens":0,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":0,"total_tokens":0}';
 const CASES = [
   { name: 'safe', raw: SAFE_RAW, input: 17, cached: 3, total: 24 },
   {

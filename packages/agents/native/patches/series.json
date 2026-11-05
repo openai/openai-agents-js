@@ -233,9 +233,13 @@
       "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
     },
     {
-      "path": "0057-native-request-metadata.patch",
+      "path": "0054-native-response-integrity-reasons.patch",
+      "sha256": "006be27601ea216c750b5df1c0f9b0f9f4259b9206e1f33869400cf4ff61ea7a"
+    },
+    {
+      "path": "0058-native-request-metadata.patch",
       "sha256": "5b3b9a410f2f284b3b54eaa5763ac3c8d25f2031f22dc6fc7468389eacd07e4c"
     }
   ],
-  "result_tree": "1799b27affe9596c379c2cd7b600e70deb0bac1f"
+  "result_tree": "7881de6cdb505937e6f6ac76d8a054038d2f7de8"
 }
