@@ -15,9 +15,10 @@ export const nativeInputPaths = [
   '.github/workflows/alpha-release-artifacts.yml',
   'scripts/native-bundle-inputs.mjs',
   'scripts/restore-native-bundle.mjs',
+  'scripts/verified-native-bundle.mjs',
 ];
 
-export function nativeInputs() {
+export function nativeComparisonPaths() {
   // Include file names, modes and blob IDs, including newly added inputs.
   const tracked = (paths) =>
     execFileSync('git', ['ls-files', '--stage', '-z', '--', ...paths], {
@@ -41,9 +42,14 @@ export function nativeInputs() {
       existsSync(dir + '/.cargo/config') ||
       existsSync(dir + '/.cargo/config.toml'),
   );
-  const entries =
-    linked || cargoConfiguration
-      ? tracked(['.', ':(exclude).github/native-bundle.json'])
-      : native;
+  return linked || cargoConfiguration ? ['.'] : nativeInputPaths;
+}
+
+export function nativeInputs() {
+  const entries = execFileSync(
+    'git',
+    ['ls-files', '--stage', '-z', '--', ...nativeComparisonPaths()],
+    { maxBuffer: 64 * 1024 * 1024 },
+  );
   return createHash('sha256').update(entries).digest('hex');
 }

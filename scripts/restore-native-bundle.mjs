@@ -1,37 +1,32 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import console from 'node:console';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import process from 'node:process';
 import { nativeInputs } from './native-bundle-inputs.mjs';
+import { findNativeBundle } from './verified-native-bundle.mjs';
 
-const lockPath = '.github/native-bundle.json';
 const platform = process.platform + '-' + process.arch;
-const { GITHUB_OUTPUT, PIN_REF } = process.env;
+const { GITHUB_OUTPUT } = process.env;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const inputs = nativeInputs();
 
-async function restore() {
-  // Only an unchanged pin on the exact event base authorizes a download.
-  // A shallow checkout can lack that commit when GitHub regenerates the merge ref.
-  if (
-    !existsSync(lockPath) ||
-    spawnSync('git', ['diff', '--quiet', PIN_REF, 'HEAD', '--', lockPath])
-      .status !== 0
-  ) {
-    console.log('No accepted native pin. Building from source.');
-    return false;
-  }
-  const lock = JSON.parse(
-    execFileSync('git', ['show', PIN_REF + ':' + lockPath]),
-  );
-  const asset = lock.platforms?.[platform];
-  if (lock.inputs !== inputs || !asset) {
-    console.log(
-      'No matching platform pin for these native inputs. Building from source.',
+function report(message) {
+  console.log(message);
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      'Native bundle (' + platform + ', ' + inputs + '): ' + message + '\n',
     );
+  }
+}
+
+async function restore() {
+  const asset = findNativeBundle(inputs, platform);
+  if (!asset) {
+    report('No verified native bundle for these inputs. Building from source.');
     return false;
   }
   assert.ok(
@@ -49,7 +44,7 @@ async function restore() {
     },
   );
   if ([404, 410].includes(response.status)) {
-    console.log('Pinned artifact is unavailable. Building from source.');
+    report('Native artifact is unavailable. Building from source.');
     return false;
   }
   assert.ok(response.ok, 'Native download returned HTTP ' + response.status);
@@ -70,8 +65,8 @@ async function restore() {
       stdio: ['pipe', 'inherit', 'inherit'],
     },
   );
-  console.log(
-    'Restored verified native artifact ' + asset.id + ' for ' + platform,
+  report(
+    'Restored verified native artifact ' + asset.id + ' from run ' + asset.run,
   );
   return true;
 }
