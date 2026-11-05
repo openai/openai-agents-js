@@ -254,6 +254,10 @@ export class NativeA2AExecutor<
         ) => {
           await claim.current();
           const snapshot = await this.#snapshot(context, desired);
+          checkBytes(
+            Task.toJSON(snapshot),
+            bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
+          );
           await claim.current();
           const next: NativeA2ATask = {
             schemaVersion: 1,
@@ -422,21 +426,22 @@ export class NativeA2AExecutor<
             ];
             await publish('completed', complete);
           }
-        } catch {
+        } catch (error) {
           if (session && !closed) {
             await session.close();
             closed = true;
           }
           await claim.current();
-          if (record?.state !== 'completed' && record?.state !== 'waiting')
-            await publish(
-              controller.signal.aborted ? 'canceled' : 'failed',
-              task(
-                controller.signal.aborted
-                  ? TaskState.TASK_STATE_CANCELED
-                  : TaskState.TASK_STATE_FAILED,
-              ),
-            );
+          if (record?.state === 'completed' || record?.state === 'waiting')
+            throw error;
+          await publish(
+            controller.signal.aborted ? 'canceled' : 'failed',
+            task(
+              controller.signal.aborted
+                ? TaskState.TASK_STATE_CANCELED
+                : TaskState.TASK_STATE_FAILED,
+            ),
+          );
         } finally {
           controller.signal.removeEventListener('abort', stop);
           if (session && !closed) await session.close();
@@ -444,7 +449,7 @@ export class NativeA2AExecutor<
       });
     } catch (error) {
       let cause = error;
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted && error === controller.signal.reason) {
         try {
           await this.#retireWaiting(scope, bus);
           return;
@@ -502,6 +507,10 @@ export class NativeA2AExecutor<
         message: undefined,
         timestamp: new Date().toISOString(),
       };
+      checkBytes(
+        Task.toJSON(desired),
+        bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
+      );
       await claim.commit(record.generation, {
         ...record,
         generation: record.generation + 1,
@@ -561,9 +570,18 @@ export class NativeA2AExecutor<
           checkpoint: undefined,
           pending: undefined,
         };
+        checkBytes(
+          Task.toJSON(desired),
+          bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
+        );
         await claim.commit(record.generation, replacement);
         record = replacement;
         await claim.current();
+      } else {
+        checkBytes(
+          Task.toJSON(record.desired),
+          bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
+        );
       }
       await this.#options.store.save(structuredClone(record.desired), context);
       await claim.current();

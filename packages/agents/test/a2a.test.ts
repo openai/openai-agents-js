@@ -1146,3 +1146,81 @@ it.each(['discovery fetch', 'RPC fetch', 'RPC body'])(
     await expect(operation).rejects.toBe(cancellation);
   },
 );
+
+it('rejects a manual-reply challenge from another task before reservation or send', async () => {
+  const remote = await peer({
+    execute: async (request, bus) => {
+      bus.publish(
+        AgentEvent.task({
+          ...Task.fromJSON({}),
+          id: request.taskId,
+          contextId: request.contextId,
+          status: {
+            state: TaskState.TASK_STATE_INPUT_REQUIRED,
+            timestamp: undefined,
+            message: {
+              ...Message.fromJSON({}),
+              parts: [
+                Part.fromJSON({
+                  data: {
+                    challenge: 'challenge',
+                    generation: 1,
+                    tool: 'decision',
+                    arguments: {},
+                  },
+                }),
+              ],
+            },
+          },
+        }),
+      );
+      bus.finished();
+    },
+    cancelTask: async () => {},
+  });
+  const reservations: string[] = [];
+  const sent: string[] = [];
+  const provider = new A2AJobProvider({
+    endpoint: remote.endpoint,
+    authorize: async () => {},
+    authorization: async () => 'synthetic',
+    reserve: async (_claim, operation) => {
+      reservations.push(operation);
+    },
+    encode: () => [Part.fromJSON({ text: 'hello' })],
+    project: () => null,
+    fetch: async (url, init) => {
+      const response = await fetch(url, init);
+      if (typeof init?.body === 'string') {
+        sent.push(init.body);
+        if (JSON.parse(init.body).method === 'GetTask') {
+          const payload = await response.json();
+          payload.result.id = 'different-task';
+          return new Response(JSON.stringify(payload), {
+            headers: response.headers,
+          });
+        }
+      }
+      return response;
+    },
+  });
+  const pending = await provider.start(claim(), null, context);
+  expect(pending.status).toBe('inputRequired');
+  const receipt = JSON.parse(pending.receipt!);
+  await expect(
+    provider.respond(
+      claim('respond', pending),
+      {
+        taskId: receipt.taskId,
+        contextId: receipt.contextId,
+        challenge: 'challenge',
+        generation: 1,
+        result: 'confidential-answer-sentinel',
+      },
+      context,
+    ),
+  ).rejects.toMatchObject({ reason: 'authorization' });
+  expect(reservations).toEqual(['start']);
+  expect(remote.calls).toEqual(['SendMessage', 'GetTask']);
+  expect(sent.join('')).not.toContain('confidential-answer-sentinel');
+});

@@ -21,7 +21,7 @@ import {
   type NativeA2ABinding,
   type NativeA2AClaim,
 } from '../src/a2a/executor';
-import { connectA2A } from '../src/a2a/client';
+import { connectA2A, type A2ALimits } from '../src/a2a/client';
 import { inputProposal } from '../src/a2a/content';
 import { FileA2AStore } from './a2a-store';
 import { runA2AExample } from '../examples/a2a/two-agents';
@@ -30,7 +30,11 @@ afterEach(() => vi.restoreAllMocks());
 const user = { isAuthenticated: true, userName: 'user' };
 const context = new ServerCallContext({ user, requestedVersion: '1.0' });
 
-async function host(store: FileA2AStore, executor: AgentExecutor) {
+async function host(
+  store: FileA2AStore,
+  executor: AgentExecutor,
+  limits?: A2ALimits,
+) {
   const server = createServer(async (request, response) => {
     if (request.url === '/card') {
       response.end(JSON.stringify(AgentCard.toJSON(card)));
@@ -63,7 +67,7 @@ async function host(store: FileA2AStore, executor: AgentExecutor) {
   );
   const client = await connectA2A(
     { name: 'native', cardUrl: `${base}/card`, rpcUrl: `${base}/rpc` },
-    { authorization: async () => 'synthetic' },
+    { authorization: async () => 'synthetic', limits },
   );
   return {
     client,
@@ -217,86 +221,284 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       }
     }, 30_000);
 
-    it.each(['before-save', 'after-save'] as const)(
-      'recovers a native terminal result in a fresh process after an official handler %s fault',
-      async (fault) => {
+    it.each(
+      (['before-save', 'after-save'] as const).flatMap((fault) =>
+        (['completed', 'waiting'] as const).map((state) => ({ fault, state })),
+      ),
+    )(
+      'reports $state publication failure and recovers after an official handler $fault fault',
+      async ({ fault, state }) => {
         const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-        await withScriptedResponses([[text('once')]], async (model) => {
-          const directory = await mkdtemp(join(tmpdir(), 'a2a-publication-'));
-          const path = join(directory, 'store.json');
-          let injected = false;
-          class FaultStore extends FileA2AStore {
-            override async save(task: Task, callContext: ServerCallContext) {
-              if (
-                task.status?.state === TaskState.TASK_STATE_COMPLETED &&
-                !injected
-              ) {
-                injected = true;
-                this.fail = fault;
+        await withScriptedResponses(
+          state === 'completed'
+            ? [[text('once')]]
+            : [[toolCall('decision', {}, { callId: 'decision' })]],
+          async (model) => {
+            const directory = await mkdtemp(join(tmpdir(), 'a2a-publication-'));
+            const path = join(directory, 'store.json');
+            let injected = false;
+            class FaultStore extends FileA2AStore {
+              override async save(task: Task, callContext: ServerCallContext) {
+                if (
+                  task.status?.state ===
+                    (state === 'completed'
+                      ? TaskState.TASK_STATE_COMPLETED
+                      : TaskState.TASK_STATE_INPUT_REQUIRED) &&
+                  !injected
+                ) {
+                  injected = true;
+                  this.fail = fault;
+                }
+                return super.save(task, callContext);
               }
-              return super.save(task, callContext);
             }
-          }
-          const store = new FaultStore(path),
-            stopped = Promise.withResolvers<void>();
-          const agent = new Agent({
-            instructions: 'Answer.',
-            model: 'gpt-5.5',
-            provider: model.provider,
-          });
-          const native = new NativeA2AExecutor({
-            store,
-            agentFactory: async () => ({ agent, context: undefined }),
-          });
-          const remote = await host(store, {
-            execute: async (request, bus) => {
-              try {
-                await native.execute(request, bus);
-              } finally {
-                stopped.resolve();
-              }
-            },
-            cancelTask: native.cancelTask,
-          });
-          try {
-            const created = await remote.client.sendMessage(
-              input([Part.fromJSON({ text: 'begin' })]),
-            );
-            if (!('id' in created)) throw new Error();
-            await stopped.promise;
-            expect(injected).toBe(true);
-            expect(errors).toHaveBeenCalled();
-            const record = store.record(created.id, context)!;
-            expect(record.state).toBe('completed');
-            expect(model.requests).toHaveLength(1);
-            await remote.close();
-            const child = spawnSync(
-              process.execPath,
-              [
-                '--import',
-                'tsx',
-                fileURLToPath(
-                  new URL('./fixtures/a2a-recover.ts', import.meta.url),
-                ),
-                path,
-                created.id,
-                created.contextId,
-              ],
-              { encoding: 'utf8', timeout: 20_000 },
-            );
-            expect(child.status, child.stderr).toBe(0);
-            const recovered = JSON.parse(child.stdout.trim());
-            expect(recovered.executions).toBe(0);
-            expect(recovered.task).toEqual(Task.toJSON(record.desired));
-            expect(recovered.task.artifacts).toHaveLength(1);
-            expect(model.requests).toHaveLength(1);
-          } finally {
-            await remote.close();
-            await rm(directory, { recursive: true, force: true });
-          }
-        });
+            const store = new FaultStore(path),
+              stopped = Promise.withResolvers<void>();
+            const agent = new Agent({
+              instructions: 'Answer.',
+              model: 'gpt-5.5',
+              provider: model.provider,
+              tools:
+                state === 'waiting'
+                  ? [
+                      manualTool({
+                        name: 'decision',
+                        description: 'Choose.',
+                        parameters: z.strictObject({}),
+                        result: z.boolean(),
+                      }),
+                    ]
+                  : [],
+            });
+            const native = new NativeA2AExecutor({
+              store,
+              agentFactory: async () => ({ agent, context: undefined }),
+            });
+            let ownerFailure: unknown;
+            const remote = await host(store, {
+              execute: async (request, bus) => {
+                try {
+                  await native.execute(request, bus);
+                } catch (error) {
+                  ownerFailure = error;
+                  throw error;
+                } finally {
+                  stopped.resolve();
+                }
+              },
+              cancelTask: native.cancelTask,
+            });
+            try {
+              const created = await remote.client.sendMessage(
+                input([Part.fromJSON({ text: 'begin' })]),
+              );
+              if (!('id' in created)) throw new Error();
+              await stopped.promise;
+              expect(ownerFailure).toMatchObject({ reason: 'unavailable' });
+              expect(injected).toBe(true);
+              expect(errors).toHaveBeenCalled();
+              const record = store.record(created.id, context)!;
+              expect(record.state).toBe(state);
+              expect(model.requests).toHaveLength(1);
+              await remote.close();
+              const child = spawnSync(
+                process.execPath,
+                [
+                  '--import',
+                  'tsx',
+                  fileURLToPath(
+                    new URL('./fixtures/a2a-recover.ts', import.meta.url),
+                  ),
+                  path,
+                  created.id,
+                  created.contextId,
+                ],
+                { encoding: 'utf8', timeout: 20_000 },
+              );
+              expect(child.status, child.stderr).toBe(0);
+              const recovered = JSON.parse(child.stdout.trim());
+              expect(recovered.executions).toBe(0);
+              expect(recovered.task).toEqual(Task.toJSON(record.desired));
+              expect(recovered.task.artifacts ?? []).toHaveLength(
+                state === 'completed' ? 1 : 0,
+              );
+              expect(recovered.record.state).toBe(state);
+              expect(model.requests).toHaveLength(1);
+            } finally {
+              await remote.close();
+              await rm(directory, { recursive: true, force: true });
+            }
+          },
+        );
       },
       30_000,
+    );
+
+    it.each(['completed', 'waiting'] as const)(
+      'preserves a committed %s publication failure when cancellation races its save',
+      async (state) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        await withScriptedResponses(
+          state === 'completed'
+            ? [[text('once')]]
+            : [[toolCall('decision', {}, { callId: 'decision' })]],
+          async (model) => {
+            const entering = Promise.withResolvers<void>(),
+              release = Promise.withResolvers<void>(),
+              cancelling = Promise.withResolvers<void>(),
+              stopped = Promise.withResolvers<void>();
+            let injected = false,
+              ownerFailure: unknown;
+            class HeldSaveStore extends FileA2AStore {
+              override async save(task: Task, callContext: ServerCallContext) {
+                if (
+                  !injected &&
+                  task.status?.state ===
+                    (state === 'completed'
+                      ? TaskState.TASK_STATE_COMPLETED
+                      : TaskState.TASK_STATE_INPUT_REQUIRED)
+                ) {
+                  injected = true;
+                  entering.resolve();
+                  await release.promise;
+                  this.fail = 'before-save';
+                }
+                return super.save(task, callContext);
+              }
+            }
+            const store = new HeldSaveStore();
+            const agent = new Agent({
+              instructions: 'Answer.',
+              model: 'gpt-5.5',
+              provider: model.provider,
+              tools:
+                state === 'waiting'
+                  ? [
+                      manualTool({
+                        name: 'decision',
+                        description: 'Choose.',
+                        parameters: z.strictObject({}),
+                        result: z.boolean(),
+                      }),
+                    ]
+                  : [],
+            });
+            const native = new NativeA2AExecutor({
+              store,
+              agentFactory: async () => ({ agent, context: undefined }),
+            });
+            const remote = await host(store, {
+              execute: async (request, bus) => {
+                try {
+                  await native.execute(request, bus);
+                } catch (error) {
+                  ownerFailure = error;
+                  throw error;
+                } finally {
+                  stopped.resolve();
+                }
+              },
+              cancelTask: (id, bus) => {
+                const pending = native.cancelTask(id, bus);
+                cancelling.resolve();
+                return pending;
+              },
+            });
+            try {
+              const created = await remote.client.sendMessage(
+                input([Part.fromJSON({ text: 'begin' })]),
+              );
+              if (!('id' in created)) throw new Error('Expected task');
+              await entering.promise;
+              const retained = store.record(created.id, context)!;
+              expect(retained.state).toBe(state);
+              const cancellation = remote.client
+                .cancelTask({ tenant: '', id: created.id, metadata: undefined })
+                .catch((error: unknown) => error);
+              await cancelling.promise;
+              release.resolve();
+              await stopped.promise;
+              expect(ownerFailure).toMatchObject({ reason: 'unavailable' });
+              expect(await cancellation).toMatchObject({
+                reason: 'unavailable',
+              });
+              expect(store.record(created.id, context)).toEqual(retained);
+              expect(model.requests).toHaveLength(1);
+            } finally {
+              release.resolve();
+              await remote.close();
+            }
+          },
+        );
+      },
+      30000,
+    );
+
+    it.each(['completed', 'waiting'] as const)(
+      'bounds the full %s wire Task before its journal commit',
+      async (state) => {
+        const large = 'r'.repeat(6000);
+        await withScriptedResponses(
+          state === 'completed'
+            ? [[text(large)]]
+            : [
+                [
+                  toolCall(
+                    'decision',
+                    { payload: large },
+                    { callId: 'decision' },
+                  ),
+                ],
+              ],
+          async (model) => {
+            const store = new FileA2AStore();
+            const agent = new Agent({
+              instructions: 'Answer.',
+              model: 'gpt-5.5',
+              provider: model.provider,
+              tools:
+                state === 'waiting'
+                  ? [
+                      manualTool({
+                        name: 'decision',
+                        description: 'Choose.',
+                        parameters: z.strictObject({ payload: z.string() }),
+                        result: z.boolean(),
+                      }),
+                    ]
+                  : [],
+            });
+            const remote = await host(
+              store,
+              new NativeA2AExecutor({
+                store,
+                limits: { bodyBytes: 8192 },
+                agentFactory: async () => ({ agent, context: undefined }),
+              }),
+              { bodyBytes: 8192 },
+            );
+            try {
+              const created = await remote.client.sendMessage(
+                input([Part.fromJSON({ text: 'i'.repeat(4096) })]),
+              );
+              if (!('id' in created)) throw new Error('Expected task');
+              const failed = await settled(remote.client, created);
+              expect(failed.status?.state).toBe(TaskState.TASK_STATE_FAILED);
+              expect(
+                Buffer.byteLength(JSON.stringify(Task.toJSON(failed))),
+              ).toBeLessThanOrEqual(8192);
+              const record = store.record(created.id, context)!;
+              expect(record.state).toBe('failed');
+              expect(record.checkpoint).toBeUndefined();
+              expect(record.desired.artifacts).toEqual([]);
+              expect(model.requests).toHaveLength(1);
+            } finally {
+              await remote.close();
+            }
+          },
+        );
+      },
+      30000,
     );
 
     it('rejects multiple pending manual requests without saving a resumable checkpoint', async () => {

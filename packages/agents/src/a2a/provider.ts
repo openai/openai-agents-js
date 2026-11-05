@@ -275,6 +275,7 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
     const challenge = inputProposal(task);
     if (
       task.status?.state !== TaskState.TASK_STATE_INPUT_REQUIRED ||
+      task.id !== receipt.taskId ||
       task.contextId !== receipt.contextId ||
       challenge?.challenge !== reply.challenge ||
       challenge?.generation !== reply.generation

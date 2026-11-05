@@ -303,3 +303,39 @@ it.each([1500, 4000])(
     expect(factories).toBe(size === 1500 ? 1 : 0);
   },
 );
+
+it.each(['completed', 'running'] as const)(
+  'rejects an oversized recovered %s Task before mutation or publication',
+  async (state) => {
+    const store = new FileA2AStore(),
+      desired = task();
+    desired.history = [
+      {
+        ...Message.fromJSON({}),
+        role: Role.ROLE_USER,
+        parts: [Part.fromJSON({ text: 'large'.repeat(1024) })],
+      },
+    ];
+    const record: NativeA2ATask = {
+      schemaVersion: 1,
+      binding,
+      generation: 1,
+      publicationRevision: 1,
+      state,
+      desired,
+    };
+    await store.own(binding, (claim) => claim.commit(undefined, record));
+    const executor = new NativeA2AExecutor({
+      store,
+      limits: { bodyBytes: 1024 },
+      agentFactory: async () => {
+        throw new Error('must not execute');
+      },
+    });
+    await expect(executor.recover(binding, context)).rejects.toMatchObject({
+      reason: 'limit',
+    });
+    expect(store.record('task', context)).toEqual(record);
+    expect(await store.load('task', context)).toBeUndefined();
+  },
+);
