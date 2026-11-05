@@ -34,6 +34,7 @@ enum Admission {
 }
 
 pub(crate) struct Turn {
+    pub(crate) tracing: Option<Arc<codex_otel::sdk_trace::ContextLease>>,
     id: String,
     accepted: AtomicBool,
     delivered: AtomicBool,
@@ -546,6 +547,9 @@ impl ThreadLifecycleContributor<Config> for Contributor {
 impl TurnLifecycleContributor for Contributor {
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            let tracing = input
+                .turn_store
+                .get_or_init(codex_otel::sdk_trace::CapturedContext::capture);
             let settlement = input.thread_store.get_or_init(Settlement::default);
             let own_instructions = input
                 .thread_store
@@ -586,6 +590,7 @@ impl TurnLifecycleContributor for Contributor {
                 .is_some_and(|turn| turn.id == input.turn_id);
             // Even same-ID recovery receives a new native lifecycle receipt.
             input.turn_store.insert(Turn {
+                tracing: tracing.context.clone(),
                 id: input.turn_id.to_owned(),
                 accepted: AtomicBool::new(false),
                 delivered: AtomicBool::new(false),

@@ -147,6 +147,11 @@ export type {
   Exporter,
   OtelTlsConfig,
   TelemetryOptions,
+  TraceOptions,
+  SpanContext,
+  TraceEvent,
+  TraceProcessor,
+  FlushResult,
 } from './runtime/telemetry';
 
 export { nativeGoals } from './runtime/goals';
