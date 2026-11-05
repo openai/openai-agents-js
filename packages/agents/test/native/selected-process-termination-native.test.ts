@@ -119,7 +119,9 @@ it
         'Termination RPC did not receive a real upstream response',
       );
       expect(upstream.error).toBeUndefined();
-      expect(upstream.result).toMatchObject({ running: false });
+      // `running: true` acknowledges a termination request for a live process.
+      // It does not report the process's state after termination.
+      expect(upstream.result).toMatchObject({ running: true });
       expect(terminations()).toHaveLength(1);
       const starts = executor.requests.filter(
         (request) => request.method === 'process/start',
@@ -136,18 +138,15 @@ it
         'Session.close did not join the termination acknowledgment',
       );
       expect(result.ok).toBe(acknowledgment === 'accepted');
-      if (result.ok) {
-        await expect(
-          bounded(session.close(), 'Repeated close did not complete'),
-        ).resolves.toBeUndefined();
-      } else {
+      if (!result.ok)
         expect(String(result.error)).toMatch(
           /terminat|shutdown|cleanup|acknowledg/i,
         );
-        await expect(
-          bounded(session.close(), 'Repeated close did not complete'),
-        ).rejects.toBe(result.error);
-      }
+      // Command termination has one attempt: an already closed session does
+      // not recheck its acknowledgment or issue another termination RPC.
+      await expect(
+        bounded(session.close(), 'Repeated close did not complete'),
+      ).resolves.toBeUndefined();
       expect(terminations()).toHaveLength(1);
       await provider.close();
       await executor.close();
