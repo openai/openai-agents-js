@@ -297,22 +297,22 @@ importers:
         version: 6.0.1
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/ai-sdk:
     dependencies:
       '@ai-sdk/anthropic':
         specifier: ^3.0.116
-        version: 3.0.116(zod@4.3.5)
+        version: 3.0.116(zod@4.6.6)
       '@ai-sdk/google':
         specifier: ^4.0.87
-        version: 4.0.87(zod@4.3.5)
+        version: 4.0.87(zod@4.6.6)
       '@ai-sdk/openai':
         specifier: ^4.0.83
-        version: 4.0.83(zod@4.3.5)
+        version: 4.0.83(zod@4.6.6)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -321,20 +321,20 @@ importers:
         version: link:../../packages/agents-extensions
       '@openrouter/ai-sdk-provider':
         specifier: ^2.9.0
-        version: 2.9.0(ai@6.0.277(zod@4.3.5))(zod@4.3.5)
+        version: 2.9.0(ai@6.0.277(zod@4.6.6))(zod@4.6.6)
       zod:
-        specifier: 4.3.5
-        version: 4.3.5
+        specifier: 4.6.6
+        version: 4.6.6
     devDependencies:
       ai:
         specifier: ^6.0.277
-        version: 6.0.277(zod@4.3.5)
+        version: 6.0.277(zod@4.6.6)
 
   examples/ai-sdk-ui:
     dependencies:
       '@ai-sdk/react':
         specifier: ^4.0.0
-        version: 4.0.121(react@19.3.0)(zod@4.3.5)
+        version: 4.0.121(react@19.3.0)(zod@4.6.6)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -346,7 +346,7 @@ importers:
         version: link:../../packages/agents-openai
       ai:
         specifier: ^7.0.0
-        version: 7.0.118(zod@4.3.5)
+        version: 7.0.118(zod@4.6.6)
       next:
         specifier: 16.4.1
         version: 16.4.1(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@22.19.13)(babel-plugin-react-compiler@1.0.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -366,12 +366,12 @@ importers:
         specifier: ^4.0.0
         version: 4.0.1(supports-color@10.2.2)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       '@ai-sdk/openai':
         specifier: ^4.0.83
-        version: 4.0.83(zod@4.3.5)
+        version: 4.0.83(zod@4.6.6)
       '@types/node':
         specifier: 22.19.13
         version: 22.19.13
@@ -392,10 +392,10 @@ importers:
         version: link:../../packages/agents
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/connectors:
     dependencies:
@@ -412,17 +412,17 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents-core
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/docs:
     dependencies:
       '@ai-sdk/openai':
         specifier: ^4.0.83
-        version: 4.0.83(zod@4.3.5)
+        version: 4.0.83(zod@4.6.6)
       '@modelcontextprotocol/server-filesystem':
         specifier: ^2026.8.31
-        version: 2026.8.31(supports-color@10.2.2)(zod@4.3.5)
+        version: 2026.8.31(supports-color@10.2.2)(zod@4.6.6)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -443,7 +443,7 @@ importers:
         version: 1.8.0(valibot@1.5.0(typescript@5.9.3))
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       server-only:
         specifier: ^0.0.1
         version: 0.0.1
@@ -451,8 +451,8 @@ importers:
         specifier: ^1.5.0
         version: 1.5.0(typescript@5.9.3)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/financial-research-agent:
     dependencies:
@@ -460,8 +460,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/handoffs:
     dependencies:
@@ -472,8 +472,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents-core
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/live:
     dependencies:
@@ -482,13 +482,13 @@ importers:
         version: link:../../packages/agents
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.6.6)
       ws:
         specifier: ^8.22.0
         version: 8.22.0
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       '@types/ws':
         specifier: ^8.18.2
@@ -498,10 +498,10 @@ importers:
     dependencies:
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.0
-        version: 1.32.0(supports-color@10.2.2)(zod@4.5.4)
+        version: 1.32.0(supports-color@10.2.2)(zod@4.6.6)
       '@modelcontextprotocol/server-filesystem':
         specifier: ^2026.8.31
-        version: 2026.8.31(supports-color@10.2.2)(zod@4.5.4)
+        version: 2026.8.31(supports-color@10.2.2)(zod@4.6.6)
       '@openai/agents':
         specifier: workspace:*
         version: link:../../packages/agents
@@ -518,8 +518,8 @@ importers:
         specifier: ^7.10.0
         version: 7.10.0(prisma@7.10.0(@types/node@22.19.13)(@types/react-dom@19.1.6(@types/react@19.2.18))(@types/react@19.2.18)(better-sqlite3@12.11.1)(magicast@0.5.4)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@5.9.3))(typescript@5.9.3)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       prisma:
         specifier: ^7.10.0
@@ -532,10 +532,10 @@ importers:
         version: link:../../packages/agents
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/nextjs:
     dependencies:
@@ -570,8 +570,8 @@ importers:
         specifier: ^3.7.0
         version: 3.7.0
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4
@@ -605,13 +605,13 @@ importers:
         version: 4.3.3(vite@8.3.3(@types/node@22.19.13)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.15)(yaml@2.9.0))
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       typescript:
         specifier: ~5.8.3
@@ -650,8 +650,8 @@ importers:
         specifier: ^0.1.5
         version: 0.1.5
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4
@@ -699,8 +699,8 @@ importers:
         specifier: 124.0.8
         version: 124.0.8(react-native@0.86.3(@babel/core@7.29.7(supports-color@10.2.2))(@types/react@19.2.18)(react@19.2.3)(supports-color@10.2.2))(supports-color@10.2.2)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       '@config-plugins/react-native-webrtc':
         specifier: 15.0.2
@@ -722,10 +722,10 @@ importers:
         version: 16.6.1
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -761,8 +761,8 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/realtime-twilio-sip:
     dependencies:
@@ -786,10 +786,10 @@ importers:
         version: 6.0.1
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/research-bot:
     dependencies:
@@ -797,8 +797,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/sandbox:
     dependencies:
@@ -809,8 +809,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents-extensions
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/standard-schema:
     dependencies:
@@ -824,8 +824,8 @@ importers:
         specifier: ^1.5.0
         version: 1.5.0(typescript@5.9.3)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   examples/tools:
     dependencies:
@@ -846,13 +846,13 @@ importers:
         version: 6.0.1
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       playwright:
         specifier: ^1.63.0
         version: 1.63.0
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   packages/agents:
     dependencies:
@@ -867,11 +867,11 @@ importers:
         version: link:../agents-realtime
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
     devDependencies:
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   packages/agents-core:
     dependencies:
@@ -883,7 +883,7 @@ importers:
         version: 4.4.3(supports-color@10.2.2)
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
       tar:
         specifier: 7.5.22
         version: 7.5.22
@@ -892,8 +892,8 @@ importers:
         specifier: ^4.1.13
         version: 4.1.13
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
     optionalDependencies:
       '@modelcontextprotocol/client':
         specifier: ^2.0.0
@@ -931,7 +931,7 @@ importers:
         version: 1.9.3
       ai:
         specifier: ^6.0.277
-        version: 6.0.277(zod@4.3.5)
+        version: 6.0.277(zod@4.6.6)
       e2b:
         specifier: 2.52.0
         version: 2.52.0
@@ -945,8 +945,8 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   packages/agents-openai:
     dependencies:
@@ -955,11 +955,11 @@ importers:
         version: link:../agents-core
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6)
     devDependencies:
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
   packages/agents-realtime:
     dependencies:
@@ -971,7 +971,7 @@ importers:
         version: 8.18.2
       openai:
         specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5)
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.6.6)
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -980,8 +980,8 @@ importers:
         specifier: ^8.3.3
         version: 8.3.3(@types/node@22.19.13)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.15)(yaml@2.9.0)
       zod:
-        specifier: ^4.3.5
-        version: 4.3.5
+        specifier: ^4.6.6
+        version: 4.6.6
 
 packages:
 
@@ -2663,6 +2663,7 @@ packages:
 
   '@modelcontextprotocol/server-filesystem@2026.8.31':
     resolution: {integrity: sha512-kKaFkyAh6oipvc9+EAbJ552JafnMnOq5nzmzWkp1jJdBhTAAGpmIpWihUG1+rfNhmEFM98gUZDdCHCDD4v6a7Q==}
+    deprecated: 'Date-based versions are no longer published. This package has resumed semantic versioning at 1.0.0: install the latest version.'
     hasBin: true
 
   '@napi-rs/wasm-runtime@1.2.4':
@@ -9483,82 +9484,79 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
-  zod@4.3.5:
-    resolution: {integrity: sha512-k7Nwx6vuWx1IJ9Bjuf4Zt1PEllcwe7cls3VNzm4CQ1/hgtFUK2bRNG3rvnpPUhFjmqJKAKtjV576KnUkHocg/g==}
-
-  zod@4.5.4:
-    resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
+  zod@4.6.6:
+    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
 
-  '@ai-sdk/anthropic@3.0.116(zod@4.3.5)':
+  '@ai-sdk/anthropic@3.0.116(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.15
-      '@ai-sdk/provider-utils': 4.0.50(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 4.0.50(zod@4.6.6)
+      zod: 4.6.6
 
-  '@ai-sdk/gateway@3.0.189(zod@4.3.5)':
+  '@ai-sdk/gateway@3.0.189(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.15
-      '@ai-sdk/provider-utils': 4.0.50(zod@4.3.5)
+      '@ai-sdk/provider-utils': 4.0.50(zod@4.6.6)
       '@vercel/oidc': 3.2.0
-      zod: 4.3.5
+      zod: 4.6.6
 
-  '@ai-sdk/gateway@4.0.96(zod@4.3.5)':
+  '@ai-sdk/gateway@4.0.96(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.18
-      '@ai-sdk/provider-utils': 5.0.49(zod@4.3.5)
+      '@ai-sdk/provider-utils': 5.0.49(zod@4.6.6)
       '@vercel/oidc': 3.2.0
-      zod: 4.3.5
+      zod: 4.6.6
 
-  '@ai-sdk/google@4.0.87(zod@4.3.5)':
+  '@ai-sdk/google@4.0.87(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.21
-      '@ai-sdk/provider-utils': 5.0.53(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 5.0.53(zod@4.6.6)
+      zod: 4.6.6
 
-  '@ai-sdk/mcp@2.0.60(zod@4.3.5)':
+  '@ai-sdk/mcp@2.0.60(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.18
-      '@ai-sdk/provider-utils': 5.0.49(zod@4.3.5)
+      '@ai-sdk/provider-utils': 5.0.49(zod@4.6.6)
       cross-spawn: 7.0.6
       pkce-challenge: 5.0.1
-      zod: 4.3.5
+      zod: 4.6.6
 
-  '@ai-sdk/openai@4.0.83(zod@4.3.5)':
+  '@ai-sdk/openai@4.0.83(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.21
-      '@ai-sdk/provider-utils': 5.0.53(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 5.0.53(zod@4.6.6)
+      zod: 4.6.6
 
-  '@ai-sdk/provider-utils@4.0.50(zod@4.3.5)':
+  '@ai-sdk/provider-utils@4.0.50(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.15
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.1.1(patch_hash=a569122b13184e5bf2b9fed8a172a2d518f3534aefc2c9fcec12c9c6b33befef)
       undici: 6.28.1
-      zod: 4.3.5
+      zod: 4.6.6
 
-  '@ai-sdk/provider-utils@5.0.49(zod@4.3.5)':
+  '@ai-sdk/provider-utils@5.0.49(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.18
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1(patch_hash=a569122b13184e5bf2b9fed8a172a2d518f3534aefc2c9fcec12c9c6b33befef)
       undici: 7.29.1
-      zod: 4.3.5
+      zod: 4.6.6
 
-  '@ai-sdk/provider-utils@5.0.53(zod@4.3.5)':
+  '@ai-sdk/provider-utils@5.0.53(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.21
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1(patch_hash=a569122b13184e5bf2b9fed8a172a2d518f3534aefc2c9fcec12c9c6b33befef)
       undici: 7.29.1
-      zod: 4.3.5
+      zod: 4.6.6
 
   '@ai-sdk/provider@3.0.15':
     dependencies:
@@ -9572,12 +9570,12 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@4.0.121(react@19.3.0)(zod@4.3.5)':
+  '@ai-sdk/react@4.0.121(react@19.3.0)(zod@4.6.6)':
     dependencies:
-      '@ai-sdk/mcp': 2.0.60(zod@4.3.5)
+      '@ai-sdk/mcp': 2.0.60(zod@4.6.6)
       '@ai-sdk/provider': 4.0.18
-      '@ai-sdk/provider-utils': 5.0.49(zod@4.3.5)
-      ai: 7.0.118(zod@4.3.5)
+      '@ai-sdk/provider-utils': 5.0.49(zod@4.6.6)
+      ai: 7.0.118(zod@4.6.6)
       react: 19.3.0
       swr: 2.5.1(react@19.3.0)
       throttleit: 2.1.0
@@ -9704,7 +9702,7 @@ snapshots:
     dependencies:
       sitemap: 9.0.1
       stream-replace-string: 2.0.0
-      zod: 4.5.4
+      zod: 4.6.6
 
   '@astrojs/starlight-tailwind@5.0.0(@astrojs/starlight@0.42.5(@astrojs/markdown-remark@7.3.1(supports-color@10.2.2))(astro@7.3.5(@astrojs/markdown-remark@7.3.1(supports-color@10.2.2))(@types/node@22.19.13)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.15)(yaml@2.9.0))(supports-color@10.2.2)(typescript@5.9.3))(tailwindcss@4.3.3)':
     dependencies:
@@ -11853,12 +11851,12 @@ snapshots:
       eventsource-parser: 3.0.6
       jose: 6.1.3
       pkce-challenge: 5.0.1
-      zod: 4.3.5
+      zod: 4.6.6
     optional: true
 
   '@modelcontextprotocol/core@2.0.0':
     dependencies:
-      zod: 4.3.5
+      zod: 4.6.6
     optional: true
 
   '@modelcontextprotocol/sdk@1.26.0(supports-color@10.2.2)(zod@3.25.76)':
@@ -11883,7 +11881,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.3.5)':
+  '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.6.6)':
     dependencies:
       '@hono/node-server': 1.19.17(hono@4.13.7)
       ajv: 8.20.0
@@ -11900,34 +11898,12 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.3.5
-      zod-to-json-schema: 3.25.1(zod@4.3.5)
+      zod: 4.6.6
+      zod-to-json-schema: 3.25.1(zod@4.6.6)
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.30.0(supports-color@10.2.2)(zod@4.5.4)':
-    dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.7)
-      ajv: 8.20.0
-      ajv-formats: 3.0.1(ajv@8.20.0)
-      content-type: 1.0.5
-      cors: 2.8.6
-      cross-spawn: 7.0.6
-      eventsource: 3.0.7
-      eventsource-parser: 3.0.6
-      express: 5.2.1(supports-color@10.2.2)
-      express-rate-limit: 8.7.0(express@5.2.1(supports-color@10.2.2))(supports-color@10.2.2)
-      hono: 4.13.7
-      jose: 6.1.3
-      json-schema-typed: 8.0.2
-      pkce-challenge: 5.0.1
-      raw-body: 3.0.2
-      zod: 4.5.4
-      zod-to-json-schema: 3.25.1(zod@4.5.4)
-    transitivePeerDependencies:
-      - supports-color
-
-  '@modelcontextprotocol/sdk@1.32.0(supports-color@10.2.2)(zod@4.5.4)':
+  '@modelcontextprotocol/sdk@1.32.0(supports-color@10.2.2)(zod@4.6.6)':
     dependencies:
       '@hono/node-server': 1.19.17(hono@4.13.7)
       ajv: 8.20.0
@@ -11944,25 +11920,14 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.5.4
-      zod-to-json-schema: 3.25.1(zod@4.5.4)
+      zod: 4.6.6
+      zod-to-json-schema: 3.25.1(zod@4.6.6)
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/server-filesystem@2026.8.31(supports-color@10.2.2)(zod@4.3.5)':
+  '@modelcontextprotocol/server-filesystem@2026.8.31(supports-color@10.2.2)(zod@4.6.6)':
     dependencies:
-      '@modelcontextprotocol/sdk': 1.30.0(supports-color@10.2.2)(zod@4.3.5)
-      diff: 8.0.4
-      glob: 13.0.6
-      minimatch: 10.2.5
-    transitivePeerDependencies:
-      - '@cfworker/json-schema'
-      - supports-color
-      - zod
-
-  '@modelcontextprotocol/server-filesystem@2026.8.31(supports-color@10.2.2)(zod@4.5.4)':
-    dependencies:
-      '@modelcontextprotocol/sdk': 1.30.0(supports-color@10.2.2)(zod@4.5.4)
+      '@modelcontextprotocol/sdk': 1.30.0(supports-color@10.2.2)(zod@4.6.6)
       diff: 8.0.4
       glob: 13.0.6
       minimatch: 10.2.5
@@ -12054,10 +12019,10 @@ snapshots:
   '@openai/codex@0.160.0-win32-x64':
     optional: true
 
-  '@openrouter/ai-sdk-provider@2.9.0(ai@6.0.277(zod@4.3.5))(zod@4.3.5)':
+  '@openrouter/ai-sdk-provider@2.9.0(ai@6.0.277(zod@4.6.6))(zod@4.6.6)':
     dependencies:
-      ai: 6.0.277(zod@4.3.5)
-      zod: 4.3.5
+      ai: 6.0.277(zod@4.6.6)
+      zod: 4.6.6
 
   '@opentelemetry/api-logs@0.220.0':
     dependencies:
@@ -13913,20 +13878,20 @@ snapshots:
       clean-stack: 2.2.0
       indent-string: 4.0.0
 
-  ai@6.0.277(zod@4.3.5):
+  ai@6.0.277(zod@4.6.6):
     dependencies:
-      '@ai-sdk/gateway': 3.0.189(zod@4.3.5)
+      '@ai-sdk/gateway': 3.0.189(zod@4.6.6)
       '@ai-sdk/provider': 3.0.15
-      '@ai-sdk/provider-utils': 4.0.50(zod@4.3.5)
+      '@ai-sdk/provider-utils': 4.0.50(zod@4.6.6)
       '@opentelemetry/api': 1.9.0
-      zod: 4.3.5
+      zod: 4.6.6
 
-  ai@7.0.118(zod@4.3.5):
+  ai@7.0.118(zod@4.6.6):
     dependencies:
-      '@ai-sdk/gateway': 4.0.96(zod@4.3.5)
+      '@ai-sdk/gateway': 4.0.96(zod@4.6.6)
       '@ai-sdk/provider': 4.0.18
-      '@ai-sdk/provider-utils': 5.0.49(zod@4.3.5)
-      zod: 4.3.5
+      '@ai-sdk/provider-utils': 5.0.49(zod@4.6.6)
+      zod: 4.6.6
 
   ajv-formats@3.0.1(ajv@8.20.0):
     optionalDependencies:
@@ -14100,7 +14065,7 @@ snapshots:
       vitefu: 1.1.3(vite@8.3.3(@types/node@22.19.13)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.49.0)(tsx@4.23.15)(yaml@2.9.0))
       xxhash-wasm: 1.1.0
       yargs-parser: 22.0.0
-      zod: 4.5.4
+      zod: 4.6.6
     optionalDependencies:
       '@astrojs/markdown-remark': 7.3.1(supports-color@10.2.2)
       sharp: 0.35.5(@types/node@22.19.13)
@@ -17861,17 +17826,17 @@ snapshots:
       is-docker: 2.2.1
       is-wsl: 2.2.0
 
-  openai@7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.3.5):
+  openai@7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.21.3)(zod@4.6.6):
     optionalDependencies:
       '@aws-sdk/credential-provider-node': 3.972.33
       ws: 8.21.3
-      zod: 4.3.5
+      zod: 4.6.6
 
-  openai@7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5):
+  openai@7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.6.6):
     optionalDependencies:
       '@aws-sdk/credential-provider-node': 3.972.33
       ws: 8.22.0
-      zod: 4.3.5
+      zod: 4.6.6
 
   openapi-fetch@0.17.0:
     dependencies:
@@ -19906,20 +19871,14 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  zod-to-json-schema@3.25.1(zod@4.3.5):
+  zod-to-json-schema@3.25.1(zod@4.6.6):
     dependencies:
-      zod: 4.3.5
-
-  zod-to-json-schema@3.25.1(zod@4.5.4):
-    dependencies:
-      zod: 4.5.4
+      zod: 4.6.6
 
   zod@3.24.4: {}
 
   zod@3.25.76: {}
 
-  zod@4.3.5: {}
-
-  zod@4.5.4: {}
+  zod@4.6.6: {}
 
   zwitch@2.0.4: {}

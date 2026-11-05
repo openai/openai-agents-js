@@ -186,7 +186,7 @@
   },
   "devDependencies": {
     "@types/debug": "^4.1.13",
-    "zod": "^4.3.5"
+    "zod": "^4.6.6"
   },
   "files": [
     "dist"
