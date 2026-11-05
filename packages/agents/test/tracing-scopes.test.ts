@@ -1462,3 +1462,154 @@ it.each(['rejected success', 'aborted failure'] as const)(
     }
   },
 );
+
+it.each(['tracing admission', 'native submission'] as const)(
+  'keeps only known pre-submit failures idle: %s',
+  async (phase) => {
+    const failure = new Error(phase);
+    let nativeCalls = 0;
+    const session = await rootFixture(async () => {
+      nativeCalls++;
+      if (phase === 'native submission') throw failure;
+      return JSON.stringify({ status: 'started', turn_id: 'healthy' });
+    });
+    try {
+      if (phase === 'tracing admission')
+        harness.native.start_trace_span.mockImplementationOnce(() => {
+          throw failure;
+        });
+      await expect(
+        session.submit('invalid', { tracing: { name: 'invalid' } }),
+      ).rejects.toBe(failure);
+      if (phase === 'tracing admission') {
+        expect(nativeCalls).toBe(0);
+        expect((await session.submit('healthy')).turnId).toBe('healthy');
+        expect(nativeCalls).toBe(1);
+      } else {
+        await expect(session.submit('after retirement')).rejects.toThrow();
+        expect(nativeCalls).toBe(1);
+      }
+    } finally {
+      await session.close();
+    }
+  },
+);
+it('resolves a retained predecessor workflow after tracing transfers', async () => {
+  const events = Array.from({ length: 3 }, () =>
+    Promise.withResolvers<string>(),
+  );
+  const starts: Record<string, unknown>[] = [];
+  const session = await rootFixture(
+    async (wire) => {
+      const input = JSON.parse(wire);
+      if (input.mode === 'steer')
+        return JSON.stringify({ status: 'steered', turn_id: 'root-1' });
+      starts.push(input);
+      return JSON.stringify({
+        status: 'started',
+        turn_id: `root-${starts.length}`,
+      });
+    },
+    {},
+    { _managed_instructions: true },
+    events,
+  );
+  try {
+    let workflow: Awaited<ReturnType<typeof startTrace>>;
+    const turn = await withTrace({}, async (span) => {
+      workflow = span;
+      return session.submit('first');
+    });
+    const internals = session as unknown as {
+      issuedRuns: Map<
+        string,
+        {
+          tracing?: unknown;
+          issuedTracing?: unknown;
+          controller: AbortController;
+        }
+      >;
+      invokeCallback: (
+        run: unknown,
+        callback: () => Promise<void>,
+        signal: AbortSignal,
+        context: string,
+      ) => Promise<void>;
+    };
+    const predecessor = internals.issuedRuns.get('root-1')!;
+    await turn.steer('retained');
+    events[0].resolve(
+      JSON.stringify({
+        id: 'root-1',
+        msg: { type: 'task_complete', last_agent_message: 'intermediate' },
+        sdk_unsampled_steering: true,
+      }),
+    );
+    await vi.waitFor(() => expect(starts).toHaveLength(2));
+    expect(predecessor.tracing).toBeUndefined();
+    expect(predecessor.issuedTracing).toBeDefined();
+    await internals.invokeCallback(
+      predecessor,
+      async () => {
+        expect(getCurrentTrace()).toBe(workflow!);
+        await withSpan({}, () => expect(getCurrentTrace()).toBe(workflow!));
+      },
+      predecessor.controller.signal,
+      starts[0].tracing_context as string,
+    );
+  } finally {
+    await session.close();
+  }
+});
+it('clears processor descriptors when native terminal shutdown rejects', async () => {
+  const telemetry = await import('../src/runtime/telemetry');
+  await telemetry.setTraceProcessors([{ onEvent() {} }]);
+  const failure = new Error('terminal shutdown failure');
+  harness.native.shutdown_telemetry.mockRejectedValueOnce(failure);
+  await expect(shutdown()).rejects.toBe(failure);
+  const terminal = new Error('native routes are terminal');
+  harness.native.set_trace_routes.mockImplementationOnce(() => {
+    throw terminal;
+  });
+  await expect(
+    telemetry.setTraceProcessors(
+      Array.from({ length: 64 }, () => ({ onEvent() {} })),
+    ),
+  ).rejects.toBe(terminal);
+});
+it('clears registration ambient from the processor pump and callbacks', async () => {
+  const telemetry = await import('../src/runtime/telemetry');
+  let delivered = 0;
+  await withTrace({ name: 'registration' }, () =>
+    telemetry.setTraceProcessors([
+      {
+        async onEvent() {
+          expect(getCurrentSpan()).toBeUndefined();
+          expect(getCurrentTrace()).toBeUndefined();
+          await Promise.resolve();
+          expect(getCurrentSpan()).toBeUndefined();
+          delivered++;
+        },
+      },
+    ]),
+  );
+  const ids = JSON.parse(
+    harness.native.set_trace_routes.mock.calls.at(-1)![0],
+  ).processor_ids;
+  harness.native.drain_trace_events.mockResolvedValueOnce(
+    JSON.stringify({
+      events: [
+        {
+          sequence: 100000,
+          lifecycle: 'end',
+          processor_ids: ids,
+          attributes: {},
+        },
+      ],
+      through_sequence: 100000,
+    }),
+  );
+  await forceFlush();
+  await vi.waitFor(() => expect(delivered).toBe(1));
+  await telemetry.setTraceProcessors([]);
+});

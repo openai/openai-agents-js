@@ -719,6 +719,7 @@ const submissions = new WeakMap<
     compaction?: boolean;
     review?: boolean;
     retirement?: Promise<never>;
+    tracingAdmissionFailed?: boolean;
     repair?: OutputRepair;
   }
 >();
@@ -3149,6 +3150,15 @@ export class Session<OutputT = string, Context = unknown> {
     return captureTracing(options, this.options.tracingCapture);
   }
 
+  private async tracingContext(run: NativeTurn): Promise<string> {
+    try {
+      return await run.tracing!.context();
+    } catch (error) {
+      submissions.get(run)!.tracingAdmissionFailed = true;
+      throw error;
+    }
+  }
+
   private dispatchStart(run: NativeTurn, parts: JsonValue[]): void {
     const { output } = submissions.get(run)!;
     const selection = run.selection;
@@ -3182,7 +3192,7 @@ export class Session<OutputT = string, Context = unknown> {
       run,
       () => {
         if (!run.tracing) return this.#native._submit(wire);
-        return run.tracing.context().then((context) => {
+        return this.tracingContext(run).then((context) => {
           if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
             throw new TurnAborted(
               'Tracing admission stopped before native submission',
@@ -3238,7 +3248,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (continuedFrom) continuedFrom.tracing = undefined;
     this.dispatchRun(run, () => {
       if (!run.tracing) return submit();
-      return run.tracing.context().then((context) => {
+      return this.tracingContext(run).then((context) => {
         if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
           throw new TurnAborted(
             'Tracing admission stopped before native submission',
@@ -3305,10 +3315,11 @@ export class Session<OutputT = string, Context = unknown> {
           // _submit reserves InvalidArg for native guards before Core
           // dispatch. Receipt decoding failures require retiring the Session.
           rejectedBeforeAdmission =
-            error instanceof Error &&
-            'code' in error &&
-            error.code === 'InvalidArg' &&
-            !activateMcp;
+            submissions.get(run)!.tracingAdmissionFailed === true ||
+            (error instanceof Error &&
+              'code' in error &&
+              error.code === 'InvalidArg' &&
+              !activateMcp);
           throw error;
         },
       )
@@ -4878,7 +4889,7 @@ export class Session<OutputT = string, Context = unknown> {
     tracingContext?: string,
   ): Promise<void> {
     const scope = { session: this, run, active: true };
-    const workflow = run.tracing?.workflow;
+    const tracing = run.tracing ?? run.issuedTracing;
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
       .then(() =>
@@ -4888,10 +4899,11 @@ export class Session<OutputT = string, Context = unknown> {
                 tracingContext,
                 callback,
                 signal,
-                () => workflow,
+                (traceId, workflowSpanId) =>
+                  this.workflowForTrace(traceId, workflowSpanId),
               )
-            : run.tracing
-              ? run.tracing.run('host.callback', 'callback', callback)
+            : tracing
+              ? tracing.run('host.callback', 'callback', callback)
               : callback(),
         ),
       )

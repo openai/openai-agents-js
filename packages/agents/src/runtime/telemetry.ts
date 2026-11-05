@@ -1,4 +1,4 @@
-import { suppressTracing } from './tracing-context';
+import { suppressTracing, withoutTracing } from './tracing-context';
 /** Optional native telemetry. Configure before scopes or Sessions; close Sessions before shutdown. */
 import { isAbsolute, resolve } from 'node:path';
 import { binding } from './binding';
@@ -180,11 +180,14 @@ export async function shutdown(
   options: { timeoutMs?: number } = {},
 ): Promise<void> {
   const timeout = validateTimeout(options.timeoutMs);
-  await (await binding()).shutdown_telemetry(timeout);
-  processors.clear();
-  activeProcessorIds.clear();
-  retiredProcessorIds.clear();
-  wakePump?.();
+  try {
+    await (await binding()).shutdown_telemetry(timeout);
+  } finally {
+    processors.clear();
+    activeProcessorIds.clear();
+    retiredProcessorIds.clear();
+    wakePump?.();
+  }
 }
 
 /** Options for native workflow, custom-span and operation scopes. */
@@ -322,42 +325,44 @@ async function route(
   for (const id of ids) activeProcessorIds.add(id);
   retireProcessors();
   if (!pump) {
-    pump = (async () => {
-      while (processors.size) {
-        const batch = JSON.parse(await native.drain_trace_events(128));
-        let failures = 0;
-        for (const event of batch.events as TraceEvent[]) {
-          for (const id of event.processor_ids) {
-            try {
-              await suppressTracing(() =>
-                processors.get(id)?.onEvent(freezeSnapshot(event)),
-              );
-            } catch {
-              failures++;
+    pump = withoutTracing(() =>
+      (async () => {
+        while (processors.size) {
+          const batch = JSON.parse(await native.drain_trace_events(128));
+          let failures = 0;
+          for (const event of batch.events as TraceEvent[]) {
+            for (const id of event.processor_ids) {
+              try {
+                await suppressTracing(() =>
+                  processors.get(id)?.onEvent(freezeSnapshot(event)),
+                );
+              } catch {
+                failures++;
+              }
             }
           }
+          if (batch.through_sequence > acknowledgedSequence) {
+            native.ack_trace_events(batch.through_sequence, failures);
+            acknowledgedSequence = Math.max(
+              acknowledgedSequence,
+              batch.through_sequence,
+            );
+            retireProcessors();
+          }
+          if (!batch.events.length)
+            await new Promise<void>((resolve) => {
+              const timer = setTimeout(resolve, 10);
+              timer.unref();
+              wakePump = () => {
+                clearTimeout(timer);
+                resolve();
+              };
+            });
         }
-        if (batch.through_sequence > acknowledgedSequence) {
-          native.ack_trace_events(batch.through_sequence, failures);
-          acknowledgedSequence = Math.max(
-            acknowledgedSequence,
-            batch.through_sequence,
-          );
-          retireProcessors();
-        }
-        if (!batch.events.length)
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, 10);
-            timer.unref();
-            wakePump = () => {
-              clearTimeout(timer);
-              resolve();
-            };
-          });
-      }
-    })().finally(() => {
-      pump = undefined;
-    });
+      })().finally(() => {
+        pump = undefined;
+      }),
+    );
     // Native drain failures do not fail the agent execution path.
     void pump.catch(() => {});
   }
