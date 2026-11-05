@@ -66,7 +66,13 @@ function fixture(platform = fixturePlatform) {
     writeFileSync(path, bytes);
   };
   for (const [name, bytes] of Object.entries(inputs)) write(name, bytes);
-  const products = ['native/codex.node', ...nativeHelpers(platform)];
+  const products = [
+    'native/codex.node',
+    ...nativeHelpers(platform),
+    ...(platform === 'darwin-arm64'
+      ? ['native/test-bin/exec-server-fixture']
+      : []),
+  ];
   for (const name of products) {
     write(name, name);
     chmodSync(join(packageRoot, name), 0o755);
@@ -144,6 +150,123 @@ test('native-only artifacts restore with no compiler and leave current SDK sourc
       );
   } finally {
     f.dispose();
+  }
+});
+
+test('Mac snapshots restore the verified CI fixture and executable mode without a compiler', async () => {
+  const f = fixture('darwin-arm64');
+  const executable = 'native/test-bin/exec-server-fixture';
+  try {
+    const staging = join(f.repository, 'donor');
+    const receipt = readFileSync(
+      join(f.packageRoot, 'native/build-receipt.json'),
+    );
+    await copyNativeArtifact(f.repository, 'darwin-arm64', staging);
+    assert.deepEqual(
+      readFileSync(join(staging, 'native/build-receipt.json')),
+      receipt,
+    );
+    assert.equal(readFileSync(join(staging, executable), 'utf8'), executable);
+    assert.ok(!nativeHelpers('darwin-arm64').includes(executable));
+    chmodSync(join(staging, executable), 0o644);
+    rmSync(join(f.packageRoot, executable));
+    const oldPath = process.env.PATH;
+    try {
+      process.env.PATH = '';
+      await copyNativeArtifact(
+        f.repository,
+        'darwin-arm64',
+        f.packageRoot,
+        staging,
+      );
+    } finally {
+      process.env.PATH = oldPath;
+    }
+    assert.equal(
+      readFileSync(join(f.packageRoot, executable), 'utf8'),
+      executable,
+    );
+    if (process.platform !== 'win32')
+      assert.ok(lstatSync(join(f.packageRoot, executable)).mode & 0o111);
+    assert.deepEqual(
+      readFileSync(join(f.packageRoot, 'native/build-receipt.json')),
+      receipt,
+    );
+  } finally {
+    f.dispose();
+  }
+});
+
+test('Mac snapshots reject missing, changed, nonregular and unexecutable CI fixtures before copying', async () => {
+  for (const mutation of [
+    'inventory',
+    'missing',
+    'changed',
+    'directory',
+    ...(process.platform === 'win32' ? [] : ['mode']),
+  ]) {
+    const f = fixture('darwin-arm64');
+    const executable = 'native/test-bin/exec-server-fixture';
+    try {
+      if (mutation === 'inventory') {
+        delete f.receipt.products[executable];
+        f.write('native/build-receipt.json', JSON.stringify(f.receipt));
+        // Ordinary core-only local builds remain valid for packaging.
+        await verifyNativeReceipt(f.repository, 'darwin-arm64');
+      }
+      if (mutation === 'missing' || mutation === 'directory')
+        rmSync(join(f.packageRoot, executable));
+      if (mutation === 'directory') mkdirSync(join(f.packageRoot, executable));
+      if (mutation === 'changed') f.write(executable, 'tampered');
+      if (mutation === 'mode')
+        chmodSync(join(f.packageRoot, executable), 0o644);
+      const staging = join(f.repository, 'rejected');
+      await assert.rejects(
+        copyNativeArtifact(f.repository, 'darwin-arm64', staging),
+      );
+      assert.equal(existsSync(staging), false);
+    } finally {
+      f.dispose();
+    }
+  }
+});
+
+test('restoring a Mac snapshot rejects fixture corruption and other platforms retain runtime-only snapshots', async () => {
+  const f = fixture('darwin-arm64');
+  try {
+    const staging = join(f.repository, 'donor');
+    await copyNativeArtifact(f.repository, 'darwin-arm64', staging);
+    writeFileSync(
+      join(staging, 'native/test-bin/exec-server-fixture'),
+      'tampered',
+    );
+    await assert.rejects(
+      copyNativeArtifact(f.repository, 'darwin-arm64', f.packageRoot, staging),
+      /Native product changed/,
+    );
+  } finally {
+    f.dispose();
+  }
+  for (const platform of ['linux-x64', 'win32-x64']) {
+    const other = fixture(platform);
+    try {
+      const name = `native/test-bin/exec-server-fixture${platform === 'win32-x64' ? '.exe' : ''}`;
+      other.write(name, 'CI-only fixture');
+      chmodSync(join(other.packageRoot, name), 0o755);
+      other.receipt.products[name] = `sha256:${sha('CI-only fixture')}`;
+      other.write('native/build-receipt.json', JSON.stringify(other.receipt));
+      await verifyNativeReceipt(other.repository, platform);
+      await assert.rejects(
+        copyNativeArtifact(
+          other.repository,
+          platform,
+          join(other.repository, 'rejected'),
+        ),
+        /product inventory/,
+      );
+    } finally {
+      other.dispose();
+    }
   }
 });
 
@@ -360,6 +483,7 @@ function donorFixture() {
       recipe: sha(
         JSON.stringify({
           '.github/workflows/alpha-release-artifacts.yml': commit('e'),
+          '.github/workflows/stacked-executor-policy.yml': commit('e'),
           '.github/workflows/alpha-native-package.yml': commit('e'),
           '.github/workflows/alpha-sdk-package.yml': commit('e'),
         }),

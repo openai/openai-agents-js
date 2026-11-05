@@ -17,7 +17,10 @@ jobs:
     if: >-
       github.repository == 'openai/openai-agents-js' &&
       ((github.event_name == 'push' && github.event.deleted != true) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+      (github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+      (startsWith(github.event.pull_request.base.ref, 'feat/') &&
+      github.event.pull_request.base.ref != 'feat/codex-harness'))))
     name: SDK and package (${{ matrix.platform }})
     strategy:
       fail-fast: false
@@ -123,7 +126,17 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Test native artifact reuse
-        run: node --test scripts/native-artifact.test.mjs scripts/alpha-package.test.mjs
+        run: node --test scripts/native-artifact.test.mjs scripts/alpha-package.test.mjs scripts/native-workflow.test.mjs
+
+      - name: Qualify local executor grants on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents/native/test-bin/exec-server-fixture
+        run: >-
+          pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
+          -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
+          --reporter=verbose
 
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"

@@ -76,10 +76,16 @@ export async function captureNativeScope({ github, context, attempt }) {
     base_ref: null,
   };
   if (pr) {
-    assert.notEqual(pr.head.repo.id, id, 'Owned PRs use the push pipeline');
+    const owned = pr.head.repo.id === id;
+    assert.ok(
+      !owned ||
+        (pr.base.ref.startsWith('feat/') &&
+          pr.base.ref !== 'feat/codex-harness'),
+      'Owned direct PRs use the push pipeline',
+    );
     return validateNativeScope({
       ...common,
-      kind: 'fork',
+      kind: owned ? 'pr' : 'fork',
       pr_number: pr.number,
       base_repository_id: pr.base.repo.id,
       base_ref: pr.base.ref,

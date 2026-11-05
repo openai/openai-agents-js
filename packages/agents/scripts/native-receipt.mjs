@@ -151,7 +151,11 @@ export function nativeHelpers(platform) {
 export async function verifyNativeReceipt(
   repository,
   platform,
-  { artifactRoot, normalizeModes = false } = {},
+  {
+    artifactRoot,
+    normalizeModes = false,
+    snapshot = artifactRoot !== undefined,
+  } = {},
 ) {
   const packageRoot = join(repository, 'packages/agents');
   const productsRoot = artifactRoot ?? packageRoot;
@@ -179,7 +183,17 @@ export async function verifyNativeReceipt(
     sourceIdentities(packageRoot),
     'Native source identities changed',
   );
-  const products = ['native/codex.node', ...helpers];
+  const fixture = `native/test-bin/exec-server-fixture${platform === 'win32-x64' ? '.exe' : ''}`;
+  // Only macOS CI snapshots carry the executor fixture. Local builds may omit it.
+  const includeFixture = snapshot
+    ? platform === 'darwin-arm64'
+    : Object.hasOwn(receipt.products, fixture);
+  const products = [
+    'native/codex.node',
+    ...helpers,
+    ...(includeFixture ? [fixture] : []),
+  ];
+  const executables = products.filter((name) => name !== 'native/codex.node');
   assert.deepEqual(
     Object.keys(receipt.products).sort(),
     [...products].sort(),
@@ -224,15 +238,24 @@ export async function verifyNativeReceipt(
       receipt.products[name],
       `Native product changed: ${name}`,
     );
-    if (platform !== 'win32-x64' && helpers.includes(name) && !normalizeModes) {
-      assert.ok(stat.mode & 0o111, `Helper is not executable: ${name}`);
+    if (
+      platform !== 'win32-x64' &&
+      executables.includes(name) &&
+      !normalizeModes
+    ) {
+      assert.ok(stat.mode & 0o111, `Native product is not executable: ${name}`);
     }
   }
   // GitHub artifacts preserve bytes, but normalize executable files to mode 0644.
   if (normalizeModes && platform !== 'win32-x64') {
-    for (const name of helpers) chmodSync(join(productsRoot, name), 0o755);
+    for (const name of executables) chmodSync(join(productsRoot, name), 0o755);
   }
-  return { revision: receipt.sources.codex.revision, helpers };
+  return {
+    revision: receipt.sources.codex.revision,
+    helpers,
+    products,
+    receipt,
+  };
 }
 
 export async function copyNativeArtifact(
@@ -244,30 +267,28 @@ export async function copyNativeArtifact(
   const packageRoot = join(repository, 'packages/agents');
   const restoring = source !== undefined;
   const sourceRoot = source ?? packageRoot;
-  const { helpers } = await verifyNativeReceipt(
-    repository,
-    platform,
-    restoring ? { artifactRoot: sourceRoot, normalizeModes: true } : {},
-  );
+  const { products } = await verifyNativeReceipt(repository, platform, {
+    snapshot: true,
+    ...(restoring ? { artifactRoot: sourceRoot, normalizeModes: true } : {}),
+  });
   if (!restoring)
     assert.ok(
       !existsSync(destination) || readdirSync(destination).length === 0,
       'Native staging directory must be empty',
     );
-  for (const name of [
-    'native/codex.node',
-    ...helpers,
-    'native/build-receipt.json',
-  ]) {
+  for (const name of [...products, 'native/build-receipt.json']) {
     const file = join(destination, name);
     mkdirSync(dirname(file), { recursive: true });
     copyFileSync(join(sourceRoot, name), file);
-    if (platform !== 'win32-x64' && helpers.includes(name))
+    if (
+      platform !== 'win32-x64' &&
+      name !== 'native/codex.node' &&
+      name !== 'native/build-receipt.json'
+    )
       chmodSync(file, 0o755);
   }
-  await verifyNativeReceipt(
-    repository,
-    platform,
-    restoring ? {} : { artifactRoot: destination },
-  );
+  await verifyNativeReceipt(repository, platform, {
+    snapshot: true,
+    ...(restoring ? {} : { artifactRoot: destination }),
+  });
 }

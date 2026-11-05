@@ -30,7 +30,10 @@ jobs:
     if: >-
       github.repository == 'openai/openai-agents-js' &&
       ((github.event_name == 'push' && github.event.deleted != true) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+      (github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+      (startsWith(github.event.pull_request.base.ref, 'feat/') &&
+      github.event.pull_request.base.ref != 'feat/codex-harness'))))
     outputs:
       artifact_id: ${{ steps.publish.outputs['artifact-id'] }}
       artifact_digest: ${{ steps.publish.outputs['artifact-digest'] }}
@@ -155,7 +158,11 @@ jobs:
       - name: Build native products
         if: steps.reuse.outputs.usable != 'true'
         run: |
-          node packages/agents/scripts/native.mjs package
+          if [[ "$EXPECTED_PLATFORM" == darwin-arm64 ]]; then
+            node packages/agents/scripts/native.mjs package --test-fixture
+          else
+            node packages/agents/scripts/native.mjs package
+          fi
 
       - name: Stage native snapshot
         env:

@@ -8,6 +8,8 @@ on:
       - '!feat/codex-harness'
     paths:
       - '.github/workflows/alpha-release-artifacts.yml'
+      - '.github/workflows/alpha-native-package.yml'
+      - '.github/workflows/alpha-sdk-package.yml'
       - '.github/workflows/stacked-executor-policy.yml'
       - 'packages/agents/native/**'
       - 'packages/agents/src/**'
@@ -15,6 +17,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 jobs:
   package:

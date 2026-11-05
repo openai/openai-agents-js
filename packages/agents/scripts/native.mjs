@@ -40,7 +40,8 @@ const [command] = positionals;
 if (
   positionals.length !== 1 ||
   !['prepare', 'audit', 'build', 'package'].includes(command) ||
-  ((values.release || values['test-fixture']) && command !== 'build')
+  (values.release && command !== 'build') ||
+  (values['test-fixture'] && !['build', 'package'].includes(command))
 ) {
   throw new Error(
     'Usage: node scripts/native.mjs prepare|audit|build|package [--source <codex-git-repository>] [--rmcp-source <rust-sdk-git-repository>] [--release] [--test-fixture]',

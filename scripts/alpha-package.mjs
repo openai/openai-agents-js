@@ -140,7 +140,7 @@ export function verifyStarterLock(lock, packages) {
   );
 }
 
-async function stagePackage(
+export async function stagePackage(
   repository,
   name,
   version,
@@ -148,6 +148,7 @@ async function stagePackage(
   staging,
   cache,
   helpers,
+  nativeReceipt,
 ) {
   const source = join(repository, 'packages', name);
   const destination = join(staging, name, 'package');
@@ -180,6 +181,17 @@ async function stagePackage(
     platform,
   );
   if (name === 'agents') {
+    // The verified source receipt may also cover a CI-only executor fixture.
+    // Publish only runtime products, leaving the full source receipt untouched.
+    await writeJson(join(destination, 'native/build-receipt.json'), {
+      ...nativeReceipt,
+      products: Object.fromEntries(
+        ['native/codex.node', ...helpers].map((name) => [
+          name,
+          nativeReceipt.products[name],
+        ]),
+      ),
+    });
     manifest.publishConfig = {
       ...manifest.publishConfig,
       executableFiles: helpers.map((file) => `./${file}`),
@@ -239,7 +251,11 @@ export async function produceAlpha({ repository = root, version, output }) {
   assert.ok(isAbsolute(output), '--output must be absolute');
   assertCleanSource(repository, output);
   const platform = `${process.platform}-${process.arch}`;
-  const { revision, helpers } = await verifyNativeReceipt(repository, platform);
+  const {
+    revision,
+    helpers,
+    receipt: nativeReceipt,
+  } = await verifyNativeReceipt(repository, platform);
   const sourceCommit = run('git', ['rev-parse', 'HEAD'], repository).trim();
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
   await mkdir(output, { recursive: true });
@@ -259,6 +275,7 @@ export async function produceAlpha({ repository = root, version, output }) {
         staging,
         cache,
         helpers,
+        nativeReceipt,
       );
       const archive = `openai-${name}-${version}-${platform}.tgz`;
       run(

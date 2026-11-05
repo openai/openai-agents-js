@@ -22,7 +22,10 @@ jobs:
     if: >-
       github.repository == 'openai/openai-agents-js' &&
       ((github.event_name == 'push' && github.event.deleted != true) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+      (github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+      (startsWith(github.event.pull_request.base.ref, 'feat/') &&
+      github.event.pull_request.base.ref != 'feat/codex-harness'))))
     uses: ./.github/workflows/alpha-native-package.yml
     with:
       platform: linux-x64
@@ -32,7 +35,10 @@ jobs:
     if: >-
       github.repository == 'openai/openai-agents-js' &&
       ((github.event_name == 'push' && github.event.deleted != true) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+      (github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+      (startsWith(github.event.pull_request.base.ref, 'feat/') &&
+      github.event.pull_request.base.ref != 'feat/codex-harness'))))
     uses: ./.github/workflows/alpha-native-package.yml
     with:
       platform: darwin-arm64
@@ -42,7 +48,10 @@ jobs:
     if: >-
       github.repository == 'openai/openai-agents-js' &&
       ((github.event_name == 'push' && github.event.deleted != true) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+      (github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+      (startsWith(github.event.pull_request.base.ref, 'feat/') &&
+      github.event.pull_request.base.ref != 'feat/codex-harness'))))
     uses: ./.github/workflows/alpha-native-package.yml
     with:
       platform: win32-x64
@@ -52,7 +61,10 @@ jobs:
     if: >-
       github.repository == 'openai/openai-agents-js' &&
       ((github.event_name == 'push' && github.event.deleted != true) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository))
+      (github.event_name == 'pull_request' &&
+      (github.event.pull_request.head.repo.full_name != github.repository ||
+      (startsWith(github.event.pull_request.base.ref, 'feat/') &&
+      github.event.pull_request.base.ref != 'feat/codex-harness'))))
     needs: [native_linux, native_macos, native_windows]
     uses: ./.github/workflows/alpha-sdk-package.yml
     with:

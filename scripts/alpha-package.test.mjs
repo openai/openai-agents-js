@@ -1,6 +1,6 @@
-import process from 'node:process';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -16,6 +16,7 @@ import {
   alphaManifest,
   packageNames,
   starterManifest,
+  stagePackage,
   verifyNativeReceipt,
   verifyStarterLock,
 } from './alpha-package.mjs';
@@ -117,11 +118,11 @@ test('starter lock rejects registry fallback and duplicate SDK installations', (
   assert.throws(() => verifyStarterLock(duplicate, packages), /Duplicate/);
 });
 
-test('release receipt rejects debug builds, changed binaries, and fixture payloads', async () => {
+test('release packaging verifies the full CI receipt but ships only runtime products and receipt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agents-alpha-receipt-'));
   const packageRoot = join(root, 'packages/agents');
   const revision = 'a'.repeat(40);
-  const platform = `${process.platform}-${process.arch}`;
+  const platform = 'darwin-arm64';
   const files = {
     'native/CODEX_REVISION': revision,
     'native/codex.node': 'addon',
@@ -197,6 +198,71 @@ test('release receipt rejects debug builds, changed binaries, and fixture payloa
       /product inventory/,
     );
     await writeFile(receiptPath, JSON.stringify(receipt));
+    const fixture = 'native/test-bin/exec-server-fixture';
+    await mkdir(dirname(join(packageRoot, fixture)), { recursive: true });
+    await writeFile(join(packageRoot, fixture), 'CI executor fixture');
+    await chmod(join(packageRoot, fixture), 0o755);
+    receipt.products[fixture] = `sha256:${digest('CI executor fixture')}`;
+    await writeFile(receiptPath, JSON.stringify(receipt));
+    const fullReceipt = await readFile(receiptPath, 'utf8');
+    const verified = await verifyNativeReceipt(root, platform);
+    await writeFile(join(root, 'LICENSE'), 'test license');
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name: '@openai/agents',
+        version: '0.21.0',
+        files: JSON.parse(
+          await readFile(
+            join(import.meta.dirname, '../packages/agents/package.json'),
+            'utf8',
+          ),
+        ).files,
+      }),
+    );
+    await mkdir(join(packageRoot, 'dist'));
+    await writeFile(join(packageRoot, 'dist/index.js'), '// SDK output.\n');
+    const directory = await stagePackage(
+      root,
+      'agents',
+      version,
+      platform,
+      join(root, 'staged'),
+      join(root, 'npm-cache'),
+      verified.helpers,
+      verified.receipt,
+    );
+    const archive = join(root, 'release.tgz');
+    execFileSync('tar', ['-czf', archive, '-C', dirname(directory), 'package']);
+    const listing = execFileSync('tar', ['-tzf', archive], {
+      encoding: 'utf8',
+    });
+    assert.ok(!listing.includes('native/test-bin'));
+    const unpacked = join(root, 'unpacked');
+    await mkdir(unpacked);
+    execFileSync('tar', ['-xzf', archive, '-C', unpacked]);
+    const published = JSON.parse(
+      await readFile(
+        join(unpacked, 'package/native/build-receipt.json'),
+        'utf8',
+      ),
+    );
+    assert.deepEqual(
+      Object.keys(published.products).sort(),
+      ['native/codex.node', ...nativeHelpers(platform)].sort(),
+    );
+    assert.deepEqual(published.inputs, receipt.inputs);
+    assert.deepEqual(published.sources, receipt.sources);
+    for (const [name, expected] of Object.entries(published.products))
+      assert.equal(
+        `sha256:${digest(await readFile(join(unpacked, 'package', name)))}`,
+        expected,
+      );
+    assert.equal(await readFile(receiptPath, 'utf8'), fullReceipt);
+    assert.equal(
+      await readFile(join(packageRoot, fixture), 'utf8'),
+      'CI executor fixture',
+    );
     await writeFile(join(packageRoot, 'native/codex.node'), 'tampered');
     await assert.rejects(verifyNativeReceipt(root, platform), /changed/);
     assert.equal(JSON.parse(await readFile(receiptPath, 'utf8')).release, true);

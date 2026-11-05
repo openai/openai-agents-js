@@ -361,6 +361,23 @@ describe.skipIf(process.platform === 'win32')(
           git('rev-parse', 'HEAD') + '\n',
         );
         emptySeries(native, source, git('rev-parse', 'HEAD'));
+        if (host.includes('-apple-')) {
+          // Exercise package's real child-process smoke check with fake Rust outputs.
+          writeFileSync(
+            join(native, 'index.js'),
+            `
+module.exports = {
+  CODEX_REVISION: ${JSON.stringify(git('rev-parse', 'HEAD'))},
+  create_engine() {}, create_checkpoint_engine() {},
+  _packaged_runtime() {
+    const path = require('node:path');
+    return Object.fromEntries(['codex-sdk-runtime', 'codex-code-mode-host', 'codex-execve-wrapper']
+      .map(name => [name, path.join(__dirname, '..', 'bin', name)]));
+  }
+};
+`,
+          );
+        }
         writeFileSync(
           join(native, 'Cargo.lock'),
           '[[package]]\nname = "v8"\nversion = "1.2.3"\n',
@@ -433,12 +450,11 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         const suffix = windows ? '.exe' : '';
         const bin = join(pkg, 'bin');
         const build = [
-          'build',
+          ...(host.includes('-apple-') ? ['package'] : ['build', '--release']),
           '--source',
           source,
           '--rmcp-source',
           source,
-          '--release',
           '--test-fixture',
         ];
         for (const args of [
@@ -458,11 +474,26 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
               writeFileSync(join(bin, alias + suffix), 'old helper');
             }
           }
-          execFileSync(
+          const output = execFileSync(
             process.execPath,
             [join(scripts, 'native.mjs'), ...args],
             { env, stdio: 'pipe' },
           );
+          if (args[0] === 'package') {
+            expect(output.toString()).toContain('Verified native addon');
+            expect(() =>
+              execFileSync(
+                process.execPath,
+                [
+                  join(scripts, 'native.mjs'),
+                  'package',
+                  '--release',
+                  '--test-fixture',
+                ],
+                { env, stdio: 'pipe' },
+              ),
+            ).toThrow(/Usage:/);
+          }
         }
         const builds: { args: string[]; output: string; jobs?: string }[] =
           readFileSync(log, 'utf8')

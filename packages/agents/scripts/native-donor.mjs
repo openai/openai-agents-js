@@ -5,6 +5,7 @@ import process from 'node:process';
 import { canonicalBranch, validateNativeScope } from './native-scope.mjs';
 
 const callerPath = '.github/workflows/alpha-release-artifacts.yml';
+const stackedPath = '.github/workflows/stacked-executor-policy.yml';
 const nativePath = '.github/workflows/alpha-native-package.yml';
 const sdkPath = '.github/workflows/alpha-sdk-package.yml';
 const shaPattern = /^[a-f0-9]{40}$/;
@@ -14,14 +15,17 @@ const platforms = ['linux-x64', 'darwin-arm64', 'win32-x64'];
 const MAX_CANDIDATES = 20;
 
 export async function executedNativeRecipe({ github, repo, run, workflowSha }) {
-  assert.equal(run.path, callerPath, 'Unexpected producer workflow');
+  const stacked = run.path === stackedPath;
+  assert.ok(run.path === callerPath || stacked, 'Unexpected producer workflow');
+  if (stacked)
+    assert.equal(run.event, 'pull_request', 'Stacked workflows cannot donate');
   assert.match(run.head_sha, shaPattern);
   assert.ok(
     Array.isArray(run.referenced_workflows),
     'Missing executed workflow references',
   );
   const isPush = run.event === 'push';
-  // Fork PRs still qualify their own current-run snapshots, but are never historical donors.
+  // PRs qualify current-run snapshots, but are never historical donors.
   assert.ok(
     isPush || (run.event === 'pull_request' && workflowSha),
     'Only push runs can establish donor recipe authority',
@@ -34,9 +38,17 @@ export async function executedNativeRecipe({ github, repo, run, workflowSha }) {
     ),
     'Missing native workflow execution',
   );
+  if (stacked)
+    assert.ok(
+      run.referenced_workflows.some(
+        (entry) =>
+          entry.path === `${repo.owner}/${repo.repo}/${callerPath}@${executed}`,
+      ),
+      'Missing stacked Alpha workflow execution',
+    );
   for (const reference of run.referenced_workflows) {
     assert.ok(
-      [nativePath, sdkPath].some(
+      [nativePath, sdkPath, ...(stacked ? [callerPath] : [])].some(
         (path) =>
           reference.path === `${repo.owner}/${repo.repo}/${path}@${executed}`,
       ),
@@ -55,7 +67,9 @@ export async function executedNativeRecipe({ github, repo, run, workflowSha }) {
       );
   }
   const blobs = {};
-  for (const path of [callerPath, nativePath, sdkPath]) {
+  // Both entrypoints bind the same complete recipe, so stacked consumers can
+  // reuse compatible push snapshots without accepting PR runs as donors.
+  for (const path of [callerPath, stackedPath, nativePath, sdkPath]) {
     const { data: file } = await github.rest.repos.getContent({
       ...repo,
       path,
