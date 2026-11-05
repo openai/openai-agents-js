@@ -636,6 +636,17 @@ impl Control {
         }
     }
 
+    pub(crate) fn tracing_context(&self) -> codex_otel::sdk_trace::CapturedContext {
+        if self.native_ancestor.is_some() {
+            // A child created without tracing keeps that choice on later turns.
+            codex_otel::sdk_trace::CapturedContext {
+                context: self.creation_tracing(),
+            }
+        } else {
+            codex_otel::sdk_trace::CapturedContext::capture()
+        }
+    }
+
     pub(crate) fn code_import_poisoned(&self) -> bool {
         self.import_cleanup_failure.get().is_some_and(|failure| {
             failure
@@ -3360,11 +3371,11 @@ impl DirectRequest {
             // web/image, missing ids and malformed search are not client calls.
             _ => return Ok((item, false)),
         };
-        // The model stream can deliver this item on a different task. Its
-        // executor approval belongs to the turn retained by this request.
+        // Model output can arrive on another task. Keep the turn that issued
+        // the request, including an expired or untraced owner's empty context.
         let tracing = match &self.owner.settlement {
             Some(receipt) => receipt.upgrade().and_then(|turn| turn.tracing.clone()),
-            None => codex_otel::sdk_trace::ContextLease::capture().map(Arc::new),
+            None => self.control.tracing_context().context,
         };
         let request = Request {
             tracing_context: tracing.as_ref().map(|context| context.token()),
@@ -3750,7 +3761,7 @@ impl ToolLifecycleContributor for Boundary {
                 return Err(());
             }
             let retained = control.root && route == "code_mode";
-            let tracing = codex_otel::sdk_trace::ContextLease::capture();
+            let tracing = control.tracing_context().context;
             let request = Request {
                 tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "after",
@@ -4736,7 +4747,7 @@ impl CodeModeSessionDelegate for Delegate {
                 // to ordinary, unselected native calls.
                 return self.inner.invoke_tool(invocation, cancellation_token).await;
             }
-            let tracing = codex_otel::sdk_trace::ContextLease::capture();
+            let tracing = control.tracing_context().context;
             let request = Request {
                 tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "before",
