@@ -225,9 +225,17 @@
       "sha256": "e9364e66af36741d0bf03430de9ca1d02b4659d81fff8639ebf55165c544f8dc"
     },
     {
+      "path": "0056-sdk-native-tracing.patch",
+      "sha256": "417c24b71ae57e8af5657bcadd763f9a758473f2a5a877d7360380616bcccd8a"
+    },
+    {
+      "path": "0057-sdk-workflow-identity.patch",
+      "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
+    },
+    {
       "path": "0054-native-prepared-request.patch",
       "sha256": "f8cc76f8adb34ef55c49d06f05d44f637f15811653f83dbb18aac85b16f8603f"
     }
   ],
-  "result_tree": "d3b115b03f91539ccd09ae2e3d8c403139fcdb67"
+  "result_tree": "51337e71992e09f2a3d795ef8448535f55a9085b"
 }

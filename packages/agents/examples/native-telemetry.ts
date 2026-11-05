@@ -138,65 +138,72 @@ export async function runNativeTelemetry() {
               [toolCall('probe', {}, { callId: scenario })],
               ...(scenario === 'thrown-callback' ? [] : [[text('violet')]]),
             ];
-      await withScriptedResponses(script, async (peer) => {
-        const agent = new Agent({
-          instructions: 'Use probe, then answer briefly.',
-          model: 'gpt-5.5',
-          provider: peer.provider,
-          tools: [
-            tool({
-              name: 'probe',
-              parameters: z.strictObject({}),
-              execute: () => {
-                callback = scenario;
-                if (scenario === 'thrown-callback')
-                  throw new Error('Synthetic callback failure.');
-                return new ToolOutput(
-                  [{ type: 'inputText', text: 'synthetic result' }],
-                  scenario !== 'returned-failure',
-                );
-              },
-            }),
-          ],
-          ...(scenario === 'invalid-output'
-            ? { outputType: z.strictObject({ label: z.string() }) }
-            : {}),
-        });
-        await using session = await agent.session();
-        const turn = await session.submit('Run the synthetic probe.');
-        let outcome: 'completed' | 'failed' = 'completed';
-        try {
-          await turn.wait();
-        } catch {
-          outcome = 'failed';
-        }
-        const history: Array<{ id: string; status: string }> = [];
-        for await (const item of session.turns())
-          history.push({ id: item.id, status: item.status });
-        receipts.push({
-          scenario,
-          sessionId: session.id,
-          turnId: turn.turnId,
-          outcome,
-          callback,
-          toolOutput: peer.toolOutput(scenario) ?? null,
-          history,
-        });
-        peer.assertExhausted();
-        assert.equal(
-          callback,
-          scenario === 'invalid-output' ? 'not-called' : scenario,
-        );
-        if (scenario === 'success' || scenario === 'returned-failure') {
-          assert.equal(peer.toolOutput(scenario), 'synthetic result');
-        }
-        assert.equal(
-          outcome,
-          scenario === 'success' || scenario === 'returned-failure'
-            ? 'completed'
-            : 'failed',
-        );
-      });
+      await telemetry.withTrace({ name: `example.${scenario}` }, () =>
+        withScriptedResponses(script, async (peer) => {
+          const agent = new Agent({
+            instructions: 'Use probe, then answer briefly.',
+            model: 'gpt-5.5',
+            provider: peer.provider,
+            tools: [
+              tool({
+                name: 'probe',
+                parameters: z.strictObject({}),
+                execute: () => {
+                  callback = scenario;
+                  if (scenario === 'thrown-callback')
+                    throw new Error('Synthetic callback failure.');
+                  return new ToolOutput(
+                    [{ type: 'inputText', text: 'synthetic result' }],
+                    scenario !== 'returned-failure',
+                  );
+                },
+              }),
+            ],
+            ...(scenario === 'invalid-output'
+              ? { outputType: z.strictObject({ label: z.string() }) }
+              : {}),
+          });
+          await using session = await agent.session();
+          const turn = await telemetry.withSpan({ name: 'admit.probe' }, () =>
+            session.submit('Run the synthetic probe.'),
+          );
+          let outcome: 'completed' | 'failed' = 'completed';
+          try {
+            await turn.wait();
+          } catch {
+            outcome = 'failed';
+          }
+          // Flush completed native records while this Session is still open.
+          const flushed = await telemetry.forceFlush({ timeoutMs: 5_000 });
+          assert.equal(flushed.status, 'success');
+          const history: Array<{ id: string; status: string }> = [];
+          for await (const item of session.turns())
+            history.push({ id: item.id, status: item.status });
+          receipts.push({
+            scenario,
+            sessionId: session.id,
+            turnId: turn.turnId,
+            outcome,
+            callback,
+            toolOutput: peer.toolOutput(scenario) ?? null,
+            history,
+          });
+          peer.assertExhausted();
+          assert.equal(
+            callback,
+            scenario === 'invalid-output' ? 'not-called' : scenario,
+          );
+          if (scenario === 'success' || scenario === 'returned-failure') {
+            assert.equal(peer.toolOutput(scenario), 'synthetic result');
+          }
+          assert.equal(
+            outcome,
+            scenario === 'success' || scenario === 'returned-failure'
+              ? 'completed'
+              : 'failed',
+          );
+        }),
+      );
     }
   }
   // Telemetry has shut down; keep the receiver alive while reading its batches.

@@ -428,6 +428,66 @@ pub(crate) fn redact_executor_observations(history: &mut [codex_history::Rollout
     }
 }
 
+#[cfg(test)]
+mod receipt_projection_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn manual_history_projection_preserves_real_changes_and_raw_capture_authority() {
+        for strict in [false, true] {
+            for executors in [
+                json!([]),
+                json!([{"headers":{"Authorization":"synthetic-private"}}]),
+            ] {
+                let raw: Vec<RolloutItem> = serde_json::from_value(json!([
+                    {"type":"turn_context","payload":{
+                        "cwd":"/work","approval_policy":"never",
+                        "sandbox_policy":{"type":"read-only"},"model":"fixture","summary":"auto",
+                        "sdk_receipt":{"version":1,"strict_executor_writes":strict,"executors":executors}
+                    }},
+                    {"type":"response_item","payload":{
+                        "type":"function_call_output","call_id":"manual","output":"original"
+                    }}
+                ])).unwrap();
+                let raw_value = serde_json::to_value(&raw).unwrap();
+                let mut exported = raw.clone();
+                redact_executor_observations(&mut exported);
+                let exported_value = serde_json::to_value(&exported).unwrap();
+                assert!(
+                    exported_value[0]["payload"]["sdk_receipt"]
+                        .get("strict_executor_writes")
+                        .is_none()
+                );
+                assert!(
+                    exported_value[0]["payload"]["sdk_receipt"]["executors"].is_null()
+                        || exported_value[0]["payload"]["sdk_receipt"]["executors"] == json!([])
+                );
+                assert_eq!(serde_json::to_value(&raw).unwrap(), raw_value);
+                assert_ne!(raw_value, exported_value);
+
+                // The comparison and final export use the same idempotent projection.
+                let mut comparison = raw.clone();
+                redact_executor_observations(&mut comparison);
+                assert_eq!(serde_json::to_value(&comparison).unwrap(), exported_value);
+                redact_executor_observations(&mut exported);
+                assert_eq!(serde_json::to_value(&exported).unwrap(), exported_value);
+
+                for (record, field, replacement) in [
+                    (0, "model", "changed-settings"),
+                    (1, "output", "changed-tool-result"),
+                ] {
+                    let mut changed = raw_value.clone();
+                    changed[record]["payload"][field] = json!(replacement);
+                    let mut changed: Vec<RolloutItem> = serde_json::from_value(changed).unwrap();
+                    redact_executor_observations(&mut changed);
+                    assert_ne!(serde_json::to_value(changed).unwrap(), exported_value);
+                }
+            }
+        }
+    }
+}
+
 async fn export_inner(
     state: &ThreadState,
     pending: Option<&Value>,

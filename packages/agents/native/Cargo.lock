@@ -1692,6 +1692,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "native-tls",
+ "opentelemetry",
  "pretty_assertions",
  "rmcp",
  "serde",
