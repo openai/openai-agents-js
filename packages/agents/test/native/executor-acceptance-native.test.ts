@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { rootCertificates } from 'node:tls';
 import { fileURLToPath } from 'node:url';
 import { inspect } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
@@ -56,6 +57,9 @@ it.each(['wrong-host', 'untrusted-ca', 'forbidden'] as const)(
     const model = new ModelServer([]);
     const config = await model.config();
     try {
+      const untrustedRoots = join(executor.cwd, 'unrelated-public-roots.pem');
+      if (failure === 'untrusted-ca')
+        await writeFile(untrustedRoots, rootCertificates.join('\n'));
       const child = fork(
         fileURLToPath(
           new URL('./fixtures/executor-open-worker.ts', import.meta.url),
@@ -76,7 +80,8 @@ it.each(['wrong-host', 'untrusted-ca', 'forbidden'] as const)(
             ...process.env,
             ...(failure === 'untrusted-ca'
               ? {
-                  SSL_CERT_FILE: undefined,
+                  SSL_CERT_FILE: untrustedRoots,
+                  SSL_CERT_DIR: undefined,
                   CODEX_CA_CERTIFICATE: undefined,
                 }
               : {}),
@@ -103,7 +108,13 @@ it.each(['wrong-host', 'untrusted-ca', 'forbidden'] as const)(
         clearTimeout(timeout);
       }
       expect(result?.opened).toBe(false);
-      expect(result?.diagnostic).toMatch(/executor|ready/i);
+      expect(result?.diagnostic).toContain(
+        {
+          'wrong-host': 'TLS certificate does not match the executor host',
+          'untrusted-ca': 'TLS certificate issuer is not trusted',
+          forbidden: 'executor authentication denied (HTTP 401)',
+        }[failure],
+      );
       expectNoSecrets(
         [result, output],
         [

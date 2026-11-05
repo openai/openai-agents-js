@@ -4,7 +4,8 @@ use anyhow::{Context, Result, ensure};
 use codex_core_api::CodexThread;
 use codex_extension_api::{
     ContextContributor, ExtensionFuture, PreviousWorldStateSection, RenderedWorldStateFragment,
-    WorldStateContributionInput, WorldStateSectionContribution,
+    SdkApplicationInstructions, SdkTurnReceiptSeed, WorldStateContributionInput,
+    WorldStateSectionContribution,
 };
 use codex_history::RolloutItem;
 use codex_protocol::models::{
@@ -13,6 +14,8 @@ use codex_protocol::models::{
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::{ResponseItemId, ThreadId};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::sync::LazyLock;
 
 use crate::options::ThreadInstructions;
 
@@ -27,8 +30,9 @@ const NOTICE: &str = "The following application instructions replace all earlier
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Accepted {
-    id: ResponseItemId,
+    pub(crate) id: ResponseItemId,
     pub(crate) text: String,
+    pub(crate) files: Vec<Value>,
 }
 
 fn body(accepted: &Accepted) -> String {
@@ -96,6 +100,7 @@ fn accepted(item: &ResponseItem) -> Result<Option<Accepted>> {
     Ok(Some(Accepted {
         id: id.clone(),
         text: text.to_owned(),
+        files: Vec::new(),
     }))
 }
 
@@ -325,6 +330,7 @@ pub(crate) fn publication(text: &str) -> ResponseItem {
     let accepted = Accepted {
         id: ResponseItemId::new(ID_PREFIX),
         text: text.to_owned(),
+        files: Vec::new(),
     };
     ResponseItem::Message {
         id: Some(accepted.id.clone()),
@@ -423,6 +429,19 @@ pub(crate) async fn publish_if_ready(
     Ok(())
 }
 
+static CODEX_SOURCE_TREE: LazyLock<String> = LazyLock::new(|| {
+    let manifest: Value = serde_json::from_str(include_str!("../patches/series.json"))
+        .expect("native patch manifest must be valid JSON");
+    manifest["result_tree"]
+        .as_str()
+        .expect("native patch result tree")
+        .to_owned()
+});
+
+pub(crate) fn sha256(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
 pub struct Contributor;
 
 impl ContextContributor for Contributor {
@@ -431,12 +450,36 @@ impl ContextContributor for Contributor {
         input: WorldStateContributionInput<'a>,
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
-            let Some(owner) = input.thread_store.get::<ThreadInstructions>() else {
-                return Vec::new();
-            };
-            // Initial publication must become durable before this cache can
-            // contribute. Otherwise Core's injection preparation emits it twice.
-            let Some(accepted) = owner.accepted() else {
+            // Initial publication must be durable before this cache contributes.
+            let accepted = input
+                .thread_store
+                .get::<ThreadInstructions>()
+                .and_then(|owner| owner.accepted());
+            let control = input
+                .thread_store
+                .get::<crate::native_interception::Control>();
+            input.step_store.insert(SdkTurnReceiptSeed {
+                codex_revision: include_str!("../CODEX_REVISION").trim(),
+                codex_source_tree: CODEX_SOURCE_TREE.as_str(),
+                sha256,
+                strict_executor_writes: control
+                    .as_ref()
+                    .is_some_and(|control| control.strict_executor_writes()),
+                inherited_application: if accepted.is_none() {
+                    control.and_then(|control| control.inherited_instruction_files())
+                } else {
+                    None
+                },
+                application: accepted
+                    .as_ref()
+                    .map(|accepted| SdkApplicationInstructions {
+                        revision: accepted.id.to_string(),
+                        rendered: rendered(accepted),
+                        developer_sha256: sha256(&accepted.text),
+                        files: accepted.files.clone(),
+                    }),
+            });
+            let Some(accepted) = accepted else {
                 return Vec::new();
             };
             let exact = rendered(&accepted);

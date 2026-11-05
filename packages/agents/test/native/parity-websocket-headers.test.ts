@@ -307,3 +307,85 @@ it('delivers rejected-WebSocket retry advice to native Core before another provi
     await closed;
   }
 }, 15000);
+
+it('delivers sparse successful WebSocket handshake and response limit updates', async () => {
+  let httpRequests = 0;
+  const server = createServer((_request, response) => {
+    httpRequests++;
+    response.writeHead(500).end();
+  });
+  const sockets = new WebSocketServer({ server, perMessageDeflate: false });
+  sockets.on('headers', (headers) => {
+    headers.push(
+      'X-RateLimit-Remaining-Requests: 7',
+      'X-RateLimit-Limit-Requests: invalid',
+      'Authorization: synthetic-private-header',
+    );
+  });
+  sockets.on('connection', (socket) => {
+    socket.on('message', (payload) => {
+      const request = JSON.parse(payload.toString());
+      const warmup = request.generate === false;
+      const id = warmup ? 'warmup' : 'ws-limits';
+      const send = (event: object) => socket.send(JSON.stringify(event));
+      send({ type: 'response.created', response: { id } });
+      if (!warmup) {
+        send({
+          type: 'response.metadata',
+          headers: {
+            'X-RateLimit-Remaining-Tokens': 11,
+            'X-RateLimit-Reset-Tokens': '5ms',
+          },
+        });
+        send({
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            type: 'message',
+            id: 'ws-limits-message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'done' }],
+          },
+        });
+      }
+      send({ type: 'response.completed', response: { id } });
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string')
+    throw new Error('Fixture did not bind');
+  try {
+    await using provider = new NativeProvider({
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      apiKey: 'synthetic',
+      supportsWebsockets: true,
+    });
+    await using session = await new Agent({
+      instructions: 'Reply.',
+      model: 'gpt-5',
+      provider,
+    }).session();
+    const turn = await session.submit('Reply.');
+    expect((await turn.wait()).finalOutput).toBe('done');
+    const snapshots = [];
+    for await (const event of turn.events()) {
+      if (event.type === 'api_rate_limits_updated')
+        snapshots.push(event.snapshot);
+    }
+    expect(snapshots).toEqual([
+      { requests: { remaining: 7 } },
+      { tokens: { remaining: 11, resetAfterSeconds: 0.005 } },
+    ]);
+    expect(session.rateLimits()).toEqual(snapshots[1]);
+    expect(httpRequests).toBe(0);
+  } finally {
+    for (const socket of sockets.clients) socket.terminate();
+    sockets.close();
+    const closed = once(server, 'close');
+    server.close();
+    server.closeAllConnections();
+    await closed;
+  }
+}, 15_000);

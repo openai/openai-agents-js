@@ -29,6 +29,7 @@ export async function savePendingLookup(
   // Capture a static operation selection, not a preparation callback.
   const turn = await session.submit('Find the label for record-a.', {
     tools: [lookup],
+    maxModelSteps: 4,
   });
   const outcome = await turn.wait({ until: 'request' });
   if (!('requests' in outcome))

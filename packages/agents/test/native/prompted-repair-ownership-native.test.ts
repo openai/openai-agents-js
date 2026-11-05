@@ -1,9 +1,11 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { dirname } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  Environment,
   HttpMCP,
   NativeProvider,
   OutputValidationError,
@@ -13,6 +15,7 @@ import {
 } from '../../src';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { startPublicExecutor } from './fixtures/public-executor';
 
 const report = z.object({ label: z.string().min(2) });
 const cleanup: Array<() => Promise<void>> = [];
@@ -131,6 +134,114 @@ async function collect<T>(values: AsyncIterable<T>): Promise<T[]> {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'native prompted repair preserves original ownership',
   () => {
+    it.skipIf(process.platform !== 'linux')(
+      'waits for a yielded MCP cell before accepting a change to writable roots',
+      async () => {
+        const executor = await startPublicExecutor();
+        const originalRoots = [dirname(executor.cwd)];
+        cleanup.push(() => executor.close());
+        const remote = await peer();
+        let cellId = '';
+        const server = new ModelServer([
+          [
+            {
+              type: 'custom_tool_call',
+              name: 'exec',
+              call_id: 'pending-cell',
+              input:
+                'const pending = tools.mcp__records__lookup({key:"original"}); yield_control(); text(await pending);',
+            },
+          ],
+          (request) => {
+            const output = (request.input as JsonObject[]).find(
+              (item) =>
+                item.call_id === 'pending-cell' &&
+                item.type === 'custom_tool_call_output',
+            );
+            const value = output?.output;
+            const contents =
+              typeof value === 'string'
+                ? value
+                : (value as JsonObject[] | undefined)
+                    ?.map((item) => item.text ?? '')
+                    .join('');
+            const match = /Script running with cell ID ([^\s.]+)/.exec(
+              contents ?? '',
+            );
+            if (!match) throw new Error('Expected a yielded MCP cell');
+            cellId = match[1];
+            return [message('Pending lookup')];
+          },
+          [message('Same roots')],
+          () => [
+            call(
+              'wait',
+              { cell_id: cellId, yield_time_ms: 10000 },
+              { callId: 'collect-cell' },
+            ),
+          ],
+          (request) => {
+            expect(JSON.stringify(request.input)).toContain(
+              'original-record-effect',
+            );
+            return [message('Lookup collected')];
+          },
+          [message('Changed roots')],
+        ]);
+        const provider = await providerFor(server);
+        const session = await new Agent({
+          provider,
+          model: 'gpt-5.5',
+          instructions: 'Look up the record.',
+          programmaticToolCalling: true,
+          tools: [
+            new HttpMCP({
+              name: 'records',
+              url: remote.url,
+              tools: ['lookup'],
+              approvalMode: 'approve',
+            }),
+          ],
+        }).session({
+          environment: new Environment({
+            url: executor.url,
+            headers: executor.headers,
+            cwd: executor.cwd,
+            writableRoots: originalRoots,
+            tools: ['exec_command'],
+          }),
+        });
+        cleanup.push(() => session.close());
+        async function run(
+          input: string,
+          options: { writableRoots?: string[] } = {},
+        ) {
+          const turn = await session.submit(input, options);
+          return (await turn.wait()).finalOutput;
+        }
+        try {
+          expect(await run('Start lookup')).toBe('Pending lookup');
+          await remote.entered.promise;
+          await expect(
+            run('Change roots', { writableRoots: [] }),
+          ).rejects.toThrow(/earlier executor work/);
+          expect(server.requests).toHaveLength(2);
+          expect(
+            await run('Keep roots', { writableRoots: originalRoots }),
+          ).toBe('Same roots');
+          remote.release.resolve();
+          expect(await run('Collect lookup')).toBe('Lookup collected');
+          expect(await run('Change roots', { writableRoots: [] })).toBe(
+            'Changed roots',
+          );
+          server.assertExhausted();
+        } finally {
+          remote.release.resolve();
+        }
+      },
+      30000,
+    );
+
     it.each([false, true])(
       'joins an actually admitted yielded original MCP result policy (fails=%s)',
       async (policyFails) => {

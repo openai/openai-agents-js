@@ -1,5 +1,6 @@
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
+import { localRecoveryRequired } from './local-recovery';
 import { assertCheckpointNetworkPolicy } from './state';
 import { assertCheckpointSelections } from './selection-state';
 import { readCheckpointSelections } from './state';
@@ -84,6 +85,15 @@ export async function openSession(
     saved,
     networkPolicyDigest(environment?.network),
   );
+  if (
+    saved !== null &&
+    saved.executor_policy_digest === undefined &&
+    (environment?.kind === 'local' || environment?.writableRoots !== undefined)
+  ) {
+    throw new TypeError(
+      'Restore requires the recorded executor write and network policy',
+    );
+  }
   const native = await binding();
   const runtime: RuntimeOptions = {
     ...native._packaged_runtime(),
@@ -92,9 +102,11 @@ export async function openSession(
     ...(environment ? { environment: environmentConfig(environment) } : {}),
   };
   const parentTrace = captureTraceContext(options.parentTrace);
+  const { _sdk_reconciled_calls, ...capturedThreadOptions } =
+    setup.threadOptions;
   const threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
-    ...setup.threadOptions,
+    ...capturedThreadOptions,
     ...(options.localStorage
       ? {}
       : {
@@ -263,6 +275,20 @@ export async function openSession(
       catalog.specsJson,
       freshManual,
     );
+  } else if (threadOptions._sdk_resume_thread_id !== undefined) {
+    const opened = await engine._start_local_resume(
+      encode({
+        ...threadOptions,
+        config: initialConfig,
+        ...(_sdk_reconciled_calls === undefined
+          ? {}
+          : { _sdk_reconciled_calls }),
+      }),
+      catalog.specsJson,
+    );
+    if (typeof opened === 'string')
+      throw localRecoveryRequired(opened, threadOptions._sdk_resume_thread_id);
+    thread = opened;
   } else {
     thread = await engine.start_replaceable_thread(
       encode({ ...threadOptions, config: initialConfig }),
@@ -296,7 +322,11 @@ export async function openSession(
 export async function runOwnedSession<Output>(
   session: Session<Output>,
   input: string | JsonValue[] | null,
-  options: { returnState?: boolean; signal?: AbortSignal } = {},
+  options: {
+    returnState?: boolean;
+    signal?: AbortSignal;
+    maxModelSteps?: number;
+  } = {},
 ): Promise<Completed<Output>> {
   const cancellation: { rejection?: unknown; reason?: unknown } = {};
   const retire = AsyncResource.bind(() => {
@@ -319,7 +349,11 @@ export async function runOwnedSession<Output>(
 async function completeOwnedSession<Output>(
   session: Session<Output>,
   input: string | JsonValue[] | null,
-  options: { returnState?: boolean; signal?: AbortSignal },
+  options: {
+    returnState?: boolean;
+    signal?: AbortSignal;
+    maxModelSteps?: number;
+  },
   cancellation: { rejection?: unknown; reason?: unknown },
 ): Promise<Completed<Output>> {
   const originalFailure = (error: unknown) =>
@@ -342,7 +376,9 @@ async function completeOwnedSession<Output>(
   const result = await (
     input == null
       ? session.wait()
-      : session._run(input, options.signal).then(() => session.wait())
+      : session
+          ._run(input, options.signal, options.maxModelSteps)
+          .then(() => session.wait())
   ).catch(async (error) => {
     const primary = originalFailure(error);
     try {

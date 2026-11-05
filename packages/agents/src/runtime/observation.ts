@@ -1,5 +1,7 @@
+import type { ExecutionItem } from './history';
 import type { ManualToolRequest } from './manual';
 import type { TokenUsageInfo } from './run-events';
+import type { ApiRateLimits } from './api-rate-limits';
 
 type Event = Readonly<{ sessionId: string; sequence: number }>;
 type SubmissionEvent = Event &
@@ -15,6 +17,25 @@ type ToolIdentity = Readonly<{
   family: 'function' | 'mcp';
 }>;
 
+export type ExecutionItemSummary = Readonly<
+  Pick<
+    ExecutionItem,
+    'type' | 'id' | 'threadId' | 'turnId' | 'callId' | 'status'
+  >
+>;
+
+export type ObservationOptions = {
+  after?: number;
+  /** Include execution payloads for a trusted consumer. */
+  includeExecutionDetails?: boolean;
+};
+
+type ExecutionObservation = SubmissionEvent &
+  Readonly<{ type: 'execution_item_completed' }>;
+
+export type ApiRateLimitsUpdated = SubmissionEvent &
+  Readonly<{ type: 'api_rate_limits_updated'; snapshot: ApiRateLimits }>;
+
 export type Observation =
   | (Event & Readonly<{ type: 'warning'; message: string }>)
   | (SubmissionEvent & Readonly<{ type: 'turn_started' }>)
@@ -28,7 +49,10 @@ export type Observation =
       Readonly<{ type: 'output_text_delta'; itemId: string; delta: string }>)
   | (SubmissionEvent &
       Readonly<{ type: 'usage_updated'; usage: TokenUsageInfo | null }>)
+  | ApiRateLimitsUpdated
   | (SubmissionEvent & Readonly<{ type: 'context_compacted'; itemId: string }>)
+  | (ExecutionObservation &
+      Readonly<{ item: ExecutionItemSummary | ExecutionItem }>)
   | (SubmissionEvent & ToolIdentity & Readonly<{ type: 'tool_started' }>)
   | (SubmissionEvent &
       ToolIdentity &
@@ -48,8 +72,11 @@ export type Observation =
   | (Event & Readonly<{ type: 'gap'; firstSequence: number }>);
 
 type WithoutIdentity<T> = T extends Event ? Omit<T, keyof Event> : never;
+type RetainedObservation =
+  | Exclude<Observation, ExecutionObservation>
+  | (ExecutionObservation & Readonly<{ item: ExecutionItem }>);
 export type ObservationInput = WithoutIdentity<
-  Exclude<Observation, { type: 'gap' }>
+  Exclude<RetainedObservation, { type: 'gap' }>
 >;
 export type ObservedEvent = Observation | ManualToolRequest;
 
@@ -60,9 +87,23 @@ export type TurnObservationScope = {
   phase: () => ObservationPhase;
 };
 
+function projectObservation(
+  event: RetainedObservation,
+  includeExecutionDetails: boolean,
+): Observation {
+  if (event.type !== 'execution_item_completed') return event;
+  if (includeExecutionDetails)
+    return Object.freeze({ ...event, item: structuredClone(event.item) });
+  const { type, id, threadId, turnId, callId, status } = event.item;
+  return Object.freeze({
+    ...event,
+    item: Object.freeze({ type, id, threadId, turnId, callId, status }),
+  });
+}
+
 /** One passive bounded suffix, shared by independent readers. */
 export class ObservationBuffer {
-  private records: Array<{ event: Observation; size: number }> = [];
+  private records: Array<{ event: RetainedObservation; size: number }> = [];
   private characters = 0;
   private sequence = 0;
   private closed = false;
@@ -99,7 +140,7 @@ export class ObservationBuffer {
     this.repairParent = { buffer: parent, submissionId: parentSubmissionId };
   }
 
-  append(value: ObservationInput): Observation | null {
+  append(value: ObservationInput): RetainedObservation | null {
     const event = this.record(value, this.sessionId);
     if (event && this.repairParent && 'submissionId' in event) {
       const linked = {
@@ -124,10 +165,19 @@ export class ObservationBuffer {
     return event;
   }
 
+  /** A native completion survived in history but its live owner has retired. */
+  gap(): void {
+    if (this.closed) return;
+    this.sequence++;
+    this.records = [];
+    this.characters = 0;
+    this.notify();
+  }
+
   private record(
     value: ObservationInput,
     sessionId: string,
-  ): Observation | null {
+  ): RetainedObservation | null {
     if (this.closed) return null;
     const event = Object.freeze({
       ...value,
@@ -136,7 +186,9 @@ export class ObservationBuffer {
     });
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
-      0,
+      event.type === 'execution_item_completed'
+        ? JSON.stringify(event.item).length
+        : 0,
     );
     if (size > 65_536) {
       this.records = [];
@@ -158,16 +210,20 @@ export class ObservationBuffer {
     this.notify();
   }
 
-  events(options?: { after?: number }): AsyncIterableIterator<ObservedEvent>;
+  events(options?: ObservationOptions): AsyncIterableIterator<ObservedEvent>;
   events(
-    options: { after?: number } | undefined,
+    options: ObservationOptions | undefined,
     scope: TurnObservationScope,
   ): AsyncIterableIterator<Observation>;
   events(
-    { after = 0 }: { after?: number } = {},
+    options: ObservationOptions = {},
     scope?: TurnObservationScope,
   ): AsyncIterableIterator<ObservedEvent> {
     this.options.validate?.();
+    let { after = 0 } = options;
+    const includeExecutionDetails =
+      Object.hasOwn(options, 'includeExecutionDetails') &&
+      options.includeExecutionDetails === true;
     if (!Number.isInteger(after) || after < 0 || after > this.sequence)
       throw new RangeError(
         'after must be a sequence between zero and the current event',
@@ -216,7 +272,10 @@ export class ObservationBuffer {
               if (event.sequence <= after) continue;
               after = event.sequence;
               if (!scope || scope.includes(event))
-                return { done: false, value: event };
+                return {
+                  done: false,
+                  value: projectObservation(event, includeExecutionDetails),
+                };
             }
             const phase = scope?.phase();
             if (phase === 'ended' || (this.closed && phase !== 'finishing'))

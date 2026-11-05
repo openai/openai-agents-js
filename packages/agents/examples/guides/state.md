@@ -16,6 +16,8 @@ History projects a canonical accepted input's Responses record and native user i
 
 `saveState()` exports idle conversation state. `suspend()` seals a supported pending manual boundary and exports its continuation. Restore with `agent.session({ state })`, supplying current trusted declarations. Snapshots contain conversation data. They contain neither running JavaScript nor a workspace backup. Python checkpoint interchange is not supported.
 
+Opening a checkpoint with a local executor or explicit `Environment.writableRoots` requires the matching saved executor policy digest. Older checkpoints without that digest can still reopen with their compatible default executor policy. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.
+
 ### Restore instructions and tools
 
 Validate the envelope with `parseSessionState(json)`. If you trust the storage, read and reuse the last accepted instructions with `await readSessionInstructions(state)`. Older v2 and manual v3 checkpoints can lack that record. The reader then throws, and you can restore with current trusted instructions.

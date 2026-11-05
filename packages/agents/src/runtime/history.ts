@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import {
+  projectTurnReceipt,
+  repairTurnReceiptSchema,
+  type TurnReceipt,
+} from './turn-receipt';
+import {
   addTokenCounts,
   nonnegativeTokenCountWireSchema,
   parseTokenCount,
@@ -57,14 +62,16 @@ export type HistoryTurn = {
   completedAt: number | null;
   error: Failure | null;
   usage: RecordedTokenUsage | null;
+  receipt?: TurnReceipt;
 };
 export type RecordedTurn = HistoryTurn & {
   parentSessionId?: string;
   parentTurnId?: string;
 };
 /** JSON-safe observational turn data for history/receipt owners, not Core checkpoints. */
-export type RecordedTurnWire = Omit<RecordedTurn, 'usage'> & {
+export type RecordedTurnWire = Omit<RecordedTurn, 'usage' | 'receipt'> & {
   usage: RecordedTokenUsageWire | null;
+  receipt?: z.infer<typeof repairTurnReceiptSchema>;
 };
 
 /** @internal Passive terminal observations; never Core history or grants. */
@@ -106,10 +113,18 @@ export const repairTurnWireSchema = z
       })
       .strict()
       .nullable(),
+    receipt: repairTurnReceiptSchema.optional(),
     parentSessionId: z.string().min(1),
     parentTurnId: z.string().min(1),
   })
-  .strict() satisfies z.ZodType<RepairTurnWire>;
+  .strict()
+  .refine(
+    (turn) =>
+      turn.receipt === undefined ||
+      (turn.receipt.threadId === turn.sessionId &&
+        turn.receipt.turnId === turn.id),
+    'Repair receipt identity must match its recorded turn',
+  ) satisfies z.ZodType<RepairTurnWire>;
 export const repairItemWireSchema = z
   .object({
     parentSessionId: z.string().min(1),
@@ -144,8 +159,17 @@ function mapRecordedUsage<T>(
 }
 
 export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
+  const { receipt, ...wire } = turn;
   return {
-    ...turn,
+    ...wire,
+    ...(receipt
+      ? {
+          receipt: {
+            ...receipt,
+            executors: receipt.executors?.length === 0 ? [] : null,
+          },
+        }
+      : {}),
     usage:
       turn.usage === null
         ? null
@@ -200,11 +224,14 @@ export type SessionItem = ItemIdentity &
         type: 'function_call_output';
         callId: string;
         status: ItemStatus;
+        reconciliation?: 'applied' | 'not_applied';
         output: JsonValue;
         error: string | null;
       }
     | {
         type: 'mcp_call';
+        threadId?: string;
+        callId?: string;
         serverLabel: string;
         name: string;
         arguments: JsonValue;
@@ -214,12 +241,24 @@ export type SessionItem = ItemIdentity &
       }
     | {
         type: 'command_execution';
+        threadId?: string;
+        callId?: string;
+        argv?: string[];
         command: string;
         cwd: string | null;
         status: ItemStatus;
         output: string | null;
         exitCode: number | null;
         durationMs: number | null;
+      }
+    | {
+        type: 'file_change';
+        threadId: string;
+        callId: string;
+        status: ItemStatus;
+        changes: Record<string, PatchChange>;
+        stdout: string | null;
+        stderr: string | null;
       }
     | {
         type: 'web_search_call';
@@ -248,6 +287,42 @@ export type SessionItem = ItemIdentity &
         recipientAgentId: string;
       }
   );
+const patchContentChanges = [
+  z.object({ type: z.literal('add'), content: z.string() }),
+  z.object({ type: z.literal('delete'), content: z.string() }),
+] as const;
+const patchChangeSchema = z.discriminatedUnion('type', [
+  ...patchContentChanges,
+  z.object({
+    type: z.literal('update'),
+    unifiedDiff: z.string(),
+    movePath: z.string().nullable(),
+  }),
+]);
+const nativePatchChangeSchema = z
+  .discriminatedUnion('type', [
+    ...patchContentChanges,
+    z.object({
+      type: z.literal('update'),
+      unified_diff: z.string(),
+      move_path: z.string().nullable(),
+    }),
+  ])
+  .transform((change) =>
+    change.type === 'update'
+      ? {
+          type: change.type,
+          unifiedDiff: change.unified_diff,
+          movePath: change.move_path,
+        }
+      : change,
+  );
+export type PatchChange = z.infer<typeof patchChangeSchema>;
+export type ExecutionItem = Extract<
+  SessionItem,
+  { type: 'command_execution' | 'file_change' | 'mcp_call' }
+> & { threadId: string; callId: string };
+
 /** The raw recorded source remains available to lower-level history consumers. */
 export type HistoryItem = SessionItem & { data: JsonObject };
 
@@ -296,12 +371,15 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('function_call_output'),
       callId: z.string(),
+      reconciliation: z.enum(['applied', 'not_applied']).optional(),
       status: repairItemStatusSchema,
       output: jsonValue,
       error: z.string().nullable(),
     }),
     z.object({
       type: z.literal('mcp_call'),
+      threadId: z.string().optional(),
+      callId: z.string().optional(),
       serverLabel: z.string(),
       name: z.string(),
       arguments: jsonValue,
@@ -311,12 +389,24 @@ const repairItemProjectionSchema = z.intersection(
     }),
     z.object({
       type: z.literal('command_execution'),
+      threadId: z.string().optional(),
+      callId: z.string().optional(),
+      argv: z.array(z.string()).optional(),
       command: z.string(),
       cwd: z.string().nullable(),
       status: repairItemStatusSchema,
       output: z.string().nullable(),
       exitCode: z.number().nullable(),
       durationMs: z.number().nullable(),
+    }),
+    z.object({
+      type: z.literal('file_change'),
+      threadId: z.string(),
+      callId: z.string(),
+      status: repairItemStatusSchema,
+      changes: z.record(z.string(), patchChangeSchema),
+      stdout: z.string().nullable(),
+      stderr: z.string().nullable(),
     }),
     z.object({
       type: z.literal('web_search_call'),
@@ -537,6 +627,20 @@ function webAction(raw: JsonObject): WebSearchAction | null {
       return { type: 'other' };
   }
 }
+function reconciliationOutcome(raw: JsonObject) {
+  if (
+    raw.type !== 'function_call_output' &&
+    raw.type !== 'custom_tool_call_output'
+  )
+    return undefined;
+  const kinds = object(
+    raw.internal_chat_message_metadata_passthrough,
+  )?.content_item_kinds;
+  if (!Array.isArray(kinds) || kinds.length !== 1) return undefined;
+  if (kinds[0] === 'sdk_reconciliation.applied') return 'applied';
+  if (kinds[0] === 'sdk_reconciliation.not_applied') return 'not_applied';
+}
+
 function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   const output =
     raw.type === 'function_call_output' ||
@@ -582,15 +686,18 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       arguments: raw.arguments ?? raw.input ?? null,
       status: 'in_progress',
     };
-  if (output && typeof raw.call_id === 'string')
+  if (output && typeof raw.call_id === 'string') {
+    const reconciliation = reconciliationOutcome(raw);
     return {
       ...common,
       type: 'function_call_output',
       callId: raw.call_id,
-      status: 'completed',
+      status: reconciliation === 'not_applied' ? 'failed' : 'completed',
       output: raw.output ?? null,
       error: null,
+      ...(reconciliation === undefined ? {} : { reconciliation }),
     };
+  }
   if (raw.type === 'web_search_call')
     return {
       ...common,
@@ -600,6 +707,78 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     };
   return null;
 }
+export function projectExecutionItem(
+  value: JsonValue | undefined,
+  turnId: string,
+  threadId: string,
+  done = true,
+): ExecutionItem | null {
+  const raw = object(value);
+  if (!raw || typeof raw.id !== 'string' || !raw.id) return null;
+  const common = {
+    id: raw.id,
+    turnId,
+    threadId,
+    callId: raw.id,
+    status: status(raw.status, done),
+  };
+  switch (raw.type) {
+    case 'CommandExecution': {
+      const duration = object(raw.duration);
+      const argv = Array.isArray(raw.command)
+        ? raw.command.map(String)
+        : undefined;
+      const command = argv
+        ? argv
+            .map((value) =>
+              /^[\w@%+=:,./-]+$/.test(value)
+                ? value
+                : `'${value.replace(/'/g, `'"'"'`)}'`,
+            )
+            .join(' ')
+        : String(raw.command ?? '');
+      return {
+        ...common,
+        type: 'command_execution',
+        ...(argv ? { argv } : {}),
+        command,
+        cwd: text(raw.cwd),
+        output: text(raw.aggregated_output),
+        exitCode: number(raw.exit_code),
+        durationMs: duration
+          ? (number(duration.secs) ?? 0) * 1000 +
+            Math.floor((number(duration.nanos) ?? 0) / 1_000_000)
+          : null,
+      };
+    }
+    case 'FileChange': {
+      const changes = z
+        .record(z.string(), nativePatchChangeSchema)
+        .safeParse(raw.changes);
+      if (!changes.success) return null;
+      return {
+        ...common,
+        type: 'file_change',
+        changes: changes.data,
+        stdout: text(raw.stdout),
+        stderr: text(raw.stderr),
+      };
+    }
+    case 'McpToolCall':
+      return {
+        ...common,
+        type: 'mcp_call',
+        serverLabel: String(raw.server),
+        name: String(raw.tool),
+        arguments: raw.arguments ?? null,
+        output: raw.result ?? null,
+        error: raw.error ?? null,
+      };
+    default:
+      return null;
+  }
+}
+
 function nativeItems(
   raw: JsonObject,
   done: boolean,
@@ -697,47 +876,6 @@ function nativeItems(
           status: toolStatus,
           output: toolStatus === 'completed' ? output : null,
           error,
-        },
-      ];
-    }
-    case 'McpToolCall':
-      return [
-        {
-          ...common,
-          type: 'mcp_call',
-          serverLabel: String(raw.server),
-          name: String(raw.tool),
-          arguments: raw.arguments ?? null,
-          status: terminal,
-          output: raw.result ?? null,
-          error: raw.error ?? null,
-        },
-      ];
-    case 'CommandExecution': {
-      const duration = object(raw.duration);
-      const command = Array.isArray(raw.command)
-        ? raw.command
-            .map((arg) => {
-              const value = String(arg);
-              return /^[\w@%+=:,./-]+$/.test(value)
-                ? value
-                : `'${value.replace(/'/g, `'"'"'`)}'`;
-            })
-            .join(' ')
-        : String(raw.command ?? '');
-      return [
-        {
-          ...common,
-          type: 'command_execution',
-          command,
-          cwd: text(raw.cwd),
-          status: terminal,
-          output: text(raw.aggregated_output),
-          exitCode: number(raw.exit_code),
-          durationMs: duration
-            ? (number(duration.secs) ?? 0) * 1000 +
-              Math.floor((number(duration.nanos) ?? 0) / 1_000_000)
-            : null,
         },
       ];
     }
@@ -874,10 +1012,19 @@ export function projectHistory(
     else if (output && call) call.output = occurrence;
     return occurrence;
   }
+  const receipts = new Map<string, TurnReceipt>();
   for (const { type, payload, metadata: recordedMetadata } of history) {
     if (type === 'compacted' || type === 'session_meta')
       pendingUser = undefined;
     if (type === 'turn_context' && typeof payload.turn_id === 'string') {
+      const receipt = projectTurnReceipt(payload.sdk_receipt, payload.turn_id);
+      if (receipt) receipts.set(payload.turn_id, receipt);
+      // The latest sample owns the receipt, even if its format is unsupported.
+      else if (
+        payload.sdk_receipt !== undefined &&
+        payload.sdk_receipt !== null
+      )
+        receipts.delete(payload.turn_id);
       if (current !== payload.turn_id) pendingUser = undefined;
       current = payload.turn_id;
       aborted = null;
@@ -894,6 +1041,11 @@ export function projectHistory(
         payload.internal_chat_message_metadata_passthrough,
       );
       if (
+        reconciliationOutcome(payload) &&
+        typeof metadata?.turn_id === 'string'
+      )
+        turn = metadata.turn_id;
+      if (
         !turn &&
         aborted &&
         ['function_call_output', 'custom_tool_call_output'].includes(
@@ -906,6 +1058,11 @@ export function projectHistory(
       if (turn) {
         const item = responseItem(payload, turn);
         if (item) {
+          if (item.type === 'function_call_output' && item.reconciliation) {
+            const reconciled = turns.get(turn);
+            if (reconciled?.status === 'in_progress')
+              reconciled.status = 'cancelled';
+          }
           const occurrence = remember(
             item,
             false,
@@ -960,6 +1117,29 @@ export function projectHistory(
       const id: string | null =
         text(payload.turn_id) ?? text(payload.turnId) ?? current;
       if (!id) continue;
+      const done = payload.type === 'item_completed';
+      const native =
+        done || payload.type === 'item_started'
+          ? object(payload.item)
+          : undefined;
+      if (
+        native?.type === 'McpToolCall' ||
+        native?.type === 'CommandExecution' ||
+        native?.type === 'FileChange'
+      ) {
+        // Late execution evidence belongs to a surviving turn and cannot
+        // change which turn owns subsequent response items.
+        if (turns.has(id)) {
+          const item = projectExecutionItem(
+            native,
+            id,
+            text(payload.thread_id) ?? subagentId ?? sessionId,
+            done,
+          );
+          if (item) remember({ ...item, data: native }, true);
+        }
+        continue;
+      }
       if (pendingUser?.item.turnId !== id) pendingUser = undefined;
       current = id;
       aborted = null;
@@ -981,30 +1161,25 @@ export function projectHistory(
         }
       }
 
-      if (
-        payload.type === 'item_started' ||
-        payload.type === 'item_completed'
-      ) {
-        const native = object(payload.item);
-        if (native?.type === 'ContextCompaction') pendingUser = undefined;
-        if (native)
-          for (const item of nativeItems(
-            native,
-            payload.type === 'item_completed',
-            id,
-            subagentId ?? sessionId,
-          )) {
-            const seenNative = identities.get(
-              JSON.stringify([item.turnId, false, true, item.id]),
-            )?.native;
-            const occurrence = remember(item, true);
-            if (native.type === 'UserMessage' && !seenNative) {
-              // Core records each accepted input before its distinct native item.
-              if (pendingUser && occurrence !== pendingUser)
-                userAliases.add(pendingUser);
-              pendingUser = undefined;
-            }
+      if (native) {
+        if (native.type === 'ContextCompaction') pendingUser = undefined;
+        for (const item of nativeItems(
+          native,
+          done,
+          id,
+          text(payload.thread_id) ?? subagentId ?? sessionId,
+        )) {
+          const seenNative = identities.get(
+            JSON.stringify([item.turnId, false, true, item.id]),
+          )?.native;
+          const occurrence = remember(item, true);
+          if (native.type === 'UserMessage' && !seenNative) {
+            // Core records each accepted input before its distinct native item.
+            if (pendingUser && occurrence !== pendingUser)
+              userAliases.add(pendingUser);
+            pendingUser = undefined;
           }
+        }
       }
       const started =
         payload.type === 'task_started' || payload.type === 'turn_started';
@@ -1057,6 +1232,8 @@ export function projectHistory(
     }
   }
   for (const [id, turn] of turns) {
+    const receipt = receipts.get(id);
+    if (receipt) turn.receipt = receipt;
     const total = responseUsage.get(id);
     turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
   }
@@ -1069,11 +1246,18 @@ export function projectHistory(
       while (cursorIds.has(item.id)) item.id += ':' + index;
       cursorIds.add(item.id);
     }
-    if (item.type === 'function_call' && !occurrence.native) {
-      const terminal = turns.get(item.turnId)?.status;
-      item.status =
-        occurrence.output?.item.status ??
-        (terminal && terminal !== 'in_progress' ? 'incomplete' : 'in_progress');
+    if (item.type === 'function_call') {
+      const output = occurrence.output?.item;
+      if (output?.type === 'function_call_output' && output.reconciliation)
+        item.status = output.status;
+      else if (!occurrence.native) {
+        const terminal = turns.get(item.turnId)?.status;
+        item.status =
+          output?.status ??
+          (terminal && terminal !== 'in_progress'
+            ? 'incomplete'
+            : 'in_progress');
+      }
     }
   }
   return {

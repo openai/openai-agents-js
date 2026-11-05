@@ -43,6 +43,7 @@ export default function App() {
   const [status, setStatus] = useState('disconnected');
   const [history, setHistory] = useState<RealtimeItem[]>([]);
   const [message, setMessage] = useState('Hello from React Native.');
+  const [pairingToken, setPairingToken] = useState('');
   const [lastError, setLastError] = useState<string | null>(null);
 
   const disconnect = useCallback(() => {
@@ -78,7 +79,12 @@ export default function App() {
         enableAudio: !IS_IOS_SIMULATOR,
       });
       const getEphemeralKey = async () => {
-        const response = await fetch(TOKEN_URL, { method: 'POST' });
+        const response = await fetch(TOKEN_URL, {
+          method: 'POST',
+          headers: pairingToken.trim()
+            ? { Authorization: `Bearer ${pairingToken.trim()}` }
+            : undefined,
+        });
         if (!response.ok) {
           throw new Error(
             `Token server returned ${response.status}: ${await response.text()}`,
@@ -183,15 +189,9 @@ export default function App() {
         connectingRef.current = false;
       }
     }
-  }, []);
+  }, [pairingToken]);
 
   useEffect(() => disconnect, [disconnect]);
-
-  useEffect(() => {
-    if (E2E_MODE) {
-      void connect();
-    }
-  }, [connect]);
 
   const sendMessage = () => {
     const text = message.trim();
@@ -213,6 +213,16 @@ export default function App() {
         <Text style={styles.title}>Agents Realtime React Native</Text>
         <Text style={styles.status}>Status: {status}</Text>
         <Text style={styles.hint}>Token server: {TOKEN_URL}</Text>
+        <TextInput
+          accessibilityLabel="Pairing token"
+          autoCapitalize="none"
+          autoCorrect={false}
+          onChangeText={setPairingToken}
+          placeholder="Pairing token"
+          secureTextEntry
+          style={styles.input}
+          value={pairingToken}
+        />
         {IS_IOS_SIMULATOR ? (
           <Text style={styles.hint}>
             Audio is temporarily disabled on iOS Simulator because of a current

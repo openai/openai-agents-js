@@ -3,6 +3,7 @@ import type { _NativeChildTurn } from '../../native/index.js';
 import { decode } from './binding';
 import {
   issueTurn,
+  TurnAborted,
   type Turn,
   type TurnRequestWait,
   type Completed,
@@ -11,7 +12,7 @@ import { NativeError, enrichNativeError } from './native-error';
 import type { FunctionCallOutput, UserInput } from './input';
 import type { ManualToolReply } from './manual';
 import { tokenUsageInfo } from './run-events';
-import type { Observation } from './observation';
+import type { Observation, ObservationOptions } from './observation';
 export const subagentSchema = z
   .object({
     id: z.string(),
@@ -111,9 +112,9 @@ export function issueChildTurn(
   callbacks: {
     beforeWait(): void;
     drain(): Promise<void>;
-    observations(options: {
-      after?: number;
-    }): AsyncIterableIterator<Observation>;
+    observations(
+      options: ObservationOptions,
+    ): AsyncIterableIterator<Observation>;
     requests?: TurnRequestWait<string>;
   },
 ): Turn<string> {
@@ -123,12 +124,15 @@ export function issueChildTurn(
     try {
       wire = await native.wait_with_usage();
     } catch (cause) {
-      const error = new NativeError(
+      const terminal = native.terminal_error();
+      const details = terminal === null ? null : JSON.parse(terminal);
+      const ErrorType =
+        details?._sdk_child_interrupted === true ? TurnAborted : NativeError;
+      const error = new ErrorType(
         cause instanceof Error ? cause.message : String(cause),
         { cause },
       );
-      const terminal = native.terminal_error();
-      enrichNativeError(error, terminal === null ? null : JSON.parse(terminal));
+      enrichNativeError(error, details);
       throw error;
     } finally {
       await callbacks.drain();

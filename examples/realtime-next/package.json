@@ -2,9 +2,11 @@
   "name": "realtime-next",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "next dev --turbopack --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start",
+    "generate-token": "node generate-token.mjs",
+    "test": "tsx --test test/token.test.ts",
     "lint": "next lint",
     "build-check": "tsc --noEmit"
   },

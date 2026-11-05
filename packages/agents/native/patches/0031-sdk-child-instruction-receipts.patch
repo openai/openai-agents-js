@@ -1,0 +1,64 @@
+diff --git a/codex-rs/core/src/session/step_context.rs b/codex-rs/core/src/session/step_context.rs
+--- a/codex-rs/core/src/session/step_context.rs
++++ b/codex-rs/core/src/session/step_context.rs
+@@ -96,19 +96,31 @@
+         effort: Option<&ReasoningEffort>,
+     ) -> Option<serde_json::Value> {
+         let seed = self.extension_data.get::<SdkTurnReceiptSeed>()?;
+-        let application = seed.application.as_ref().filter(|application| {
++        let has_developer_fragment = |expected: &str| {
+             input.iter().rev().any(|item| {
+                 let ResponseItem::Message { role, content, .. } = item else {
+                     return false;
+                 };
+                 role == "developer" && content.iter().any(|part| {
+-                    matches!(part, ContentItem::InputText { text } if text == &application.rendered)
++                    matches!(part, ContentItem::InputText { text } if text == expected)
+                 })
+             })
+-        });
++        };
++        let application = seed
++            .application
++            .as_ref()
++            .filter(|application| has_developer_fragment(&application.rendered));
+         let mut files = application
+             .map(|application| application.files.clone())
+             .unwrap_or_default();
++        let configured_developer = self.turn.developer_instructions.as_deref();
++        let configured_sha256 = configured_developer.map(seed.sha256);
++        if let Some(inherited) = seed.inherited_application.as_deref()
++            && configured_sha256.as_ref() == Some(&inherited.developer_sha256)
++            && configured_developer.is_some_and(has_developer_fragment)
++        {
++            files.extend(inherited.files.iter().cloned());
++        }
+         if let Some(instructions) = &self.loaded_agents_md {
+             files.extend(instructions.sdk_file_receipts(seed.sha256));
+         }
+@@ -117,7 +129,7 @@
+         }
+         let developer_sha256 = application
+             .map(|value| value.developer_sha256.clone())
+-            .or_else(|| self.turn.developer_instructions.as_deref().map(seed.sha256));
++            .or(configured_sha256);
+         let settings = &self.settings;
+         let model = &settings.model_info;
+         let reasoning_effort = effort
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -132,6 +132,13 @@
+     pub sha256: fn(&str) -> String,
+     pub strict_executor_writes: bool,
+     pub application: Option<SdkApplicationInstructions>,
++    pub inherited_application: Option<std::sync::Arc<SdkInheritedApplicationInstructions>>,
++}
++
++/// Opening file evidence for a child that samples the inherited developer instructions.
++pub struct SdkInheritedApplicationInstructions {
++    pub developer_sha256: String,
++    pub files: Vec<serde_json::Value>,
+ }
+ 
+ /// Other applied instruction files loaded by SDK context contributors in this step.

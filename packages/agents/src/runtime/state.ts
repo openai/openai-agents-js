@@ -192,6 +192,10 @@ const childStateSchema = z.discriminatedUnion('status', [
 const rootState = {
   codex_revision: z.literal(CODEX_REVISION),
   source_session_id: z.string().min(1),
+  executor_policy_digest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
   history: z.array(jsonObject),
   pending_actions: z.array(jsonObject).default([]),
   recovery: z
@@ -257,6 +261,7 @@ const manualContinuationSchema = z.object({
     .min(1),
 });
 const manualContextSchema = z.object({
+  remaining_model_steps: z.number().int().nonnegative().safe().optional(),
   instructions: z.string().nullable(),
   result_schemas: z.array(
     z.object({

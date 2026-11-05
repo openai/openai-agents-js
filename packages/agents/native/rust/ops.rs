@@ -1,5 +1,6 @@
 //! JSON adapters for native operations that contain Rust-only channels or values.
 use crate::config::{decode, optional};
+use crate::environment::StrictExecutorWrites;
 use anyhow::{Context, Result, bail};
 use codex_core_api::{AbsolutePathBuf, CodexThread, WithTurnExtensionData};
 use codex_extension_api::ExtensionDataInit;
@@ -289,6 +290,8 @@ params!(TurnParams {
     #[serde(default)] mode: Mode,
     expected_turn_id: Option<String>,
     expected_previous_turn_id: Option<String>,
+    #[serde(default)] exact_steering: bool,
+    writable_roots: Option<Vec<PathUri>>,
 });
 
 fn rejection(reason: NotSubmittedReason) -> Value {
@@ -373,15 +376,16 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
         .map(decode::<crate::python_tools::OperationSelection>)
         .transpose()
         .map_err(pre_admission)?;
-    let p: TurnParams = decode(value).map_err(pre_admission)?;
-    if state.engine.local_checklist_store.is_some()
+    let mut p: TurnParams = decode(value).map_err(pre_admission)?;
+    let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
+    if (strict.is_some() || state.engine.local_checklist_store.is_some())
         && p.thread_settings
             .environments
             .as_ref()
             .is_some_and(|selection| !selection.environments.is_empty())
     {
         return Err(pre_admission(anyhow::anyhow!(
-            "local storage does not support native executor environments"
+            "native executor overrides cannot replace trusted environment policy"
         )));
     }
     let turn_init = if let Some(selection) = selection {
@@ -405,6 +409,11 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
         None
     };
     if matches!(p.mode, Mode::ContinueIfIdle) {
+        if p.writable_roots.is_some() {
+            return Err(pre_admission(anyhow::anyhow!(
+                "Writable roots require a new root turn"
+            )));
+        }
         return continue_managed(state, &mut mutation, p).await;
     }
     if !(matches!(p.mode, Mode::StartIfIdle | Mode::StartOrSteer | Mode::Steer)
@@ -422,7 +431,82 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
             "replaceable tools support ordinary submit/steer only, without persistent execution"
         )));
     }
-    start_with_params(thread, p, turn_init, Some((state, &mut mutation))).await
+    let next_strict = if let Some(roots) = p.writable_roots.take() {
+        let strict = strict
+            .filter(|_| matches!(p.mode, Mode::StartIfIdle))
+            .ok_or_else(|| {
+                pre_admission(anyhow::anyhow!(
+                    "Writable roots require a new root and a strict Session Environment"
+                ))
+            })?;
+        let (selection, next_strict) = prepare_write_selection(state, &strict, roots)
+            .await
+            .map_err(pre_admission)?;
+        p.thread_settings.environments = Some(selection);
+        Some(next_strict)
+    } else {
+        None
+    };
+    let result = start_with_params(thread, p, turn_init, Some((state, &mut mutation))).await?;
+    if let Some(strict) = next_strict
+        && result["status"] == "started"
+    {
+        // Keep the old grants if Core declined to start the turn.
+        thread.thread_extension_data().insert(strict);
+    }
+    Ok(result)
+}
+
+async fn prepare_write_selection(
+    state: &crate::engine::ThreadState,
+    strict: &StrictExecutorWrites,
+    roots: Vec<PathUri>,
+) -> Result<(TurnEnvironmentSelections, StrictExecutorWrites)> {
+    let thread = &state.thread;
+    let current = thread.environment_selections().await;
+    let [selection] = current.as_slice() else {
+        bail!("Writable roots require one selected native Environment");
+    };
+    let config = thread.config().await;
+    let (replacement, strict) = crate::environment::replace_writable_roots(
+        selection,
+        &config,
+        &state.engine.manager.environment_manager(),
+        strict,
+        roots,
+        state.engine.local_storage_home(),
+    )
+    .await?;
+    if selection.environment_id == codex_exec_server::LOCAL_ENVIRONMENT_ID
+        && let Some(store) = &state.engine.local_checklist_store
+    {
+        let path = store.live_rollout_path(state.id).await?;
+        strict.check_local_rollout_path(&path).await?;
+    }
+    if selection != &replacement {
+        let descendants = state
+            .engine
+            .manager
+            .list_agent_subtree_thread_ids(state.id)
+            .await?;
+        anyhow::ensure!(
+            descendants.iter().all(|id| *id == state.id)
+                && thread.active_turn_environment_selections().await.is_none()
+                && thread.list_background_terminals().await.is_empty()
+                && !thread
+                    .thread_extension_data()
+                    .get::<crate::native_interception::Control>()
+                    .is_some_and(|control| control.has_unsettled_code_cells()),
+            "Cannot change writable roots while earlier executor work or descendants are retained"
+        );
+    }
+    Ok((
+        TurnEnvironmentSelections::new(
+            thread.config_snapshot().await.cwd().clone(),
+            vec![replacement],
+        ),
+        strict,
+    ))
 }
 
 // Called only from the private SDK submit route after decoded Session options.
@@ -522,6 +606,11 @@ async fn start_with_params<'a>(
         &mut Option<tokio::sync::MutexGuard<'a, ()>>,
     )>,
 ) -> Result<Value> {
+    if p.exact_steering && !matches!(p.mode, Mode::Steer) {
+        return Err(pre_admission(anyhow::anyhow!(
+            "exact_steering requires steer mode"
+        )));
+    }
     let input = if p.input.is_array() {
         TurnInput::UserInput {
             content: decode::<Vec<UserInput>>(p.input).map_err(pre_admission)?,
@@ -634,15 +723,22 @@ async fn start_with_params<'a>(
             } else {
                 None
             };
+            if p.exact_steering && reserved.is_none() {
+                return Ok(rejection(NotSubmittedReason::NoActiveTurn));
+            }
             // Core can complete an accepted item before this await returns.
             // Rejections and dispatch errors must remove only their unused ID.
             let result = thread.steer_turn(request, expected).await;
             if !matches!(&result, Ok(SteerSubmission::Steered { .. }))
-                && let Some((turn, id)) = reserved
+                && let Some((turn, id)) = &reserved
             {
-                turn.discard_steering(&id);
+                turn.discard_steering(id);
             }
             Ok(match result? {
+                SteerSubmission::Steered { turn_id } if p.exact_steering => {
+                    let (_, input_id) = reserved.expect("exact steering reserved an input ID");
+                    json!({"status": "steered", "turn_id": turn_id, "input_id": input_id})
+                }
                 SteerSubmission::Steered { turn_id } => {
                     json!({"status": "steered", "turn_id": turn_id})
                 }

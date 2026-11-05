@@ -8,6 +8,7 @@ on:
       - '**/*.mdx'
   pull_request:
     branches: [feat/codex-harness]
+  workflow_call:
 
 permissions:
   contents: read
@@ -33,7 +34,8 @@ jobs:
             runner: macos-15
           - platform: win32-x64
             runner: windows-2025
-    runs-on: ${{ matrix.runner }}
+    # Keep macOS on its ARM runner and preserve standard runners for fork-owned repositories.
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
     timeout-minutes: 180
     defaults:
       run:
@@ -86,6 +88,25 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
           node packages/agents/scripts/native.mjs package
+      - name: Build the macOS WSS test fixture
+        if: runner.os == 'macOS'
+        working-directory: packages/agents/native
+        run: |
+          # Reuse the verified V8 files and target from native.mjs package.
+          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
+          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
+          cargo build --locked --release --example exec-server-fixture
+          fixture="$CARGO_TARGET_DIR/release/examples/exec-server-fixture"
+          test -x "$fixture"
+          echo "CODEX_EXEC_SERVER_TEST_BINARY=$fixture" >> "$GITHUB_ENV"
+      - name: Qualify local executor grants on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
+          -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
+          --reporter=verbose
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles

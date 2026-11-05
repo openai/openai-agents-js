@@ -30,6 +30,7 @@ pub(crate) struct ForkMetadata {
     goal: Option<crate::goals::GoalSnapshot>,
     checklist: Option<crate::storage::ChecklistState>,
     code_mode: Option<codex_code_mode::CodeModeSnapshot>,
+    executor_policy_digest: Option<String>,
 }
 
 impl ForkMetadata {
@@ -78,6 +79,9 @@ impl ForkMetadata {
             goal,
             checklist,
             code_mode,
+            executor_policy_digest: serde_json::from_value(
+                source["executor_policy_digest"].clone(),
+            )?,
         })
     }
 
@@ -149,6 +153,8 @@ pub struct Checkpoint {
     managed_tool_specs: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     root_turn_budget: Option<crate::response_control::BudgetSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    executor_policy_digest: Option<String>,
 }
 
 #[derive(Default)]
@@ -402,6 +408,26 @@ pub async fn export(state: &ThreadState, pending: Option<&Value>) -> anyhow::Res
     export_inner(state, pending, false).await
 }
 
+pub(crate) fn redact_executor_observations(history: &mut [codex_history::RolloutItem]) {
+    for record in history {
+        if let codex_history::RolloutItem::TurnContext(context) = record
+            && let Some(receipt) = context
+                .sdk_receipt
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            receipt.remove("strict_executor_writes");
+            if receipt
+                .get("executors")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|value| !value.is_empty())
+            {
+                receipt.insert("executors".to_owned(), serde_json::Value::Null);
+            }
+        }
+    }
+}
+
 async fn export_inner(
     state: &ThreadState,
     pending: Option<&Value>,
@@ -541,6 +567,15 @@ async fn export_inner(
         .thread_extension_data()
         .get::<crate::response_control::ResponseControl>();
     let root_turn_budget = control.and_then(|control| control.checkpoint_budget());
+    let mut history = history;
+    redact_executor_observations(&mut history);
+    for child in &mut descendants {
+        redact_executor_observations(&mut child.history);
+    }
+    let executor_policy_digest = match state.retained_metadata.get() {
+        Some(fork) => fork.executor_policy_digest.clone(),
+        None => crate::environment::checkpoint_policy(&state.thread).await?,
+    };
     let mut exported = serde_json::to_value(Checkpoint {
         format_version: if code_states.is_empty() { 2 } else { 4 },
         codex_revision: include_str!("../CODEX_REVISION").trim().to_owned(),
@@ -555,6 +590,7 @@ async fn export_inner(
         interrupted_thread_ids,
         managed_tool_specs,
         root_turn_budget,
+        executor_policy_digest,
     })?;
     if let Some(metadata) = state.retained_metadata.get() {
         metadata.overlay(&mut exported, state.id)?;
@@ -1332,8 +1368,15 @@ pub async fn restore(
     }
 
     let (mut startup, instructions) = engine.build_startup(options).await?;
+    crate::environment::check_checkpoint_policy(
+        checkpoint.executor_policy_digest.as_deref(),
+        &startup,
+    )?;
 
     if python_specs.is_some() {
+        // An absent current environment is an explicit empty selection on restore.
+        startup.environments.get_or_insert_with(Vec::new);
+
         // The checkpoint owns accepted model choices, not provider credentials,
         // tools, permissions or any other current application configuration.
         if let Some(settings) = checkpoint.history.iter().rev().find_map(|item| match item {

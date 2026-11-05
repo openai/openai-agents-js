@@ -2,6 +2,7 @@
 
 #![recursion_limit = "256"]
 
+use napi::bindgen_prelude::Either;
 use napi_derive::napi;
 
 mod application_instructions;
@@ -16,6 +17,7 @@ mod environment;
 mod extensions;
 mod goals;
 mod graph_stop;
+mod local_reconciliation;
 mod local_storage;
 mod mcp_result_control;
 mod mcp_roster;
@@ -249,6 +251,20 @@ impl Engine {
 
     fn current(&self) -> napi::Result<RuntimeOwned<engine::EngineState>> {
         Self::current_owner(&self.inner)
+    }
+
+    async fn start_native_thread(
+        &self,
+        options_json: &str,
+        specs_json: &str,
+    ) -> anyhow::Result<NativeThread> {
+        let inner = self
+            .current()
+            .map_err(|error| anyhow::anyhow!(error.reason))?;
+        let options = config::decode(serde_json::from_str(options_json)?)?;
+        let specs = serde_json::from_str(specs_json)?;
+        let _context_operation = inner.operation(false)?;
+        inner.start_with_tools(options, specs).await
     }
 
     fn current_owner(
@@ -542,21 +558,28 @@ impl Engine {
         options_json: String,
         specs_json: String,
     ) -> napi::Result<NativeThread> {
-        let options_json = options_json.as_str();
-        let specs_json = specs_json.as_str();
+        self.start_native_thread(&options_json, &specs_json)
+            .await
+            .map_err(native_error)
+    }
 
-        let inner = self.current()?;
-        let options = config::decode(serde_json::from_str(options_json).map_err(native_error)?)
-            .map_err(native_error)?;
-        let specs = serde_json::from_str(specs_json).map_err(native_error)?;
-        (async move {
-            let _context_operation = inner.operation(false).map_err(native_error)?;
-            inner
-                .start_with_tools(options, specs)
-                .await
-                .map_err(native_error)
-        })
-        .await
+    #[napi(js_name = "_start_local_resume")]
+    pub async fn start_local_resume(
+        &self,
+        options_json: String,
+        specs_json: String,
+    ) -> napi::Result<Either<NativeThread, String>> {
+        match self.start_native_thread(&options_json, &specs_json).await {
+            Ok(thread) => Ok(Either::A(thread)),
+            Err(error) => match error.downcast::<local_reconciliation::RecoveryRequired>() {
+                Ok(hold) => {
+                    let history = usage::history_to_wire(&hold.history).map_err(native_error)?;
+                    let snapshot = serde_json::json!({ "calls": hold.calls, "history": history });
+                    Ok(Either::B(snapshot.to_string()))
+                }
+                Err(error) => Err(native_error(error)),
+            },
+        }
     }
 
     #[napi(js_name = "close")]
@@ -917,9 +940,15 @@ impl ContextChange {
             ),
             descendant_models: Vec::new(),
         };
+        let runtime = environment::context_candidate_runtime(
+            &change.state.thread,
+            &change.state.engine.runtime_json,
+        )
+        .await
+        .map_err(native_error)?;
         let mut state = engine::EngineState::new_owned(
             serde_json::to_string(&config).map_err(native_error)?,
-            change.state.engine.runtime_json.clone(),
+            runtime,
             true,
             api_key,
             Some(&self.prospective),
@@ -2612,6 +2641,9 @@ impl NativeThread {
                 tools
                     .restore_schema_history(&mut projected)
                     .map_err(native_error)?;
+                // Compare portable projections. The store lease below still
+                // verifies the exact unredacted writer prefix.
+                checkpoint::redact_executor_observations(&mut projected);
                 if serde_json::to_value(projected).map_err(native_error)? != saved["history"] {
                     return Ok(serde_json::json!({"status":"not_ready"}).to_string());
                 }
@@ -2688,6 +2720,7 @@ impl NativeThread {
                 tools
                     .restore_schema_history(&mut history)
                     .map_err(native_error)?;
+                checkpoint::redact_executor_observations(&mut history);
                 saved["history"] = serde_json::to_value(history).map_err(native_error)?;
                 saved["agent_options"] = serde_json::json!({});
                 usage::checkpoint_to_wire(&mut saved).map_err(native_error)?;
@@ -2792,14 +2825,8 @@ impl NativeThread {
                     .map_err(native_error)
             })
             .transpose()?;
-        if selection
-            .as_ref()
-            .is_some_and(|selection| selection.before_step)
-        {
-            return Err(native_error(
-                "manual continuation recovery requires static selection",
-            ));
-        }
+        // A restored root can use step preparation to enforce its remaining
+        // SDK budget. The SDK never serializes an application callback.
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         inner
@@ -3079,6 +3106,19 @@ impl NativeThread {
     #[napi(js_name = "_close_selected_environment")]
     pub async fn _close_selected_environment(&self) -> napi::Result<Option<String>> {
         self.close_owned(true).await
+    }
+
+    #[napi(js_name = "_stop_sampling_for_close")]
+    pub fn _stop_sampling_for_close(&self) -> napi::Result<()> {
+        if let Some(inner) = self.live()?
+            && let Some(root) = inner
+                .thread
+                .thread_extension_data()
+                .get::<native_interception::Control>()
+        {
+            root.graph().close_sampling.request();
+        }
+        Ok(())
     }
 }
 

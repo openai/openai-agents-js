@@ -55,6 +55,10 @@ export class Engine {
     options_json: string,
     specs_json: string,
   ): Promise<NativeThread>;
+  _start_local_resume(
+    options_json: string,
+    specs_json: string,
+  ): Promise<NativeThread | string>;
   _close_report(): Promise<string | null>;
   close(): Promise<void>;
 }
@@ -202,6 +206,7 @@ export class NativeThread {
   close(): Promise<void>;
   _close_report(): Promise<string | null>;
   _close_selected_environment(): Promise<string | null>;
+  _stop_sampling_for_close(): void;
   _request_graph_stop(
     scope: 'root' | 'thread_tree',
     mode: 'force' | 'graceful',
