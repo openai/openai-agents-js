@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -48,6 +51,39 @@ async function providerPeer(
   let rejectedRequests = 0;
   const rejectedBodies: JsonObject[] = [];
   let rejectedUpgrades = 0;
+  let upgradeRejection: 401 | 426 | undefined = websocketStatus;
+  const upgradeMetadata: JsonObject[] = [];
+  const httpMetadata: JsonObject[] = [];
+  const bodyDigests: string[] = [];
+  const sockets = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: false,
+  });
+  // Test-only fault injection: record the Core-facing carrier, not the provider socket.
+  const coreCarrierSockets = new Set<WebSocket>();
+  const originalUpgrade = WebSocketServer.prototype.handleUpgrade;
+  const captureUpgrade = vi
+    .spyOn(WebSocketServer.prototype, 'handleUpgrade')
+    .mockImplementation(function (
+      this: WebSocketServer,
+      request,
+      socket,
+      head,
+      callback,
+    ) {
+      return originalUpgrade.call(this, request, socket, head, (accepted) => {
+        if (this !== sockets) {
+          coreCarrierSockets.add(accepted);
+        }
+        callback(accepted, request);
+      });
+    });
+  const metadata = (
+    headers: import('node:http').IncomingHttpHeaders,
+  ): JsonObject => {
+    const value = headers['x-codex-turn-metadata'];
+    return typeof value === 'string' ? JSON.parse(value) : {};
+  };
   const server = createServer(async (request, response) => {
     try {
       const chunks: Buffer[] = [];
@@ -58,6 +94,8 @@ async function providerPeer(
       if (failure) {
         rejectedRequests++;
         rejectedBodies.push(parsedBody);
+        httpMetadata.push(metadata(request.headers));
+        bodyDigests.push(createHash('sha256').update(body).digest('hex'));
         response.writeHead(failure.status, {
           'content-type': 'application/json',
           ...(failure.retryAfter === null
@@ -93,11 +131,49 @@ async function providerPeer(
     }
   });
   if (rejectWebsocketUpgrade) {
-    server.on('upgrade', (_request, socket) => {
-      rejectedUpgrades++;
-      socket.end(
-        `HTTP/1.1 ${websocketStatus} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
-      );
+    server.on('upgrade', (request, socket, head) => {
+      if (upgradeRejection !== undefined) {
+        rejectedUpgrades++;
+        upgradeMetadata.push(metadata(request.headers));
+        socket.end(
+          `HTTP/1.1 ${upgradeRejection} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+        );
+        return;
+      }
+      sockets.handleUpgrade(request, socket, head, (websocket) => {
+        websocket.on('message', async (data) => {
+          try {
+            const request = JSON.parse(data.toString());
+            if (request.generate === false) {
+              websocket.send(
+                JSON.stringify({
+                  type: 'response.created',
+                  response: { id: 'auth-warmup' },
+                }),
+              );
+              websocket.send(
+                JSON.stringify({
+                  type: 'response.completed',
+                  response: { id: 'auth-warmup' },
+                }),
+              );
+              return;
+            }
+            const reply = await fetch(`${upstream}/responses`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(request),
+            });
+            assert(reply.ok, 'Priming provider response failed');
+            for (const line of (await reply.text()).split('\n')) {
+              if (line.startsWith('data: ')) websocket.send(line.slice(6));
+            }
+          } catch (error) {
+            failures.push(error);
+            websocket.terminate();
+          }
+        });
+      });
     });
   }
   await new Promise<void>((resolve, reject) => {
@@ -125,6 +201,24 @@ async function providerPeer(
   }
   return {
     provider,
+    upgradeMetadata,
+    httpMetadata,
+    bodyDigests,
+    setWebsocketRejection(status: 401 | 426 | undefined) {
+      upgradeRejection = status;
+    },
+    async retireCoreCarrier() {
+      expect(coreCarrierSockets.size).toBeGreaterThan(0);
+      await Promise.all(
+        [...coreCarrierSockets].map(async (socket) => {
+          if (socket.readyState === 3) return;
+          const closed = once(socket, 'close');
+          socket.terminate();
+          await closed;
+        }),
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    },
     get rejectedRequests() {
       return rejectedRequests;
     },
@@ -138,6 +232,9 @@ async function providerPeer(
       try {
         await provider.close();
       } finally {
+        captureUpgrade.mockRestore();
+        for (const socket of sockets.clients) socket.terminate();
+        await new Promise<void>((resolve) => sockets.close(() => resolve()));
         server.closeAllConnections();
         await new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve())),
@@ -676,11 +773,19 @@ describe('Python-aligned native provider error metadata', () => {
           requestId: 'final-http-request',
           category: 'authentication_error',
         });
-        // Startup preconnect owns a separate recovery budget. This first turn
-        // keeps normal HTTP recovery and owns the final failure metadata.
+        // Startup preconnect has its own recovery budget. The real turn still
+        // owns normal HTTP recovery and the final HTTP failure metadata.
         expect(error).toMatchObject({ retryable: false });
         expect(peer.rejectedUpgrades).toBe(upgrades);
         expect(peer.rejectedRequests).toBe(httpAttempts);
+        expect(peer.upgradeMetadata.map((item) => item.request_kind)).toEqual(
+          Array(upgrades).fill('prewarm'),
+        );
+        expect(peer.httpMetadata.map((item) => item.request_kind)).toEqual(
+          Array(httpAttempts).fill('turn'),
+        );
+        if (httpAttempts === 2)
+          expect(peer.bodyDigests[0]).toBe(peer.bodyDigests[1]);
         await expect(turn.wait()).rejects.toBe(error);
         model.assertExhausted();
       } finally {
@@ -689,6 +794,80 @@ describe('Python-aligned native provider error metadata', () => {
         } finally {
           await peer.close();
         }
+      }
+    },
+    30_000,
+  );
+
+  it.each([401, 403])(
+    'shares exhausted recovery across a real sampling reconnect (%s)',
+    async (status) => {
+      let effects = 0;
+      const model = new ModelServer([
+        [call('write_once', {}, { callId: 'sampling-effect' })],
+        [message('primed')],
+      ]);
+      const peer = await providerPeer(
+        model,
+        () => ({ ...authentication, status }),
+        true,
+      );
+      peer.setWebsocketRejection(undefined);
+      let session: Session | undefined;
+      try {
+        session = await new Agent({
+          instructions: 'Record one effect, then answer.',
+          model: 'gpt-5',
+          provider: peer.provider,
+          tools: [
+            tool({
+              name: 'write_once',
+              parameters: z.object({}),
+              execute() {
+                effects++;
+                return 'recorded once';
+              },
+            }),
+          ],
+        }).session();
+        expect(
+          (
+            await (
+              await session.submit('Prime the socket and record one effect.')
+            ).wait()
+          ).finalOutput,
+        ).toBe('primed');
+        expect(effects).toBe(1);
+        expect(peer.rejectedRequests).toBe(0);
+        await peer.retireCoreCarrier();
+        peer.setWebsocketRejection(401);
+        const turn = await session.submit(
+          'Reject this fresh sampling request.',
+        );
+        const error: unknown = await turn
+          .wait()
+          .catch((error: unknown) => error);
+        expectMetadata(error, {
+          statusCode: status,
+          code: authentication.code,
+          requestId: authentication.requestId,
+          category: 'authentication_error',
+        });
+        expect(peer.upgradeMetadata.map((item) => item.request_kind)).toEqual([
+          'turn',
+          'turn',
+        ]);
+        expect(peer.httpMetadata.map((item) => item.request_kind)).toEqual([
+          'turn',
+        ]);
+        expect(peer.rejectedRequests).toBe(1);
+        expect(error).toMatchObject({ retryable: false });
+        expect(effects).toBe(1);
+        await expect(turn.wait()).rejects.toBe(error);
+        model.assertExhausted();
+      } finally {
+        await session?.close();
+        await peer.close();
       }
     },
     30_000,

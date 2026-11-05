@@ -32,10 +32,17 @@ use crate::{NativeThread, config, extensions, goals, options};
 
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(test)]
+struct ProcessCleanupHold {
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+}
+
 pub struct EngineState {
     pub manager: Arc<ThreadManager>,
     pub(crate) sdk_selected_model: bool,
     pub store: Arc<dyn ThreadStore>,
+    pub(crate) custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     pub(crate) local_checklist_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
     pub agent_graph: Arc<crate::storage::MemoryAgentGraph>,
     pub goals: Option<goals::GoalBackend>,
@@ -57,6 +64,10 @@ pub struct EngineState {
     // Wrapper slots stay weak. Shared raw fork receipts survive a lost source,
     // without retaining a ThreadState (which itself owns this EngineState).
     native_threads: std::sync::Mutex<Vec<NativeThreadRegistration>>,
+    // Exact cleanup authority survives manager removal and a cancelled close.
+    pending_process_cleanup: std::sync::Mutex<Vec<Arc<CodexThread>>>,
+    #[cfg(test)]
+    process_cleanup_hold: std::sync::Mutex<Option<Arc<ProcessCleanupHold>>>,
     pub startup_warnings: Vec<String>,
     extension_events: Arc<extensions::Events>,
     cloud_config: codex_config::CloudConfigBundleLoader,
@@ -187,9 +198,42 @@ impl EngineState {
         prospective: Option<&std::sync::Mutex<Option<crate::RuntimeOwned<EnvironmentManager>>>>,
         initial_models: crate::checkpoint::InitialModels,
     ) -> anyhow::Result<Self> {
+        Self::new_owned_with_store(
+            config_json,
+            runtime_json,
+            checkpoint,
+            api_key,
+            prospective,
+            initial_models,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn new_owned_with_store(
+        config_json: String,
+        runtime_json: String,
+        checkpoint: bool,
+        api_key: Option<String>,
+        prospective: Option<&std::sync::Mutex<Option<crate::RuntimeOwned<EnvironmentManager>>>>,
+        initial_models: crate::checkpoint::InitialModels,
+        custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
+    ) -> anyhow::Result<Self> {
+        ensure!(
+            custom_store.is_none()
+                || (!checkpoint
+                    && config::environment(&runtime_json)?.is_none()
+                    && config::native_thread_store(&runtime_json)?.is_none()
+                    && !config::native_goal_store_enabled(&runtime_json)?),
+            "custom canonical storage cannot combine local, checkpoint, or goal stores"
+        );
         let telemetry = crate::telemetry::engine_starting().await?;
         let runtime_json = config::prepare_runtime(&runtime_json)?;
         let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
+        ensure!(
+            custom_store.is_none() || !config.update_plan_enabled,
+            "custom canonical storage does not support Checklist"
+        );
         let environment_options = config::environment(&runtime_json)?;
         if let Some(environment) = &environment_options {
             environment.restrict_network_approval(&mut config)?;
@@ -348,22 +392,30 @@ impl EngineState {
         });
         let store: Arc<dyn ThreadStore> = match &local_checklist_store {
             Some(store) => store.clone(),
-            None => Arc::new(crate::storage::MemoryThreadStore::default()),
+            None => match &custom_store {
+                Some(store) => store.clone(),
+                None => Arc::new(crate::storage::MemoryThreadStore::default()),
+            },
         };
-        if let Some(id) = config::sdk_resume_thread_id(&runtime_json)? {
-            let local = local_checklist_store
-                .as_ref()
-                .context("SDK resume requires current native local storage")?;
-            let saved = store
-                .read_thread(ReadThreadParams {
-                    thread_id: id,
-                    include_archived: true,
-                    include_history: false,
-                })
-                .await?;
-            local.expect_resume_model(id, saved.model.clone());
-            if config.model.is_none() {
-                config.model = saved.model;
+        if custom_store.is_none() {
+            if let Some(id) = config::sdk_resume_thread_id(&runtime_json)? {
+                ensure!(
+                    local_checklist_store.is_some() || custom_store.is_some(),
+                    "SDK resume requires current canonical storage"
+                );
+                let saved = store
+                    .read_thread(ReadThreadParams {
+                        thread_id: id,
+                        include_archived: true,
+                        include_history: false,
+                    })
+                    .await?;
+                if let Some(local) = &local_checklist_store {
+                    local.expect_resume_model(id, saved.model.clone());
+                }
+                if config.model.is_none() {
+                    config.model = saved.model;
+                }
             }
         }
         if local_checklist_store.is_some()
@@ -416,7 +468,7 @@ impl EngineState {
                 &config,
                 auth.clone(),
                 goals.as_ref(),
-                local_checklist_store.is_some(),
+                local_checklist_store.is_some() || custom_store.is_some(),
                 weak.clone(),
                 environment.clone(),
                 extension_events.clone(),
@@ -456,6 +508,7 @@ impl EngineState {
             manager,
             store,
             local_checklist_store,
+            custom_store,
             agent_graph,
             goals,
             sdk_user_input_enabled,
@@ -466,6 +519,9 @@ impl EngineState {
             retired: AtomicBool::new(false),
             context_gate: Arc::new(tokio::sync::RwLock::new(())),
             native_threads: std::sync::Mutex::new(Vec::new()),
+            pending_process_cleanup: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            process_cleanup_hold: std::sync::Mutex::new(None),
             lifecycle: Mutex::new(()),
             manual_observations: tokio::sync::RwLock::new(()),
             event_owners: Mutex::new(HashMap::new()),
@@ -488,7 +544,7 @@ impl EngineState {
         specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     ) -> anyhow::Result<NativeThread> {
         let _guard = self.lifecycle.lock().await;
-        if self.local_checklist_store.is_some() {
+        if self.local_checklist_store.is_some() || self.custom_store.is_some() {
             options.validate_local_authority()?;
         }
         let resume = options.sdk_resume_thread_id;
@@ -498,6 +554,10 @@ impl EngineState {
             "reconciled calls require local resume"
         );
         ensure!(
+            self.custom_store.is_none() || reconciled_calls.is_empty(),
+            "custom canonical storage requires its explicit reconciliation API"
+        );
+        ensure!(
             config::sdk_resume_thread_id(&self.runtime_json)?.is_none_or(|id| Some(id) == resume),
             "SDK resume must match the current runtime admission"
         );
@@ -505,12 +565,15 @@ impl EngineState {
         let mut local_resume_admission = None;
         if let Some(id) = resume {
             ensure!(
-                self.local_checklist_store.is_some()
+                (self.local_checklist_store.is_some() || self.custom_store.is_some())
                     && matches!(startup.initial_history, InitialHistory::New)
                     && startup.reserved_thread_id.is_none(),
                 "SDK resume requires local storage and no competing history or identity"
             );
             self.ensure_no_live_owner(id).await?;
+            if let Some(store) = &self.custom_store {
+                store.open(id, true).await?;
+            }
             let saved = self.read_stored_thread(id).await?;
             if startup.config.model.is_none() {
                 startup.config.model = saved.model.clone();
@@ -523,47 +586,59 @@ impl EngineState {
                     .is_empty(),
                 "SDK resume cannot authorize saved startup tools"
             );
-            let executor_policy =
-                crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
             let InitialHistory::Resumed(history) = &mut initial_history else {
                 anyhow::bail!("SDK resume requires the stored model context");
             };
-            if let Some(path) = history.rollout_path.as_deref() {
-                let home = self.local_storage_home().expect("checked local store");
-                crate::environment::check_local_resume_rollout_path(&startup, &home.join(path))
-                    .await?;
-            }
-            let admission = self
-                .local_checklist_store
-                .as_ref()
-                .expect("checked local store")
-                .prepare_resume(
-                    codex_thread_store::ResumeThreadParams {
-                        thread_id: id,
-                        rollout_path: history.rollout_path.clone(),
-                        history: Some(history.history.clone()),
-                        history_revision: history.history_revision.clone(),
-                        include_archived: true,
-                        metadata: codex_thread_store::ThreadPersistenceMetadata {
-                            cwd: Some(startup.config.cwd.to_path_buf()),
-                            model_provider: startup.config.model_provider_id.clone(),
-                            memory_mode: if startup.config.memories.generate_memories {
-                                codex_protocol::protocol::ThreadMemoryMode::Enabled
-                            } else {
-                                codex_protocol::protocol::ThreadMemoryMode::Disabled
+            if self.local_checklist_store.is_some() {
+                let executor_policy =
+                    crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
+                if let Some(path) = history.rollout_path.as_deref() {
+                    let home = self.local_storage_home().expect("checked local store");
+                    crate::environment::check_local_resume_rollout_path(&startup, &home.join(path))
+                        .await?;
+                }
+                let admission = self
+                    .local_checklist_store
+                    .as_ref()
+                    .expect("checked local store")
+                    .prepare_resume(
+                        codex_thread_store::ResumeThreadParams {
+                            thread_id: id,
+                            rollout_path: history.rollout_path.clone(),
+                            history: Some(history.history.clone()),
+                            history_revision: history.history_revision.clone(),
+                            include_archived: true,
+                            metadata: codex_thread_store::ThreadPersistenceMetadata {
+                                cwd: Some(startup.config.cwd.to_path_buf()),
+                                model_provider: startup.config.model_provider_id.clone(),
+                                memory_mode: if startup.config.memories.generate_memories {
+                                    codex_protocol::protocol::ThreadMemoryMode::Enabled
+                                } else {
+                                    codex_protocol::protocol::ThreadMemoryMode::Disabled
+                                },
                             },
                         },
-                    },
-                    saved.model,
-                    instructions.clone(),
-                    executor_policy,
-                    reconciled_calls,
-                )
-                .await?;
-            let prepared = admission.prepared_params()?;
-            history.history = prepared.history.as_ref().expect("prepared history").clone();
-            history.rollout_path = prepared.rollout_path.clone();
-            history.history_revision = prepared.history_revision.clone();
+                        saved.model,
+                        instructions.clone(),
+                        executor_policy,
+                        reconciled_calls,
+                    )
+                    .await?;
+                let prepared = admission.prepared_params()?;
+                history.history = prepared.history.as_ref().expect("prepared history").clone();
+                history.rollout_path = prepared.rollout_path.clone();
+                history.history_revision = prepared.history_revision.clone();
+                local_resume_admission = Some(admission);
+            } else {
+                if instructions.managed() {
+                    if let Some(accepted) = crate::application_instructions::validate(
+                        &history.history,
+                        &instructions.text()?.unwrap_or_default(),
+                    )? {
+                        instructions.confirm(accepted)?;
+                    }
+                }
+            }
             ensure!(
                 initial_history
                     .get_dynamic_tools()
@@ -572,7 +647,6 @@ impl EngineState {
                 "SDK resume cannot authorize saved startup tools"
             );
             startup.initial_history = initial_history;
-            local_resume_admission = Some(admission);
         }
         if let Some(store) = &self.local_checklist_store {
             config::validate_local_tool_config(&startup.config)?;
@@ -592,6 +666,27 @@ impl EngineState {
             startup
                 .thread_extension_init
                 .insert(crate::local_storage::LocalReceiptStore(store.clone()));
+        }
+        if let Some(store) = &self.custom_store {
+            config::validate_local_tool_config(&startup.config)?;
+            startup.environments.get_or_insert_with(Vec::new);
+            ensure!(
+                !startup.config.agents_enabled
+                    && !startup.config.update_plan_enabled
+                    && startup
+                        .environments
+                        .as_ref()
+                        .is_none_or(|environments| environments.is_empty())
+                    && config::web_search_tool(&startup.config).is_none()
+                    && !startup.config.features.enabled(Feature::Goals)
+                    && !startup.config.features.enabled(Feature::CodeMode)
+                    && startup.dynamic_tools.is_empty()
+                    && !startup.config.ephemeral,
+                "custom storage supports root managed tools only"
+            );
+            startup
+                .thread_extension_init
+                .insert(crate::custom_storage::ReceiptStore(store.clone()));
         }
         if let Some(model) = &startup.config.model {
             self.validate_hosted_search_model(model).await?;
@@ -1107,15 +1202,61 @@ impl EngineState {
 
     async fn close_locked(&self) -> anyhow::Result<Option<String>> {
         if self.closed.load(Ordering::Acquire) {
-            return Ok(match &self.local_checklist_store {
-                Some(store) => store
-                    .check_failure(None)
-                    .await
-                    .err()
-                    .map(|error| error.to_string()),
-                None => None,
-            });
+            let mut diagnostics = Vec::new();
+            let retained = self
+                .pending_process_cleanup
+                .lock()
+                .expect("process cleanup poisoned")
+                .clone();
+            for thread in retained {
+                if let Err(error) = tokio::time::timeout(
+                    CLOSE_TIMEOUT,
+                    thread.shutdown_agent_tree_and_check_processes(),
+                )
+                .await
+                .context("Codex process cleanup timed out")?
+                {
+                    diagnostics.push(error.to_string());
+                }
+            }
+            let canonical = if let Some(store) = &self.custom_store {
+                store.close_all().await?
+            } else {
+                match &self.local_checklist_store {
+                    Some(store) => store
+                        .check_failure(None)
+                        .await
+                        .err()
+                        .map(|error| error.to_string()),
+                    None => None,
+                }
+            };
+            diagnostics.extend(canonical);
+            return Ok((!diagnostics.is_empty()).then(|| diagnostics.join("; ")));
         }
+        // Fork cleanup and manager shutdown remove completed threads. Preserve
+        // their exact cleanup health before either path changes the registry.
+        let mut closing_trees = Vec::new();
+        for id in self.manager.list_thread_ids().await {
+            if let Ok(thread) = self.manager.get_thread(id).await {
+                closing_trees.push(thread);
+            }
+        }
+        let closing_trees = {
+            let mut retained = self
+                .pending_process_cleanup
+                .lock()
+                .expect("process cleanup poisoned");
+            for thread in closing_trees {
+                if !retained
+                    .iter()
+                    .any(|previous| Arc::ptr_eq(previous, &thread))
+                {
+                    retained.push(thread);
+                }
+            }
+            retained.clone()
+        };
         // The registration retains the same raw receipt after the source owner
         // disappears. It never retains an SDK ThreadState or a strong wrapper.
         let receipts: Vec<_> = self
@@ -1142,12 +1283,41 @@ impl EngineState {
             report.timed_out.len(),
             report.submit_failed.len()
         );
+        for thread in closing_trees {
+            let checked = tokio::time::timeout_at(import_deadline, async {
+                #[cfg(test)]
+                {
+                    let hold = self.process_cleanup_hold.lock().unwrap().clone();
+                    if let Some(hold) = hold {
+                        hold.entered.add_permits(1);
+                        hold.release.acquire().await.unwrap().forget();
+                    }
+                }
+                thread.shutdown_agent_tree_and_check_processes().await
+            })
+            .await
+            .context("Codex process cleanup timed out")?;
+            if let Err(error) = checked {
+                // Preserve rejected confirmations through later cleanup/caller cancellation.
+                fork_diagnostics.push(error.to_string());
+            } else {
+                self.pending_process_cleanup
+                    .lock()
+                    .expect("process cleanup poisoned")
+                    .retain(|previous| !Arc::ptr_eq(previous, &thread));
+            }
+        }
         if let Some(diagnostic) = self
             .interception
             .cleanup_code_imports(None, import_deadline)
             .await?
         {
             fork_diagnostics.push(diagnostic);
+        }
+        if let Some(store) = &self.custom_store {
+            if let Some(diagnostic) = store.close_all().await? {
+                fork_diagnostics.push(diagnostic);
+            }
         }
         let diagnostic = if let Some(store) = &self.local_checklist_store {
             store.close_database().await?;
@@ -2589,6 +2759,9 @@ impl ThreadState {
                     store.check_failure(Some(self.id)).await?;
                     ensure!(!*closing.borrow(), "Codex thread is closed");
                 }
+                if let Some(store) = &self.engine.custom_store {
+                    store.check(self.id).await?;
+                }
                 let (event, turn) = events.session_terminal.take().expect("retained terminal");
                 if let Some(settlement) = self
                     .thread
@@ -2733,6 +2906,7 @@ impl ThreadState {
                             store.check_failure(Some(self.id)).await?;
                             ensure!(!*closing.borrow(), "Codex thread is closed");
                         }
+                        if let Some(store) = &self.engine.custom_store {store.check(self.id).await?;}
                         return self.root_event(event, None);
                     }
                     if let Some(settlement) = self.thread.thread_extension_data()
@@ -2790,22 +2964,20 @@ impl ThreadState {
     }
 
     pub(crate) async fn close_report(&self) -> anyhow::Result<Option<String>> {
-        self.close_owned(false).await
+        self.close_owned().await
     }
 
     pub(crate) async fn close_selected_environment(&self) -> anyhow::Result<Option<String>> {
-        self.close_owned(true).await
+        self.close_owned().await
     }
 
-    async fn close_owned(&self, selected_environment: bool) -> anyhow::Result<Option<String>> {
+    async fn close_owned(&self) -> anyhow::Result<Option<String>> {
         let _guard = self.close_lock.lock().await;
-        // Raw close still retires admission before waiting for any mutation.
-        // Selected close needs the live receipt to settle before listing terminals.
-        if !selected_environment
-            && let Some(settlement) = self
-                .thread
-                .thread_extension_data()
-                .get::<crate::turn_settlement::Settlement>()
+        // Core owns checked process cleanup; retire SDK admission before any wait.
+        if let Some(settlement) = self
+            .thread
+            .thread_extension_data()
+            .get::<crate::turn_settlement::Settlement>()
         {
             settlement.retire();
         }
@@ -2842,6 +3014,13 @@ impl ThreadState {
             events.graph.close();
         }
         if already_closed {
+            if let Some(store) = &self.engine.custom_store {
+                return Ok(store
+                    .check(self.id)
+                    .await
+                    .err()
+                    .map(|error| error.to_string()));
+            }
             return Ok(match &self.engine.local_checklist_store {
                 Some(store) => store
                     .check_failure(Some(self.id))
@@ -2851,8 +3030,7 @@ impl ThreadState {
                 None => None,
             });
         }
-        let mut shutdown_deadline = tokio::time::Instant::now() + CLOSE_TIMEOUT;
-        let mut ack_remaining = CLOSE_TIMEOUT;
+        let shutdown_deadline = tokio::time::Instant::now() + CLOSE_TIMEOUT;
         let mut ack_error = fork_diagnostic;
         let mut import_diagnostic = None;
         let shutdown = async {
@@ -2860,67 +3038,14 @@ impl ThreadState {
             let mut pending = vec![(self.id, self.thread.clone())];
             loop {
                 for (id, thread) in pending {
-                    if selected_environment
-                        && let Some(settlement) = thread
-                            .thread_extension_data()
-                            .get::<crate::turn_settlement::Settlement>()
-                    {
-                        let started = tokio::time::Instant::now();
-                        // One budget for all attempts, including all known descendants.
-                        // Never start another attempt after that budget has elapsed.
-                        let acknowledged = if ack_remaining.is_zero() {
-                            Err(())
-                        } else {
-                            tokio::time::timeout(ack_remaining, async {
-                                // A child can already have stopped before root close finds it.
-                                if matches!(
-                                    thread.agent_status().await,
-                                    codex_protocol::protocol::AgentStatus::Shutdown
-                                        | codex_protocol::protocol::AgentStatus::NotFound
-                                ) {
-                                    return true;
-                                }
-
-                                if settlement.interrupt_session(&thread).await.is_err() {
-                                    // Shutdown still owns cleanup, but cannot credit an
-                                    // ACK from a terminal store that may already be drained.
-                                    return false;
-                                }
-                                let mut all_acknowledged = true;
-                                for terminal in thread.list_background_terminals().await {
-                                    match terminal.process_id.parse::<i32>() {
-                                        Ok(process_id) => {
-                                            all_acknowledged &= thread
-                                                .terminate_background_terminal(process_id)
-                                                .await;
-                                        }
-                                        Err(_) => all_acknowledged = false,
-                                    }
-                                }
-                                all_acknowledged
-                            })
-                            .await
-                            .map_err(|_| ())
-                        };
-                        settlement.retire();
-                        let elapsed = started.elapsed();
-                        ack_remaining = ack_remaining.saturating_sub(elapsed);
-                        // Preserve the original total shutdown bound independently of ACK time.
-                        shutdown_deadline += elapsed;
-                        match acknowledged {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                ack_error.get_or_insert(
-                                    "A remote process termination attempt was not acknowledged"
-                                        .to_owned(),
-                                );
-                            }
-                            Err(()) => {
-                                ack_error.get_or_insert_with(|| {
-                                    "Remote process termination attempts timed out".to_owned()
-                                });
-                            }
-                        }
+                    if id == self.id {
+                        // SDK threads confirm process cleanup inside their live Core shutdown.
+                        // Fence starts before joining child delivery and closing any writer.
+                        let _shutdown = self
+                            .engine
+                            .manager
+                            .request_agent_tree_shutdown(self.id)
+                            .await?;
                     }
                     tokio::time::timeout_at(shutdown_deadline, thread.shutdown_and_wait())
                         .await
@@ -2949,13 +3074,9 @@ impl ThreadState {
                 }
             }
             tokio::time::timeout_at(shutdown_deadline, async {
-                // Core's per-thread join waits for loop exit. Check managed process
-                // cleanup across the exact tree before releasing its ownership.
-                if let Err(error) = self
-                    .thread
-                    .shutdown_agent_tree_and_check_managed_processes()
-                    .await
-                {
+                // Confirm both managed-local and remote cleanup across the exact tree
+                // before releasing ownership, including detached startup cleanup.
+                if let Err(error) = self.thread.shutdown_agent_tree_and_check_processes().await {
                     ack_error = Some(match ack_error.take() {
                         Some(message) => format!("{message}; {error}"),
                         None => error.to_string(),
@@ -3021,6 +3142,14 @@ impl ThreadState {
                 Some(message) => format!("{message}; {error}"),
                 None => error.to_string(),
             });
+        }
+        if let Some(store) = &self.engine.custom_store {
+            if let Err(error) = store.check(self.id).await {
+                ack_error = Some(error.to_string());
+            }
+            if let Some(failure) = store.take_release_failure(self.id).await {
+                ack_error.get_or_insert(failure);
+            }
         }
         self.closed.store(true, Ordering::Release);
         Ok(ack_error)
