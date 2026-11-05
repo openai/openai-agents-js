@@ -258,12 +258,12 @@
     },
     {
       "path": "0059-sdk-queued-trace-policy.patch",
-      "sha256": "65cea14c71d319d1e1b0eb6a3137b72ae4ad10a8c6070cc24fb0cc5eecfbdeb7"
+      "sha256": "7bbc86c06556a9c21550cec75f2da1316fa69f37fb56510249704cf01c0c70ab"
     },
     {
       "path": "0059-native-request-metadata.patch",
       "sha256": "5b3b9a410f2f284b3b54eaa5763ac3c8d25f2031f22dc6fc7468389eacd07e4c"
     }
   ],
-  "result_tree": "35c72a035d80f5bdce452d7d3512af8eb5cf6b14"
+  "result_tree": "90d64270c1c943dc119e752824af3749e409c907"
 }

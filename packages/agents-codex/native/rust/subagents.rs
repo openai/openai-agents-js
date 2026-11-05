@@ -6,6 +6,7 @@ use codex_core::context::{
     ContextualUserFragment, InternalContextSource, InternalModelContextFragment,
 };
 use codex_core_api::{CodexThread, ThreadManager, WithTurnExtensionData};
+use codex_otel::sdk_trace::FutureExt as _;
 use codex_protocol::ThreadId;
 use codex_protocol::models::{ContentItem, MessagePhase, ResponseItem};
 use codex_protocol::protocol::{Event, EventMsg, TokenUsageInfo, TurnAbortReason};
@@ -751,7 +752,8 @@ pub async fn submit(
         content: input.input,
         client_id: None,
     });
-    if let Some(tracing) = control.creation_tracing() {
+    let creation_tracing = control.creation_tracing();
+    if let Some(tracing) = &creation_tracing {
         request.trace = Some(
             codex_otel::sdk_trace::trace_carrier(tracing.token()).map_err(anyhow::Error::msg)?,
         );
@@ -795,6 +797,7 @@ pub async fn submit(
     init.insert(seed.clone());
     let turn_id = match thread
         .start_turn_if_idle(WithTurnExtensionData::new(request.clone(), init))
+        .with_context(crate::lease_context(creation_tracing.as_deref())?)
         .await?
     {
         StartIfIdleSubmission::Started { turn_id } => {
@@ -844,7 +847,11 @@ pub async fn submit(
                     "Native child turn ownership changed"
                 );
             }
-            match thread.steer_turn(request, expected).await {
+            match thread
+                .steer_turn(request, expected)
+                .with_context(crate::lease_context(receipt.tracing.as_deref())?)
+                .await
+            {
                 Ok(SteerSubmission::Steered { turn_id }) => {
                     receipt.confirm_admission();
                     turn_id
@@ -980,6 +987,7 @@ pub async fn continue_retained(
             WithTurnExtensionData::new(request, init),
             turn.turn_id.clone(),
         )
+        .with_context(crate::lease_context(receipt.tracing.as_deref())?)
         .await?;
     let turn_id = match submitted {
         TurnInputSubmission::Started { turn_id } => {

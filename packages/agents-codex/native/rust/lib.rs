@@ -1895,7 +1895,7 @@ impl NativeThread {
             })?;
             serde_json::to_string(&result).map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -2003,7 +2003,7 @@ impl NativeThread {
             serde_json::to_string(&serde_json::json!({"status": "started", "turn_id": turn_id}))
                 .map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -2062,7 +2062,7 @@ impl NativeThread {
             };
             serde_json::to_string(&receipt).map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -2859,7 +2859,7 @@ impl NativeThread {
                 .map_err(native_error)?;
             serde_json::to_string(&events).map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -2960,7 +2960,7 @@ impl NativeThread {
             }
             serde_json::to_string(&result).map_err(native_error)
         })
-        .with_context(context)
+        .with_context(codex_otel::sdk_trace::explicit_submission_context(context))
         .await
     }
 
@@ -3780,6 +3780,17 @@ impl std::fmt::Display for TraceIngressError {
             Self::Invalid(message) => f.write_str(message),
         }
     }
+}
+
+fn lease_context(
+    lease: Option<&codex_otel::sdk_trace::ContextLease>,
+) -> anyhow::Result<opentelemetry::Context> {
+    let context = lease
+        .map(|lease| codex_otel::sdk_trace::context(lease.token()))
+        .transpose()
+        .map_err(anyhow::Error::msg)?
+        .unwrap_or_default();
+    Ok(codex_otel::sdk_trace::explicit_submission_context(context))
 }
 
 fn trace_identity(
