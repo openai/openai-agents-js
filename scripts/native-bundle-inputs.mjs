@@ -24,18 +24,20 @@ export function nativeInputs() {
       maxBuffer: 64 * 1024 * 1024,
     });
   const native = tracked(nativeInputPaths);
-  // Symlinks and ancestor workspaces can reach arbitrary files outside the native crate.
+  // Symlinks, workspace dependencies and configured compiler wrappers can read other files.
   const linked = native
     .toString()
     .split('\0')
     .some((entry) => entry.startsWith('120000 '));
-  const ancestor = [
-    'Cargo.toml',
-    'packages/Cargo.toml',
-    'packages/agents/Cargo.toml',
-  ].some(existsSync);
+  const crate = 'packages/agents/native';
+  const cargoConfiguration = ['.', 'packages', 'packages/agents', crate].some(
+    (dir) =>
+      (dir !== crate && existsSync(dir + '/Cargo.toml')) ||
+      existsSync(dir + '/.cargo/config') ||
+      existsSync(dir + '/.cargo/config.toml'),
+  );
   const entries =
-    linked || ancestor
+    linked || cargoConfiguration
       ? tracked(['.', ':(exclude).github/native-bundle.json'])
       : native;
   return createHash('sha256').update(entries).digest('hex');

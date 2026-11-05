@@ -162,4 +162,16 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
     expect(restore(base).output).toContain('restored=false');
     git('rm', '-q', path);
   }
+  mkdirSync(join(repo, '.cargo'));
+  writeFileSync(
+    join(repo, '.cargo/config.toml'),
+    '[build]\nrustc-wrapper = "wrapper"\n',
+  );
+  writeFileSync(join(repo, 'wrapper'), 'first compiler wrapper\n');
+  const configured = restore(commit('configure a compiler wrapper')).output;
+  writeFileSync(join(repo, 'wrapper'), 'replacement compiler wrapper\n');
+  const changed = restore(commit('change the external wrapper')).output;
+  expect(/^inputs=(.+)$/m.exec(changed)[1]).not.toBe(
+    /^inputs=(.+)$/m.exec(configured)[1],
+  );
 });
