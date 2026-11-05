@@ -157,6 +157,7 @@ export class NativeThread {
   _update_model_settings(settings_json: string): Promise<boolean>;
   _compact(): Promise<string>;
   _execute_command(name: string, arguments_: string): Promise<string>;
+  _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _check_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;

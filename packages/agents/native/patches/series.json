@@ -211,7 +211,11 @@
     {
       "path": "0053-serialize-token-budget-context-commit.patch",
       "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
+    },
+    {
+      "path": "0054-native-prepared-request.patch",
+      "sha256": "8a744feaead0a45f54be30df5d4be237b1aca29995d96eeb410c11b7f13cfd53"
     }
   ],
-  "result_tree": "049bf9bbdd75072a30a7739245d79bd05391eda8"
+  "result_tree": "5296ecb1f56ece03e66636e1ccda16fc723fa956"
 }
