@@ -44,6 +44,7 @@ import {
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
+import { captureThreadStore, type SessionStore } from './custom-thread-store';
 import { captureReconciledCalls, type ReconciledCall } from './local-recovery';
 import { captureTools, toolIdentity, type Tool } from './tools';
 import { validateMaxModelSteps, type OperationOptions } from './session';
@@ -81,7 +82,7 @@ export interface SessionOptions<Context = undefined> {
   model?: string;
   /** Merge defined keys over Agent settings; null serviceTier clears its override. */
   modelSettings?: ModelSettings;
-  storage?: LocalStorage;
+  storage?: LocalStorage | SessionStore;
   resume?: string;
   /** Application-confirmed outcomes for unknown calls on this local resume. */
   reconciledCalls?: readonly ReconciledCall[];
@@ -524,8 +525,29 @@ export class Agent<Context = undefined, Output = string> {
     } = options;
     const context = opening ? opening.context : suppliedContext;
 
+    const customStore =
+      descriptor !== undefined && 'acquire' in descriptor
+        ? captureThreadStore(descriptor as SessionStore)
+        : undefined;
     const storage =
-      descriptor === undefined ? undefined : localStoragePath(descriptor);
+      descriptor === undefined
+        ? undefined
+        : customStore
+          ? undefined
+          : localStoragePath(descriptor as LocalStorage);
+    const persistent = descriptor !== undefined;
+    if (
+      customStore &&
+      (environmentInput !== undefined ||
+        declarations.webSearch ||
+        declarations.checklist ||
+        declarations.nativeGoals ||
+        declarations.nativeAgents ||
+        catalog.tools.some((tool) => tool.kind === 'manual'))
+    )
+      throw new TypeError(
+        'Custom canonical storage does not support environments, native search, checklists, goals, child agents, or manual tools',
+      );
     const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
     if (
       reconciledCalls !== undefined &&
@@ -615,10 +637,7 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'NativeGoals reserves create_goal, get_goal and update_goal',
       );
-    if (
-      suppliedState != null &&
-      (storage !== undefined || resume !== undefined)
-    )
+    if (suppliedState != null && (persistent || resume !== undefined))
       throw new TypeError(
         'Portable state cannot be combined with local storage or resume',
       );
@@ -626,15 +645,12 @@ export class Agent<Context = undefined, Output = string> {
     const state = stateResult?.data;
     if (
       resume !== undefined &&
-      (storage === undefined || typeof resume !== 'string' || !resume)
+      (!persistent || typeof resume !== 'string' || !resume)
     )
       throw new TypeError(
         'resume requires local storage and a nonempty native Session ID',
       );
-    if (
-      storage !== undefined &&
-      (declarations.mcp.length || programmaticToolCalling)
-    )
+    if (persistent && (declarations.mcp.length || programmaticToolCalling))
       throw new TypeError(
         'Local storage supports current managed tools without MCP or Code Mode',
       );
@@ -671,7 +687,7 @@ export class Agent<Context = undefined, Output = string> {
     )
       throw new TypeError('programmaticToolCalling reserves exec and wait');
     const activeOutput = selection?.restoredOutput.output ?? output;
-    if (storage !== undefined && output.repair)
+    if (persistent && output.repair)
       throw new TypeError('Local storage does not support output repair');
     assertOutputState(state, activeOutput.identity);
     if (
@@ -731,7 +747,7 @@ export class Agent<Context = undefined, Output = string> {
       include_environment_context: !!environment,
       'agents.enabled': false,
       'features.goals': declarations.nativeGoals,
-      ...(storage === undefined
+      ...(!persistent
         ? {}
         : {
             'features.apps': false,
@@ -862,10 +878,12 @@ export class Agent<Context = undefined, Output = string> {
         },
         runtime: {
           ...home,
-          ...(storage === undefined
+          ...(!persistent
             ? {}
             : {
-                native_thread_store: storage,
+                ...(storage === undefined
+                  ? {}
+                  : { native_thread_store: storage }),
                 ...(declarations.nativeGoals
                   ? { native_goal_store: storage }
                   : {}),
@@ -920,7 +938,8 @@ export class Agent<Context = undefined, Output = string> {
       const session: CoreSessionOptions = {
         parentTrace: captureTraceContext(options.parentTrace),
         state,
-        localStorage: storage !== undefined,
+        localStorage: persistent,
+        customStore,
         localResume: resume !== undefined,
         environment,
         context,

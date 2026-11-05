@@ -4,7 +4,11 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { jsonObject, type JsonObject } from '../../src/runtime/binding';
+import {
+  jsonObject,
+  type JsonObject,
+  type NativeThread,
+} from '../../src/runtime/binding';
 import {
   Agent,
   NativeProvider,
@@ -846,6 +850,20 @@ it.each([true, false])(
     // The native factory is the existing low-level capacity seam. The public operation and all HTTP/tool work remain real.
     const { binding } = await import('../../src/runtime/binding');
     const native = await binding();
+    const nativeErrors: unknown[] = [];
+    const nextEvent = native.NativeThread.prototype._next_session_event;
+    const observer = vi
+      .spyOn(native.NativeThread.prototype, '_next_session_event')
+      .mockImplementation(async function (this: NativeThread) {
+        const raw = await nextEvent.call(this);
+        const event = JSON.parse(raw);
+        if (
+          event.msg.type === 'error' &&
+          String(event.msg.message).includes('automatic compaction')
+        )
+          nativeErrors.push(event.msg);
+        return raw;
+      });
     const create = native.create_engine;
     const spy = vi
       .spyOn(native, 'create_engine')
@@ -897,14 +915,17 @@ it.each([true, false])(
           if (event.type === 'turn_finished') terminals.push(event);
         expect(terminals).toHaveLength(1);
         expect(terminals[0].status).toBe('failed');
+        expect(nativeErrors).toHaveLength(1);
         expect(server.requests).toHaveLength(1);
         expect(editor).toHaveBeenCalledTimes(1);
       } else {
         expect((await turn.wait()).finalOutput).toBe('done');
+        expect(nativeErrors).toHaveLength(0);
         expect(server.requests).toHaveLength(3);
       }
       expect(effects).toBe(1);
     } finally {
+      observer.mockRestore();
       spy.mockRestore();
     }
   },

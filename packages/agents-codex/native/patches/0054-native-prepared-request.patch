@@ -60,7 +60,7 @@ index c302aac22a6b055739501c55033aec814eb7a248..6843656823fe6a779c6d12ad19172851
          base_instructions,
          output_schema: None,
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index ba7896a2533635a63324a2f58dd4724d9dcf125a..0ff43989e5386f050cf35e5db69925d0c8568fc8 100644
+index 258b670961950f71e3a8dc29edb8a961158bdb6d..2f8c5526d90c21d44f61df78069a532209005ac6 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -11,6 +11,7 @@ mod apps;
@@ -367,7 +367,7 @@ index 0000000000000000000000000000000000000000..a70e5faf6d3b77f8fa6d90f9c92276ae
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e44acd8ac9 100644
+index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe548a41720 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -1,3 +1,4 @@
@@ -375,7 +375,7 @@ index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e4
  use std::collections::HashMap;
  use std::collections::HashSet;
  use std::sync::Arc;
-@@ -1464,6 +1465,26 @@ async fn run_auto_compact(
+@@ -1465,6 +1466,17 @@ async fn run_auto_compact(
      phase: CompactionPhase,
  ) -> CodexResult<()> {
      let turn_context = &step_context.turn;
@@ -387,22 +387,13 @@ index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e4
 +        .any(|contributor| contributor.prepares_request(&turn_context.extension_data))
 +    {
 +        let err = CodexErr::Fatal("automatic compaction is unsupported for an operation with prepare_request; shorten the input or start a new operation".into());
-+        // The guard bypasses the compact task that normally reports mid-turn failures.
-+        if matches!(phase, CompactionPhase::MidTurn) {
-+            sess.track_turn_codex_error(turn_context.as_ref(), &err);
-+            sess.send_event(
-+                turn_context.as_ref(),
-+                EventMsg::Error(err.to_error_event(None)),
-+            )
-+            .await;
-+        }
 +        return Err(err);
 +    }
 +
      if matches!(phase, CompactionPhase::PreTurn)
          && crate::guardian::is_basic_session_source(&turn_context.session_source)
          && !crate::guardian::should_compact_guardian_input(sess)?
-@@ -1607,6 +1628,7 @@ pub(crate) fn build_prompt(
+@@ -1608,6 +1620,7 @@ pub(crate) fn build_prompt(
          parallel_tool_calls: true,
          tool_admission: None,
          sampling_stop: None,
@@ -410,7 +401,7 @@ index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e4
          base_instructions,
          output_schema: turn_context.final_output_json_schema.clone(),
          output_schema_strict: !crate::guardian::is_basic_session_source(
-@@ -1658,6 +1680,7 @@ async fn run_sampling_request(
+@@ -1659,6 +1672,7 @@ async fn run_sampling_request(
      );
      let max_retries = turn_context.provider.info().stream_max_retries();
      let mut retry_state = ResponsesStreamRetryState::default();
@@ -418,7 +409,7 @@ index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e4
      let mut initial_input = Some(input);
      let mut original_input = None;
      let mut executed_tool_calls_by_output = HashMap::new();
-@@ -1690,6 +1713,27 @@ async fn run_sampling_request(
+@@ -1691,6 +1705,27 @@ async fn run_sampling_request(
          let responses_metadata = sess
              .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
              .await;
@@ -446,7 +437,7 @@ index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e4
          if crate::guardian::is_basic_session_source(&turn_context.session_source) {
              crate::guardian::prepare_guardian_prompt(
                  &sess,
-@@ -1699,6 +1743,34 @@ async fn run_sampling_request(
+@@ -1700,6 +1735,34 @@ async fn run_sampling_request(
              )
              .await?;
          }
@@ -481,7 +472,7 @@ index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e4
          let err = match try_run_sampling_request(
              tool_runtime.clone(),
              Arc::clone(&sess),
-@@ -1707,7 +1779,7 @@ async fn run_sampling_request(
+@@ -1708,7 +1771,7 @@ async fn run_sampling_request(
              client_session,
              &responses_metadata,
              Arc::clone(&turn_diff_tracker),
@@ -490,7 +481,7 @@ index d156b9478a861df94ddd509055ca43674f788dd9..b15f0e08556d6c5f564d9cb38d7503e4
              cancellation_token.child_token(),
          )
          .await
-@@ -1763,6 +1835,7 @@ async fn run_sampling_request(
+@@ -1765,6 +1828,7 @@ async fn run_sampling_request(
              ));
          }
          retry??;
