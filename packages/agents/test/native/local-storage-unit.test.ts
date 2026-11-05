@@ -1,10 +1,12 @@
 import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { Agent as ClassicAgent } from '@openai/agents-core';
 import { ScriptedModel } from '@openai/agents-core/testing';
 import { SDKRunner } from '../../src/migration';
+import { localRecoveryRequired } from '../../src/runtime/local-recovery';
 import {
   Agent,
   localStorage,
@@ -21,6 +23,62 @@ const exists = (path: string) =>
   );
 
 describe('local profile declarations and failed-opening lease ownership', () => {
+  it('inspects completed and interrupted work without logging tool arguments', () => {
+    const call = {
+      threadId: 'thread',
+      turnId: 'interrupted',
+      callId: 'call',
+      name: 'lookup',
+      namespace: 'reports',
+      arguments: '{"account":"private-account"}',
+    };
+    const error = localRecoveryRequired(
+      JSON.stringify({
+        calls: [call],
+        history: [
+          {
+            type: 'event_msg',
+            payload: { type: 'task_started', turn_id: 'completed' },
+          },
+          {
+            type: 'event_msg',
+            payload: { type: 'task_complete', turn_id: 'completed' },
+          },
+          {
+            type: 'event_msg',
+            payload: { type: 'task_started', turn_id: 'interrupted' },
+          },
+          {
+            type: 'response_item',
+            payload: {
+              type: 'function_call',
+              call_id: call.callId,
+              name: call.name,
+              namespace: call.namespace,
+              arguments: call.arguments,
+            },
+          },
+        ],
+      }),
+      call.threadId,
+    );
+    expect(error.calls).toEqual([call]);
+    expect(error.turns.map(({ id, status }) => [id, status])).toEqual([
+      ['completed', 'completed'],
+      ['interrupted', 'interrupted'],
+    ]);
+    expect(error.items).toContainEqual(
+      expect.objectContaining({
+        type: 'function_call',
+        callId: call.callId,
+        arguments: call.arguments,
+      }),
+    );
+    expect(error.message).not.toContain('private-account');
+    expect(inspect(error)).not.toContain('private-account');
+    expect(JSON.stringify(error)).not.toContain('private-account');
+  });
+
   it('refuses native LocalStorage substitution for a classic Model before effects', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'classic-native-storage-'));
     try {
