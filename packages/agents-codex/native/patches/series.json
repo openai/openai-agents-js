@@ -258,12 +258,12 @@
     },
     {
       "path": "0059-sdk-queued-trace-policy.patch",
-      "sha256": "1ec311d0ba35b0d41dba0ee319b85729039a55800f7477f4c5cb5e457462ffc5"
+      "sha256": "7bbc86c06556a9c21550cec75f2da1316fa69f37fb56510249704cf01c0c70ab"
     },
     {
       "path": "0059-terminal-authentication-retry.patch",
       "sha256": "2064b337e86352296df7ac5bde428a11ad145ca568478f977dcfb2ef3a87cff8"
     }
   ],
-  "result_tree": "52d2ec0d009f092df2903869cfa764a16445417e"
+  "result_tree": "77c98d47f44a9f13525a2c7622e7682e3a607d64"
 }
