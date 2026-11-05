@@ -87,18 +87,54 @@ index f6fcf14..e190c5f 100644
      dispatch_span
  }
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 0187a60..413a2e6 100644
+index 0187a60..7ecd486 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -97,7 +97,6 @@ use codex_network_proxy::NetworkProxyAuditMetadata;
+@@ -97,7 +97,7 @@ use codex_network_proxy::NetworkProxyAuditMetadata;
  use codex_network_proxy::normalize_host;
  use codex_otel::auth_storage::AuthStorageOriginator;
  use codex_otel::current_span_trace_id;
 -use codex_otel::current_span_w3c_trace_context;
++#[cfg(test)]
  use codex_otel::set_parent_from_w3c_trace_context;
  use codex_prompts::render_model_instructions;
  use codex_protocol::ResponseUsageMetadata;
-@@ -1018,6 +1017,7 @@ impl SessionIo {
+@@ -521,22 +521,20 @@ impl Session {
+         args: SessionSpawnArgs,
+     ) -> BoxFuture<'static, CodexResult<(Arc<Self>, SessionIo)>> {
+         let tree_shutdown = args.agent_control.runtime().shutdown.clone();
++        let caller_policy = codex_otel::sdk_trace::current_scope_policy();
+         Box::pin(async move {
+-            let parent_trace = match args.parent_trace {
+-                Some(trace) => {
+-                    if codex_otel::context_from_w3c_trace_context(&trace).is_some() {
+-                        Some(trace)
+-                    } else {
+-                        warn!("ignoring invalid thread spawn trace carrier");
+-                        None
+-                    }
+-                }
+-                None => None,
+-            };
+             let thread_spawn_span = info_span!("thread_spawn", otel.name = "thread_spawn");
+-            if let Some(trace) = parent_trace.as_ref() {
+-                let _ = set_parent_from_w3c_trace_context(&thread_spawn_span, trace);
+-            }
++            let parent_trace = args.parent_trace.filter(|trace| {
++                let Some(mut parent) = codex_otel::context_from_w3c_trace_context(trace) else {
++                    warn!("ignoring invalid thread spawn trace carrier");
++                    return false;
++                };
++                if let Some(policy) = &caller_policy {
++                    parent = parent.with_value(policy.clone());
++                }
++                codex_otel::set_parent_from_context(&thread_spawn_span, parent);
++                true
++            });
+             let spawn = Self::spawn_internal(SessionSpawnArgs {
+                 parent_trace,
+                 ..args
+@@ -1018,6 +1016,7 @@ impl SessionIo {
              op,
              turn_extension_init,
              trace,
@@ -106,16 +142,18 @@ index 0187a60..413a2e6 100644
              parent_turn_id,
              root_turn_id,
              residency_guard,
-@@ -1029,7 +1029,7 @@ impl SessionIo {
+@@ -1029,7 +1028,9 @@ impl SessionIo {
      /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
      pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
          if sub.trace.is_none() {
 -            sub.trace = current_span_w3c_trace_context();
 +            (sub.trace, sub.trace_policy) = codex_otel::sdk_trace::submission_trace();
++        } else if sub.trace_policy.is_none() {
++            sub.trace_policy = codex_otel::sdk_trace::current_scope_policy();
          }
          self.tx_sub
              .send(sub)
-@@ -1063,6 +1063,7 @@ impl SessionIo {
+@@ -1063,6 +1064,7 @@ impl SessionIo {
              },
              trace,
              turn_extension_init,
@@ -123,7 +161,7 @@ index 0187a60..413a2e6 100644
              parent_turn_id: None,
              root_turn_id: None,
              residency_guard: None,
-@@ -1089,6 +1090,7 @@ impl SessionIo {
+@@ -1089,6 +1091,7 @@ impl SessionIo {
              },
              trace,
              turn_extension_init,
@@ -193,18 +231,62 @@ index d5ee490..3744bc3 100644
          root_turn_id: None,
          residency_guard: None,
 diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
-index 6d56fba..9127d03 100644
+index 6d56fba..566cc51 100644
 --- a/codex-rs/otel/src/sdk_trace.rs
 +++ b/codex-rs/otel/src/sdk_trace.rs
-@@ -542,13 +542,21 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+@@ -81,6 +81,10 @@ fn policies() -> &'static Mutex<HashMap<Identity, Weak<PolicyRegistration>>> {
+     POLICIES.get_or_init(Default::default)
+ }
+ fn policy_registration(span: &SpanContext) -> Option<Arc<PolicyRegistration>> {
++    // Wire IDs identify ancestry. Only a locally created span can own a registry entry.
++    if span.is_remote() {
++        return None;
++    }
+     // Release the registry lock before upgrading: dropping the final upgraded
+     // owner removes its entry and must never run while this lock is held.
+     let registration = policies()
+@@ -109,12 +113,6 @@ pub fn policy_for_context(context: &Context) -> Option<Arc<ScopePolicy>> {
+         .cloned()
+         .or_else(|| policy_for_span(context.span().span_context()))
+ }
+-pub fn restore_policy(context: Context) -> Context {
+-    match policy_for_context(&context) {
+-        Some(policy) => context.with_value(policy),
+-        None => context,
+-    }
+-}
+ pub fn scoped_capture_allowed() -> bool {
+     policy_for_context(&Context::current())
+         .is_none_or(|policy| !policy.disabled && policy.include_sensitive_data)
+@@ -542,18 +540,52 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
  pub fn context(key: &str) -> Result<Context, String> {
      Ok(resolve(key)?.context.clone())
  }
++struct ExplicitSubmissionContext;
++
++/// Mark the context selected by an SDK admission, including an explicit empty owner.
++pub fn explicit_submission_context(context: Context) -> Context {
++    context.with_value(ExplicitSubmissionContext)
++}
++
++fn current_submission_context() -> Context {
++    let context = Context::current();
++    if context.get::<ExplicitSubmissionContext>().is_some() {
++        context
++    } else {
++        crate::trace_context::current_span_context()
++    }
++}
++
++pub fn current_scope_policy() -> Option<Arc<ScopePolicy>> {
++    policy_for_context(&current_submission_context())
++}
++
 +pub fn submission_trace() -> (
 +    Option<codex_protocol::protocol::W3cTraceContext>,
 +    Option<Arc<ScopePolicy>>,
 +) {
-+    let active = crate::trace_context::current_span_context();
++    let active = current_submission_context();
 +    (
 +        crate::trace_context::context_w3c_trace_context(&active),
 +        policy_for_context(&active),
@@ -222,12 +304,205 @@ index 6d56fba..9127d03 100644
 +    // span. A W3C round trip would discard those values before policy lookup.
 +    let context = crate::trace_context::current_span_context();
      let policy = policy_for_context(&context)?;
-     let registration = retain_policy(context.span().span_context(), policy);
+-    let registration = retain_policy(context.span().span_context(), policy);
++    let registration = {
++        let span = context.span();
++        let identity = span.span_context();
++        // A remote parent may carry an independently captured caller policy.
++        // Keep that value on the handle without claiming the parent's IDs.
++        (!identity.is_remote()).then(|| retain_policy(identity, policy))
++    };
      let handle = Arc::new(Handle {
-@@ -979,6 +987,98 @@ mod context_lease_tests {
+         context,
+-        _registration: Some(registration),
++        _registration: registration,
+         parent_span_id: None,
+         ended: Mutex::new(true),
+     });
+@@ -627,7 +659,9 @@ mod tests {
+             release_trace_span(key);
+         }
+         let carrier = trace_carrier(&lease).unwrap();
+-        let parent = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        let remote = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        assert!(policy_for_context(&remote).is_none());
++        let parent = context(&lease).unwrap();
+         assert_eq!(
+             policy_for_context(&parent)
+                 .unwrap()
+@@ -750,7 +784,9 @@ mod lifecycle_tests {
+         end_trace_span(root_key, r#"{"status":"error"}"#).unwrap();
+         release_trace_span(root_key);
+         let carrier = trace_carrier(&lease).unwrap();
+-        let parent = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        let remote = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        assert!(policy_for_context(&remote).is_none());
++        let parent = context(&lease).unwrap();
+         assert!(!policy_for_context(&parent).unwrap().include_sensitive_data);
+         let child = global::tracer("native-fixture").start_with_context("native-child", &parent);
+         let mut child = wrap_span(child, &parent);
+@@ -979,6 +1015,256 @@ mod context_lease_tests {
      use super::*;
      use opentelemetry_sdk::trace::{InMemorySpanExporter, Sampler, SdkTracerProvider};
 
++    #[test]
++    fn explicitly_admitted_context_wins_over_an_unrelated_native_span() {
++        use opentelemetry::trace::TracerProvider as _;
++        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
++        use tracing_subscriber::prelude::*;
++
++        const CHILD: &str = "CODEX_SDK_EXPLICIT_ADMISSION_OWNER_TEST";
++        if std::env::var_os(CHILD).is_none() {
++            let status = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "sdk_trace::context_lease_tests::explicitly_admitted_context_wins_over_an_unrelated_native_span", "--nocapture"])
++                .env(CHILD, "1")
++                .status()
++                .unwrap();
++            assert!(status.success());
++            return;
++        }
++        let provider = SdkTracerProvider::builder()
++            .with_sampler(Sampler::AlwaysOn)
++            .build();
++        global::set_tracer_provider(provider.clone());
++        let subscriber = tracing_subscriber::registry()
++            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("admission-test")));
++        let _subscriber = tracing::subscriber::set_default(subscriber);
++        configure_pipeline(true);
++        let start = |name: &str| {
++            let value: Value = serde_json::from_str(
++                &start_trace_span(&json!({"name":name,"kind":"workflow"}).to_string()).unwrap(),
++            )
++            .unwrap();
++            value["handle"].as_str().unwrap().to_owned()
++        };
++        let caller = start("admitted caller");
++        let other = start("unrelated native workflow");
++        let caller_context = context(&caller).unwrap();
++        let caller_policy = policy_for_context(&caller_context).unwrap();
++        let other_context = context(&other).unwrap();
++        let other_policy = policy_for_context(&other_context).unwrap();
++        let native = tracing::info_span!(parent: None, "active native span");
++        let _ = native.set_parent(other_context);
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .build()
++            .unwrap();
++        {
++            let _entered = native.enter();
++            assert!(Arc::ptr_eq(&current_scope_policy().unwrap(), &other_policy));
++            let inspect = |selected: Context| {
++                runtime.block_on(
++                    async { (current_scope_policy(), submission_trace()) }
++                        .with_context(explicit_submission_context(selected)),
++                )
++            };
++            let (policy, (carrier, queued_policy)) = inspect(caller_context);
++            assert!(
++                policy.is_some_and(|policy| Arc::ptr_eq(&policy, &caller_policy)),
++                "explicit admission borrowed the unrelated native workflow",
++            );
++            assert!(Arc::ptr_eq(&queued_policy.unwrap(), &caller_policy));
++            assert_eq!(carrier, Some(trace_carrier(&caller).unwrap()));
++            let (policy, (carrier, queued_policy)) = inspect(Context::new());
++            assert!(policy.is_none() && queued_policy.is_none() && carrier.is_none());
++        }
++        drop(native);
++        for handle in [&caller, &other] {
++            end_trace_span(handle, r#"{"status":"ok"}"#).unwrap();
++            release_trace_span(handle);
++        }
++        provider.shutdown().unwrap();
++    }
++
++    #[test]
++    fn remote_trace_identity_cannot_authorize_an_sdk_export_route() {
++        const CHILD: &str = "CODEX_SDK_REMOTE_POLICY_ROUTE_TEST";
++        if std::env::var_os(CHILD).is_none() {
++            let status = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "sdk_trace::context_lease_tests::remote_trace_identity_cannot_authorize_an_sdk_export_route"])
++                .env(CHILD, "1")
++                .status()
++                .unwrap();
++            assert!(status.success());
++            return;
++        }
++
++        let provider = SdkTracerProvider::builder()
++            .with_sampler(Sampler::AlwaysOn)
++            .build();
++        global::set_tracer_provider(provider.clone());
++        configure_pipeline(true);
++        crate::sdk_trace_routes::configure_default(true);
++        let start = |name: &str| {
++            let reference = crate::sdk_trace_routes::register_trace_credentials(
++                &json!({"x-test-route": name}).to_string(),
++            )
++            .unwrap();
++            let value: Value = serde_json::from_str(
++                &start_trace_span(
++                    &json!({"name":name,"kind":"workflow","credential_ref":reference}).to_string(),
++                )
++                .unwrap(),
++            )
++            .unwrap();
++            (value["handle"].as_str().unwrap().to_owned(), reference)
++        };
++        let (victim, victim_reference) = start("victim");
++        let (caller, caller_reference) = start("caller");
++        let carrier = trace_carrier(&victim).unwrap();
++        let remote = crate::trace_context::context_from_trace_headers(
++            carrier.traceparent.as_deref(),
++            carrier.tracestate.as_deref(),
++        )
++        .unwrap();
++        assert!(remote.span().span_context().is_remote());
++        assert!(
++            policy_for_context(&context(&victim).unwrap())
++                .unwrap()
++                .credential
++                .is_some()
++        );
++
++        let unscoped = build_span(
++            "sdk-route-test",
++            opentelemetry::trace::SpanBuilder::from_name("unscoped request"),
++            &remote,
++        );
++        assert_eq!(
++            unscoped.span_context().trace_id(),
++            remote.span().span_context().trace_id()
++        );
++        let recovered =
++            policy_for_span(unscoped.span_context()).and_then(|policy| policy.credential.clone());
++        assert!(
++            recovered.is_none(),
++            "an external trace ID restored a private export route"
++        );
++
++        let caller_policy = policy_for_context(&context(&caller).unwrap()).unwrap();
++        let scoped = build_span(
++            "sdk-route-test",
++            opentelemetry::trace::SpanBuilder::from_name("scoped request"),
++            &remote.with_value(caller_policy.clone()),
++        );
++        assert_eq!(
++            scoped.span_context().trace_id(),
++            unscoped.span_context().trace_id()
++        );
++        assert!(Arc::ptr_eq(
++            &policy_for_span(scoped.span_context()).unwrap(),
++            &caller_policy
++        ));
++        drop(scoped);
++        drop(unscoped);
++        for (handle, reference) in [(victim, victim_reference), (caller, caller_reference)] {
++            end_trace_span(&handle, r#"{"status":"ok"}"#).unwrap();
++            release_trace_span(&handle);
++            crate::sdk_trace_routes::release_trace_credentials(&reference).unwrap();
++        }
++        provider.shutdown().unwrap();
++    }
++
 +    #[test]
 +    fn unowned_instrumented_span_never_borrows_ambient_workflow_policy() {
 +        use opentelemetry::trace::TracerProvider as _;
@@ -323,8 +598,21 @@ index 6d56fba..9127d03 100644
      #[test]
      fn captured_leases_retain_intermediate_identity_until_last_owner_releases() {
          const CHILD: &str = "CODEX_SDK_CONTEXT_LEASE_IDENTITY_CHILD";
+@@ -1040,8 +1326,10 @@ mod context_lease_tests {
+                     let carrier = trace_carrier(first.token()).unwrap();
+                     drop(active);
+                     let assert_policy = || {
+-                        let restored = crate::context_from_w3c_trace_context(&carrier).unwrap();
+-                        let restored = policy_for_context(&restored)
++                        let remote = crate::context_from_w3c_trace_context(&carrier).unwrap();
++                        assert!(policy_for_context(&remote).is_none());
++                        let retained = context(second.token()).unwrap();
++                        let restored = policy_for_context(&retained)
+                             .expect("live lease must retain intermediate identity policy");
+                         assert!(Arc::ptr_eq(&restored, &policy));
+                         assert_eq!(restored.disabled, disabled);
 diff --git a/codex-rs/otel/src/trace_context.rs b/codex-rs/otel/src/trace_context.rs
-index e1c6277..4d9cf8c 100644
+index e1c6277..74f1641 100644
 --- a/codex-rs/otel/src/trace_context.rs
 +++ b/codex-rs/otel/src/trace_context.rs
 @@ -27,8 +27,16 @@ static TRACESTATE_ENTRIES: OnceLock<RwLock<BTreeMap<String, BTreeMap<String, Str
@@ -346,3 +634,11 @@ index e1c6277..4d9cf8c 100644
  }
 
  pub fn span_w3c_trace_context(span: &Span) -> Option<W3cTraceContext> {
+@@ -109,7 +117,6 @@ pub fn current_span_trace_id() -> Option<String> {
+
+ pub fn context_from_w3c_trace_context(trace: &W3cTraceContext) -> Option<Context> {
+     context_from_trace_headers(trace.traceparent.as_deref(), trace.tracestate.as_deref())
+-        .map(crate::sdk_trace::restore_policy)
+ }
+
+ pub fn set_parent_from_w3c_trace_context(span: &Span, trace: &W3cTraceContext) -> bool {
