@@ -12,8 +12,10 @@ on:
       - '.github/workflows/alpha-sdk-package.yml'
       - '.github/workflows/stacked-executor-policy.yml'
       - 'packages/agents/native/**'
+      - 'packages/agents/scripts/**'
       - 'packages/agents/src/**'
       - 'packages/agents/test/native/**'
+      - 'scripts/**'
 
 permissions:
   contents: read

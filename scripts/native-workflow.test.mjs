@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { posix } from 'node:path';
 import test from 'node:test';
 import { URL } from 'node:url';
 import { runInNewContext } from 'node:vm';
@@ -17,6 +18,57 @@ const native = workflow('alpha-native-package');
 const sdk = workflow('alpha-sdk-package');
 const source = (path) =>
   readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+
+test('stacked qualification includes helper-only changes while preserving branch and path exclusions', () => {
+  const configuration = source(stacked);
+  const patterns = (name) => {
+    const block = configuration.match(
+      new RegExp(`^ {4}${name}:\\n((?: {6}.+\\n)+)`, 'm'),
+    );
+    assert.ok(block, `Missing ${name} filter`);
+    return [...block[1].matchAll(/^ {6}- '([^']+)'$/gm)].map(
+      (match) => match[1],
+    );
+  };
+  const branches = patterns('branches');
+  const paths = patterns('paths');
+  const qualifies = (branch, changedPath) =>
+    branches.some(
+      (pattern) =>
+        !pattern.startsWith('!') && posix.matchesGlob(branch, pattern),
+    ) &&
+    !branches.some(
+      (pattern) =>
+        pattern.startsWith('!') && posix.matchesGlob(branch, pattern.slice(1)),
+    ) &&
+    paths.some((pattern) => posix.matchesGlob(changedPath, pattern));
+
+  const helperChanges = [
+    ...['artifact', 'donor', 'receipt', 'scope', 'source'].map(
+      (name) => `packages/agents/scripts/native-${name}.mjs`,
+    ),
+    'packages/agents/scripts/native.mjs',
+    'packages/agents/scripts/v8-release.json',
+    'scripts/alpha-package.mjs',
+    'scripts/verify-alpha-package.mjs',
+    'scripts/native-workflow.test.mjs',
+    'scripts/fixtures/native-run-live-pr.json',
+  ];
+  for (const branch of [
+    'feat/executor-policy',
+    'feat/executor-policy/nested',
+  ]) {
+    for (const changedPath of helperChanges) {
+      assert.equal(qualifies(branch, changedPath), true, changedPath);
+    }
+    for (const changedPath of ['README.md', 'docs/guides/tools.mdx']) {
+      assert.equal(qualifies(branch, changedPath), false, changedPath);
+    }
+  }
+  for (const branch of ['feat/codex-harness', 'main', 'fix/executor-policy']) {
+    assert.equal(qualifies(branch, helperChanges[0]), false, branch);
+  }
+});
 
 test('direct and stacked native routes run only eligible repository events', () => {
   const conditions = [direct, native, sdk].flatMap((path) =>
