@@ -44,7 +44,7 @@ function runWorker(
   directory: string,
   options?: Pick<
     Parameters<typeof superviseArtifact>[0],
-    'reconcile' | 'startupMs' | 'steer'
+    'reconcile' | 'startupMs' | 'steer' | 'turnMs'
   >,
 ) {
   const server = new BorrowedPeer();
@@ -592,12 +592,79 @@ it('records attention before disposing the session when submission rejects', asy
   } as unknown as Session);
   try {
     await expect(runWorker(directory)).rejects.toBe(error);
-    expect(snapshotAtDisposal).toMatchObject({
+    expect(snapshotAtDisposal).toEqual({
       threadId: 'thread',
       state: 'needs_attention',
     });
   } finally {
     session.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('records the deadline and closes the worker while submission is still pending', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-worker-admission-'));
+  const deadline = new AbortController();
+  const timeout = new DOMException('Synthetic turn deadline.', 'TimeoutError');
+  const timeoutSignal = vi
+    .spyOn(AbortSignal, 'timeout')
+    .mockReturnValueOnce(new AbortController().signal)
+    .mockReturnValueOnce(deadline.signal);
+  const submitting = Promise.withResolvers<void>();
+  const admission = Promise.withResolvers<object>();
+  const close = vi.fn(async () => {});
+  const events = vi.fn(async function* () {});
+  const turn = {
+    events,
+    async waitForAttention() {
+      deadline.signal.throwIfAborted();
+    },
+    async cancel() {},
+  };
+  const submit = vi.fn(() => {
+    submitting.resolve();
+    return admission.promise;
+  });
+  const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+    id: 'thread',
+    submit,
+    close,
+  } as unknown as Session);
+  let exited = false;
+  const failure = runWorker(directory, { turnMs: 50 }).catch(
+    (error: unknown) => {
+      exited = true;
+      return error;
+    },
+  );
+  try {
+    await submitting.promise;
+    expect(timeoutSignal).toHaveBeenLastCalledWith(50);
+    deadline.abort(timeout);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(close).toHaveBeenCalledOnce();
+    await vi.waitFor(async () => {
+      expect(await readWorkerSnapshot(directory)).toEqual({
+        threadId: 'thread',
+        state: 'needs_attention',
+        attention: 'deadline',
+      });
+    });
+    expect(exited).toBe(false);
+
+    admission.resolve(turn);
+    expect(await failure).toBe(timeout);
+    expect(events).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    await expect(publishAcceptedDraft(directory)).rejects.toThrow(
+      'Publication requires an accepted draft.',
+    );
+  } finally {
+    admission.resolve(turn);
+    await failure;
+    session.mockRestore();
+    timeoutSignal.mockRestore();
     await rm(directory, { recursive: true, force: true });
   }
 });
