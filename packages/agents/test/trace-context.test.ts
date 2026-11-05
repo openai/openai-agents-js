@@ -54,14 +54,29 @@ describe('explicit W3C trace carriers', () => {
     parent.replace('2222222222222222', '0'.repeat(16)),
     parent.replace('1111', 'ABCD'),
     parent + '-suffix',
-    parent.slice(0, -2) + '02',
     'ff' + parent.slice(2),
     parent + '\nprivate',
   ])('rejects malformed parents without echoing values', (traceparent) => {
     expect(() => new TraceContext({ traceparent })).toThrow(
-      'Invalid W3C traceparent',
+      'Invalid or unsupported native traceparent',
     );
   });
+
+  it('omits absent tracestate and keeps the carrier compatible with Headers', () => {
+    const headers = new TraceContext({ traceparent: parent }).toHeaders();
+    expect(headers.tracestate).toBeUndefined();
+    expect(Object.hasOwn(headers, 'tracestate')).toBe(false);
+    expect(new Headers(headers).get('tracestate')).toBeNull();
+  });
+
+  it.each(['02', '09'])(
+    'rejects trace flags %s outside the documented native profile',
+    (flags) => {
+      expect(
+        () => new TraceContext({ traceparent: parent.slice(0, -2) + flags }),
+      ).toThrow('Invalid or unsupported native traceparent');
+    },
+  );
 
   it('retains the known W3C prefix of future versions', () => {
     const future = '01' + parent.slice(2) + '-opaque';
@@ -78,7 +93,7 @@ describe('explicit W3C trace carriers', () => {
     'a=x,'.repeat(33),
   ])('rejects malformed tracestate', (tracestate) => {
     expect(() => new TraceContext({ traceparent: parent, tracestate })).toThrow(
-      'Invalid W3C tracestate',
+      'Invalid or unsupported native tracestate',
     );
   });
 
@@ -94,7 +109,7 @@ describe('explicit W3C trace carriers', () => {
           traceparent: parent,
           tracestate: 'tenant@abcdefghijklmn=x',
         }),
-    ).toThrow('Invalid W3C tracestate');
+    ).toThrow('Invalid or unsupported native tracestate');
   });
 
   it('keeps invalid optional native metadata from failing callback admission', () => {
@@ -123,10 +138,10 @@ describe('explicit W3C trace carriers', () => {
     });
     const options = { parentTrace: { traceparent: 'private-invalid' } };
     await expect(agent.session(options)).rejects.toThrow(
-      'Invalid W3C traceparent',
+      'Invalid or unsupported native traceparent',
     );
     await expect(agent.run('hello', options)).rejects.toThrow(
-      'Invalid W3C traceparent',
+      'Invalid or unsupported native traceparent',
     );
   });
 });
