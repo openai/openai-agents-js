@@ -237,9 +237,29 @@
       "sha256": "006be27601ea216c750b5df1c0f9b0f9f4259b9206e1f33869400cf4ff61ea7a"
     },
     {
-      "path": "0058-native-request-metadata.patch",
+      "path": "0054-native-history-durability.patch",
+      "sha256": "cda109edea1cb5a669e8be466c49b44259f7e1b0e6c79f0598005a1e4c176ca8"
+    },
+    {
+      "path": "0055-native-history-write-reconciliation.patch",
+      "sha256": "b37fa326977162283daf992214bc54bf13c19d6bd00221e77ea4c4c0933528ab"
+    },
+    {
+      "path": "0056-native-tree-finalization-before-store-close.patch",
+      "sha256": "af72648c78ad7efadae0054ef540090933138172b6bcbaf1e2b8dbdbd851eaa6"
+    },
+    {
+      "path": "0057-native-confirmed-remote-teardown.patch",
+      "sha256": "0dbfe2124d7bf0a0330dce01653a9607225fcb4b4c6246f0d1e46c2f821e4f0e"
+    },
+    {
+      "path": "0058-native-metadata-durability.patch",
+      "sha256": "10136a8852249737dbf7974c579cb84faf0d36fc495fcbaeeafe66a3dfa7e3d6"
+    },
+    {
+      "path": "0059-native-request-metadata.patch",
       "sha256": "5b3b9a410f2f284b3b54eaa5763ac3c8d25f2031f22dc6fc7468389eacd07e4c"
     }
   ],
-  "result_tree": "2f332c344424fe9d3191ae544f1c47b8cf703d2e"
+  "result_tree": "43b3da6e72df98d1113d7b624deafa347ae6595d"
 }

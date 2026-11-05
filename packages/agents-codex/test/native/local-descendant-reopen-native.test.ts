@@ -1,5 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -217,6 +217,30 @@ for (const depth of [1, 2]) {
           };
           const source = start({ ...common, mode });
           const opened = await source.wait('opened');
+          const canonicalCompleted = async () => {
+            const directChild = [...depths].find(
+              ([, level]) => level === 1,
+            )?.[0];
+            expect(directChild).toBeTypeOf('string');
+            const rollouts = (
+              await readdir(common.profile, { recursive: true })
+            ).filter((path) => path.endsWith(`${opened.id}.jsonl`));
+            expect(rollouts).toHaveLength(1);
+            const rows = (
+              await readFile(join(common.profile, rollouts[0]!), 'utf8')
+            )
+              .trim()
+              .split('\n')
+              .map((line) => JSON.parse(line));
+            return rows.filter(
+              (row) =>
+                row.type === 'event_msg' &&
+                row.payload?.type === 'item_completed' &&
+                row.payload.item?.type === 'SubAgentActivity' &&
+                row.payload.item.kind === 'completed' &&
+                row.payload.item.agent_thread_id === directChild,
+            );
+          };
           if (mode === 'active')
             await Promise.race([
               active.promise,
@@ -231,6 +255,7 @@ for (const depth of [1, 2]) {
           if (mode === 'settled') {
             await source.wait('done');
             expect(await source.exited, source.stderr()).toBe(0);
+            expect(await canonicalCompleted()).toHaveLength(1);
           } else {
             source.child.kill('SIGKILL');
             await source.exited;
@@ -266,6 +291,7 @@ for (const depth of [1, 2]) {
                 destination.rows.find((row) => row.type === 'history')
                   ?.children,
               ).toHaveLength(depth);
+              expect(await canonicalCompleted()).toHaveLength(1);
               expect(server.requests).toHaveLength(before + 2);
               expect(await readFile(common.effects, 'utf8')).toBe(
                 expectedEffect + 'destination:fresh\n',

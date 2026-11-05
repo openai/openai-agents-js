@@ -857,3 +857,48 @@ async fn metadata_fork_lost_wrapper_and_final_owner_keep_only_raw_cleanup_owners
 
 // These cases deliberately inspect the source SQL row. Public export alone
 // cannot establish which same-ID store a failed candidate touched.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_engine_close_retains_cleanup_after_manager_removal() {
+    let (_provider, _home, engine, _source) = open().await;
+    let state = engine.current().unwrap();
+    let hold = Arc::new(ProcessCleanupHold {
+        entered: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    *state.process_cleanup_hold.lock().unwrap() = Some(hold.clone());
+    let closing = state.clone();
+    let first = tokio::spawn(async move { closing.close_report().await });
+    tokio::time::timeout(Duration::from_secs(5), hold.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    assert!(state.manager.list_thread_ids().await.is_empty());
+    first.abort();
+    assert!(first.await.unwrap_err().is_cancelled());
+
+    let closing = state.clone();
+    let mut retry = tokio::spawn(async move { closing.close_report().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut retry)
+            .await
+            .is_err(),
+        "cleanup must remain pending after its registry entry is gone"
+    );
+    tokio::time::timeout(Duration::from_secs(5), hold.entered.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    hold.release.add_permits(1);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), retry)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
+    engine.close().await.unwrap();
+}

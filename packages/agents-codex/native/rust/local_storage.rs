@@ -206,14 +206,14 @@ pub(crate) fn observe_turn(turn: &mut Option<String>, item: &RolloutItem) {
 
 // Refuse unknown effects rather than allow Core recovery to fabricate cancelled
 // outputs or automatically replay a callback after process loss.
-fn validate_settled(history: &[RolloutItem]) -> ThreadStoreResult<()> {
+pub(crate) fn validate_settled(history: &[RolloutItem]) -> ThreadStoreResult<()> {
     local_reconciliation::validate_settled(history).map_err(checklist_error)
 }
 
 // This validates recorded data only. It does not grant child execution or acquire
 // a writer. The caller must obtain the complete graph and histories under the
 // reviewed root-writer ownership boundary before publishing a Session.
-fn validate_root_header(id: ThreadId, history: &[RolloutItem]) -> ThreadStoreResult<()> {
+pub(crate) fn validate_root_header(id: ThreadId, history: &[RolloutItem]) -> ThreadStoreResult<()> {
     if !matches!(history.first(), Some(RolloutItem::SessionMeta(header))
         if header.meta.id == id
             && header.meta.source.parent_thread_id().is_none()
@@ -1727,7 +1727,20 @@ impl ThreadStore for LocalChecklistStore {
         &self,
         params: UpdateThreadMetadataParams,
     ) -> ThreadStoreFuture<'_, Option<StoredThread>> {
-        ThreadStore::update_thread_metadata(&self.inner, params)
+        Box::pin(async move {
+            let id = params.thread_id;
+            let mut writers = self.writers.lock().await;
+            if let Some(writer) = writers.get(&id) {
+                writer.check()?;
+            }
+            let result = self.inner.update_thread_metadata(params).await;
+            if let Err(error) = &result
+                && let Some(writer) = writers.get_mut(&id)
+            {
+                writer.failure.get_or_insert_with(|| error.to_string());
+            }
+            result
+        })
     }
 
     fn move_thread_to_section(
@@ -2277,6 +2290,85 @@ mod tests {
                 .is_err()
         );
         assert!(owner.flush_thread(id).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canonical_metadata_failure_remains_visible_after_successful_native_flush() {
+        let home = tempfile::tempdir().unwrap();
+        let owner = store(home.path()).await;
+        let id = ThreadId::new();
+        let mut params = create_params(id, home.path());
+        params.history_mode = ThreadHistoryMode::Paginated;
+        owner.create_thread(params).await.unwrap();
+        owner
+            .persist_thread(id, PersistContext::Standard)
+            .await
+            .unwrap();
+        owner.flush_thread(id).await.unwrap();
+
+        // Canonical metadata uses SQLite; native history has a separate flush.
+        // A failed metadata write must not disappear when that flush succeeds.
+        owner.state.close().await;
+        let failure = owner
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id: id,
+                patch: ThreadMetadataPatch {
+                    memory_mode: Some(ThreadMemoryMode::Enabled),
+                    ..Default::default()
+                },
+                include_archived: false,
+            })
+            .await
+            .expect_err("canonical metadata update must fail")
+            .to_string();
+        owner.inner.flush_thread(id).await.unwrap();
+        owner
+            .flush_thread(id)
+            .await
+            .expect_err("flush must retain metadata failure");
+        owner
+            .append_items(AppendThreadItemsParams {
+                thread_id: id,
+                items: vec![RolloutItem::EventMsg(EventMsg::UserMessage(
+                    codex_protocol::protocol::UserMessageEvent {
+                        message: "must wait for recovery".into(),
+                        ..Default::default()
+                    },
+                ))],
+            })
+            .await
+            .expect_err("later appends require recovery");
+        owner
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id: id,
+                patch: ThreadMetadataPatch::default(),
+                include_archived: false,
+            })
+            .await
+            .expect_err("later metadata updates require recovery");
+        assert_eq!(
+            owner.writers.lock().await[&id].failure.as_deref(),
+            Some(failure.as_str()),
+        );
+        owner
+            .shutdown_thread(id)
+            .await
+            .expect_err("close must retain metadata failure");
+        assert!(owner.inner.live_rollout_path(id).await.is_err());
+
+        // The failure belongs to this writer, not every store in the process.
+        let healthy_home = tempfile::tempdir().unwrap();
+        let healthy = store(healthy_home.path()).await;
+        let healthy_id = ThreadId::new();
+        let mut healthy_params = create_params(healthy_id, healthy_home.path());
+        healthy_params.history_mode = ThreadHistoryMode::Paginated;
+        healthy.create_thread(healthy_params).await.unwrap();
+        healthy
+            .persist_thread(healthy_id, PersistContext::Standard)
+            .await
+            .unwrap();
+        healthy.flush_thread(healthy_id).await.unwrap();
+        healthy.shutdown_thread(healthy_id).await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
