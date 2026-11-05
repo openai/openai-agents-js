@@ -883,11 +883,18 @@ async function customOnlyCase() {
 }
 
 async function restoreCase(batches: unknown[]) {
+  let directValidationTrace: string | undefined;
   const lookup = manualTool({
     name: 'lookup',
     description: 'Return a synthetic record.',
     parameters: z.object({ key: z.string() }),
-    result: z.object({ value: z.string() }),
+    result: z.object({ value: z.string() }).superRefine((value, context) => {
+      if (value.value === 'invalid') {
+        assert.equal(telemetry.getCurrentSpan()?.kind, 'validation');
+        directValidationTrace = telemetry.getCurrentSpan()?.context.traceId;
+        context.addIssue({ code: 'custom', message: 'invalid' });
+      }
+    }),
   });
   await withScriptedResponses(
     [
@@ -915,6 +922,18 @@ async function restoreCase(batches: unknown[]) {
           const turn = await session.submit('lookup');
           const result = await turn.wait({ until: 'request' });
           assert('requests' in result && result.requests.length === 1);
+          const request = lookup.match(result.requests[0]);
+          assert(request);
+          await telemetry.withTrace(
+            { name: 'unrelated.direct.reply', parent: null },
+            () =>
+              assert.rejects(
+                session.submit(request.reply({ value: 'invalid' })),
+                /Manual tool result failed validation/,
+              ),
+          );
+          assert.equal(directValidationTrace, originalTrace);
+
           state = await session.suspend();
         },
       );

@@ -11,6 +11,8 @@ const harness = vi.hoisted(() => {
     configure_telemetry: vi.fn(async (_wire: string) => {}),
     start_trace_span: vi.fn((json: string) => {
       const options = JSON.parse(json);
+      if (options.parent && released.has(options.parent))
+        throw new Error('Unknown or released native tracing context');
       starts.push(options);
       const handle = `span-${++id}`;
       const parent = contexts.get(options.parent);
@@ -1235,3 +1237,228 @@ it('suppresses processor descendants including detached scopes and captured oper
   });
   await withTrace({}, (span) => expect(span.context.disabled).toBe(false));
 });
+
+it.each(['traced', 'disabled', 'untraced'] as const)(
+  'restores direct manual reply validation (%s)',
+  async (mode) => {
+    const { manualTool } = await import('../src/runtime/manual');
+    const { NativeAgents } = await import('../src/runtime/native-agents');
+    const { z } = await import('zod');
+    const observations: Array<{
+      span: ReturnType<typeof getCurrentSpan>;
+      workflow: ReturnType<typeof getCurrentTrace>;
+    }> = [];
+    const declaration = manualTool({
+      name: 'direct_probe',
+      description: 'manual validation',
+      parameters: z.object({}),
+      result: z.string().superRefine((value, context) => {
+        observations.push({
+          span: getCurrentSpan(),
+          workflow: getCurrentTrace(),
+        });
+        if (value === 'invalid')
+          context.addIssue({ code: 'custom', message: 'invalid' });
+      }),
+    });
+    const events = Array.from({ length: 2 }, () =>
+      Promise.withResolvers<string>(),
+    );
+    const interception = Promise.withResolvers<string>();
+    let submitted: Record<string, unknown> = {};
+    const child = {
+      session_id: 'trace-fixture',
+      child_id: 'child',
+      incarnation: '1',
+      turn_id: 'child-turn',
+      instance_id: 'instance',
+    } as import('../native/index.js')._NativeChildTurn;
+    const session = await rootFixture(
+      async (wire) => {
+        submitted = JSON.parse(wire);
+        return JSON.stringify({ status: 'started', turn_id: 'root' });
+      },
+      { nativeAgents: new NativeAgents() },
+      {},
+      events,
+      {
+        _child_turn: async () => child,
+        _enable_native_interception: () => true,
+        _configure_native_interception: () => true,
+        _next_native_interception: () => interception.promise,
+        _revoke_native_interception: () => {
+          interception.resolve('null');
+        },
+        _finish_native_interception_reader: () => {},
+        _configure_manual_tools: () => {},
+        _manual_checkpoint_config_supported: async () => false,
+        _manual_tool_current: () => true,
+        _pending_manual_tools: () => '[]',
+        _respond_python_tool: async () => true,
+      },
+      [declaration],
+    );
+    let workflow: Awaited<ReturnType<typeof startTrace>> | undefined;
+    let token: string | undefined;
+    try {
+      if (mode === 'untraced') await session.submit('run');
+      else
+        await withTrace(
+          { disabled: mode === 'disabled', includeSensitiveData: false },
+          async (value) => {
+            workflow = value;
+            await session.submit('run');
+          },
+        );
+      const operation = harness.contexts.get(
+        submitted.tracing_context as string,
+      );
+      if (operation)
+        token = harness.native.retain_trace_context(operation.handle as string);
+      const requestReady = (async () => {
+        for await (const event of session.events()) {
+          const request = declaration.match(event);
+          if (request) return request;
+        }
+        throw new Error('Missing request');
+      })();
+      events[0].resolve(
+        JSON.stringify({
+          id: 'child-turn',
+          subagent_id: 'child',
+          subagent_incarnation: '1',
+          subagent_instance_id: 'instance',
+          msg: {
+            type: 'dynamic_tool_call_request',
+            tool: 'direct_probe',
+            namespace: null,
+            callId: 'manual-call',
+            turnId: 'child-turn',
+            arguments: {},
+            tracing_context: token,
+            _sdk_code_origin: null,
+            _sdk_model: 'fixture',
+            _sdk_python_tool: {
+              thread: 'child',
+              instance: '1',
+              generation: '0',
+              slot: 0,
+              manual_grant: 'grant',
+            },
+          },
+        }),
+      );
+      const request = await requestReady;
+      const records = (
+        session as unknown as {
+          manualCalls: Map<string, { tracing?: unknown }>;
+        }
+      ).manualCalls;
+      const record = [...records.values()][0];
+      await withTrace({ name: 'unrelated' }, async () => {
+        await expect(session.submit(request.reply('invalid'))).rejects.toThrow(
+          'Manual tool result failed validation',
+        );
+        expect(records.size).toBe(1);
+        await session.submit(request.reply('valid'));
+      });
+      expect(observations).toHaveLength(2);
+      for (const observed of observations) {
+        expect(observed.workflow).toBe(workflow);
+        if (mode === 'untraced') expect(observed.span).toBeUndefined();
+        else {
+          expect(observed.span?.kind).toBe('validation');
+          expect(observed.span?.context.disabled).toBe(mode === 'disabled');
+          expect(observed.span?.context.includeSensitiveData).toBe(false);
+        }
+      }
+      expect(records.size).toBe(0);
+      expect(record.tracing).toBeUndefined();
+    } finally {
+      await session.close();
+      if (token) harness.native.release_trace_context(token);
+    }
+  },
+);
+
+it.each(['rejected success', 'aborted failure'] as const)(
+  'settles managed span after native acceptance: %s',
+  async (outcome) => {
+    const { tool, ToolOutput } = await import('../src/runtime/tools');
+    const { z } = await import('zod');
+    const events = Array.from({ length: 2 }, () =>
+      Promise.withResolvers<string>(),
+    );
+    const responding = Promise.withResolvers<void>();
+    const accepted = Promise.withResolvers<boolean>();
+    let span: ReturnType<typeof getCurrentSpan>;
+    let submitted: Record<string, unknown> = {};
+    const declaration = tool({
+      name: 'outcome_probe',
+      parameters: z.object({}),
+      execute: () => {
+        span = getCurrentSpan();
+        return new ToolOutput(
+          [{ type: 'inputText', text: 'result' }],
+          outcome === 'rejected success',
+        );
+      },
+    });
+    const session = await rootFixture(
+      async (wire) => {
+        submitted = JSON.parse(wire);
+        return JSON.stringify({ status: 'started', turn_id: 'root' });
+      },
+      {},
+      {},
+      events,
+      {
+        _check_python_tool: () => {},
+        _respond_python_tool: async () => {
+          responding.resolve();
+          return accepted.promise;
+        },
+      },
+      [declaration],
+    );
+    try {
+      await withTrace({}, () => session.submit('run'));
+      events[0].resolve(
+        JSON.stringify({
+          id: 'root',
+          msg: {
+            type: 'dynamic_tool_call_request',
+            tool: 'outcome_probe',
+            namespace: null,
+            callId: 'outcome-call',
+            turnId: 'root',
+            arguments: {},
+            tracing_context: submitted.tracing_context,
+            _sdk_code_origin: null,
+            _sdk_model: 'fixture',
+            _sdk_python_tool: {
+              thread: 'trace-fixture',
+              generation: '0',
+              slot: 0,
+            },
+          },
+        }),
+      );
+      await responding.promise;
+      const ends = () =>
+        harness.native.end_trace_span.mock.calls.filter(
+          ([handle]) => handle === span!.handle,
+        );
+      expect(ends()).toHaveLength(0);
+      const closing =
+        outcome === 'aborted failure' ? session.close() : undefined;
+      accepted.resolve(outcome === 'aborted failure');
+      if (closing) await closing;
+      await vi.waitFor(() => expect(ends()).toHaveLength(1));
+      expect(JSON.parse(ends()[0][1]).status).toBe('cancelled');
+    } finally {
+      accepted.resolve(false);
+      await session.close();
+    }
+  },
+);

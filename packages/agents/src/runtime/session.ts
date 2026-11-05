@@ -942,6 +942,7 @@ export class Session<OutputT = string, Context = unknown> {
       event: NativeEvent;
       tool: ManualTool;
       grant: ReturnType<typeof createManualRequest>;
+      tracing?: TraceSpan;
       ready: boolean;
       identity: ToolIdentity;
     }
@@ -2976,6 +2977,7 @@ export class Session<OutputT = string, Context = unknown> {
               if (call.run !== current) continue;
               if (keys.has(key) && this.manualCurrent(call.event)) continue;
               call.grant.deactivate();
+              call.tracing = undefined;
               this.manualCalls.delete(key);
               removed = true;
             }
@@ -4961,6 +4963,7 @@ export class Session<OutputT = string, Context = unknown> {
     for (const [key, call] of this.manualCalls) {
       if (run ? call.run !== run : this.current(call.run)) continue;
       call.grant.deactivate();
+      call.tracing = undefined;
       this.manualCalls.delete(key);
       removed = true;
     }
@@ -5092,6 +5095,7 @@ export class Session<OutputT = string, Context = unknown> {
           event,
           tool,
           grant,
+          tracing: getCurrentSpan(),
           identity,
           ready: false,
         });
@@ -5221,7 +5225,11 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<boolean> {
     for (const [key, call] of this.manualCalls) {
       if (expectedKey !== undefined && key !== expectedKey) continue;
-      const output = call.grant.takeReply(reply, beforeConsume);
+      if (!call.grant.matchesReply(reply)) continue;
+      const validate = () => call.grant.takeReply(reply, beforeConsume);
+      const output = call.tracing
+        ? call.tracing.validate(validate)
+        : withoutTracing(validate);
       if (!output) continue;
       // A taken grant is unavailable before its native reply and end hook
       // settle. An explicit save may keep waiting on other grants in this run.
@@ -5242,6 +5250,7 @@ export class Session<OutputT = string, Context = unknown> {
             encodeReceipt({ request: call.event.msg, response: output }),
           );
         }
+        call.tracing = undefined;
         this.manualCalls.delete(key);
         this.notifyManualProgress();
         this.observeToolEnd(
@@ -5770,7 +5779,7 @@ export class Session<OutputT = string, Context = unknown> {
         family: 'function',
       };
       this.observeToolStart(owner, identity);
-      let status: ToolStatus = 'failed';
+      let status: ToolStatus | undefined;
       try {
         const args =
           typeof msg.arguments === 'string'
@@ -5801,11 +5810,10 @@ export class Session<OutputT = string, Context = unknown> {
             this.#native._check_python_tool(encodeReceipt(msg));
           },
         );
-        if (!response.success)
-          getCurrentSpan()?.end({ status: 'error', category: 'tool_error' });
-        if (owner.controller.signal.aborted)
-          getCurrentSpan()?.end({ status: 'cancelled', category: 'cancelled' });
-        if (!this.current(owner)) return;
+        if (!this.current(owner)) {
+          status = 'cancelled';
+          return;
+        }
         this.#native._check_python_tool(encodeReceipt(msg));
         const accepted = await this.#native._respond_python_tool(
           encodeReceipt({
@@ -5813,23 +5821,37 @@ export class Session<OutputT = string, Context = unknown> {
             response,
           }),
         );
-        status = accepted
-          ? response.success
-            ? 'completed'
-            : 'failed'
-          : 'cancelled';
         if (accepted && root)
           this.options.selectedModel?.toolResult?.(
             context.callId,
             tool.name,
             response,
           );
+        status = accepted
+          ? response.success
+            ? 'completed'
+            : 'failed'
+          : 'cancelled';
       } finally {
-        this.observeToolEnd(
-          owner,
-          identity,
-          owner.controller.signal.aborted ? 'cancelled' : status,
-        );
+        const finalStatus = owner.controller.signal.aborted
+          ? 'cancelled'
+          : status;
+        if (finalStatus !== undefined)
+          getCurrentSpan()?.end({
+            status:
+              finalStatus === 'cancelled'
+                ? 'cancelled'
+                : finalStatus === 'failed'
+                  ? 'error'
+                  : 'ok',
+            category:
+              finalStatus === 'cancelled'
+                ? 'cancelled'
+                : finalStatus === 'failed'
+                  ? 'tool_error'
+                  : undefined,
+          });
+        this.observeToolEnd(owner, identity, finalStatus ?? 'failed');
       }
     };
     if (root)

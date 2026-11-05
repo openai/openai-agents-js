@@ -72,7 +72,7 @@ export class TraceSpan {
         JSON.stringify({
           name: 'host.output_validation',
           kind: 'validation',
-          parent: this.handle,
+          parent: this.#contextToken,
         }),
       ),
     );
