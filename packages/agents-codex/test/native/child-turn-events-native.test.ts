@@ -912,6 +912,7 @@ it('keeps child tracing policy for explicit starts and active steering', async (
       let roots = 0;
       let childModels = 0;
       let steps = 0;
+      let holdNextChildStep = false;
       let approvals = 0;
       let workflow: Awaited<ReturnType<typeof telemetry.startTrace>>;
       const entered = Promise.withResolvers<void>();
@@ -938,7 +939,7 @@ it('keeps child tracing policy for explicit starts and active steering', async (
                 call(
                   'spawn_agent',
                   {
-                    task_name: 'policy-child',
+                    task_name: 'policy_child',
                     message: 'Do the scripted work.',
                   },
                   { namespace: 'collaboration', callId: 'spawn-policy' },
@@ -970,7 +971,9 @@ it('keeps child tracing policy for explicit starts and active steering', async (
             new NativeAgents({
               beforeStep: async () => {
                 check();
-                if (++steps === 2) {
+                steps++;
+                if (holdNextChildStep) {
+                  holdNextChildStep = false;
                   entered.resolve();
                   await release.promise;
                   check();
@@ -1011,10 +1014,13 @@ it('keeps child tracing policy for explicit starts and active steering', async (
             disabled: false,
           },
           async () => {
+            holdNextChildStep = true;
             const second = await child.submit('new child turn');
             await entered.promise;
-            expect(await child.submit('steer active child')).toBe(second);
-            release.resolve();
+            const steered = await child
+              .submit('steer active child')
+              .finally(release.resolve);
+            expect(steered).toBe(second);
             expect((await second.wait()).finalOutput).toBe(
               'explicit child done',
             );
