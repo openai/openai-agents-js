@@ -226,7 +226,7 @@
     },
     {
       "path": "0056-sdk-native-tracing.patch",
-      "sha256": "417c24b71ae57e8af5657bcadd763f9a758473f2a5a877d7360380616bcccd8a"
+      "sha256": "0e45e726652f4df20626a7f21be11a7eb1cdc81f65f9d3c4030470962e7cb6b1"
     },
     {
       "path": "0057-sdk-workflow-identity.patch",
@@ -257,5 +257,5 @@
       "sha256": "10136a8852249737dbf7974c579cb84faf0d36fc495fcbaeeafe66a3dfa7e3d6"
     }
   ],
-  "result_tree": "5cc00cf8750496648ff5620cd98121bc698448e4"
+  "result_tree": "7f082be8686f215dff9ee18b226ba21281a561e4"
 }
