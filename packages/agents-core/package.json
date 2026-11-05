@@ -128,12 +128,12 @@
   ],
   "license": "MIT",
   "optionalDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0"
+    "@modelcontextprotocol/client": "^2.4.0"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0",
     "debug": "^4.4.3",
-    "openai": "^7.2.0",
+    "openai": "^7.45.1",
     "tar": "7.5.22"
   },
   "peerDependencies": {
@@ -186,7 +186,7 @@
   },
   "devDependencies": {
     "@types/debug": "^4.1.13",
-    "zod": "^4.6.6"
+    "zod": "^4.6.7"
   },
   "files": [
     "dist"
