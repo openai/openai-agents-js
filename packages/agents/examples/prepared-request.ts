@@ -8,6 +8,10 @@ import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
  * The scripted provider uses explicit HTTP and a standard Responses (non-Lite) model.
  * Keep eager ordinary tools and a direct root;
  * Environment, code mode, children and automatic compaction are outside this profile.
+ * Pre-turn or mid-turn automatic compaction fails before any hidden model request.
+ * Shorten the input or start a new operation without the callback. Earlier tool effects remain.
+ * Post-turn compaction is refused while preserving the completed answer.
+ * Supply new input to Agent.run when using prepareRequest. A resumed turn cannot add an editor.
  * Sampling edits do not change canonical history, executable schemas or policies.
  * For structured output, use native mode or prompted mode with maxRetries: 0.
  */

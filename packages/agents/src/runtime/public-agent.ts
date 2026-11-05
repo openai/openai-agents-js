@@ -94,6 +94,7 @@ export interface RunOptions<Context = undefined> extends Omit<
 > {
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
+  /** Edit requests for a new run with input. A resumed turn cannot add an editor. */
   prepareRequest?: import('./session').OperationOptions<Context>['prepareRequest'];
   returnState?: boolean;
   onNativeQuestion?: (
@@ -345,6 +346,8 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Cannot replace the model step budget when resuming a run',
       );
+    if (input === null && options.prepareRequest !== undefined)
+      throw new TypeError('Cannot add prepareRequest when resuming a run');
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {

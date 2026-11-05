@@ -367,10 +367,15 @@ index 0000000000000000000000000000000000000000..a70e5faf6d3b77f8fa6d90f9c92276ae
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 6995888c4fff7fd6fd135db322e85db302c09462..ae5e9360041d44bb86015c1d7320eda62b164a7c 100644
+index 6995888c4fff7fd6fd135db322e85db302c09462..498b82ed76e161a4212ba0baab834bc147fede4c 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -1459,6 +1459,26 @@ async fn run_auto_compact(
+@@ -1,3 +1,4 @@
++use std::borrow::Cow;
+ use std::collections::HashMap;
+ use std::collections::HashSet;
+ use std::sync::Arc;
+@@ -1459,6 +1460,26 @@ async fn run_auto_compact(
      phase: CompactionPhase,
  ) -> CodexResult<()> {
      let turn_context = &step_context.turn;
@@ -397,7 +402,7 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..ae5e9360041d44bb86015c1d7320eda6
      if matches!(phase, CompactionPhase::PreTurn)
          && crate::guardian::is_basic_session_source(&turn_context.session_source)
          && !crate::guardian::should_compact_guardian_input(sess)?
-@@ -1602,6 +1622,7 @@ pub(crate) fn build_prompt(
+@@ -1602,6 +1623,7 @@ pub(crate) fn build_prompt(
          parallel_tool_calls: true,
          tool_admission: None,
          sampling_stop: None,
@@ -405,7 +410,7 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..ae5e9360041d44bb86015c1d7320eda6
          base_instructions,
          output_schema: turn_context.final_output_json_schema.clone(),
          output_schema_strict: !crate::guardian::is_basic_session_source(
-@@ -1653,6 +1674,7 @@ async fn run_sampling_request(
+@@ -1653,6 +1675,7 @@ async fn run_sampling_request(
      );
      let max_retries = turn_context.provider.info().stream_max_retries();
      let mut retry_state = ResponsesStreamRetryState::default();
@@ -413,7 +418,7 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..ae5e9360041d44bb86015c1d7320eda6
      let mut initial_input = Some(input);
      let mut original_input = None;
      let mut executed_tool_calls_by_output = HashMap::new();
-@@ -1685,6 +1707,27 @@ async fn run_sampling_request(
+@@ -1685,6 +1708,27 @@ async fn run_sampling_request(
          let responses_metadata = sess
              .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
              .await;
@@ -441,12 +446,12 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..ae5e9360041d44bb86015c1d7320eda6
          if crate::guardian::is_basic_session_source(&turn_context.session_source) {
              crate::guardian::prepare_guardian_prompt(
                  &sess,
-@@ -1694,6 +1737,33 @@ async fn run_sampling_request(
+@@ -1694,6 +1738,34 @@ async fn run_sampling_request(
              )
              .await?;
          }
 +        // The original prompt remains authoritative for history and retry bookkeeping.
-+        let mut sampling_prompt = prompt.clone();
++        let mut sampling_prompt = Cow::Borrowed(&prompt);
 +        if !editors.is_empty() {
 +            let data = crate::prepared_request::snapshot(&prompt).map_err(CodexErr::Fatal)?;
 +            let admission = prompt.tool_admission.clone().ok_or_else(|| {
@@ -467,15 +472,16 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..ae5e9360041d44bb86015c1d7320eda6
 +            }
 +            output.admission.admit_request().map_err(CodexErr::Fatal)?;
 +            if let Some(data) = output.data {
-+                sampling_prompt =
-+                    crate::prepared_request::apply(&prompt, data).map_err(CodexErr::Fatal)?;
++                sampling_prompt = Cow::Owned(
++                    crate::prepared_request::apply(&prompt, data).map_err(CodexErr::Fatal)?,
++                );
 +            }
-+            sampling_prompt.prepared_request_admission = Some(output.admission);
++            sampling_prompt.to_mut().prepared_request_admission = Some(output.admission);
 +        }
          let err = match try_run_sampling_request(
              tool_runtime.clone(),
              Arc::clone(&sess),
-@@ -1702,7 +1772,7 @@ async fn run_sampling_request(
+@@ -1702,7 +1774,7 @@ async fn run_sampling_request(
              client_session,
              &responses_metadata,
              Arc::clone(&turn_diff_tracker),
@@ -484,7 +490,7 @@ index 6995888c4fff7fd6fd135db322e85db302c09462..ae5e9360041d44bb86015c1d7320eda6
              cancellation_token.child_token(),
          )
          .await
-@@ -1758,6 +1828,7 @@ async fn run_sampling_request(
+@@ -1758,6 +1830,7 @@ async fn run_sampling_request(
              ));
          }
          retry??;

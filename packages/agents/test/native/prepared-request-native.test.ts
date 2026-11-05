@@ -350,6 +350,49 @@ it('joins a cancelled uncooperative callback before admitting the next root', as
   expect((await next.wait()).finalOutput).toBe('fresh');
 });
 
+it('rejects a new request editor before restoring an admitted manual turn', async () => {
+  const approval = manualTool({
+    name: 'approval',
+    description: 'Wait.',
+    parameters: z.object({}),
+    result: z.string(),
+  });
+  const server = new ModelServer([
+    [call('approval', {}, { callId: 'manual' })],
+    [message('continued')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Ask.',
+    provider,
+    tools: [approval],
+  });
+  await using session = await agent.session();
+  const turn = await session.submit('go');
+  const pending = await turn.wait({ until: 'request' });
+  expect(pending).toHaveProperty('requests');
+  const state = await session.suspend();
+  await session.close();
+  const editor = vi.fn(() => undefined);
+  const onInteraction = vi.fn((action: Parameters<typeof approval.match>[0]) =>
+    approval.match(action)!.reply('approved'),
+  );
+  await expect(
+    agent.run(null, { state, prepareRequest: editor, onInteraction }),
+  ).rejects.toThrow('Cannot add prepareRequest when resuming a run');
+  expect(editor).not.toHaveBeenCalled();
+  expect(onInteraction).not.toHaveBeenCalled();
+  expect(server.requests).toHaveLength(1);
+  await expect(
+    agent.run(null, { state, onInteraction }),
+  ).resolves.toMatchObject({
+    finalOutput: 'continued',
+  });
+  expect(server.requests).toHaveLength(2);
+  expect(JSON.stringify(server.requests[1]!.input)).toContain('approved');
+});
+
 it('refuses active manual checkpoint readiness and export after preparation settles', async () => {
   const approval = manualTool({
     name: 'approval',

@@ -289,6 +289,9 @@ export interface OperationOptions<Context = unknown> {
    * Requires a standard Responses (non-Lite) model, explicit HTTP, and eager root function/MCP tools.
    * Undefined keeps the original.
    * Recovery may prepare again; avoid business effects in this callback. Active checkpoints refuse it.
+   * Pre-turn or mid-turn automatic compaction fails the operation before any hidden request.
+   * Shorten the input or start a new operation without this callback. Earlier tool effects remain.
+   * Post-turn compaction is also refused, but the operation keeps its completed answer.
    */
   prepareRequest?: (
     context: PrepareRequestContext<Context>,
