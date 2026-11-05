@@ -141,7 +141,11 @@ describe('native decoded OTLP transports', () => {
     it(
       title,
       async (context) => {
-        if (dependencyProbe) context.skip(dependencyProbe);
+        if (dependencyProbe) {
+          if (process.env.AGENTS_REQUIRE_TRACING_QUALIFICATION === '1')
+            throw new Error(dependencyProbe);
+          context.skip(dependencyProbe);
+        }
         const directory = await mkdtemp(join(tmpdir(), 'agents-otlp-'));
         const args = [
           join(fixtures, 'otlp-collector.py'),
@@ -165,6 +169,10 @@ describe('native decoded OTLP transports', () => {
             await execute('openssl', ['version']);
           } catch {
             await rm(directory, { recursive: true, force: true });
+            if (process.env.AGENTS_REQUIRE_TRACING_QUALIFICATION === '1')
+              throw new Error(
+                'OTLP TLS qualification requires test-only openssl',
+              );
             context.skip('OTLP TLS qualification requires test-only openssl');
           }
           await certificates(directory);

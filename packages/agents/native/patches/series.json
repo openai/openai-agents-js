@@ -225,9 +225,17 @@
       "sha256": "e9364e66af36741d0bf03430de9ca1d02b4659d81fff8639ebf55165c544f8dc"
     },
     {
-      "path": "0056-w3c-defined-trace-flags.patch",
-      "sha256": "e18ef85b7d975a646b65e9ea43473af9dc046bd8d650117fcaee3fbf52d6ee33"
+      "path": "0056-sdk-native-tracing.patch",
+      "sha256": "417c24b71ae57e8af5657bcadd763f9a758473f2a5a877d7360380616bcccd8a"
+    },
+    {
+      "path": "0057-sdk-workflow-identity.patch",
+      "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
+    },
+    {
+      "path": "0058-w3c-defined-trace-flags.patch",
+      "sha256": "71e0c2a759a06a84283f4fb2282bf124c82d60a3d8dc02d63f0e288795fb7243"
     }
   ],
-  "result_tree": "e8a3b8596623664fec67b6d28e4bc787c93086c7"
+  "result_tree": "41d0f0991e0afcd0c65561bd98b5fec96617ce14"
 }
