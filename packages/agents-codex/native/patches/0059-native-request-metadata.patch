@@ -80,10 +80,13 @@ index 55f0915..f2d1c89 100644
              options.extra_headers.extend(responses_headers);
              let interceptors = crate::model_request::prepare(
                  &self.client.request_contributors,
-@@ -1781,17 +1782,34 @@ impl ModelClientSession {
+@@ -1781,20 +1782,37 @@ impl ModelClientSession {
              )
              .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
              crate::model_request::wait_if_sampling_stopped(prompt.sampling_stop.as_deref()).await;
+             if let Some(admission) = &prompt.prepared_request_admission {
+                 admission.admit_request().map_err(CodexErr::Fatal)?;
+             }
 +            let request_observation = if observation_is_reviewer {
 +                None
 +            } else {

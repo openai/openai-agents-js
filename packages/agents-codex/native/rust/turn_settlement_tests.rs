@@ -680,6 +680,92 @@ impl Fixture {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn child_submit_waits_for_its_passive_native_turn_to_release_the_slot() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let provider = Provider::start().await;
+        let (_home, engine) = provider.engine().await;
+        let session = engine.start_with_tools(Default::default(), Vec::new()).await.unwrap();
+        let parent = session.current().unwrap();
+        let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent.id,
+            depth: 1,
+            agent_path: Some(codex_protocol::AgentPath::root().join("settlement").unwrap()),
+            agent_nickname: None,
+            agent_role: None,
+        });
+        let options = serde_json::from_value(json!({
+            "session_source":source, "thread_source":ThreadSource::Subagent,
+        })).unwrap();
+        let child = {
+            let _lifecycle = engine.lifecycle.lock().await;
+            let (mut startup, _) = engine.build_startup(options).await.unwrap();
+            startup.thread_extension_init.insert(crate::native_agents::Policy {
+                roles: Vec::new(), max_depth: 1, inherited_instructions: None,
+                allowed: Default::default(),
+            });
+            // The parent remains the only SDK event owner for this native child.
+            engine.manager.start_thread(startup).await.unwrap()
+        };
+        let hold = Arc::new(CompletionHold {
+            parent: parent.id, entered: Semaphore::new(0), release: Semaphore::new(0),
+        });
+        let store = engine.store.as_any().downcast_ref::<crate::storage::MemoryThreadStore>().unwrap();
+        *store.completion_hold.lock().unwrap() = Some(hold.clone());
+        let StartIfIdleSubmission::Started { turn_id: previous } = child.thread
+            .start_turn_if_idle(request("first input")).await.unwrap() else {
+            panic!("passive child did not start");
+        };
+        hold.entered.acquire().await.unwrap().forget();
+        let settlement = child.thread.thread_extension_data().get::<Settlement>().unwrap();
+        loop {
+            let event = child.thread.next_event().await.unwrap();
+            if matches!(&event.msg, EventMsg::TurnComplete(done) if done.turn_id == previous) {
+                settlement.delivered(&event.msg);
+                break;
+            }
+        }
+        {
+            let mut events = parent.events.lock().await;
+            parent.discover_children(&mut events).await.unwrap();
+        }
+        let (instance, _, _) = crate::subagents::instance(&parent, child.thread_id)
+            .await.unwrap().expect("passive child must be an owned descendant");
+        let control = child.thread.thread_extension_data()
+            .get::<crate::native_interception::Control>().unwrap();
+        assert!(control.active_turn_id().is_none());
+        assert!(settlement.completed_child().is_some());
+        let id = child.thread_id;
+        let owner = parent.clone();
+        let mut submit = tokio::spawn(async move {
+            Box::pin(crate::subagents::submit(&owner, id, instance, json!({
+                "input":[{"type":"text", "text":"second input", "text_elements":[]}]
+            }))).await
+        });
+        tokio::select! {
+            permit = settlement.waiting.acquire() => permit.unwrap().forget(),
+            result = &mut submit => {
+                panic!("child submission returned before its native slot became idle: {}", result.is_ok());
+            }
+        }
+        assert!(parent.mutations.try_lock().is_err(), "child admission must retain its serialization");
+        assert_eq!(provider.child_requests(id), 1);
+        *store.completion_hold.lock().unwrap() = None;
+        hold.release.add_permits(1);
+        let turn = submit.await.unwrap().unwrap();
+        assert_ne!(turn.turn_id, previous);
+        loop {
+            let event = child.thread.next_event().await.unwrap();
+            if matches!(&event.msg, EventMsg::TurnComplete(done) if done.turn_id == turn.turn_id) {
+                break;
+            }
+        }
+        assert_eq!(provider.child_requests(id), 2);
+        parent.close().await.unwrap();
+        engine.close().await.unwrap();
+    }).await.expect("passive child admission did not settle");
+}
+
 #[tokio::test]
 async fn passive_manual_observation_serializes_with_context_change() {
     let fixture = Fixture::held_before_terminal().await;

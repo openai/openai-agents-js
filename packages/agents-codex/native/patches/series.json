@@ -261,9 +261,17 @@
       "sha256": "7bbc86c06556a9c21550cec75f2da1316fa69f37fb56510249704cf01c0c70ab"
     },
     {
+      "path": "0059-terminal-authentication-retry.patch",
+      "sha256": "2064b337e86352296df7ac5bde428a11ad145ca568478f977dcfb2ef3a87cff8"
+    },
+    {
+      "path": "0054-native-prepared-request.patch",
+      "sha256": "2b56a9551dcdd687e5aef834109d9ff5b4ab3914fde2eae81f4b42c54caaa21d"
+    },
+    {
       "path": "0059-native-request-metadata.patch",
-      "sha256": "5b3b9a410f2f284b3b54eaa5763ac3c8d25f2031f22dc6fc7468389eacd07e4c"
+      "sha256": "00fb1ca9eff806e34ebd56521d4367c4905e6be285b773a2c32cc8ec617f17ae"
     }
   ],
-  "result_tree": "90d64270c1c943dc119e752824af3749e409c907"
+  "result_tree": "23cb52d639046a6d67ecea8553a7ad053a62cc21"
 }

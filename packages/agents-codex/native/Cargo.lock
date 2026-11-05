@@ -1698,8 +1698,8 @@ dependencies = [
  "serde",
  "serde_ignored",
  "serde_json",
- "serde_yaml",
  "serde_path_to_error",
+ "serde_yaml",
  "sha2 0.10.9",
  "strum",
  "strum_macros 0.28.0",
@@ -2412,6 +2412,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "futures",
+ "serde",
  "serde_json",
 ]
 
