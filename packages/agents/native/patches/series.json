@@ -215,7 +215,15 @@
     {
       "path": "0024-native-response-observations.patch",
       "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
+    },
+    {
+      "path": "0054-native-context-metadata.patch",
+      "sha256": "9703fe0286b3ff967ad8b926d6af5b464cd8e04db5b2234162b6ef27894f09d1"
+    },
+    {
+      "path": "0055-native-documented-defaults.patch",
+      "sha256": "e9364e66af36741d0bf03430de9ca1d02b4659d81fff8639ebf55165c544f8dc"
     }
   ],
-  "result_tree": "ea9493714212f7d98100810870de3f64033801fd"
+  "result_tree": "a580dfe41a7d203e7800d3be2f145c03d2465794"
 }
