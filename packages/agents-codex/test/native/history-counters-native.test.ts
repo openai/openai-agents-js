@@ -656,7 +656,10 @@ function assertTurnUsage(
   expect(turn, `missing actual recorded turn ${turnId}`).toBeDefined();
   expect(turn?.usage).toEqual({
     inputTokens: expected.inputTokens,
-    inputTokensDetails: { cachedTokens: expected.cachedInputTokens },
+    inputTokensDetails: {
+      cachedTokens: expected.cachedInputTokens,
+      cacheWriteTokens: expected.cacheWriteInputTokens,
+    },
     outputTokens: expected.outputTokens,
     outputTokensDetails: { reasoningTokens: expected.reasoningOutputTokens },
     totalTokens: expected.totalTokens,
@@ -875,6 +878,24 @@ describe(
         const result = await unwrap(context.track(turn.wait()));
         expect(result.finalOutput).toBe('original done');
         assertUsageInfo(result.usage, usageOf(scenario, true), true);
+        const responseObservations = (await collect(session.turns()))[0]
+          .responses;
+        expect(responseObservations).toHaveLength(2);
+        expect(responseObservations?.[0]).toMatchObject({
+          responseId: 'response-1',
+          status: 'completed',
+          usageSource: 'received',
+          usage: {
+            inputTokens: 9007199254740993n,
+            totalTokens: 9007199254741000n,
+          },
+        });
+        expect(responseObservations?.[1]).toMatchObject({
+          responseId: 'response-2',
+          status: 'completed',
+          usageSource: 'received',
+          usage: { inputTokens: 7, totalTokens: 9 },
+        });
         const before = await session.saveState();
         assertCheckpointUsageGroups(
           before,
@@ -960,6 +981,9 @@ describe(
         );
         await restored.compact({ summary });
         expect(server.requests).toHaveLength(2);
+        expect((await collect(restored.turns()))[0].responses).toEqual(
+          responseObservations,
+        );
         const second = await restored.saveState();
         expect(second.history.slice(0, stored.history.length)).toEqual(
           stored.history,
@@ -1757,3 +1781,144 @@ describe(
     );
   },
 );
+
+it('preserves cache-write availability through native totals, receipts and restored history', async () => {
+  try {
+    for (const cacheWrite of [undefined, 0, 4]) {
+      const raw = JSON.stringify({
+        input_tokens: 10,
+        input_tokens_details: {
+          cached_tokens: 2,
+          ...(cacheWrite === undefined
+            ? {}
+            : { cache_write_tokens: cacheWrite }),
+        },
+        output_tokens: 3,
+        output_tokens_details: { reasoning_tokens: 1 },
+        total_tokens: 13,
+      });
+      const server = new ModelServer([[message('done')]], [raw]);
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-cache-availability',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        model: 'gpt-5.5',
+        instructions: 'Answer.',
+        provider,
+      });
+      await using session = await agent.session();
+      const turn = await session.submit('one request');
+      await turn.wait();
+      const turns: RecordedTurn[] = [];
+      for await (const row of session.turns()) turns.push(row);
+      const recorded = turns[0];
+      const expected = {
+        cachedTokens: 2,
+        ...(cacheWrite === undefined ? {} : { cacheWriteTokens: cacheWrite }),
+      };
+      expect(recorded.usage?.inputTokensDetails).toEqual(expected);
+      expect(recorded.responses?.[0].usage?.inputTokensDetails).toEqual(
+        expected,
+      );
+      expect(recorded.receipt?.turnId).toBe(turn.turnId);
+      const state = await session.saveState();
+      const accounting = state.history.find(
+        (row) => row.type === 'token_usage_record',
+      );
+      expect(
+        (accounting?.payload as JsonObject | undefined)?.turn_token_usage,
+      ).toMatchObject({ cache_write_input_tokens: cacheWrite ?? 0 });
+      await using restored = await agent.session({ state });
+      const restoredTurns: RecordedTurn[] = [];
+      for await (const row of restored.turns()) restoredTurns.push(row);
+      expect(restoredTurns[0].usage?.inputTokensDetails).toEqual(expected);
+      expect(restoredTurns[0].responses).toEqual(recorded.responses);
+      expect(restoredTurns[0].receipt?.model).toBe(recorded.receipt?.model);
+      expect(restoredTurns[0].receipt?.turnId).toBe(recorded.receipt?.turnId);
+      expect(server.requests).toHaveLength(1);
+      server.assertExhausted();
+    }
+  } finally {
+    await ModelServer.closeAll();
+  }
+}, 60_000);
+
+it('keeps a successful accounted cache-write count after an unlinked failed attempt', async () => {
+  const failed = JSON.stringify({
+    type: 'response.failed',
+    response: {
+      id: 'failed-unlinked',
+      error: { code: 'unknown_error', message: 'Temporary fixture failure.' },
+      usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 },
+    },
+  });
+  const completed = JSON.stringify({
+    type: 'response.completed',
+    response: {
+      id: 'successful-linked',
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: { cached_tokens: 2, cache_write_tokens: 4 },
+        output_tokens: 3,
+        total_tokens: 13,
+      },
+    },
+  });
+  const server = new ModelServer([[], [message('done')]], [], undefined, [
+    failed,
+    completed,
+  ]);
+  try {
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-retry-availability',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      model: 'gpt-5.5',
+      instructions: 'Answer.',
+      provider,
+    });
+    await using session = await agent.session();
+    expect(
+      (await (await session.submit('retry once')).wait()).finalOutput,
+    ).toBe('done');
+    const turns: RecordedTurn[] = [];
+    for await (const row of session.turns()) turns.push(row);
+    const recorded = turns[0];
+    expect(recorded.usage?.totalTokens).toBe(13);
+    expect(recorded.usage?.inputTokensDetails.cacheWriteTokens).toBe(4);
+    const rejected = recorded.responses?.find(
+      (row) => row.responseId === 'failed-unlinked',
+    );
+    const accepted = recorded.responses?.find(
+      (row) => row.responseId === 'successful-linked',
+    );
+    expect(rejected?.status).toBe('failed');
+    expect(
+      rejected?.usage?.inputTokensDetails?.cacheWriteTokens,
+    ).toBeUndefined();
+    expect(accepted?.status).toBe('completed');
+    const state = await session.saveState();
+    const accountingLinks = state.history
+      .filter((row) => row.type === 'token_usage_record')
+      .map((row) => (row.payload as JsonObject).response_observation_id);
+    expect(accountingLinks).not.toContain(rejected?.id);
+    expect(accountingLinks).toContain(accepted?.id);
+    await using restored = await agent.session({ state });
+    const restoredTurns: RecordedTurn[] = [];
+    for await (const row of restored.turns()) restoredTurns.push(row);
+    expect(restoredTurns[0].usage?.inputTokensDetails.cacheWriteTokens).toBe(4);
+    expect(restoredTurns[0].responses).toEqual(recorded.responses);
+    expect(server.requests).toHaveLength(2);
+    server.assertExhausted();
+  } finally {
+    await ModelServer.closeAll();
+  }
+}, 30_000);

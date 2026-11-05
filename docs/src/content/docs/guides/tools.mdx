@@ -225,7 +225,7 @@ Use `timeoutMs` to limit the duration of each function tool invocation.
 - When `outputSchema` is set, the default changes to `raise_exception`. Using `error_as_result` requires a `timeoutErrorFunction` that returns a schema-compatible value.
 - Timeouts abort `details.signal`, so long-running tools can stop promptly when they listen for cancellation.
 
-If you invoke a function tool directly, use [`invokeFunctionTool`](/openai-agents-js/openai/agents/functions/invokefunctiontool) to enforce the same timeout behavior as normal agent runs.
+If you invoke a function tool directly, use [`invokeFunctionTool`](/openai-agents-js/openai/agents-core/functions/invokefunctiontool) to enforce the same timeout behavior as normal agent runs.
 
 #### Non‑strict JSON‑schema tools
 
@@ -338,7 +338,7 @@ You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprot
 
 <Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
-For a complete example, see [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts). The [MCP guide](/openai-agents-js/guides/mcp) covers MCP server tool integration. When managing multiple servers (or partial failures), use `connectMcpServers` and the lifecycle guidance in the [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle).
+For a complete example, see [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/mcp/filesystem-example.ts). The [MCP guide](/openai-agents-js/guides/mcp) covers MCP server tool integration. When managing multiple servers (or partial failures), use `connectMcpServers` and the lifecycle guidance in the [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle).
 
 ---
 
@@ -414,7 +414,7 @@ Structured outputs also change failure handling:
 
 Programmatic Tool Calling is Responses-only. Chat Completions, Voice agents, and the AI SDK model adapter reject these options. When an eligible tool is deferred, tool search must load it before a later generated program can call it.
 
-See [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/programmatic-tool-calling.ts) for a complete example.
+See [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/tools/programmatic-tool-calling.ts) for a complete example.
 
 ---
 
@@ -442,4 +442,4 @@ Refer to the [Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) fo
 - [Running agents](/openai-agents-js/guides/running-agents) for execution flow, streaming, and conversation state.
 - [Models](/openai-agents-js/guides/models) for hosted OpenAI model configuration and Responses transport choices.
 - [Guardrails](/openai-agents-js/guides/guardrails) to validate tool inputs or outputs.
-- See the TypeDoc reference for [`tool()`](/openai-agents-js/openai/agents/functions/tool) and the various hosted tool types.
+- See the TypeDoc reference for [`tool()`](/openai-agents-js/openai/agents-core/functions/tool) and the various hosted tool types.

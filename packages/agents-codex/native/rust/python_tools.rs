@@ -809,7 +809,8 @@ impl PythonTools {
                 "type":"dynamic_tool_call_request", "turnId": turn, "callId": call,
                 "namespace": entry.name.namespace, "tool": entry.name.name,
                 "arguments": arguments, "_sdk_python_tool": key.reply,
-                "_sdk_code_origin":code_origin, "_sdk_model":model
+                "_sdk_code_origin":code_origin, "_sdk_model":model,
+                "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
         if let Some(instance) = &self.instance {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi } from 'vitest';
 
 import { AgentHooks, EventEmitterDelegate, RunHooks } from '../src/lifecycle';
 import type { EventEmitter } from '@openai/agents-core/_shims';
@@ -47,6 +47,40 @@ describe('EventEmitterDelegate', () => {
 });
 
 describe('AgentHooks and RunHooks', () => {
+  it('preserves protected Node emitter methods, chaining, and listener types', () => {
+    type Context = { label: string };
+    class AgentHookProbe extends AgentHooks<Context> {
+      configure() {
+        this.eventEmitter
+          .once('agent_start', (context) => {
+            expectTypeOf(context).toEqualTypeOf<RunContext<Context>>();
+          })
+          .setMaxListeners(12);
+        return this.eventEmitter
+          .on('agent_end', (_context, output) => {
+            expectTypeOf(output).toEqualTypeOf<string>();
+          })
+          .getMaxListeners();
+      }
+    }
+    class RunHookProbe extends RunHooks<Context> {
+      configure() {
+        this.eventEmitter
+          .once('agent_start', (context) => {
+            expectTypeOf(context).toEqualTypeOf<RunContext<Context>>();
+          })
+          .setMaxListeners(12);
+        return this.eventEmitter
+          .on('agent_end', (_context, _agent, output) => {
+            expectTypeOf(output).toEqualTypeOf<string>();
+          })
+          .getMaxListeners();
+      }
+    }
+    expect(new AgentHookProbe().configure()).toBe(12);
+    expect(new RunHookProbe().configure()).toBe(12);
+  });
+
   it('emit lifecycle events with typed payloads', () => {
     const agentHooks = new AgentHooks();
     const runHooks = new RunHooks();

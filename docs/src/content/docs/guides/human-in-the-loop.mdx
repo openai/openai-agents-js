@@ -34,7 +34,7 @@ To require approval for a tool, set `needsApproval` to `true` or to an async fun
 ### Flow
 
 1. When a tool invocation is about to execute, the SDK evaluates its approval rule (`needsApproval` or the hosted MCP equivalent).
-2. If approval is required and no decision is stored yet, the tool call does not execute. Instead, the run records a [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem).
+2. If approval is required and no decision is stored yet, the tool call does not execute. Instead, the run records a [`RunToolApprovalItem`](/openai-agents-js/openai/agents-core/classes/runtoolapprovalitem).
 3. At the end of that turn, the run pauses and returns all pending approvals in the [result](/openai-agents-js/guides/results) `interruptions` array. This includes approvals raised inside nested `agent.asTool()` runs.
 4. Resolve each pending item with `result.state.approve(interruption)` or `result.state.reject(interruption)`. Pass `{ alwaysApprove: true }` or `{ alwaysReject: true }` if the same tool should stay approved or rejected for the rest of the run. When rejecting, you can also pass `{ message: '...' }` to control the rejection text that is sent back to the model for that specific tool call.
 5. Resume by passing the updated `result.state` back into `runner.run(agent, state)`, where `agent` is the original top-level agent for the run. The SDK continues from the interrupted point, including nested agent-tool executions.
@@ -67,7 +67,7 @@ Use `RunState.addInput()` when new user input arrives while a run is paused and 
 
 Read `state.pendingInput` to inspect a cloned snapshot of the staged items, or call `state.clearPendingInput()` before resuming to remove all of them. `addInput()` accepts either a string or an array of input items. It raises a `UserError` when the state cannot safely reach another model call, such as a terminal state, a state with no remaining turns, or an interruption whose tool result may end the run.
 
-Once admitted, each staged occurrence becomes a [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) in the run's `newItems`, while its raw input item is included in `history`.
+Once admitted, each staged occurrence becomes a [`RunInputItem`](/openai-agents-js/openai/agents-core/classes/runinputitem) in the run's `newItems`, while its raw input item is included in `history`.
 
 With a local `session`, the SDK persists admitted input once before starting the model request. With `conversationId` or `previousResponseId`, it remains pending until the server accepts the response, so a failure known to occur before acceptance can be resumed without losing the input. If the provider reports that the request may already have been accepted, the SDK checkpoints that occurrence and fails closed instead of silently replaying it. See [Model retries](/openai-agents-js/guides/models#model-retries) for the separate, explicit unsafe-replay override.
 
@@ -97,7 +97,7 @@ This more complete example prompts for approval in the terminal and temporarily 
   title="Human in the loop"
 />
 
-See [the full example script](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop.ts) for a working end-to-end version.
+See [the full example script](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/human-in-the-loop.ts) for a working end-to-end version.
 
 ## Dealing with longer approval times
 
@@ -162,7 +162,7 @@ A request remains consumed if deserialization or execution fails, or if executio
   title="Server-owned approval state"
 />
 
-See the [CLI client/server simulation](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-server.ts) for the complete example. This is not a deployable HTTP service. Production applications must supply trusted authentication, authorization for the displayed details and selected calls, request and CSRF protections where applicable, bounded storage retention, atomic consumption in shared storage, and a recovery policy. The CLI uses synthetic tool data and disables tracing; real application snapshots and diagnostics can contain sensitive data.
+See the [CLI client/server simulation](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/human-in-the-loop-server.ts) for the complete example. This is not a deployable HTTP service. Production applications must supply trusted authentication, authorization for the displayed details and selected calls, request and CSRF protections where applicable, bounded storage retention, atomic consumption in shared storage, and a recovery policy. The CLI uses synthetic tool data and disables tracing; real application snapshots and diagnostics can contain sensitive data.
 
 #### Snapshots transported by clients
 

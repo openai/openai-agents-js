@@ -6,25 +6,39 @@ description: Run a durable native agent, steer a specific turn, and recover afte
 import { Code } from '@astrojs/starlight/components';
 import waitForWorkerExample from '../../../../../examples/docs/native-workers/waitForWorker.ts?raw';
 
-Run each worker in its own process. Give each process a workspace and a local profile for conversation history. The worker owns the live `Session` and its `Turn` handles. The supervisor can reconnect and read progress from the application journal while the worker continues. Save `session.id` so a replacement worker can reopen the same conversation.
+Run each worker in its own process with a workspace and a local profile for conversation history. The worker owns the live `Session` and its `Turn` handles. The supervisor reads progress from the application journal. Save `session.id` so a replacement worker can reopen the same conversation.
 
-This guide uses the experimental native API in `@openai/agents` on Node.js 24 with an API key. Use an SDK build that includes these worker controls and its matching native runtime. [Install the native SDK](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/installation.md).
+Use Node.js 24 and build the SDK and matching native runtime from the `feat/codex-harness` checkout for these worker controls. Live model calls need an API key. The runnable example uses scripted responses. [Build from source](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/building.md) or [run the reference worker](#run-the-reference-worker).
 
 ## Choose what the worker can do
 
 Open the session with `agent.session({ environment, storage })`. Create `storage` with `localStorage(path)` and choose both paths in trusted application code. Keep the profile and the application journal outside the executor working directory and every additional writable root, including roots granted on later turns. Let only one worker write to a conversation at a time.
 
-Use `Environment.local({ cwd, tools, writableRoots })` for the bundled local executor on Linux or macOS. Choose the tools the worker needs from `exec_command`, `write_stdin`, and `apply_patch`. If the runtime cannot start the platform sandbox, session opening fails. On macOS, the bundled local executor also fails at session opening if the host lacks a per-user `launchd` domain or cannot signal processes by identity. The workspace and extra roots must resolve to existing directories below the executor's filesystem root. `cwd` is always a writable root. The sandbox protects metadata within writable roots and grants no implicit temporary directory.
+### Open a local executor
 
-On a supported Linux executor or the bundled local macOS executor, a new root submission can replace the extra roots with `session.submit(input, { writableRoots })`. Pass `[]` to allow writes only within the workspace. Wait for the entire current root turn to finish, or cancel it and await cleanup, before submitting a replacement grant. Also collect the results of any yielded tool cells or returned process handles before changing the roots. If a current writable root uses a symlink, the path must still resolve to the same directory when you submit it again. When adding a directory to the current root list, pass the canonical executor path from your application's configuration. Use the same rule when restoring a grant you removed. Omit `writableRoots` to keep the current policy.
+Use `Environment.local({ cwd, tools, writableRoots })` on Linux or macOS. Select the tools the worker needs from `exec_command`, `write_stdin`, and `apply_patch`. The session opens only if the platform sandbox starts. On macOS, the host also needs a per-user `launchd` domain and support for signaling processes by identity.
 
-For a WSS executor that reports macOS, choose the write roots in the environment when opening the session. You can resubmit an equivalent grant if the paths pass validation.
+The workspace and any extra writable roots must resolve to existing directories below the executor's filesystem root. The workspace (`cwd`) is always writable. The sandbox protects metadata inside those roots. If a command needs temporary storage, use a directory within a writable root.
 
 The local sandbox lets commands read the workspace, extra writable roots, and the platform files and helpers needed to run the sandbox. The executor starts each command with a fresh environment and sets `PATH` to `/usr/bin:/bin`. Install the SDK and its native helpers outside every writable root. For example, install the SDK in the supervisor's project and give the worker a separate workspace.
 
 The local executor uses restricted networking by default. Set `network` to configure its managed proxy for `exec_command`. Your application's JavaScript and MCP clients use their own process permissions.
 
+### Change write access between turns
+
+On a supported Linux executor or the bundled local macOS executor, a new root submission can replace the extra writable roots.
+
+1. Wait for the current root turn to finish, or cancel it and await cleanup. Collect results from any yielded tool cells or returned process handles.
+2. For a new or previously removed directory, use the canonical executor path from your application's configuration. If a current root uses a symlink, that path must still resolve to the same directory.
+3. Call `session.submit(input, { writableRoots })`. Pass `[]` to allow writes only in the workspace. Omit `writableRoots` to keep the current policy.
+
+For a WSS executor that reports macOS, choose the write roots when opening the session. A later submission can repeat an equivalent grant if the paths pass validation.
+
+### Connect a remote executor
+
 For a WSS executor, select the endpoint and credentials in trusted code. Set `writableRoots` on the environment to require the strict write policy. The SDK checks the capabilities that the executor reports. The application must trust that executor to enforce the policy. Read the startup error to distinguish a refused connection, a timeout, or denied authentication. Durable reopen and portable restore require a current trusted environment that matches the saved strict policy. [Configure executor tools and network policy](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/executors.md#managed-executor-network-policy).
+
+### Select instructions and MCP tools
 
 The native SDK uses a managed Codex home. Leave `projectGuidance` off to skip supplemental guidance from `.claude/rules` in the selected workspace. Pass trusted UTF-8 files as `instructionFiles` to add their contents to the session instructions in order.
 
@@ -38,9 +52,19 @@ If the root no longer owns that active native turn, `steerExact` rejects with `S
 
 ## Wait for a result or a decision
 
-`turn.waitForAttention()` returns a completion with `finalOutput`, live `requests` that the application can answer, or a `TurnNeedsAttention` with `type: 'needs_attention'`. Known terminal reasons are `interrupted`, `connection_lost`, `rate_limited`, and `quota_blocked`. The outcome also carries the `error` and current `rateLimits`. Ordinary tool activity stays within the wait. Unclassified failures reject. This wait covers the turn's own requests. [Read interactions across a session](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/interactions.md#read-pending-interactions).
+`await session.submit(input)` returns the `Turn` that owns the submitted work. Use `await turn.wait()` for its completed result. Use `await turn.waitForAttention()` if the worker can need a supervisor decision.
+
+`waitForAttention()` waits through ordinary tool activity and returns one of three outcomes.
+
+- A completed result with `finalOutput`.
+- Live `requests` from this turn that the application can answer.
+- A `TurnNeedsAttention` with `type: 'needs_attention'`, the `error`, and current `rateLimits`. Known terminal reasons are `interrupted`, `connection_lost`, `rate_limited`, and `quota_blocked`.
+
+Unclassified failures reject the wait. To handle requests from across the session, [read its pending interactions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/interactions.md#read-pending-interactions).
 
 Give session opening its own deadline with the `signal` option. Set separate deadlines for application callbacks and MCP transports. An abort signal on `waitForAttention` stops that wait. When your deadline should also stop the turn, call `turn.cancel()` and wait for cleanup before releasing the worker. Cleanup can outlast the deadline. Earlier effects may already have reached the workspace or an external service.
+
+Use `await session.interrupt()` to return as soon as the SDK accepts a root stop. Keep the Session alive and call `await session.close()` to join cleanup before the worker exits. To stop the captured root and join its cleanup in one call, use `await turn.cancel()`.
 
 <Code
   lang="typescript"
@@ -52,7 +76,9 @@ Give session opening its own deadline with the `signal` option. Set separate dea
 
 `session.rateLimits()` starts empty in each live session. It returns the latest usable snapshot from provider response headers. Each usable response replaces the previous snapshot. `api_rate_limits_updated` observations carry the new value in `snapshot`.
 
-Windows may include `requests`, `tokens`, or `projectTokens`. Each window can contain a `limit`, `remaining`, and `resetAfterSeconds`. A snapshot may also include `retryAfterSeconds` or `retryAt`. Treat every missing field as unknown. Counts can be `bigint` when they exceed JavaScript's safe integer range. These fields describe API-key rate limits and retry advice, separate from token usage. Let your application decide when to retry after checking the operation's effects.
+A snapshot can include rate-limit windows for `requests`, `tokens`, and `projectTokens`. Each window can contain `limit`, `remaining`, and `resetAfterSeconds`. Counts can be `bigint` when they exceed JavaScript's safe integer range.
+
+The snapshot may also include `retryAfterSeconds` or `retryAt`. Treat missing fields as unknown. These fields report API-key limits and retry advice. Read token usage separately and check the operation's effects before deciding when to retry.
 
 ## Check execution and turn receipts
 
@@ -72,10 +98,16 @@ A crash can leave a tool invocation in history without its result. If opening ra
 
 Check an independent application record, such as a service receipt or a committed transaction. Keep the worker paused if any effect is still unknown.
 
-After confirming every requested outcome, call `agent.session()` with the same opening options and `reconciledCalls`. Copy `threadId`, `turnId`, and `callId` from each inspected call into its `ReconciledCall`. Set `outcome` to `applied` or `not_applied` and put model-visible text in `result`. The SDK records the verified results before admitting the session and blocks reuse of those call IDs. You can reuse an identical receipt on reopen. A conflicting result fails. Use a stable application operation key to prevent duplicates under new call IDs. Recovery applies to supported root calls that are still in model context. An unfinished descendant can block cold reopen.
+After confirming every requested outcome, call `agent.session()` with the same opening options and `reconciledCalls`. For each `ReconciledCall`, copy `threadId`, `turnId`, and `callId` from the inspected call. Set `outcome` to `applied` or `not_applied` and put model-visible text in `result`.
+
+The SDK records the verified results before admitting the session and blocks reuse of those call IDs. Reopening with an identical receipt succeeds. A conflicting result fails. Use a stable application operation key to prevent duplicates under new call IDs.
+
+Recovery applies to supported root calls that are still in model context. An unfinished descendant can block cold reopen.
 
 ## Run the reference worker
 
-The example runs two conversations in separate worker processes and workspaces. It reopens them after the processes exit and sends feedback to the original conversation. It checks a structured result against the saved artifact and command evidence. The result can include a question for review. A separate application step records an accepted artifact under a stable key. The example also measures opening, follow-up submission, first managed tool activity, and completion separately.
+The example runs two conversations in separate worker processes and workspaces. It reopens them after the processes exit and sends feedback to the original conversation. It checks a structured result against the saved artifact and command evidence. The result can include a question for review. A separate application step records an accepted artifact under a stable key. The worker applies one turn deadline to submission and the wait for attention.
+
+Its snapshot measures opening, follow-up submission and completion separately. It distinguishes the first managed tool start (`firstToolMs`) from the first observed tool result (`firstToolResultMs`).
 
 Run the example on Linux to exercise supervision and recovery with scripted responses. Your application owns the worker processes, the journal, artifact review, publication, and production measurements. [Run the supervised worker example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/supervised-worker/README.md).

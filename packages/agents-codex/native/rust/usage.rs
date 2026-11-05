@@ -67,6 +67,15 @@ fn counter_from_wire(value: &mut Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn received_counter_from_wire(value: &mut Value) -> anyhow::Result<()> {
+    counter_from_wire(value)?;
+    anyhow::ensure!(
+        value.as_i64().is_some_and(|count| count >= 0),
+        "Received response usage counters must be nonnegative"
+    );
+    Ok(())
+}
+
 fn visit_usage(value: &mut Value, counter: CounterVisitor) -> anyhow::Result<()> {
     if value.is_null() {
         return Ok(());
@@ -137,12 +146,24 @@ pub(crate) fn event_to_wire(message: &mut Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn visit_history(history: &mut Value, counter: CounterVisitor) -> anyhow::Result<()> {
+fn visit_history(
+    history: &mut Value,
+    counter: CounterVisitor,
+    received_counter: CounterVisitor,
+) -> anyhow::Result<()> {
     let items = history
         .as_array_mut()
         .ok_or_else(|| anyhow::anyhow!("History must be an array"))?;
     for item in items {
         match item.get("type").and_then(Value::as_str) {
+            Some("response_observation_record") => {
+                if let Some(usage) = item
+                    .get_mut("payload")
+                    .and_then(|payload| payload.get_mut("usage"))
+                {
+                    visit_usage(usage, received_counter)?;
+                }
+            }
             Some("token_usage_record") => {
                 if let Some(record) = item.get_mut("payload") {
                     visit_record(record, counter)?;
@@ -176,16 +197,19 @@ pub(crate) fn history_to_wire(history: &[codex_history::RolloutItem]) -> anyhow:
 }
 
 fn history_usage_to_wire(history: &mut Value) -> anyhow::Result<()> {
-    visit_history(history, counter_to_wire)
+    visit_history(history, counter_to_wire, counter_to_wire)
 }
 
 pub(crate) fn history_from_wire(history: &mut Value) -> anyhow::Result<()> {
-    visit_history(history, counter_from_wire)
+    visit_history(history, counter_from_wire, received_counter_from_wire)
 }
 
-fn visit_checkpoint(checkpoint: &mut Value, counter: CounterVisitor) -> anyhow::Result<()> {
+fn visit_checkpoint(
+    checkpoint: &mut Value,
+    visit: fn(&mut Value) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
     if let Some(history) = checkpoint.get_mut("history") {
-        visit_history(history, counter)?;
+        visit(history)?;
     }
     if let Some(descendants) = checkpoint.get_mut("descendants") {
         let descendants = descendants
@@ -193,7 +217,7 @@ fn visit_checkpoint(checkpoint: &mut Value, counter: CounterVisitor) -> anyhow::
             .ok_or_else(|| anyhow::anyhow!("Checkpoint descendants must be an array"))?;
         for descendant in descendants {
             if let Some(history) = descendant.get_mut("history") {
-                visit_history(history, counter)?;
+                visit(history)?;
             }
         }
     }
@@ -202,17 +226,65 @@ fn visit_checkpoint(checkpoint: &mut Value, counter: CounterVisitor) -> anyhow::
 
 // These transport views never change Core's stored or internal checkpoint format.
 pub(crate) fn checkpoint_to_wire(checkpoint: &mut Value) -> anyhow::Result<()> {
-    visit_checkpoint(checkpoint, counter_to_wire)
+    visit_checkpoint(checkpoint, history_usage_to_wire)
 }
 
 pub(crate) fn checkpoint_from_wire(checkpoint: &mut Value) -> anyhow::Result<()> {
-    visit_checkpoint(checkpoint, counter_from_wire)
+    visit_checkpoint(checkpoint, history_from_wire)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn restored_response_observations_reject_negative_counts_in_root_and_descendants() {
+        for key in COUNTERS {
+            for value in [json!(-1), json!("-9007199254740993")] {
+                let history = json!([{
+                    "type": "response_observation_record",
+                    "payload": { "usage": { (key): value } }
+                }]);
+                for mut checkpoint in [
+                    json!({"history": history}),
+                    json!({"descendants": [{"history": history}]}),
+                ] {
+                    let error = checkpoint_from_wire(&mut checkpoint).unwrap_err();
+                    assert_eq!(
+                        error.to_string(),
+                        "Received response usage counters must be nonnegative"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn response_observation_usage_roundtrips_exact_optional_counters() -> anyhow::Result<()> {
+        let mut history = json!([
+            {"type":"response_observation_record","payload":{"id":"o","usage":{"input_tokens":i64::MAX,"cached_input_tokens":0}}},
+            {"type":"response_observation_record","payload":{"id":"missing","usage":null}},
+            {"type":"response_item","payload":{"arguments":{"type":"response_observation_record","usage":{"input_tokens":i64::MAX}}}}
+        ]);
+        let original = history.clone();
+        history_usage_to_wire(&mut history)?;
+        assert_eq!(
+            history[0]["payload"]["usage"]["input_tokens"],
+            i64::MAX.to_string()
+        );
+        assert_eq!(history[0]["payload"]["usage"]["cached_input_tokens"], 0);
+        assert!(
+            history[0]["payload"]["usage"]
+                .get("output_tokens")
+                .is_none()
+        );
+        assert!(history[1]["payload"]["usage"].is_null());
+        assert_eq!(history[2], original[2]);
+        history_from_wire(&mut history)?;
+        assert_eq!(history, original);
+        Ok(())
+    }
 
     #[test]
     fn typed_child_usage_preserves_large_counts() {

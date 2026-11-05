@@ -759,6 +759,7 @@ pub(crate) async fn continue_retained<'a>(
     state: &'a crate::engine::ThreadState,
     mutation: &mut Option<MutexGuard<'a, ()>>,
     previous_id: &str,
+    trace: Option<codex_protocol::protocol::W3cTraceContext>,
     start: TurnStartOptions,
     mut init: ExtensionDataInit,
 ) -> anyhow::Result<TurnInputSubmission> {
@@ -784,6 +785,7 @@ pub(crate) async fn continue_retained<'a>(
         ),
     )));
     request.start = start;
+    request.trace = trace;
     let deadline = Instant::now() + SETTLEMENT_GRACE;
     loop {
         if !crate::graph_stop::continuation_allowed(state) || !settlement.can_continue(&expected) {

@@ -54,6 +54,7 @@ async function routePeer(
   const failures: { nonce: string; oversized: boolean }[] = [];
   const remote = {
     available: true,
+    headers: [],
     async send_text(payload: string) {
       const body = JSON.parse(payload) as JsonObject;
       sent.push({
