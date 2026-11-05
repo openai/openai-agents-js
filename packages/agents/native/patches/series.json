@@ -211,7 +211,15 @@
     {
       "path": "0053-serialize-token-budget-context-commit.patch",
       "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
+    },
+    {
+      "path": "0054-native-context-metadata.patch",
+      "sha256": "95261f3080ad5c3ac26e8b59a3ecc94cb6720ccb259a32731201d3eeb6ec119b"
+    },
+    {
+      "path": "0055-native-documented-defaults.patch",
+      "sha256": "e9364e66af36741d0bf03430de9ca1d02b4659d81fff8639ebf55165c544f8dc"
     }
   ],
-  "result_tree": "049bf9bbdd75072a30a7739245d79bd05391eda8"
+  "result_tree": "0eb10e16d6bc881c0e56c66c09a59abe7fdaeda2"
 }
