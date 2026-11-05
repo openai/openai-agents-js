@@ -72,7 +72,7 @@ export function bound(value: number | undefined, fallback: number): number {
   return result;
 }
 
-export function checkBytes(value: unknown, limit: number): void {
+export function checkBytes(value: unknown, limit: number): string {
   let encoded: string | undefined;
   try {
     encoded = JSON.stringify(value);
@@ -81,6 +81,7 @@ export function checkBytes(value: unknown, limit: number): void {
   }
   if (encoded === undefined || Buffer.byteLength(encoded) > limit)
     throw new A2AError('limit');
+  return encoded;
 }
 
 async function boundedResponse(
