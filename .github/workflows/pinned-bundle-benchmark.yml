@@ -1,0 +1,12 @@
+name: Pinned native bundle benchmark
+on:
+  push:
+    branches: [codex/prototype-pinned-native-bundle]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  alpha:
+    uses: ./.github/workflows/alpha-release-artifacts.yml
