@@ -2111,6 +2111,21 @@ impl NativeThread {
             .map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_prepared_request")]
+    pub fn _reply_prepared_request(&self, response_json: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::prepared_requests::Reply = serde_json::from_str(&response_json)
+            .map_err(|_| input_error("Invalid prepared request reply"))?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Prepared request requires managed Session"))?;
+        tools
+            .reply_prepared(&inner.id.to_string(), response)
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_step")]
     pub fn _reply_step(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;
@@ -2911,6 +2926,14 @@ impl NativeThread {
                 .transpose()?;
             // A restored root can use step preparation to enforce its remaining
             // SDK budget. The SDK never serializes an application callback.
+            if selection
+                .as_ref()
+                .is_some_and(|selection| selection.prepare_request)
+            {
+                return Err(native_error(
+                    "manual continuation recovery cannot restore request preparation",
+                ));
+            }
             let inner = self.current()?;
             let _operation = inner.engine.operation(false).map_err(native_error)?;
             inner

@@ -165,6 +165,7 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _check_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
