@@ -39,12 +39,51 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Run both original Mac child-tracing checks twice
+      - name: Capture the missing trace at its source boundary
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("packages/agents-codex/test/native/child-turn-events-native.test.ts")
+          source = path.read_text()
+          marker = "it('keeps child tracing policy for explicit starts and active steering'"
+          prefix, case = source.split(marker, 1)
+          prefix = "import { appendFileSync } from 'node:fs';\n" + prefix
+          prefix += """function traceProbe(stage: string, detail?: unknown) {
+            appendFileSync(process.env.TRACE_PROBE_FILE!, JSON.stringify({ stage, detail }) + '\\n');
+          }
+          """
+          additions = {
+            "      let approvals = 0;": "      traceProbe('loop', {disabled});",
+            "        const span = telemetry.getCurrentSpan()!;": """        traceProbe('callback', {
+                    disabled, roots, childModels, steps, approvals, holdNextChildStep,
+                    hasSpan: Boolean(span), sameTrace: telemetry.getCurrentTrace() === workflow,
+                    actualDisabled: span?.context.disabled, sensitive: span?.context.includeSensitiveData,
+                  });""",
+            "        expect((await turn.wait()).finalOutput).toBe('initial child done');": "        traceProbe('initial done', {disabled, steps});",
+            "            const second = await child.submit('new child turn');": "            traceProbe('explicit submit', {disabled, steps});",
+            "            await entered.promise;": "            traceProbe('entered', {disabled, steps});",
+            "            expect(steered).toBe(second);": "            traceProbe('steered', {disabled, steps});",
+            "        model.assertExhausted();": "        traceProbe('loop done', {disabled, steps});",
+          }
+          for needle, extra in additions.items():
+              assert case.count(needle) == 1, needle
+              case = case.replace(needle, needle + "\n" + extra)
+          path.write_text(prefix + marker + case)
+          path = Path("packages/agents-codex/src/runtime/session.ts")
+          source = "import { appendFileSync as appendTraceProbe } from 'node:fs';\n" + path.read_text()
+          needle = "        const selected = await withNativeCallbackContext(\n"
+          assert source.count(needle) == 1
+          source = source.replace(needle, """        appendTraceProbe(process.env.TRACE_PROBE_FILE!, JSON.stringify({
+                    stage: 'child step event', turnId: owner.turnId, stepIndex: capturedSelection.stepIndex,
+                    hasWireContext: typeof event.msg.tracing_context === 'string',
+                  }) + '\\n');
+          """ + needle)
+          path.write_text(source)
+          PY
+      - name: Identify which child step lost its trace
+        run: |
+          export TRACE_PROBE_FILE="$RUNNER_TEMP/missing-child-trace.jsonl"
           status=0
-          for trial in 1 2; do
-            echo "Trial $trial"
-            pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering' || status=1
-            pnpm test:native packages/agents-codex/test/native/native-questions.test.ts -t 'keeps original child tracing through question reply and physical handler cleanup' || status=1
-          done
+          pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering' --reporter=verbose || status=1
+          cat "$TRACE_PROBE_FILE"
           exit "$status"
