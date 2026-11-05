@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
-import { afterEach, expect, it, onTestFailed, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  expect,
+  it,
+  onTestFailed,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -24,8 +32,17 @@ import {
   type NativeThread,
 } from '../../src/runtime/binding';
 import { TurnAborted } from '../../src/runtime/session';
+import * as telemetry from '../../src/runtime/telemetry';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
+
+beforeAll(async () => {
+  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+});
+
+afterAll(async () => {
+  await telemetry.shutdown();
+});
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -2255,8 +2272,6 @@ it('keeps opening unpublished until its real publication boundary reaches the so
 }, 30_000);
 
 it('keeps original child tracing through question reply and physical handler cleanup', async () => {
-  const telemetry = await import('../../src/runtime/telemetry');
-  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
   try {
     for (const disabled of [false, true]) {
       const executor = await startPublicExecutor();
@@ -2347,6 +2362,6 @@ it('keeps original child tracing through question reply and physical handler cle
       }
     }
   } finally {
-    await telemetry.shutdown();
+    await telemetry.forceFlush();
   }
 }, 60_000);
