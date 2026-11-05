@@ -61,6 +61,8 @@ Read settled descendant history through `session.subagents()` or the `subagentId
 
 The native store flushes each managed result before the model can use it. If a root call has no saved result after process loss, opening stops before the model runs or the SDK dispatches a tool.
 
+The following structured recovery procedure requires the [current source build](building.md). The published `0.22.0-alpha.1` supports local storage and resume, but exports neither `LocalRecoveryRequired` nor `reconciledCalls`. That release refuses uncertain profiles and supplies no profile-repair API. Preserve the profile and independently reconcile the effects; do not edit native history to force reopening.
+
 1. Read the original thread, turn, and call IDs from `LocalRecoveryRequired.calls`. Check each effect in your external system.
 2. Keep the reported IDs and supply the confirmed `outcome` (`'applied'` or `'not_applied'`) and a text `result` the model can read. Leave a call unresolved while its outcome is unknown.
 3. Reopen with `storage`, `resume`, and the `reconciledCalls` list. The SDK records the supplied result against the original call without invoking the tool again.

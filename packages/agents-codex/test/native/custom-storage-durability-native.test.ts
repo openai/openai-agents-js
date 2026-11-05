@@ -18,6 +18,7 @@ import {
   type SessionStore,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { readRecoveryIntent } from '../../examples/custom-storage-recovery';
 
 const directories: string[] = [];
 const children: ChildProcess[] = [];
@@ -313,15 +314,17 @@ describe('public native custom storage durability', () => {
     server.assertExhausted();
   }, 45000);
 
-  it('does not replay an effect after SIGKILL before its completion was persisted', async () => {
+  it('recovers from the application intent journal after SIGKILL without replaying the effect', async () => {
     const path = await directory();
     const effects = join(path, 'effects');
+    const intentPath = join(path, 'order-intent.json');
     const server = new ModelServer([
       [call('record', {}, { callId: 'ambiguous-effect' })],
     ]);
     const first = await worker(server, {
       directory: path,
       effects,
+      intentPath,
       mode: 'hold-effect',
     });
     const opened = await first.wait('opened');
@@ -339,15 +342,20 @@ describe('public native custom storage durability', () => {
     );
     first.child.kill('SIGKILL');
     await first.exited;
+    // The replacement process needs only application-owned files. It does not
+    // parse the native snapshot or reuse the departed worker's in-memory IDs.
+    const { businessKey, ...identities } = await readRecoveryIntent(intentPath);
+    expect(businessKey).toBe('synthetic-order');
+    expect(await readFile(effects, 'utf8')).toBe('effect\n');
     // The application must establish process death before removing a stale
     // reference-adapter lock. The adapter never steals a live owner's lease.
-    await rm(join(path, `${opened.id}.lock`), { recursive: true });
+    await rm(join(path, `${identities.sessionId}.lock`), { recursive: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       const resumed = await worker(server, {
         directory: path,
         effects,
         mode: 'hold-open',
-        resume: opened.id,
+        resume: identities.sessionId,
       });
       expect((await resumed.wait('failure')).message).toMatch(
         /unknown|unresolved|reconcil/i,
@@ -356,9 +364,7 @@ describe('public native custom storage durability', () => {
     }
     expect(await readFile(effects, 'utf8')).toBe('effect\n');
     const reconciliation = {
-      sessionId: opened.id,
-      turnId: submitted.turnId,
-      callId: 'ambiguous-effect',
+      ...identities,
       result: 'external effect verified',
     };
     await reconcileSessionStore(fileSessionStore(path), reconciliation);
@@ -390,8 +396,11 @@ describe('public native custom storage durability', () => {
           },
         }),
       ],
-    }).session({ storage: fileSessionStore(path), resume: opened.id });
-    expect(recovered.id).toBe(opened.id);
+    }).session({
+      storage: fileSessionStore(path),
+      resume: identities.sessionId,
+    });
+    expect(recovered.id).toBe(identities.sessionId);
     expect(
       (
         await (

@@ -34,7 +34,7 @@ The returned array contains the completed answers in turn order. This excerpt de
 
 The chooser receives the completed answer from the original `Turn.wait()`. Returning `null` finishes the example. Returning text starts a new Turn in the same Session, keeping its conversation. The example submits with `ifBusy: 'reject'` so it cannot steer another active Turn.
 
-Each Turn has its own `beforeStep` counter, which starts at zero. The separate `maxTurns` limit bounds this example's outer loop. If the chooser requests another answer after that many completed turns, the helper throws instead of starting another turn. This example does not configure `beforeStep`.
+Each Turn has its own `beforeStep` counter, which starts at zero. The separate `maxTurns` limit bounds this example's outer loop. If the chooser requests another answer after that many completed turns, the helper throws instead of starting another turn. This example does not configure `beforeStep`. To bound model requests within each Turn, see the source-build [`maxModelSteps` option](../guides/tools.md#select-tools-before-a-model-step).
 
 A pending native approval goes to `approve` before the chooser runs. The example replies through that original request and waits on its Turn again. Partial text, tool results, and pending requests do not count as a completed answer. Applications using manual tools or MCP forms need their own request handlers. This example handles native approvals only.
 

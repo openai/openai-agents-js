@@ -9,7 +9,7 @@ try {
 } catch (error) {
   if (error?.code === 'MODULE_NOT_FOUND') {
     throw new Error(
-      'MCP Tasks requires optional dependencies. Install @modelcontextprotocol/client@2.0.0 and @modelcontextprotocol/core@2.0.0.',
+      'MCP Tasks requires optional dependencies. Install @modelcontextprotocol/client@2.4.0 and @modelcontextprotocol/core@2.4.0.',
     );
   }
   throw error;

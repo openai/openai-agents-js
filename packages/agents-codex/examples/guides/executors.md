@@ -2,6 +2,8 @@
 
 Use an `Environment` to give a native Session access to selected tools on a remote executor. Your application chooses the endpoint, credentials, and permissions; the executor enforces its declared policy.
 
+For commands on the application host, use [local execution](local-execution.md). See [workspace write grants](workspace-grants.md) to add or replace writable directories, and [project guidance and skills](project-guidance.md) to prepare rule files or discover a skill catalog.
+
 Choose how your application owns that connection:
 
 | Declaration | Resource owner |
@@ -60,6 +62,8 @@ A Session `signal` cancels opening through publication. After `agent.session(...
 Close retires the native transport, engine, carrier, and entered child callbacks before it disposes the source. Provider resources release afterward, even if the disposer rejects. Concurrent cleanup and retries share the same disposer promise. A disposer cannot close, wait on, or submit to its own Session. Close Sessions before their provider.
 
 ## Remote skill directories
+
+For a tested `SKILL.md` layout and catalog check, see [prepare a skill catalog](project-guidance.md#prepare-a-skill-catalog).
 
 Set `Environment.capabilityDirectories` to absolute remote directories to discover their skills. Paths may use POSIX or Windows absolute spelling, or absolute file URIs. The declaration copies the list, so later edits to the input array have no effect.
 

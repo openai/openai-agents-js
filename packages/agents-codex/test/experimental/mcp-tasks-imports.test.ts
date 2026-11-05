@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -11,6 +18,13 @@ it.each(['cjs', 'mjs'] as const)(
     try {
       const installed = join(root, 'node_modules/@openai/agents-codex');
       const source = resolve(__dirname, '../..');
+      const manifest = JSON.parse(
+        await readFile(join(source, 'package.json'), 'utf8'),
+      ) as { optionalDependencies: Record<string, string> };
+      const clientVersion =
+        manifest.optionalDependencies['@modelcontextprotocol/client'];
+      const coreVersion =
+        manifest.optionalDependencies['@modelcontextprotocol/core'];
       await mkdir(join(installed, 'experimental'), { recursive: true });
       await copyFile(
         join(source, 'package.json'),
@@ -53,8 +67,7 @@ it.each(['cjs', 'mjs'] as const)(
         }),
       );
       expect(result).toEqual({
-        message:
-          'MCP Tasks requires optional dependencies. Install @modelcontextprotocol/client@2.0.0 and @modelcontextprotocol/core@2.0.0.',
+        message: `MCP Tasks requires optional dependencies. Install @modelcontextprotocol/client@${clientVersion} and @modelcontextprotocol/core@${coreVersion}.`,
         cause: null,
       });
     } finally {

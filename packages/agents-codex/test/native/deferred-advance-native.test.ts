@@ -502,6 +502,27 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       20_000,
     );
 
+    it.each(['failed', 'cancelled'] as const)(
+      'leaves a %s job pending until the host explicitly supplies a safe reply',
+      async (status) => {
+        await using f = await fixture();
+        f.backend.start.mockResolvedValueOnce({ status });
+        expect(await f.jobs.advance(f.session, f.request)).toEqual({ status });
+        expect(f.model.requests).toHaveLength(1);
+        expect(f.project).not.toHaveBeenCalled();
+        expect(f.journal.saveResult).not.toHaveBeenCalled();
+        const pending = await f.session.wait({ until: 'request' });
+        expect('requests' in pending).toBe(true);
+        await f.session.respond(
+          f.request.reply('The host confirmed the job stopped.'),
+        );
+        expect((await f.session.wait()).finalOutput).toBe('done');
+        expect(f.backend.start).toHaveBeenCalledTimes(1);
+        f.model.assertExhausted();
+      },
+      20_000,
+    );
+
     it.each(['binding', 'action', 'stale request'] as const)(
       'rejects a mismatched %s before invoking a provider',
       async (reason) => {

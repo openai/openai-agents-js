@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import { z } from 'zod';
-import { Agent, Runner, ToolOutput, tool } from '@openai/agents-codex';
-import {
-  text,
-  toolCall,
-  withScriptedResponses,
-} from '@openai/agents-codex/testing';
+import { Agent, Runner, ToolOutput, tool } from '@openai/agents';
+import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
 
 /**
  * Exercise the public request, argument and result controls without live credentials.
@@ -113,6 +109,16 @@ export async function runPreparedRequestExample(): Promise<string> {
         /Explain the lookup result in one sentence/,
       );
       return result.finalOutput;
+    },
+  );
+}
+
+if (typeof require !== 'undefined' && require.main === module) {
+  runPreparedRequestExample().then(
+    (answer) => console.log(answer),
+    (error: unknown) => {
+      console.error(error);
+      process.exitCode = 1;
     },
   );
 }

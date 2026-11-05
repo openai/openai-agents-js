@@ -41,9 +41,27 @@ Use `name` to identify the workflow and `groupId` to group related traces. Workf
 
 To flush completed trace records while a Session is open, await `telemetry.forceFlush({ timeoutMs: 5000 })`. Check the returned `status`, `droppedRecords`, and `failedDeliveries` before treating delivery as complete.
 
+For an application-owned trace destination, use the source-built [native trace processor API](trace-processors.md). It supports custom-only callbacks and combined callback/OTLP routes. Adding a processor preserves existing routes; replacing processors also replaces the built-in trace exporter.
+
+## Carry a W3C parent across services
+
+With the current [source build](building.md), construct `TraceContext` from selected `traceparent` and optional `tracestate` headers, then pass it as `parentTrace` when opening a Session or starting a new operation. The [native trace context example](../native-trace-context.ts) exports `runWithTrace(headers)` for an application that supplies its own ingress instrumentation and model credentials. Configure native telemetry before calling it if you want native spans exported.
+
+`TraceContext` validates and freezes an explicit header carrier. Constructing it does not create a span, configure an exporter, or read an arbitrary JavaScript OpenTelemetry provider's ambient state. A tool callback receives `context.traceContext` for its issuing native tool span; pass that carrier to a nested run or call `toHeaders()` when injecting an outbound request.
+
+An operation's explicit `parentTrace` overrides the Session fallback. Omission or `null` inherits the Session parent. A queued operation captures its selected parent when queued. A restored Session needs a new parent from the application; checkpoints do not establish current tracing context.
+
+The native carrier profile requires lowercase, nonzero trace and span IDs. Version `00` accepts flags `00` through `03`, including the sampled and random-trace-ID bits. `traceparent` is limited to 512 ASCII characters. `tracestate` permits at most 32 entries, keys and values up to 256 characters, and tenant system IDs up to 13 characters. The native profile can reject a carrier that another W3C implementation accepts. Select only the two supported headers and handle invalid ingress before opening resources; do not pass all HTTP headers or include credentials in `tracestate`.
+
+### Resolve a parent conflict
+
+SDK `withTrace` and `withSpan` scopes also select a native parent. If you supply `parentTrace` inside an active SDK scope, both selections must identify the same trace and parent span. A new SDK span has a different span identity from its external ingress parent, even when both share a trace ID. Combining those parents rejects admission with `Explicit trace context must match the SDK tracing parent`.
+
+Choose the parent once for that boundary: use the explicit ingress carrier outside a conflicting SDK scope, or let the active SDK scope supply the operation parent. Do not replace a tool callback's current span with an older ingress parent when a nested run already inherits that callback's SDK scope. A rejected conflict does not retire an otherwise usable Session. Trace parent selection does not relax an ancestor's disabled or sensitive-data restrictions.
+
 ## Configure transport and credentials
 
-Set `caCertificate` to the CA certificate file. For client authentication over HTTP or gRPC, supply both `clientCertificate` and `clientPrivateKey`. Relative paths resolve at configure time. The exporter verifies the server certificate. Configure the Session's network permissions separately.
+Set an exporter's `tls.caCertificate` to the CA certificate file. For client authentication over HTTP or gRPC, supply both `tls.clientCertificate` and `tls.clientPrivateKey` on that exporter. Relative paths resolve at configure time. The exporter verifies the server certificate. Configure the Session's network permissions separately.
 
 Malformed or incomplete identities fail during initialization. If native initialization already claimed the tracing subscriber, start a new process before retrying.
 

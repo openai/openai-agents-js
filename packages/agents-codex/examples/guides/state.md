@@ -6,6 +6,8 @@ Choose the record that matches your task. The application reconciles external ef
 | --- | --- |
 | Inspect conversation progress and retained usage | [Native history snapshots](#history-and-state). |
 | Move a supported conversation to another Session | [Save or suspend a session](#save-or-suspend-a-session), then [restore its declarations](#restore-instructions-and-tools). |
+| Branch from full conversation history | [Fork a conversation](#fork-a-conversation). |
+| Inspect the settings recorded for a native turn | [Inspect effective turn settings](#inspect-effective-turn-settings). |
 | Check whether the current boundary can be captured | [Capture readiness](recovery.md#check-capture-readiness). |
 | Keep canonical snapshots in application-owned files | [File-backed custom storage](session-store.md#store-canonical-conversation-state-in-application-owned-files). |
 | Reopen a native profile with checklist or goal support | [Local native profiles](local-state.md#local-native-profiles). |
@@ -22,6 +24,16 @@ A `function_call_output` projection can have `status: 'completed'` and `error: n
 Keep missing timestamps, usage, and records missing. Read the Turn outcome for execution status and the application's external receipt for the effect.
 
 History projects a canonical accepted input's Responses record and native user item as one message, retaining the native ID and content. A snapshot taken before the native item is recorded can expose the Responses ID; a later snapshot replaces it with the native item. Saved checkpoints preserve native recording semantics; their raw history is not an API for authoring independent messages.
+
+### Inspect effective turn settings
+
+With the [current source build](building.md), a recorded turn from `session.turns()` can include `receipt: TurnReceipt`. The receipt describes the latest recorded sampling attempt within that native turn, rather than every request or the Session's current defaults. Read a child's receipt through `session.turns({ subagentId })`. The published `0.22.0-alpha.1` does not expose this receipt.
+
+The receipt records the sampled model and reasoning effort, accepted instruction revision, developer-instruction hash, ordered instruction-file paths/sources/hashes, whether native user configuration participated, native source/build identities, approval policy, and executor settings when available. Inspect these observations when an answer appears to use different settings from those you expected. The [session configuration example](../session-configuration.ts) loads trusted instruction files, runs a scripted turn, and checks their sampled hashes and turn identity.
+
+A missing or unsupported receipt leaves these settings unknown. A receipt is an observation of selected configuration, not proof that the provider honored a request, that a tool succeeded, or that an external effect committed. Hashes identify bytes; they do not contain the original instructions or make a portable checkpoint self-contained. Portable snapshots withhold executor policy details, so `executors: null` does not prove that no executor was admitted. Receipt paths and configuration can be private application data.
+
+For application-supplied workflow correlation, see [request metadata](request-metadata.md). Correlation metadata and sampled settings answer different questions; neither grants execution authority.
 
 ### Read retained response usage
 
@@ -95,6 +107,23 @@ An omitted selection differs from an empty one. Saved defaults control later ord
 Prompted output works with live manual replies and explicit `suspend()`. Supply `onInteraction` for a one-shot prompted run that uses manual tools; implicit pending transfer remains plain-only. A pending capture uses the active turn's output override, while an idle capture uses the Session default. After a successful seal, repeated `suspend()` calls return detached copies of the retained receipt, including after close or an application persistence failure. A rejected pre-commit suspension leaves existing requests live.
 
 Output-aware envelopes retain passive repair receipts separately from native history. Save, fork, supplied-summary replacement, and later manual suspension preserve them without replaying requests or effects. They preserve exact counters and actual attempt identities across capture; a new root retargets only their parent Session identity. Restoring receipts grants no reply authority. Neither corrected text nor repair receipts enter later model context. If a possibly admitted attempt lacks a complete receipt, portable capture remains unavailable for that Session.
+
+## Fork a conversation
+
+Use `saveState()` to capture the current conversation identity for later restore. Use `fork()` to create portable state for a fresh, independently owned root with the full retained history up to the capture boundary. Forking makes no model request and does not replay recorded tool effects. Later source turns do not enter the branch. You can continue using the source and close either Session independently.
+
+This excerpt assumes an existing `agent` and a settled portable `source` Session:
+
+```ts
+const state = await source.fork();
+await using branch = await agent.session({ state });
+const alternative = await branch.submit('Explore another approach.');
+console.log((await alternative.wait()).finalOutput);
+```
+
+Restore with the current trusted declarations described in [restore instructions and tools](#restore-instructions-and-tools). The destination uses the saved accepted model settings and current application credentials, callbacks, context, and Environment. A branch's new Session ID does not create a new external business operation: retain the original application effect key when checking or deduplicating effects. Close the source as well as the branch when their owners finish.
+
+Fork requires settled portable root history without descendants, pending effects, or live background terminals. Local profiles and custom SessionStore storage do not support it. Retained checklist and goal data do not grant destination tools or resume autonomous work. An [application-supplied summary](session-configuration.md#context-compaction) is an optional context replacement with its own stricter limits. The [summary-and-fork helper](../fork-summary.ts) composes the two operations; a full-history fork needs no summary.
 
 ## Storage and recovery tasks
 

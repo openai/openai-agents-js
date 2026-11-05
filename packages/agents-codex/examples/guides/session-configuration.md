@@ -24,6 +24,16 @@ For JavaScript clients and custom model loops, see [classic model configuration]
 
 Pass `provider`, `model`, or `modelSettings` to `agent.session(...)` or `agent.run(...)` to configure one conversation.
 
+Native `modelSettings` accepts these fields:
+
+| Field | Value and behavior |
+| --- | --- |
+| `reasoningEffort` | A string selecting the model's reasoning effort. |
+| `reasoningSummary` | A string selecting the model's reasoning summary setting. |
+| `serviceTier` | A string selecting a service tier, or `null` to clear an inherited override. |
+
+Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Native settings do not accept classic fields such as `temperature`, `maxTokens`, or `retry`; use [Model migration](migrate-models.md) for a supported classic Model.
+
 - An opening provider or model overrides the Agent default.
 - Defined `modelSettings` keys override the matching Agent settings. Omitted or `undefined` keys inherit the defaults. An empty object inherits every default.
 - `serviceTier: null` clears an inherited tier. Tools and workspace access come from their own declarations.
@@ -33,6 +43,26 @@ Each Session captures its effective configuration when it opens. The Agent keeps
 Portable `state`, including state from `session.fork()`, retains the saved model and accepted settings. Restore through the same Agent even if its default model differs or is absent. Leave `model` and `modelSettings` undefined when restoring. Passing `modelSettings: {}` rejects the restore.
 
 You can supply a provider with current credentials on restore. Afterward, an idle Session can use `session.update(...)` to change supported settings. A `NativeAgents` Session keeps its opening model settings. Checkpoints omit provider credentials and tool grants.
+
+The scripted [session configuration example](../session-configuration.ts) merges settings, clears an inherited tier, and checks the recorded configuration. It uses the current [source build](building.md), with no model credentials. Run it from the repository root:
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/session-configuration.ts
+```
+
+The command prints a native Turn receipt after checking the request's effective reasoning settings and omitted service tier. Its synthetic model name and setting values demonstrate configuration; they do not verify access to a live model or tier.
+
+## Load trusted instruction files
+
+With the current [source build](building.md), pass `instructionFiles` when opening a Session or starting a new `agent.run()`. The SDK loads each selected file as UTF-8 during opening, appends its text after the Agent instructions in the supplied order, and separates the parts with blank lines. Relative paths resolve against the application's current working directory. An unreadable file, non-file path, or invalid UTF-8 rejects opening.
+
+Select files and parent directories that untrusted actors cannot modify. File contents become developer instructions. This option does not discover project files automatically or read files through an executor. Later edits to a file do not update an open Session's captured instructions.
+
+The [session configuration example](../session-configuration.ts) creates two private temporary policy files, opens a Session with both, and checks their order in the sampled input. It then reads the Turn receipt, checks the resolved paths and exact byte hashes, closes the Session, and removes the files. See [Inspect effective turn settings](state.md#inspect-effective-turn-settings) for receipt fields and observation limits.
+
+## Prepare one model request
+
+With the current [source build](building.md), use `prepareRequest` to edit detached sampling instructions, input, and tool presentation. Return the edited request to apply it. Read [Prepare a native model request](request-preparation.md) for the HTTP, model, tool, compaction, and restore constraints before adding a callback.
 
 ## Override opening tools
 
@@ -44,12 +74,16 @@ See [the tenant tools example](../opening-tools.ts) for two Sessions with separa
 
 ## Connection retries and errors
 
-Connection recovery uses the provider's configured retry limits for requests and streams, with the existing backoff. The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. These limits do not set a total operation timeout or cap server-requested delays.
+`NativeProvider` uses the native client's request and stream recovery limits and backoff. Its public options do not expose retry budgets. Classic Model retry settings belong to the separate [Model migration](migrate-models.md) route. The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. Native retry limits do not set a total operation timeout or cap server-requested delays.
 
 Use `turn.cancel()` to stop an active Turn and join its cleanup, including while it waits to retry. If a request fails, inspect the error before deciding whether to submit more work.
 
 | NativeError field | How to read it |
 | --- | --- |
+| `statusCode` | Observed HTTP status as a number, or `null` when unavailable. |
+| `code` | Observed provider error code as a string, or `null` when unavailable. |
+| `category` | Native error classification as a string, such as `authentication_error` or `rate_limit_exceeded`, or `null` when unavailable. |
+| `requestId` | Observed provider request ID as a string, or `null` when unavailable. This differs from the SDK's passive request-observation ID. |
 | `retryable` | The runtime classified this request error as eligible or ineligible for retry. A terminal error can still report `true` after exhausting its attempt budget. `null` means the runtime supplied no classification. |
 | `retryAfterMs` | The server-advised delay remaining when the runtime reported the error. `null` means the runtime observed no advice. `0` includes expired advice. The value stays fixed after the error is reported. |
 
@@ -60,6 +94,12 @@ Use `turn.cancel()` to stop an active Turn and join its cleanup, including while
 - `recorded` is reserved for confirmed effects. The SDK does not currently produce this value.
 
 Before repeating an operation with uncertain effects, check the original action against an application or provider record.
+
+### Diagnose authentication failures
+
+With the current [source build](building.md), terminal HTTP 401 or 403 errors retain their observed status, provider code, request ID, and `authentication_error` category when available. Native authentication recovery can make another attempt before reporting a terminal 401. Once recovery ends, authentication errors report `retryable: false`, even if the server supplied `Retry-After` advice. A reported delay does not make that failure retryable.
+
+Check the selected endpoint, model credential, and provider error code before starting more work. An explicit provider API key is captured by that provider; changing `OPENAI_API_KEY` does not replace it. Create a provider with corrected credentials for a new Session or supported restore, and close its Sessions before closing the old provider. A later authentication failure can follow a completed tool effect, so reconcile earlier work before repeating the operation.
 
 ### Inspect an incomplete model response
 

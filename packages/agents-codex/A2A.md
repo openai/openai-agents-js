@@ -103,6 +103,89 @@ The executor publishes string results as text parts. For structured results, it 
 
 `authRequired` remains a host credential flow and never becomes a generic approval answer. A host must not accept untrusted remote approval text as authority to perform local actions.
 
+## Run deferred work across coordinator restarts
+
+The [deferred thumbnail example](examples/a2a/deferred-thumbnail.ts) combines `A2AJobProvider`, `DeferredTools`, the existing [SQLite job journal](examples/external-job-journal.ts), and a native A2A peer that asks for one manual decision. It uses scripted model responses and a synthetic render effect. No API key or external service is needed. Use the [source build prerequisites](examples/guides/building.md), Node.js 24, and a private local POSIX directory outside model-visible mounts.
+
+Start the peer in one terminal, from the repository root:
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts serve
+```
+
+It prints `A2A peer: http://127.0.0.1:PORT`. Keep it running. In another terminal, replace `PORT` with that printed port and run:
+
+```sh
+A2A_DIRECTORY=$(mktemp -d)
+PEER_ORIGIN="http://127.0.0.1:PORT"
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN"
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" observe
+```
+
+Each command starts a separate coordinator process. The first command can print `pending` while the peer runs, or `inputRequired` once it has saved its manual request. Repeat the `observe` command until it prints `inputRequired`, then run `approve`. Every observation retains the same remote task and context IDs. The first command saves the original native checkpoint, invocation binding, and remote receipt. An `inputRequired` observation also saves the challenge and generation. Observing creates no remote work and answers no request.
+
+Once the status is `inputRequired`, approve and observe the result:
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" approve
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" observe
+```
+
+`approve` is an explicit trusted application decision. It constructs `A2AInputReply` from the saved task/context IDs and the current challenge and generation, with `result: true`. The provider checks the remote request again, spends the durable reply reservation, and sends once. The peer restores its native manual request, records one synthetic render, and returns structured output. The coordinator validates and delivers exactly `{"byteCount":3085}` to its original native call, waits for settlement, and saves completion. The approval can return `pending` while the peer finishes. Repeat `observe` until it prints `{"status":"completed"}`. Reopening a completed order makes no remote call or effect.
+
+The recipe reuses the thumbnail example's `render` declaration, `ThumbnailStore`, `Journal`, and public byte-count projector. The source-checkout coordinator uses the existing `ModelServer` test fixture so a resumed command can make zero or one final model call. Its provider callbacks separately enforce the current claim, resolve the fixed loopback credential, reserve each mutation, encode input, and validate the remote result. The endpoint and order come from trusted application configuration. Model arguments cannot choose them.
+
+### Observe uncertain mutations without replay
+
+The optional loss arguments discard one response only after the local peer has handled the mutation. They demonstrate an uncertain acknowledgment, not a failed effect. Use a new peer and private directory for each scenario.
+
+For an uncertain create, stop the completed peer with Ctrl+C and start a peer whose script ends at the manual request:
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts serve hold
+```
+
+In the second terminal, substitute its new printed origin:
+
+```sh
+A2A_DIRECTORY=$(mktemp -d)
+PEER_ORIGIN="http://127.0.0.1:PORT"
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" observe lose-create
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" observe
+```
+
+Both commands print `{"status":"unknown"}`. The remote peer accepted one create, but the coordinator has no confirmed task receipt. Its start reservation stays spent. It does not create another task. Production code must reconcile through an authoritative host mechanism or leave the outcome unknown.
+
+For an uncertain reply, start a fresh ordinary `serve` peer and use its printed origin:
+
+```sh
+A2A_DIRECTORY=$(mktemp -d)
+PEER_ORIGIN="http://127.0.0.1:PORT"
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN"
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" observe
+```
+
+Repeat `observe` until the status is `inputRequired`, then send the reply with its acknowledgment discarded:
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" approve lose-reply
+pnpm exec tsx packages/agents-codex/examples/a2a/deferred-thumbnail.ts run "$A2A_DIRECTORY" "$PEER_ORIGIN" observe
+```
+
+The reply command prints `unknown` and retains the known remote IDs. It cannot establish whether the reply took effect. The later process uses `getTask` with the saved receipt; repeat `observe` if it still returns `pending`. Once the remote task finishes, it observes the completed result without resending the reply. The peer records one render. `requireReconciliation: false` permits this explicit unknown-outcome flow; generic A2A supplies no create-reconciliation guarantee.
+
+### Storage and shutdown limits
+
+One peer supports one demonstration order. The coordinator's SQLite ownership and journal survive sequential process restarts. The peer uses the in-memory `ExampleA2AStore`, so keep it alive until the coordinator finishes or you deliberately stop an unknown-create scenario. Restarting that peer loses its tasks and pending manual checkpoint. This example does not provide production authentication, remote-task durability, distributed storage, or power-loss guarantees.
+
+Stop the peer with Ctrl+C after the commands finish, then remove the application-owned state directory when no coordinator uses it. A cancellation or observer disconnect cannot undo a recorded effect.
+
+Run the source-checkout acceptance cases, which start independent peer and coordinator processes and count creates, replies, and effects:
+
+```sh
+pnpm test:native packages/agents-codex/test/native/a2a-deferred-example.test.ts
+```
+
 ## Host storage and recovery
 
 `NativeA2AStore` extends the official `TaskStore`. The same object stores private native records and public A2A Tasks. `own(binding, callback)` grants exclusive host ownership across workers. Its claim checks ownership after asynchronous work and atomically compares and replaces the private record. Hosts implement leases and database transactions; the SDK does not implement a distributed job engine.

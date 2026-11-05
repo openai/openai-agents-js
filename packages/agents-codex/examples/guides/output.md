@@ -74,7 +74,7 @@ Legacy `submit` rejects an `outputType` field, including one hidden by an option
 Keep the Turn returned for the overridden root and use it throughout that operation:
 
 - Await `turn.wait()` for its typed result. `session.wait()` rejects for this root, including after completion.
-- Use `turn.steer()` for input while it runs. Implicit busy steering through `session.submit(input)` rejects.
+- Use `turn.steer()` for input while it runs. With the current source build, use [exact native-step steering](sessions.md#steer-a-logical-root-or-one-native-step) when the input must target a captured step. Implicit busy steering through `session.submit(input)` rejects.
 - Deliver manual replies with `session.respond(reply)`, which returns no final result. Result-returning `session.submit(reply)` rejects.
 
 A later default submission restores the ordinary shortcuts. Existing default-only submissions keep their result types and steering behavior.

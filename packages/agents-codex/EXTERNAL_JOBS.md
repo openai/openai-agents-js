@@ -110,7 +110,11 @@ Choose the next action from the returned status:
 | Outcome | Application action |
 | --- | --- |
 | `continued` | Await the original restored Turn in `outcome.turn` with `outcome.turn.wait()`. |
-| `pending`, `inputRequired`, `unknown`, or `busy` | Handle or schedule the external work in the host. These statuses are not model results. |
+| `pending` | Schedule a later advance of the same job. |
+| `inputRequired` | Collect an authorized host response, then use the explicit response operation below. |
+| `unknown` | Reconcile the uncertain journal/provider operation before continuing. |
+| `busy` | Let the current owner finish before another advance. |
+| `failed` or `cancelled` | Stop scheduling this job. The helper has not answered the manual tool or continued its model Turn. |
 
 Both timing options use milliseconds:
 
@@ -122,6 +126,25 @@ The application schedules later advances. On abort, the helper waits for coopera
 Preparation supports portable checkpoints at root manual-tool calls with plain text or supported prompted output. It refuses local profiles, an Environment, native children, pending native-schema output, and unsupported programmatic code state. For work that preparation cannot capture, reply to a live manual request. The `start` shortcut also refuses changed Session instructions or tool bindings. To replace them with current configuration, prepare and restore explicitly.
 
 Automatic delivery refuses JSON containing the current model API key, journal key, or provider receipt, including an incidental substring match. A refusal does not authorize another start. After host review, a fresh live manual request can receive a safe reply directly. The application must record that completion itself.
+
+## Respond, cancel, or stop a job
+
+`advance()` defaults to observing or advancing the existing job under journal ownership. To answer an `inputRequired` job, use the same fresh restored request and supply a host-authorized response:
+
+```ts
+const outcome = await jobs.advance(restored, request, {
+  operation: 'respond',
+  response: { confirmation: 'accepted' },
+});
+```
+
+The registered provider must implement `respond`, and the journal must authorize that exact operation against the current receipt and binding. The helper passes `response` to the provider; the provider owns its validation. Ordinary advancement does not infer a response from model text.
+
+To request authorized remote cancellation, call `jobs.advance(restored, request, { operation: 'cancel' })`. The provider must implement `cancel`, the job must be pending or require input, and the journal must authorize it. Aborting a wait or closing a Session does not perform this remote cancellation. If its acknowledgment is uncertain, reconcile that same operation instead of spending another response or cancellation permission.
+
+After `failed` or `cancelled`, close the local Session if the host stops the workflow. If the application chooses to continue the model with a safe failure explanation, answer the still-live matched manual request through `restored.respond(request.reply(...))`, await the original Turn, and durably record that separate completion. The helper does not project failed/cancelled provider payloads or manufacture their model-facing results. A `continued` outcome alone supplies a Turn to await; pending siblings can still require their own replies.
+
+For an MCP Tasks integration, see [the existing MCP task example](examples/mcp-tasks.ts). It uses the same coordinator and application journal with `MCPTasksProvider`; the adapter does not replace the application's authorization or uncertain-creation reconciliation.
 
 ## Try recovery with a normal manual tool
 

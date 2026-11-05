@@ -7,11 +7,38 @@ Use [`WorkerSignals`](signals.ts) when your supervisor already has a trusted acc
 In your supervisor, supply the current `accountId`, attachment `generation`, and full rate-limit `response` from your account service. Set `observedAt` and `expiresAt` in Unix seconds. Pass the resulting `signals` to `superviseArtifact` or `waitForWorkerAttention`.
 
 ```ts
-import { WorkerSignals } from './signals.js';
+import { WorkerSignals, type AccountQuotaObservation } from './signals.js';
+
+const accountId = 'example-account';
+const generation = 1;
+const observedAt = Date.now() / 1000;
+const expiresAt = observedAt + 30;
+const response: AccountQuotaObservation['response'] = {
+  accountId,
+  ordinaryUsageAllowed: false,
+  rateLimitsByLimitId: {
+    codex: {
+      primary: { usedPercent: 100, windowDurationMins: 300 },
+      credits: { hasCredits: true, unlimited: false, balance: '7.50' },
+    },
+    reports: { spendControlReached: true },
+  },
+};
 
 const signals = new WorkerSignals({ accountId, generation });
 signals.updateQuota({ generation, observedAt, expiresAt, response });
+console.log(signals.quota?.limitId, signals.quota?.blocked); // codex false
+
+const reports = new WorkerSignals({
+  accountId,
+  generation,
+  limitId: 'reports',
+});
+reports.updateQuota({ generation, observedAt, expiresAt, response });
+console.log(reports.quota?.limitId, reports.quota?.blocked); // reports true
 ```
+
+This synthetic response illustrates the [accepted observation type](signals.ts). Supply real observations from your trusted account service. The default bucket is `codex`. Pass `limitId` to select another bucket; exhaustion in an unselected bucket does not block this waiter. An entry in `rateLimitsByLimitId` takes precedence over `rateLimits`. The helper uses the single `rateLimits` value only when its `limitId` matches; an omitted ID there means `codex`.
 
 The response must identify the attached account. Keep the generation from when the read began. When the account changes or the supervisor reconnects, call `signals.attach({ accountId, generation })` with a higher generation. Attaching clears the previous observation.
 
@@ -37,5 +64,7 @@ A fresh observation for the current account can block the wait in either case.
 
 - The service reports a recognized reached limit or spend control.
 - The service disallows ordinary usage and confirms that no usable credits remain.
+
+The recognized `rateLimitReachedType` values are `rate_limit_reached`, `workspace_owner_credits_depleted`, `workspace_member_credits_depleted`, `workspace_owner_usage_limit_reached`, and `workspace_member_usage_limit_reached`. `spendControlReached: true` also establishes a block. `hasCredits: false` and `unlimited: false` together establish that no usable credits remain; either flag being `true` establishes usable credits. Missing flags leave availability unknown.
 
 Use the service's credit flags to determine availability. A displayed balance, rounded percentage, elapsed reset time, or unrecognized reason cannot establish a block. A terminal provider quota stop still needs attention even if an earlier observation showed credits.
