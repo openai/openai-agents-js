@@ -45,11 +45,13 @@ async function restore() {
   const lock = JSON.parse(
     execFileSync('git', ['show', PIN_REF + ':' + lockPath]),
   );
-  if (lock.inputs !== inputs) {
-    console.log('Native inputs changed. Building from source.');
+  const asset = lock.platforms?.[platform];
+  if (lock.inputs !== inputs || !asset) {
+    console.log(
+      'No matching platform pin for these native inputs. Building from source.',
+    );
     return false;
   }
-  const asset = lock.platforms[platform];
   assert.ok(
     Number.isSafeInteger(asset.id) && asset.id > 0,
     'Invalid native artifact ID',

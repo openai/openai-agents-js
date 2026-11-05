@@ -124,12 +124,12 @@ jobs:
           if [[ "$EXPECTED_PLATFORM" == darwin-arm64 ]]; then
             products+=(native/test-bin/exec-server-fixture)
           fi
-          tar -czf - "${products[@]}" > "$RUNNER_TEMP/native-$INPUTS-$EXPECTED_PLATFORM.tar.gz"
+          tar -czf - "${products[@]}" > "$RUNNER_TEMP/native-$INPUTS-$EXPECTED_PLATFORM-$GITHUB_RUN_ATTEMPT.tar.gz"
       - name: Upload the native bundle for pinning
         if: steps.native.outputs.restored != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          path: ${{ runner.temp }}/native-${{ steps.native.outputs.inputs }}-${{ matrix.platform }}.tar.gz
+          path: ${{ runner.temp }}/native-${{ steps.native.outputs.inputs }}-${{ matrix.platform }}-${{ github.run_attempt }}.tar.gz
           archive: false
           if-no-files-found: error
           retention-days: 90
