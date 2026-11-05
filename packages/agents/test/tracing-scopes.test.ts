@@ -2034,3 +2034,52 @@ it.each(['live', 'expired', 'missing carrier'] as const)(
     }
   },
 );
+
+it.each(['live', 'aborted', 'explicit ok', 'explicit error'] as const)(
+  'settles native callback normal return after cancellation: %s',
+  async (state) => {
+    const source = await startTrace();
+    const token = source.retain();
+    const controller = new AbortController();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const result = { reply: 'synthetic' };
+    let callbackSpan: ReturnType<typeof getCurrentSpan>;
+    const pending = withNativeCallbackContext(
+      token,
+      async () => {
+        callbackSpan = getCurrentSpan();
+        if (state === 'explicit ok') callbackSpan!.end({ status: 'ok' });
+        if (state === 'explicit error') callbackSpan!.end({ status: 'error' });
+        entered.resolve();
+        await release.promise;
+        return result;
+      },
+      controller.signal,
+    );
+    try {
+      await entered.promise;
+      if (state !== 'live')
+        controller.abort(new Error('synthetic cancellation'));
+      release.resolve();
+      expect(await pending).toBe(result);
+      const ends = harness.native.end_trace_span.mock.calls.filter(
+        ([handle]) => handle === callbackSpan!.handle,
+      );
+      expect(ends).toHaveLength(1);
+      const outcome = JSON.parse(ends[0][1]);
+      expect(outcome.status).toBe(
+        state === 'aborted'
+          ? 'cancelled'
+          : state === 'explicit error'
+            ? 'error'
+            : 'ok',
+      );
+      if (state === 'aborted') expect(outcome.category).toBe('cancelled');
+    } finally {
+      release.resolve();
+      source.releaseContext(token);
+      source.close();
+    }
+  },
+);

@@ -340,7 +340,10 @@ export async function withNativeCallbackContext<T>(
     : ambient.getStore();
   const span = spanFromWire(native, wire, 'callback', parent);
   try {
-    return await ambient.run(span, () => callback());
+    const result = await ambient.run(span, () => callback());
+    if (signal?.aborted)
+      span.end({ status: 'cancelled', category: 'cancelled' });
+    return result;
   } catch (error) {
     span.end({
       status: signal?.aborted ? 'cancelled' : 'error',
