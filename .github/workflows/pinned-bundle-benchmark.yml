@@ -1,7 +1,7 @@
 name: Pinned native bundle benchmark
 on:
   push:
-    branches: [codex/prototype-pinned-native-bundle]
+    branches: [codex/prototype-pinned-native-bundle-current]
 
 permissions:
   contents: read
