@@ -8,12 +8,13 @@ use napi_derive::napi;
 use opentelemetry::trace::TraceContextExt as _;
 
 mod application_instructions;
-mod canonical_rules;
 mod auth;
+mod canonical_rules;
 mod checkpoint;
 mod commands;
 mod config;
 mod context;
+mod custom_storage;
 mod engine;
 mod environment;
 mod extensions;
@@ -2431,6 +2432,17 @@ impl NativeThread {
                         .await
                         .map_err(native_error)?;
                 }
+                if let Some(store) = &inner.engine.custom_store {
+                    let id = codex_protocol::ThreadId::from_string(&request.reply.thread)
+                        .map_err(native_error)?;
+                    store
+                        .receipt(
+                            id,
+                            python_tools::PythonOutput(response.clone()).receipt(&request),
+                        )
+                        .await
+                        .map_err(native_error)?;
+                }
                 let sent = sender.send(response.clone()).is_ok();
                 if sent {
                     tools.record_manual_receipt(&request, response);
@@ -3254,6 +3266,89 @@ impl NativeChildTurn {
     pub async fn cancel(&self) -> napi::Result<Option<bool>> {
         self.inner.cancel().await.map_err(native_error)
     }
+}
+
+#[napi(js_name = "reconcile_thread_store")]
+pub async fn reconcile_thread_store(
+    callback: custom_storage::Callback,
+    result_json: String,
+) -> napi::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Reconciliation {
+        thread_id: codex_protocol::ThreadId,
+        turn_id: String,
+        call_id: String,
+        result: codex_protocol::dynamic_tools::DynamicToolResponse,
+    }
+    let result: Reconciliation = serde_json::from_str(&result_json).map_err(input_error)?;
+    let store = custom_storage::CustomThreadStore::new(callback);
+    let reconciled = store
+        .reconcile(
+            result.thread_id,
+            result.turn_id,
+            result.call_id,
+            result.result,
+        )
+        .await;
+    // Reconciliation has no Engine cleanup owner. Retry physical release while
+    // keeping the durable receipt outcome separate from cleanup diagnostics.
+    let cleanup = match store.release_writer(result.thread_id).await {
+        Ok(_) => Ok(()),
+        Err(first) => {
+            if store.take_release_failure(result.thread_id).await.is_some() {
+                store
+                    .release_writer(result.thread_id)
+                    .await
+                    .map(|_| ())
+                    .map_err(|retry| format!("{first}; release retry failed: {retry}"))
+            } else {
+                Err(first.to_string())
+            }
+        }
+    };
+    match (reconciled, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) => Err(native_error(primary)),
+        (Ok(()), Err(cleanup)) => Err(native_error(cleanup)),
+        (Err(primary), Err(cleanup)) => Err(native_error(format!(
+            "reconciliation failed: {primary}; writer cleanup failed: {cleanup}"
+        ))),
+    }
+}
+
+#[napi(js_name = "create_store_engine")]
+pub async fn create_store_engine(
+    config_json: String,
+    runtime_json: String,
+    api_key: Option<String>,
+    callback: custom_storage::Callback,
+    application_apps_json: Option<String>,
+) -> napi::Result<Engine> {
+    let application =
+        verification::prepare(application_apps_json.as_deref()).map_err(native_error)?;
+    let store = Arc::new(custom_storage::CustomThreadStore::new(callback));
+    let mut inner = engine::EngineState::new_owned_with_store(
+        config_json,
+        runtime_json,
+        false,
+        api_key,
+        None,
+        Default::default(),
+        Some(store),
+    )
+    .await
+    .map_err(native_error)?;
+    inner.application_apps = match application {
+        Some(application) => Some(
+            application
+                .bind(&inner.service_config)
+                .await
+                .map_err(native_error)?,
+        ),
+        None => None,
+    };
+    Ok(Engine::new(inner))
 }
 
 #[napi(js_name = "create_engine")]
