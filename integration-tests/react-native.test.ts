@@ -124,7 +124,17 @@ describe('React Native', () => {
       try {
         tokenServer = runTokenServer`npm run token-server`;
         tokenServer.catch(() => {});
+        let tokenServerOutput = '';
+        tokenServer.stdout?.on('data', (data: Buffer) => {
+          tokenServerOutput += data.toString();
+        });
         await waitForOutput(tokenServer, 'Realtime token server listening');
+        const pairingToken = tokenServerOutput.match(
+          /Pairing token: ([A-Za-z0-9_-]+)/,
+        )?.[1];
+        if (!pairingToken) {
+          throw new Error('Token server did not print a pairing token.');
+        }
 
         await run`adb reverse tcp:8787 tcp:8787`;
         await run`adb reverse tcp:8082 tcp:8082`;
@@ -138,6 +148,10 @@ describe('React Native', () => {
         await run`adb shell pm grant com.openai.agents.realtimernexample android.permission.RECORD_AUDIO`;
         await run`adb shell am force-stop com.openai.agents.realtimernexample`;
         await run`adb shell monkey -p com.openai.agents.realtimernexample 1`;
+        await tapAndroidText(run, 'Pairing token');
+        await run`adb shell input text ${pairingToken}`;
+        await run`adb shell input keyevent KEYCODE_BACK`;
+        await tapAndroidText(run, 'CONNECT');
 
         const result = await waitForAndroidSentinel(run);
         expect(result).toBe('RN_REALTIME_E2E:PASS');
@@ -213,4 +227,30 @@ async function waitForAndroidSentinel(
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
   throw new Error('Timed out waiting for the React Native E2E sentinel.');
+}
+
+async function tapAndroidText(
+  run: ReturnType<typeof execaBase>,
+  label: string,
+): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const { stdout } = await run`adb shell uiautomator dump /dev/tty`;
+    const node = stdout
+      .match(/<node\b[^>]*>/g)
+      ?.find(
+        (item) =>
+          item.includes(`text="${label}"`) ||
+          item.includes(`content-desc="${label}"`),
+      );
+    const bounds = node?.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
+    if (bounds) {
+      const x = Math.floor((Number(bounds[1]) + Number(bounds[3])) / 2);
+      const y = Math.floor((Number(bounds[2]) + Number(bounds[4])) / 2);
+      await run`adb shell input tap ${x} ${y}`;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(`Timed out waiting for Android control: ${label}`);
 }

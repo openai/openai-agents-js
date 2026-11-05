@@ -26,6 +26,8 @@ Start the local token server in one terminal:
 OPENAI_API_KEY=sk-... pnpm -F realtime-react-native token-server
 ```
 
+The server prints a new pairing token at startup. Enter that token in the app before connecting, including on an emulator or simulator. The app sends it only in token requests; do not put it in an `EXPO_PUBLIC_*` variable or a URL.
+
 Build and launch the native app in another terminal:
 
 ```sh
@@ -52,7 +54,7 @@ HOST=<tailscale-ip> OPENAI_API_KEY=sk-... pnpm -F realtime-react-native token-se
 EXPO_PUBLIC_REALTIME_TOKEN_URL=http://<tailscale-ip>:8787/token pnpm -F realtime-react-native start
 ```
 
-The server prints a new pairing token when it binds beyond loopback. Enter that token in the app before connecting. The app sends it only in token requests; do not put it in an `EXPO_PUBLIC_*` variable or a URL. The private tunnel protects the pairing token in transit. The server permits six token requests per client per minute. Stop the server after testing.
+The private tunnel protects the pairing token in transit. The server permits six token requests per client per minute. Stop the server after testing.
 
 This example uses Expo SDK 57 with React Native 0.86. After upgrading from SDK 55, regenerate the ignored native projects and rebuild the development client:
 
