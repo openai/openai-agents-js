@@ -515,7 +515,25 @@ describe('recorded response observations', () => {
         JSON.parse(JSON.stringify(recordedTurnToWire(turn))),
       );
       expect(recordedTurnFromWire(wire)).toEqual(turn);
+      const wrongTurn = {
+        ...wire,
+        responses: wire.responses?.map((response) => ({
+          ...response,
+          turnId: 'contradictory-turn',
+        })),
+      };
+      expect(repairTurnWireSchema.safeParse(wrongTurn).success).toBe(false);
     }
+    const failed = observed('unlinked-failure', {}, { status: 'failed' });
+    const success = observed('linked-success', { cache_write_input_tokens: 4 });
+    const successfulAccounting = accounting('linked-success');
+    successfulAccounting.payload.turn_token_usage = {
+      cache_write_input_tokens: 4,
+    };
+    expect(
+      project([failed, success, successfulAccounting]).usage?.inputTokensDetails
+        .cacheWriteTokens,
+    ).toBe(4);
     const partial = accounting('known');
     partial.payload.turn_token_usage = { cache_write_input_tokens: 4 };
     for (const observations of [
@@ -529,7 +547,8 @@ describe('recorded response observations', () => {
       ],
     ]) {
       expect(
-        project([...observations, partial]).usage?.inputTokensDetails,
+        project([...observations, accounting('unknown'), partial]).usage
+          ?.inputTokensDetails,
       ).not.toHaveProperty('cacheWriteTokens');
     }
   });

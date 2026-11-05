@@ -216,6 +216,12 @@ export const repairTurnWireSchema = z
       (turn.receipt.threadId === turn.sessionId &&
         turn.receipt.turnId === turn.id),
     'Repair receipt identity must match its recorded turn',
+  )
+  .refine(
+    (turn) =>
+      turn.responses === undefined ||
+      turn.responses.every((response) => response.turnId === turn.id),
+    'Repair response identity must match its recorded turn',
   ) satisfies z.ZodType<RepairTurnWire>;
 export const repairItemWireSchema = z
   .object({
@@ -1501,6 +1507,15 @@ export function projectHistory(
     if (receipt) turn.receipt = receipt;
     const total = responseUsage.get(id);
     turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    const accountedIds = new Set(
+      (responses.get(id) ?? [])
+        .filter(
+          (response) =>
+            response.usageSource === 'native_normalized' &&
+            response.id !== null,
+        )
+        .map((response) => response.id),
+    );
     const nativeIds = observations.get(id);
     // Only an exact native link identifies the accounting copy of an observation.
     const projectedIds = new Set<string>();
@@ -1521,6 +1536,8 @@ export function projectHistory(
       retained.some(
         (response) =>
           response.usageSource === 'received' &&
+          response.id !== null &&
+          accountedIds.has(response.id) &&
           response.usage?.inputTokensDetails?.cacheWriteTokens === undefined,
       )
     )

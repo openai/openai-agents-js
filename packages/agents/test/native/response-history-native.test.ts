@@ -279,6 +279,20 @@ it('keeps negative counters unknown in retained prompted-repair history across s
   await using restored = await agent.session({ state });
   expect(await turnsOf(restored)).toEqual(recorded);
   expect((await restored.saveState()).format_version).toBe(4);
+  const contradictory = JSON.parse(
+    JSON.stringify({
+      ...state,
+      repair_turns: state.repair_turns.map((row) => ({
+        ...row,
+        responses: row.responses?.map((response) => ({
+          ...response,
+          turnId: 'contradictory-turn',
+        })),
+      })),
+    }),
+  );
+  await expect(agent.session({ state: contradictory })).rejects.toThrow();
+
   expect(await turnsOf(session)).toEqual(recorded);
   expect(server.requests).toHaveLength(3);
   server.assertExhausted();
