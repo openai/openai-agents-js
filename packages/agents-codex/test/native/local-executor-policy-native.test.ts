@@ -2381,6 +2381,9 @@ it.skipIf(!supported).for(['portable', 'local'] as const)(
     const hits: string[] = [];
     try {
       await Promise.all([mkdir(origin), mkdir(cache), mkdir(locks)]);
+      // Hosted runners can install Node outside the executor's filesystem view.
+      const nodeBinary = join(cache, 'node');
+      await copyFile(process.execPath, nodeBinary);
       // Apple's /usr/bin/git is an xcrun shim. Execute the real Git binary in
       // the sandbox without granting an Xcode installation write access.
       const gitBinary =
@@ -2451,7 +2454,7 @@ it.skipIf(!supported).for(['portable', 'local'] as const)(
       // Force both names for the same peer through the managed proxy. A fresh
       // Agent avoids Node's automatic environment proxy applying a second time.
       const request = (host: string, stage: string) =>
-        `${quote(process.execPath)} -e ${quote(`
+        `${quote(nodeBinary)} -e ${quote(`
         const http = require('node:http');
         const target = 'http://${host}:${address.port}/${stage}';
         const proxy = new URL(process.env.HTTP_PROXY || process.env.http_proxy);
