@@ -8,11 +8,11 @@ permissions:
   contents: read
 jobs:
   benchmark:
-    name: Cold Windows js 16 cores sample 1
+    name: Cold Windows js 64 cores sample 1
     runs-on:
       group: codex-runners
-      labels: codex-windows-x64
-    timeout-minutes: 180
+      labels: codex-windows-x64-xl
+    timeout-minutes: '180'
     defaults:
       run:
         shell: bash
@@ -22,7 +22,7 @@ jobs:
       RUSTUP_TOOLCHAIN: 1.95.0
       CARGO_INCREMENTAL: '0'
       OPENAI_AGENTS_NATIVE_TIMINGS: '1'
-      CARGO_BUILD_JOBS: '16'
+      CARGO_BUILD_JOBS: '64'
       BENCHMARK_SAMPLE: '1'
       BENCHMARK_SOURCE_SHA: 2324cf345efdad65ca6d87907939bae22444961e
     steps:
@@ -31,7 +31,7 @@ jobs:
         ref: 2324cf345efdad65ca6d87907939bae22444961e
         fetch-depth: '2'
         persist-credentials: 'false'
-    - name: Record machine and begin low-rate sampling
+    - name: Record machine and verify pinned cold inputs
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
@@ -45,6 +45,10 @@ jobs:
         }
         @{ logical_cpus = [int]($cpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum; ram_kib = $os.TotalVisibleMemorySize; cargo_jobs = $env:CARGO_BUILD_JOBS; source_sha = (git rev-parse HEAD); sample = $env:BENCHMARK_SAMPLE } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP/benchmark-machine.json"
         Get-Content "$env:RUNNER_TEMP/benchmark-machine.json"
+    - name: Begin pilot-only sampling
+      if: env.BENCHMARK_SAMPLE == '1'
+      shell: pwsh
+      run: |
         $script = @'
         while ($true) {
           $cpu = Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'"
@@ -90,7 +94,7 @@ jobs:
     - name: Test the extracted bundles
       run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
     - name: Stop sampler
-      if: always()
+      if: always() && env.BENCHMARK_SAMPLE == '1'
       shell: pwsh
       run: |
         $path = "$env:RUNNER_TEMP/benchmark-sampler.pid"
@@ -99,7 +103,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
-        name: experimental-windows-js-16-sample-1
+        name: experimental-windows-js-64-sample-1
         path: |
           ${{ runner.temp }}/benchmark-machine.json
           ${{ runner.temp }}/benchmark-samples.jsonl
