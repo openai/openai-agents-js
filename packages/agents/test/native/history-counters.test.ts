@@ -437,3 +437,213 @@ describe('existing format-3 manual usage wire', () => {
     expect(sessionStateSchema.safeParse(invalid).success).toBe(false);
   });
 });
+
+describe('recorded response observations', () => {
+  const observed = (
+    id: string,
+    usage: Record<string, string | number> | null,
+    extra: Record<string, unknown> = {},
+  ): ThreadHistory[number] => ({
+    type: 'response_observation_record',
+    payload: {
+      id,
+      thread_id: 'origin-thread',
+      turn_id: 't',
+      response_id: 'reused-provider-id',
+      status: 'completed',
+      incomplete_reason: null,
+      usage,
+      ...extra,
+    } as ThreadHistory[number]['payload'],
+  });
+  const accounting = (link?: string): ThreadHistory[number] => ({
+    type: 'token_usage_record',
+    payload: {
+      thread_id: 'origin-thread',
+      turn_id: 't',
+      response_id: 'reused-provider-id',
+      usage: { input_tokens: 7, total_tokens: 9 },
+      turn_token_usage: { input_tokens: 14, total_tokens: 18 },
+      ...(link ? { response_observation_id: link } : {}),
+    },
+  });
+
+  it('preserves optional received counters, exact counts and absent whole usage', () => {
+    const turn = project([
+      observed('o1', { input_tokens: large, cached_input_tokens: 0 }),
+      accounting('o1'),
+      observed('o2', null, { response_id: null }),
+      observed('o3', {}),
+    ]);
+    expect(turn.responses).toEqual([
+      {
+        id: 'o1',
+        threadId: 'origin-thread',
+        turnId: 't',
+        responseId: 'reused-provider-id',
+        status: 'completed',
+        usageSource: 'received',
+        usage: {
+          inputTokens: 9007199254740993n,
+          inputTokensDetails: { cachedTokens: 0 },
+        },
+      },
+      {
+        id: 'o2',
+        threadId: 'origin-thread',
+        turnId: 't',
+        responseId: null,
+        status: 'completed',
+        usageSource: 'received',
+        usage: null,
+      },
+      {
+        id: 'o3',
+        threadId: 'origin-thread',
+        turnId: 't',
+        responseId: 'reused-provider-id',
+        status: 'completed',
+        usageSource: 'received',
+        usage: {},
+      },
+    ]);
+    expect(turn.usage?.totalTokens).toBe(18);
+    const wire = recordedTurnToWire(turn);
+    expect(wire.responses?.[0].usage?.inputTokens).toBe(large);
+    expect(JSON.parse(JSON.stringify(wire))).toEqual(wire);
+    expect(recordedTurnFromWire(wire)).toEqual(turn);
+    expect(project([])).not.toHaveProperty('responses');
+  });
+
+  it('matches accounting by exact observation link and retains occurrence order', () => {
+    const old = accounting();
+    const fresh = observed('new', { total_tokens: 9 });
+    const missing = accounting('missing-observation');
+    const records = [old, fresh, accounting('new'), old, missing];
+    const responses = project(records).responses!;
+    expect(responses.map((row) => [row.id, row.usageSource])).toEqual([
+      [null, 'native_normalized'],
+      ['new', 'received'],
+      [null, 'native_normalized'],
+      ['missing-observation', 'native_normalized'],
+    ]);
+    expect(responses[0]).not.toHaveProperty('status');
+    expect(responses[0]).not.toHaveProperty('incompleteReason');
+    expect(responses[0].usage?.inputTokens).toBe(7);
+    expect(
+      project([
+        ...records,
+        fresh,
+        {
+          type: 'compacted',
+          payload: { latest_token_usage_record: accounting('new').payload },
+        },
+      ]).responses,
+    ).toEqual(responses);
+    // Projecting inherited history must not replace its native origin with the SDK session ID.
+    expect(
+      projectHistory([...start, ...records, ...finish], 'fork').turns[0]
+        .responses,
+    ).toEqual(responses);
+    expect(project(records).responses).toEqual(responses);
+  });
+
+  it('deduplicates linked accounting fallbacks and preserves unlinked occurrences', () => {
+    const records = [
+      accounting('missing-observation'),
+      accounting(),
+      accounting('missing-observation'),
+      accounting('received-observation'),
+      accounting(),
+      observed('received-observation', { total_tokens: 9 }),
+    ];
+    const turn = project(records);
+    expect(
+      turn.responses?.map(({ id, usageSource }) => [id, usageSource]),
+    ).toEqual([
+      ['missing-observation', 'native_normalized'],
+      [null, 'native_normalized'],
+      [null, 'native_normalized'],
+      ['received-observation', 'received'],
+    ]);
+    expect(turn.usage).toEqual(project([accounting()]).usage);
+  });
+
+  it('retains provider terminal facts independently of SDK failure', () => {
+    for (const status of ['completed', 'incomplete', 'failed']) {
+      const turn = project([
+        observed(
+          'o',
+          { total_tokens: 0 },
+          {
+            status,
+            incomplete_reason:
+              status === 'incomplete' ? 'max_output_tokens' : null,
+          },
+        ),
+        {
+          type: 'event_msg',
+          payload: {
+            type: 'error',
+            turn_id: 't',
+            message: 'fixture rejection',
+          },
+        },
+      ]);
+      expect(turn.status).toBe('failed');
+      expect(turn.responses?.[0].status).toBe(status);
+      expect(turn.responses?.[0].usage?.totalTokens).toBe(0);
+    }
+    expect(
+      project([
+        { type: 'event_msg', payload: { type: 'error', turn_id: 't' } },
+      ]),
+    ).not.toHaveProperty('responses');
+  });
+
+  it('removes response observations and link indexes with rolled-back turns', () => {
+    const history: ThreadHistory = [
+      ...start,
+      observed('same', { total_tokens: 1 }),
+      accounting('same'),
+      ...finish,
+      {
+        type: 'event_msg',
+        payload: { type: 'thread_rolled_back', num_turns: 1 },
+      },
+      ...start,
+      observed('same', { total_tokens: 2 }),
+      accounting('same'),
+      ...finish,
+    ];
+    expect(projectHistory(history, 'session').turns[0].responses).toHaveLength(
+      1,
+    );
+    expect(
+      projectHistory(history, 'session').turns[0].responses?.[0].usage
+        ?.totalTokens,
+    ).toBe(2);
+  });
+
+  it('strictly validates repair response wire counters while accepting old receipts', () => {
+    const turn = {
+      ...recordedTurnToWire(project([observed('o', { total_tokens: large })])),
+      parentSessionId: 'parent',
+      parentTurnId: 'parent-turn',
+    };
+    expect(repairTurnWireSchema.parse(turn)).toEqual(turn);
+    const { responses: _responses, ...legacy } = turn;
+    expect(repairTurnWireSchema.parse(legacy)).toEqual(legacy);
+    for (const counter of ['01', '-1', 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const invalid = structuredClone(turn);
+      invalid.responses![0].usage!.totalTokens = counter;
+      expect(repairTurnWireSchema.safeParse(invalid).success).toBe(false);
+    }
+    expect(
+      repairTurnWireSchema.safeParse({
+        ...turn,
+        responses: [{ ...turn.responses![0], rawProviderError: 'private' }],
+      }).success,
+    ).toBe(false);
+  });
+});

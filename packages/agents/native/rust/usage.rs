@@ -143,6 +143,14 @@ fn visit_history(history: &mut Value, counter: CounterVisitor) -> anyhow::Result
         .ok_or_else(|| anyhow::anyhow!("History must be an array"))?;
     for item in items {
         match item.get("type").and_then(Value::as_str) {
+            Some("response_observation_record") => {
+                if let Some(usage) = item
+                    .get_mut("payload")
+                    .and_then(|payload| payload.get_mut("usage"))
+                {
+                    visit_usage(usage, counter)?;
+                }
+            }
             Some("token_usage_record") => {
                 if let Some(record) = item.get_mut("payload") {
                     visit_record(record, counter)?;
@@ -213,6 +221,32 @@ pub(crate) fn checkpoint_from_wire(checkpoint: &mut Value) -> anyhow::Result<()>
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn response_observation_usage_roundtrips_exact_optional_counters() -> anyhow::Result<()> {
+        let mut history = json!([
+            {"type":"response_observation_record","payload":{"id":"o","usage":{"input_tokens":i64::MAX,"cached_input_tokens":0}}},
+            {"type":"response_observation_record","payload":{"id":"missing","usage":null}},
+            {"type":"response_item","payload":{"arguments":{"type":"response_observation_record","usage":{"input_tokens":i64::MAX}}}}
+        ]);
+        let original = history.clone();
+        history_usage_to_wire(&mut history)?;
+        assert_eq!(
+            history[0]["payload"]["usage"]["input_tokens"],
+            i64::MAX.to_string()
+        );
+        assert_eq!(history[0]["payload"]["usage"]["cached_input_tokens"], 0);
+        assert!(
+            history[0]["payload"]["usage"]
+                .get("output_tokens")
+                .is_none()
+        );
+        assert!(history[1]["payload"]["usage"].is_null());
+        assert_eq!(history[2], original[2]);
+        history_from_wire(&mut history)?;
+        assert_eq!(history, original);
+        Ok(())
+    }
 
     #[test]
     fn typed_child_usage_preserves_large_counts() {

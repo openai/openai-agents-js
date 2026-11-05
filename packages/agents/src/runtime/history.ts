@@ -48,6 +48,47 @@ export interface RecordedTokenUsageWire {
   totalTokens: TokenCountWire;
 }
 
+/** Counters received from the provider; absent fields remain unknown. */
+export interface ReceivedTokenUsage {
+  inputTokens?: TokenCount;
+  inputTokensDetails?: {
+    cachedTokens?: TokenCount;
+    cacheWriteTokens?: TokenCount;
+  };
+  outputTokens?: TokenCount;
+  outputTokensDetails?: { reasoningTokens?: TokenCount };
+  totalTokens?: TokenCount;
+}
+
+export interface ReceivedTokenUsageWire {
+  inputTokens?: TokenCountWire;
+  inputTokensDetails?: {
+    cachedTokens?: TokenCountWire;
+    cacheWriteTokens?: TokenCountWire;
+  };
+  outputTokens?: TokenCountWire;
+  outputTokensDetails?: { reasoningTokens?: TokenCountWire };
+  totalTokens?: TokenCountWire;
+}
+
+/** Retained provider facts, independent of SDK acceptance and turn success. */
+export interface RecordedResponse {
+  /** Native observation identity; unavailable for unlinked legacy records. */
+  id: string | null;
+  threadId: string;
+  turnId: string;
+  responseId: string | null;
+  status?: 'completed' | 'incomplete' | 'failed';
+  incompleteReason?:
+    'content_filter' | 'max_output_tokens' | 'interrupted' | 'unknown';
+  /** Legacy normalized zeros do not prove the provider supplied those fields. */
+  usageSource: 'received' | 'native_normalized';
+  usage: ReceivedTokenUsage | null;
+}
+export type RecordedResponseWire = Omit<RecordedResponse, 'usage'> & {
+  usage: ReceivedTokenUsageWire | null;
+};
+
 export interface Failure {
   code: string;
   message: string | null;
@@ -64,14 +105,17 @@ export type HistoryTurn = {
   completedAt: number | null;
   error: Failure | null;
   usage: RecordedTokenUsage | null;
+  /** Retained observations, not complete provider-attempt or charge coverage. */
+  responses?: RecordedResponse[];
 };
 export type RecordedTurn = HistoryTurn & {
   parentSessionId?: string;
   parentTurnId?: string;
 };
 /** JSON-safe observational turn data for history/receipt owners, not Core checkpoints. */
-export type RecordedTurnWire = Omit<RecordedTurn, 'usage'> & {
+export type RecordedTurnWire = Omit<RecordedTurn, 'usage' | 'responses'> & {
   usage: RecordedTokenUsageWire | null;
+  responses?: RecordedResponseWire[];
 };
 
 /** @internal Passive terminal observations; never Core history or grants. */
@@ -81,6 +125,40 @@ export type RepairTurnWire = RecordedTurnWire & {
   parentSessionId: string;
   parentTurnId: string;
 };
+const receivedUsageWireSchema = z
+  .object({
+    inputTokens: nonnegativeTokenCountWireSchema.optional(),
+    inputTokensDetails: z
+      .object({
+        cachedTokens: nonnegativeTokenCountWireSchema.optional(),
+        cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    outputTokens: nonnegativeTokenCountWireSchema.optional(),
+    outputTokensDetails: z
+      .object({
+        reasoningTokens: nonnegativeTokenCountWireSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    totalTokens: nonnegativeTokenCountWireSchema.optional(),
+  })
+  .strict();
+const recordedResponseWireSchema = z
+  .object({
+    id: z.string().min(1).nullable(),
+    threadId: z.string().min(1),
+    turnId: z.string().min(1),
+    responseId: z.string().nullable(),
+    status: z.enum(['completed', 'incomplete', 'failed']).optional(),
+    incompleteReason: z
+      .enum(['content_filter', 'max_output_tokens', 'interrupted', 'unknown'])
+      .optional(),
+    usageSource: z.enum(['received', 'native_normalized']),
+    usage: receivedUsageWireSchema.nullable(),
+  })
+  .strict();
 export const repairTurnWireSchema = z
   .object({
     id: z.string().min(1),
@@ -116,6 +194,7 @@ export const repairTurnWireSchema = z
       })
       .strict()
       .nullable(),
+    responses: z.array(recordedResponseWireSchema).optional(),
     parentSessionId: z.string().min(1),
     parentTurnId: z.string().min(1),
   })
@@ -160,9 +239,71 @@ function mapRecordedUsage<T>(
   };
 }
 
-export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
+function mapReceivedUsage<T>(
+  usage: ReceivedTokenUsage | ReceivedTokenUsageWire,
+  convert: (value: number | bigint | string) => T,
+) {
   return {
-    ...turn,
+    ...(usage.inputTokens === undefined
+      ? {}
+      : { inputTokens: convert(usage.inputTokens) }),
+    ...(usage.inputTokensDetails === undefined
+      ? {}
+      : {
+          inputTokensDetails: {
+            ...(usage.inputTokensDetails.cachedTokens === undefined
+              ? {}
+              : {
+                  cachedTokens: convert(usage.inputTokensDetails.cachedTokens),
+                }),
+            ...(usage.inputTokensDetails.cacheWriteTokens === undefined
+              ? {}
+              : {
+                  cacheWriteTokens: convert(
+                    usage.inputTokensDetails.cacheWriteTokens,
+                  ),
+                }),
+          },
+        }),
+    ...(usage.outputTokens === undefined
+      ? {}
+      : { outputTokens: convert(usage.outputTokens) }),
+    ...(usage.outputTokensDetails === undefined
+      ? {}
+      : {
+          outputTokensDetails: {
+            ...(usage.outputTokensDetails.reasoningTokens === undefined
+              ? {}
+              : {
+                  reasoningTokens: convert(
+                    usage.outputTokensDetails.reasoningTokens,
+                  ),
+                }),
+          },
+        }),
+    ...(usage.totalTokens === undefined
+      ? {}
+      : { totalTokens: convert(usage.totalTokens) }),
+  };
+}
+
+export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
+  const { responses, ...rest } = turn;
+  return {
+    ...rest,
+    ...(responses === undefined
+      ? {}
+      : {
+          responses: responses.map((response) => ({
+            ...response,
+            usage:
+              response.usage === null
+                ? null
+                : mapReceivedUsage(response.usage, (value) =>
+                    tokenCountToWire(parseTokenCount(value)),
+                  ),
+          })),
+        }),
     usage:
       turn.usage === null
         ? null
@@ -173,8 +314,20 @@ export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
 }
 
 export function recordedTurnFromWire(turn: RecordedTurnWire): RecordedTurn {
+  const { responses, ...rest } = turn;
   return {
-    ...turn,
+    ...rest,
+    ...(responses === undefined
+      ? {}
+      : {
+          responses: responses.map((response) => ({
+            ...response,
+            usage:
+              response.usage === null
+                ? null
+                : mapReceivedUsage(response.usage, parseTokenCount),
+          })),
+        }),
     usage:
       turn.usage === null
         ? null
@@ -451,6 +604,33 @@ function recordedUsage(raw: JsonObject): RecordedTokenUsage {
     totalTokens: usageCount(raw, 'total_tokens'),
   };
 }
+function receivedUsage(raw: JsonObject): ReceivedTokenUsage {
+  const count = (key: string) =>
+    raw[key] == null ? undefined : parseTokenCount(raw[key]);
+  const inputTokens = count('input_tokens');
+  const cachedTokens = count('cached_input_tokens');
+  const cacheWriteTokens = count('cache_write_input_tokens');
+  const outputTokens = count('output_tokens');
+  const reasoningTokens = count('reasoning_output_tokens');
+  const totalTokens = count('total_tokens');
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(cachedTokens === undefined && cacheWriteTokens === undefined
+      ? {}
+      : {
+          inputTokensDetails: {
+            ...(cachedTokens === undefined ? {} : { cachedTokens }),
+            ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+          },
+        }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(reasoningTokens === undefined
+      ? {}
+      : { outputTokensDetails: { reasoningTokens } }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+  };
+}
+
 function failure(raw: JsonObject): Failure {
   const info = object(raw.codex_error_info);
   const variant =
@@ -852,6 +1032,17 @@ export function projectHistory(
 ) {
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
+  const responses = new Map<string, RecordedResponse[]>();
+  const observations = new Map<string, Set<string>>();
+  function appendResponse(
+    target: Map<string, RecordedResponse[]>,
+    id: string,
+    response: RecordedResponse,
+  ) {
+    const entries = target.get(id) ?? [];
+    entries.push(response);
+    target.set(id, entries);
+  }
   const responseUsage = new Map<string, JsonObject>();
   const incompleteCacheWriteUsage = new Set<string>();
   const failures = new Map<string, Failure>();
@@ -904,11 +1095,49 @@ export function projectHistory(
       aborted = null;
       if (!order.includes(current)) order.push(current);
     } else if (
+      type === 'response_observation_record' &&
+      typeof payload.turn_id === 'string' &&
+      typeof payload.id === 'string'
+    ) {
+      const ids = observations.get(payload.turn_id) ?? new Set<string>();
+      if (!ids.has(payload.id)) {
+        ids.add(payload.id);
+        observations.set(payload.turn_id, ids);
+        const reason = text(payload.incomplete_reason);
+        appendResponse(responses, payload.turn_id, {
+          id: payload.id,
+          threadId: String(payload.thread_id),
+          turnId: payload.turn_id,
+          responseId: text(payload.response_id),
+          status: payload.status as RecordedResponse['status'],
+          ...(reason === null
+            ? {}
+            : {
+                incompleteReason:
+                  reason as RecordedResponse['incompleteReason'],
+              }),
+          usageSource: 'received',
+          usage: object(payload.usage)
+            ? receivedUsage(object(payload.usage)!)
+            : null,
+        });
+      }
+    } else if (
       type === 'token_usage_record' &&
       typeof payload.turn_id === 'string'
     ) {
       const value = object(payload.turn_token_usage);
       if (value) usage.set(payload.turn_id, recordedUsage(value));
+      appendResponse(responses, payload.turn_id, {
+        id: text(payload.response_observation_id),
+        threadId: text(payload.thread_id) ?? sessionId,
+        turnId: payload.turn_id,
+        responseId: text(payload.response_id),
+        usageSource: 'native_normalized',
+        usage: object(payload.usage)
+          ? recordedUsage(object(payload.usage)!)
+          : null,
+      });
     } else if (type === 'response_item') {
       let turn = current;
       const metadata = object(
@@ -966,6 +1195,8 @@ export function projectHistory(
         for (const id of removed) {
           turns.delete(id);
           usage.delete(id);
+          responses.delete(id);
+          observations.delete(id);
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
           failures.delete(id);
@@ -1091,6 +1322,20 @@ export function projectHistory(
   for (const [id, turn] of turns) {
     const total = responseUsage.get(id);
     turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    const nativeIds = observations.get(id);
+    // Only an exact native link identifies the accounting copy of an observation.
+    const projectedIds = new Set<string>();
+    const retained = (responses.get(id) ?? []).filter((response) => {
+      if (response.id === null) return true;
+      if (
+        (response.usageSource !== 'received' && nativeIds?.has(response.id)) ||
+        projectedIds.has(response.id)
+      )
+        return false;
+      projectedIds.add(response.id);
+      return true;
+    });
+    if (retained.length) turn.responses = retained;
   }
   const cursorIds = new Set(
     items.filter(({ recordedId }) => recordedId).map(({ item }) => item.id),

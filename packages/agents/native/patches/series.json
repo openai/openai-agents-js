@@ -95,7 +95,11 @@
     {
       "path": "0024-api-key-rate-limits.patch",
       "sha256": "7214955c12f507f0534a7813205eeba656265aa6d919aa3704ec5a47f3ea7d64"
+    },
+    {
+      "path": "0024-native-response-observations.patch",
+      "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
     }
   ],
-  "result_tree": "fa74ed80025deb5a9da3fbb5fcc3da9fbb6be38d"
+  "result_tree": "587d7b2bbcdd944dbbb4c20f40f138cdf267d2ca"
 }
