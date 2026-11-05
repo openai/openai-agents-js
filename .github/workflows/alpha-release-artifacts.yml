@@ -2,7 +2,7 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness]
+    branches: [feat/codex-harness, 'ci/native-bundle/**']
     paths-ignore:
       - '**/*.md'
       - '**/*.mdx'

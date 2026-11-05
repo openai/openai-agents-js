@@ -5,26 +5,13 @@ import console from 'node:console';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync } from 'node:fs';
 import process from 'node:process';
+import { nativeInputs } from './native-bundle-inputs.mjs';
 
 const lockPath = '.github/native-bundle.json';
 const platform = process.platform + '-' + process.arch;
 const { GITHUB_OUTPUT, PIN_REF } = process.env;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
-// Git includes file names, modes, and blob IDs, including newly added inputs.
-const inputs = sha256(
-  execFileSync('git', [
-    'ls-files',
-    '--stage',
-    '-z',
-    '--',
-    'packages/agents/native',
-    'packages/agents/scripts',
-    ':(glob)**/.cargo/**',
-    ':(glob)**/.gitattributes',
-    '.github/workflows/alpha-release-artifacts.yml',
-    'scripts/restore-native-bundle.mjs',
-  ]),
-);
+const inputs = nativeInputs();
 
 async function restore() {
   // Only an unchanged pin on the exact event base authorizes a download.
