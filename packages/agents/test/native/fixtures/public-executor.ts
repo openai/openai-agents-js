@@ -2,7 +2,6 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:https';
-import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -148,23 +147,14 @@ export async function startPublicExecutor(
     process.env.SSL_CERT_FILE = ca;
     process.env.SSL_CERT_DIR = config;
     process.env.CODEX_CA_CERTIFICATE = ca;
-    const reservation = createTcpServer();
-    reservation.listen(0, '127.0.0.1');
-    await once(reservation, 'listening');
-    const address = reservation.address();
-    if (!address || typeof address === 'string')
-      throw new Error('No executor port');
-    await new Promise<void>((resolveClose) =>
-      reservation.close(() => resolveClose()),
-    );
-    const upstreamUrl = `ws://127.0.0.1:${address.port}`;
+    let upstreamUrl = '';
     child = spawn(
       process.env.CODEX_EXEC_SERVER_TEST_BINARY ??
         resolve(
           import.meta.dirname,
           '../../../native/test-bin/exec-server-fixture',
         ),
-      [upstreamUrl],
+      ['ws://127.0.0.1:0'],
       {
         cwd,
         env: {
@@ -180,8 +170,15 @@ export async function startPublicExecutor(
       startupError = error;
     });
     let log = '';
+    let addressOutput = '';
     child.stdout?.on('data', (data: Buffer) => {
-      log += data.toString();
+      const text = data.toString();
+      log += text;
+      if (!upstreamUrl) {
+        addressOutput += text;
+        const address = /^(ws:\/\/127\.0\.0\.1:\d+)\r?\n/m.exec(addressOutput);
+        if (address) upstreamUrl = address[1];
+      }
     });
     child.stderr?.on('data', (data: Buffer) => {
       log += data.toString();
@@ -193,8 +190,9 @@ export async function startPublicExecutor(
         throw new Error(`Executor failed to start: ${log}`);
       try {
         if (
+          upstreamUrl &&
           (
-            await fetch(`http://127.0.0.1:${address.port}/readyz`, {
+            await fetch(`${upstreamUrl.replace('ws:', 'http:')}/readyz`, {
               signal: AbortSignal.timeout(1000),
             })
           ).ok
