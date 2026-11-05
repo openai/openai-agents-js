@@ -1,0 +1,254 @@
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index 6ac6135..140dd3d 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -5835,6 +5835,7 @@ async fn tree_shutdown_preserves_sibling_completion_activity_with_full_parent_qu
+             op: Op::ReloadUserConfig,
+             trace: None,
+             turn_extension_init: None,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
+index 6caab5e..28b5147 100644
+--- a/codex-rs/core/src/codex_delegate.rs
++++ b/codex-rs/core/src/codex_delegate.rs
+@@ -287,6 +287,7 @@ pub(crate) async fn run_codex_thread_one_shot(
+                         op: Op::Shutdown {},
+                         turn_extension_init: None,
+                         trace: None,
++                        trace_policy: None,
+                         parent_turn_id: None,
+                         root_turn_id: None,
+                         residency_guard: None,
+diff --git a/codex-rs/core/src/codex_delegate_tests.rs b/codex-rs/core/src/codex_delegate_tests.rs
+index 0ca83da..78fb323 100644
+--- a/codex-rs/core/src/codex_delegate_tests.rs
++++ b/codex-rs/core/src/codex_delegate_tests.rs
+@@ -155,6 +155,7 @@ async fn forward_ops_preserves_submission_trace_context() {
+             ),
+             tracestate: Some("vendor=state".to_string()),
+         }),
++        trace_policy: None,
+         parent_turn_id: Some("parent-turn".to_string()),
+         root_turn_id: Some("root-turn".to_string()),
+         residency_guard: None,
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index f9c5f8e..d1c66d4 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -576,6 +576,7 @@ impl CodexThread {
+                 op: Op::SuspendTurnAndShutdown { reply },
+                 turn_extension_init: None,
+                 trace: current_span_w3c_trace_context(),
++                trace_policy: None,
+                 parent_turn_id: None,
+                 root_turn_id: None,
+                 residency_guard: None,
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index f6fcf14..e190c5f 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -6,7 +6,8 @@ use crate::realtime_conversation::handle_speech as handle_realtime_conversation_
+ use crate::realtime_conversation::handle_start as handle_realtime_conversation_start;
+ use crate::realtime_conversation::handle_text as handle_realtime_conversation_text;
+ use async_channel::Receiver;
+-use codex_otel::set_parent_from_w3c_trace_context;
++use codex_otel::context_from_w3c_trace_context;
++use codex_otel::set_parent_from_context;
+ use tracing::Instrument;
+ use tracing::debug_span;
+ use tracing::info_span;
+@@ -773,13 +774,18 @@ pub(super) fn submission_dispatch_span(sub: &Submission) -> tracing::Span {
+             codex.op = op_name
+         ),
+     };
+-    if let Some(trace) = sub.trace.as_ref()
+-        && !set_parent_from_w3c_trace_context(&dispatch_span, trace)
+-    {
+-        warn!(
+-            submission.id = sub.id.as_str(),
+-            "ignoring invalid submission trace carrier"
+-        );
++    if let Some(trace) = sub.trace.as_ref() {
++        if let Some(mut parent) = context_from_w3c_trace_context(trace) {
++            if let Some(policy) = &sub.trace_policy {
++                parent = parent.with_value(policy.clone());
++            }
++            set_parent_from_context(&dispatch_span, parent);
++        } else {
++            warn!(
++                submission.id = sub.id.as_str(),
++                "ignoring invalid submission trace carrier"
++            );
++        }
+     }
+     dispatch_span
+ }
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 0187a60..413a2e6 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -97,7 +97,6 @@ use codex_network_proxy::NetworkProxyAuditMetadata;
+ use codex_network_proxy::normalize_host;
+ use codex_otel::auth_storage::AuthStorageOriginator;
+ use codex_otel::current_span_trace_id;
+-use codex_otel::current_span_w3c_trace_context;
+ use codex_otel::set_parent_from_w3c_trace_context;
+ use codex_prompts::render_model_instructions;
+ use codex_protocol::ResponseUsageMetadata;
+@@ -1018,6 +1017,7 @@ impl SessionIo {
+             op,
+             turn_extension_init,
+             trace,
++            trace_policy: None,
+             parent_turn_id,
+             root_turn_id,
+             residency_guard,
+@@ -1029,7 +1029,7 @@ impl SessionIo {
+     /// Use sparingly: prefer `submit()` so submission IDs are generated consistently.
+     pub(crate) async fn submit_with_id(&self, mut sub: Submission) -> CodexResult<()> {
+         if sub.trace.is_none() {
+-            sub.trace = current_span_w3c_trace_context();
++            (sub.trace, sub.trace_policy) = codex_otel::sdk_trace::submission_trace();
+         }
+         self.tx_sub
+             .send(sub)
+@@ -1063,6 +1063,7 @@ impl SessionIo {
+             },
+             trace,
+             turn_extension_init,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+@@ -1089,6 +1090,7 @@ impl SessionIo {
+             },
+             trace,
+             turn_extension_init,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+diff --git a/codex-rs/core/src/session/step_activation_tests.rs b/codex-rs/core/src/session/step_activation_tests.rs
+index 68e2cf7..5ad38f4 100644
+--- a/codex-rs/core/src/session/step_activation_tests.rs
++++ b/codex-rs/core/src/session/step_activation_tests.rs
+@@ -497,6 +497,7 @@ fn settings_submission(
+                 reply,
+             },
+             trace: None,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+diff --git a/codex-rs/core/src/session/submission.rs b/codex-rs/core/src/session/submission.rs
+index 413e187..a4a34bd 100644
+--- a/codex-rs/core/src/session/submission.rs
++++ b/codex-rs/core/src/session/submission.rs
+@@ -14,6 +14,8 @@ pub(crate) struct Submission {
+     pub turn_extension_init: Option<ExtensionDataInit>,
+     /// Optional W3C trace carrier propagated across async submission handoffs.
+     pub trace: Option<W3cTraceContext>,
++    /// Local workflow policy owned by this queued submission until dispatch.
++    pub trace_policy: Option<std::sync::Arc<codex_otel::sdk_trace::ScopePolicy>>,
+     pub parent_turn_id: Option<String>,
+     pub root_turn_id: Option<String>,
+     /// Keeps a V2 recipient resident until this submission is handled or dropped.
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index d5ee490..3744bc3 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -6285,6 +6285,7 @@ async fn standalone_settings_invalidate_continuation_before_delivering_acceptanc
+                 reply: Some(reply),
+             },
+             trace: None,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+@@ -8366,6 +8367,7 @@ fn submission_dispatch_span_prefers_submission_trace_context() {
+             turn_extension_init: None,
+             id: "sub-1".into(),
+             op: Op::Interrupt,
++            trace_policy: None,
+             parent_turn_id: None,
+             root_turn_id: None,
+             residency_guard: None,
+@@ -8396,6 +8398,7 @@ fn submission_dispatch_span_uses_debug_for_realtime_audio() {
+                 item_id: None,
+             },
+         }),
++        trace_policy: None,
+         parent_turn_id: None,
+         root_turn_id: None,
+         residency_guard: None,
+@@ -8755,6 +8758,7 @@ async fn spawn_task_turn_span_inherits_dispatch_trace_context() {
+         turn_extension_init: None,
+         id: "sub-1".into(),
+         op: Op::Interrupt,
++        trace_policy: None,
+         parent_turn_id: None,
+         root_turn_id: None,
+         residency_guard: None,
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 6d56fba..a655dde 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -542,13 +542,26 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+ pub fn context(key: &str) -> Result<Context, String> {
+     Ok(resolve(key)?.context.clone())
+ }
++pub fn submission_trace() -> (
++    Option<codex_protocol::protocol::W3cTraceContext>,
++    Option<Arc<ScopePolicy>>,
++) {
++    let active = crate::trace_context::current_span_context();
++    (
++        crate::trace_context::context_w3c_trace_context(&active),
++        policy_for_context(&active),
++    )
++}
++
+ pub fn current_context_token() -> Option<String> {
+-    // Native lifecycle hooks may run in an instrumented tracing span without
+-    // an attached OpenTelemetry Context. Prefer that exact span's carrier.
+-    let context = crate::trace_context::current_span_w3c_trace_context()
+-        .and_then(|trace| crate::trace_context::context_from_w3c_trace_context(&trace))
+-        .filter(|context| policy_for_context(context).is_some())
+-        .unwrap_or_else(|| restore_policy(Context::current()));
++    // Native lifecycle hooks can inherit private values on the instrumented
++    // span. A W3C round trip would discard those values before policy lookup.
++    let active = crate::trace_context::current_span_context();
++    let context = if policy_for_context(&active).is_some() {
++        active
++    } else {
++        restore_policy(Context::current())
++    };
+     let policy = policy_for_context(&context)?;
+     let registration = retain_policy(context.span().span_context(), policy);
+     let handle = Arc::new(Handle {
+diff --git a/codex-rs/otel/src/trace_context.rs b/codex-rs/otel/src/trace_context.rs
+index e1c6277..4d9cf8c 100644
+--- a/codex-rs/otel/src/trace_context.rs
++++ b/codex-rs/otel/src/trace_context.rs
+@@ -27,8 +27,16 @@ static TRACESTATE_ENTRIES: OnceLock<RwLock<BTreeMap<String, BTreeMap<String, Str
+     OnceLock::new();
+
+ pub fn current_span_w3c_trace_context() -> Option<W3cTraceContext> {
+-    span_w3c_trace_context(&Span::current())
+-        .or_else(|| context_w3c_trace_context(&Context::current()))
++    context_w3c_trace_context(&current_span_context())
++}
++
++pub(crate) fn current_span_context() -> Context {
++    let active = Span::current().context();
++    if active.span().span_context().is_valid() {
++        active
++    } else {
++        Context::current()
++    }
+ }
+
+ pub fn span_w3c_trace_context(span: &Span) -> Option<W3cTraceContext> {
