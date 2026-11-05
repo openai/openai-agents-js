@@ -187,7 +187,7 @@ export class NativeA2AExecutor<
         };
         await current();
         checkBytes(
-          context.userMessage,
+          Message.toJSON(context.userMessage),
           bound(this.#options.limits?.inputBytes, 1024 * 1024),
         );
         if (
@@ -534,6 +534,13 @@ export class NativeA2AExecutor<
       let record = await claim.load();
       await claim.current();
       if (!record) return;
+      if (
+        canonicalDeferredInput(record.binding) !==
+          canonicalDeferredInput(scope) ||
+        record.desired.id !== scope.taskId ||
+        record.desired.contextId !== scope.contextId
+      )
+        throw new A2AError('authorization');
       if (record.state === 'running' || record.state === 'claimed') {
         const desired = structuredClone(record.desired);
         desired.status = {

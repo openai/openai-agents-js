@@ -174,6 +174,8 @@ export async function connectA2A(
         maxBody,
       );
     } catch (error) {
+      options.signal?.throwIfAborted();
+      init.signal?.throwIfAborted();
       if (error instanceof A2AError) throw error;
       throw new A2AError('unavailable');
     }
@@ -189,6 +191,7 @@ export async function connectA2A(
   try {
     card = await resolver.resolve(cardUrl, '');
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (error instanceof A2AError) throw error;
     throw new A2AError('unsupported');
   }

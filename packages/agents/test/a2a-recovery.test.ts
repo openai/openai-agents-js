@@ -227,3 +227,79 @@ it('isolates public/private task reads by the current principal and retires a wa
   expect(store.record('task', context)?.state).toBe('canceled');
   expect(store.record('task', context)?.checkpoint).toBeUndefined();
 });
+
+it.each(['binding context', 'desired task', 'desired context'])(
+  'rejects a recovered %s mismatch before journal mutation or publication',
+  async (mismatch) => {
+    const store = new FileA2AStore(),
+      desired = task();
+    if (mismatch === 'desired task') desired.id = 'other-task';
+    if (mismatch === 'desired context')
+      desired.contextId = 'other-conversation';
+    const record: NativeA2ATask = {
+      schemaVersion: 1,
+      binding,
+      generation: 1,
+      publicationRevision: 1,
+      state: 'running',
+      desired,
+    };
+    await store.own(binding, (claim) => claim.commit(undefined, record));
+    let factories = 0;
+    const executor = new NativeA2AExecutor({
+      store,
+      agentFactory: async () => {
+        factories++;
+        throw new Error('must not execute');
+      },
+    });
+    const requested =
+      mismatch === 'binding context'
+        ? { ...binding, contextId: 'other-conversation' }
+        : binding;
+    await expect(executor.recover(requested, context)).rejects.toThrow(
+      'authorization',
+    );
+    expect(store.record('task', context)).toEqual(record);
+    expect(await store.load('task', context)).toBeUndefined();
+    expect(factories).toBe(0);
+  },
+);
+
+it.each([1500, 4000])(
+  'measures executor inline images with official message JSON (%i bytes)',
+  async (size) => {
+    const store = new FileA2AStore();
+    let factories = 0;
+    const executor = new NativeA2AExecutor({
+      store,
+      limits: { inputBytes: 4096 },
+      agentFactory: async () => {
+        factories++;
+        throw new Error('factory reached');
+      },
+    });
+    const message = {
+      ...Message.fromJSON({}),
+      role: Role.ROLE_USER,
+      parts: [
+        Part.fromJSON({
+          raw: Buffer.alloc(size, 120).toString('base64'),
+          mediaType: 'image/png',
+        }),
+      ],
+    };
+    const request = new RequestContext(
+      { message, tenant: '', metadata: undefined, configuration: undefined },
+      'task',
+      'conversation',
+      context,
+    );
+    await expect(
+      executor.execute(request, new DefaultExecutionEventBus()),
+    ).rejects.toMatchObject({
+      reason: size === 1500 ? 'unavailable' : 'limit',
+    });
+    expect(factories).toBe(size === 1500 ? 1 : 0);
+  },
+);

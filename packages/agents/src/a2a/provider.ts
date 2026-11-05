@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Message, Role, Task, TaskState, type Part } from '@a2a-js/sdk';
+import { Message, Role, Task, TaskState, Part } from '@a2a-js/sdk';
 import type {
   JobClaim,
   JobContext,
@@ -168,12 +168,12 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
         );
         return { status: 'completed', receipt, value };
       }
-      if (state === TaskState.TASK_STATE_INPUT_REQUIRED)
-        return {
-          status: 'inputRequired',
-          receipt,
-          value: inputProposal(task),
-        };
+      if (state === TaskState.TASK_STATE_INPUT_REQUIRED) {
+        const value = inputProposal(task);
+        return value
+          ? { status: 'inputRequired', receipt, value }
+          : { status: 'unknown', receipt };
+      }
     } catch {
       return { status: 'unknown', receipt };
     }
@@ -202,7 +202,10 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
     if (claim.update?.receipt) return this.observe(claim, context);
     const parts = this.#options.encode(input);
     a2aInput(parts);
-    checkBytes(parts, bound(this.#options.limits?.inputBytes, 1024 * 1024));
+    checkBytes(
+      parts.map((part) => Part.toJSON(part)),
+      bound(this.#options.limits?.inputBytes, 1024 * 1024),
+    );
     const client = await this.#connect(claim, 'start', context);
     try {
       const result = await client.sendMessage({

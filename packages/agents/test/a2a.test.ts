@@ -978,3 +978,171 @@ it('keeps an uncertain reply reservation bound to the challenge when the answer 
   expect(replySends).toBe(1);
   expect(reservations.size).toBe(2);
 });
+
+it.each(['missing message', 'unsupported text', 'malformed data'])(
+  'keeps %s input-required proposals unknown with an acknowledged receipt',
+  async (shape) => {
+    const remote = await peer({
+      execute: async (request, bus) => {
+        bus.publish(
+          AgentEvent.task({
+            ...Task.fromJSON({}),
+            id: request.taskId,
+            contextId: request.contextId,
+            status: {
+              state: TaskState.TASK_STATE_INPUT_REQUIRED,
+              timestamp: undefined,
+              message:
+                shape === 'missing message'
+                  ? undefined
+                  : {
+                      ...Message.fromJSON({}),
+                      parts: [
+                        Part.fromJSON(
+                          shape === 'unsupported text'
+                            ? { text: 'answer me' }
+                            : { data: { tool: 'confirm' } },
+                        ),
+                      ],
+                    },
+            },
+          }),
+        );
+        bus.finished();
+      },
+      cancelTask: async () => {},
+    });
+    const provider = new A2AJobProvider({
+      endpoint: remote.endpoint,
+      authorize: async () => {},
+      authorization: async () => 'synthetic',
+      reserve: async () => {},
+      encode: () => [Part.fromJSON({ text: 'hello' })],
+      project: () => null,
+    });
+    const update = await provider.start(claim(), null, context);
+    expect(update.status).toBe('unknown');
+    expect(update).not.toHaveProperty('value');
+    expect(JSON.parse(update.receipt!)).toMatchObject({
+      taskId: expect.any(String),
+      contextId: expect.any(String),
+    });
+    expect(await provider.observe(claim('observe', update), context)).toEqual(
+      update,
+    );
+    expect(remote.calls).toEqual(['SendMessage', 'GetTask']);
+  },
+);
+
+it.each([300_000, 800_000])(
+  'bounds inline image input by official wire bytes (%i bytes)',
+  async (size) => {
+    const remote = await peer({
+      execute: async (request, bus) => {
+        bus.publish(
+          AgentEvent.task({
+            ...Task.fromJSON({}),
+            id: request.taskId,
+            contextId: request.contextId,
+            status: {
+              state: TaskState.TASK_STATE_COMPLETED,
+              message: undefined,
+              timestamp: undefined,
+            },
+          }),
+        );
+        bus.finished();
+      },
+      cancelTask: async () => {},
+    });
+    let credentials = 0,
+      reservations = 0;
+    const part = Part.fromJSON({
+      raw: Buffer.alloc(size, 120).toString('base64'),
+      mediaType: 'image/png',
+    });
+    const provider = new A2AJobProvider({
+      endpoint: remote.endpoint,
+      authorize: async () => {},
+      authorization: async () => {
+        credentials++;
+        return 'synthetic';
+      },
+      reserve: async () => {
+        reservations++;
+      },
+      encode: () => [part],
+      project: () => null,
+    });
+    const operation = provider.start(claim(), null, context);
+    if (size < 400_000) {
+      expect(
+        Buffer.byteLength(JSON.stringify([Part.toJSON(part)])),
+      ).toBeLessThan(1024 * 1024);
+      expect(await operation).toMatchObject({
+        status: 'completed',
+        value: null,
+      });
+      expect(remote.calls).toEqual(['SendMessage']);
+      expect(reservations).toBe(1);
+    } else {
+      await expect(operation).rejects.toMatchObject({ reason: 'limit' });
+      expect(remote.headers).toEqual([]);
+      expect(credentials).toBe(0);
+      expect(reservations).toBe(0);
+    }
+  },
+);
+
+it.each(['discovery fetch', 'RPC fetch', 'RPC body'])(
+  'preserves caller cancellation during %s',
+  async (phase) => {
+    const remote = await peer();
+    const controller = new AbortController(),
+      cancellation = new Error('caller transport cancellation');
+    const entered = Promise.withResolvers<void>();
+    const options = {
+      authorization: async () => 'synthetic',
+      signal: controller.signal,
+      fetch: (async (url, init) => {
+        if (
+          String(url) === remote.endpoint.cardUrl &&
+          phase !== 'discovery fetch'
+        )
+          return fetch(url, init);
+        if (phase === 'RPC body') {
+          return new Response(
+            new ReadableStream({
+              start(stream) {
+                init!.signal!.addEventListener(
+                  'abort',
+                  () => stream.error(init!.signal!.reason),
+                  { once: true },
+                );
+                entered.resolve();
+              },
+            }),
+          );
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          init!.signal!.addEventListener(
+            'abort',
+            () => reject(init!.signal!.reason),
+            { once: true },
+          );
+          entered.resolve();
+        });
+      }) as typeof fetch,
+    };
+    const operation =
+      phase === 'discovery fetch'
+        ? connectA2A(remote.endpoint, options)
+        : (await connectA2A(remote.endpoint, options)).getTask({
+            tenant: '',
+            id: 'task',
+          });
+    await entered.promise;
+    controller.abort(cancellation);
+    await expect(operation).rejects.toBe(cancellation);
+  },
+);
