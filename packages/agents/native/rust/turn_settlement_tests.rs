@@ -192,7 +192,7 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
                 json!({})
             };
             let params = json!({"mode":"start_if_idle", "input":[{"type":"text","text":"begin"}],
-                "start":start});
+                "start":start, "observation_submission_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"});
             let started: Value = serde_json::from_str(&native._submit(params.to_string()).await.unwrap()).unwrap();
             assert_eq!(started["status"], "started");
             let first = started["turn_id"].as_str().unwrap();
@@ -220,8 +220,12 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
             } else {
                 hold.release.add_permits(1);
             }
+            let mut metadata = Vec::new();
             let original = loop {
                 let event = state.next_session_event().await.unwrap();
+                if event["msg"]["type"] == "_sdk_request_metadata" {
+                    metadata.push(event.clone());
+                }
                 if matches!(
                     event["msg"]["type"].as_str(),
                     Some("task_complete" | "turn_complete" | "turn_aborted")
@@ -259,7 +263,7 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
             }
             let submit =
                 json!({"mode":"continue_if_idle", "expected_previous_turn_id":first, "input":[],
-                    "start":start});
+                    "start":start, "observation_submission_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"});
             let continued: Value =
                 serde_json::from_str(&native._submit(submit.to_string()).await.unwrap()).unwrap();
             if route == "replaceable" {
@@ -269,7 +273,36 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
                 assert_eq!(continued["status"], "started");
                 let next_id = continued["turn_id"].as_str().unwrap();
                 assert_ne!(next_id, first);
-                let next = session_terminal(&state, next_id).await.unwrap();
+                let next = loop {
+                    let event = state.next_session_event().await.unwrap();
+                    if event["msg"]["type"] == "_sdk_request_metadata" {
+                        metadata.push(event.clone());
+                    }
+                    if matches!(event["msg"]["type"].as_str(), Some("task_complete" | "turn_complete")) {
+                        assert_eq!(event["id"], next_id);
+                        break event;
+                    }
+                };
+                while let Some(notice) = state.request_metadata.try_next() {
+                    metadata.push(notice);
+                }
+                for (turn_id, submission_id) in [
+                    (first, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                    (next_id, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                ] {
+                    let owned: Vec<_> = metadata.iter().filter(|notice| notice["msg"]["submission_id"] == submission_id).collect();
+                    assert_eq!(owned.len(), 2, "missing dispatch/link metadata for {submission_id}");
+                    let dispatch = &owned[0]["msg"]["observation"];
+                    let linked = &owned[1]["msg"]["observation"];
+                    assert_eq!(dispatch["type"], "model_request_dispatching");
+                    assert_eq!(linked["type"], "model_response_linked");
+                    assert_eq!(dispatch["turn_id"], turn_id);
+                    assert_eq!(linked["turn_id"], turn_id);
+                    assert_eq!(dispatch["thread_id"], state.id.to_string());
+                    assert_eq!(linked["request_id"], dispatch["request_id"]);
+                    assert!(linked["response_observation_id"].as_str().is_some_and(|id| !id.is_empty()));
+                }
+                assert_ne!(metadata[0]["msg"]["observation"]["request_id"], metadata[2]["msg"]["observation"]["request_id"]);
                 assert_eq!(next["sdk_unsampled_steering"], false);
                 assert_eq!(next["msg"]["last_agent_message"], output);
                 let requests = provider.requests.lock().unwrap();

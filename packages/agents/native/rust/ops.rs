@@ -552,6 +552,11 @@ async fn continue_managed<'a>(
         }
     }
     init.insert(selection);
+    if let Some(submission) = p.observation_submission_id {
+        state
+            .request_metadata
+            .seed(&mut init, submission, state.id.to_string());
+    }
     let value = submission(
         crate::turn_settlement::continue_retained(
             state,

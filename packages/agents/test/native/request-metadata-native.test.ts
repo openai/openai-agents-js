@@ -16,6 +16,94 @@ import {
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 
+it('preserves metadata through live steering of the same native turn', async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const marker = 'retained-metadata-steering';
+  const server = new ModelServer([
+    async () => {
+      entered.resolve();
+      await release.promise;
+      return [message('initial answer')];
+    },
+    (request) => {
+      expect(JSON.stringify(request.input)).toContain(marker);
+      return [message('steered answer')];
+    },
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-retained-metadata',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Answer, then handle steering.',
+    provider,
+  });
+  await using session = await agent.session();
+  try {
+    const turn = await session.submit('first');
+    const completed = turn.wait();
+    void completed.catch(() => undefined);
+    await entered.promise;
+    await turn.steer(marker);
+    release.resolve();
+    expect((await completed).finalOutput).toBe('steered answer');
+    const events = [];
+    for await (const event of turn.events()) events.push(event);
+    const dispatches = events.filter(
+      (event): event is ModelRequestDispatching =>
+        event.type === 'model_request_dispatching',
+    );
+    const links = events.filter(
+      (event): event is ModelResponseLinked =>
+        event.type === 'model_response_linked',
+    );
+    expect(server.requests).toHaveLength(2);
+    expect(dispatches).toHaveLength(2);
+    expect(links).toHaveLength(2);
+    expect(dispatches[0].submissionId).toBe(turn.submissionId);
+    expect(dispatches[1].submissionId).toBe(dispatches[0].submissionId);
+    expect(dispatches[1].requestId).not.toBe(dispatches[0].requestId);
+    expect(dispatches[1].turnId).toBe(dispatches[0].turnId);
+    for (const dispatch of dispatches)
+      expect(dispatch.threadId).toBe(session.id);
+    const records = [];
+    for await (const record of session.turns()) records.push(record);
+    const occurrences = records.flatMap((record) => record.responses ?? []);
+    expect(occurrences).toHaveLength(2);
+    for (const link of links) {
+      const dispatch = dispatches.find(
+        (event) => event.requestId === link.requestId,
+      )!;
+      expect([link.threadId, link.turnId, link.submissionId]).toEqual([
+        dispatch.threadId,
+        dispatch.turnId,
+        dispatch.submissionId,
+      ]);
+      expect(
+        occurrences.some(
+          (response) => response.id === link.responseObservationId,
+        ),
+      ).toBe(true);
+    }
+    const state = await session.saveState();
+    await session.close();
+    await using restored = await agent.session({ state });
+    const restoredRecords = [];
+    for await (const record of restored.turns()) restoredRecords.push(record);
+    expect(restoredRecords.map((record) => record.responses)).toEqual(
+      records.map((record) => record.responses),
+    );
+    expect(server.requests).toHaveLength(2);
+    server.assertExhausted();
+  } finally {
+    release.resolve();
+  }
+}, 30_000);
+
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   await ModelServer.closeAll();
