@@ -16,7 +16,7 @@ History projects a canonical accepted input's Responses record and native user i
 
 `saveState()` exports idle conversation state. `suspend()` seals a supported pending manual boundary and exports its continuation. Restore with `agent.session({ state })`, supplying current trusted declarations. Snapshots contain conversation data. They contain neither running JavaScript nor a workspace backup. Python checkpoint interchange is not supported.
 
-Opening a checkpoint with a local executor or explicit `Environment.writableRoots` requires the matching saved executor policy digest. Older checkpoints without that digest can still reopen with their compatible default executor policy. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.
+Opening a checkpoint with a local executor or explicit `Environment.writableRoots` requires the matching saved executor policy digest. For a checkpoint without that digest, restore with a WSS Environment that omits `writableRoots` and matches the saved `network` setting. For an idle checkpoint with no network policy, you can also omit the Environment. To use a local executor or explicit `writableRoots` instead, open a new Session without this checkpoint. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.
 
 ### Restore instructions and tools
 
@@ -139,11 +139,13 @@ See the [local-storage example](../local-storage.ts).
 
 ### Profile ownership
 
+The SDK rejects a local working directory or writable root that overlaps the storage profile. For example, put the worker in `worker/workspace` and keep its session history in `worker/profile`.
+
 A profile uses the native local store and one native writer per conversation. Concurrent writers refuse. A clean close that completes cleanup releases that writer. The profile survives cleanup of the provider's temporary directory. Opening uses current callbacks, credentials and accepted instructions. Saved tool names do not authorize new effects. The directory is conversation storage, not a backup of workspace files, credentials, JavaScript tasks or live reply grants.
 
 ### Supported capabilities
 
-Local profiles support root managed functions, live manual tools, native checklists, declared native goals, and an explicit current WebSearch grant. A current Environment and NativeAgents declaration can also admit native children. MCP, Apps, Plugins, and Code Mode are unavailable.
+Local profiles support root managed functions, live manual tools, native checklists, declared native goals, and an explicit current WebSearch grant. A current Environment and NativeAgents declaration can also admit native children. Use [`selectMcpTools`](./mcp.md#materialize-a-borrowed-sdk-mcp-namespace) to expose explicitly selected tools from an application-owned MCP client as managed functions. Local profiles reject Core-owned `HttpMCP` and `StdioMCP` registrations. Apps, Plugins, and Code Mode are unavailable.
 
 An idle Session supports ordinary `compact()` in place using its current native thread, writer, and goal service. Supplied-summary compaction, `saveState()`, and `suspend()` reject. A rejected suspend leaves a live manual reply grant usable.
 
@@ -157,7 +159,9 @@ Read settled descendant history through `session.subagents()` or the `subagentId
 
 ### Persistence failures and cleanup
 
-The native store flushes an actual managed result before acknowledging it to Core. If a process dies without a matching receipt, the effect is unknown: reopen refuses before model or callback work. The SDK does not replay the callback or invent a cancellation result. Reconcile with your external system. This API provides no profile-repair or history-editing operation. A stream terminal or final output is not a separate durability receipt, and no power-loss guarantee is implied.
+The native store flushes each managed result before the model can use it. If a root call has no saved result after process loss, opening stops before the model runs or the SDK dispatches a tool. `LocalRecoveryRequired.calls` gives the original thread, turn, and call IDs. Verify each effect in your external system. For each call, keep the reported IDs and provide the confirmed `outcome` (`'applied'` or `'not_applied'`) and a text `result` that the model can read. Reopen with `storage`, `resume`, and the `reconciledCalls` list. The SDK records the supplied result against the original call without invoking the tool again. If an outcome remains unknown, leave the call unresolved.
+
+A terminal event or final output reports turn progress. The managed result flush records the tool's outcome. You can still lose data during a power failure.
 
 Close can reject a persistence error even after physical cleanup finishes. Incomplete cleanup retains its owners and temporary files. Retry `session.close()`. If opening failed before returning a Session, close any other active Sessions, then call the captured `agent.provider.close()` or explicit provider's `close()` to finish retained cleanup. That call fences new openings and joins every started failed-opening cleanup attempt. It never makes the failed opening successful. Preserve the original opening error and any cleanup failures for diagnosis.
 

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
-  fileThreadStore,
+  fileSessionStore,
   localStorage,
   tool,
 } from '../../../src';
@@ -71,7 +71,7 @@ async function main() {
     const session = await agent.session({
       storage: config.local
         ? localStorage(config.directory)
-        : fileThreadStore(config.directory),
+        : fileSessionStore(config.directory),
       resume: config.resume,
     });
     if (config.mode === 'hold-abort')

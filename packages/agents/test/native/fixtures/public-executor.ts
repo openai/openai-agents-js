@@ -14,6 +14,8 @@ export async function startPublicExecutor(
   options: {
     captureFileSystemDiagnostics?: boolean;
     captureProcessDiagnostics?: boolean;
+    /** Gate or replace only a real upstream termination response. */
+    transformTerminateResponse?: (response: JsonObject) => Promise<JsonObject>;
     certificateNames?: string;
     authorization?: string;
     rejectAuthorization?: boolean;
@@ -231,10 +233,16 @@ export async function startPublicExecutor(
         const queued: string[] = [];
         const starts = new Set<string>();
         const infoRequests = new Set<string>();
+        const terminateRequests = new Set<string>();
         downstream.on('message', (data) => {
           const text = data.toString();
           const request = JSON.parse(text) as JsonObject;
           requests.push(request);
+          if (
+            options.transformTerminateResponse &&
+            request.method === 'process/terminate'
+          )
+            terminateRequests.add(JSON.stringify(request.id));
           if (options.dropStartReplyAfter && request.method === 'process/start')
             starts.add(JSON.stringify(request.id));
           if (
@@ -329,6 +337,16 @@ export async function startPublicExecutor(
                 retainProcess({ direction: 'response', ...entry, ...state });
                 readStates.set(key, serialized);
               }
+            }
+          }
+          if (options.transformTerminateResponse && !binary) {
+            const response = JSON.parse(data.toString()) as JsonObject;
+            if (terminateRequests.delete(JSON.stringify(response.id))) {
+              const transformed =
+                await options.transformTerminateResponse(response);
+              if (downstream.readyState === WebSocket.OPEN)
+                downstream.send(JSON.stringify(transformed));
+              return;
             }
           }
           if (options.dropStartReplyAfter && !binary) {

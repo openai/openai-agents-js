@@ -32,6 +32,12 @@ use crate::{NativeThread, config, extensions, goals, options};
 
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(test)]
+struct ProcessCleanupHold {
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+}
+
 pub struct EngineState {
     pub manager: Arc<ThreadManager>,
     pub(crate) sdk_selected_model: bool,
@@ -58,6 +64,10 @@ pub struct EngineState {
     // Wrapper slots stay weak. Shared raw fork receipts survive a lost source,
     // without retaining a ThreadState (which itself owns this EngineState).
     native_threads: std::sync::Mutex<Vec<NativeThreadRegistration>>,
+    // Exact cleanup authority survives manager removal and a cancelled close.
+    pending_process_cleanup: std::sync::Mutex<Vec<Arc<CodexThread>>>,
+    #[cfg(test)]
+    process_cleanup_hold: std::sync::Mutex<Option<Arc<ProcessCleanupHold>>>,
     pub startup_warnings: Vec<String>,
     extension_events: Arc<extensions::Events>,
     cloud_config: codex_config::CloudConfigBundleLoader,
@@ -509,6 +519,9 @@ impl EngineState {
             retired: AtomicBool::new(false),
             context_gate: Arc::new(tokio::sync::RwLock::new(())),
             native_threads: std::sync::Mutex::new(Vec::new()),
+            pending_process_cleanup: std::sync::Mutex::new(Vec::new()),
+            #[cfg(test)]
+            process_cleanup_hold: std::sync::Mutex::new(None),
             lifecycle: Mutex::new(()),
             manual_observations: tokio::sync::RwLock::new(()),
             event_owners: Mutex::new(HashMap::new()),
@@ -1189,18 +1202,61 @@ impl EngineState {
 
     async fn close_locked(&self) -> anyhow::Result<Option<String>> {
         if self.closed.load(Ordering::Acquire) {
-            if let Some(store) = &self.custom_store {
-                return Ok(store.close_all().await?);
+            let mut diagnostics = Vec::new();
+            let retained = self
+                .pending_process_cleanup
+                .lock()
+                .expect("process cleanup poisoned")
+                .clone();
+            for thread in retained {
+                if let Err(error) = tokio::time::timeout(
+                    CLOSE_TIMEOUT,
+                    thread.shutdown_agent_tree_and_check_processes(),
+                )
+                .await
+                .context("Codex process cleanup timed out")?
+                {
+                    diagnostics.push(error.to_string());
+                }
             }
-            return Ok(match &self.local_checklist_store {
-                Some(store) => store
-                    .check_failure(None)
-                    .await
-                    .err()
-                    .map(|error| error.to_string()),
-                None => None,
-            });
+            let canonical = if let Some(store) = &self.custom_store {
+                store.close_all().await?
+            } else {
+                match &self.local_checklist_store {
+                    Some(store) => store
+                        .check_failure(None)
+                        .await
+                        .err()
+                        .map(|error| error.to_string()),
+                    None => None,
+                }
+            };
+            diagnostics.extend(canonical);
+            return Ok((!diagnostics.is_empty()).then(|| diagnostics.join("; ")));
         }
+        // Fork cleanup and manager shutdown remove completed threads. Preserve
+        // their exact cleanup health before either path changes the registry.
+        let mut closing_trees = Vec::new();
+        for id in self.manager.list_thread_ids().await {
+            if let Ok(thread) = self.manager.get_thread(id).await {
+                closing_trees.push(thread);
+            }
+        }
+        let closing_trees = {
+            let mut retained = self
+                .pending_process_cleanup
+                .lock()
+                .expect("process cleanup poisoned");
+            for thread in closing_trees {
+                if !retained
+                    .iter()
+                    .any(|previous| Arc::ptr_eq(previous, &thread))
+                {
+                    retained.push(thread);
+                }
+            }
+            retained.clone()
+        };
         // The registration retains the same raw receipt after the source owner
         // disappears. It never retains an SDK ThreadState or a strong wrapper.
         let receipts: Vec<_> = self
@@ -1227,6 +1283,30 @@ impl EngineState {
             report.timed_out.len(),
             report.submit_failed.len()
         );
+        for thread in closing_trees {
+            let checked = tokio::time::timeout_at(import_deadline, async {
+                #[cfg(test)]
+                {
+                    let hold = self.process_cleanup_hold.lock().unwrap().clone();
+                    if let Some(hold) = hold {
+                        hold.entered.add_permits(1);
+                        hold.release.acquire().await.unwrap().forget();
+                    }
+                }
+                thread.shutdown_agent_tree_and_check_processes().await
+            })
+            .await
+            .context("Codex process cleanup timed out")?;
+            if let Err(error) = checked {
+                // Preserve rejected confirmations through later cleanup/caller cancellation.
+                fork_diagnostics.push(error.to_string());
+            } else {
+                self.pending_process_cleanup
+                    .lock()
+                    .expect("process cleanup poisoned")
+                    .retain(|previous| !Arc::ptr_eq(previous, &thread));
+            }
+        }
         if let Some(diagnostic) = self
             .interception
             .cleanup_code_imports(None, import_deadline)
@@ -2853,22 +2933,20 @@ impl ThreadState {
     }
 
     pub(crate) async fn close_report(&self) -> anyhow::Result<Option<String>> {
-        self.close_owned(false).await
+        self.close_owned().await
     }
 
     pub(crate) async fn close_selected_environment(&self) -> anyhow::Result<Option<String>> {
-        self.close_owned(true).await
+        self.close_owned().await
     }
 
-    async fn close_owned(&self, selected_environment: bool) -> anyhow::Result<Option<String>> {
+    async fn close_owned(&self) -> anyhow::Result<Option<String>> {
         let _guard = self.close_lock.lock().await;
-        // Raw close still retires admission before waiting for any mutation.
-        // Selected close needs the live receipt to settle before listing terminals.
-        if !selected_environment
-            && let Some(settlement) = self
-                .thread
-                .thread_extension_data()
-                .get::<crate::turn_settlement::Settlement>()
+        // Core owns checked process cleanup; retire SDK admission before any wait.
+        if let Some(settlement) = self
+            .thread
+            .thread_extension_data()
+            .get::<crate::turn_settlement::Settlement>()
         {
             settlement.retire();
         }
@@ -2921,8 +2999,7 @@ impl ThreadState {
                 None => None,
             });
         }
-        let mut shutdown_deadline = tokio::time::Instant::now() + CLOSE_TIMEOUT;
-        let mut ack_remaining = CLOSE_TIMEOUT;
+        let shutdown_deadline = tokio::time::Instant::now() + CLOSE_TIMEOUT;
         let mut ack_error = fork_diagnostic;
         let mut import_diagnostic = None;
         let shutdown = async {
@@ -2930,71 +3007,9 @@ impl ThreadState {
             let mut pending = vec![(self.id, self.thread.clone())];
             loop {
                 for (id, thread) in pending {
-                    if selected_environment
-                        && let Some(settlement) = thread
-                            .thread_extension_data()
-                            .get::<crate::turn_settlement::Settlement>()
-                    {
-                        let started = tokio::time::Instant::now();
-                        // One budget for all attempts, including all known descendants.
-                        // Never start another attempt after that budget has elapsed.
-                        let acknowledged = if ack_remaining.is_zero() {
-                            Err(())
-                        } else {
-                            tokio::time::timeout(ack_remaining, async {
-                                // A child can already have stopped before root close finds it.
-                                if matches!(
-                                    thread.agent_status().await,
-                                    codex_protocol::protocol::AgentStatus::Shutdown
-                                        | codex_protocol::protocol::AgentStatus::NotFound
-                                ) {
-                                    return true;
-                                }
-
-                                if settlement.interrupt_session(&thread).await.is_err() {
-                                    // Shutdown still owns cleanup, but cannot credit an
-                                    // ACK from a terminal store that may already be drained.
-                                    return false;
-                                }
-                                let mut all_acknowledged = true;
-                                for terminal in thread.list_background_terminals().await {
-                                    match terminal.process_id.parse::<i32>() {
-                                        Ok(process_id) => {
-                                            all_acknowledged &= thread
-                                                .terminate_background_terminal(process_id)
-                                                .await;
-                                        }
-                                        Err(_) => all_acknowledged = false,
-                                    }
-                                }
-                                all_acknowledged
-                            })
-                            .await
-                            .map_err(|_| ())
-                        };
-                        settlement.retire();
-                        let elapsed = started.elapsed();
-                        ack_remaining = ack_remaining.saturating_sub(elapsed);
-                        // Preserve the original total shutdown bound independently of ACK time.
-                        shutdown_deadline += elapsed;
-                        match acknowledged {
-                            Ok(true) => {}
-                            Ok(false) => {
-                                ack_error.get_or_insert(
-                                    "A remote process termination attempt was not acknowledged"
-                                        .to_owned(),
-                                );
-                            }
-                            Err(()) => {
-                                ack_error.get_or_insert_with(|| {
-                                    "Remote process termination attempts timed out".to_owned()
-                                });
-                            }
-                        }
-                    }
                     if id == self.id {
-                        // Keep the selected root's explicit termination ACK ahead of tree
-                        // cancellation. Core then joins child delivery before closing writers.
+                        // SDK threads confirm process cleanup inside their live Core shutdown.
+                        // Fence starts before joining child delivery and closing any writer.
                         let _shutdown = self
                             .engine
                             .manager
@@ -3028,13 +3043,9 @@ impl ThreadState {
                 }
             }
             tokio::time::timeout_at(shutdown_deadline, async {
-                // Core's per-thread join waits for loop exit. Check managed process
-                // cleanup across the exact tree before releasing its ownership.
-                if let Err(error) = self
-                    .thread
-                    .shutdown_agent_tree_and_check_managed_processes()
-                    .await
-                {
+                // Confirm both managed-local and remote cleanup across the exact tree
+                // before releasing ownership, including detached startup cleanup.
+                if let Err(error) = self.thread.shutdown_agent_tree_and_check_processes().await {
                     ack_error = Some(match ack_error.take() {
                         Some(message) => format!("{message}; {error}"),
                         None => error.to_string(),

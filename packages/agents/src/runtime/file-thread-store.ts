@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  lstat,
   mkdir,
   open,
   readFile,
@@ -7,9 +8,10 @@ import {
   rm,
   rmdir,
   unlink,
+  type FileHandle,
 } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { CanonicalThreadStore } from './custom-thread-store';
+import type { SessionStore } from './custom-thread-store';
 
 interface RecordFile {
   revision: number;
@@ -35,25 +37,25 @@ async function syncDirectory(directory: string): Promise<void> {
  * Serialize operations within each acquired lease. The filesystem must support
  * atomic rename and file/directory fsync. Network filesystems are unsupported.
  * A crashed writer leaves its lock: stop and confirm the old process is dead
- * before an operator removes `<threadId>.lock`. Never remove a live writer's lock.
+ * before an operator removes `<sessionId>.lock`. Never remove a live writer's lock.
  */
-export function fileThreadStore(directory: string): CanonicalThreadStore {
+export function fileSessionStore(directory: string): SessionStore {
   const root = resolve(directory);
-  const released = new Set<string>();
-  function paths(threadId: string) {
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(threadId)) {
+  const releases = new Map<string, FileHandle | 'released'>();
+  function paths(sessionId: string) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(sessionId)) {
       throw new TypeError(
-        'Thread ID must contain 1–128 letters, digits, _ or -',
+        'Session ID must contain 1–128 letters, digits, _ or -',
       );
     }
     return {
-      record: join(root, `${threadId}.json`),
-      lock: join(root, `${threadId}.lock`),
-      owner: join(root, `${threadId}.lock`, 'owner'),
+      record: join(root, `${sessionId}.json`),
+      lock: join(root, `${sessionId}.lock`),
+      owner: join(root, `${sessionId}.lock`, 'owner'),
     };
   }
-  async function assertFence(threadId: string, fence: string): Promise<void> {
-    const { owner } = paths(threadId);
+  async function assertFence(sessionId: string, fence: string): Promise<void> {
+    const { owner } = paths(sessionId);
     let actual: string;
     try {
       actual = await readFile(owner, 'utf8');
@@ -66,10 +68,10 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
     if (actual !== fence)
       throw new Error('Thread writer fence is no longer valid');
   }
-  async function readRecord(threadId: string): Promise<RecordFile | null> {
+  async function readRecord(sessionId: string): Promise<RecordFile | null> {
     let text: string;
     try {
-      text = await readFile(paths(threadId).record, 'utf8');
+      text = await readFile(paths(sessionId).record, 'utf8');
     } catch (error) {
       if (hasCode(error, 'ENOENT')) return null;
       throw error;
@@ -87,8 +89,8 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
     return record;
   }
   return {
-    async acquire(threadId) {
-      const { lock, owner } = paths(threadId);
+    async acquire(sessionId) {
+      const { lock, owner } = paths(sessionId);
       await mkdir(root, { recursive: true, mode: 0o700 });
       await mkdir(lock, { mode: 0o700 });
       const fence = randomUUID();
@@ -117,12 +119,12 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
         throw error;
       }
     },
-    async read(threadId, fence) {
-      await assertFence(threadId, fence);
-      return (await readRecord(threadId))?.snapshot ?? null;
+    async read(sessionId, fence) {
+      await assertFence(sessionId, fence);
+      return (await readRecord(sessionId))?.snapshot ?? null;
     },
-    async commit(threadId, fence, writeId, expectedRevision, snapshot) {
-      await assertFence(threadId, fence);
+    async commit(sessionId, fence, writeId, expectedRevision, snapshot) {
+      await assertFence(sessionId, fence);
       if (
         !Number.isSafeInteger(expectedRevision) ||
         expectedRevision < 0 ||
@@ -133,7 +135,7 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
       ) {
         throw new TypeError('Invalid thread commit');
       }
-      const previous = await readRecord(threadId);
+      const previous = await readRecord(sessionId);
       if (previous?.writeId === writeId) {
         if (
           previous.snapshot !== snapshot ||
@@ -150,7 +152,7 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
       if ((previous?.revision ?? 0) !== expectedRevision) {
         throw new Error('Thread revision conflict');
       }
-      const target = paths(threadId).record;
+      const target = paths(sessionId).record;
       const temporary = `${target}.${randomUUID()}.tmp`;
       try {
         const handle = await open(temporary, 'wx', 0o600);
@@ -167,7 +169,7 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
         } finally {
           await handle.close();
         }
-        await assertFence(threadId, fence);
+        await assertFence(sessionId, fence);
         await rename(temporary, target);
         await syncDirectory(root);
       } catch (error) {
@@ -182,11 +184,11 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
         throw error;
       }
     },
-    async flush(threadId, fence) {
-      await assertFence(threadId, fence);
+    async flush(sessionId, fence) {
+      await assertFence(sessionId, fence);
       let handle;
       try {
-        handle = await open(paths(threadId).record, 'r');
+        handle = await open(paths(sessionId).record, 'r');
       } catch (error) {
         if (!hasCode(error, 'ENOENT')) throw error;
       }
@@ -199,19 +201,49 @@ export function fileThreadStore(directory: string): CanonicalThreadStore {
       }
       await syncDirectory(root);
     },
-    async release(threadId, fence) {
-      const lease = JSON.stringify([threadId, fence]);
-      if (released.has(lease)) {
+    async release(sessionId, fence) {
+      const lease = JSON.stringify([sessionId, fence]);
+      let ownedDirectory = releases.get(lease);
+      if (ownedDirectory === 'released') {
         // Retry only the barrier, even when a successor now owns the lock path.
         await syncDirectory(root);
         return;
       }
-      await assertFence(threadId, fence);
-      const { owner, lock } = paths(threadId);
-      await unlink(owner);
-      await rmdir(lock);
+      const { owner, lock } = paths(sessionId);
+      if (!ownedDirectory) {
+        await assertFence(sessionId, fence);
+        ownedDirectory = await open(lock, 'r');
+        try {
+          await unlink(owner);
+        } catch (error) {
+          await ownedDirectory.close();
+          throw error;
+        }
+        // Pin the inode after unlink so a failed rmdir can retry this exact
+        // directory without mistaking a replacement for its cleanup owner.
+        releases.set(lease, ownedDirectory);
+      }
+      const owned = await ownedDirectory.stat({ bigint: true });
+      let current;
+      try {
+        current = await lstat(lock, { bigint: true });
+      } catch (error) {
+        if (!hasCode(error, 'ENOENT')) throw error;
+      }
+      if (
+        current &&
+        (!current.isDirectory() ||
+          current.dev !== owned.dev ||
+          current.ino !== owned.ino)
+      ) {
+        releases.delete(lease);
+        await ownedDirectory.close();
+        throw new Error('Thread writer fence is no longer valid');
+      }
+      if (current) await rmdir(lock);
       // Record the physical unlock before a failed barrier can lose its result.
-      released.add(lease);
+      releases.set(lease, 'released');
+      await ownedDirectory.close();
       await syncDirectory(root);
     },
   };

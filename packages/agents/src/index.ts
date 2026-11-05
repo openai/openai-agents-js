@@ -146,12 +146,12 @@ export { nativeGoals } from './runtime/goals';
 export type { NativeGoals, NativeGoal } from './runtime/goals';
 
 export { localStorage } from './runtime/local-storage';
-export { reconcileThreadStore } from './runtime/custom-thread-store';
+export { reconcileSessionStore } from './runtime/custom-thread-store';
 export type {
-  CanonicalThreadStore,
+  SessionStore,
   ReconciledToolResult,
 } from './runtime/custom-thread-store';
-export { fileThreadStore } from './runtime/file-thread-store';
+export { fileSessionStore } from './runtime/file-thread-store';
 export type { LocalStorage } from './runtime/local-storage';
 export type {
   ExecutorNetworkReceipt,

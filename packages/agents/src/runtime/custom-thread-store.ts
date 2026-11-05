@@ -1,33 +1,35 @@
+import { outputOf, ToolOutput } from './tools';
+
 /**
  * Preview canonical native storage. Snapshots are opaque, versioned SDK data.
  * The SDK serializes operations within each acquired lease. Direct callers must
  * do the same; overlapping writes and release on one lease are unsupported.
  */
-export interface CanonicalThreadStore {
+export interface SessionStore {
   /** Acquire exclusive writer ownership before any authoritative read. */
-  acquire(threadId: string): Promise<string>;
-  read(threadId: string, fence: string): Promise<string | null>;
+  acquire(sessionId: string): Promise<string>;
+  read(sessionId: string, fence: string): Promise<string | null>;
   /** Atomically compare the revision, fence stale writers, and durably commit. */
   commit(
-    threadId: string,
+    sessionId: string,
     fence: string,
     writeId: string,
     expectedRevision: number,
     snapshot: string,
   ): Promise<void>;
   /** Optional durability barrier; omitted only when commit itself is fully durable. */
-  flush?(threadId: string, fence: string): Promise<void>;
+  flush?(sessionId: string, fence: string): Promise<void>;
   /** Release this exact owner; preserve committed history even after failure. */
-  release(threadId: string, fence: string): Promise<void>;
+  release(sessionId: string, fence: string): Promise<void>;
 }
 
 /** @internal Capture live application methods, never serialize executable authority. */
 export function captureThreadStore(
-  store: CanonicalThreadStore,
+  store: SessionStore,
 ): (request: string) => Promise<string> {
   for (const method of ['acquire', 'read', 'commit', 'release'] as const)
     if (typeof store?.[method] !== 'function')
-      throw new TypeError(`Canonical storage requires ${method}`);
+      throw new TypeError(`Session store requires ${method}`);
   const acquire = store.acquire.bind(store);
   const read = store.read.bind(store);
   const commit = store.commit.bind(store);
@@ -74,27 +76,36 @@ export function captureThreadStore(
 
 /** An externally verified outcome for an original unresolved native tool call. */
 export interface ReconciledToolResult {
-  threadId: string;
+  sessionId: string;
   turnId: string;
   callId: string;
-  result: string;
+  result: string | ToolOutput;
 }
 /** Record authoritative external reconciliation while no Session owns this thread. */
-export async function reconcileThreadStore(
-  store: CanonicalThreadStore,
+export async function reconcileSessionStore(
+  store: SessionStore,
   result: ReconciledToolResult,
 ): Promise<void> {
-  for (const value of [result.threadId, result.turnId, result.callId])
+  for (const value of [result.sessionId, result.turnId, result.callId])
     if (typeof value !== 'string' || !value)
       throw new TypeError(
-        'Reconciliation requires original thread, turn, and call identities',
+        'Reconciliation requires original session, turn, and call identities',
       );
-  if (typeof result.result !== 'string')
-    throw new TypeError('Reconciled result must be a string');
+  if (
+    typeof result.result !== 'string' &&
+    !(result.result instanceof ToolOutput)
+  )
+    throw new TypeError('Reconciled result must be a string or ToolOutput');
+  const output = outputOf(result.result);
   const { binding } = await import('./binding');
   const native = await binding();
   await native.reconcile_thread_store(
     captureThreadStore(store),
-    JSON.stringify(result),
+    JSON.stringify({
+      threadId: result.sessionId,
+      turnId: result.turnId,
+      callId: result.callId,
+      result: output,
+    }),
   );
 }

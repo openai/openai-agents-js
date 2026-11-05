@@ -37,10 +37,7 @@ import {
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
-import {
-  captureThreadStore,
-  type CanonicalThreadStore,
-} from './custom-thread-store';
+import { captureThreadStore, type SessionStore } from './custom-thread-store';
 import { captureReconciledCalls, type ReconciledCall } from './local-recovery';
 import { captureTools, toolIdentity, type Tool } from './tools';
 import { validateMaxModelSteps, type OperationOptions } from './session';
@@ -71,7 +68,7 @@ export interface SessionOptions<Context = undefined> {
   model?: string;
   /** Merge defined keys over Agent settings; null serviceTier clears its override. */
   modelSettings?: ModelSettings;
-  storage?: LocalStorage | CanonicalThreadStore;
+  storage?: LocalStorage | SessionStore;
   resume?: string;
   /** Application-confirmed outcomes for unknown calls on this local resume. */
   reconciledCalls?: readonly ReconciledCall[];
@@ -487,7 +484,7 @@ export class Agent<Context = undefined, Output = string> {
 
     const customStore =
       descriptor !== undefined && 'acquire' in descriptor
-        ? captureThreadStore(descriptor as CanonicalThreadStore)
+        ? captureThreadStore(descriptor as SessionStore)
         : undefined;
     const storage =
       descriptor === undefined

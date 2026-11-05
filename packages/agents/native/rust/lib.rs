@@ -434,6 +434,9 @@ impl Engine {
         let work = async {
             let _permit = inner.operation(false).map_err(native_error)?;
             let route = inner.sentinel_route(&provider_id, &headers)?;
+            let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
+            let turn = native_interception::sentinel_http_turn(&inner, &provider_id, &ticket)
+                .map_err(native_error)?;
             let provider = route.provider.api_provider().await.map_err(native_error)?;
             let mut request = provider
                 .build_request("POST".parse().map_err(native_error)?, "responses")
@@ -445,6 +448,15 @@ impl Engine {
                         provider.retry.to_policy(),
                         || request.clone(),
                         |request, _attempt| async {
+                            // Each upstream attempt is newly admitted, including
+                            // retries of a request that began before the stop.
+                            if turn
+                                .as_deref()
+                                .is_some_and(turn_settlement::Turn::sampling_stopped)
+                            {
+                                // Keep the owning interrupt responsible for settlement.
+                                std::future::pending::<()>().await;
+                            }
                             route
                                 .transport
                                 .stream(request)
@@ -469,7 +481,6 @@ impl Engine {
                     ..
                 }) => NativeModelBody::http_error(status, headers, body)?,
                 Err(error) => {
-                    let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
                     native_interception::sentinel_failed(
                         &inner,
                         &provider_id,
@@ -3204,7 +3215,7 @@ pub async fn reconcile_thread_store(
         thread_id: codex_protocol::ThreadId,
         turn_id: String,
         call_id: String,
-        result: String,
+        result: codex_protocol::dynamic_tools::DynamicToolResponse,
     }
     let result: Reconciliation = serde_json::from_str(&result_json).map_err(input_error)?;
     let store = custom_storage::CustomThreadStore::new(callback);
@@ -3216,14 +3227,30 @@ pub async fn reconcile_thread_store(
             result.result,
         )
         .await;
-    // This standalone operation has no Engine cleanup owner. Drain retained
-    // writer cleanup before dropping its callback while preserving the failure.
-    let cleanup = store.close_all().await;
-    reconciled.map_err(native_error)?;
-    if let Some(failure) = cleanup.map_err(native_error)? {
-        return Err(native_error(failure));
+    // Reconciliation has no Engine cleanup owner. Retry physical release while
+    // keeping the durable receipt outcome separate from cleanup diagnostics.
+    let cleanup = match store.release_writer(result.thread_id).await {
+        Ok(_) => Ok(()),
+        Err(first) => {
+            if store.take_release_failure(result.thread_id).await.is_some() {
+                store
+                    .release_writer(result.thread_id)
+                    .await
+                    .map(|_| ())
+                    .map_err(|retry| format!("{first}; release retry failed: {retry}"))
+            } else {
+                Err(first.to_string())
+            }
+        }
+    };
+    match (reconciled, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) => Err(native_error(primary)),
+        (Ok(()), Err(cleanup)) => Err(native_error(cleanup)),
+        (Err(primary), Err(cleanup)) => Err(native_error(format!(
+            "reconciliation failed: {primary}; writer cleanup failed: {cleanup}"
+        ))),
     }
-    Ok(())
 }
 
 #[napi(js_name = "create_store_engine")]

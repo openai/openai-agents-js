@@ -1,11 +1,10 @@
 //! Application-owned canonical snapshots with a disposable native projection.
 use codex_history::RolloutItem;
 use codex_protocol::{
-    ThreadId,
-    models::{FunctionCallOutputBody, FunctionCallOutputPayload, ResponseInputItem, ResponseItem},
-    protocol::EventMsg,
+    ThreadId, dynamic_tools::DynamicToolResponse, models::ResponseItem, protocol::EventMsg,
 };
 use codex_thread_store::*;
+use codex_tools::{ToolOutput, ToolPayload};
 use napi::{bindgen_prelude::Promise, threadsafe_function::ThreadsafeFunction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -527,17 +526,17 @@ impl CustomThreadStore {
         id: ThreadId,
         turn: String,
         call: String,
-        result: String,
+        result: DynamicToolResponse,
     ) -> ThreadStoreResult<()> {
         self.open_mode(id, true, true).await?;
-        let mut item: ResponseItem = ResponseInputItem::FunctionCallOutput {
-            call_id: call,
-            output: FunctionCallOutputPayload {
-                body: FunctionCallOutputBody::Text(result),
-                success: Some(true),
-            },
-        }
-        .into();
+        let mut item: ResponseItem = crate::python_tools::PythonOutput(result)
+            .to_response_item(
+                &call,
+                &ToolPayload::Function {
+                    arguments: String::new(),
+                },
+            )
+            .into();
         if let ResponseItem::FunctionCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
@@ -550,14 +549,19 @@ impl CustomThreadStore {
                 },
             );
         }
-        let primary = self.receipt(id, item).await;
-        let cleanup = self.release(id).await;
-        primary.and(cleanup)
+        self.receipt(id, item).await
     }
     async fn release(&self, id: ThreadId) -> ThreadStoreResult<()> {
+        self.release_writer(id)
+            .await?
+            .map_or(Ok(()), |failure| Err(error(failure)))
+    }
+    // Standalone reconciliation retains the receipt failure separately from
+    // physical writer cleanup. Session callers still receive sticky failures.
+    pub(crate) async fn release_writer(&self, id: ThreadId) -> ThreadStoreResult<Option<String>> {
         let mut writers = self.writers.lock().await;
         let Some(writer) = writers.get(&id) else {
-            return Ok(());
+            return Ok(None);
         };
         let failure = writer.failure.clone();
         if let Some(failure) = &failure {
@@ -578,7 +582,7 @@ impl CustomThreadStore {
         }
         writers.remove(&id);
         self.projection.shutdown_thread(id).await?;
-        failure.map_or(Ok(()), |failure| Err(error(failure)))
+        Ok(failure)
     }
 }
 impl ThreadStore for CustomThreadStore {

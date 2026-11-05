@@ -1,8 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   captureThreadStore,
-  type CanonicalThreadStore,
+  reconcileSessionStore,
+  type SessionStore,
 } from '../src/runtime/custom-thread-store';
+
+import { outputOf, ToolOutput } from '../src/runtime/tools';
+
+const nativeReconcile = vi.hoisted(() =>
+  vi.fn(async (_callback: unknown, _payload: string) => {}),
+);
+vi.mock('../src/runtime/binding', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/runtime/binding')>()),
+  binding: async () => ({ reconcile_thread_store: nativeReconcile }),
+}));
 
 function deferred() {
   let resolve!: () => void;
@@ -17,7 +28,7 @@ describe('canonical storage callback ownership', () => {
     const started = deferred();
     const finish = deferred();
     const events: string[] = [];
-    const store: CanonicalThreadStore = {
+    const store: SessionStore = {
       acquire: async () => 'owner',
       read: async () => null,
       commit: async () => {
@@ -91,5 +102,58 @@ describe('canonical storage callback ownership', () => {
     await expect(committed).rejects.toBe(failure);
     await expect(closed).resolves.toBe('null');
     expect(events).toEqual(['failed commit', 'released']);
+  });
+});
+
+describe('reconciled tool result normalization', () => {
+  const store: SessionStore = {
+    acquire: async () => 'owner',
+    read: async () => null,
+    commit: async () => {},
+    release: async () => {},
+  };
+  it.each([
+    'verified text',
+    new ToolOutput([{ type: 'inputText', text: 'verified failure' }], false),
+    new ToolOutput([
+      { type: 'inputText', text: 'caption' },
+      { type: 'inputImage', imageUrl: 'data:image/png;base64,AA==' },
+      { type: 'inputAudio', audioUrl: 'data:audio/wav;base64,AA==' },
+    ]),
+  ])('uses the ordinary tool output payload for %j', async (result) => {
+    nativeReconcile.mockClear();
+    await reconcileSessionStore(store, {
+      sessionId: 'session',
+      turnId: 'turn',
+      callId: 'call',
+      result,
+    });
+    expect(nativeReconcile).toHaveBeenCalledOnce();
+    const payload = JSON.parse(nativeReconcile.mock.calls[0]![1] as string);
+    expect(payload).toEqual({
+      threadId: 'session',
+      turnId: 'turn',
+      callId: 'call',
+      result: outputOf(result),
+    });
+    expect(payload.result.success).toBe(
+      result instanceof ToolOutput ? result.success : true,
+    );
+  });
+  it('rejects malformed ToolOutput before native acquisition like an ordinary callback', async () => {
+    nativeReconcile.mockClear();
+    const result = new ToolOutput([
+      { type: 'inputImage', imageUrl: 7 as unknown as string },
+    ]);
+    expect(() => outputOf(result)).toThrow();
+    await expect(
+      reconcileSessionStore(store, {
+        sessionId: 'session',
+        turnId: 'turn',
+        callId: 'call',
+        result,
+      }),
+    ).rejects.toThrow();
+    expect(nativeReconcile).not.toHaveBeenCalled();
   });
 });

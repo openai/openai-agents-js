@@ -1,4 +1,4 @@
-import { Agent, NativeProvider, fileThreadStore } from '@openai/agents';
+import { Agent, NativeProvider, fileSessionStore } from '@openai/agents';
 
 /** Retain directory and conversation ID to resume with a fresh process. */
 export async function runCustomStorage(directory: string, resume?: string) {
@@ -10,7 +10,7 @@ export async function runCustomStorage(directory: string, resume?: string) {
     instructions: 'Answer briefly and remember this conversation.',
   });
   await using session = await agent.session({
-    storage: fileThreadStore(directory),
+    storage: fileSessionStore(directory),
     resume,
   });
   const result = await (
@@ -25,12 +25,12 @@ export async function runCustomStorage(directory: string, resume?: string) {
 // and atomic rename. It writes a full native snapshot at each durable boundary.
 // It saves canonical conversation state; it does not make tool effects atomic.
 // After a process crash, first prove that process is dead, then explicitly remove
-// `<directory>/<threadId>.lock` before reopening. Never recover a live writer.
+// `<directory>/<sessionId>.lock` before reopening. Never recover a live writer.
 // Keep the directory private: snapshots can contain prompts and tool results.
 if (typeof require !== 'undefined' && require.main === module) {
   const directory = process.argv[2];
   if (!directory)
-    throw new Error('Usage: custom-storage.ts DIRECTORY [THREAD_ID]');
+    throw new Error('Usage: custom-storage.ts DIRECTORY [SESSION_ID]');
   runCustomStorage(directory, process.argv[3])
     .then((result) => console.log(result))
     .catch((error: unknown) => {

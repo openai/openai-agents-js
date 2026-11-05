@@ -193,21 +193,45 @@
       "sha256": "8f6395a1b8d253170db019319cdaeff855ce1798efcc20eed704689fe070d994"
     },
     {
+      "path": "0049-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0050-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
+    },
+    {
+      "path": "0051-stop-token-budget-auto-compaction.patch",
+      "sha256": "f06a855f695a3514361a1044a7c9c31099cb548d19f81845845314ffd0ae5537"
+    },
+    {
       "path": "0052-scan-deep-helper-hard-links.patch",
       "sha256": "dbdc0621cb4011fab3ca7ddd6812193c53c6b49851ddb4b24fdadb0cc0d93223"
     },
     {
-      "path": "0053-native-history-durability.patch",
-      "sha256": "a83aa1fbaa0fe5892971c671b19fcdf09c4d29d0cb60e20bd5f4729db8a23f15"
+      "path": "0053-serialize-token-budget-context-commit.patch",
+      "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
     },
     {
-      "path": "0054-native-history-write-reconciliation.patch",
-      "sha256": "02abd4b0ab45907d179d315ea65063a196df6a96af7dcd7a6eb5211826543f71"
+      "path": "0054-native-history-durability.patch",
+      "sha256": "3827223728bcee81ea77abb4d5682b6075f80739671a2977f436c94412d9a08e"
     },
     {
-      "path": "0055-native-tree-finalization-before-store-close.patch",
+      "path": "0055-native-history-write-reconciliation.patch",
+      "sha256": "e8da877bf23d570c3cde2bc5a776e7cf5945b854245288137ab765376baa6647"
+    },
+    {
+      "path": "0056-native-tree-finalization-before-store-close.patch",
       "sha256": "3001b286ecaf94bde058069bf82539be1fe361712479a1706aff8b78beab9008"
+    },
+    {
+      "path": "0057-native-confirmed-remote-teardown.patch",
+      "sha256": "78b4d111fa5675b7dcbf2d47bb6f1fd174d0cddfc4ecf9d641891aadd5eb3649"
+    },
+    {
+      "path": "0058-native-metadata-durability.patch",
+      "sha256": "10136a8852249737dbf7974c579cb84faf0d36fc495fcbaeeafe66a3dfa7e3d6"
     }
   ],
-  "result_tree": "f755ef368ccb17c11cc042cf99a160906fdf31dc"
+  "result_tree": "cff59c7966c1415f80cae24a7982744f15753d95"
 }

@@ -4,10 +4,10 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import type { JsonObject, JsonValue } from '../../../src/runtime/binding';
 import type { NativeConfig } from '../../../src/runtime/config';
 
+type ResponseValue = JsonObject[] | { status: number; body: string };
 type Response =
-  | JsonObject[]
-  | { status: number; body: string }
-  | ((request: JsonObject) => JsonObject[] | Promise<JsonObject[]>);
+  | ResponseValue
+  | ((request: JsonObject) => ResponseValue | Promise<ResponseValue>);
 const servers: ModelServer[] = [];
 
 export function message(text: string): JsonObject {
@@ -62,12 +62,12 @@ export class ModelServer {
       });
       const selected = this.responses[requestIndex];
       assert(selected, 'Unexpected provider request');
-      if (typeof selected !== 'function' && !Array.isArray(selected)) {
-        response.writeHead(selected.status).end(selected.body);
-        return;
-      }
       const output =
         typeof selected === 'function' ? await selected(requestBody) : selected;
+      if (!Array.isArray(output)) {
+        response.writeHead(output.status).end(output.body);
+        return;
+      }
       const id = `response-${requestIndex + 1}`;
       const selectedUsage = this.rawUsage[requestIndex];
       const usage =

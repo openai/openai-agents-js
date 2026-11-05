@@ -11,10 +11,11 @@ import {
   NativeAgents,
   nativeGoals,
   checklist,
-  fileThreadStore,
-  reconcileThreadStore,
+  fileSessionStore,
+  reconcileSessionStore,
   tool,
-  type CanonicalThreadStore,
+  ToolOutput,
+  type SessionStore,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
@@ -113,12 +114,12 @@ describe('public native custom storage durability', () => {
   it.each(['goals', 'children', 'checklist'] as const)(
     'rejects unsupported %s before acquiring storage or dispatching work',
     async (kind) => {
-      const durable = fileThreadStore(await directory());
+      const durable = fileSessionStore(await directory());
       const server = new ModelServer([]);
       const provider = await providerFor(server);
       let acquisitions = 0;
       let effects = 0;
-      const storage: CanonicalThreadStore = {
+      const storage: SessionStore = {
         ...durable,
         acquire: async (...args) => {
           acquisitions++;
@@ -155,6 +156,67 @@ describe('public native custom storage durability', () => {
       server.assertExhausted();
     },
   );
+
+  it('rejects local reconciliation receipts for custom storage before acquiring or dispatching work', async () => {
+    const durable = fileSessionStore(await directory());
+    const server = new ModelServer([]);
+    const provider = await providerFor(server);
+    let acquisitions = 0;
+    let reads = 0;
+    let effects = 0;
+    const storage: SessionStore = {
+      ...durable,
+      acquire: async (...args) => {
+        acquisitions++;
+        return durable.acquire(...args);
+      },
+      read: async (...args) => {
+        reads++;
+        return durable.read(...args);
+      },
+    };
+    const threadId = '00000000-0000-4000-8000-000000000001';
+    const agent = new Agent({
+      instructions: 'Do work.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        tool({
+          name: 'record',
+          description: 'Record.',
+          parameters: z.object({}),
+          execute: () => {
+            effects++;
+            return 'recorded';
+          },
+        }),
+      ],
+    });
+    const failure = await agent
+      .session({
+        storage,
+        resume: threadId,
+        reconciledCalls: [
+          {
+            threadId,
+            turnId: '00000000-0000-4000-8000-000000000002',
+            callId: 'verified-call',
+            outcome: 'applied',
+            result: 'external effect verified',
+          },
+        ],
+      })
+      .catch((error) => error);
+    expect(failure).toBeInstanceOf(TypeError);
+    expect(failure.message).toMatch(
+      /reconciledCalls requires local storage and resume/,
+    );
+    expect(acquisitions).toBe(0);
+    expect(reads).toBe(0);
+    expect(effects).toBe(0);
+    await provider.close();
+    server.assertExhausted();
+  });
 
   it('cold resumes completed history in another process without repeating an effect', async () => {
     const path = await directory();
@@ -266,8 +328,8 @@ describe('public native custom storage durability', () => {
     const submitted = await first.wait('submitted');
     await first.wait('effect');
     await expect(
-      reconcileThreadStore(fileThreadStore(path), {
-        threadId: opened.id,
+      reconcileSessionStore(fileSessionStore(path), {
+        sessionId: opened.id,
         turnId: submitted.turnId,
         callId: 'ambiguous-effect',
         result: 'must not overwrite a live owner',
@@ -294,14 +356,14 @@ describe('public native custom storage durability', () => {
     }
     expect(await readFile(effects, 'utf8')).toBe('effect\n');
     const reconciliation = {
-      threadId: opened.id,
+      sessionId: opened.id,
       turnId: submitted.turnId,
       callId: 'ambiguous-effect',
       result: 'external effect verified',
     };
-    await reconcileThreadStore(fileThreadStore(path), reconciliation);
+    await reconcileSessionStore(fileSessionStore(path), reconciliation);
     await expect(
-      reconcileThreadStore(fileThreadStore(path), reconciliation),
+      reconcileSessionStore(fileSessionStore(path), reconciliation),
     ).rejects.toThrow(/pending|unresolved|already|intent/i);
     const currentServer = new ModelServer([
       (request) => {
@@ -328,7 +390,7 @@ describe('public native custom storage durability', () => {
           },
         }),
       ],
-    }).session({ storage: fileThreadStore(path), resume: opened.id });
+    }).session({ storage: fileSessionStore(path), resume: opened.id });
     expect(recovered.id).toBe(opened.id);
     expect(
       (
@@ -351,6 +413,254 @@ describe('public native custom storage durability', () => {
     currentServer.assertExhausted();
     server.assertExhausted();
   }, 45000);
+
+  it.each([
+    'transient release',
+    'lost release acknowledgment',
+    'persistent release',
+    'receipt failure',
+    'receipt and release failure',
+  ] as const)(
+    'keeps reconciliation and cleanup outcomes separate after %s',
+    async (fault) => {
+      const path = await directory();
+      const effects = join(path, 'effects');
+      const server = new ModelServer([
+        [call('record', {}, { callId: 'reconciled-effect' })],
+      ]);
+      const original = await worker(server, {
+        directory: path,
+        effects,
+        mode: 'hold-effect',
+      });
+      const opened = await original.wait('opened');
+      const submitted = await original.wait('submitted');
+      await original.wait('effect');
+      original.child.kill('SIGKILL');
+      await original.exited;
+      await rm(join(path, `${opened.id}.lock`), { recursive: true });
+      const durable = fileSessionStore(path);
+      let releases = 0;
+      let fence = '';
+      const storage: SessionStore = {
+        ...durable,
+        acquire: async (id) => {
+          fence = await durable.acquire(id);
+          return fence;
+        },
+        commit: async (...args) => {
+          if (
+            fault === 'receipt failure' ||
+            fault === 'receipt and release failure'
+          )
+            throw new Error('fixture reconciliation receipt unavailable');
+          await durable.commit(...args);
+        },
+        release: async (...args) => {
+          releases++;
+          if (
+            (releases === 1 && fault !== 'receipt failure') ||
+            fault === 'persistent release' ||
+            fault === 'receipt and release failure'
+          ) {
+            if (fault === 'lost release acknowledgment')
+              await durable.release(...args);
+            throw new Error('fixture reconciliation release unavailable');
+          }
+          await durable.release(...args);
+        },
+      };
+      const reconciliation = {
+        sessionId: opened.id,
+        turnId: submitted.turnId,
+        callId: 'reconciled-effect',
+        result: 'externally verified completion',
+      };
+      const outcome = reconcileSessionStore(storage, reconciliation);
+      if (
+        fault === 'persistent release' ||
+        fault === 'receipt and release failure'
+      ) {
+        if (fault === 'receipt and release failure')
+          await expect(outcome).rejects.toThrow(
+            /reconciliation failed:.*canonical storage operation failed.*writer cleanup failed:.*canonical storage operation failed/s,
+          );
+        else
+          await expect(outcome).rejects.toThrow(
+            /canonical storage operation failed.*release retry failed/s,
+          );
+        // Both release attempts failed before unlocking; explicitly clean up
+        // after the standalone helper has returned and no owner is running.
+        await durable.release(opened.id, fence);
+        if (fault === 'receipt and release failure')
+          await reconcileSessionStore(durable, reconciliation);
+      } else if (fault === 'receipt failure') {
+        await expect(outcome).rejects.toThrow(
+          /canonical storage operation failed/,
+        );
+        await reconcileSessionStore(durable, reconciliation);
+      } else {
+        await expect(outcome).resolves.toBeUndefined();
+      }
+      expect(releases).toBe(fault === 'receipt failure' ? 1 : 2);
+      await expect(
+        reconcileSessionStore(durable, reconciliation),
+      ).rejects.toThrow(/unresolved|already|intent/i);
+      const reopened = await worker(server, {
+        directory: path,
+        effects,
+        mode: 'hold-open',
+        resume: opened.id,
+      });
+      const restored = await reopened.wait('opened');
+      expect(
+        restored.history.filter(
+          (item: any) =>
+            item.type === 'function_call_output' &&
+            item.callId === 'reconciled-effect',
+        ),
+      ).toHaveLength(1);
+      reopened.child.send('close');
+      await reopened.wait('done');
+      await reopened.exited;
+      expect(await readFile(effects, 'utf8')).toBe('effect\n');
+      server.assertExhausted();
+    },
+    45000,
+  );
+
+  it.each(['failed text', 'image', 'mixed media'] as const)(
+    'restores the ordinary model-visible %s outcome after reconciliation',
+    async (kind) => {
+      const imageUrl =
+        'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+      const audioUrl =
+        'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=';
+      const result =
+        kind === 'failed text'
+          ? new ToolOutput(
+              [{ type: 'inputText', text: 'verified external failure' }],
+              false,
+            )
+          : kind === 'image'
+            ? ToolOutput.image(imageUrl)
+            : new ToolOutput([
+                { type: 'inputText', text: 'verified caption' },
+                { type: 'inputImage', imageUrl },
+                { type: 'inputAudio', audioUrl },
+              ]);
+      const ordinary = new ModelServer([
+        [call('record', {}, { callId: 'parity-effect' })],
+        [message('ordinary result accepted')],
+      ]);
+      const ordinaryProvider = await providerFor(ordinary);
+      const normal = await new Agent({
+        instructions: 'Use record.',
+        model: 'gpt-5',
+        provider: ordinaryProvider,
+        tools: [
+          tool({
+            name: 'record',
+            description: 'Record.',
+            parameters: z.object({}),
+            execute: () => result,
+          }),
+        ],
+      }).session({ storage: fileSessionStore(await directory()) });
+      await (await normal.submit('Record.')).wait();
+      const normalHistory = await history(normal);
+      const normalOutput = (
+        ordinary.requests[1].input as Array<Record<string, unknown>>
+      ).find(
+        (item) =>
+          item.type === 'function_call_output' &&
+          item.call_id === 'parity-effect',
+      )?.output;
+      expect(normalOutput).toBeDefined();
+      await normal.close();
+      await ordinaryProvider.close();
+      ordinary.assertExhausted();
+
+      const path = await directory();
+      const effects = join(path, 'effects');
+      const crashed = new ModelServer([
+        [call('record', {}, { callId: 'parity-effect' })],
+      ]);
+      const original = await worker(crashed, {
+        directory: path,
+        effects,
+        mode: 'hold-effect',
+      });
+      const opened = await original.wait('opened');
+      const submitted = await original.wait('submitted');
+      await original.wait('effect');
+      original.child.kill('SIGKILL');
+      await original.exited;
+      await rm(join(path, `${opened.id}.lock`), { recursive: true });
+      await reconcileSessionStore(fileSessionStore(path), {
+        sessionId: opened.id,
+        turnId: submitted.turnId,
+        callId: 'parity-effect',
+        result,
+      });
+      const resumed = new ModelServer([
+        [message('reconciled result accepted')],
+      ]);
+      const resumedProvider = await providerFor(resumed);
+      let replayedEffects = 0;
+      const recovered = await new Agent({
+        instructions: 'Use record when requested.',
+        model: 'gpt-5',
+        provider: resumedProvider,
+        tools: [
+          tool({
+            name: 'record',
+            description: 'Record.',
+            parameters: z.object({}),
+            execute: () => {
+              replayedEffects++;
+              return result;
+            },
+          }),
+        ],
+      }).session({ storage: fileSessionStore(path), resume: opened.id });
+      const restored = await history(recovered);
+      const originalReceipt = normalHistory.find(
+        (item) =>
+          item.type === 'function_call_output' &&
+          item.callId === 'parity-effect',
+      );
+      const reconciledReceipt = restored.filter(
+        (item) =>
+          item.type === 'function_call_output' &&
+          item.callId === 'parity-effect',
+      );
+      expect(reconciledReceipt).toHaveLength(1);
+      const restoredReceipt = reconciledReceipt[0];
+      if (
+        originalReceipt?.type !== 'function_call_output' ||
+        restoredReceipt?.type !== 'function_call_output'
+      )
+        throw new Error('Expected ordinary and reconciled tool receipts');
+      expect(restoredReceipt.output).toEqual(originalReceipt.output);
+      await (await recovered.submit('Use the verified result.')).wait();
+      const restoredOutput = (
+        resumed.requests[0].input as Array<Record<string, unknown>>
+      ).find(
+        (item) =>
+          item.type === 'function_call_output' &&
+          item.call_id === 'parity-effect',
+      )?.output;
+      expect(restoredOutput).toEqual(normalOutput);
+      expect(replayedEffects).toBe(0);
+      expect(await readFile(effects, 'utf8')).toBe('effect\n');
+      await recovered.close();
+      await resumedProvider.close();
+      crashed.assertExhausted();
+      resumed.assertExhausted();
+    },
+    45000,
+  );
 
   it('does not treat canceled native cleanup as a committed callback result', async () => {
     const path = await directory();
@@ -385,11 +695,11 @@ describe('public native custom storage durability', () => {
   }, 45000);
 
   it('fails opening before model dispatch when the store read is unavailable', async () => {
-    const durable = fileThreadStore(await directory());
+    const durable = fileSessionStore(await directory());
     const server = new ModelServer([]);
     const provider = await providerFor(server);
     let releases = 0;
-    const storage: CanonicalThreadStore = {
+    const storage: SessionStore = {
       acquire: (...args) => durable.acquire(...args),
       commit: (...args) => durable.commit(...args),
       read: async () => {
@@ -413,10 +723,10 @@ describe('public native custom storage durability', () => {
   it.each(['commit', 'flush'] as const)(
     'does not dispatch the callback when its intent %s fails',
     async (failurePoint) => {
-      const durable = fileThreadStore(await directory());
+      const durable = fileSessionStore(await directory());
       let armed = false;
       let effects = 0;
-      const storage: CanonicalThreadStore = {
+      const storage: SessionStore = {
         acquire: (...args) => durable.acquire(...args),
         read: (...args) => durable.read(...args),
         release: (...args) => durable.release(...args),
@@ -470,10 +780,10 @@ describe('public native custom storage durability', () => {
   );
 
   it('reports a failed initial write before model or tool dispatch', async () => {
-    const durable = fileThreadStore(await directory());
+    const durable = fileSessionStore(await directory());
     const server = new ModelServer([]);
     const provider = await providerFor(server);
-    const storage: CanonicalThreadStore = {
+    const storage: SessionStore = {
       acquire: (...args) => durable.acquire(...args),
       read: (...args) => durable.read(...args),
       release: (...args) => durable.release(...args),
@@ -500,11 +810,11 @@ describe('public native custom storage durability', () => {
     'reports %s and retries close without discarding committed history',
     async (failurePoint) => {
       const path = await directory();
-      const durable = fileThreadStore(path);
+      const durable = fileSessionStore(path);
       const server = new ModelServer([[message('durable answer')]]);
       const provider = await providerFor(server);
       let releases = 0;
-      const storage: CanonicalThreadStore = {
+      const storage: SessionStore = {
         acquire: (...args) => durable.acquire(...args),
         read: (...args) => durable.read(...args),
         commit: (...args) => durable.commit(...args),
@@ -536,7 +846,7 @@ describe('public native custom storage durability', () => {
         instructions: 'Answer.',
         model: 'gpt-5',
         provider: current,
-      }).session({ storage: fileThreadStore(path), resume: id });
+      }).session({ storage: fileSessionStore(path), resume: id });
       expect(await history(reopened)).toEqual(expected);
       await reopened.close();
       await current.close();
@@ -599,12 +909,12 @@ describe('public native custom storage durability', () => {
   );
 
   it('stops before an effect when a committed intent loses both write acknowledgments', async () => {
-    const durable = fileThreadStore(await directory());
+    const durable = fileSessionStore(await directory());
     let armed = false;
     let attempts = 0;
     let effects = 0;
-    let original: Parameters<CanonicalThreadStore['commit']> | undefined;
-    const storage: CanonicalThreadStore = {
+    let original: Parameters<SessionStore['commit']> | undefined;
+    const storage: SessionStore = {
       acquire: (...args) => durable.acquire(...args),
       read: (...args) => durable.read(...args),
       release: (...args) => durable.release(...args),
@@ -660,11 +970,11 @@ describe('public native custom storage durability', () => {
     'handles %s at the tool completion boundary without duplicate effects',
     async (fault) => {
       const path = await directory();
-      const durable = fileThreadStore(path);
+      const durable = fileSessionStore(path);
       let armed = false;
       let injected = 0;
       let effects = 0;
-      const storage: CanonicalThreadStore = {
+      const storage: SessionStore = {
         acquire: (...args) => durable.acquire(...args),
         read: (...args) => durable.read(...args),
         release: (...args) => durable.release(...args),
@@ -721,7 +1031,7 @@ describe('public native custom storage durability', () => {
         instructions: 'Use record.',
         model: 'gpt-5',
         provider: reopenedProvider,
-      }).session({ storage: fileThreadStore(path), resume: id });
+      }).session({ storage: fileSessionStore(path), resume: id });
       if (fault === 'commit rejection') {
         await expect(opening).rejects.toThrow(/unknown|unresolved|reconcil/i);
         await reopenedProvider.close();

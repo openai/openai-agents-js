@@ -11,7 +11,7 @@ use codex_core_api::{CodexThread, Config, ManagedLocalExecCancelFailure, WithTur
 use codex_extension_api::{
     ExtensionData, ExtensionDataInit, ExtensionFuture, ThreadIdleCause, ThreadIdleInput,
     ThreadLifecycleContributor, ThreadStopInput, TurnAbortInput, TurnErrorInput,
-    TurnLifecycleContributor, TurnStartInput, TurnStopInput,
+    TurnLifecycleContributor, TurnSamplingStop, TurnStartInput, TurnStopInput,
 };
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::{EventMsg, Op};
@@ -43,6 +43,7 @@ pub(crate) struct Turn {
     admission: watch::Sender<Admission>,
     steering: Option<Steering>,
     graceful: AtomicBool,
+    sampling_stop: TurnSamplingStop,
     input_recorded: AtomicBool,
     terminal: AtomicBool,
     local_exec_cancel_failed: AtomicBool,
@@ -128,6 +129,12 @@ impl Turn {
 
     pub(crate) fn request_graceful(&self) {
         self.graceful.store(true, Ordering::Release);
+    }
+    pub(crate) fn stop_sampling(&self) {
+        self.sampling_stop.request();
+    }
+    pub(crate) fn sampling_stopped(&self) -> bool {
+        self.sampling_stop.requested()
     }
     pub(crate) fn born_fenced(&self) -> bool {
         self.born_fenced
@@ -340,6 +347,10 @@ impl Settlement {
             !thread.managed_local_exec_cancel_failed(&receipt.id),
             LOCAL_COMMAND_CLEANUP_FAILED
         );
+        anyhow::ensure!(
+            !thread.remote_process_termination_failed(),
+            "Remote process termination attempt was not acknowledged"
+        );
         {
             let current = self.current.lock().expect("turn settlement poisoned");
             anyhow::ensure!(
@@ -476,6 +487,18 @@ impl Settlement {
 pub(crate) struct Contributor;
 
 impl ThreadLifecycleContributor<Config> for Contributor {
+    fn on_thread_start<'a>(
+        &'a self,
+        input: codex_extension_api::ThreadStartInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            // Runtime-only policy covers startup and detached child cleanup too.
+            input
+                .thread_store
+                .get_or_init(codex_core_api::ConfirmRemoteProcessTermination::default);
+        })
+    }
+
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(settlement) = input.thread_store.get::<Settlement>() {
@@ -548,11 +571,11 @@ impl TurnLifecycleContributor for Contributor {
             let owner = input
                 .thread_store
                 .get::<crate::native_interception::Control>();
-            if let Some(owner) = &owner {
-                input
-                    .turn_store
-                    .insert(owner.graph().close_sampling.clone());
-            }
+            let sampling_stop = owner
+                .as_ref()
+                .map(|owner| owner.graph().close_sampling.for_turn())
+                .unwrap_or_default();
+            input.turn_store.insert(sampling_stop.clone());
             let graph = owner
                 .as_ref()
                 .map(|control| control.graph().state.lock().expect("graph stop poisoned"));
@@ -579,6 +602,7 @@ impl TurnLifecycleContributor for Contributor {
                 admission: watch::channel(Admission::Pending).0,
                 steering: managed_steering.then(Steering::default),
                 graceful: AtomicBool::new(false),
+                sampling_stop,
                 input_recorded: AtomicBool::new(false),
                 terminal: AtomicBool::new(false),
                 local_exec_cancel_failed: AtomicBool::new(false),
