@@ -7,10 +7,62 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, URL } from 'node:url';
 import { expect, onTestFinished, test } from 'vitest';
+import { verifyProducer, verifyUpload } from './pin-native-bundle.mjs';
+
+test('a successful caller with Alpha job names cannot mint a native pin', () => {
+  const repository = { full_name: 'openai/openai-agents-js' };
+  const run = {
+    conclusion: 'success',
+    repository,
+    head_repository: repository,
+    event: 'push',
+    workflow_id: 1,
+    path: '.github/workflows/alpha-release-artifacts.yml',
+    head_branch: 'ci/native-bundle/test',
+    head_sha: 'a'.repeat(40),
+  };
+  expect(() => verifyProducer(run, 1)).not.toThrow();
+  for (const change of [
+    { path: '.github/workflows/caller.yml' },
+    { workflow_id: 2 },
+    { event: 'pull_request' },
+    { head_branch: 'other' },
+    { head_repository: { full_name: 'fork/openai-agents-js' } },
+  ])
+    expect(() => verifyProducer({ ...run, ...change }, 1)).toThrow();
+});
+
+test('the selected artifact ID and digest must both come from the platform upload step', () => {
+  const job = 'Package and test (linux-x64)';
+  const step = 'Upload the native bundle for pinning';
+  const sha256 = 'a'.repeat(64);
+  const asset = { name: 'bundle.tar.gz', id: 12, digest: 'sha256:' + sha256 };
+  const prefix = job + '\t' + step + '\t2026-01-01T00:00:00Z ';
+  const finalized =
+    prefix + 'Artifact bundle.tar.gz successfully finalized. Artifact ID 12';
+  const checksum = prefix + 'SHA256 digest of uploaded artifact is ' + sha256;
+  expect(verifyUpload(job, asset, finalized + '\n' + checksum)).toEqual({
+    id: 12,
+    sha256,
+  });
+  for (const forged of [
+    finalized.replace(step, 'Other step'),
+    finalized.replace(job, 'Other job'),
+    finalized.replace('ID 12', 'ID 13'),
+  ])
+    expect(() => verifyUpload(job, asset, forged + '\n' + checksum)).toThrow();
+  expect(() =>
+    verifyUpload(
+      job,
+      asset,
+      finalized + '\n' + checksum.replace(sha256, 'b'.repeat(64)),
+    ),
+  ).toThrow();
+});
 
 test('native reuse requires unchanged inputs and the exact bytes authorized by the PR base', () => {
   const temp = mkdtempSync(join(tmpdir(), 'agents-native-pin-'));
@@ -99,7 +151,15 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
   commit('proposed pin');
   expect(restore(base).output).toContain('restored=false');
   git('checkout', base, '--', '.github/native-bundle.json');
-  writeFileSync(join(native, 'new.rs'), '// new compiler input\n');
-  commit('additional native source');
-  expect(restore(base).output).toContain('restored=false');
+  for (const path of [
+    'packages/agents/native/new.rs',
+    'Cargo.toml',
+    'packages/agents/bin/extra',
+  ]) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), 'new tracked build input\n');
+    commit('additional build input');
+    expect(restore(base).output).toContain('restored=false');
+    git('rm', '-q', path);
+  }
 });

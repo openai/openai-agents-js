@@ -94,9 +94,11 @@ The runner isolates temporary files and Git configuration, passes only required 
 
 ### Pinning the alpha native runtime
 
-CI for `feat/codex-harness` builds and tests the current SDK on Linux, macOS and Windows. For SDK-only changes, it downloads the native bundle in `.github/native-bundle.json` and verifies its SHA-256. A changed native input, a missing or expired bundle, or a pull request that edits the pin triggers a fresh native build.
+CI for `feat/codex-harness` builds and tests the current SDK on Linux, macOS and Windows. For SDK-only changes, it downloads the native bundle in `.github/native-bundle.json` and verifies its SHA-256. Changed native inputs, missing or expired artifacts, and pull requests that edit the pin or lack the exact event base build from source.
 
-To update the pin, choose a successful run that built all three native bundles from a source revision you reviewed. Run `node scripts/pin-native-bundle.mjs RUN_ID` from the repository root and commit the generated manifest. The artifacts expire after 90 days. To renew a pin for unchanged native code, remove the manifest on a branch and use its fresh PR build to generate the replacement.
+To update the pin, choose a successful Alpha push build on `feat/codex-harness` that compiled all three platforms. To build before merge or renew an expiring pin, commit the proposed changes on a branch with the manifest removed and push it to `ci/native-bundle/<name>`. The producer branch must match the complete proposed tree except for the manifest. The artifacts expire after 90 days.
+
+Run `node scripts/pin-native-bundle.mjs RUN_ID` from the repository root and commit the generated manifest. It records the producer commit and checks each artifact against the platform's upload step. CI runs `node scripts/pin-native-bundle.mjs --check` when a PR proposes a pin, including hand-edited manifests.
 
 ### Code style
 
