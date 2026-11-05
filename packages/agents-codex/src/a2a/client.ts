@@ -92,6 +92,11 @@ async function boundedResponse(
     await response.body?.cancel().catch(() => {});
     throw new A2AError('unavailable');
   }
+  const encoding = response.headers.get('Content-Encoding');
+  if (encoding !== null && encoding.toLowerCase() !== 'identity') {
+    await response.body.cancel().catch(() => {});
+    throw new A2AError('unsupported');
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -167,6 +172,7 @@ export async function connectA2A(
         ...(init.signal ? [init.signal] : []),
       ]);
       const headers = new Headers(init.headers);
+      headers.set('Accept-Encoding', 'identity');
       if (credential !== undefined && parent)
         for (const [key, value] of Object.entries(parent.toHeaders()))
           headers.set(key, value);

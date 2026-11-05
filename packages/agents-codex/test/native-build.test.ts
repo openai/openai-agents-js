@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
@@ -350,6 +350,7 @@ describe.skipIf(process.platform === 'win32')(
           join(native, 'Cargo.lock'),
           '[[package]]\nname = "v8"\nversion = "1.2.3"\n',
         );
+        const downloads = host === 'x86_64-unknown-linux-gnu' && !configured;
         const windows = host.endsWith('-windows-msvc');
         const names = [
           windows
@@ -360,7 +361,7 @@ describe.skipIf(process.platform === 'win32')(
         const cache = join(native, '.cache/v8');
         mkdirSync(cache, { recursive: true });
         const assets = names.map((name) => {
-          writeFileSync(join(cache, name), name);
+          if (!downloads) writeFileSync(join(cache, name), name);
           return {
             name,
             digest: 'sha256:' + createHash('sha256').update(name).digest('hex'),
@@ -369,6 +370,26 @@ describe.skipIf(process.platform === 'win32')(
         writeFileSync(
           join(scripts, 'v8-release.json'),
           JSON.stringify({ version: '1.2.3', assets }),
+        );
+        const fetchLog = join(dir, 'fetch.jsonl');
+        const preload = join(dir, 'fetch.mjs');
+        writeFileSync(
+          preload,
+          `import { appendFileSync } from 'node:fs';
+const attempts = new Map();
+globalThis.fetch = async (url) => {
+  const name = new URL(url).pathname.split('/').pop();
+  const attempt = (attempts.get(name) || 0) + 1;
+  attempts.set(name, attempt);
+  const mode = process.env.TEST_V8_DOWNLOAD;
+  const firstArchiveRetry = mode === 'retry' && name.startsWith('lib') && attempt === 1;
+  let status = 200;
+  if (mode === 'exhausted' || firstArchiveRetry) status = 504;
+  if (mode === '404') status = 404;
+  appendFileSync(process.env.TEST_FETCH_LOG, JSON.stringify({ name, status }) + '\\n');
+  return new Response(mode === 'digest' ? 'incorrect bytes' : name, { status });
+};
+`,
         );
         const log = join(dir, 'cargo-builds.jsonl');
         writeFileSync(
@@ -405,6 +426,8 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           ...process.env,
           PATH: tools + delimiter + process.env.PATH,
           TEST_RUST_HOST: host,
+          TEST_V8_DOWNLOAD: 'retry',
+          TEST_FETCH_LOG: fetchLog,
           TEST_CARGO_LOG: log,
           CARGO_TARGET_DIR: join(dir, 'target'),
         };
@@ -415,6 +438,12 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         delete env.RUSTY_V8_ARCHIVE;
         delete env.RUSTY_V8_SRC_BINDING_PATH;
         if (configured) env.CARGO_BUILD_TARGET = host;
+        const invoke = (args: string[], extraEnv: NodeJS.ProcessEnv = {}) =>
+          spawnSync(
+            process.execPath,
+            ['--import', preload, join(scripts, 'native.mjs'), ...args],
+            { env: { ...env, ...extraEnv }, encoding: 'utf8' },
+          );
         const suffix = windows ? '.exe' : '';
         const bin = join(pkg, 'bin');
         const build = [
@@ -443,11 +472,20 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
               writeFileSync(join(bin, alias + suffix), 'old helper');
             }
           }
-          execFileSync(
-            process.execPath,
-            [join(scripts, 'native.mjs'), ...args],
-            { env, stdio: 'pipe' },
-          );
+          const result = invoke(args);
+          expect(result.status, result.stderr).toBe(0);
+        }
+        if (downloads) {
+          const requests = readFileSync(fetchLog, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line));
+          expect(requests.map(({ status }) => status)).toEqual([504, 200, 200]);
+          for (const name of names)
+            expect(readFileSync(join(cache, name), 'utf8')).toBe(name);
+          expect(readdirSync(cache).sort()).toEqual([...names].sort());
+        } else {
+          expect(() => readFileSync(fetchLog)).toThrow();
         }
         const builds: { args: string[]; output: string; jobs?: string }[] =
           readFileSync(log, 'utf8')
@@ -617,6 +655,26 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         expect(readFileSync(join(bin, 'local-notes.txt'), 'utf8')).toBe(
           'keep unrelated work',
         );
+        if (downloads) {
+          const cargoLog = readFileSync(log, 'utf8');
+          for (const mode of ['exhausted', '404', 'digest']) {
+            for (const name of names) rmSync(join(cache, name));
+            rmSync(fetchLog);
+            const result = invoke(build, { TEST_V8_DOWNLOAD: mode });
+            expect(result.status).toBe(1);
+            expect(result.stderr).toContain(
+              mode === 'digest'
+                ? 'V8 SHA-256 mismatch'
+                : `V8 download failed (${mode === '404' ? 404 : 504})`,
+            );
+            expect(
+              readFileSync(fetchLog, 'utf8').trim().split('\n'),
+            ).toHaveLength(mode === 'exhausted' ? 3 : 1);
+            expect(readFileSync(log, 'utf8')).toBe(cargoLog);
+            expect(readdirSync(cache)).toEqual([]);
+            for (const name of names) writeFileSync(join(cache, name), name);
+          }
+        }
         // A previous receipt cannot qualify a failed build with changed inputs.
         expect(() =>
           execFileSync(
