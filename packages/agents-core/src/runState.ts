@@ -1836,7 +1836,7 @@ type CurrentResponseGeneratedItemOwnership = z.infer<
 
 const guardrailFunctionOutputSchema = z.object({
   tripwireTriggered: z.boolean(),
-  outputInfo: z.any(),
+  outputInfo: z.any().optional(),
 });
 
 const toolGuardrailBehaviorSchema = z.discriminatedUnion('type', [
