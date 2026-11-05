@@ -45,7 +45,7 @@ The provider requires separate callbacks for current authorization, credential r
 
 Ordinary function tools use native execution and cleanup. The resumable profile supports one settled root manual request. Native `Session.suspend()` owns checkpoint admission; live callbacks, multiple pending requests, and unsupported nested states cannot become resumable A2A input requests. Before consuming a reply, the adapter checks its challenge and generation and validates its answer against the current manual declaration. Invalid answers preserve the waiting checkpoint. A fresh native Session restores the checkpoint and issues a current reply grant. A repeated, foreign, or changed declaration cannot reuse that grant.
 
-Explicit cancellation closes the active native Session and joins its cleanup. Closing an HTTP observer does not cancel the task. Cancellation cannot undo external effects that already completed. A settled native completion may win a concurrent cancellation.
+Explicit cancellation closes the active native Session and joins its cleanup. If cleanup cannot confirm termination, the adapter retains an unknown outcome and rejects cancellation acknowledgment. Host-side cancellation during factory setup retires an admitted fresh task without opening a Session; HTTP cancellation requires an already published Task. Closing an HTTP observer does not cancel the task. Cancellation cannot undo external effects that already completed. A settled native completion may win a concurrent cancellation.
 
 ## Host storage and recovery
 

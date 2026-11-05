@@ -11,6 +11,7 @@ import { Agent, manualTool, tool } from '../src/index';
 import { text, toolCall, withScriptedResponses } from '../src/testing/index';
 import { AgentCard, Message, Part, Role, Task, TaskState } from '@a2a-js/sdk';
 import {
+  DefaultExecutionEventBus,
   DefaultRequestHandler,
   JsonRpcTransportHandler,
   ServerCallContext,
@@ -106,6 +107,266 @@ const input = (parts: Part[], taskId = '', contextId = '') => ({
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'A2A with native Sessions and the official HTTP handler',
   () => {
+    it.each([false, true])(
+      'retires a fresh factory cancellation with commit failure=%s',
+      async (commitFailure) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        await withScriptedResponses([], async (model) => {
+          const entered = Promise.withResolvers<void>(),
+            release = Promise.withResolvers<void>();
+          let owners = 0;
+          class FreshStore extends FileA2AStore {
+            override async own<T>(
+              scope: NativeA2ABinding,
+              run: (claim: NativeA2AClaim) => Promise<T>,
+            ): Promise<T> {
+              const owner = ++owners;
+              return super.own(scope, (claim) =>
+                run({
+                  ...claim,
+                  commit: async (expected, record) => {
+                    if (owner === 2 && commitFailure)
+                      throw new Error('retirement commit failed');
+                    await claim.commit(expected, record);
+                  },
+                }),
+              );
+            }
+          }
+          const store = new FreshStore(),
+            agent = new Agent({
+              instructions: 'Answer.',
+              model: 'gpt-5.5',
+              provider: model.provider,
+            });
+          const sessions = vi.spyOn(agent, 'session');
+          let cancel!: () => Promise<void>,
+            taskId = '';
+          const native = new NativeA2AExecutor({
+            store,
+            agentFactory: async (scope) => {
+              taskId = scope.taskId;
+              entered.resolve();
+              await release.promise;
+              return { agent, context: undefined };
+            },
+          });
+          const remote = await host(store, {
+            execute: async (request, bus) => {
+              cancel = () => native.cancelTask(request.taskId, bus);
+              await native.execute(request, bus);
+            },
+            cancelTask: native.cancelTask,
+          });
+          try {
+            const sending = remote.client
+              .sendMessage(input([Part.fromJSON({ text: 'fresh' })]))
+              .then(
+                (value) => ({ value }),
+                (error) => ({ error }),
+              );
+            await entered.promise;
+            // The host has the task ID from its factory before the official handler can expose a Task.
+            expect(await store.load(taskId, context)).toBeUndefined();
+            const cancellation = cancel().then(
+              () => true,
+              () => false,
+            );
+            release.resolve();
+            expect(await cancellation).toBe(!commitFailure);
+            const result = await sending;
+            if (commitFailure) {
+              expect('error' in result).toBe(true);
+              expect(store.record(taskId, context)).toBeUndefined();
+            } else {
+              expect(
+                'value' in result &&
+                  'id' in result.value &&
+                  result.value.status?.state,
+              ).toBe(TaskState.TASK_STATE_CANCELED);
+              const record = store.record(taskId, context)!;
+              expect(record.state).toBe('canceled');
+              expect(record.generation).toBe(1);
+              expect(record.checkpoint).toBeUndefined();
+              expect(record.desired.history[0].parts[0].content).toEqual({
+                $case: 'text',
+                value: 'fresh',
+              });
+              expect(await store.load(taskId, context)).toEqual(record.desired);
+              await native.recover(record.binding, context);
+              expect(store.record(taskId, context)).toEqual(record);
+            }
+            expect(sessions).not.toHaveBeenCalled();
+            expect(model.requests).toHaveLength(0);
+          } finally {
+            release.resolve();
+            await remote.close();
+          }
+        });
+      },
+      30000,
+    );
+
+    it.each(
+      ['completion', 'execution failure', 'cancellation'].flatMap((phase) =>
+        [false, true].map((closeFailure) => ({ phase, closeFailure })),
+      ),
+    )(
+      'publishes the durable $phase outcome with close failure=$closeFailure',
+      async ({ phase, closeFailure }) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        await withScriptedResponses(
+          phase === 'completion'
+            ? [[text('done')]]
+            : phase === 'execution failure'
+              ? [
+                  [
+                    toolCall('decision', {}, { callId: 'one' }),
+                    toolCall('decision', {}, { callId: 'two' }),
+                  ],
+                ]
+              : [[toolCall('work', {}, { callId: 'work' })]],
+          async (model) => {
+            const entered = Promise.withResolvers<void>(),
+              stopped = Promise.withResolvers<void>();
+            const store = new FileA2AStore();
+            const decision = manualTool({
+              name: 'decision',
+              description: 'Choose.',
+              parameters: z.strictObject({}),
+              result: z.boolean(),
+            });
+            const work = tool({
+              name: 'work',
+              description: 'Wait.',
+              parameters: z.strictObject({}),
+              execute: async (_args, ctx) => {
+                entered.resolve();
+                await new Promise<void>((resolve) => {
+                  if (ctx.signal.aborted) resolve();
+                  else
+                    ctx.signal.addEventListener('abort', () => resolve(), {
+                      once: true,
+                    });
+                });
+                ctx.signal.throwIfAborted();
+                return 'unexpected';
+              },
+            });
+            const agent = new Agent({
+              instructions: 'Work.',
+              model: 'gpt-5.5',
+              provider: model.provider,
+              tools:
+                phase === 'execution failure'
+                  ? [decision]
+                  : phase === 'cancellation'
+                    ? [work]
+                    : [],
+            });
+            const open = agent.session.bind(agent);
+            const sessions = vi
+              .spyOn(agent, 'session')
+              .mockImplementation(async (options) => {
+                const session = await open(options),
+                  close = session.close.bind(session);
+                if (closeFailure)
+                  vi.spyOn(session, 'close').mockImplementation(async () => {
+                    await close();
+                    throw new Error('private retained close failure');
+                  });
+                return session;
+              });
+            const native = new NativeA2AExecutor({
+              store,
+              agentFactory: async () => ({ agent, context: undefined }),
+            });
+            let ownerFailure: unknown;
+            const remote = await host(store, {
+              execute: async (request, bus) => {
+                try {
+                  await native.execute(request, bus);
+                } catch (error) {
+                  ownerFailure = error;
+                  throw error;
+                } finally {
+                  stopped.resolve();
+                }
+              },
+              cancelTask: native.cancelTask,
+            });
+            try {
+              const created = await remote.client.sendMessage(
+                input([Part.fromJSON({ text: 'begin' })]),
+              );
+              if (!('id' in created)) throw new Error('Expected Task');
+              if (phase === 'cancellation') {
+                await entered.promise;
+                const cancellation = remote.client.cancelTask({
+                  tenant: '',
+                  id: created.id,
+                  metadata: undefined,
+                });
+                if (closeFailure) await expect(cancellation).rejects.toThrow();
+                else
+                  expect((await cancellation).status?.state).toBe(
+                    TaskState.TASK_STATE_CANCELED,
+                  );
+              }
+              await stopped.promise;
+              const record = store.record(created.id, context)!;
+              expect(record.state).toBe(
+                closeFailure
+                  ? 'unknown'
+                  : phase === 'completion'
+                    ? 'completed'
+                    : phase === 'cancellation'
+                      ? 'canceled'
+                      : 'failed',
+              );
+              expect(record.desired.status?.state).toBe(
+                closeFailure || phase === 'execution failure'
+                  ? TaskState.TASK_STATE_FAILED
+                  : phase === 'completion'
+                    ? TaskState.TASK_STATE_COMPLETED
+                    : TaskState.TASK_STATE_CANCELED,
+              );
+              if (closeFailure) {
+                expect(ownerFailure).toBeDefined();
+                expect(record.desired.metadata?.['agents.a2a.outcome']).toBe(
+                  'unknown',
+                );
+                expect(record.checkpoint).toBeUndefined();
+                expect(
+                  JSON.stringify(Task.toJSON(record.desired)),
+                ).not.toContain('private retained close failure');
+                await expect(
+                  remote.client.cancelTask({
+                    tenant: '',
+                    id: created.id,
+                    metadata: undefined,
+                  }),
+                ).rejects.toThrow();
+                await expect(
+                  native.cancelTask(created.id, new DefaultExecutionEventBus()),
+                ).rejects.toThrow();
+                await native.recover(record.binding, context);
+                expect(store.record(created.id, context)).toEqual(record);
+              }
+              expect(await store.load(created.id, context)).toEqual(
+                record.desired,
+              );
+              expect(sessions).toHaveBeenCalledTimes(1);
+              expect(model.requests).toHaveLength(1);
+            } finally {
+              await remote.close();
+            }
+          },
+        );
+      },
+      30000,
+    );
+
     it('publishes validated structured output with the shared result wrapper', async () => {
       await withScriptedResponses([[text('{"value":7}')]], async (model) => {
         const store = new FileA2AStore();
@@ -844,6 +1105,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       'claim failure',
       'commit failure',
       'binding mismatch',
+      'desired task mismatch',
+      'desired context mismatch',
       'missing record',
       'nonwaiting record',
     ] as const)(
@@ -890,6 +1153,8 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                         if (mode === 'missing record') return undefined;
                         if (
                           mode === 'binding mismatch' ||
+                          mode === 'desired task mismatch' ||
+                          mode === 'desired context mismatch' ||
                           mode === 'nonwaiting record'
                         ) {
                           if (!record)
@@ -900,6 +1165,19 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                               binding: {
                                 ...record.binding,
                                 principal: 'foreign',
+                              },
+                            };
+                          if (
+                            mode === 'desired task mismatch' ||
+                            mode === 'desired context mismatch'
+                          )
+                            return {
+                              ...record,
+                              desired: {
+                                ...record.desired,
+                                ...(mode === 'desired task mismatch'
+                                  ? { id: 'foreign-task' }
+                                  : { contextId: 'foreign-context' }),
                               },
                             };
                           return { ...record, state: 'claimed' };

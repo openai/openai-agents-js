@@ -176,6 +176,7 @@ export class NativeA2AExecutor<
     const settled = Promise.withResolvers<void>();
     void settled.promise.catch(() => {});
     let failure: A2AError | undefined;
+    let initialContext: RequestContext | undefined;
     this.#active.set(scope.taskId, { controller, done: settled.promise });
     try {
       await this.#options.store.own(scope, async (claim) => {
@@ -206,6 +207,7 @@ export class NativeA2AExecutor<
         if (record && record.state !== 'waiting')
           throw new A2AError('unsupported');
         const input = record ? undefined : a2aInput(context.userMessage.parts);
+        if (!record && !context.task) initialContext = context;
         const setup = await this.#options.agentFactory(scope, context.context);
         await current();
         const tools = [...setup.agent.tools];
@@ -428,21 +430,36 @@ export class NativeA2AExecutor<
             await publish('completed', complete);
           }
         } catch (error) {
+          let cleanupFailed = false;
           if (session && !closed) {
-            await session.close();
-            closed = true;
+            try {
+              await session.close();
+            } catch {
+              cleanupFailed = true;
+            } finally {
+              closed = true;
+            }
           }
           await claim.current();
           if (record?.state === 'completed' || record?.state === 'waiting')
             throw error;
-          await publish(
-            controller.signal.aborted ? 'canceled' : 'failed',
-            task(
-              controller.signal.aborted
-                ? TaskState.TASK_STATE_CANCELED
-                : TaskState.TASK_STATE_FAILED,
-            ),
+          const canceled = controller.signal.aborted && !cleanupFailed;
+          const desired = task(
+            canceled
+              ? TaskState.TASK_STATE_CANCELED
+              : TaskState.TASK_STATE_FAILED,
           );
+          if (cleanupFailed)
+            desired.metadata = {
+              ...desired.metadata,
+              'agents.a2a.outcome': 'unknown',
+            };
+          await publish(
+            cleanupFailed ? 'unknown' : canceled ? 'canceled' : 'failed',
+            desired,
+          );
+          // An unconfirmed close must not become a successful cancellation acknowledgment.
+          if (cleanupFailed) throw error;
         } finally {
           controller.signal.removeEventListener('abort', stop);
           if (session && !closed) await session.close();
@@ -452,7 +469,7 @@ export class NativeA2AExecutor<
       let cause = error;
       if (controller.signal.aborted && error === controller.signal.reason) {
         try {
-          await this.#retireWaiting(scope, bus);
+          await this.#retireCanceled(scope, bus, initialContext);
           return;
         } catch (retirementError) {
           cause = retirementError;
@@ -486,23 +503,34 @@ export class NativeA2AExecutor<
     }
     const scope = this.#waiting.get(taskId);
     if (!scope) throw new A2AError('unavailable');
-    await this.#retireWaiting(scope, bus);
+    await this.#retireCanceled(scope, bus);
   };
 
-  async #retireWaiting(
+  async #retireCanceled(
     scope: NativeA2ABinding,
     bus: ExecutionEventBus,
+    initialContext?: RequestContext,
   ): Promise<void> {
     await this.#options.store.own(scope, async (claim) => {
       const record = await claim.load();
       await claim.current();
-      if (!record || record.state !== 'waiting')
+      if (record ? record.state !== 'waiting' : !initialContext)
         throw new A2AError('unavailable');
       if (
-        canonicalDeferredInput(record.binding) !== canonicalDeferredInput(scope)
+        record &&
+        (canonicalDeferredInput(record.binding) !==
+          canonicalDeferredInput(scope) ||
+          record.desired.id !== scope.taskId ||
+          record.desired.contextId !== scope.contextId)
       )
         throw new A2AError('authorization');
-      const desired = structuredClone(record.desired);
+      const desired = record
+        ? structuredClone(record.desired)
+        : await this.#snapshot(initialContext!, {
+            ...Task.fromJSON({}),
+            id: scope.taskId,
+            contextId: scope.contextId,
+          });
       desired.status = {
         state: TaskState.TASK_STATE_CANCELED,
         message: undefined,
@@ -512,10 +540,13 @@ export class NativeA2AExecutor<
         Task.toJSON(desired),
         bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
       );
-      await claim.commit(record.generation, {
+      await claim.current();
+      await claim.commit(record?.generation, {
+        schemaVersion: 1,
+        binding: scope,
         ...record,
-        generation: record.generation + 1,
-        publicationRevision: record.publicationRevision + 1,
+        generation: (record?.generation ?? 0) + 1,
+        publicationRevision: (record?.publicationRevision ?? 0) + 1,
         state: 'canceled',
         desired,
         checkpoint: undefined,

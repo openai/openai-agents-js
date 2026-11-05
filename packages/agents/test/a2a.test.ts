@@ -470,6 +470,218 @@ it.each(
   },
 );
 
+it('preserves a known unsent provider envelope limit', async () => {
+  const remote = await peer();
+  const parts = [Part.fromJSON({ text: 'hello' })];
+  let credentials = 0,
+    reservations = 0;
+  const provider = new A2AJobProvider({
+    endpoint: remote.endpoint,
+    authorize: async () => {},
+    authorization: async () => {
+      credentials++;
+      return 'synthetic';
+    },
+    reserve: async () => {
+      reservations++;
+    },
+    encode: () => parts,
+    project: () => null,
+    limits: {
+      inputBytes: Buffer.byteLength(
+        JSON.stringify(parts.map((part) => Part.toJSON(part))),
+      ),
+    },
+  });
+  await expect(provider.start(claim(), null, context)).rejects.toMatchObject({
+    reason: 'limit',
+  });
+  expect(credentials).toBe(0);
+  expect(reservations).toBe(0);
+  expect(remote.calls).toEqual([]);
+});
+
+it('keeps a post-dispatch provider body limit indeterminate', async () => {
+  const remote = await peer();
+  let reservations = 0;
+  const provider = new A2AJobProvider({
+    endpoint: remote.endpoint,
+    authorize: async () => {},
+    authorization: async () => 'synthetic',
+    reserve: async () => {
+      reservations++;
+    },
+    encode: () => [Part.fromJSON({ text: 'hello' })],
+    project: () => null,
+    limits: { bodyBytes: 4096 },
+    fetch: async (url, init) => {
+      const response = await fetch(url, init);
+      return String(url) === remote.endpoint.rpcUrl
+        ? new Response('x'.repeat(8192))
+        : response;
+    },
+  });
+  expect(await provider.start(claim(), null, context)).toEqual({
+    status: 'unknown',
+  });
+  expect(reservations).toBe(1);
+  expect(remote.calls).toEqual(['SendMessage']);
+});
+
+it.each(['current', 'authorization', 'reserve'] as const)(
+  'preserves caller abort rejected during the asynchronous %s fence',
+  async (phase) => {
+    const remote = await peer();
+    const controller = new AbortController();
+    const cancellation = new Error('synthetic cancellation');
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    let armed = false,
+      credentials = 0,
+      reservations = 0;
+    const fence = async () => {
+      entered.resolve();
+      await release.promise;
+      controller.signal.throwIfAborted();
+    };
+    const client = await connectA2A(remote.endpoint, {
+      signal: controller.signal,
+      current: async () => {
+        if (armed && phase === 'current') await fence();
+      },
+      authorization: async () => {
+        credentials++;
+        if (phase === 'authorization') await fence();
+        return 'synthetic';
+      },
+      reserve: async () => {
+        reservations++;
+        if (phase === 'reserve') await fence();
+      },
+    });
+    armed = true;
+    const operation = client.sendMessage({
+      tenant: '',
+      metadata: undefined,
+      configuration: undefined,
+      message: {
+        ...Message.fromJSON({}),
+        messageId: 'abort-fence',
+        role: Role.ROLE_USER,
+        parts: [Part.fromJSON({ text: 'hello' })],
+      },
+    });
+    const result = expect(operation).rejects.toBe(cancellation);
+    await entered.promise;
+    controller.abort(cancellation);
+    release.resolve();
+    await result;
+    expect(credentials).toBe(phase === 'current' ? 0 : 1);
+    expect(reservations).toBe(phase === 'reserve' ? 1 : 0);
+    expect(remote.calls).toEqual([]);
+  },
+);
+
+it.each(['initial', 'after-credential'] as const)(
+  'preserves caller abort rejected during provider %s authorization',
+  async (phase) => {
+    const remote = await peer();
+    const controller = new AbortController();
+    const cancellation = new Error('synthetic provider cancellation');
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    let credentials = 0,
+      reservations = 0;
+    const provider = new A2AJobProvider({
+      endpoint: remote.endpoint,
+      authorize: async () => {
+        if (phase === 'initial' || credentials > 0) {
+          entered.resolve();
+          await release.promise;
+          controller.signal.throwIfAborted();
+        }
+      },
+      authorization: async () => {
+        credentials++;
+        return 'synthetic';
+      },
+      reserve: async () => {
+        reservations++;
+      },
+      encode: () => [Part.fromJSON({ text: 'hello' })],
+      project: () => null,
+    });
+    const operation = provider.start(claim(), null, {
+      signal: controller.signal,
+    });
+    const result = expect(operation).rejects.toBe(cancellation);
+    await entered.promise;
+    controller.abort(cancellation);
+    release.resolve();
+    await result;
+    expect(credentials).toBe(phase === 'initial' ? 0 : 1);
+    expect(reservations).toBe(0);
+    expect(remote.calls).toEqual([]);
+  },
+);
+
+it.each(['fetch', 'post-ack-policy'] as const)(
+  'does not reuse another request limit as unsent proof after %s',
+  async (phase) => {
+    const remote = await peer();
+    const request = {
+      tenant: '',
+      metadata: undefined,
+      configuration: undefined,
+      message: {
+        ...Message.fromJSON({}),
+        messageId: 'old-limit',
+        role: Role.ROLE_USER,
+        parts: [Part.fromJSON({ text: 'hello' })],
+      },
+    };
+    const earlier = await connectA2A(remote.endpoint, {
+      authorization: async () => 'synthetic',
+      limits: { inputBytes: 1 },
+    });
+    const previousFailure = await earlier
+      .sendMessage(request)
+      .catch((error: unknown) => error);
+    expect(previousFailure).toMatchObject({ reason: 'limit' });
+    expect(remote.calls).toEqual([]);
+    let reservations = 0,
+      projections = 0;
+    const provider = new A2AJobProvider({
+      endpoint: remote.endpoint,
+      authorize: async () => {
+        if (phase === 'post-ack-policy' && remote.calls.includes('SendMessage'))
+          throw previousFailure;
+      },
+      authorization: async () => 'synthetic',
+      reserve: async () => {
+        reservations++;
+      },
+      encode: () => [Part.fromJSON({ text: 'hello' })],
+      project: () => {
+        projections++;
+        return null;
+      },
+      fetch: async (url, init) => {
+        const response = await fetch(url, init);
+        if (phase === 'fetch' && String(url) === remote.endpoint.rpcUrl)
+          throw previousFailure;
+        return response;
+      },
+    });
+    expect(await provider.start(claim(), null, context)).toEqual({
+      status: 'unknown',
+    });
+    expect(reservations).toBe(1);
+    expect(projections).toBe(0);
+    expect(remote.calls).toEqual(['SendMessage']);
+  },
+);
+
 it('keeps provider object admission before discovery and transport sizing', async () => {
   const remote = await peer();
   let credentials = 0,

@@ -9,6 +9,7 @@ import type {
 import { canonicalDeferredInput } from '../experimental/deferred-codec';
 import {
   A2AError,
+  A2ARequestLimitError,
   bound,
   checkBytes,
   connectA2A,
@@ -109,6 +110,7 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       try {
         await this.#options.authorize(claim, operation);
       } catch {
+        context.signal.throwIfAborted();
         throw new A2AError('authorization');
       }
       context.signal.throwIfAborted();
@@ -207,8 +209,9 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       bound(this.#options.limits?.inputBytes, 1024 * 1024),
     );
     const client = await this.#connect(claim, 'start', context);
+    let result: Awaited<ReturnType<typeof client.sendMessage>>;
     try {
-      const result = await client.sendMessage({
+      result = await client.sendMessage({
         tenant: '',
         metadata: undefined,
         configuration: undefined,
@@ -219,9 +222,16 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
           parts: [...parts],
         },
       });
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (error instanceof A2ARequestLimitError) throw error;
+      return { status: 'unknown' };
+    }
+    try {
       if (!('id' in result)) throw new A2AError('unsupported');
       return await this.#update(claim, result, 'start', context);
     } catch {
+      context.signal.throwIfAborted();
       return { status: 'unknown' };
     }
   }
@@ -238,6 +248,7 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
         receipt,
       );
     } catch {
+      context.signal.throwIfAborted();
       return { status: 'unknown', receipt: claim.update!.receipt };
     }
   }
@@ -312,6 +323,7 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       if (!('id' in result)) throw new A2AError('unsupported');
       return await this.#update(claim, result, 'respond', context, receipt);
     } catch {
+      context.signal.throwIfAborted();
       return { status: 'unknown', receipt: claim.update!.receipt };
     }
   }
@@ -332,6 +344,7 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
         receipt,
       );
     } catch {
+      context.signal.throwIfAborted();
       return { status: 'unknown', receipt: claim.update!.receipt };
     }
   }

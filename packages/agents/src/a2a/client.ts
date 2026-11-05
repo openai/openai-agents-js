@@ -37,6 +37,13 @@ export class A2AError extends Error {
   }
 }
 
+/** Internal proof that the exact request exceeded its limit before dispatch. */
+export class A2ARequestLimitError extends A2AError {
+  constructor() {
+    super('limit');
+  }
+}
+
 export function fixedUrl(value: string): string {
   let url: URL;
   try {
@@ -142,6 +149,7 @@ export async function connectA2A(
     try {
       await options.current?.();
     } catch {
+      options.signal?.throwIfAborted();
       throw new A2AError('authorization');
     }
     options.signal?.throwIfAborted();
@@ -176,6 +184,7 @@ export async function connectA2A(
     } catch (error) {
       options.signal?.throwIfAborted();
       init.signal?.throwIfAborted();
+      if (error instanceof A2ARequestLimitError) throw new A2AError('limit');
       if (error instanceof A2AError) throw error;
       throw new A2AError('unavailable');
     }
@@ -218,7 +227,7 @@ export async function connectA2A(
           if (String(url) !== rpcUrl || typeof init?.body !== 'string')
             throw new A2AError('unsupported');
           if (Buffer.byteLength(init.body) > inputLimit)
-            throw new A2AError('limit');
+            throw new A2ARequestLimitError();
           let rpc: {
             method: string;
             id: unknown;
@@ -251,6 +260,8 @@ export async function connectA2A(
               throw new A2AError('authorization');
             validateHeaderValue('Authorization', `Bearer ${token}`);
           } catch {
+            options.signal?.throwIfAborted();
+            init.signal?.throwIfAborted();
             throw new A2AError('authorization');
           }
           await current();
@@ -258,6 +269,8 @@ export async function connectA2A(
             try {
               await options.reserve?.(operation);
             } catch {
+              options.signal?.throwIfAborted();
+              init.signal?.throwIfAborted();
               throw new A2AError('authorization');
             }
             await current();
