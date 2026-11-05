@@ -747,10 +747,15 @@ pub async fn submit(
         control.has_native_agents(),
         "Child submission requires current NativeAgents ownership"
     );
-    let request = TurnInputRequest::new(TurnInput::UserInput {
+    let mut request = TurnInputRequest::new(TurnInput::UserInput {
         content: input.input,
         client_id: None,
     });
+    if let Some(tracing) = control.creation_tracing() {
+        request.trace = Some(
+            codex_otel::sdk_trace::trace_carrier(tracing.token()).map_err(anyhow::Error::msg)?,
+        );
+    }
     let settlement = thread
         .thread_extension_data()
         .get::<crate::turn_settlement::Settlement>()
@@ -811,6 +816,12 @@ pub async fn submit(
                 .reserve_steering()
                 .context("Native child does not accept managed steering")?;
             let mut request = request;
+            request.trace = receipt
+                .tracing
+                .as_ref()
+                .map(|tracing| codex_otel::sdk_trace::trace_carrier(tracing.token()))
+                .transpose()
+                .map_err(anyhow::Error::msg)?;
             if let TurnInput::UserInput { client_id, .. } = &mut request.input {
                 *client_id = Some(steering_id.clone());
             }
@@ -949,12 +960,19 @@ pub async fn continue_retained(
         child_id: turn.child_id,
         instance_id: turn.instance_id,
     };
-    let request = TurnInputRequest::new(TurnInput::ResponseItem(ContextualUserFragment::into(
+    let mut request = TurnInputRequest::new(TurnInput::ResponseItem(ContextualUserFragment::into(
         InternalModelContextFragment::new(
             InternalContextSource::from_static("agents_steering"),
             "Continue with the latest user input already in the conversation. Do not repeat completed work.",
         ),
     )));
+    request.trace = receipt
+        .tracing
+        .as_ref()
+        .map(|tracing| codex_otel::sdk_trace::trace_carrier(tracing.token()))
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+
     let seed = Arc::new(crate::turn_settlement::Seed::default());
     init.insert(seed.clone());
     let submitted = thread
