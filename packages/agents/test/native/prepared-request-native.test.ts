@@ -12,6 +12,8 @@ import {
   ToolOutput,
   tool,
   manualTool,
+  toolRef,
+  HostedVerificationMCP,
   HttpMCP,
   localStorage,
 } from '@openai/agents';
@@ -348,6 +350,170 @@ it('joins a cancelled uncooperative callback before admitting the next root', as
     prepareRequest: () => undefined,
   });
   expect((await next.wait()).finalOutput).toBe('fresh');
+});
+
+it.each(['empty', 'eager-reference'] as const)(
+  'prepares the selected %s roster when the opening catalog has a deferred tool',
+  async (selection) => {
+    const eager = tool({
+      name: 'eager',
+      parameters: z.object({}),
+      execute: () => 'unused',
+    });
+    const deferred = tool({
+      name: 'deferred',
+      parameters: z.object({}),
+      deferLoading: true,
+      execute: () => 'unused',
+    });
+    const server = new ModelServer([[message('done')]]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      model: 'gpt-5.5',
+      instructions: 'Answer.',
+      provider,
+      tools: [eager, deferred],
+    }).session();
+    const editor = vi.fn(({ request }: { request: PreparedRequestData }) => {
+      expect(request.tools.map((tool) => tool.name)).toEqual(
+        selection === 'empty' ? [] : ['eager'],
+      );
+      return request;
+    });
+    const turn = await session.submit('go', {
+      tools: selection === 'empty' ? [] : [toolRef('eager')],
+      prepareRequest: editor,
+    });
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(editor).toHaveBeenCalledTimes(1);
+    expect(server.requests[0].tools).toEqual(
+      selection === 'empty'
+        ? []
+        : [expect.objectContaining({ type: 'function', name: 'eager' })],
+    );
+  },
+);
+
+it('refuses a selected deferred tool before the editor, HTTP and tool effects', async () => {
+  const execute = vi.fn(() => 'unused');
+  const deferred = tool({
+    name: 'deferred',
+    parameters: z.object({}),
+    deferLoading: true,
+    execute,
+  });
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Answer.',
+    provider,
+    tools: [deferred],
+  }).session();
+  const editor = vi.fn(() => undefined);
+  const turn = await session.submit('go', {
+    tools: [toolRef('deferred')],
+    prepareRequest: editor,
+  });
+  await expect(turn.wait()).rejects.toThrow(/prepare_request.*eager/i);
+  expect(editor).not.toHaveBeenCalled();
+  expect(execute).not.toHaveBeenCalled();
+  expect(server.requests).toHaveLength(0);
+});
+
+it('checks the roster after beforeStep and preserves effects before a later deferred selection', async () => {
+  const execute = vi.fn(() => 'original effect');
+  const eager = tool({ name: 'eager', parameters: z.object({}), execute });
+  const deferredExecute = vi.fn(() => 'unused');
+  const deferred = tool({
+    name: 'deferred',
+    parameters: z.object({}),
+    deferLoading: true,
+    execute: deferredExecute,
+  });
+  const server = new ModelServer([[call('eager', {}, { callId: 'effect' })]]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Call eager.',
+    provider,
+    tools: [eager, deferred],
+  }).session();
+  const editor = vi.fn(({ request }: { request: PreparedRequestData }) => {
+    expect(request.tools.map((tool) => tool.name)).toEqual(['eager']);
+    return request;
+  });
+  const beforeStep = vi.fn(({ stepIndex }: { stepIndex: number }) => [
+    toolRef(stepIndex === 0 ? 'eager' : 'deferred'),
+  ]);
+  const turn = await session.submit('go', {
+    beforeStep,
+    prepareRequest: editor,
+  });
+  await expect(turn.wait()).rejects.toThrow(/prepare_request.*eager/i);
+  expect(beforeStep).toHaveBeenCalledTimes(2);
+  expect(editor).toHaveBeenCalledTimes(1);
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(deferredExecute).not.toHaveBeenCalled();
+  expect(server.requests).toHaveLength(1);
+  expect(server.requests[0].tools).toEqual([
+    expect.objectContaining({ type: 'function', name: 'eager' }),
+  ]);
+});
+
+it('keeps the operation ceiling when beforeStep tries to select an excluded deferred tool', async () => {
+  const eager = tool({
+    name: 'eager',
+    parameters: z.object({}),
+    execute: () => 'unused',
+  });
+  const deferred = tool({
+    name: 'deferred',
+    parameters: z.object({}),
+    deferLoading: true,
+    execute: () => 'unused',
+  });
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Answer.',
+    provider,
+    tools: [eager, deferred],
+  }).session();
+  const editor = vi.fn(() => undefined);
+  const turn = await session.submit('go', {
+    tools: [toolRef('eager')],
+    beforeStep: () => [toolRef('deferred')],
+    prepareRequest: editor,
+  });
+  await expect(turn.wait()).rejects.toThrow();
+  expect(editor).not.toHaveBeenCalled();
+  expect(server.requests).toHaveLength(0);
+});
+
+it('keeps fixed hosted MCP registration outside the editor profile even with no selected tools', async () => {
+  const remote = await peer();
+  const hosted = new HostedVerificationMCP({
+    url: remote.url,
+    tools: ['lookup'],
+    deferLoading: false,
+  });
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Answer.',
+    provider,
+    tools: [hosted],
+  }).session();
+  const editor = vi.fn(() => undefined);
+  await expect(
+    session.submit('go', { tools: [], prepareRequest: editor }),
+  ).rejects.toThrow(/eager function/i);
+  expect(editor).not.toHaveBeenCalled();
+  expect(remote.effects).toHaveLength(0);
+  expect(server.requests).toHaveLength(0);
 });
 
 it('rejects a new request editor before restoring an admitted manual turn', async () => {

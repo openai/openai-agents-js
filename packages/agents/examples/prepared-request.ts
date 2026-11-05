@@ -6,7 +6,8 @@ import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
 /**
  * Exercise the public request, argument and result controls without live credentials.
  * The scripted provider uses explicit HTTP and a standard Responses (non-Lite) model.
- * Keep eager ordinary tools and a direct root;
+ * Select eager ordinary tools for each sampling step of a direct root.
+ * beforeStep may narrow a mixed opening catalog. Deferred sampled tools fail before the editor.
  * Environment, code mode, children and automatic compaction are outside this profile.
  * Pre-turn or mid-turn automatic compaction fails before any hidden model request.
  * Shorten the input or start a new operation without the callback. Earlier tool effects remain.

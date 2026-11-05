@@ -298,6 +298,7 @@ export interface OperationOptions<Context = unknown> {
   /**
    * Edit detached native sampling data; original tools and history retain authority.
    * Requires a standard Responses (non-Lite) model, explicit HTTP, and eager root function/MCP tools.
+   * Unselected deferred tools may remain in the opening catalog. beforeStep may narrow a mixed ceiling.
    * Undefined keeps the original.
    * Recovery may prepare again; avoid business effects in this callback. Active checkpoints refuse it.
    * Pre-turn or mid-turn automatic compaction fails the operation before any hidden request.
@@ -2676,10 +2677,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.options.webSearch ||
         this.options.nativeGoals ||
         this.options.checklist ||
-        this.catalog.tools.some((tool) => tool.deferLoading) ||
-        this.openingMcpTools.some(
-          (tool) => tool.deferLoading || isHostedRegistration(tool),
-        )
+        this.openingMcpTools.some(isHostedRegistration)
       )
         throw new TypeError(
           'prepareRequest supports only direct root eager function and ordinary MCP tools',
