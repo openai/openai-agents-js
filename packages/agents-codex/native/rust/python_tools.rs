@@ -100,6 +100,7 @@ pub(crate) struct ChildStepSelection;
 
 pub struct PythonTools {
     local_store: Option<Arc<crate::local_storage::LocalChecklistStore>>,
+    custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     preserve_schemas: bool,
     strict_functions: bool,
     schema_receipts: schema_fidelity::Receipts,
@@ -358,7 +359,12 @@ impl PythonTools {
         } else {
             HashSet::new()
         };
-        if local_store.is_some() {
+        if local_store.is_some()
+            || startup
+                .thread_extension_init
+                .get::<crate::custom_storage::ReceiptStore>()
+                .is_some()
+        {
             let mut names = tool_names(&specs);
             names.extend(goal_names.iter().cloned());
             // These are current startup grants, not names read from history.
@@ -407,6 +413,10 @@ impl PythonTools {
         }
         fixed.extend(goal_names);
         let tools = Self {
+            custom_store: startup
+                .thread_extension_init
+                .get::<crate::custom_storage::ReceiptStore>()
+                .map(|store| store.0.clone()),
             local_store: startup
                 .thread_extension_init
                 .get::<crate::local_storage::LocalReceiptStore>()
@@ -478,6 +488,7 @@ impl PythonTools {
         let child = Self {
             // Receipt ownership stays with each child writer/turn/call, not the root.
             local_store: parent.local_store.clone(),
+            custom_store: parent.custom_store.clone(),
             preserve_schemas: parent.preserve_schemas,
             strict_functions: parent.strict_functions,
             schema_receipts: Default::default(),
@@ -1555,6 +1566,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .await
                     .map_err(|error| FunctionCallError::Fatal(error.to_string()))?;
             }
+            if let Some(store) = &self.tools.custom_store {
+                let id = codex_protocol::ThreadId::from_string(&self.thread)
+                    .map_err(|_| FunctionCallError::Fatal("invalid canonical thread".into()))?;
+                store
+                    .register_call(id, &call.turn_id, &call.call_id)
+                    .await
+                    .map_err(|e| FunctionCallError::Fatal(e.to_string()))?;
+            }
             let (key, receiver) = self
                 .tools
                 .enqueue(
@@ -1574,7 +1593,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
             };
             let response = match receiver.await {
                 Ok(response) => response,
-                Err(_) if self.tools.local_store.is_some() => {
+                Err(_) if self.tools.local_store.is_some() || self.tools.custom_store.is_some() => {
                     // No real receipt can certify the external effect. Keep
                     // this call unresolved until Core cancels its owned future;
                     // returning a synthetic result would allow another sample.
@@ -1740,6 +1759,7 @@ mod pending_tests {
     fn tools() -> Arc<PythonTools> {
         let tools = Arc::new(PythonTools {
             local_store: None,
+            custom_store: None,
             preserve_schemas: false,
             strict_functions: false,
             schema_receipts: Default::default(),

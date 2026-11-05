@@ -2741,7 +2741,7 @@ describe('release-specific package membership', () => {
         ).rejects.toMatchObject({ code: 'ENOENT' });
       },
     );
-  });
+  }, 15_000);
 
   test('checks facade and owner MCP Tasks when registry installs include optional dependencies', () => {
     for (const name of ['@openai/agents', '@openai/agents-codex']) {

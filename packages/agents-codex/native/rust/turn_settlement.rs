@@ -357,6 +357,10 @@ impl Settlement {
             !thread.managed_local_exec_cancel_failed(&receipt.id),
             LOCAL_COMMAND_CLEANUP_FAILED
         );
+        anyhow::ensure!(
+            !thread.remote_process_termination_failed(),
+            "Remote process termination attempt was not acknowledged"
+        );
         {
             let current = self.current.lock().expect("turn settlement poisoned");
             anyhow::ensure!(
@@ -493,6 +497,18 @@ impl Settlement {
 pub(crate) struct Contributor;
 
 impl ThreadLifecycleContributor<Config> for Contributor {
+    fn on_thread_start<'a>(
+        &'a self,
+        input: codex_extension_api::ThreadStartInput<'a, Config>,
+    ) -> ExtensionFuture<'a, ()> {
+        Box::pin(async move {
+            // Runtime-only policy covers startup and detached child cleanup too.
+            input
+                .thread_store
+                .get_or_init(codex_core_api::ConfirmRemoteProcessTermination::default);
+        })
+    }
+
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(settlement) = input.thread_store.get::<Settlement>() {
