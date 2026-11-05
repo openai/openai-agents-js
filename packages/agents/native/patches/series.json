@@ -215,7 +215,11 @@
     {
       "path": "0024-native-response-observations.patch",
       "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
+    },
+    {
+      "path": "0055-w3c-defined-trace-flags.patch",
+      "sha256": "e18ef85b7d975a646b65e9ea43473af9dc046bd8d650117fcaee3fbf52d6ee33"
     }
   ],
-  "result_tree": "ea9493714212f7d98100810870de3f64033801fd"
+  "result_tree": "8c2b54f417db0c2bbfc2be8e4891dcd0d538ea38"
 }

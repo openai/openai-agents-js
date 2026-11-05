@@ -114,6 +114,37 @@ async function review() {
   }
 }
 
+async function definedFlags(flags: string) {
+  let callback: ReturnType<TraceContext['toHeaders']> | undefined;
+  const server = new ModelServer([
+    [call('observe', {}, { callId: 'flags-call' })],
+    [final('done')],
+  ]);
+  const agent = new Agent({
+    instructions: 'Call observe.',
+    model: 'gpt-5',
+    provider: await providerFor(server),
+    tools: [
+      tool({
+        name: 'observe',
+        parameters: z.object({}),
+        execute: (_args, context) => {
+          assert(context.traceContext);
+          callback = context.traceContext.toHeaders();
+          return 'accepted';
+        },
+      }),
+    ],
+  });
+  const result = await agent.run('start', {
+    parentTrace: parent(PARENT.slice(0, -2) + flags),
+  });
+  assert.equal(result.finalOutput, 'done');
+  assert(callback);
+  server.assertExhausted();
+  return { callback, turn: result.turn.turnId };
+}
+
 async function graph() {
   const remoteServer = new ModelServer([[final('remote')]]);
   const remote = new Agent({
@@ -293,8 +324,9 @@ async function main() {
     traces: { kind: 'otlp-http', endpoint: collector!, protocol: 'json' },
   });
   try {
-    const result =
-      mode === 'graph'
+    const result = mode?.startsWith('flags-')
+      ? await definedFlags(mode.slice(6))
+      : mode === 'graph'
         ? await graph()
         : mode === 'compact'
           ? await compact()

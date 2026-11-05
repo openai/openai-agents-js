@@ -92,6 +92,15 @@ it('exports isolated root and compaction parents, queued snapshots, exact callba
     return false;
   };
   try {
+    for (const flags of ['02', '03']) {
+      const receipt = await run('flags-' + flags);
+      expect(receipt.callback.traceparent.slice(3, 35)).toBe(
+        PARENT.slice(3, 35),
+      );
+      expect(receipt.callback.traceparent.endsWith('-' + flags)).toBe(true);
+      if (flags === '03')
+        expectParent(dispatch(receipt.turn), PARENT.slice(0, -2) + flags);
+    }
     const compact = await run('compact');
     expectParent(dispatch(compact.first), OVERRIDE);
     expectParent(dispatch(compact.compact), PARENT);

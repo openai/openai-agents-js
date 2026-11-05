@@ -9,7 +9,7 @@ export interface TraceContextHeaders {
 /**
  * Immutable explicit native trace parent, independent of any tracing provider.
  * Traceparent accepts at most 512 ASCII characters, nonzero lowercase IDs, and
- * version 00 flags 00 or 01. Future versions retain their opaque suffix.
+ * version 00 flags 00 through 03 (sampled and random trace ID). Future versions retain their opaque suffix.
  * Tracestate accepts 32 entries with keys and values up to 256 characters;
  * tenant system IDs accept at most 13 characters to match native OpenTelemetry.
  * This native profile does not accept every standards-valid W3C carrier.
@@ -44,7 +44,8 @@ export class TraceContext {
       match[2] === '0'.repeat(32) ||
       match[3] === '0'.repeat(16) ||
       (match[1] === '00' &&
-        (parent.length !== 55 || !['00', '01'].includes(match[4]!))) ||
+        (parent.length !== 55 ||
+          !['00', '01', '02', '03'].includes(match[4]!))) ||
       (parent.length > 55 && parent[55] !== '-') ||
       /[^\x21-\x7e]/.test(parent)
     )
