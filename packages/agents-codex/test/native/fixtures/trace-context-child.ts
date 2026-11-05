@@ -4,6 +4,9 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  NativeAgents,
+  Environment,
+  fileSessionStore,
   TraceContext,
   telemetry,
   tool,
@@ -11,6 +14,7 @@ import {
   type SessionState,
 } from '../../../src';
 import { ModelServer, call, message } from './model-server';
+import { startPublicExecutor } from './public-executor';
 
 const PARENT = '00-11111111111111111111111111111111-2222222222222222-01';
 const OVERRIDE = '00-33333333333333333333333333333333-4444444444444444-01';
@@ -111,6 +115,286 @@ async function review() {
     };
   } finally {
     await session.close();
+  }
+}
+
+async function definedFlags(flags: string) {
+  let callback: ReturnType<TraceContext['toHeaders']> | undefined;
+  const server = new ModelServer([
+    [call('observe', {}, { callId: 'flags-call' })],
+    [final('done')],
+  ]);
+  const agent = new Agent({
+    instructions: 'Call observe.',
+    model: 'gpt-5',
+    provider: await providerFor(server),
+    tools: [
+      tool({
+        name: 'observe',
+        parameters: z.object({}),
+        execute: (_args, context) => {
+          assert(context.traceContext);
+          callback = context.traceContext.toHeaders();
+          return 'accepted';
+        },
+      }),
+    ],
+  });
+  const result = await agent.run('start', {
+    parentTrace: parent(PARENT.slice(0, -2) + flags),
+  });
+  assert.equal(result.finalOutput, 'done');
+  assert(callback);
+  server.assertExhausted();
+  return { callback, turn: result.turn.turnId };
+}
+
+async function storeReopen(path: string) {
+  const callbacks: ReturnType<TraceContext['toHeaders']>[] = [];
+  const server = new ModelServer(
+    Array.from({ length: 3 }, (_, index) => [
+      [call('observe', {}, { callId: `store-${index}` })],
+      [final('stored')],
+    ]).flat(),
+  );
+  const agent = new Agent({
+    instructions: 'Call observe.',
+    model: 'gpt-5',
+    provider: await providerFor(server),
+    tools: [
+      tool({
+        name: 'observe',
+        parameters: z.object({}),
+        execute: (_args, context) => {
+          assert(context.traceContext);
+          callbacks.push(context.traceContext.toHeaders());
+          return 'accepted';
+        },
+      }),
+    ],
+  });
+  const storage = fileSessionStore(path + '.store');
+  let id: string | undefined;
+  const turns: string[] = [];
+  for (const carrier of [
+    PARENT.slice(0, -2) + '03',
+    WORKER.slice(0, -2) + '03',
+    undefined,
+  ]) {
+    const session = await agent.session({
+      storage,
+      resume: id,
+      parentTrace: carrier ? parent(carrier) : undefined,
+    });
+    try {
+      id ??= session.id;
+      assert.equal(session.id, id);
+      const turn = await session.submit('observe after opening');
+      assert.equal((await turn.wait()).finalOutput, 'stored');
+      turns.push(turn.turnId!);
+    } finally {
+      await session.close();
+    }
+  }
+  assert.equal(callbacks.length, 3);
+  server.assertExhausted();
+  return { id, turns, callbacks };
+}
+
+async function ownedChildren(flags?: string, steering = false) {
+  const callbackTurns: string[] = [];
+  const callbacks: ReturnType<TraceContext['toHeaders']>[] = [];
+  let rootCallback: ReturnType<TraceContext['toHeaders']> | undefined;
+  const sampled = Promise.withResolvers<void>();
+  const releaseSample = Promise.withResolvers<void>();
+  const continued = Promise.withResolvers<void>();
+  const marker = 'RAW_CHILD_RETAINED_TRACE';
+  const sampledMarker: boolean[] = [];
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let workflow: Awaited<ReturnType<typeof telemetry.startTrace>> | undefined;
+  let traceId = flags ? PARENT.slice(3, 35) : undefined;
+  let policyChecks = 0;
+  const checkPolicy = () => {
+    if (flags) return;
+    const span = telemetry.getCurrentSpan();
+    assert(span);
+    assert.equal(telemetry.getCurrentTrace(), workflow);
+    assert.equal(span.context.disabled, false);
+    assert.equal(span.context.includeSensitiveData, false);
+    policyChecks++;
+  };
+  let rootId: string | undefined;
+  let roots = 0;
+  let children = 0;
+  const respond = async (request: Record<string, unknown>) => {
+    const metadata = request.client_metadata as Record<string, string>;
+    const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
+    rootId ??= id;
+    if (id === rootId)
+      return ++roots === 1
+        ? [call('root_observe', {}, { callId: 'root-observe' })]
+        : roots === 2
+          ? [
+              call(
+                'spawn_agent',
+                { task_name: 'trace_child', message: 'Call observe.' },
+                { namespace: 'collaboration', callId: 'spawn-trace-child' },
+              ),
+            ]
+          : [final('root done')];
+    children++;
+    sampledMarker.push(JSON.stringify(request.input).includes(marker));
+    if (steering && children === 2) {
+      sampled.resolve();
+      await releaseSample.promise;
+    }
+    return children % 2 === 1
+      ? [call('observe', {}, { callId: `child-observe-${children}` })]
+      : [final('child done')];
+  };
+  const server = new ModelServer(Array.from({ length: 7 }, () => respond));
+  const agent = new Agent({
+    instructions: 'Delegate.',
+    model: 'gpt-5.5',
+    provider: await providerFor(server),
+    tools: [
+      new NativeAgents({
+        beforeStep: () => {
+          checkPolicy();
+          return undefined;
+        },
+      }),
+      tool({
+        name: 'root_observe',
+        parameters: z.object({}),
+        execute: (_args, context) => {
+          checkPolicy();
+          assert(context.traceContext);
+          rootCallback = context.traceContext.toHeaders();
+          return 'root observed';
+        },
+      }),
+      tool({
+        name: 'observe',
+        parameters: z.object({}),
+        execute: async (_args, context) => {
+          checkPolicy();
+          assert(context.traceContext);
+          callbacks.push(context.traceContext.toHeaders());
+          callbackTurns.push(context.turnId);
+          if (callbacks.length === 2) continued.resolve();
+          if (callbacks.length === 1) {
+            entered.resolve();
+            await release.promise;
+          }
+          await Promise.resolve();
+          checkPolicy();
+          return 'accepted';
+        },
+      }),
+    ],
+  });
+  const executor = await startPublicExecutor();
+  try {
+    const open = async () => {
+      const session = await agent.session({
+        ...(flags
+          ? { parentTrace: parent(PARENT.slice(0, -2) + flags) }
+          : { tracing: { includeSensitiveData: false } }),
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+          approval: () => false,
+        }),
+      });
+      try {
+        const root = await session.submit('delegate');
+        assert.equal((await root.wait()).finalOutput, 'root done');
+        return { session, root };
+      } catch (error) {
+        release.resolve();
+        await session.close();
+        throw error;
+      }
+    };
+    const { session, root } = flags
+      ? await open()
+      : await telemetry.withTrace(
+          { name: 'carrier.owner', includeSensitiveData: false },
+          async (original) => {
+            workflow = original;
+            traceId = original.context.traceId;
+            return open();
+          },
+        );
+    try {
+      const owned = await Array.fromAsync(session.subagents());
+      assert.equal(owned.length, 1);
+      const child = owned[0]!;
+      assert(child.turn);
+      await Promise.race([
+        entered.promise,
+        child.turn.wait().then(() => {
+          throw new Error('Child finished without entering observe');
+        }),
+      ]);
+      release.resolve();
+      let later;
+      if (steering) {
+        await sampled.promise;
+        const steered = await telemetry.withTrace(
+          { name: 'unrelated.steering', includeSensitiveData: true },
+          () => child.submit(marker),
+        );
+        assert.equal(steered, child.turn);
+        releaseSample.resolve();
+        assert.equal((await child.turn.wait()).finalOutput, 'child done');
+        await continued.promise;
+        for await (const event of session.events()) {
+          if (
+            event.type === 'turn_finished' &&
+            event.turnId === callbackTurns[1]
+          ) {
+            assert.equal(event.status, 'completed');
+            break;
+          }
+        }
+        assert.deepEqual(sampledMarker.slice(0, 3), [false, false, true]);
+      } else {
+        assert.equal((await child.turn.wait()).finalOutput, 'child done');
+        later = await telemetry.withTrace(
+          { name: 'unrelated.caller', includeSensitiveData: true },
+          () => child.submit('call observe again'),
+        );
+      }
+      if (later) assert.equal((await later.wait()).finalOutput, 'child done');
+      if (steering) assert.deepEqual(sampledMarker, [false, false, true, true]);
+      assert.equal(callbacks.length, 2);
+      server.assertExhausted();
+      return {
+        flags,
+        steering,
+        sampledMarker,
+        traceId,
+        rootCallback,
+        callbacks,
+        callbackTurns,
+        rootTurn: root.turnId,
+        childTurns: callbackTurns,
+        policyChecks,
+      };
+    } finally {
+      release.resolve();
+      releaseSample.resolve();
+      await session.close();
+    }
+  } finally {
+    release.resolve();
+    releaseSample.resolve();
+    await executor.close();
   }
 }
 
@@ -293,14 +577,25 @@ async function main() {
     traces: { kind: 'otlp-http', endpoint: collector!, protocol: 'json' },
   });
   try {
-    const result =
-      mode === 'graph'
-        ? await graph()
-        : mode === 'compact'
-          ? await compact()
-          : mode === 'review'
-            ? await review()
-            : await manual(mode!, path!);
+    const result = mode?.startsWith('flags-')
+      ? await definedFlags(mode.slice(6))
+      : mode === 'store-reopen'
+        ? await storeReopen(path!)
+        : mode?.startsWith('owned-steering-')
+          ? await ownedChildren(mode.slice('owned-steering-'.length), true)
+          : mode?.startsWith('owned-children-')
+            ? await ownedChildren(
+                mode === 'owned-children-scoped'
+                  ? undefined
+                  : mode.slice('owned-children-'.length),
+              )
+            : mode === 'graph'
+              ? await graph()
+              : mode === 'compact'
+                ? await compact()
+                : mode === 'review'
+                  ? await review()
+                  : await manual(mode!, path!);
     console.log(JSON.stringify(result));
   } finally {
     await telemetry.shutdown();
