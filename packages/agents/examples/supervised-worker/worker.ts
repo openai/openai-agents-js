@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { addAbortListener } from 'node:events';
 import { constants } from 'node:fs';
 import {
   link,
@@ -323,6 +324,7 @@ export async function superviseArtifact(options: WorkerOptions) {
       return agent.session({ ...config, reconciledCalls: receipts });
     }
   };
+  let closingSession: Promise<void> | undefined;
   const runSession = async (session: Session<z.infer<typeof claim>>) => {
     const startupMs = performance.now() - startup;
     const started: WorkerSnapshot = { threadId: session.id, state: 'working' };
@@ -333,11 +335,34 @@ export async function superviseArtifact(options: WorkerOptions) {
     const taskWithVerification =
       task +
       `\n\nAfter saving draft.md, run ${verifyDraftCommand} as a standalone exec_command without a terminal.`;
-    const turn = await session
-      .submit(taskWithVerification, { ifBusy: 'reject', writableRoots: [] })
-      .catch((error: unknown) =>
-        saveStatusAndThrow({ ...started, state: 'needs_attention' }, error),
-      );
+    const expired = Promise.withResolvers<never>();
+    const listener = addAbortListener(deadline, () =>
+      expired.reject(deadline.reason),
+    );
+    const submission = session.submit(taskWithVerification, {
+      ifBusy: 'reject',
+      writableRoots: [],
+    });
+    const turn = await Promise.race([submission, expired.promise])
+      .finally(() => listener[Symbol.dispose]())
+      .catch((error: unknown) => {
+        const attention =
+          deadline.aborted && error === deadline.reason
+            ? 'deadline'
+            : undefined;
+        if (attention === 'deadline') {
+          // With no admitted Turn handle, close the owned Session to fence work.
+          closingSession = session.close().finally(async () => {
+            await submission.catch(() => {});
+          });
+          // Join and report cleanup failures after saving the timeout status.
+          void closingSession.catch(() => {});
+        }
+        return saveStatusAndThrow(
+          { ...started, state: 'needs_attention', attention },
+          error,
+        );
+      });
     const followUpSubmissionMs = previous
       ? performance.now() - submitted
       : null;
@@ -494,7 +519,7 @@ export async function superviseArtifact(options: WorkerOptions) {
     () =>
       withCleanup(
         async () => {
-          await session?.close();
+          await (closingSession ?? session?.close());
         },
         () => provider.close(),
         'Closing the worker provider failed.',

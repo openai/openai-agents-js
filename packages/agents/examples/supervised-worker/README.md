@@ -49,7 +49,7 @@ The SDK fences replay of the reconciled call IDs. Use an application operation k
 
 ## Set deadlines and measure phases
 
-The startup signal covers selected-tool discovery and native opening. Reconciliation callbacks and MCP transports must also honor their own deadline. For each turn, the worker waits for completion or attention with a separate signal. It cancels the turn and joins cleanup before saving a `needs_attention` status. The status records the reason, such as a deadline, rate limit, or unexpected interaction. Wait for the worker to exit before reopening its profile. Cleanup can take longer than the wait.
+The startup signal covers selected-tool discovery and native opening. Reconciliation callbacks and MCP transports must also honor their own deadline. A separate turn deadline covers submission and the wait for completion or attention. If submission is still pending at the deadline, the worker starts closing the session, saves `needs_attention` with reason `deadline`, and waits for submission and cleanup to settle before exiting. It does not retry the submission. After admission, the worker cancels the turn and joins its cleanup before saving `needs_attention` with the reason, such as a deadline, rate limit, or unexpected interaction. Wait for the worker to exit before reopening its profile. Cleanup can take longer than the deadline.
 
 Use the snapshot timings to track startup, follow-up submission, the first tool result, and completion separately. The legacy `firstToolMs` field measures time from submission to the first observed managed tool start. It is null if the worker sees no managed tool start.
 
