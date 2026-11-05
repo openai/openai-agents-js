@@ -86,6 +86,63 @@ it('does not accept a quota observation with a blank account identity', () => {
   expect(signals.quota).toBeUndefined();
 });
 
+it('preserves the full quota response without treating unknown fields as a block', () => {
+  const signals = new WorkerSignals({ accountId: 'fixture-a', generation: 1 });
+  const reading = quotaRead({ usableCredits: true });
+  const upsell = { kind: 'fixture-banner', offer: { title: 'Display only' } };
+  const extraBucket = {
+    limitId: 'extra-bucket',
+    rateLimitReachedType: 'future_extra_limit',
+    serviceDetails: { counter: 12 },
+  };
+  const response = {
+    ...reading.response,
+    rateLimitUpsell: upsell,
+    serviceExtension: { items: ['fixture-extension'] },
+    rateLimitsByLimitId: {
+      codex: {
+        ...reading.response.rateLimitsByLimitId!.codex,
+        rateLimitReachedType: 'future_limit',
+      },
+      'extra-bucket': extraBucket,
+    },
+  };
+  signals.updateQuota({ ...reading, response });
+
+  expect(signals.quota).toMatchObject({
+    fresh: true,
+    blocked: false,
+    usableCredits: true,
+    rateLimitReachedType: null,
+  });
+  expect(signals.quotaResponse).toEqual(response);
+
+  // The input object and the value returned to callers can each be edited.
+  upsell.offer.title = 'Input edited';
+  extraBucket.serviceDetails.counter = 99;
+  response.rateLimitsByLimitId.codex.rateLimitReachedType =
+    'rate_limit_reached';
+  const copy = signals.quotaResponse!;
+  copy.rateLimitUpsell = null;
+  copy.rateLimitsByLimitId!.codex.rateLimitReachedType = 'rate_limit_reached';
+
+  expect(signals.quotaResponse).toMatchObject({
+    rateLimitUpsell: { offer: { title: 'Display only' } },
+    serviceExtension: { items: ['fixture-extension'] },
+    rateLimitsByLimitId: {
+      codex: { rateLimitReachedType: 'future_limit' },
+      'extra-bucket': {
+        rateLimitReachedType: 'future_extra_limit',
+        serviceDetails: { counter: 12 },
+      },
+    },
+  });
+  expect(signals.quota?.blocked).toBe(false);
+  signals.attach({ accountId: 'fixture-a', generation: 2 });
+  signals.updateQuota({ ...reading, response });
+  expect(signals.quotaResponse).toBeUndefined();
+});
+
 it('waits across an ordinary tool and advisory quota for a live question, then completion', async () => {
   const continued = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -364,6 +421,66 @@ it('surfaces a terminal provider quota error despite a current credit observatio
   expect(signals.quota?.usableCredits).toBe(true);
   model.assertExhausted();
 });
+
+it.each(['completion', 'provider quota', 'provider error'] as const)(
+  'prefers settled native %s over a cached account block without an earlier result wait',
+  async (outcome) => {
+    const completed = outcome === 'completion';
+    const providerQuota = outcome === 'provider quota';
+    const code = providerQuota ? 'insufficient_quota' : 'invalid_request_error';
+    const model = new ModelServer([
+      completed
+        ? [message('Finished before observation.')]
+        : {
+            status: providerQuota ? 429 : 400,
+            body: JSON.stringify({
+              error: {
+                message: 'Synthetic provider stop.',
+                type: code,
+                code,
+              },
+            }),
+          },
+    ]);
+    await using provider = await providerFor(model);
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+    }).session();
+    const turn = await session.submit('Reply once.');
+    let status: string | undefined;
+    for await (const event of turn.events()) {
+      if (event.type === 'turn_finished') status = event.status;
+    }
+    expect(status).toBe(completed ? 'completed' : 'failed');
+
+    const signals = new WorkerSignals({
+      accountId: 'fixture-a',
+      generation: 1,
+    });
+    signals.updateQuota(quotaRead());
+    expect(signals.quota?.blocked).toBe(true);
+    const waiting = waitForWorkerAttention(turn, { signals });
+    if (completed) {
+      await expect(waiting).resolves.toMatchObject({
+        finalOutput: 'Finished before observation.',
+      });
+    } else if (providerQuota) {
+      await expect(waiting).resolves.toMatchObject({
+        type: 'needs_attention',
+        reason: 'quota_blocked',
+        error: { category: 'usage_limit_exceeded' },
+      });
+    } else {
+      await expect(waiting).rejects.toMatchObject({
+        name: 'NativeError',
+        message: expect.stringContaining('Synthetic provider stop.'),
+      });
+    }
+    model.assertExhausted();
+  },
+);
 
 it('reports native connection loss and lets a supervisor reopen the original session', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'worker-attention-profile-'));

@@ -91,6 +91,7 @@ export class WorkerSignals {
   #snapshot:
     | {
         details: Omit<AccountQuota, 'fresh' | 'blocked'>;
+        response: AccountQuotaObservation['response'];
         acceptedAt: number | null;
       }
     | undefined;
@@ -184,6 +185,7 @@ export class WorkerSignals {
     }
     this.#snapshot = {
       acceptedAt,
+      response: structuredClone(response),
       details: {
         accountId,
         generation,
@@ -209,6 +211,13 @@ export class WorkerSignals {
       },
     };
     this.#changes.dispatchEvent(new Event('change'));
+  }
+
+  /** A defensive copy of the latest accepted full service response. */
+  get quotaResponse():
+    | (AccountQuotaObservation['response'] & Record<string, unknown>)
+    | undefined {
+    return structuredClone(this.#snapshot?.response);
   }
 
   get quota(): AccountQuota | undefined {

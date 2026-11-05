@@ -58,7 +58,7 @@ After the turn completes, pass review findings or an answer as the next task. Th
 
 ### Wait for work that needs attention
 
-For a worker that owns a live `Turn`, call `waitForWorkerAttention(turn, { signal, signals })`. A result can be a completed turn, live requests, a native stop, or an account quota block. Ordinary tool events stay inside the worker. For a live request, use the matching request's reply and deliver it through the owning session. Aborting the wait leaves the turn running.
+For a worker that owns a root `Turn`, call `waitForWorkerAttention(turn, { signal, signals })`. A result can be a completed turn, live requests, a native stop, or an account quota block. A settled native result takes precedence over an account block. Ordinary tool events stay inside the worker. For a live request, use the matching request's reply and deliver it through the owning session. Aborting the wait leaves the turn running.
 
 `superviseArtifact` uses this wait internally. Its release-note question is in `snapshot.claim.question`. Pass the answer as the next task after the worker exits. When the wait reports an attention stop, the stock worker cancels its owned turn and closes the session before exiting. Use the passive wait directly if you own the session and need to answer a live request on the same turn.
 
@@ -86,6 +86,8 @@ await signals.refreshQuota({
 ```
 
 The notification prompts a fresh read. Its sparse fields do not refresh cached values or identify an account.
+
+Read `signals.quotaResponse` for a copy of the last accepted full service response, including fields the watcher does not recognize. Use `signals.quota.fresh` to check the observation's age. An unrecognized limit reason stays visible in the full response and cannot trigger a stop on its own.
 
 Read `signals.quota` for the selected bucket's available windows, reset times, and usable credits. Missing fields appear as `null`. The credit flags determine availability. The balance is for display. Fresh, current observations block when the service reports a reached limit or spend control, or when it disallows ordinary usage and confirms there are no usable credits. A rounded percentage or elapsed reset time cannot make that decision. A terminal provider quota stop still needs attention when a prior observation showed credits. The standard API-key worker runs without a feed.
 

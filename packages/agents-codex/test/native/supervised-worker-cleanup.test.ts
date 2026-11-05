@@ -142,6 +142,7 @@ it('records an account quota stop and closes its owned turn and session', async 
   const submit = vi.fn(async () => ({
     async *events() {},
     cancel,
+    _rootResultReady: () => false,
     waitForAttention({ signal }: { signal: AbortSignal }) {
       entered.resolve();
       return new Promise((_, reject) =>

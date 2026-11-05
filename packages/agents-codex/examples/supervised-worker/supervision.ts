@@ -26,30 +26,36 @@ export async function waitForWorkerAttention<
   if (!signals) return turn.waitForAttention({ signal });
   signal?.throwIfAborted();
 
-  const observer = new AbortController();
-  const waiting = signal
-    ? AbortSignal.any([signal, observer.signal])
-    : observer.signal;
-  let blocked = Promise.withResolvers<void>();
-  const wakeIfBlocked = () => {
-    if (signals.quota?.blocked) blocked.resolve();
-  };
-  signals.onChange(wakeIfBlocked, waiting);
+  for (;;) {
+    const observer = new AbortController();
+    const waiting = signal
+      ? AbortSignal.any([signal, observer.signal])
+      : observer.signal;
+    const blocked = Promise.withResolvers<void>();
+    const wakeIfBlocked = () => {
+      if (signals.quota?.blocked) blocked.resolve();
+    };
+    signals.onChange(wakeIfBlocked, waiting);
 
-  const native = turn.waitForAttention({ signal: waiting });
-  try {
-    for (;;) {
-      wakeIfBlocked();
-      const outcome = await Promise.race([native, blocked.promise]);
-      if (outcome !== undefined) return outcome;
-      waiting.throwIfAborted();
-      // The account or expiry may have changed since the feed notified us.
-      const quota = signals.quota;
-      if (quota?.blocked) return { type: 'account_quota_blocked', quota };
-      blocked = Promise.withResolvers<void>();
-    }
-  } finally {
-    observer.abort();
-    await native.catch(() => {});
+    const native = turn.waitForAttention({ signal: waiting }).catch((error) => {
+      if (!observer.signal.aborted || error !== observer.signal.reason)
+        throw error;
+    });
+    wakeIfBlocked();
+    const outcome = await Promise.race([native, blocked.promise]).finally(() =>
+      observer.abort(),
+    );
+    const settled = outcome ?? (await native);
+    if (settled !== undefined) return settled;
+    signal?.throwIfAborted();
+
+    // This example pairs with the matching SDK build. Its owner hook is
+    // internal and does not appear in the package's public declarations.
+    const root = turn as typeof turn & { _rootResultReady(): boolean };
+    if (root._rootResultReady()) return turn.waitForAttention({ signal });
+
+    // The account or expiry may have changed while the passive waiter closed.
+    const quota = signals.quota;
+    if (quota?.blocked) return { type: 'account_quota_blocked', quota };
   }
 }
