@@ -6,6 +6,7 @@ export const REVIEW_TEST_PROFILE_ENV = 'OPENAI_AGENTS_TEST_PROFILE';
 export const reviewOptionalTestFiles = [
   'helpers/tests/consoleGuard.test.ts',
   'packages/agents-core/test/sandboxes/docker.test.ts',
+  'packages/agents-core/test/sandboxes/docker.materialization.test.ts',
   'packages/agents-core/test/sandboxes/unixLocal.git.test.ts',
   'packages/agents-core/test/sandboxes/unixLocal.process.test.ts',
   'packages/agents-core/test/sandboxes/unixLocal.signals.test.ts',

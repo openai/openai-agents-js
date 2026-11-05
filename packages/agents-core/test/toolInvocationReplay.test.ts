@@ -162,7 +162,7 @@ describe('tool invocation replay binding', () => {
     );
   });
 
-  it('serializes explicit invocation state for the current schema', () => {
+  it('serializes explicit invocation state in the compatible writer format', () => {
     const agent = new Agent({ name: 'EmptyInvocationStateAgent' });
     const serialized = new RunState(
       new RunContext(),
@@ -171,7 +171,7 @@ describe('tool invocation replay binding', () => {
       1,
     ).toJSON() as any;
 
-    expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(serialized.$schemaVersion).toBe('1.23');
     expect(serialized.context.approvalInvocations).toEqual([]);
     expect(serialized.completedToolInvocations).toEqual([]);
     expect(serialized.completedToolInvocationEvidence).toEqual([]);
@@ -193,6 +193,7 @@ describe('tool invocation replay binding', () => {
         agent,
         1,
       ).toJSON() as any;
+      serialized.$schemaVersion = CURRENT_SCHEMA_VERSION;
       if (missingField === 'approvalInvocations') {
         delete serialized.context.approvalInvocations;
       } else if (missingField === 'completedToolInvocations') {
@@ -840,7 +841,7 @@ describe('tool invocation replay binding', () => {
       expect(calls).toEqual(['first']);
 
       const serialized = secondInterruption.state.toJSON() as any;
-      expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(serialized.$schemaVersion).toBe('1.23');
       expect(
         serialized.context.approvalInvocations[0].invocations[firstCallId],
       ).toBeTypeOf('string');

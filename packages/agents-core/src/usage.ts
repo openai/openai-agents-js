@@ -1,4 +1,4 @@
-import { RequestUsageData, UsageData } from './types/protocol';
+import { RequestUsageData, UsageData, TokenDetails } from './types/protocol';
 
 export type RequestUsageInput = Partial<
   RequestUsageData & {
@@ -16,10 +16,8 @@ export type UsageInput = Partial<
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
-    input_tokens_details:
-      Record<string, number> | Array<Record<string, number>> | object;
-    output_tokens_details:
-      Record<string, number> | Array<Record<string, number>> | object;
+    input_tokens_details: TokenDetails | Array<TokenDetails> | object;
+    output_tokens_details: TokenDetails | Array<TokenDetails> | object;
     request_usage_entries: RequestUsageInput[];
   }
 > & { requests?: number; requestUsageEntries?: RequestUsageInput[] };
@@ -46,12 +44,12 @@ export class RequestUsage {
   /**
    * Details about the input tokens used for this request.
    */
-  public inputTokensDetails: Record<string, number>;
+  public inputTokensDetails: TokenDetails;
 
   /**
    * Details about the output tokens used for this request.
    */
-  public outputTokensDetails: Record<string, number>;
+  public outputTokensDetails: TokenDetails;
 
   /**
    * The endpoint that produced this usage entry (e.g., responses.create, responses.compact).
@@ -68,12 +66,12 @@ export class RequestUsage {
     const inputTokensDetails =
       input?.inputTokensDetails ?? input?.input_tokens_details;
     this.inputTokensDetails = inputTokensDetails
-      ? (inputTokensDetails as Record<string, number>)
+      ? cloneTokenDetails(inputTokensDetails as TokenDetails)
       : {};
     const outputTokensDetails =
       input?.outputTokensDetails ?? input?.output_tokens_details;
     this.outputTokensDetails = outputTokensDetails
-      ? (outputTokensDetails as Record<string, number>)
+      ? cloneTokenDetails(outputTokensDetails as TokenDetails)
       : {};
     if (typeof input?.endpoint !== 'undefined') {
       this.endpoint = input.endpoint;
@@ -88,17 +86,12 @@ export class RequestUsage {
   }
 }
 
-function cloneTokenDetails(
-  details: Record<string, number>,
-): Record<string, number> {
-  return { ...details };
+export function cloneTokenDetails(details: TokenDetails): TokenDetails {
+  return TokenDetails.parse(details);
 }
 
 function cloneRequestUsage(input: RequestUsageInput): RequestUsage {
-  const cloned = new RequestUsage(input);
-  cloned.inputTokensDetails = cloneTokenDetails(cloned.inputTokensDetails);
-  cloned.outputTokensDetails = cloneTokenDetails(cloned.outputTokensDetails);
-  return cloned;
+  return new RequestUsage(input);
 }
 
 /**
@@ -128,12 +121,12 @@ export class Usage {
   /**
    * Details about the input tokens used across all requests.
    */
-  public inputTokensDetails: Array<Record<string, number>> = [];
+  public inputTokensDetails: Array<TokenDetails> = [];
 
   /**
    * Details about the output tokens used across all requests.
    */
-  public outputTokensDetails: Array<Record<string, number>> = [];
+  public outputTokensDetails: Array<TokenDetails> = [];
 
   /**
    * List of per-request usage entries for detailed cost calculations.
@@ -160,32 +153,26 @@ export class Usage {
       const inputTokensDetails =
         input?.inputTokensDetails ?? input?.input_tokens_details;
       if (Array.isArray(inputTokensDetails)) {
-        this.inputTokensDetails = inputTokensDetails as Array<
-          Record<string, number>
-        >;
+        this.inputTokensDetails = inputTokensDetails.map(cloneTokenDetails);
       } else {
         this.inputTokensDetails = inputTokensDetails
-          ? [inputTokensDetails as Record<string, number>]
+          ? [cloneTokenDetails(inputTokensDetails as TokenDetails)]
           : [];
       }
       const outputTokensDetails =
         input?.outputTokensDetails ?? input?.output_tokens_details;
       if (Array.isArray(outputTokensDetails)) {
-        this.outputTokensDetails = outputTokensDetails as Array<
-          Record<string, number>
-        >;
+        this.outputTokensDetails = outputTokensDetails.map(cloneTokenDetails);
       } else {
         this.outputTokensDetails = outputTokensDetails
-          ? [outputTokensDetails as Record<string, number>]
+          ? [cloneTokenDetails(outputTokensDetails as TokenDetails)]
           : [];
       }
 
       const requestUsageEntries =
         input?.requestUsageEntries ?? input?.request_usage_entries;
       const normalizedRequestUsageEntries = Array.isArray(requestUsageEntries)
-        ? requestUsageEntries.map((entry) =>
-            entry instanceof RequestUsage ? entry : new RequestUsage(entry),
-          )
+        ? requestUsageEntries.map(cloneRequestUsage)
         : undefined;
       this.requestUsageEntries =
         normalizedRequestUsageEntries &&
@@ -203,34 +190,19 @@ export class Usage {
   }
 
   add(newUsage: Usage) {
-    this.requests += newUsage.requests ?? 0;
-    this.inputTokens += newUsage.inputTokens ?? 0;
-    this.outputTokens += newUsage.outputTokens ?? 0;
-    this.totalTokens += newUsage.totalTokens ?? 0;
-    if (newUsage.inputTokensDetails) {
-      // The type does not allow undefined, but it could happen runtime
-      this.inputTokensDetails.push(
-        ...newUsage.inputTokensDetails.map(cloneTokenDetails),
-      );
-    }
-    if (newUsage.outputTokensDetails) {
-      // The type does not allow undefined, but it could happen runtime
-      this.outputTokensDetails.push(
-        ...newUsage.outputTokensDetails.map(cloneTokenDetails),
-      );
-    }
-
+    // Validate and copy all incoming details before changing aggregate usage.
+    const inputDetails =
+      newUsage.inputTokensDetails?.map(cloneTokenDetails) ?? [];
+    const outputDetails =
+      newUsage.outputTokensDetails?.map(cloneTokenDetails) ?? [];
+    let requestEntries: RequestUsage[] = [];
     if (
       Array.isArray(newUsage.requestUsageEntries) &&
       newUsage.requestUsageEntries.length > 0
     ) {
-      this.requestUsageEntries ??= [];
-      this.requestUsageEntries.push(
-        ...newUsage.requestUsageEntries.map(cloneRequestUsage),
-      );
+      requestEntries = newUsage.requestUsageEntries.map(cloneRequestUsage);
     } else if (newUsage.requests === 1 && newUsage.totalTokens > 0) {
-      this.requestUsageEntries ??= [];
-      this.requestUsageEntries.push(
+      requestEntries = [
         cloneRequestUsage({
           inputTokens: newUsage.inputTokens,
           outputTokens: newUsage.outputTokens,
@@ -238,7 +210,18 @@ export class Usage {
           inputTokensDetails: newUsage.inputTokensDetails?.[0],
           outputTokensDetails: newUsage.outputTokensDetails?.[0],
         }),
-      );
+      ];
+    }
+
+    this.requests += newUsage.requests ?? 0;
+    this.inputTokens += newUsage.inputTokens ?? 0;
+    this.outputTokens += newUsage.outputTokens ?? 0;
+    this.totalTokens += newUsage.totalTokens ?? 0;
+    this.inputTokensDetails.push(...inputDetails);
+    this.outputTokensDetails.push(...outputDetails);
+    if (requestEntries.length > 0) {
+      this.requestUsageEntries ??= [];
+      this.requestUsageEntries.push(...requestEntries);
     }
   }
 }

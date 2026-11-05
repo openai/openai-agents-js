@@ -1,5 +1,18 @@
 # @openai/agents-realtime
 
+## 0.21.0
+
+### Patch Changes
+
+- 4521cf5: fix: refresh WebSocket dependencies and development tooling.
+- 9687b54: fix: Reject WebRTC connections when the server reports an error before the initial session configuration is acknowledged (#466).
+- 980423f: fix: preserve Twilio audio format defaults when session audio configuration is omitted (#2072).
+- 0dd1ef8: fix: update the Realtime browser bundler to Vite 8.
+- Updated dependencies [989513a]
+- Updated dependencies [7b05470]
+- Updated dependencies [976579e]
+  - @openai/agents-core@0.21.0
+
 ## 0.20.0
 
 ### Patch Changes

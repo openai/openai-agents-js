@@ -1,5 +1,16 @@
 # @openai/agents-openai
 
+## 0.21.0
+
+### Patch Changes
+
+- 989513a: fix: Preserve bounded nested numeric token usage breakdowns across streamed runs, usage accounting, and saved run state (schema 1.23, with backward reads of earlier snapshots; #2082); usage detail values now require narrowing to numbers before arithmetic.
+- 1163b0c: fix: Preserve image detail when reading user messages from OpenAI Conversations sessions (#2078).
+- Updated dependencies [989513a]
+- Updated dependencies [7b05470]
+- Updated dependencies [976579e]
+  - @openai/agents-core@0.21.0
+
 ## 0.20.0
 
 ### Patch Changes

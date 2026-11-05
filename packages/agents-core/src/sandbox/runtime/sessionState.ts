@@ -6,9 +6,13 @@ import type { SandboxClient, SandboxClientOptions } from '../client';
 import {
   isEnvValueReference,
   isSerializedEnvValueReference,
-  type Manifest,
+  manifestAcknowledgesInContainerMountCredentialExposure,
+  Manifest,
+  replaceManifestMountCredentialExposurePolicy,
   type ManifestEnvironment,
 } from '../manifest';
+import { serializeManifestEnvironment } from '../shared/environment';
+import { stableJsonStringify } from '../shared/stableJson';
 import {
   SANDBOX_SESSION_STATE_VERSION,
   SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS,
@@ -150,17 +154,39 @@ export function toSessionStateEnvelope(
   backendId: string,
   state: SandboxSessionState,
   providerState: Record<string, unknown>,
+  options: {
+    environmentPreparation?: 'client';
+    trustedManifest?: Manifest;
+  } = {},
 ): SandboxSessionStateEnvelope {
+  const stateForEnvelope: SandboxSessionState =
+    options.environmentPreparation === 'client' && options.trustedManifest
+      ? {
+          ...state,
+          manifest: mergeClientPreparedManifestAuthority(
+            state.manifest,
+            options.trustedManifest,
+          ),
+        }
+      : state;
   validateMountEnvironmentCredentialBoundaries(
-    state.manifest,
-    state.environment ?? {},
+    stateForEnvelope.manifest,
+    options.environmentPreparation === 'client'
+      ? {}
+      : (stateForEnvelope.environment ?? {}),
+    options.environmentPreparation === 'client'
+      ? { preserveDeferredValuePresence: true }
+      : {},
   );
   const persistentManifest = serializeManifest(
-    sanitizeMountCredentialEnvironmentForPersistence(state).manifest,
+    sanitizeMountCredentialEnvironmentForPersistence(stateForEnvelope).manifest,
   );
   return {
     version: SANDBOX_SESSION_STATE_VERSION,
     backendId,
+    ...(options.environmentPreparation
+      ? { environmentPreparation: options.environmentPreparation }
+      : {}),
     manifest: serializeManifestRecord(persistentManifest),
     ...(state.snapshot !== undefined ? { snapshot: state.snapshot } : {}),
     ...(state.snapshotFingerprint !== undefined
@@ -177,10 +203,82 @@ export function toSessionStateEnvelope(
     // checks can run before deserializing provider-specific state.
     providerState: {
       ...providerStateWithoutSdkEnvelopeFields(providerState, backendId),
-      ...serializeHostPathGrantRedactionMetadata(state),
-      ...serializeMountCredentialRedactionMetadata(state),
+      ...serializeHostPathGrantRedactionMetadata(stateForEnvelope),
+      ...serializeMountCredentialRedactionMetadata(stateForEnvelope),
     },
   };
+}
+
+export function mergeClientPreparedManifestAuthority(
+  providerManifest: Manifest,
+  trustedManifest: Manifest,
+): Manifest {
+  const merged = new Manifest({
+    version: providerManifest.version,
+    root: providerManifest.root,
+    entries: structuredClone(providerManifest.entries),
+    environment: cloneManifestEnvironment(trustedManifest.environment),
+    users: structuredClone(providerManifest.users),
+    groups: structuredClone(providerManifest.groups),
+    extraPathGrants: structuredClone(trustedManifest.extraPathGrants),
+    remoteMountCommandAllowlist: [
+      ...trustedManifest.remoteMountCommandAllowlist,
+    ],
+  });
+  replaceManifestMountCredentialExposurePolicy(merged, trustedManifest);
+  return merged;
+}
+
+export function clientPreparedManifestAuthoritiesMatch(
+  providerManifest: Manifest,
+  leftTrustedManifest: Manifest,
+  rightTrustedManifest: Manifest,
+): boolean {
+  const left = mergeClientPreparedManifestAuthority(
+    providerManifest,
+    leftTrustedManifest,
+  );
+  const right = mergeClientPreparedManifestAuthority(
+    providerManifest,
+    rightTrustedManifest,
+  );
+  const environmentKeys = new Set([
+    ...Object.keys(left.environment),
+    ...Object.keys(right.environment),
+  ]);
+  for (const key of environmentKeys) {
+    if (left.environment[key]?.resolver !== right.environment[key]?.resolver) {
+      return false;
+    }
+  }
+  const mountCredentialExposure = (manifest: Manifest) =>
+    manifest.mountTargets().map(({ mountPath }) => ({
+      mountPath,
+      mountScoped: manifestAcknowledgesInContainerMountCredentialExposure(
+        manifest,
+        mountPath,
+        'mount_scoped',
+      ),
+      broad: manifestAcknowledgesInContainerMountCredentialExposure(
+        manifest,
+        mountPath,
+        'broad',
+      ),
+    }));
+  return (
+    stableJsonStringify({
+      environment: serializeManifestEnvironment(left),
+      extraPathGrants: left.extraPathGrants,
+      remoteMountCommandAllowlist: left.remoteMountCommandAllowlist,
+      mountCredentialExposure: mountCredentialExposure(left),
+    }) ===
+    stableJsonStringify({
+      environment: serializeManifestEnvironment(right),
+      extraPathGrants: right.extraPathGrants,
+      remoteMountCommandAllowlist: right.remoteMountCommandAllowlist,
+      mountCredentialExposure: mountCredentialExposure(right),
+    })
+  );
 }
 
 function providerStateWithoutSdkEnvelopeFields(
@@ -218,6 +316,30 @@ export function assertSessionStateEnvelope(
       'RunState sandbox session backend does not match the configured sandbox client.',
     );
   }
+  if (
+    envelope.environmentPreparation !== undefined &&
+    envelope.environmentPreparation !== 'client'
+  ) {
+    throw new UserError(
+      'RunState sandbox session environment preparation mode is not supported.',
+    );
+  }
+  const clientPreparesEnvironment = client.environmentPreparation === 'client';
+  const envelopeUsesClientPreparation =
+    envelope.environmentPreparation === 'client';
+  if (clientPreparesEnvironment !== envelopeUsesClientPreparation) {
+    throw new UserError(
+      'RunState sandbox session environment preparation does not match the configured sandbox client.',
+    );
+  }
+  if (
+    envelopeUsesClientPreparation &&
+    envelope.version !== SANDBOX_SESSION_STATE_VERSION
+  ) {
+    throw new UserError(
+      'Client-owned environment preparation requires the current sandbox session state version.',
+    );
+  }
 }
 
 export async function deserializeSandboxSessionStateEntry(
@@ -225,6 +347,7 @@ export async function deserializeSandboxSessionStateEntry(
   serializedEntry: SerializedSandboxSessionEntry | undefined,
   trustedManifest?: Manifest,
   trustedConfig: RunStateSessionTrustedConfig = {},
+  options: { trustedManifestAlreadyResolved?: boolean } = {},
 ): Promise<SandboxSessionState | undefined> {
   if (!serializedEntry) {
     return undefined;
@@ -234,11 +357,13 @@ export async function deserializeSandboxSessionStateEntry(
       'RunState sandbox backend does not match the configured sandbox client.',
     );
   }
-  const resolvedTrustedManifest = resolveTrustedManifestForResume(
-    client,
-    trustedManifest,
-    trustedConfig.clientOptions,
-  );
+  const resolvedTrustedManifest = options.trustedManifestAlreadyResolved
+    ? trustedManifest
+    : resolveTrustedManifestForResume(
+        client,
+        trustedManifest,
+        trustedConfig.clientOptions,
+      );
   assertTrustedManifestForDockerRunState(client, resolvedTrustedManifest);
   if (!client.deserializeSessionState) {
     throw new UserError(
@@ -247,9 +372,16 @@ export async function deserializeSandboxSessionStateEntry(
   }
   const envelope = serializedEntry.sessionState;
   assertSessionStateEnvelope(client, envelope);
+  const clientPreparesEnvironment = client.environmentPreparation === 'client';
+  if (clientPreparesEnvironment && !resolvedTrustedManifest) {
+    throw new UserError(
+      'Client-owned environment preparation requires a current trusted manifest before resuming sandbox session state.',
+    );
+  }
   assertTrustedEnvironmentForPersistedReferences(
     envelope,
     resolvedTrustedManifest,
+    { requireMatchingReferences: !clientPreparesEnvironment },
   );
   if (manifestHasInContainerMounts(deserializeManifest(envelope.manifest))) {
     throw new SandboxMountError(
@@ -272,32 +404,50 @@ export async function deserializeSandboxSessionStateEntry(
       state: providerStateWithSdkEnvelopeFields(
         envelope,
         prevalidatedPersistedState.manifest,
-        resolvedTrustedManifest,
+        clientPreparesEnvironment ? undefined : resolvedTrustedManifest,
       ),
     },
-    { clientOptions: trustedConfig.clientOptions },
+    {
+      clientOptions: trustedConfig.clientOptions,
+      ...(clientPreparesEnvironment
+        ? { trustedManifest: resolvedTrustedManifest }
+        : {}),
+    },
   );
   const materializedTrustedManifest = resolvedTrustedManifest
-    ? await resolveAndValidateMountEnvironment(resolvedTrustedManifest)
+    ? clientPreparesEnvironment
+      ? resolvedTrustedManifest
+      : await resolveAndValidateMountEnvironment(resolvedTrustedManifest)
     : undefined;
   const state = await client.deserializeSessionState(
     providerStateWithSdkEnvelopeFields(
       envelope,
       prevalidatedPersistedState.manifest,
-      materializedTrustedManifest,
+      clientPreparesEnvironment ? undefined : materializedTrustedManifest,
     ),
   );
-  if (client.backendId === 'docker') {
+  if (client.backendId === 'docker' && !clientPreparesEnvironment) {
     delete state.sessionIdentity;
   }
-  const credentialReboundState = rebindPersistedMountCredentials(
-    {
-      ...state,
-      ...deserializeHostPathGrantRedactionMetadata(envelope.providerState),
-      ...deserializeMountCredentialRedactionMetadata(envelope.providerState),
-    },
-    materializedTrustedManifest,
+  const hostPathMetadata = deserializeHostPathGrantRedactionMetadata(
+    envelope.providerState,
   );
+  const mountCredentialMetadata = deserializeMountCredentialRedactionMetadata(
+    envelope.providerState,
+  );
+  const credentialReboundState: SandboxSessionState = clientPreparesEnvironment
+    ? {
+        ...prevalidatedPersistedState,
+        ...hostPathMetadata,
+      }
+    : rebindPersistedMountCredentials(
+        {
+          ...state,
+          ...hostPathMetadata,
+          ...mountCredentialMetadata,
+        },
+        materializedTrustedManifest,
+      );
   const reboundState = rebindPersistedPathGrants(
     credentialReboundState,
     materializedTrustedManifest,
@@ -309,7 +459,17 @@ export async function deserializeSandboxSessionStateEntry(
   );
   assertMountCredentialsRebound(reboundState);
   validateMountCredentialBoundaries(reboundState.manifest);
+  validateMountEnvironmentCredentialBoundaries(
+    clientPreparesEnvironment
+      ? resolvedTrustedManifest!
+      : reboundState.manifest,
+    clientPreparesEnvironment ? {} : (reboundState.environment ?? {}),
+    clientPreparesEnvironment ? { preserveDeferredValuePresence: true } : {},
+  );
   assertHostPathGrantsRebound(reboundState);
+  if (clientPreparesEnvironment) {
+    return markRunStateSessionState(state, trustedConfig);
+  }
   return markRunStateSessionState(reboundState, trustedConfig);
 }
 
@@ -394,6 +554,7 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 function assertTrustedEnvironmentForPersistedReferences(
   envelope: SandboxSessionStateEnvelope,
   trustedManifest: Manifest | undefined,
+  options: { requireMatchingReferences?: boolean } = {},
 ): void {
   const persistedEnvironment = envelope.manifest.environment;
   if (
@@ -414,6 +575,9 @@ function assertTrustedEnvironmentForPersistedReferences(
     throw new UserError(
       'RunState sandbox session state with environment value references requires a current trusted manifest for the sandbox agent.',
     );
+  }
+  if (options.requireMatchingReferences === false) {
+    return;
   }
 
   const missingReferenceKeys = referenceKeys.filter(

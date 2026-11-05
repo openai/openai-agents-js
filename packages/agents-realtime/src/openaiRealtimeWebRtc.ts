@@ -435,7 +435,7 @@ export class OpenAIRealtimeWebRTC
             ) {
               return;
             }
-            const { data: parsed, isGeneric } = parseRealtimeEvent(event);
+            const { data: parsed } = parseRealtimeEvent(event);
             if (parsed?.type === 'error' && !settled) {
               // A server rejection during setup must not become a successful
               // connection through the acknowledgement timeout fallback.
@@ -450,7 +450,7 @@ export class OpenAIRealtimeWebRTC
             ) {
               return;
             }
-            if (!parsed || isGeneric) {
+            if (!parsed) {
               return;
             }
 
@@ -467,7 +467,10 @@ export class OpenAIRealtimeWebRTC
             }
 
             if (parsed.type === 'session.created') {
-              this._tracingConfig = parsed.session.tracing;
+              this._tracingConfig =
+                'tracing' in parsed.session
+                  ? (parsed.session.tracing ?? null)
+                  : null;
               // Trying to turn on tracing after the session is created
               const tracingConfig =
                 typeof userSessionConfig.tracing === 'undefined'

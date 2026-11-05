@@ -3978,6 +3978,25 @@ describe('DockerSandboxClient unit behavior', () => {
   );
 
   it('preserves live reuse after runtime files are materialized', async () => {
+    childProcessMocks.spawn.mockImplementation((_command, args: string[]) => {
+      if (args.includes('/usr/bin/realpath')) {
+        return dockerSpawnResult({ stdout: `${args.at(-1)}\n` });
+      }
+      if (args.includes('stat')) {
+        return dockerSpawnResult({
+          status: 1,
+          stderr: 'stat: No such file or directory\n',
+        });
+      }
+      if (args.includes('/usr/bin/tar')) {
+        const child = dockerSpawnResult({ remainActive: true });
+        const input = new PassThrough();
+        input.resume();
+        input.on('finish', () => child.emit('close', 0, null));
+        return Object.assign(child, { stdin: input });
+      }
+      return dockerSpawnResult({});
+    });
     let runCount = 0;
     const inspections = new Map<string, DockerContainerInspection>();
     processMocks.runSandboxProcess.mockImplementation(

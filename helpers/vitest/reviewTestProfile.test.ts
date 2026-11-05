@@ -22,6 +22,7 @@ describe('review test profile', () => {
       expect.arrayContaining([
         'helpers/tests/consoleGuard.test.ts',
         'packages/agents-core/test/sandboxes/docker.test.ts',
+        'packages/agents-core/test/sandboxes/docker.materialization.test.ts',
       ]),
     );
   });
@@ -37,6 +38,7 @@ describe('review test profile', () => {
       ),
     ).toEqual([
       'test/sandboxes/docker.test.ts',
+      'test/sandboxes/docker.materialization.test.ts',
       'test/sandboxes/unixLocal.git.test.ts',
       'test/sandboxes/unixLocal.process.test.ts',
       'test/sandboxes/unixLocal.signals.test.ts',

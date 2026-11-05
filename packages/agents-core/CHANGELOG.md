@@ -1,5 +1,16 @@
 # @openai/agents-core
 
+## 0.21.0
+
+### Minor Changes
+
+- 989513a: fix: Preserve bounded nested numeric token usage breakdowns across streamed runs, usage accounting, and saved run state (schema 1.23, with backward reads of earlier snapshots; #2082); usage detail values now require narrowing to numbers before arithmetic.
+- 7b05470: feat: Remove the Runloop sandbox provider and its public API; see the [migration guide](https://github.com/openai/openai-agents-js/tree/main/examples/sandbox/extensions#migrating-from-runloop) for supported alternatives.
+
+### Patch Changes
+
+- 976579e: fix: recognize GPT-6 Astra, Sol, Luna, and GPT-6.1 Sol in sandbox dynamic compaction thresholds (#2068).
+
 ## 0.20.0
 
 ### Minor Changes

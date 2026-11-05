@@ -418,8 +418,8 @@ export class OpenAIRealtimeWebSocket
       if (this.#state.websocket !== ws) {
         return;
       }
-      const { data: parsed, isGeneric } = parseRealtimeEvent(message);
-      if (!parsed || isGeneric) {
+      const { data: parsed } = parseRealtimeEvent(message);
+      if (!parsed) {
         return;
       }
 
@@ -501,7 +501,8 @@ export class OpenAIRealtimeWebSocket
         }
         this.#responseCreateSequencer.markResponseDone();
       } else if (parsed.type === 'session.created') {
-        this._tracingConfig = parsed.session.tracing;
+        this._tracingConfig =
+          'tracing' in parsed.session ? (parsed.session.tracing ?? null) : null;
         // Trying to turn on tracing after the session is created
         const tracingConfig =
           typeof sessionConfig.tracing === 'undefined'

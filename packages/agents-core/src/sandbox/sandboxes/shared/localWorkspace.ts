@@ -26,15 +26,25 @@ import {
   mkdir,
   mkdtemp,
   open,
+  opendir,
   readdir,
   readFile,
+  readlink,
   realpath,
   rm,
   stat,
   symlink,
 } from 'node:fs/promises';
 import { constants, type Dirent, type Stats } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   isHostPathWithinRoot,
@@ -717,6 +727,248 @@ function resolveLocalSourcePath(
   );
 }
 
+type LocalDirectoryContent =
+  | { type: 'dir'; path: string }
+  | { type: 'file'; path: string; content: Uint8Array };
+
+export type LocalWorkspaceContent = (
+  | { type: 'dir'; path: string; mustBeEmpty?: boolean }
+  | { type: 'file'; path: string; content: Uint8Array }
+  | {
+      type: 'file';
+      path: string;
+      size: number;
+      chunks: AsyncIterable<Uint8Array>;
+    }
+  | { type: 'symlink'; path: string; target: string }
+) & { permissions?: number };
+
+/** Read configured resources without opening any live workspace destination. */
+export async function* readLocalWorkspaceEntry(
+  entry: Entry,
+  localSourceGrants: SandboxPathGrant[],
+  privateGitRoot: string | undefined,
+): AsyncGenerator<LocalWorkspaceContent> {
+  assertLocalWorkspaceEntryMetadataSupported(
+    'Local sandbox materialization',
+    '',
+    entry,
+    { allowLocalBindMounts: false },
+  );
+  yield* readLocalWorkspaceEntryContents(
+    entry,
+    '',
+    localSourceGrants,
+    privateGitRoot,
+  );
+}
+
+async function* readLocalWorkspaceEntryContents(
+  entry: Entry,
+  path: string,
+  localSourceGrants: SandboxPathGrant[],
+  privateGitRoot: string | undefined,
+): AsyncGenerator<LocalWorkspaceContent> {
+  const permissions =
+    permissionsForSandboxEntry(entry.permissions).toMode() & 0o1777;
+  switch (entry.type) {
+    case 'dir':
+      yield { type: 'dir', path, permissions };
+      for (const [childPath, child] of Object.entries(entry.children ?? {})) {
+        yield* readLocalWorkspaceEntryContents(
+          child,
+          posix.join(path, normalizeRelativePath(childPath)),
+          localSourceGrants,
+          privateGitRoot,
+        );
+      }
+      return;
+    case 'file':
+      yield {
+        type: 'file',
+        path,
+        permissions,
+        content: Buffer.from(entry.content),
+      };
+      return;
+    case 'local_file':
+      yield {
+        type: 'file',
+        path,
+        permissions,
+        content: await readStableLocalFile(
+          resolveLocalSourcePath('local_file', entry.src, {
+            localSourceGrants,
+          }),
+        ),
+      };
+      return;
+    case 'local_dir':
+      for await (const item of readLocalDirectoryContents(
+        resolveLocalSourcePath('local_dir', entry.src, { localSourceGrants }),
+        '',
+      )) {
+        yield {
+          ...item,
+          path: posix.join(path, item.path),
+          ...(item.path === '' ? { permissions } : {}),
+        };
+      }
+      return;
+    case 'git_repo': {
+      if (privateGitRoot === undefined) {
+        throw new UserError(
+          'Git resources require a private temporary directory.',
+        );
+      }
+      await assertGitAvailable();
+      const temporary = await mkdtemp(join(privateGitRoot, 'checkout-'));
+      try {
+        const { result, commitFetchError } = await cloneGitRepo(
+          normalizeGitRepository(entry),
+          temporary,
+          entry.ref,
+        );
+        if (result.status !== 0) {
+          throw new UserError(
+            `Failed to materialize git_repo entry ${entry.repo}: ${formatSandboxProcessError(commitFetchError ?? result)}`,
+          );
+        }
+        const source = await resolveGitRepoSource(temporary, entry);
+        const copiesTree = Boolean(
+          entry.subpath || (entry.ref && looksLikeCommitRef(entry.ref)),
+        );
+        const info = await lstat(source);
+        if (copiesTree && info.isFile()) {
+          yield {
+            type: 'file',
+            path,
+            permissions,
+            content: await readFile(source),
+          };
+          return;
+        }
+        if (!info.isDirectory()) {
+          throw new UserError(
+            `git_repo subpath must resolve to a file or directory: ${entry.subpath}`,
+          );
+        }
+        // SHA/subpath copies retain existing target modes; direct clones retain Git modes.
+        const contents = copiesTree
+          ? readLocalDirectoryContents(source, '')
+          : readClonedGitContent(source, '');
+        for await (const item of contents) {
+          yield {
+            ...item,
+            path: posix.join(path, item.path),
+            ...(item.path === '' ? { permissions } : {}),
+            ...(item.path === '' && item.type === 'dir' && !copiesTree
+              ? { mustBeEmpty: true }
+              : {}),
+          };
+        }
+      } finally {
+        await rm(temporary, { recursive: true, force: true });
+      }
+      return;
+    }
+    default:
+      throw new SandboxUnsupportedFeatureError(
+        'Mount entries must be configured through the sandbox mount APIs.',
+      );
+  }
+}
+
+async function* readClonedGitContent(
+  source: string,
+  path: string,
+): AsyncGenerator<LocalWorkspaceContent> {
+  const info = await lstat(source);
+  const permissions = info.mode & 0o1777;
+  if (info.isSymbolicLink()) {
+    yield { type: 'symlink', path, target: await readlink(source) };
+  } else if (info.isFile()) {
+    const handle = await open(source, LOCAL_SOURCE_FILE_READ_FLAGS);
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || !sameFilesystemEntry(opened, info)) {
+        throw new UserError('git_repo file changed while materializing.');
+      }
+      yield {
+        type: 'file',
+        path,
+        permissions,
+        size: opened.size,
+        chunks: readClonedGitFileChunks(handle, opened.size),
+      };
+    } finally {
+      await handle.close();
+    }
+  } else if (info.isDirectory()) {
+    yield { type: 'dir', path, permissions };
+    for await (const child of await opendir(source)) {
+      yield* readClonedGitContent(
+        join(source, child.name),
+        posix.join(path, child.name),
+      );
+    }
+  }
+}
+
+async function* readClonedGitFileChunks(
+  handle: Awaited<ReturnType<typeof open>>,
+  remaining: number,
+): AsyncGenerator<Uint8Array> {
+  while (remaining > 0) {
+    const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+    if (bytesRead === 0) {
+      throw new UserError('git_repo file changed while materializing.');
+    }
+    remaining -= bytesRead;
+    yield buffer.subarray(0, bytesRead);
+  }
+}
+
+async function* readLocalDirectoryContents(
+  sourceDir: string,
+  relativePath: string,
+  expectedSourceStat?: Stats,
+): AsyncGenerator<LocalDirectoryContent> {
+  const source = await resolveStableLocalDirSource(
+    sourceDir,
+    expectedSourceStat,
+  );
+  yield { type: 'dir', path: relativePath };
+  for await (const child of await opendir(sourceDir)) {
+    await assertStableLocalDirPath(sourceDir, source.stat);
+    const sourcePath = join(sourceDir, child.name);
+    const path = relativePath ? `${relativePath}/${child.name}` : child.name;
+    if (child.isDirectory()) {
+      const childStat = await assertStableLocalDirChild(
+        source.root,
+        sourcePath,
+      );
+      yield* readLocalDirectoryContents(sourcePath, path, childStat);
+    } else if (child.isFile()) {
+      yield {
+        type: 'file',
+        path,
+        content: await readStableLocalDirFile(source.root, sourcePath),
+      };
+    } else if (child.isSymbolicLink()) {
+      throw new UserError(
+        `local_dir entries do not support symbolic links: ${sourcePath}`,
+      );
+    } else {
+      throw new UserError(
+        `local_dir entries do not support this file type: ${sourcePath}`,
+      );
+    }
+  }
+  await assertStableLocalDirPath(sourceDir, source.stat);
+}
+
 async function copyLocalDirectory(
   sourceDir: string,
   destination: string,
@@ -1090,14 +1342,7 @@ async function materializeGitRepoEntry(
   entry: GitRepo,
   logicalPath: string,
 ): Promise<void> {
-  const gitVersion = await runSandboxProcess('git', ['--version'], {
-    timeoutMs: GIT_VERSION_TIMEOUT_MS,
-  });
-  if (gitVersion.status !== 0) {
-    throw new UserError(
-      'git_repo entries require a local `git` executable, but `git` was not found.',
-    );
-  }
+  await assertGitAvailable();
 
   const repository = normalizeGitRepository(entry);
   const cloneIntoTemporaryDirectory =
@@ -1135,18 +1380,7 @@ async function materializeGitRepoEntry(
       return;
     }
 
-    const sourcePath = entry.subpath
-      ? resolve(cloneDestination, entry.subpath)
-      : cloneDestination;
-    if (entry.subpath) {
-      const cloneRoot = await realpath(cloneDestination);
-      const subpathRealpath = await realpath(sourcePath);
-      if (!isHostPathStrictlyWithinRoot(cloneRoot, subpathRealpath)) {
-        throw new UserError(
-          `git_repo subpath escapes the cloned repository: ${entry.subpath}`,
-        );
-      }
-    }
+    const sourcePath = await resolveGitRepoSource(cloneDestination, entry);
     const sourceInfo = await lstat(sourcePath);
     if (sourceInfo.isDirectory()) {
       await copyLocalDirectory(
@@ -1179,6 +1413,36 @@ async function materializeGitRepoEntry(
     if (cloneIntoTemporaryDirectory) {
       await rm(cloneDestination, { recursive: true, force: true });
     }
+  }
+}
+
+async function resolveGitRepoSource(
+  cloneRoot: string,
+  entry: GitRepo,
+): Promise<string> {
+  const source = entry.subpath ? resolve(cloneRoot, entry.subpath) : cloneRoot;
+  if (
+    entry.subpath &&
+    !isHostPathStrictlyWithinRoot(
+      await realpath(cloneRoot),
+      await realpath(source),
+    )
+  ) {
+    throw new UserError(
+      `git_repo subpath escapes the cloned repository: ${entry.subpath}`,
+    );
+  }
+  return source;
+}
+
+async function assertGitAvailable(): Promise<void> {
+  const gitVersion = await runSandboxProcess('git', ['--version'], {
+    timeoutMs: GIT_VERSION_TIMEOUT_MS,
+  });
+  if (gitVersion.status !== 0) {
+    throw new UserError(
+      'git_repo entries require a local `git` executable, but `git` was not found.',
+    );
   }
 }
 

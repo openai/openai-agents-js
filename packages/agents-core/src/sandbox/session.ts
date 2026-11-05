@@ -6,12 +6,13 @@ import type { Entry } from './entries';
 import type { Manifest } from './manifest';
 import type { Snapshot } from './snapshot';
 
-export const SANDBOX_SESSION_STATE_VERSION = 5 as const;
+export const SANDBOX_SESSION_STATE_VERSION = 6 as const;
 export const SUPPORTED_SANDBOX_SESSION_STATE_VERSIONS = [
   1,
   2,
   3,
   4,
+  5,
   SANDBOX_SESSION_STATE_VERSION,
 ] as const;
 export type SandboxSessionStateVersion =
@@ -32,6 +33,7 @@ export type ExposedPortEndpoint = {
 export type SandboxSessionStateEnvelope = {
   version: SandboxSessionStateVersion;
   backendId: string;
+  environmentPreparation?: 'client';
   manifest: Record<string, unknown>;
   snapshot?: Snapshot | null;
   snapshotFingerprint?: string | null;
