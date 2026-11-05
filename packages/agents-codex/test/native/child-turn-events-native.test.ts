@@ -907,7 +907,12 @@ it('keeps child tracing policy for explicit starts and active steering', async (
   const telemetry = await import('../../src/runtime/telemetry');
   await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
   try {
-    for (const disabled of [false, true]) {
+    const modes = [false, true].flatMap((disabled) => [
+      { disabled, programmaticToolCalling: false, approve: true },
+      { disabled, programmaticToolCalling: true, approve: true },
+      { disabled, programmaticToolCalling: false, approve: false },
+    ]);
+    for (const { disabled, programmaticToolCalling, approve } of modes) {
       let rootId: string | undefined;
       let roots = 0;
       let childModels = 0;
@@ -949,15 +954,27 @@ it('keeps child tracing policy for explicit starts and active steering', async (
         childModels++;
         return childModels === 1
           ? [message('initial child done')]
-          : [
-              call(
-                'exec_command',
-                { cmd: 'printf denied' },
-                { callId: 'denied-command' },
-              ),
-            ];
+          : childModels === 2
+            ? [
+                programmaticToolCalling
+                  ? {
+                      type: 'custom_tool_call',
+                      name: 'exec',
+                      call_id: 'traced-command',
+                      input:
+                        "text(await tools.exec_command({cmd:'printf traced'}));",
+                    }
+                  : call(
+                      'exec_command',
+                      { cmd: 'printf traced' },
+                      { callId: 'traced-command' },
+                    ),
+              ]
+            : [message('explicit child done')];
       };
-      const model = new ModelServer(Array.from({ length: 4 }, () => respond));
+      const model = new ModelServer(
+        Array.from({ length: approve ? 5 : 4 }, () => respond),
+      );
       const executor = await startPublicExecutor();
       try {
         await using provider = await providerFor(model);
@@ -965,6 +982,7 @@ it('keeps child tracing policy for explicit starts and active steering', async (
           instructions: 'Delegate.',
           model: 'gpt-5.5',
           provider,
+          programmaticToolCalling,
           tools: [
             new NativeAgents({
               beforeStep: async (context) => {
@@ -990,10 +1008,13 @@ it('keeps child tracing policy for explicit starts and active steering', async (
             cwd: executor.cwd,
             headers: executor.headers,
             tools: ['exec_command', 'write_stdin', 'apply_patch'],
-            approval: () => {
+            approval: (context) => {
               check();
+              expect(context.call?.route).toBe(
+                programmaticToolCalling ? 'code' : 'direct',
+              );
               approvals++;
-              return false;
+              return approve;
             },
           }),
         });
@@ -1025,16 +1046,24 @@ it('keeps child tracing policy for explicit starts and active steering', async (
                 );
               }),
             ]);
-            expect(await child.submit('steer active child')).toBe(second);
-            release.resolve();
-            await expect(finished).rejects.toBeInstanceOf(NativeError);
+            const steered = await child
+              .submit('steer active child')
+              .finally(release.resolve);
+            expect(steered).toBe(second);
+            if (approve) {
+              expect((await finished).finalOutput).toBe('explicit child done');
+            } else {
+              await expect(finished).rejects.toThrow(NativeError);
+            }
           },
         );
         expect(approvals).toBe(1);
-        expect(childModels).toBe(2);
-        expect(
-          executor.requests.some((rpc) => rpc.method === 'process/start'),
-        ).toBe(false);
+        expect(childModels).toBe(approve ? 3 : 2);
+        if (!approve) {
+          expect(
+            executor.requests.some((rpc) => rpc.method === 'process/start'),
+          ).toBe(false);
+        }
         expect(steps).toBeGreaterThanOrEqual(3);
         model.assertExhausted();
       } finally {
