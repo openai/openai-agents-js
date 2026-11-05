@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 
 import {
   PUBLIC_PACKAGES,
+  WORKSPACE_PACKAGES,
   repoRoot,
   readJson,
   sortedUnique,
@@ -659,7 +660,7 @@ export async function installFromRegistry(registry, allOptionals) {
     packDirectory = await mkdtemp(
       path.join(tmpdir(), 'agents-api-contract-registry-pack-'),
     );
-    for (const [name, directory] of PUBLIC_PACKAGES) {
+    for (const [name, directory] of WORKSPACE_PACKAGES) {
       const manifest = await readJson(
         path.join(repoRoot, 'packages', directory, 'package.json'),
       );
@@ -702,7 +703,7 @@ export async function installFromRegistry(registry, allOptionals) {
     return {
       installRoot,
       roots: Object.fromEntries(
-        PUBLIC_PACKAGES.map(([name]) => [
+        WORKSPACE_PACKAGES.map(([name]) => [
           name,
           path.join(installRoot, 'node_modules', name),
         ]),

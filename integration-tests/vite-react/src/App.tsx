@@ -6,9 +6,12 @@ import {
   setDefaultOpenAIClient,
   setTracingDisabled,
 } from '@openai/agents/classic';
+import { RealtimeAgent } from '@openai/agents/realtime';
 import OpenAI from 'openai';
 
 setTracingDisabled(true);
+
+const realtimeAgent = new RealtimeAgent({ name: 'Browser Realtime Agent' });
 
 const openai = new OpenAI({
   // IMPORTANT: DO NOT DO THIS.
@@ -35,7 +38,12 @@ function App() {
     });
   }, []);
 
-  return <>{result ? <span data-testid="response">{result}</span> : null}</>;
+  return (
+    <>
+      <span data-testid="realtime-agent">{realtimeAgent.name}</span>
+      {result ? <span data-testid="response">{result}</span> : null}
+    </>
+  );
 }
 
 export default App;

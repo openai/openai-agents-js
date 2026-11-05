@@ -16,7 +16,8 @@ This repository is a pnpm-managed monorepo that contains several packages:
 
 - `packages/agents-core`: Core abstractions and runtime for building agent workflows.
 - `packages/agents-openai`: OpenAI SDK bindings and concrete implementations.
-- `packages/agents`: Convenience bundle that re-exports core and OpenAI packages.
+- `packages/agents` provides the public SDK imports and initializes classic agents.
+- `packages/agents-codex` contains the embedded Codex runtime, native helpers, and Codex examples.
 - `packages/agents-realtime`: Realtime bindings and implementations.
 - `packages/agents-extensions`: Extensions for additional workflows.
 

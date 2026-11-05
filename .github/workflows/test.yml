@@ -319,8 +319,8 @@ jobs:
 
           // Standard CI runs without the native binary. Report native coverage
           // separately while preserving the released SDK's existing floors.
-          // The former root/testing implementations remain covered under classic/.
-          const nativeSource = /^packages\/agents\/src\/(?:runtime\/|migration\/|experimental\/|(?:index|testing\/index)\.ts$)/;
+          // The convenience facade and classic implementations retain released coverage.
+          const nativeSource = /^packages\/agents-codex\/src\//;
           const cohorts = { released: {}, native: {} };
           for (const [file, coverage] of Object.entries(summary)) {
             if (file === 'total') continue;

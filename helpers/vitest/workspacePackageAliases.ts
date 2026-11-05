@@ -68,7 +68,7 @@ function sourcePathForExport(
     );
   }
   if (
-    workspacePackage.name === '@openai/agents' &&
+    workspacePackage.name === '@openai/agents-codex' &&
     exportPath === './experimental/mcp-tasks'
   ) {
     distTarget = './dist/experimental/mcp-tasks/index.mjs';

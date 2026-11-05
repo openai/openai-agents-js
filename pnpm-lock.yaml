@@ -186,6 +186,9 @@ importers:
       '@eslint/js':
         specifier: ^9.39.5
         version: 9.39.5
+      '@openai/agents':
+        specifier: workspace:*
+        version: link:packages/agents
       '@types/node':
         specifier: 22.19.13
         version: 22.19.13
@@ -859,6 +862,28 @@ importers:
 
   packages/agents:
     dependencies:
+      '@openai/agents-codex':
+        specifier: workspace:*
+        version: link:../agents-codex
+      '@openai/agents-core':
+        specifier: workspace:*
+        version: link:../agents-core
+      '@openai/agents-openai':
+        specifier: workspace:*
+        version: link:../agents-openai
+      '@openai/agents-realtime':
+        specifier: workspace:*
+        version: link:../agents-realtime
+      openai:
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5)
+    devDependencies:
+      zod:
+        specifier: ^4.3.5
+        version: 4.3.5
+
+  packages/agents-codex:
+    dependencies:
       '@hyperjump/browser':
         specifier: 1.6.0
         version: 1.6.0
@@ -871,18 +896,9 @@ importers:
       '@openai/agents-core':
         specifier: workspace:*
         version: link:../agents-core
-      '@openai/agents-openai':
-        specifier: workspace:*
-        version: link:../agents-openai
-      '@openai/agents-realtime':
-        specifier: workspace:*
-        version: link:../agents-realtime
       email-addresses:
         specifier: 5.0.0
         version: 5.0.0
-      openai:
-        specifier: ^7.2.0
-        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5)
       ws:
         specifier: ^8.22.0
         version: 8.22.0
@@ -893,9 +909,18 @@ importers:
         specifier: npm:zod@4.6.7
         version: zod@4.6.7
     devDependencies:
+      '@openai/agents-openai':
+        specifier: workspace:*
+        version: link:../agents-openai
+      '@openai/agents-realtime':
+        specifier: workspace:*
+        version: link:../agents-realtime
       '@types/ws':
         specifier: ^8.18.2
         version: 8.18.2
+      openai:
+        specifier: ^7.2.0
+        version: 7.2.0(@aws-sdk/credential-provider-node@3.972.33)(ws@8.22.0)(zod@4.3.5)
     optionalDependencies:
       '@modelcontextprotocol/client':
         specifier: 2.4.0

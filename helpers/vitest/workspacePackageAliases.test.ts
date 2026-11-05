@@ -57,8 +57,8 @@ describe('workspace package aliases', () => {
   it('maps the MCP tasks runtime wrapper to its TypeScript entrypoint', () => {
     const aliases = createWorkspacePackageAliases([
       {
-        name: '@openai/agents',
-        root: resolve(rootDir, 'packages/agents'),
+        name: '@openai/agents-codex',
+        root: resolve(rootDir, 'packages/agents-codex'),
         exports: {
           './experimental/mcp-tasks': {
             import: {
@@ -69,8 +69,11 @@ describe('workspace package aliases', () => {
         },
       },
     ]);
-    expect(aliases['@openai/agents/experimental/mcp-tasks']).toBe(
-      resolve(rootDir, 'packages/agents/src/experimental/mcp-tasks/index.ts'),
+    expect(aliases['@openai/agents-codex/experimental/mcp-tasks']).toBe(
+      resolve(
+        rootDir,
+        'packages/agents-codex/src/experimental/mcp-tasks/index.ts',
+      ),
     );
   });
 

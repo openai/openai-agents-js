@@ -11,6 +11,7 @@ const EXEC_MAX_BUFFER = Number(
 );
 const ALLOWED_PACKAGES = [
   '@openai/agents',
+  '@openai/agents-codex',
   '@openai/agents-core',
   '@openai/agents-extensions',
   '@openai/agents-openai',

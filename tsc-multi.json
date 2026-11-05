@@ -15,6 +15,7 @@
     "packages/agents-core/tsconfig.json",
     "packages/agents-openai/tsconfig.json",
     "packages/agents-realtime/tsconfig.json",
+    "packages/agents-codex/tsconfig.json",
     "packages/agents/tsconfig.json",
     "packages/agents-extensions/tsconfig.json"
   ],

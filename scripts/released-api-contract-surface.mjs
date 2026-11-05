@@ -13,6 +13,12 @@ export const PUBLIC_PACKAGES = [
   ['@openai/agents', 'agents'],
 ];
 
+// Candidate builds include Codex; released baseline promotion stays on PUBLIC_PACKAGES.
+export const WORKSPACE_PACKAGES = [
+  ...PUBLIC_PACKAGES,
+  ['@openai/agents-codex', 'agents-codex'],
+];
+
 export const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -1022,7 +1028,7 @@ function symbolOwnedByRoots(symbol, ownedRoots) {
 function createProgram(rootNames, sourceMode = false) {
   const paths = sourceMode
     ? Object.fromEntries(
-        PUBLIC_PACKAGES.flatMap(([name, directory]) => [
+        WORKSPACE_PACKAGES.flatMap(([name, directory]) => [
           [name, [`packages/${directory}/src/index.ts`]],
           [`${name}/*`, [`packages/${directory}/src/*`]],
         ]),

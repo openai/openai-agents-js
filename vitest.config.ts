@@ -59,7 +59,7 @@ function createProjects(reviewTestProfile: boolean) {
       ...baseTestConfig,
       ...reviewExcludes(root, reviewTestProfile),
       alias: testAliases,
-      ...(name === '@openai/agents'
+      ...(name === '@openai/agents-codex'
         ? { include: nativeAgentTestIncludes }
         : {}),
       name,
