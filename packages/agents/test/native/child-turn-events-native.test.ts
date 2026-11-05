@@ -640,6 +640,7 @@ describe('exact native child cancellation', () => {
           .wait()
           .catch((cause: unknown) => cause);
         expect(error).toBeInstanceOf(TurnAborted);
+        expect((error as NativeError).responseIntegrityReason).toBeNull();
         await expect(attention).resolves.toMatchObject({
           type: 'needs_attention',
           reason: 'interrupted',

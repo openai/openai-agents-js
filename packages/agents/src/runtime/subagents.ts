@@ -8,7 +8,7 @@ import {
   type TurnRequestWait,
   type Completed,
 } from './session';
-import { NativeError, enrichNativeError } from './native-error';
+import { NativeError, nativeError, enrichNativeError } from './native-error';
 import type { FunctionCallOutput, UserInput } from './input';
 import type { ManualToolReply } from './manual';
 import { tokenUsageInfo } from './run-events';
@@ -126,13 +126,12 @@ export function issueChildTurn(
     } catch (cause) {
       const terminal = native.terminal_error();
       const details = terminal === null ? null : JSON.parse(terminal);
-      const ErrorType =
-        details?._sdk_child_interrupted === true ? TurnAborted : NativeError;
-      const error = new ErrorType(
-        cause instanceof Error ? cause.message : String(cause),
-        { cause },
-      );
-      enrichNativeError(error, details);
+      const message = cause instanceof Error ? cause.message : String(cause);
+      const error =
+        details?._sdk_child_interrupted === true
+          ? new TurnAborted(message, { cause })
+          : nativeError(details, message, { cause });
+      if (error instanceof TurnAborted) enrichNativeError(error, details);
       throw error;
     } finally {
       await callbacks.drain();
