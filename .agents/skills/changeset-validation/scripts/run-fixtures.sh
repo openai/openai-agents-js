@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR=$(git rev-parse --show-toplevel)
+# A commit hook exports its repository and index. Let Git discover each fixture repository.
+unset $(git rev-parse --local-env-vars)
 SKILL_DIR="$ROOT_DIR/.agents/skills/changeset-validation"
 
 node --experimental-vm-modules --test "$SKILL_DIR/scripts/changeset-prompt.test.mjs"

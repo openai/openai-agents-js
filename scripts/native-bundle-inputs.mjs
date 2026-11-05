@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
 export const nativeInputPaths = [
-  'packages/agents/native',
-  'packages/agents/scripts',
-  'packages/agents/bin',
+  'packages/agents-codex/native',
+  'packages/agents-codex/scripts',
+  'packages/agents-codex/bin',
   // An ancestor workspace can supply Cargo's lockfile, dependencies and profiles.
   ':(glob)**/Cargo.toml',
   ':(glob)**/Cargo.lock',
@@ -29,8 +29,13 @@ export function nativeInputs() {
     .toString()
     .split('\0')
     .some((entry) => entry.startsWith('120000 '));
-  const crate = 'packages/agents/native';
-  const cargoConfiguration = ['.', 'packages', 'packages/agents', crate].some(
+  const crate = 'packages/agents-codex/native';
+  const cargoConfiguration = [
+    '.',
+    'packages',
+    'packages/agents-codex',
+    crate,
+  ].some(
     (dir) =>
       (dir !== crate && existsSync(dir + '/Cargo.toml')) ||
       existsSync(dir + '/.cargo/config') ||

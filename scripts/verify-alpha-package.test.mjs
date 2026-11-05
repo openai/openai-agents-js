@@ -44,6 +44,12 @@ test('accepts a matching archive set and rejects tampering and receipt substitut
     await writeFile(checksumFile, checksumText);
     await save();
     assert.deepEqual(await verifyArtifactDirectory(directory), receipt);
+    const runtime = receipt.packages['@openai/agents-codex'];
+    delete receipt.packages['@openai/agents-codex'];
+    await save();
+    await assert.rejects(verifyArtifactDirectory(directory));
+    receipt.packages['@openai/agents-codex'] = runtime;
+    await save();
     await writeFile(
       checksumFile,
       checksumText.replace(receipt.starter.sha256, '0'.repeat(64)),

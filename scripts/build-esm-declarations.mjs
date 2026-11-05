@@ -56,14 +56,11 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  const root = new URL('../', import.meta.url);
-  for (const name of [
-    'agents-core',
-    'agents-openai',
-    'agents-realtime',
-    'agents',
-    'agents-extensions',
-  ]) {
-    buildEsmDeclarations(fileURLToPath(new URL(`packages/${name}/dist`, root)));
+  const root = fileURLToPath(new URL('../', import.meta.url));
+  const { projects } = JSON.parse(
+    readFileSync(join(root, 'tsc-multi.json'), 'utf8'),
+  );
+  for (const project of projects) {
+    buildEsmDeclarations(join(root, dirname(project), 'dist'));
   }
 }

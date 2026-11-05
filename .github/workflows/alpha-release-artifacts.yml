@@ -104,10 +104,10 @@ jobs:
 
       - name: Build the native runtime
         if: steps.native.outputs.restored != 'true'
-        run: node packages/agents/scripts/native.mjs package
+        run: node packages/agents-codex/scripts/native.mjs package
       - name: Build the macOS WSS test fixture
         if: runner.os == 'macOS' && steps.native.outputs.restored != 'true'
-        working-directory: packages/agents/native
+        working-directory: packages/agents-codex/native
         run: |
           export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
           export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
@@ -116,7 +116,7 @@ jobs:
           install -m 0755 "$CARGO_TARGET_DIR/release/examples/exec-server-fixture" test-bin/exec-server-fixture
       - name: Archive the native bundle
         if: steps.native.outputs.restored != 'true'
-        working-directory: packages/agents
+        working-directory: packages/agents-codex
         env:
           INPUTS: ${{ steps.native.outputs.inputs }}
         run: |
@@ -151,27 +151,27 @@ jobs:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: |
           pnpm test:native \
-            packages/agents/test/native/supervised-worker-example.test.ts \
-            packages/agents/test/native/supervised-worker-cleanup.test.ts \
+            packages/agents-codex/test/native/supervised-worker-example.test.ts \
+            packages/agents-codex/test/native/supervised-worker-cleanup.test.ts \
             --reporter=verbose
           pnpm test:native \
-            packages/agents/test/native/local-executor-policy-native.test.ts \
+            packages/agents-codex/test/native/local-executor-policy-native.test.ts \
             -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home' \
             --reporter=verbose
       - name: Qualify local executor grants on macOS
         if: runner.os == 'macOS'
         env:
-          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents/native/test-bin/exec-server-fixture
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: >-
-          pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
+          pnpm test:native packages/agents-codex/test/native/local-executor-policy-native.test.ts
           -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
           --reporter=verbose
       - name: Qualify owned child tracing on macOS
         if: runner.os == 'macOS'
         run: |
-          pnpm test:native packages/agents/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering'
-          pnpm test:native packages/agents/test/native/native-questions.test.ts -t 'keeps original child tracing through question reply and physical handler cleanup'
+          pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering'
+          pnpm test:native packages/agents-codex/test/native/native-questions.test.ts -t 'keeps original child tracing through question reply and physical handler cleanup'
       - name: Qualify native tracing and decoded OTLP transports
         if: runner.os == 'Linux'
         env:
@@ -180,8 +180,8 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/agents-otel-collector"
           "$RUNNER_TEMP/agents-otel-collector/bin/python" -m pip install grpcio==1.85.0 opentelemetry-proto==1.45.1
-          OTLP_TEST_PYTHON="$RUNNER_TEMP/agents-otel-collector/bin/python" pnpm exec vitest run --project @openai/agents packages/agents/test/native/tracing-parity.test.ts packages/agents/test/native/telemetry-transports.test.ts
-          pnpm test:native packages/agents/test/native/mcp-policy-native.test.ts -t 'restores the native MCP carrier'
+          OTLP_TEST_PYTHON="$RUNNER_TEMP/agents-otel-collector/bin/python" pnpm exec vitest run --project @openai/agents-codex packages/agents-codex/test/native/tracing-parity.test.ts packages/agents-codex/test/native/telemetry-transports.test.ts
+          pnpm test:native packages/agents-codex/test/native/mcp-policy-native.test.ts -t 'restores the native MCP carrier'
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles
