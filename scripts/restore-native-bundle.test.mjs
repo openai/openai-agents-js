@@ -83,6 +83,10 @@ test('native reuse requires unchanged inputs and the exact bytes authorized by t
   const base = commit('accepted pin');
   writeFileSync(join(repo, 'sdk.js'), 'export default 1;\n');
   commit('SDK only');
+  // The event base can be outside a shallow checkout of the merge commit.
+  const missingBase = restore('f'.repeat(40));
+  expect(missingBase.status).toBe(0);
+  expect(missingBase.output).toContain('restored=false');
   const corrupt = restore(base);
   expect(corrupt.status).toBe(1);
   expect(corrupt.error).toContain('Native bundle checksum mismatch');

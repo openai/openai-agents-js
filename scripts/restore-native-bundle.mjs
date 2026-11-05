@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import console from 'node:console';
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync } from 'node:fs';
@@ -27,17 +27,12 @@ const inputs = sha256(
 );
 
 async function restore() {
-  // A PR changing the pin must build fresh. Its base authorizes any download.
+  // Only an unchanged pin on the exact event base authorizes a download.
+  // A shallow checkout can lack that commit when GitHub regenerates the merge ref.
   if (
     !existsSync(lockPath) ||
-    execFileSync('git', [
-      'diff',
-      '--name-only',
-      PIN_REF,
-      'HEAD',
-      '--',
-      lockPath,
-    ]).length
+    spawnSync('git', ['diff', '--quiet', PIN_REF, 'HEAD', '--', lockPath])
+      .status !== 0
   ) {
     console.log('No accepted native pin. Building from source.');
     return false;
