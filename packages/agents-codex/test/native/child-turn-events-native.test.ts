@@ -949,17 +949,15 @@ it('keeps child tracing policy for explicit starts and active steering', async (
         childModels++;
         return childModels === 1
           ? [message('initial child done')]
-          : childModels === 2
-            ? [
-                call(
-                  'exec_command',
-                  { cmd: 'printf denied' },
-                  { callId: 'denied-command' },
-                ),
-              ]
-            : [message('explicit child done')];
+          : [
+              call(
+                'exec_command',
+                { cmd: 'printf denied' },
+                { callId: 'denied-command' },
+              ),
+            ];
       };
-      const model = new ModelServer(Array.from({ length: 5 }, () => respond));
+      const model = new ModelServer(Array.from({ length: 4 }, () => respond));
       const executor = await startPublicExecutor();
       try {
         await using provider = await providerFor(model);
@@ -1029,11 +1027,14 @@ it('keeps child tracing policy for explicit starts and active steering', async (
             ]);
             expect(await child.submit('steer active child')).toBe(second);
             release.resolve();
-            expect((await finished).finalOutput).toBe('explicit child done');
+            await expect(finished).rejects.toBeInstanceOf(NativeError);
           },
         );
         expect(approvals).toBe(1);
-        expect(childModels).toBe(3);
+        expect(childModels).toBe(2);
+        expect(
+          executor.requests.some((rpc) => rpc.method === 'process/start'),
+        ).toBe(false);
         expect(steps).toBeGreaterThanOrEqual(3);
         model.assertExhausted();
       } finally {
