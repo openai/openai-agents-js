@@ -253,3 +253,45 @@ it('reports the model context used for child compaction and sampling', async () 
     await executor.close();
   }
 });
+
+it('reports the compactor model after terminal compaction overflow', async () => {
+  const overflow = {
+    status: 200,
+    body: `data: ${JSON.stringify({
+      type: 'response.failed',
+      response: {
+        id: 'overflow',
+        error: {
+          code: 'context_length_exceeded',
+          message: 'context limit fixture',
+        },
+      },
+    })}\n\n`,
+  };
+  const server = new ModelServer(
+    [[message('known')], ...Array.from({ length: 16 }, () => overflow)],
+    [USAGE],
+  );
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Answer.',
+    provider,
+  }).session();
+  await (await session.submit('one')).wait();
+  await session.update({ model: 'gpt-daybreak-red-latest' });
+  const turn = await session.submit('two');
+  await expect(turn.wait()).rejects.toThrow(/context window/);
+  const observed = [];
+  for await (const event of turn.events()) {
+    if (event.type === 'usage_updated' && event.usage !== null)
+      observed.push(event.usage);
+  }
+  expect(observed.length).toBeGreaterThan(0);
+  expect(server.requests.length).toBeGreaterThan(1);
+  expect(server.requests.every((request) => request.model === 'gpt-5.5')).toBe(
+    true,
+  );
+  expect(observed.at(-1)?.totalTokenUsage.totalTokens).toBe(258_400);
+  expect(observed.at(-1)?.modelContextWindow).toBe(258_400);
+});
