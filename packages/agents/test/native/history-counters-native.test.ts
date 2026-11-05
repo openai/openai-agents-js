@@ -878,6 +878,24 @@ describe(
         const result = await unwrap(context.track(turn.wait()));
         expect(result.finalOutput).toBe('original done');
         assertUsageInfo(result.usage, usageOf(scenario, true), true);
+        const responseObservations = (await collect(session.turns()))[0]
+          .responses;
+        expect(responseObservations).toHaveLength(2);
+        expect(responseObservations?.[0]).toMatchObject({
+          responseId: 'response-1',
+          status: 'completed',
+          usageSource: 'received',
+          usage: {
+            inputTokens: 9007199254740993n,
+            totalTokens: 9007199254741000n,
+          },
+        });
+        expect(responseObservations?.[1]).toMatchObject({
+          responseId: 'response-2',
+          status: 'completed',
+          usageSource: 'received',
+          usage: { inputTokens: 7, totalTokens: 9 },
+        });
         const before = await session.saveState();
         assertCheckpointUsageGroups(
           before,
@@ -963,6 +981,9 @@ describe(
         );
         await restored.compact({ summary });
         expect(server.requests).toHaveLength(2);
+        expect((await collect(restored.turns()))[0].responses).toEqual(
+          responseObservations,
+        );
         const second = await restored.saveState();
         expect(second.history.slice(0, stored.history.length)).toEqual(
           stored.history,
