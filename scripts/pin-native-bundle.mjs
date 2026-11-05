@@ -20,13 +20,36 @@ assert.equal(
   repo,
   'Choose a build from the SDK repository',
 );
-const pages = api('--paginate', '--slurp', path + '/artifacts?per_page=100');
-const artifacts = pages.flatMap((page) => page.artifacts);
+function list(endpoint, field) {
+  return api('--paginate', '--slurp', path + endpoint).flatMap(
+    (page) => page[field],
+  );
+}
+const artifacts = list('/artifacts?per_page=100', 'artifacts');
+const jobs = list('/jobs?filter=all&per_page=100', 'jobs');
 
 let inputs;
 const platforms = {};
 for (const platform of ['darwin-arm64', 'linux-x64', 'win32-x64']) {
-  const suffix = '-' + platform + '-' + run.run_attempt + '.tar.gz';
+  // A retry of one failed platform keeps the other platforms' successful jobs.
+  const name = 'Package and test (' + platform + ')';
+  const job = jobs
+    .filter((entry) => entry.name === name || entry.name.endsWith(' / ' + name))
+    .sort((a, b) => b.run_attempt - a.run_attempt)[0];
+  assert.equal(
+    job?.conclusion,
+    'success',
+    'Expected a qualified job for ' + platform,
+  );
+  const upload = job.steps.find(
+    (step) => step.name === 'Upload the native bundle for pinning',
+  );
+  assert.equal(
+    upload?.conclusion,
+    'success',
+    'Expected a fresh native build for ' + platform,
+  );
+  const suffix = '-' + platform + '-' + job.run_attempt + '.tar.gz';
   const matches = artifacts.filter(
     (asset) =>
       !asset.expired &&
@@ -34,8 +57,8 @@ for (const platform of ['darwin-arm64', 'linux-x64', 'win32-x64']) {
       asset.name.endsWith(suffix),
   );
   assert.equal(matches.length, 1, 'Expected one fresh bundle for ' + platform);
-  const { id, digest, name } = matches[0];
-  const key = name.slice('native-'.length, -suffix.length);
+  const { id, digest, name: artifactName } = matches[0];
+  const key = artifactName.slice('native-'.length, -suffix.length);
   assert.match(key, /^[a-f0-9]{64}$/);
   assert.equal(
     inputs ?? key,
