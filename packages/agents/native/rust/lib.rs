@@ -1939,7 +1939,12 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_compact")]
-    pub async fn _compact(&self) -> napi::Result<String> {
+    pub async fn _compact(&self, trace_json: Option<String>) -> napi::Result<String> {
+        let trace = trace_json
+            .as_deref()
+            .map(serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>)
+            .transpose()
+            .map_err(|_| input_error("Invalid trace carrier"))?;
         let inner = self.current()?;
         // Serialize admission with startup/engine close, then thread mutations.
         // These guards end with the enqueue receipt, before the SDK waits for
@@ -1973,7 +1978,7 @@ impl NativeThread {
         graph_stop::check_mutation(&inner).map_err(input_error)?;
         let turn_id = inner
             .thread
-            .submit(codex_protocol::protocol::Op::Compact)
+            .submit_with_trace(codex_protocol::protocol::Op::Compact, trace)
             .await
             .map_err(native_error)?;
         serde_json::to_string(&serde_json::json!({"status": "started", "turn_id": turn_id}))
@@ -1981,11 +1986,21 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_execute_command")]
-    pub async fn _execute_command(&self, name: String, arguments: String) -> napi::Result<String> {
+    pub async fn _execute_command(
+        &self,
+        name: String,
+        arguments: String,
+        trace_json: Option<String>,
+    ) -> napi::Result<String> {
         commands::validate_arguments(&name, &arguments).map_err(input_error)?;
         if name == "compact" {
-            return self._compact().await;
+            return self._compact(trace_json).await;
         }
+        let trace = trace_json
+            .as_deref()
+            .map(serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>)
+            .transpose()
+            .map_err(|_| input_error("Invalid trace carrier"))?;
         let inner = self.current()?;
         let _lifecycle = inner.engine.lifecycle.lock().await;
         let _context_operation = inner.engine.operation(false).map_err(native_error)?;
@@ -2009,7 +2024,7 @@ impl NativeThread {
             }
             "review" => {
                 commands::check_review(&inner).await.map_err(input_error)?;
-                let turn = commands::review(&inner, &arguments)
+                let turn = commands::review(&inner, &arguments, trace)
                     .await
                     .map_err(native_error)?;
                 serde_json::json!({"status": "started", "turn_id": turn})
@@ -2834,7 +2849,14 @@ impl NativeThread {
         &self,
         output_schema_json: Option<String>,
         selection_json: Option<String>,
+        trace_json: Option<String>,
     ) -> napi::Result<String> {
+        let trace = trace_json
+            .map(|trace| {
+                serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>(&trace)
+                    .map_err(native_error)
+            })
+            .transpose()?;
         let output_schema = output_schema_json
             .map(|schema| serde_json::from_str::<Value>(&schema).map_err(native_error))
             .transpose()?;
@@ -2892,6 +2914,7 @@ impl NativeThread {
             settings,
             output_schema,
             selection,
+            trace,
         )
         .await
         .map_err(native_error)?;
