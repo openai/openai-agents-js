@@ -3907,42 +3907,44 @@ mod native_trace_merge_tests {
         )
         .unwrap();
         let token = readback["handle"].as_str().unwrap();
-        let explicit = W3cTraceContext {
-            traceparent: Some(format!(
-                "00-{}-{}-01",
-                readback["trace_id"].as_str().unwrap(),
-                readback["span_id"].as_str().unwrap()
-            )),
-            tracestate: Some("fixture=explicit".into()),
-        };
-        let mut mismatch = json!({"input":[],"trace":carrier("12345678901234ab","01","fixture=other"),"tracing_context":token});
-        let receipt = ops::prepare_submission_trace(&mut mismatch)
-            .unwrap()
-            .unwrap();
-        assert_eq!(receipt["status"], "not_submitted");
-        assert_eq!(receipt["reason"]["type"], "trace_context_conflict");
-        assert!(codex_otel::sdk_trace::trace_span_context(token).is_ok());
-        let mut matching = json!({"input":[],"trace":explicit,"tracing_context":token});
-        assert!(
-            ops::prepare_submission_trace(&mut matching)
+        for flags in ["02", "03"] {
+            let explicit = W3cTraceContext {
+                traceparent: Some(format!(
+                    "00-{}-{}-{flags}",
+                    readback["trace_id"].as_str().unwrap(),
+                    readback["span_id"].as_str().unwrap()
+                )),
+                tracestate: Some("fixture=explicit".into()),
+            };
+            let mut mismatch = json!({"input":[],"trace":carrier("12345678901234ab","01","fixture=other"),"tracing_context":token});
+            let receipt = ops::prepare_submission_trace(&mut mismatch)
                 .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            matching["trace"]["traceparent"],
-            explicit.traceparent.as_deref().unwrap()
-        );
-        assert_eq!(matching["trace"]["tracestate"], "fixture=explicit");
-        assert!(matching.get("tracing_context").is_none());
-        let parsed = codex_otel::context_from_w3c_trace_context(&explicit).unwrap();
-        let restored = codex_otel::sdk_trace::policy_for_context(&parsed).unwrap();
-        let original = codex_otel::sdk_trace::policy_for_context(
-            &codex_otel::sdk_trace::context(token).unwrap(),
-        )
-        .unwrap();
-        assert!(std::sync::Arc::ptr_eq(&restored, &original));
-        assert!(restored.disabled);
-        assert!(!restored.include_sensitive_data);
+                .unwrap();
+            assert_eq!(receipt["status"], "not_submitted");
+            assert_eq!(receipt["reason"]["type"], "trace_context_conflict");
+            assert!(codex_otel::sdk_trace::trace_span_context(token).is_ok());
+            let mut matching = json!({"input":[],"trace":explicit,"tracing_context":token});
+            assert!(
+                ops::prepare_submission_trace(&mut matching)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                matching["trace"]["traceparent"],
+                explicit.traceparent.as_deref().unwrap()
+            );
+            assert_eq!(matching["trace"]["tracestate"], "fixture=explicit");
+            assert!(matching.get("tracing_context").is_none());
+            let parsed = codex_otel::context_from_w3c_trace_context(&explicit).unwrap();
+            let restored = codex_otel::sdk_trace::policy_for_context(&parsed).unwrap();
+            let original = codex_otel::sdk_trace::policy_for_context(
+                &codex_otel::sdk_trace::context(token).unwrap(),
+            )
+            .unwrap();
+            assert!(std::sync::Arc::ptr_eq(&restored, &original));
+            assert!(restored.disabled);
+            assert!(!restored.include_sensitive_data);
+        }
         let mut scoped_only = json!({"input":[],"tracing_context":token});
         assert!(
             ops::prepare_submission_trace(&mut scoped_only)

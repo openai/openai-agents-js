@@ -11,6 +11,8 @@ const execute = promisify(execFile);
 const PARENT = '00-11111111111111111111111111111111-2222222222222222-01';
 const OVERRIDE = '00-33333333333333333333333333333333-4444444444444444-01';
 const WORKER = '00-55555555555555555555555555555555-6666666666666666-01';
+const STATE =
+  'tenant@abcdefghijklm=' + 'x'.repeat(256) + ',other=' + 'y'.repeat(256);
 type Span = {
   name: string;
   traceId: string;
@@ -103,13 +105,33 @@ it('exports isolated root and compaction parents, queued snapshots, exact callba
     }
     for (const flags of ['02', '03']) {
       const owned = await run('owned-children-' + flags);
+      expect(owned.rootCallback.traceparent.slice(3, 35)).toBe(
+        PARENT.slice(3, 35),
+      );
+      expect(owned.rootCallback.traceparent.endsWith('-' + flags)).toBe(true);
+      expect(owned.rootCallback.tracestate).toBe(STATE);
       expect(owned.callbacks).toHaveLength(2);
       for (const callback of owned.callbacks) {
-        expect(callback.traceparent.slice(3, 35)).toBe(owned.traceId);
+        expect(callback.traceparent.slice(3, 35)).toBe(PARENT.slice(3, 35));
         expect(callback.traceparent.endsWith('-' + flags)).toBe(true);
+        expect(callback.tracestate).toBe(STATE);
       }
-      expect(owned.policyChecks).toBeGreaterThanOrEqual(4);
+      if (flags === '03') {
+        const root = dispatch(owned.rootTurn);
+        expectParent(root, PARENT);
+        for (const turn of owned.childTurns) {
+          const child = dispatch(turn);
+          expect(child.traceId).toBe(root.traceId);
+          expect(descendsFrom(child, root)).toBe(true);
+        }
+      }
     }
+    const scoped = await run('owned-children-scoped');
+    expect(scoped.rootCallback.traceparent.slice(3, 35)).toBe(scoped.traceId);
+    expect(scoped.callbacks).toHaveLength(2);
+    expect(scoped.policyChecks).toBeGreaterThanOrEqual(4);
+    for (const callback of scoped.callbacks)
+      expect(callback.traceparent.slice(3, 35)).toBe(scoped.traceId);
     const reopened = await run('store-reopen');
     expectParent(dispatch(reopened.turns[0]), PARENT);
     expectParent(dispatch(reopened.turns[1]), WORKER);

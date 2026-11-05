@@ -751,11 +751,7 @@ pub async fn submit(
         content: input.input,
         client_id: None,
     });
-    if let Some(tracing) = control.creation_tracing() {
-        request.trace = Some(
-            codex_otel::sdk_trace::trace_carrier(tracing.token()).map_err(anyhow::Error::msg)?,
-        );
-    }
+    request.trace = control.creation_trace()?;
     let settlement = thread
         .thread_extension_data()
         .get::<crate::turn_settlement::Settlement>()

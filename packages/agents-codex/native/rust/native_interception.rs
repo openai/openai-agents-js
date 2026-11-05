@@ -577,6 +577,7 @@ pub struct Control {
     native_ancestor: Option<Weak<Control>>,
     stopped: CancellationToken,
     creation_tracing: OnceLock<Option<Arc<codex_otel::sdk_trace::ContextLease>>>,
+    creation_trace: OnceLock<Option<codex_protocol::protocol::W3cTraceContext>>,
     direct_turn: Mutex<Option<Arc<DirectTurn>>>,
     code_mode_sessions: Mutex<Vec<Weak<Session>>>,
     pending_code_import: Mutex<Option<Weak<PendingCodeImport>>>,
@@ -622,6 +623,17 @@ enum CodeImportState {
 impl Control {
     pub(crate) fn creation_tracing(&self) -> Option<Arc<codex_otel::sdk_trace::ContextLease>> {
         self.creation_tracing.get().cloned().flatten()
+    }
+
+    pub(crate) fn creation_trace(
+        &self,
+    ) -> Result<Option<codex_protocol::protocol::W3cTraceContext>> {
+        match self.creation_tracing() {
+            Some(tracing) => codex_otel::sdk_trace::trace_carrier(tracing.token())
+                .map(Some)
+                .map_err(anyhow::Error::msg),
+            None => Ok(self.creation_trace.get().cloned().flatten()),
+        }
     }
 
     pub(crate) fn code_import_poisoned(&self) -> bool {
@@ -714,6 +726,7 @@ impl Control {
             native_ancestor: None,
             stopped: CancellationToken::new(),
             creation_tracing: OnceLock::new(),
+            creation_trace: OnceLock::new(),
             direct_turn: Mutex::new(None),
             code_mode_sessions: Mutex::default(),
             pending_code_import: Mutex::default(),
@@ -757,6 +770,7 @@ impl Control {
             native_ancestor: Some(Arc::downgrade(parent)),
             stopped: CancellationToken::new(),
             creation_tracing: OnceLock::new(),
+            creation_trace: OnceLock::new(),
             direct_turn: Mutex::new(None),
             code_mode_sessions: Mutex::default(),
             pending_code_import: Mutex::default(),
@@ -2316,6 +2330,11 @@ impl ThreadLifecycleContributor<Config> for Boundary {
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             let creation_tracing = codex_otel::sdk_trace::CapturedContext::capture().context;
+            let creation_trace = if creation_tracing.is_none() {
+                codex_otel::current_span_w3c_trace_context()
+            } else {
+                None
+            };
             let root = !matches!(
                 input.session_source,
                 SessionSource::Internal(_) | SessionSource::SubAgent(_)
@@ -2348,6 +2367,7 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                 }
             });
             let _ = control.creation_tracing.set(creation_tracing);
+            let _ = control.creation_trace.set(creation_trace);
             if strict_executor_writes {
                 let _ = control.strict_executor_writes.set(());
             }
@@ -3340,7 +3360,12 @@ impl DirectRequest {
             // web/image, missing ids and malformed search are not client calls.
             _ => return Ok((item, false)),
         };
-        let tracing = codex_otel::sdk_trace::ContextLease::capture();
+        // The model stream can deliver this item on a different task. Its
+        // executor approval belongs to the turn retained by this request.
+        let tracing = match &self.owner.settlement {
+            Some(receipt) => receipt.upgrade().and_then(|turn| turn.tracing.clone()),
+            None => codex_otel::sdk_trace::ContextLease::capture().map(Arc::new),
+        };
         let request = Request {
             tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "before",
@@ -8203,6 +8228,43 @@ mod mcp_policy_tests {
         drop(output);
         drop(tx);
     }
+    #[test]
+    fn child_creation_trace_retains_raw_parent_without_sdk_policy() {
+        for flags in ["02", "03"] {
+            let original = codex_protocol::protocol::W3cTraceContext {
+                traceparent: Some(format!(
+                    "00-11111111111111111111111111111111-2222222222222222-{flags}"
+                )),
+                tracestate: Some("tenant=original".into()),
+            };
+            let attached = codex_otel::context_from_w3c_trace_context(&original)
+                .unwrap()
+                .attach();
+            let control = Control::new("original-child".into(), false);
+            let _ = control
+                .creation_trace
+                .set(codex_otel::current_span_w3c_trace_context());
+            assert!(control.creation_tracing().is_none());
+            drop(attached);
+            let unrelated = codex_protocol::protocol::W3cTraceContext {
+                traceparent: Some("00-33333333333333333333333333333333-4444444444444444-01".into()),
+                tracestate: Some("tenant=unrelated".into()),
+            };
+            let _attached = codex_otel::context_from_w3c_trace_context(&unrelated)
+                .unwrap()
+                .attach();
+            let retained = control.creation_trace().unwrap().unwrap();
+            assert_eq!(retained.traceparent, original.traceparent);
+            assert_eq!(retained.tracestate, original.tracestate);
+            assert!(
+                Control::new("another-child".into(), false)
+                    .creation_trace()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+
     #[tokio::test]
     async fn child_receipt_retains_original_tracing_after_origin_scope_ends() {
         const CHILD: &str = "AGENTS_CHILD_RECEIPT_TRACE_TEST";
@@ -8225,6 +8287,12 @@ mod mcp_policy_tests {
         let _ = control
             .creation_tracing
             .set(codex_otel::sdk_trace::CapturedContext::capture().context);
+        let _ = control
+            .creation_trace
+            .set(Some(codex_protocol::protocol::W3cTraceContext {
+                traceparent: Some("00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-03".into()),
+                tracestate: None,
+            }));
         let mode = serde_json::from_value(serde_json::json!({"mode":"default", "settings":{"model":"test","reasoning_effort":null,"developer_instructions":null}})).unwrap();
         crate::turn_settlement::Contributor
             .on_turn_start(TurnStartInput {
@@ -8249,6 +8317,16 @@ mod mcp_policy_tests {
         let _unrelated = codex_otel::sdk_trace::context(unrelated_handle)
             .unwrap()
             .attach();
+        assert!(
+            control
+                .creation_trace()
+                .unwrap()
+                .unwrap()
+                .traceparent
+                .as_deref()
+                .unwrap()
+                .starts_with("00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-")
+        );
         for owner in [creation, tracing] {
             let snapshot: serde_json::Value = serde_json::from_str(
                 &codex_otel::sdk_trace::trace_span_context(owner.token()).unwrap(),
