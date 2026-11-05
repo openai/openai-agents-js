@@ -760,6 +760,8 @@ class NativeTurn {
   readonly toolCleanupErrors: unknown[] = [];
   readonly executing = new Set<string>();
   tracing?: TraceCapture;
+  // Keep workflow ownership when a retained successor takes completion tracing.
+  issuedTracing?: TraceCapture;
   selection?: OperationSelection;
   writableRoots?: readonly string[];
   preparation?: AbortController;
@@ -2156,7 +2158,11 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private issuedTurn(step: NativeTurn): Turn<unknown, string | null> {
-    if (step.id) this.issuedRuns.set(step.id, step);
+    if (step.id) {
+      step.tracing?.retainWorkflowForSession();
+      step.issuedTracing ??= step.tracing;
+      this.issuedRuns.set(step.id, step);
+    }
     const run = this.rootRun(step);
     let turn = this.turnHandles.get(run);
     if (!turn) {
@@ -3911,7 +3917,7 @@ export class Session<OutputT = string, Context = unknown> {
     // Issued turns already retain exact result owners, including completed and
     // retained steps. A child may first reach JS after a later root starts.
     for (const run of this.issuedRuns.values()) {
-      const workflow = run.tracing?.workflow;
+      const workflow = (run.issuedTracing ?? run.tracing)?.workflow;
       if (
         workflow?.context.traceId === traceId &&
         workflow.context.spanId === workflowSpanId
@@ -7697,12 +7703,14 @@ export class Session<OutputT = string, Context = unknown> {
     while (this.isOpen && this.#native === native) {
       const raw = parseNative(await native._next_native_mcp_result());
       if (!this.isOpen || this.#native !== native || raw === null) return;
-      const { incarnation, ...notice } = nativeMcpResultInfoSchema
-        .extend({
-          incarnation: z.string().nullable().optional(),
-          generation: z.string().optional(),
-        })
-        .parse(raw);
+      const { incarnation, tracing_context, ...notice } =
+        nativeMcpResultInfoSchema
+          .extend({
+            incarnation: z.string().nullable().optional(),
+            generation: z.string().optional(),
+            tracing_context: z.string().optional(),
+          })
+          .parse(raw);
       const owner = this.callbackOwner(
         notice.thread_id,
         incarnation,
@@ -7731,14 +7739,21 @@ export class Session<OutputT = string, Context = unknown> {
             )
           )
             return;
-          const response = await transformMcpResult(
-            this.mcpTools,
-            this.mcpGeneration,
-            this.options.context,
-            owner instanceof NativeTurn
-              ? this.#turnFor(owner)
-              : await this.childSubmission(owner),
-            { ...notice, generation: notice.generation ?? '' },
+          const response = await withNativeCallbackContext(
+            tracing_context,
+            async () =>
+              transformMcpResult(
+                this.mcpTools,
+                this.mcpGeneration,
+                this.options.context,
+                owner instanceof NativeTurn
+                  ? this.#turnFor(owner)
+                  : await this.childSubmission(owner),
+                { ...notice, generation: notice.generation ?? '' },
+              ),
+            owner.controller.signal,
+            (traceId, workflowSpanId) =>
+              this.workflowForTrace(traceId, workflowSpanId),
           );
           if (this.current(owner)) {
             native._resolve_native_mcp_result(
@@ -8627,36 +8642,44 @@ export class Session<OutputT = string, Context = unknown> {
         phase = 'provider';
       }
       if (phase === 'provider') {
-        if (!this.environmentDisposalFinished) {
-          try {
-            await this.options.environmentOwner?.dispose(async (dispose) => {
-              const scope = { session: this, active: true };
-              try {
-                await toolInvocation.run(scope, dispose);
-              } finally {
-                scope.active = false;
-              }
-            });
-          } catch (error) {
-            // Automatic source retirement may have no current waiter. Keep its
-            // failed close joinable after all remaining owners have retired.
-            this.environmentCloseFailure ??= done.promise;
-            acknowledgmentFailure = new NativeError(
-              'Environment lease cleanup failed',
-              {
-                cause: acknowledgmentFailure
-                  ? new AggregateError(
-                      [acknowledgmentFailure, error],
-                      'Session and environment cleanup failed',
-                    )
-                  : error,
-              },
-            );
-          } finally {
-            this.environmentDisposalFinished = true;
+        try {
+          if (!this.environmentDisposalFinished) {
+            try {
+              await this.options.environmentOwner?.dispose(async (dispose) => {
+                const scope = { session: this, active: true };
+                try {
+                  await toolInvocation.run(scope, dispose);
+                } finally {
+                  scope.active = false;
+                }
+              });
+            } catch (error) {
+              // Automatic source retirement may have no current waiter. Keep its
+              // failed close joinable after all remaining owners have retired.
+              this.environmentCloseFailure ??= done.promise;
+              acknowledgmentFailure = new NativeError(
+                'Environment lease cleanup failed',
+                {
+                  cause: acknowledgmentFailure
+                    ? new AggregateError(
+                        [acknowledgmentFailure, error],
+                        'Session and environment cleanup failed',
+                      )
+                    : error,
+                },
+              );
+            } finally {
+              this.environmentDisposalFinished = true;
+            }
           }
+          await this.options.onClose?.();
+        } finally {
+          await Promise.all(
+            [...this.issuedRuns.values()].map((issued) =>
+              issued.issuedTracing?.releaseWorkflow(),
+            ),
+          );
         }
-        await this.options.onClose?.();
       }
       this.observations.finish('closed');
       if (run) this.finishObservation(run);

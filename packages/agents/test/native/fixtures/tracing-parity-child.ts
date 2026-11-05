@@ -173,6 +173,14 @@ async function contextCase(batches: unknown[]) {
             callbackTrace = telemetry.getCurrentSpan()?.context.traceId ?? '';
             entered.resolve();
             await release.promise;
+            const explicit = await telemetry.startSpan({
+              parent: telemetry.getCurrentTrace()!,
+            });
+            assert.equal(
+              explicit.context.parentSpanId,
+              workflowHandle?.context.spanId,
+            );
+            explicit.close();
             return telemetry.withSpan({ name: 'application.tool_work' }, () => {
               assert.equal(telemetry.getCurrentTrace(), workflowHandle);
               return 'tool-result';

@@ -11,6 +11,7 @@ export class TraceSpan {
   readonly context: SpanContext;
   private ended = false;
   private released = false;
+  private readonly retainedContexts = new Set<string>();
   constructor(
     private readonly native: Native,
     /** @internal Opaque process-local handle; never persist. */
@@ -22,10 +23,16 @@ export class TraceSpan {
     this.context = Object.freeze(context);
   }
   /** @internal */ retain(): string {
-    return this.native.retain_trace_context(this.handle);
+    const source = this.released
+      ? (this.retainedContexts.values().next().value ?? this.handle)
+      : this.handle;
+    const token = this.native.retain_trace_context(source);
+    this.retainedContexts.add(token);
+    return token;
   }
   /** @internal */ releaseContext(token: string): void {
     this.native.release_trace_context(token);
+    this.retainedContexts.delete(token);
   }
   end(
     outcome: { status?: 'ok' | 'error' | 'cancelled'; category?: string } = {},
@@ -92,23 +99,64 @@ export function captureTracing(
     opening === undefined
   )
     return undefined;
-  return new TraceCapture(start(options ?? {}, 'operation', opening));
+  const parent =
+    options?.parent === undefined ? ambient.getStore() : options.parent;
+  const workflow = parent?.kind === 'workflow' ? parent : parent?.workflow;
+  // Reserve before start() can yield and the lexical workflow can close.
+  const workflowLease =
+    options?.detached || options?.parent === null
+      ? undefined
+      : workflow
+        ? Promise.resolve({ span: workflow, token: workflow.retain() })
+        : parent === undefined && options?.parent === undefined
+          ? opening?.retainWorkflow()
+          : undefined;
+  return new TraceCapture(
+    start(options ?? {}, 'operation', opening),
+    workflowLease,
+  );
 }
+type WorkflowLease = { span: TraceSpan; token: string };
 /** @internal One captured native operation; settlement releases every host lease. */
 export class TraceCapture {
   private span?: TraceSpan;
   private contextToken?: string;
-  constructor(readonly ready: Promise<TraceSpan>) {
+  private finished = false;
+  private sessionOwnsWorkflow = false;
+  constructor(
+    readonly ready: Promise<TraceSpan>,
+    private workflowLease?: Promise<WorkflowLease | undefined>,
+  ) {
+    void workflowLease?.catch(() => {});
     void ready.then(
       (span) => {
         this.span = span;
       },
-      () => {},
+      () => {
+        void this.releaseWorkflow().catch(() => {});
+      },
     );
   }
   /** @internal Workflow metadata only; native callback carriers own ancestry. */
   get workflow(): TraceSpan | undefined {
     return this.span?.kind === 'workflow' ? this.span : this.span?.workflow;
+  }
+  /** @internal Reserve an inherited workflow before its owner can finish. */
+  retainWorkflow(): Promise<WorkflowLease | undefined> | undefined {
+    return this.workflowLease?.then((lease) =>
+      lease ? { span: lease.span, token: lease.span.retain() } : undefined,
+    );
+  }
+  /** @internal Issued runs can receive their first child after completion. */
+  retainWorkflowForSession(): void {
+    this.sessionOwnsWorkflow = true;
+  }
+  /** @internal Release only after the owning Session joins native/child cleanup. */
+  async releaseWorkflow(): Promise<void> {
+    const lease = this.workflowLease;
+    this.workflowLease = undefined;
+    const value = await lease;
+    value?.span.releaseContext(value.token);
   }
   /** @internal Retain synchronously when ready; otherwise reserve before closing. */
   retain(): Promise<{ token: string; span: TraceSpan }> {
@@ -136,6 +184,8 @@ export class TraceCapture {
     cancelled = false,
     category = 'operation_error',
   ): void {
+    if (this.finished) return;
+    this.finished = true;
     void this.ready
       .then((span) => {
         span.end({
@@ -152,6 +202,9 @@ export class TraceCapture {
         });
         if (this.contextToken) span.releaseContext(this.contextToken);
         span.close();
+      })
+      .finally(() => {
+        if (!this.sessionOwnsWorkflow) return this.releaseWorkflow();
       })
       .catch(() => {});
   }

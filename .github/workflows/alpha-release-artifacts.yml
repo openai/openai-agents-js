@@ -116,6 +116,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/agents-otel-collector"
           "$RUNNER_TEMP/agents-otel-collector/bin/python" -m pip install grpcio==1.85.0 opentelemetry-proto==1.45.1
           OTLP_TEST_PYTHON="$RUNNER_TEMP/agents-otel-collector/bin/python" pnpm exec vitest run --project @openai/agents packages/agents/test/native/tracing-parity.test.ts packages/agents/test/native/telemetry-transports.test.ts
+          pnpm test:native packages/agents/test/native/mcp-policy-native.test.ts -t 'restores the native MCP carrier'
       - name: Create the release bundles
         run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles

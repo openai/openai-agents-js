@@ -297,6 +297,7 @@ export class Agent<Context = undefined, Output = string> {
           providerOwnsCleanup = true;
         },
       );
+      let openingError: unknown;
       try {
         session.tracingCapture = tracingCapture;
         const originalClose = session.onClose;
@@ -304,7 +305,7 @@ export class Agent<Context = undefined, Output = string> {
           try {
             await originalClose?.();
           } finally {
-            tracingCapture?.finish();
+            tracingCapture?.finish(openingError);
           }
         };
         environmentOwner.signal.throwIfAborted();
@@ -321,7 +322,8 @@ export class Agent<Context = undefined, Output = string> {
         lease.openingSucceeded();
         return opened as CoreSession<Output, Context>;
       } catch (error) {
-        return lease.failOpening(error);
+        openingError = error;
+        return await lease.failOpening(error);
       }
     } catch (error) {
       tracingCapture?.finish(error);
