@@ -101,7 +101,10 @@ export interface RunOptions<Context = undefined> extends Omit<
 > {
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
-  /** Edit requests for a new run with input. A resumed turn cannot add an editor. */
+  /**
+   * Edit requests for a new run with input. A resumed turn cannot add an editor.
+   * Manual tools require onInteraction because an edited run cannot save an active checkpoint.
+   */
   prepareRequest?: import('./session').OperationOptions<Context>['prepareRequest'];
   returnState?: boolean;
   onNativeQuestion?: (
@@ -543,6 +546,7 @@ export class Agent<Context = undefined, Output = string> {
         environmentInput ||
         declarations.nativeAgents ||
         declarations.nativeGoals ||
+        declarations.checklist ||
         declarations.webSearch ||
         declarations.tools.some((tool) => tool.deferLoading) ||
         declarations.mcp.some(

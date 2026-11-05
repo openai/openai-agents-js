@@ -213,9 +213,13 @@
       "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
     },
     {
+      "path": "0024-native-response-observations.patch",
+      "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
+    },
+    {
       "path": "0054-native-prepared-request.patch",
-      "sha256": "d1b3f896d04a45c7d23e4efd649ad8e172e6cd838cd4d89e77848326ccd5722b"
+      "sha256": "f8cc76f8adb34ef55c49d06f05d44f637f15811653f83dbb18aac85b16f8603f"
     }
   ],
-  "result_tree": "112ac800d02e7afe1f398f923cdc1cf7218230c0"
+  "result_tree": "18a3ff00bc2acc6bbcc72ce517a8b5e67ca5c445"
 }

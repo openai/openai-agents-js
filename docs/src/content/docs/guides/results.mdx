@@ -10,8 +10,8 @@ import usageExample from '../../../../../examples/docs/results/usage.ts?raw';
 
 When you [run your agent](/openai-agents-js/guides/running-agents), you receive one of these result types:
 
-- [`RunResult`](/openai-agents-js/openai/agents/classes/runresult) if you call `run` without `stream: true`
-- [`StreamedRunResult`](/openai-agents-js/openai/agents/classes/streamedrunresult) if you call `run` with `stream: true`. For details on streaming, also check the [streaming guide](/openai-agents-js/guides/streaming).
+- [`RunResult`](/openai-agents-js/openai/agents-core/classes/runresult) if you call `run` without `stream: true`
+- [`StreamedRunResult`](/openai-agents-js/openai/agents-core/classes/streamedrunresult) if you call `run` with `stream: true`. For details on streaming, also check the [streaming guide](/openai-agents-js/guides/streaming).
 
 Both result types expose core properties such as `finalOutput`, `newItems`, `interruptions`, and `state`. `StreamedRunResult` adds streaming controls like `completed`, `toStream()`, `toTextStream()`, and `currentAgent`.
 
@@ -64,7 +64,7 @@ These properties answer different questions:
 | --- | --- | --- |
 | `input` | The base input for this run. If a handoff input filter rewrote the history, this reflects the filtered input the run continued with. | Auditing what this run actually used as input |
 | `output` | Only the model-shaped items generated in this run, without agent metadata. | Storing or replaying just the new model delta |
-| `newItems` | Rich [`RunItem`](/openai-agents-js/openai/agents/type-aliases/runitem) wrappers with agent/tool/handoff metadata. | Logs, UIs, audits, and debugging |
+| `newItems` | Rich [`RunItem`](/openai-agents-js/openai/agents-core/type-aliases/runitem) wrappers with agent/tool/handoff metadata. | Logs, UIs, audits, and debugging |
 | `history` | A replay-ready next-turn input built from `input + newItems`. | Manual chat loops and client-managed conversation state |
 
 In practice:
@@ -82,13 +82,13 @@ In practice:
 
 `newItems` provides detailed records of the run. Common item types are:
 
-- [`RunMessageOutputItem`](/openai-agents-js/openai/agents/classes/runmessageoutputitem) for assistant messages.
-- [`RunInputItem`](/openai-agents-js/openai/agents/classes/runinputitem) for input admitted from `RunState.pendingInput` while resuming a run.
-- [`RunReasoningItem`](/openai-agents-js/openai/agents/classes/runreasoningitem) for reasoning items.
-- [`RunToolSearchCallItem`](/openai-agents-js/openai/agents/classes/runtoolsearchcallitem) and [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents/classes/runtoolsearchoutputitem) for Responses tool-search requests and the loaded tool definitions they return.
-- [`RunToolCallItem`](/openai-agents-js/openai/agents/classes/runtoolcallitem) and [`RunToolCallOutputItem`](/openai-agents-js/openai/agents/classes/runtoolcalloutputitem) for tool calls and their results.
-- [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem) for tool calls that paused for approval.
-- [`RunHandoffCallItem`](/openai-agents-js/openai/agents/classes/runhandoffcallitem) and [`RunHandoffOutputItem`](/openai-agents-js/openai/agents/classes/runhandoffoutputitem) for handoff requests and completed transfers.
+- [`RunMessageOutputItem`](/openai-agents-js/openai/agents-core/classes/runmessageoutputitem) for assistant messages.
+- [`RunInputItem`](/openai-agents-js/openai/agents-core/classes/runinputitem) for input admitted from `RunState.pendingInput` while resuming a run.
+- [`RunReasoningItem`](/openai-agents-js/openai/agents-core/classes/runreasoningitem) for reasoning items.
+- [`RunToolSearchCallItem`](/openai-agents-js/openai/agents-core/classes/runtoolsearchcallitem) and [`RunToolSearchOutputItem`](/openai-agents-js/openai/agents-core/classes/runtoolsearchoutputitem) for Responses tool-search requests and the loaded tool definitions they return.
+- [`RunToolCallItem`](/openai-agents-js/openai/agents-core/classes/runtoolcallitem) and [`RunToolCallOutputItem`](/openai-agents-js/openai/agents-core/classes/runtoolcalloutputitem) for tool calls and their results.
+- [`RunToolApprovalItem`](/openai-agents-js/openai/agents-core/classes/runtoolapprovalitem) for tool calls that paused for approval.
+- [`RunHandoffCallItem`](/openai-agents-js/openai/agents-core/classes/runhandoffcallitem) and [`RunHandoffOutputItem`](/openai-agents-js/openai/agents-core/classes/runhandoffoutputitem) for handoff requests and completed transfers.
 
 Choose `newItems` over `output` whenever you need to know which agent produced an item or whether it marks a tool, tool-search, handoff, or approval boundary. When you use `toolSearchTool()`, these tool-search items are the easiest way to inspect which deferred tools or namespaces were loaded before the normal tool call happened.
 
@@ -106,7 +106,7 @@ In streaming mode, `currentAgent` tells you which agent is currently active whil
 
 ### Interruptions and resumable state
 
-If a tool needs approval, the run pauses and `interruptions` contains the pending [`RunToolApprovalItem`](/openai-agents-js/openai/agents/classes/runtoolapprovalitem)s. This can include approvals raised by direct tools, by tools reached after a handoff, or by nested `agent.asTool()` runs.
+If a tool needs approval, the run pauses and `interruptions` contains the pending [`RunToolApprovalItem`](/openai-agents-js/openai/agents-core/classes/runtoolapprovalitem)s. This can include approvals raised by direct tools, by tools reached after a handoff, or by nested `agent.asTool()` runs.
 
 Resolve approvals through `result.state.approve(...)` / `result.state.reject(...)`, then pass the same `state` back into `run()` to resume. You do not need to resolve every interruption at once. If you rerun after handling only some items, resolved calls can continue while unresolved ones stay pending and pause the run again.
 

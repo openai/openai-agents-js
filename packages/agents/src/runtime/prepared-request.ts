@@ -11,7 +11,10 @@ export interface PreparedToolPresentation {
   description: string;
   parameters: { [key: string]: JsonValue };
 }
-/** Native Responses input items; optional values use native omission, not null. */
+/** Native Responses input items use native omission for optional values.
+ * Managed function parameter edits retain raw schema fields through their captured
+ * sampling receipt. Other tools require a lossless native schema round trip.
+ */
 export interface PreparedRequestData {
   instructions: string;
   input: JsonValue[];

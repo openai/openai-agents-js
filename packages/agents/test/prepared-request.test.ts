@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as nativeBinding from '../src/runtime/binding';
 import * as turnReceipt from '../src/runtime/turn-receipt';
-import { Agent, NativeProvider, tool, HttpMCP } from '../src';
+import { Agent, NativeProvider, tool, HttpMCP, checklist } from '../src';
 import { z } from 'zod';
 import {
   capturePreparedRequest,
@@ -91,7 +91,12 @@ describe('prepared request capture boundary', () => {
   });
 });
 
-it.each(['websocket', 'deferred-function', 'deferred-mcp'] as const)(
+it.each([
+  'websocket',
+  'deferred-function',
+  'deferred-mcp',
+  'checklist',
+] as const)(
   'rejects unsupported %s before provider acquisition or editor invocation',
   async (profile) => {
     const provider = new NativeProvider(
@@ -118,7 +123,9 @@ it.each(['websocket', 'deferred-function', 'deferred-mcp'] as const)(
                 url: 'http://127.0.0.1:1/mcp',
               }),
             ]
-          : [];
+          : profile === 'checklist'
+            ? [checklist()]
+            : [];
     await expect(
       new Agent({ instructions: 'Answer.', provider, tools }).run('go', {
         prepareRequest: editor,

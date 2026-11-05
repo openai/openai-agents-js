@@ -130,6 +130,8 @@ export type {
   RecordedTurn,
   Failure,
   RecordedTokenUsage,
+  ReceivedTokenUsage,
+  RecordedResponse,
 } from './runtime/history';
 export { OutputValidationError } from './runtime/output';
 export type { OutputSpec } from './runtime/output';

@@ -3184,7 +3184,7 @@ export class Session<OutputT = string, Context = unknown> {
       !interactive &&
       this.defaultTools.some((tool) => tool.kind === 'manual') &&
       !this.oneShot?.onRequiredAction &&
-      !this.canCheckpointManual(output)
+      !this.canCheckpointManual(output, selection)
     )
       throw new InteractionRequired();
     const roots =
@@ -5364,8 +5364,12 @@ export class Session<OutputT = string, Context = unknown> {
       .catch((error) => this.readerFailed(error));
   }
 
-  private canCheckpointManual(output = this.defaultOutput): boolean {
+  private canCheckpointManual(
+    output = this.defaultOutput,
+    selection?: OperationSelection,
+  ): boolean {
     return (
+      selection?.prepareRequest === undefined &&
       !output.prompt &&
       this.nativeManualCheckpoint &&
       supportsManualCheckpoint(this.threadOptions, !!this.environment)

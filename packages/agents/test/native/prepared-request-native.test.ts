@@ -14,6 +14,7 @@ import {
   manualTool,
   toolRef,
   HostedVerificationMCP,
+  InteractionRequired,
   HttpMCP,
   localStorage,
 } from '@openai/agents';
@@ -515,6 +516,47 @@ it('keeps fixed hosted MCP registration outside the editor profile even with no 
   expect(remote.effects).toHaveLength(0);
   expect(server.requests).toHaveLength(0);
 });
+
+it.each([false, true])(
+  'requires a one-shot interaction handler with an editor and manual tools (handler=%s)',
+  async (handled) => {
+    const approval = manualTool({
+      name: 'approval',
+      description: 'Wait.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const server = new ModelServer([
+      [call('approval', {}, { callId: 'manual' })],
+      [message('continued')],
+    ]);
+    await using provider = await providerFor(server);
+    const editor = vi.fn(() => undefined);
+    const result = new Agent({
+      model: 'gpt-5.5',
+      instructions: 'Ask.',
+      provider,
+      tools: [approval],
+    }).run('go', {
+      prepareRequest: editor,
+      ...(handled
+        ? {
+            onInteraction: (action: Parameters<typeof approval.match>[0]) =>
+              approval.match(action)!.reply('approved'),
+          }
+        : {}),
+    });
+    if (handled) {
+      await expect(result).resolves.toMatchObject({ finalOutput: 'continued' });
+      expect(editor).toHaveBeenCalledTimes(2);
+      expect(server.requests).toHaveLength(2);
+    } else {
+      await expect(result).rejects.toBeInstanceOf(InteractionRequired);
+      expect(editor).not.toHaveBeenCalled();
+      expect(server.requests).toHaveLength(0);
+    }
+  },
+);
 
 it('rejects a new request editor before restoring an admitted manual turn', async () => {
   const approval = manualTool({
@@ -1193,12 +1235,70 @@ it.each(['no-edit', 'unchanged', 'description', 'parameters', 'both'] as const)(
   },
 );
 
-it('rejects a lossy nested schema key before HTTP and before tool effects', async () => {
-  const execute = vi.fn(() => 'effect');
+it('preserves raw edited bounds and null schema keys while original execution validation remains authoritative', async () => {
+  const effects: number[] = [];
   const selected = tool({
     name: 'lookup',
-    parameters: z.object({ value: z.string() }),
-    execute,
+    parameters: z.object({ value: z.number().max(10) }),
+    execute: ({ value }) => {
+      effects.push(value);
+      return 'effect';
+    },
+  });
+  const replacement = {
+    type: 'object',
+    properties: {
+      value: { type: 'number', maximum: 20, unknown_null_key: null },
+    },
+    required: ['value'],
+    additionalProperties: false,
+  };
+  const server = new ModelServer([
+    [call('lookup', { value: 7 }, { callId: 'allowed' })],
+    [call('lookup', { value: 15 }, { callId: 'above-original-maximum' })],
+  ]);
+  await using provider = await providerFor(server);
+  const result = new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Call lookup then answer.',
+    provider,
+    tools: [selected],
+  }).run('go', {
+    prepareRequest({ request }) {
+      request.tools[0].parameters = structuredClone(replacement);
+      return request;
+    },
+  });
+  await expect(result).rejects.toMatchObject({
+    issues: [
+      expect.objectContaining({
+        code: 'too_big',
+        maximum: 10,
+        path: ['value'],
+      }),
+    ],
+  });
+  expect(effects).toEqual([7]);
+  expect(server.requests).toHaveLength(2);
+  for (const request of server.requests) {
+    expect(request.tools).toEqual([
+      expect.objectContaining({
+        name: 'lookup',
+        type: 'function',
+        parameters: replacement,
+      }),
+    ]);
+    expect(JSON.stringify(request.tools)).not.toContain('[agents-schema:');
+  }
+});
+
+it('rejects a lossy ordinary MCP schema edit without a managed raw receipt before HTTP or effects', async () => {
+  const remote = await peer();
+  const selected = new HttpMCP({
+    name: 'records',
+    url: remote.url,
+    tools: ['lookup'],
+    deferLoading: false,
   });
   const server = new ModelServer([]);
   await using provider = await providerFor(server);
@@ -1212,13 +1312,15 @@ it('rejects a lossy nested schema key before HTTP and before tool effects', asyn
       prepareRequest({ request }) {
         request.tools[0].parameters = {
           type: 'object',
-          properties: { value: { type: 'string', unknown_null_key: null } },
+          properties: {
+            value: { type: 'number', maximum: 20, unknown_null_key: null },
+          },
           required: ['value'],
         };
         return request;
       },
     }),
   ).rejects.toThrow(/loses fields|prepared.request/i);
-  expect(execute).not.toHaveBeenCalled();
+  expect(remote.effects).toHaveLength(0);
   expect(server.requests).toHaveLength(0);
 });

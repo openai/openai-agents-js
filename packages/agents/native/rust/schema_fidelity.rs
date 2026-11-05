@@ -246,11 +246,13 @@ impl Receipts {
                 },
                 _ => anyhow::bail!("Invalid managed prepared function"),
             };
-            // This is only the receipt's expected native wire projection.
-            // Keep tool.parameters byte-for-value intact: Core still owns its
-            // lossless validation, including rejection of unknown nested keys.
+            // Core validates the native projection. This captured sampling
+            // receipt restores the exact raw schema only after tool identity
+            // and projected declaration checks succeed at serialization.
             if parameters_changed {
                 function.parameters = serde_json::from_value(tool.parameters.clone())
+                    .map_err(|_| anyhow::anyhow!("Invalid prepared schema projection"))?;
+                tool.parameters = serde_json::to_value(&function.parameters)
                     .map_err(|_| anyhow::anyhow!("Invalid prepared schema projection"))?;
             }
             function.description = Self::description(&tool.description, &token, entries.len());
@@ -659,7 +661,7 @@ mod prepared_tests {
         }
     }
     #[test]
-    fn returned_lossy_data_and_identity_are_never_normalized_for_core() {
+    fn managed_schema_projection_keeps_immutable_identity_for_core() {
         let receipts = Receipts::default();
         let (_original, data) = fixture(&receipts);
         let view = receipts.prepared(data).unwrap();
@@ -672,7 +674,12 @@ mod prepared_tests {
         edited.tools[0].defer_loading = Some(true);
         let submitted = edited.tools[0].clone();
         let _metadata = receipts.reconcile_prepared(&view, &mut edited).unwrap();
-        assert_eq!(edited.tools[0].parameters, submitted.parameters);
+        assert_ne!(edited.tools[0].parameters, submitted.parameters);
+        assert!(
+            edited.tools[0].parameters["properties"]["key"]
+                .get("unknown_null_key")
+                .is_none()
+        );
         assert_eq!(edited.tools[0].name, submitted.name);
         assert_eq!(edited.tools[0].namespace, submitted.namespace);
         assert_eq!(edited.tools[0].kind, submitted.kind);

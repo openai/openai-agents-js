@@ -4,16 +4,22 @@ import { WeatherParameters, WeatherReport } from './schemas.ts';
 
 const getWeather = tool({
   name: 'get_weather',
-  description: 'Get the current weather for a city.',
+  description: 'Return a sample temperature in the requested unit.',
   parameters: WeatherParameters,
-  execute: async ({ city, unit }) => `${city}: 22 degrees ${unit}`,
+  execute: ({ city, unit }) => {
+    const temperature = unit === 'fahrenheit' ? 71.6 : 22;
+    return `${city}: ${temperature} degrees ${unit}`;
+  },
 });
 
 const zodTool = tool({
   name: 'get_timezone',
-  description: 'Get the timezone for a city.',
+  description: 'Look up the city in the sample time zone data.',
   parameters: z.object({ city: z.string() }),
-  execute: async ({ city }) => `${city}: UTC`,
+  execute: ({ city }) =>
+    city.trim().toLowerCase() === 'tokyo'
+      ? 'Asia/Tokyo'
+      : `No sample time zone for ${city}.`,
 });
 
 const agent = new Agent({
@@ -23,9 +29,5 @@ const agent = new Agent({
   outputType: WeatherReport,
 });
 
-async function main() {
-  const result = await run(agent, 'What is the weather in Tokyo?');
-  console.log(result.finalOutput);
-}
-
-main().catch(console.error);
+const result = await run(agent, 'What is the weather in Tokyo?');
+console.log(result.finalOutput);

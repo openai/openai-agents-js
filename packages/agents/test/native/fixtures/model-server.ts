@@ -79,9 +79,10 @@ export class ModelServer {
       // Check syntax only; emit the original text so large JSON integers stay exact.
       if (usage !== undefined) JSON.parse(usage);
       const completed =
-        usage === undefined
+        this.terminalFrames?.[requestIndex] ??
+        (usage === undefined
           ? JSON.stringify({ type: 'response.completed', response: { id } })
-          : `{"type":"response.completed","response":{"id":${JSON.stringify(id)},"usage":${usage}}}`;
+          : `{"type":"response.completed","response":{"id":${JSON.stringify(id)},"usage":${usage}}}`);
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       const events = [
         { type: 'response.created', response: { id } },
@@ -123,6 +124,7 @@ export class ModelServer {
       index: number,
       request: JsonObject,
     ) => void | Promise<void>,
+    private readonly terminalFrames?: readonly string[],
   ) {
     this.rawUsage = Array.isArray(usage)
       ? usage

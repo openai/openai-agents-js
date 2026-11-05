@@ -50,8 +50,8 @@ EXPO_PUBLIC_REALTIME_TOKEN_URL=http://127.0.0.1:8787/token pnpm -F realtime-reac
 For a physical iOS device, connect the device and development machine to the same private Tailscale network. On the development machine, find its Tailscale IPv4 address with `tailscale ip -4`, then start the token server bound to that address:
 
 ```sh
-HOST=<tailscale-ip> OPENAI_API_KEY=sk-... pnpm -F realtime-react-native token-server
-EXPO_PUBLIC_REALTIME_TOKEN_URL=http://<tailscale-ip>:8787/token pnpm -F realtime-react-native start
+HOST="$(tailscale ip -4)" OPENAI_API_KEY=sk-... pnpm -F realtime-react-native token-server
+EXPO_PUBLIC_REALTIME_TOKEN_URL="http://$(tailscale ip -4):8787/token" pnpm -F realtime-react-native start
 ```
 
 The private tunnel protects the pairing token in transit. The server permits six token requests per client per minute. Stop the server after testing.
@@ -77,7 +77,7 @@ On Xcode 26.6 with iOS 26.5 Simulator, microphone input and audio output are cur
 For now, use a physical iOS device to test microphone input and spoken responses:
 
 ```sh
-EXPO_PUBLIC_REALTIME_TOKEN_URL=http://<tailscale-ip>:8787/token pnpm -F realtime-react-native exec expo run:ios --device
+EXPO_PUBLIC_REALTIME_TOKEN_URL="http://$(tailscale ip -4):8787/token" pnpm -F realtime-react-native exec expo run:ios --device
 ```
 
 `Device.isDevice` then enables bidirectional audio automatically.

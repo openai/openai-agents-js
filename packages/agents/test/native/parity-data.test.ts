@@ -207,7 +207,13 @@ describe('Python data API parity', () => {
       [
         {
           type: 'token_usage_record',
-          payload: { turn_id: 'turn', turn_token_usage: counts },
+          payload: {
+            thread_id: 'native-thread',
+            turn_id: 'turn',
+            response_id: 'response',
+            usage: counts,
+            turn_token_usage: counts,
+          },
         },
         {
           type: 'event_msg',
@@ -247,9 +253,25 @@ describe('Python data API parity', () => {
           message: 'busy',
           httpStatusCode: 503,
         },
+        responses: [
+          {
+            id: null,
+            threadId: 'native-thread',
+            turnId: 'turn',
+            responseId: 'response',
+            usageSource: 'native_normalized',
+            usage: {
+              inputTokens: 17,
+              inputTokensDetails: { cachedTokens: 3, cacheWriteTokens: 4 },
+              outputTokens: 7,
+              outputTokensDetails: { reasoningTokens: 2 },
+              totalTokens: 24,
+            },
+          },
+        ],
         usage: {
           inputTokens: 17,
-          inputTokensDetails: { cachedTokens: 3 },
+          inputTokensDetails: { cachedTokens: 3, cacheWriteTokens: 4 },
           outputTokens: 7,
           outputTokensDetails: { reasoningTokens: 2 },
           totalTokens: 24,
