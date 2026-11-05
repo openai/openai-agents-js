@@ -624,6 +624,17 @@ impl Control {
         self.creation_tracing.get().cloned().flatten()
     }
 
+    pub(crate) fn tracing_context(&self) -> codex_otel::sdk_trace::CapturedContext {
+        if self.native_ancestor.is_some() {
+            // A child created without tracing keeps that choice on later turns.
+            codex_otel::sdk_trace::CapturedContext {
+                context: self.creation_tracing(),
+            }
+        } else {
+            codex_otel::sdk_trace::CapturedContext::capture()
+        }
+    }
+
     pub(crate) fn code_import_poisoned(&self) -> bool {
         self.import_cleanup_failure.get().is_some_and(|failure| {
             failure
@@ -3340,7 +3351,7 @@ impl DirectRequest {
             // web/image, missing ids and malformed search are not client calls.
             _ => return Ok((item, false)),
         };
-        let tracing = codex_otel::sdk_trace::ContextLease::capture();
+        let tracing = self.control.tracing_context().context;
         let request = Request {
             tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "before",
@@ -3725,7 +3736,7 @@ impl ToolLifecycleContributor for Boundary {
                 return Err(());
             }
             let retained = control.root && route == "code_mode";
-            let tracing = codex_otel::sdk_trace::ContextLease::capture();
+            let tracing = control.tracing_context().context;
             let request = Request {
                 tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "after",
@@ -4711,7 +4722,7 @@ impl CodeModeSessionDelegate for Delegate {
                 // to ordinary, unselected native calls.
                 return self.inner.invoke_tool(invocation, cancellation_token).await;
             }
-            let tracing = codex_otel::sdk_trace::ContextLease::capture();
+            let tracing = control.tracing_context().context;
             let request = Request {
                 tracing_context: tracing.as_ref().map(|context| context.token()),
                 phase: "before",
