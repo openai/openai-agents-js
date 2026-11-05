@@ -3895,20 +3895,34 @@ export class Session<OutputT = string, Context = unknown> {
     return owner;
   }
 
-  private workflowForTrace(traceId: string): TraceSpan | undefined {
+  private workflowForTrace(
+    traceId: string,
+    workflowSpanId: string,
+  ): TraceSpan | undefined {
     const current =
       this.lifecycle.kind === 'turn'
         ? this.lifecycle.run.tracing?.workflow
         : this.lastRun?.tracing?.workflow;
-    if (current?.context.traceId === traceId) return current;
+    if (
+      current?.context.traceId === traceId &&
+      current.context.spanId === workflowSpanId
+    )
+      return current;
     // Issued turns already retain exact result owners, including completed and
     // retained steps. A child may first reach JS after a later root starts.
     for (const run of this.issuedRuns.values()) {
       const workflow = run.tracing?.workflow;
-      if (workflow?.context.traceId === traceId) return workflow;
+      if (
+        workflow?.context.traceId === traceId &&
+        workflow.context.spanId === workflowSpanId
+      )
+        return workflow;
     }
     const opening = this.options.tracingCapture?.workflow;
-    return opening?.context.traceId === traceId ? opening : undefined;
+    return opening?.context.traceId === traceId &&
+      opening.context.spanId === workflowSpanId
+      ? opening
+      : undefined;
   }
 
   private processChild(
@@ -4749,7 +4763,8 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined,
           () => beforeStep(context),
           signal,
-          (traceId) => this.workflowForTrace(traceId),
+          (traceId, workflowSpanId) =>
+            this.workflowForTrace(traceId, workflowSpanId),
         );
         signal.throwIfAborted();
         if (
@@ -5819,7 +5834,8 @@ export class Session<OutputT = string, Context = unknown> {
           : undefined,
         execute,
         owner.controller.signal,
-        (traceId) => this.workflowForTrace(traceId),
+        (traceId, workflowSpanId) =>
+          this.workflowForTrace(traceId, workflowSpanId),
       );
   }
 
@@ -7809,7 +7825,8 @@ export class Session<OutputT = string, Context = unknown> {
                 tracingContext,
                 callback,
                 owner.controller.signal,
-                (traceId) => this.workflowForTrace(traceId),
+                (traceId, workflowSpanId) =>
+                  this.workflowForTrace(traceId, workflowSpanId),
               ),
             );
             pending.resolve();

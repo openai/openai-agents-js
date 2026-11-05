@@ -108,6 +108,29 @@ async function flush() {
   assert.equal(result.status, 'success', JSON.stringify(result));
 }
 async function contextCase(batches: unknown[]) {
+  await telemetry.withTrace(
+    { name: 'workflow.shared_outer', traceId: '4'.repeat(32) },
+    async (outer) => {
+      await telemetry.withTrace(
+        { name: 'workflow.shared_inner' },
+        async (inner) => {
+          assert.equal(inner.context.traceId, outer.context.traceId);
+          assert.notEqual(inner.context.spanId, outer.context.spanId);
+          assert.equal(telemetry.getCurrentTrace(), inner);
+          await telemetry.withSpan({}, () =>
+            assert.equal(telemetry.getCurrentTrace(), inner),
+          );
+          await telemetry.withSpan({ parent: outer }, () =>
+            assert.equal(telemetry.getCurrentTrace(), outer),
+          );
+          await telemetry.withSpan({ parent: null }, () =>
+            assert.equal(telemetry.getCurrentTrace(), undefined),
+          );
+        },
+      );
+      assert.equal(telemetry.getCurrentTrace(), outer);
+    },
+  );
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let effects = 0;
@@ -296,6 +319,7 @@ async function controlCase(batches: unknown[]) {
           (span) => {
             assert.equal(span.context.disabled, true);
             assert.equal(span.context.parentSpanId, null);
+            assert.equal(telemetry.getCurrentTrace(), undefined);
           },
         ),
     );

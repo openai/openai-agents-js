@@ -162,6 +162,7 @@ interface WireSpanContext {
   trace_id: string;
   span_id: string;
   parent_span_id: string | null;
+  workflow_span_id: string | null;
   disabled: boolean;
   include_sensitive_data: boolean;
 }
@@ -171,6 +172,7 @@ function spanFromWire(
   kind: string,
   parent?: TraceSpan,
 ): TraceSpan {
+  const workflow = parent?.kind === 'workflow' ? parent : parent?.workflow;
   return new TraceSpan(
     native,
     context.handle,
@@ -182,10 +184,9 @@ function spanFromWire(
       disabled: context.disabled,
       includeSensitiveData: context.include_sensitive_data,
     },
-    parent?.context.traceId === context.trace_id
-      ? parent.kind === 'workflow'
-        ? parent
-        : parent.workflow
+    workflow?.context.traceId === context.trace_id &&
+      workflow.context.spanId === context.workflow_span_id
+      ? workflow
       : undefined,
   );
 }
@@ -287,7 +288,10 @@ export async function withNativeCallbackContext<T>(
   context: string | undefined,
   callback: () => T | Promise<T>,
   signal?: AbortSignal,
-  workflowForTrace?: (traceId: string) => TraceSpan | undefined,
+  workflowForTrace?: (
+    traceId: string,
+    workflowSpanId: string,
+  ) => TraceSpan | undefined,
 ): Promise<T> {
   if (context === undefined) return callback();
   const native = await binding();
@@ -301,7 +305,9 @@ export async function withNativeCallbackContext<T>(
     ),
   );
   const parent = workflowForTrace
-    ? workflowForTrace(wire.trace_id)
+    ? wire.workflow_span_id
+      ? workflowForTrace(wire.trace_id, wire.workflow_span_id)
+      : undefined
     : ambient.getStore();
   const span = spanFromWire(native, wire, 'callback', parent);
   try {

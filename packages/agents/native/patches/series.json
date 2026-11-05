@@ -199,7 +199,11 @@
     {
       "path": "0053-sdk-native-tracing.patch",
       "sha256": "cc962c74fa929f85ea363394a28b0b3e402fda824584d01f4af9ed3884311bd9"
+    },
+    {
+      "path": "0054-sdk-workflow-identity.patch",
+      "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
     }
   ],
-  "result_tree": "f754397675968d81223b41ecffe7a7f9af07d44e"
+  "result_tree": "614312f23a3901f2c1729593f56b2356574d4e29"
 }
