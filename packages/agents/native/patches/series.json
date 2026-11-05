@@ -213,13 +213,17 @@
       "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
     },
     {
+      "path": "0024-native-response-observations.patch",
+      "sha256": "506fd6c938ae58e7f44a2ddcef2f2794ba33069c5f0cc3c098090fcf2c4e4c26"
+    },
+    {
       "path": "0054-sdk-native-tracing.patch",
-      "sha256": "a6ea57be2d022a630184b3eed7d27c6897dc8b707b40b71144a9d688e0cc65fa"
+      "sha256": "417c24b71ae57e8af5657bcadd763f9a758473f2a5a877d7360380616bcccd8a"
     },
     {
       "path": "0055-sdk-workflow-identity.patch",
       "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
     }
   ],
-  "result_tree": "7e07071ebc3bc61dab807b10e2a690f909ffee8d"
+  "result_tree": "3a388c2f084df0abc6f6d6c1af7a6dc5729fb985"
 }

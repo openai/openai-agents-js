@@ -1,8 +1,24 @@
 # Supervise a durable native worker
 
-Run a separate process for each worker. Give each process its own private directory, executor workspace, local history, and MCP credentials. The supervisor admits one process per worker directory at a time. Use a supported Linux host with the native addon and local executor helpers. The sandbox needs a compatible `bwrap` and a host policy that permits its user namespaces.
+The supervisor runs one process per worker directory at a time. Each worker has a private directory, executor workspace, local history, and MCP credentials.
 
-Build the TypeScript and native packages, then qualify the Linux host by running the synthetic workflow from the repository root.
+Use a supported Linux host with the native addon and local executor helpers. The host must allow a compatible `bwrap` to create user namespaces.
+
+## Run the example
+
+Build the workspace packages and matching native helpers first. [Build the native SDK from source](../guides/building.md).
+
+From the repository root, run the two-worker recovery example.
+
+```sh
+OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1 pnpm test:native \
+  packages/agents/test/native/supervised-worker-example.test.ts \
+  -t 'steers and reconnects'
+```
+
+The workflow uses scripted Responses and MCP peers. It needs no live model or MCP credentials.
+
+Run the broader check to cover timeout cleanup, reopening, and per-turn write permissions.
 
 ```sh
 OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1 pnpm test:native \
@@ -13,13 +29,22 @@ OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX=1 pnpm test:native \
 
 This setting makes the tests fail when the host cannot launch the native sandbox. The default test run skips the example if the first worker reports that the sandbox could not start.
 
-The test starts two processes with a scripted Responses endpoint and a local MCP peer. One process accepts exact-turn steering, then loses its tool reply when the supervisor kills it. The other saves a question for review. A later process opens each original conversation. One supplies a verified tool result and the other answers the question and requests a revision.
+The test exercises two kinds of recovery.
+
+- The supervisor steers the first worker's active turn, then kills its process before it receives the tool reply. A replacement reopens the conversation and supplies a verified tool result.
+- The second worker saves a question for review. Its replacement reopens the conversation, answers the question, and requests a revision.
 
 ## Set up the worker
 
-Pass your application-owned directory, model, API key, and connected MCP client to `superviseArtifact`. Choose the directory and the tools in trusted code. The example explicitly approves `reports.report` as its only selected MCP tool. This tool records a report on the peer. The caller supplies and closes the MCP client. Configure transport deadlines on that client. Core-owned `HttpMCP` and `StdioMCP` declarations use a different path from `selectMcpTools`. Use the selected-tool path with local storage.
+Choose the directory and tools in trusted application code. Pass the directory, model, API key, and connected MCP client to `superviseArtifact`.
 
-The example turns off project guidance. It uses the SDK's managed configuration and opens a local executor with the workspace as its working directory. Each turn grants writes only to that workspace. Commands can read the workspace and the platform files and helpers needed to run the sandbox. They start with a fresh environment and a system `PATH`. Install the SDK and its native helpers outside the worker's workspace. Supply current executor settings again when the worker restarts.
+For local storage, the example uses `selectMcpTools` with an application-owned client. It approves only `reports.report`, which records a report on the peer. Configure the client's transport deadlines and close it when the worker finishes. SDK-owned `HttpMCP` and `StdioMCP` declarations use a separate connection path.
+
+### Configure the executor
+
+The example disables project guidance, uses the SDK's managed configuration, and opens the local executor in the worker's workspace. Each turn grants writes only to that workspace. Commands can read the workspace and the platform files and helpers the sandbox needs.
+
+Commands start with a fresh environment and a system `PATH`. Install the SDK and its helpers outside the workspace. Supply current executor settings again when the worker restarts.
 
 The sample uses an API key and starts with the SDK's default local network policy. Set an explicit policy when your application needs an allowlist. Qualify filesystem and network policy on your target hosts.
 
@@ -27,9 +52,19 @@ The sample uses an API key and starts with the SDK's default local network polic
 
 The worker writes the native thread ID to `snapshot.json` before submitting model work. A status reader can call `readWorkerSnapshot` while the process is active or after it exits. The read uses the application journal and takes no SDK writer. Reconnecting a status reader has no effect on the active turn.
 
-Pass a supervisor's steering input while the original turn is active. The worker takes the native turn ID from `turn_started` and supplies it to `turn.steerExact`. It saves the resulting receipt in the snapshot. After a turn completes, pass review findings or an answer as the next task. The worker opens the same thread ID and starts a new turn.
+While the turn runs, give the worker the supervisor's steering input. The worker takes the native turn ID from `turn_started`, passes it to `turn.steerExact`, and saves the receipt in the snapshot.
 
-The worker asks for a standalone `sha256sum draft.md` command in the submitted task. It checks the structured claim, reads the actual bytes of `draft.md`, and looks for a successful invocation of that exact command in the workspace on that turn. Native history combines stdout and stderr. The worker allows shell diagnostics before a single final hash line and compares that line with the digest of the file. A missing draft, a missing matching command result, or a question leaves the draft for review. If the worker rejects an invalid draft, it saves `needs_review` before reporting the error. Set an artifact format and review rules that match your product.
+After the turn completes, pass review findings or an answer as the next task. The worker opens the same thread ID and starts a new turn. Wait for the old worker process to exit before starting its replacement.
+
+### Verify and publish the draft
+
+The submitted task asks the agent to run `sha256sum draft.md` as a standalone command. Before accepting the draft, the worker checks three things.
+
+1. The structured result has no open question, and `draft.md` starts with the expected release-note heading.
+2. The native history for that turn shows that the exact command succeeded in the worker's workspace.
+3. The command's final hash line matches the digest of the current file. Native history combines stdout and stderr, so shell diagnostics can appear before the single hash line.
+
+A missing draft, missing command evidence, or open question leaves the draft for review. If validation raises an error, the worker saves `needs_review` before reporting it. Choose an artifact format and review rules that fit your application.
 
 Call `publishAcceptedDraft` after the worker exits. It checks the accepted digest against the current bytes and writes a separate, content-keyed local file. Repeating the publication of the same bytes returns the same path. Production applications own the publication destination, access checks, and operation key.
 
@@ -47,12 +82,24 @@ Return a `ReconciledCall` with the exact IDs, the confirmed outcome `applied` or
 
 The SDK fences replay of the reconciled call IDs. Use an application operation key to prevent duplicate effects across new call IDs. The example handles root calls. An unfinished descendant still blocks cold recovery.
 
-## Set deadlines and measure phases
+## Set deadlines
 
-The startup signal covers selected-tool discovery and native opening. Reconciliation callbacks and MCP transports must also honor their own deadline. A separate turn deadline covers submission and the wait for completion or attention. If submission is still pending at the deadline, the worker starts closing the session, saves `needs_attention` with reason `deadline`, and waits for submission and cleanup to settle before exiting. It does not retry the submission. After admission, the worker cancels the turn and joins its cleanup before saving `needs_attention` with the reason, such as a deadline, rate limit, or unexpected interaction. Wait for the worker to exit before reopening its profile. Cleanup can take longer than the deadline.
+The startup signal covers selected-tool discovery and session opening. Reconciliation callbacks and MCP transports must honor their own deadlines.
 
-Use the snapshot timings to track startup, follow-up submission, the first tool result, and completion separately. The legacy `firstToolMs` field measures time from submission to the first observed managed tool start. It is null if the worker sees no managed tool start.
+The turn deadline starts before `session.submit()` and also covers `turn.waitForAttention()`. The worker handles a deadline according to whether submission has returned a Turn.
 
-`firstToolResultMs` measures time from submission to the first result the worker observes in that turn. It counts managed tool finishes and native execution completions with a completed or failed status. A native command can return a result before any managed tool starts. Cancelled or incomplete work does not count. The field is null when the worker observes no result, including when a gap hides it. Older snapshots can omit the field. The worker writes new timing values when it gets a final model output.
+- **Submission is pending.** The worker starts closing the session, saves `needs_attention` with reason `deadline`, and waits for submission and cleanup before exiting. It submits the work once.
+- **Submission has returned a Turn.** If the wait fails or needs supervisor action, the worker calls `turn.cancel()` and awaits cleanup before saving `needs_attention`. The snapshot records the reason, such as a deadline, rate limit, or unexpected interaction.
+
+Cleanup can outlast the deadline. Let the worker exit before reopening its profile.
+
+## Read snapshot timings
+
+When the worker receives a final model output, it records startup, follow-up submission and completion times. It also records two timings measured from submission.
+
+- `firstToolMs` is the legacy time to the first observed managed tool start. It is `null` when the worker observes no managed tool start.
+- `firstToolResultMs` measures time to the first observed result. A managed tool finish or a native execution completion qualifies when its status is `completed` or `failed`. A native command can finish before any managed tool starts.
+
+`firstToolResultMs` is `null` when the worker observes no result, including when an event-stream gap hides it. Older snapshots can omit this field.
 
 Treat the synthetic run as evidence for the reference workflow. Measure production latency and check real artifacts, permissions, and recovery behavior in the adopting application.

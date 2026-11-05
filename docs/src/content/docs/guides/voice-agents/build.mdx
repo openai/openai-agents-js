@@ -194,7 +194,7 @@ Responses-only tool options do not carry over to Voice agents. Function tool `ou
 
 Function tools run in the same environment as your `RealtimeSession`. If your session runs in the browser, the tool also executes there. If you need to perform sensitive actions, call your backend from inside the tool and let the server do the privileged work.
 
-For example, [`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next) defines a `refundBackchannel` tool in the browser. The tool forwards the request and current conversation history to `handleRefundRequest(...)` on the server. A separate `Runner` can use a different agent or model to evaluate the refund, then return the result to the voice session.
+For example, [`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/realtime-next) defines a `refundBackchannel` tool in the browser. The tool forwards the request and current conversation history to `handleRefundRequest(...)` on the server. A separate `Runner` can use a different agent or model to evaluate the refund, then return the result to the voice session.
 
 #### Hosted MCP tools
 

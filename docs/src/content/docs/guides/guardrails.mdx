@@ -31,8 +31,8 @@ If you need checks around each custom function-tool call in a workflow that incl
 Input guardrails run in three steps:
 
 1. The guardrail receives the same input passed to the agent.
-2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`InputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/inputguardrailresult).
-3. If `tripwireTriggered` is `true`, the SDK throws an [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/inputguardrailtripwiretriggered) error.
+2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents-core/interfaces/guardrailfunctionoutput) wrapped inside an [`InputGuardrailResult`](/openai-agents-js/openai/agents-core/interfaces/inputguardrailresult).
+3. If `tripwireTriggered` is `true`, the SDK throws an [`InputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/inputguardrailtripwiretriggered) error.
 
 > **Note** Input guardrails are intended for user input, so they only run if the agent is the _first_ agent in the workflow. Guardrails are configured on the agent itself because different agents often require different guardrails.
 
@@ -46,8 +46,8 @@ Input guardrails run in three steps:
 Output guardrails run in 3 steps:
 
 1. The guardrail receives the output produced by the agent.
-2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents/interfaces/guardrailfunctionoutput) wrapped inside an [`OutputGuardrailResult`](/openai-agents-js/openai/agents/interfaces/outputguardrailresult).
-3. If `tripwireTriggered` is `true`, the SDK throws an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents/classes/outputguardrailtripwiretriggered) error.
+2. The guardrail function executes and returns a [`GuardrailFunctionOutput`](/openai-agents-js/openai/agents-core/interfaces/guardrailfunctionoutput) wrapped inside an [`OutputGuardrailResult`](/openai-agents-js/openai/agents-core/interfaces/outputguardrailresult).
+3. If `tripwireTriggered` is `true`, the SDK throws an [`OutputGuardrailTripwireTriggered`](/openai-agents-js/openai/agents-core/classes/outputguardrailtripwiretriggered) error.
 
 > **Note** Output guardrails only run if the agent is the _last_ agent in the workflow. For realtime spoken interactions see [the Voice agents guide](/openai-agents-js/guides/voice-agents/build#guardrails).
 
