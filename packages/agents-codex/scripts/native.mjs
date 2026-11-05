@@ -20,6 +20,7 @@ import console from 'node:console';
 import { parseArgs } from 'node:util';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout } from 'node:timers/promises';
 import * as tls from 'node:tls';
 import { prepareSources, sha256Bytes } from './native-source.mjs';
 
@@ -170,9 +171,19 @@ async function verifiedV8(filename, override) {
         ...tls.getCACertificates('system'),
       ]);
     }
-    const response = await globalThis.fetch(url);
-    if (!response.ok)
-      throw new Error(`V8 download failed (${response.status}): ${filename}`);
+    let response;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      response = await globalThis.fetch(url);
+      if (response.ok) break;
+      if (response.status !== 504 || attempt === 3)
+        throw new Error(`V8 download failed (${response.status}): ${filename}`);
+      await response.body?.cancel();
+      const delay = attempt * 1000;
+      console.warn(
+        `V8 download for ${filename} returned HTTP 504 on attempt ${attempt} of 3. Retrying in ${delay} ms.`,
+      );
+      await setTimeout(delay);
+    }
     await pipeline(
       Readable.fromWeb(response.body),
       createWriteStream(temporary, { flags: 'wx' }),
