@@ -1,0 +1,79 @@
+name: Diagnose the macOS child-tracing check
+
+on:
+  push:
+    branches: [ci/bench/js-xl-child-trace-20261105]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  trace:
+    runs-on: macos-15-xlarge
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: bbb63439896880fe987a3c19a0be8515c6ae865f
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Restore the exact Mac binaries from the failed job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/openai/openai-agents-js/actions/artifacts/13398682835/zip > "$RUNNER_TEMP/native.tar.gz"
+          printf '%s  %s\n' '2bc8b6029b11f4dfdf69283ae57f7df3502eee3f80e795765b0b487c70623109' "$RUNNER_TEMP/native.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/native.tar.gz" -C packages/agents-codex
+          test -x packages/agents-codex/native/test-bin/exec-server-fixture
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Build the SDK from the original source
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Record the synthetic spawn reply and tracing context
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("packages/agents-codex/test/native/child-turn-events-native.test.ts")
+          source = path.read_text()
+          marker = "it('keeps child tracing policy for explicit starts and active steering'"
+          before, case = source.split(marker, 1)
+          insertions = {
+              "        rootId ??= id;": """        for (const item of Array.isArray(request.input) ? request.input : []) {
+                    if (item?.call_id === 'spawn-policy' && String(item.type).endsWith('output')) {
+                      console.log('TRACE_PROBE_SPAWN_OUTCOME', JSON.stringify(item.output).slice(0, 1600));
+                    }
+                  }""",
+              "        const span = telemetry.getCurrentSpan()!;": """        console.log('TRACE_PROBE_CONTEXT', JSON.stringify({
+                    hasSpan: Boolean(span), sameTrace: telemetry.getCurrentTrace() === workflow,
+                    expectedDisabled: disabled, actualDisabled: span?.context.disabled,
+                    includeSensitiveData: span?.context.includeSensitiveData,
+                  }));""",
+              "        const { child, turn } = await oneChild(session);": """        console.log('TRACE_PROBE_COUNTS', JSON.stringify({disabled, roots, childModels, steps}));""",
+          }
+          for needle, extra in insertions.items():
+              assert case.count(needle) == 1, needle
+              if "oneChild" in needle:
+                  case = case.replace(needle, extra + "\n" + needle)
+              else:
+                  case = case.replace(needle, needle + "\n" + extra)
+          path.write_text(before + marker + case)
+          PY
+      - name: Reproduce the original assertion three times
+        run: |
+          status=0
+          for attempt in 1 2 3; do
+            echo "Trial $attempt"
+            pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering' --reporter=verbose || status=1
+          done
+          exit "$status"
