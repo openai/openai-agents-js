@@ -3,6 +3,7 @@ import {
   NativeError,
   InteractionRequired,
   type NativeErrorOptions,
+  type ResponseIntegrityReason,
 } from '../../src';
 import {
   NativeError as SessionNativeError,
@@ -476,6 +477,180 @@ it.each(['rejected', 'mismatched', 'transport'] as const)(
       );
       if (kind === 'transport') expect(error).toBe(transport);
       else expect(error).toBeInstanceOf(TurnNotSubmitted);
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+it.each([
+  'undecodable_output_item',
+  'provider_owned_tool_receipt',
+  'unfinished_assistant_item',
+  'missing_supported_terminal_output',
+] as const)(
+  'captures readonly reason %s once, independently of provider enrichment',
+  (reason) => {
+    const error = nativeError(
+      { ...terminal, _sdk_response_integrity_reason: reason },
+      'fixed safe message',
+    );
+    expectTypeOf(
+      error.responseIntegrityReason,
+    ).toEqualTypeOf<ResponseIntegrityReason | null>();
+    expect(error.responseIntegrityReason).toBe(reason);
+    expect(Reflect.set(error, 'responseIntegrityReason', null)).toBe(false);
+    enrichNativeError(error, {
+      ...terminal,
+      _sdk_response_integrity_reason: 'missing_supported_terminal_output',
+    });
+    expect(error.responseIntegrityReason).toBe(reason);
+    enrichNativeError(error, null);
+    expect(error.responseIntegrityReason).toBe(reason);
+    expect(error.message).toBe('fixed safe message');
+    expect(error.effects).toBe('unknown');
+    expect(
+      new NativeError('application error').responseIntegrityReason,
+    ).toBeNull();
+  },
+);
+
+it.each([null, true, 7, {}, [], '', 'unknown', 'x'.repeat(10000)])(
+  'keeps unrecognized native reason unknown: %j',
+  (value) => {
+    expect(
+      nativeError({ message: 'safe', _sdk_response_integrity_reason: value })
+        .responseIntegrityReason,
+    ).toBeNull();
+  },
+);
+
+it('keeps same-ID child failures on their captured public handle, including unobserved absence', async () => {
+  const callbacks = {
+    beforeWait() {},
+    async *observations() {},
+    async drain() {},
+  };
+  const native = (reason: string | null) =>
+    ({
+      session_id: 'session',
+      child_id: 'child',
+      incarnation: 'instance',
+      instance_id: '1',
+      turn_id: 'same-id',
+      wait_with_usage: async () => {
+        throw new Error('Native child turn failed');
+      },
+      terminal_error: () =>
+        JSON.stringify({
+          ...terminal,
+          ...(reason === null
+            ? {}
+            : { _sdk_response_integrity_reason: reason }),
+        }),
+    }) as unknown as _NativeChildTurn;
+  const old = issueChildTurn(native('undecodable_output_item'), callbacks);
+  const replacement = issueChildTurn(native(null), callbacks);
+  const first = await old.wait().catch((error: unknown) => error);
+  const next = await replacement.wait().catch((error: unknown) => error);
+  expect(first).toBeInstanceOf(NativeError);
+  expect(next).toBeInstanceOf(NativeError);
+  expect((first as NativeError).responseIntegrityReason).toBe(
+    'undecodable_output_item',
+  );
+  expect((next as NativeError).responseIntegrityReason).toBeNull();
+  await expect(old.wait()).rejects.toBe(first);
+  await expect(replacement.wait()).rejects.toBe(next);
+});
+
+it.each([
+  { noticeFirst: false, aborted: false },
+  { noticeFirst: true, aborted: false },
+  { noticeFirst: false, aborted: true },
+  { noticeFirst: true, aborted: true },
+])(
+  'preserves selected root cause through later same-category failure or cancellation: %j',
+  async ({ noticeFirst, aborted }) => {
+    const { Session } = await import('../../src/runtime/session');
+    const { captureTools } = await import('../../src/runtime/tools');
+    const queued: string[] = [];
+    let changed = Promise.withResolvers<void>();
+    let closed = false;
+    const push = (msg: Record<string, unknown>) => {
+      queued.push(JSON.stringify({ id: 'root', msg }));
+      changed.resolve();
+    };
+    const session = new Session(
+      {
+        _close_report: async () => null,
+      } as unknown as import('../../src/runtime/binding').Engine,
+      {
+        id: 'selected-error-session',
+        _stop_sampling_for_close: () => {},
+        _submit: async () =>
+          JSON.stringify({ status: 'started', turn_id: 'root' }),
+        _next_session_event: async () => {
+          while (!queued.length && !closed) {
+            await changed.promise;
+            changed = Promise.withResolvers<void>();
+          }
+          if (closed) throw new Error('reader closed');
+          return queued.shift()!;
+        },
+        _finish_child_event_reader: () => {},
+        _close_report: async () => {
+          closed = true;
+          changed.resolve();
+          return null;
+        },
+      } as unknown as import('../../src/runtime/binding').NativeThread,
+      captureTools([]),
+      {},
+      {},
+    );
+    await session._start();
+    try {
+      const turn = await session.submit('select failure');
+      if (noticeFirst)
+        push({
+          type: 'error',
+          message: 'fixed safe message',
+          codex_error_info: 'Other',
+          _sdk_response_integrity_reason: 'undecodable_output_item',
+        });
+      push({
+        type: aborted ? 'turn_aborted' : 'turn_complete',
+        turn_id: 'root',
+        error: {
+          message: 'fixed safe message',
+          codex_error_info: 'Other',
+          _sdk_response_integrity_reason: 'unfinished_assistant_item',
+        },
+      });
+      const error = await turn.wait().catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(NativeError);
+      expect((error as NativeError).responseIntegrityReason).toBe(
+        noticeFirst
+          ? 'undecodable_output_item'
+          : aborted
+            ? null
+            : 'unfinished_assistant_item',
+      );
+      expect((error as NativeError).effects).toBe('unknown');
+      await expect(turn.wait()).rejects.toBe(error);
+      push({
+        type: 'error',
+        message: 'late same-ID error',
+        codex_error_info: 'Other',
+        _sdk_response_integrity_reason: 'missing_supported_terminal_output',
+      });
+      expect((error as NativeError).responseIntegrityReason).toBe(
+        noticeFirst
+          ? 'undecodable_output_item'
+          : aborted
+            ? null
+            : 'unfinished_assistant_item',
+      );
     } finally {
       await session.close();
     }

@@ -1958,7 +1958,19 @@ impl ThreadState {
         question: Option<CapturedQuestion>,
     ) -> anyhow::Result<serde_json::Value> {
         self.retire_questions_for_event(None, &event);
+        let reason = if let EventMsg::Error(error) = &event.msg {
+            self.thread
+                .thread_extension_data()
+                .get::<crate::turn_settlement::Settlement>()
+                .and_then(|settlement| settlement.observed(&event.id))
+                .and_then(|_| error.response_integrity_reason)
+        } else {
+            None
+        };
         let mut value = native_event(None, event)?;
+        if let Some(reason) = reason {
+            value["msg"]["_sdk_response_integrity_reason"] = serde_json::json!(reason);
+        }
         self.attach_question(&mut value, None, question);
         Ok(value)
     }
@@ -2585,7 +2597,20 @@ impl ThreadState {
                 {
                     settlement.delivered(&event.msg);
                 }
+                let reason = if turn.permits_integrity_reason()
+                    && let EventMsg::TurnComplete(done) = &event.msg
+                {
+                    done.error
+                        .as_ref()
+                        .and_then(|error| error.response_integrity_reason)
+                } else {
+                    None
+                };
                 let mut event = self.root_event(event, None)?;
+                if let Some(reason) = reason {
+                    event["msg"]["error"]["_sdk_response_integrity_reason"] =
+                        serde_json::json!(reason);
+                }
                 turn.attach_provider_error(&mut event);
                 if let Some(unsampled) = turn.unsampled_steering() {
                     event["sdk_unsampled_steering"] = serde_json::Value::Bool(unsampled);

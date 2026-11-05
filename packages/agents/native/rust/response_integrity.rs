@@ -8,10 +8,9 @@ use codex_extension_api::{
     ModelRequestContributor, ModelRequestInput, ModelRequestKind, ModelResponseError,
     ModelResponseInterceptor, ModelResponseStream, ResponseEvent,
 };
+use codex_protocol::error::ResponseIntegrityReason;
 use codex_protocol::models::{ContentItem, ResponseItem};
 use futures_core::Stream;
-
-const UNSUPPORTED_OUTPUT: &str = "Native model response ended without complete supported output";
 
 #[derive(Debug)]
 pub(crate) struct Contributor(pub Arc<crate::native_interception::Boundary>);
@@ -51,7 +50,12 @@ struct SupportedOutput {
 }
 
 impl SupportedOutput {
+    #[cfg(test)]
     fn rejects(&mut self, event: &ResponseEvent) -> bool {
+        self.rejection_reason(event).is_some()
+    }
+
+    fn rejection_reason(&mut self, event: &ResponseEvent) -> Option<ResponseIntegrityReason> {
         match event {
             ResponseEvent::OutputItemAdded(item) | ResponseEvent::OutputItemDone(item)
                 if matches!(
@@ -68,13 +72,13 @@ impl SupportedOutput {
             {
                 // Paired receipts come from native execution, not the model.
                 // Unpaired external context and server search belong to Core.
-                true
+                Some(ResponseIntegrityReason::ProviderOwnedToolReceipt)
             }
             ResponseEvent::OutputItemAdded(ResponseItem::Message { role, .. })
                 if role == "assistant" =>
             {
                 self.pending_assistant = true;
-                false
+                None
             }
             ResponseEvent::OutputItemDone(item) => {
                 match item {
@@ -105,14 +109,23 @@ impl SupportedOutput {
                     }
                     _ => {}
                 }
-                false
+                None
             }
             ResponseEvent::Completed { end_turn, .. } => {
-                *end_turn != Some(false)
+                if *end_turn != Some(false)
                     && ((!self.last_assistant_has_text && !self.completed_native_item)
                         || self.pending_assistant)
+                {
+                    Some(if self.pending_assistant {
+                        ResponseIntegrityReason::UnfinishedAssistantItem
+                    } else {
+                        ResponseIntegrityReason::MissingSupportedTerminalOutput
+                    })
+                } else {
+                    None
+                }
             }
-            _ => false,
+            _ => None,
         }
     }
 }
@@ -136,13 +149,11 @@ impl Stream for Generation {
         }
         let next = this.stream.as_mut().poll_next(cx);
         if let Poll::Ready(Some(Ok(event))) = &next
-            && this.output.rejects(event)
+            && let Some(reason) = this.output.rejection_reason(event)
         {
             this.rejected = true;
             this.receipt.reject_model();
-            return Poll::Ready(Some(Err(ModelResponseError::InvalidRequest {
-                message: UNSUPPORTED_OUTPUT.into(),
-            })));
+            return Poll::Ready(Some(Err(ModelResponseError::ResponseIntegrity { reason })));
         }
         next
     }
@@ -205,6 +216,31 @@ mod tests {
                 }));
             }
         }
+    }
+
+    #[test]
+    fn guard_reasons_are_selected_at_the_rejecting_branch() {
+        let mut output = SupportedOutput::default();
+        assert_eq!(
+            output.rejection_reason(&completed(None)),
+            Some(ResponseIntegrityReason::MissingSupportedTerminalOutput)
+        );
+        assert!(
+            output
+                .rejection_reason(&ResponseEvent::OutputItemAdded(message(None)))
+                .is_none()
+        );
+        assert_eq!(
+            output.rejection_reason(&completed(None)),
+            Some(ResponseIntegrityReason::UnfinishedAssistantItem)
+        );
+        let receipt = item(
+            json!({"type":"function_call_output","call_id":"provider-only","output":"synthetic"}),
+        );
+        assert_eq!(
+            output.rejection_reason(&ResponseEvent::OutputItemDone(receipt)),
+            Some(ResponseIntegrityReason::ProviderOwnedToolReceipt)
+        );
     }
 
     #[test]
