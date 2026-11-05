@@ -271,7 +271,11 @@
     {
       "path": "0059-native-request-metadata.patch",
       "sha256": "00fb1ca9eff806e34ebd56521d4367c4905e6be285b773a2c32cc8ec617f17ae"
+    },
+    {
+      "path": "0058-w3c-defined-trace-flags.patch",
+      "sha256": "1c689d4839940e41ceb5f47c3c65d02a51608a02c63230ed435997a1c751b6ed"
     }
   ],
-  "result_tree": "6e3ca2e842c1caf783abd91fb2aed74233b8366d"
+  "result_tree": "a58aca9912ec58771e46f1fd577395486798cfbf"
 }

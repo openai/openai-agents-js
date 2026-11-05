@@ -754,11 +754,7 @@ pub async fn submit(
         client_id: None,
     });
     let creation_tracing = control.creation_tracing();
-    if let Some(tracing) = &creation_tracing {
-        request.trace = Some(
-            codex_otel::sdk_trace::trace_carrier(tracing.token()).map_err(anyhow::Error::msg)?,
-        );
-    }
+    request.trace = control.creation_trace()?;
     let settlement = thread
         .thread_extension_data()
         .get::<crate::turn_settlement::Settlement>()
@@ -834,7 +830,8 @@ pub async fn submit(
                 .as_ref()
                 .map(|tracing| codex_otel::sdk_trace::trace_carrier(tracing.token()))
                 .transpose()
-                .map_err(anyhow::Error::msg)?;
+                .map_err(anyhow::Error::msg)?
+                .or_else(|| control.raw_creation_trace());
             if let TurnInput::UserInput { client_id, .. } = &mut request.input {
                 *client_id = Some(steering_id.clone());
             }
@@ -945,6 +942,10 @@ pub async fn continue_retained(
     let Some(thread) = turn.thread.upgrade() else {
         return Ok(None);
     };
+    let control = thread
+        .thread_extension_data()
+        .get::<crate::native_interception::Control>()
+        .context("Native child continuation lost its tracing owner")?;
     let settlement = thread
         .thread_extension_data()
         .get::<crate::turn_settlement::Settlement>()
@@ -990,7 +991,8 @@ pub async fn continue_retained(
         .as_ref()
         .map(|tracing| codex_otel::sdk_trace::trace_carrier(tracing.token()))
         .transpose()
-        .map_err(anyhow::Error::msg)?;
+        .map_err(anyhow::Error::msg)?
+        .or_else(|| control.raw_creation_trace());
 
     let seed = Arc::new(crate::turn_settlement::Seed::default());
     init.insert(seed.clone());

@@ -11,6 +11,8 @@ const execute = promisify(execFile);
 const PARENT = '00-11111111111111111111111111111111-2222222222222222-01';
 const OVERRIDE = '00-33333333333333333333333333333333-4444444444444444-01';
 const WORKER = '00-55555555555555555555555555555555-6666666666666666-01';
+const STATE =
+  'tenant@abcdefghijklm=' + 'x'.repeat(256) + ',other=' + 'y'.repeat(256);
 type Span = {
   name: string;
   traceId: string;
@@ -92,6 +94,67 @@ it('exports isolated root and compaction parents, queued snapshots, exact callba
     return false;
   };
   try {
+    for (const flags of ['02', '03']) {
+      const receipt = await run('flags-' + flags);
+      expect(receipt.callback.traceparent.slice(3, 35)).toBe(
+        PARENT.slice(3, 35),
+      );
+      expect(receipt.callback.traceparent.endsWith('-' + flags)).toBe(true);
+      if (flags === '03')
+        expectParent(dispatch(receipt.turn), PARENT.slice(0, -2) + flags);
+    }
+    for (const flags of ['02', '03']) {
+      for (const kind of ['owned-children-', 'owned-steering-']) {
+        const firstSpan = spans.length;
+        const owned = await run(kind + flags);
+        expect(owned.rootCallback.traceparent.slice(3, 35)).toBe(
+          PARENT.slice(3, 35),
+        );
+        expect(owned.rootCallback.traceparent.endsWith('-' + flags)).toBe(true);
+        expect(owned.rootCallback.tracestate).toBe(STATE);
+        expect(owned.callbacks).toHaveLength(2);
+        for (const callback of owned.callbacks) {
+          expect(callback.traceparent.slice(3, 35)).toBe(PARENT.slice(3, 35));
+          expect(callback.traceparent.endsWith('-' + flags)).toBe(true);
+          expect(callback.tracestate).toBe(STATE);
+        }
+        for (const span of spans
+          .slice(firstSpan)
+          .filter((span) => span.name.startsWith('op.dispatch.turn_input')))
+          expect(span.traceId).toBe(PARENT.slice(3, 35));
+        if (kind === 'owned-steering-')
+          expect(owned.sampledMarker).toEqual([false, false, true, true]);
+        if (flags === '03') {
+          const root = dispatch(owned.rootTurn);
+          expectParent(root, PARENT);
+          for (const turn of owned.childTurns) {
+            const child = dispatch(turn);
+            expect(child.traceId).toBe(root.traceId);
+            expect(descendsFrom(child, root)).toBe(true);
+          }
+        }
+      }
+    }
+    const scoped = await run('owned-children-scoped');
+    expect(scoped.rootCallback.traceparent.slice(3, 35)).toBe(scoped.traceId);
+    expect(scoped.callbacks).toHaveLength(2);
+    expect(scoped.policyChecks).toBeGreaterThanOrEqual(4);
+    for (const callback of scoped.callbacks)
+      expect(callback.traceparent.slice(3, 35)).toBe(scoped.traceId);
+    const reopened = await run('store-reopen');
+    expectParent(dispatch(reopened.turns[0]), PARENT);
+    expectParent(dispatch(reopened.turns[1]), WORKER);
+    for (const [index, expected] of [PARENT, WORKER].entries()) {
+      expect(reopened.callbacks[index].traceparent.slice(3, 35)).toBe(
+        expected.slice(3, 35),
+      );
+      expect(reopened.callbacks[index].traceparent.endsWith('-03')).toBe(true);
+    }
+    const fresh = reopened.callbacks[2].traceparent;
+    expect([PARENT.slice(3, 35), WORKER.slice(3, 35)]).not.toContain(
+      fresh.slice(3, 35),
+    );
+    expect(Number.parseInt(fresh.slice(-2), 16) & 2).toBe(0);
     const compact = await run('compact');
     expectParent(dispatch(compact.first), OVERRIDE);
     expectParent(dispatch(compact.compact), PARENT);

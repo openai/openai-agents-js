@@ -69,7 +69,17 @@ describe('explicit W3C trace carriers', () => {
     expect(new Headers(headers).get('tracestate')).toBeNull();
   });
 
-  it.each(['02', '09'])(
+  it.each(['00', '01', '02', '03'])(
+    'round-trips defined trace flags %s',
+    (flags) => {
+      const value = parent.slice(0, -2) + flags;
+      expect(new TraceContext({ traceparent: value }).toHeaders()).toEqual({
+        traceparent: value,
+      });
+    },
+  );
+
+  it.each(['04', '09'])(
     'rejects trace flags %s outside the documented native profile',
     (flags) => {
       expect(
