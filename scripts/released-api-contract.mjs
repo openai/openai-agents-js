@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import {
   normalizeSelectedPublicObjectProperties,
   validateSelectedPublicObjectProperties,
-  PUBLIC_PACKAGES,
+  WORKSPACE_PACKAGES,
   repoRoot,
   readJson,
   sortedUnique,
@@ -17,6 +17,7 @@ import {
   inspectPackageSet,
   comparePackageSets,
   classicContractView,
+  usesClassicCompatibility,
   inspectAndComparePackageSets,
   assertAllTargetsExist,
   normalizeSelectedPublicTypeAliases,
@@ -32,6 +33,7 @@ import {
   isSafeWithoutOptionalPeers,
   withAcquiredResources,
   materializePublished,
+  releasedPackageSpec,
   installOptionalPeers,
   installFromRegistry,
 } from './released-api-contract-execution.mjs';
@@ -78,7 +80,7 @@ const defaultContractPath = path.join(
 
 function workspaceRoots() {
   return Object.fromEntries(
-    PUBLIC_PACKAGES.map(([name, directory]) => [
+    WORKSPACE_PACKAGES.map(([name, directory]) => [
       name,
       path.join(repoRoot, 'packages', directory),
     ]),
@@ -105,7 +107,7 @@ async function validateSource(contract) {
       'source',
       selectedPublicTypeAliases,
       contract.selectedPublicObjectProperties ?? [],
-      { classicCompatibility: true },
+      { classicCompatibility: usesClassicCompatibility(contract) },
     );
     const errors = comparePackageSets(
       contract,
@@ -113,7 +115,7 @@ async function validateSource(contract) {
       packages,
       surfaces,
       false,
-      { classicCompatibility: true },
+      { classicCompatibility: usesClassicCompatibility(contract) },
     );
     if (errors.length > 0) throw new Error(errors.join('\n'));
     console.log(
@@ -137,7 +139,7 @@ async function validateDist(contract) {
         contract,
         baselinePackages,
         candidatePackages,
-        { classicCompatibility: true },
+        { classicCompatibility: usesClassicCompatibility(contract) },
       );
     const errors = [
       ...(await assertAllTargetsExist(candidatePackages)),
@@ -163,9 +165,11 @@ async function validatePackage(contract, registry) {
         'dist',
         contract.selectedPublicTypeAliases ?? [],
         contract.selectedPublicObjectProperties ?? [],
-        { classicCompatibility: true },
+        { classicCompatibility: usesClassicCompatibility(contract) },
       );
-      const compatibility = classicContractView(packages, surfaces);
+      const compatibility = usesClassicCompatibility(contract)
+        ? classicContractView(packages, surfaces)
+        : { packages, surfaces };
       const errors = [
         ...validateSelectedPublicObjectProperties(
           compatibility.surfaces,
@@ -204,7 +208,7 @@ async function validatePackage(contract, registry) {
           contract,
           baselinePackages,
           candidatePackages,
-          { classicCompatibility: true },
+          { classicCompatibility: usesClassicCompatibility(contract) },
         );
       const errors = [
         ...(await assertAllTargetsExist(candidatePackages)),
@@ -233,8 +237,9 @@ function countEntries(surfaces) {
 
 async function promote(contract, version, contractPath) {
   const previousPackages = contract.packages ?? {};
-  const packageSpec = Object.fromEntries(
-    PUBLIC_PACKAGES.map(([name]) => [name, { version, integrity: undefined }]),
+  const packageSpec = await releasedPackageSpec(
+    version,
+    'https://registry.npmjs.org',
   );
   const hasPreviousBaseline = Object.keys(previousPackages).length > 0;
   return withAcquiredResources(
@@ -272,17 +277,21 @@ async function promote(contract, version, contractPath) {
           contract.selectedPublicObjectProperties ?? [],
         );
       }
+      // materializePublished omits optional dependencies as well as peers.
+      // Check MCP Tasks after the following install restores those dependencies.
+      const withoutOptionals = (name, subpath) =>
+        isSafeWithoutOptionalPeers(name, subpath) &&
+        !(
+          ['@openai/agents', '@openai/agents-codex'].includes(name) &&
+          subpath === './experimental/mcp-tasks'
+        );
       errors.push(
-        ...(await validateRuntime(
-          packages,
-          surfaces,
-          isSafeWithoutOptionalPeers,
-        )),
+        ...(await validateRuntime(packages, surfaces, withoutOptionals)),
         ...(await validatePublicSpecifiers(
           packages,
           surfaces,
           released.installRoot,
-          isSafeWithoutOptionalPeers,
+          withoutOptionals,
         )),
       );
       await installOptionalPeers(released, 'https://registry.npmjs.org');
@@ -315,8 +324,7 @@ async function promote(contract, version, contractPath) {
       }
 
       const promotedPackages = {};
-      for (const [name] of PUBLIC_PACKAGES) {
-        const packageInfo = packages[name];
+      for (const [name, packageInfo] of Object.entries(packages)) {
         promotedPackages[name] = {
           version,
           integrity: released.packed[name].integrity,

@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import {
   PUBLIC_PACKAGES,
   WORKSPACE_PACKAGES,
+  packageNames,
   repoRoot,
   readJson,
   sortedUnique,
@@ -338,7 +339,7 @@ export async function validatePublicSpecifiers(
         const conditionLabel =
           conditions.length > 0 ? ` conditions ${conditions.join(',')}` : '';
         if (!result || result.error) {
-          const packageName = PUBLIC_PACKAGES.find(
+          const packageName = WORKSPACE_PACKAGES.find(
             ([name]) => specifier === name || specifier.startsWith(`${name}/`),
           )?.[0];
           if (
@@ -589,13 +590,37 @@ export async function installTarballs(
   }
 }
 
+// The facade records which owners shipped in this lockstep release. Never infer
+// historical membership from today's workspace, or treat registry failures as absence.
+export async function releasedPackageSpec(version, registry, inspect = runNpm) {
+  const dependencyJson = await inspect(
+    [
+      'view',
+      `@openai/agents@${version}`,
+      'dependencies',
+      '--json',
+      '--registry',
+      registry,
+    ],
+    repoRoot,
+  );
+  const dependencies = dependencyJson.trim() ? JSON.parse(dependencyJson) : {};
+  const required = new Set(PUBLIC_PACKAGES.map(([name]) => name));
+  return Object.fromEntries(
+    WORKSPACE_PACKAGES.filter(
+      ([name]) => required.has(name) || Object.hasOwn(dependencies, name),
+    ).map(([name]) => [name, { version }]),
+  );
+}
+
 export async function materializePublished(contractPackages, registry) {
   const packDirectory = await mkdtemp(
     path.join(tmpdir(), 'agents-api-contract-pack-'),
   );
   const packed = {};
   try {
-    for (const [name] of PUBLIC_PACKAGES) {
+    const names = packageNames(contractPackages);
+    for (const name of names) {
       const baseline = contractPackages[name];
       packed[name] = await packPublishedPackage(
         name,
@@ -607,10 +632,7 @@ export async function materializePublished(contractPackages, registry) {
     }
     const installRoot = await installTarballs(packed, registry);
     const roots = Object.fromEntries(
-      PUBLIC_PACKAGES.map(([name]) => [
-        name,
-        path.join(installRoot, 'node_modules', name),
-      ]),
+      names.map((name) => [name, path.join(installRoot, 'node_modules', name)]),
     );
     return {
       installRoot,
