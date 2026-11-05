@@ -6,7 +6,6 @@ use codex_core::context::{
     ContextualUserFragment, InternalContextSource, InternalModelContextFragment,
 };
 use codex_core_api::{CodexThread, ThreadManager, WithTurnExtensionData};
-use codex_otel::sdk_trace::FutureExt as _;
 use codex_protocol::ThreadId;
 use codex_protocol::models::{ContentItem, MessagePhase, ResponseItem};
 use codex_protocol::protocol::{Event, EventMsg, TokenUsageInfo, TurnAbortReason};
@@ -701,6 +700,8 @@ pub async fn submit(
     instance_id: u64,
     value: serde_json::Value,
 ) -> anyhow::Result<Arc<Turn>> {
+    use codex_otel::sdk_trace::FutureExt as _;
+
     let input: ChildInput = crate::config::decode(value)?;
     ensure!(
         !input.input.is_empty()
@@ -792,21 +793,30 @@ pub async fn submit(
         );
     }
     crate::graph_stop::check_after_wait(state, &serde_json::json!({}))?;
-    let mut init = thread.config_snapshot().await.turn_extension_init;
-    let seed = Arc::new(crate::turn_settlement::Seed::default());
-    init.insert(seed.clone());
-    let turn_id = match thread
-        .start_turn_if_idle(WithTurnExtensionData::new(request.clone(), init))
+    let init = thread.config_snapshot().await.turn_extension_init;
+    let turn_id = match settlement
+        .start_child(state, &thread, request.clone(), init, || {
+            let instances = state
+                .child_instances
+                .read()
+                .map_err(|_| anyhow::anyhow!("Native child state unavailable"))?;
+            ensure!(
+                instances.get(&child_id).is_some_and(|current| {
+                    current.id == instance_id
+                        && Weak::ptr_eq(&current.thread, &Arc::downgrade(&thread))
+                }),
+                "Native child changed while waiting for admission"
+            );
+            Ok(())
+        })
         .with_context(crate::lease_context(creation_tracing.as_deref())?)
         .await?
     {
-        StartIfIdleSubmission::Started { turn_id } => {
-            seed.confirm(&turn_id);
-            turn_id
-        }
+        StartIfIdleSubmission::Started { turn_id } => turn_id,
         StartIfIdleSubmission::NotSubmitted {
             reason: NotSubmittedReason::NotIdle,
         } => {
+            crate::graph_stop::check_after_wait(state, &serde_json::json!({}))?;
             let expected = control
                 .active_turn_id()
                 .context("Native child no longer has an active turn to steer")?;
@@ -903,6 +913,8 @@ pub async fn continue_retained(
     state: &Arc<ThreadState>,
     turn: &Arc<Turn>,
 ) -> anyhow::Result<Option<Arc<Turn>>> {
+    use codex_otel::sdk_trace::FutureExt as _;
+
     ensure!(
         Weak::ptr_eq(&turn.owner, &Arc::downgrade(state)),
         "Child turn belongs to another Session"

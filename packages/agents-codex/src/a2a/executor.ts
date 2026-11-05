@@ -397,7 +397,7 @@ export class NativeA2AExecutor<
             await session.close();
             closed = true;
             await claim.current();
-            checkBytes(
+            const encodedOutput = checkBytes(
               outcome.finalOutput,
               bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
             );
@@ -417,7 +417,9 @@ export class NativeA2AExecutor<
                         ? { $case: 'text', value: outcome.finalOutput }
                         : {
                             $case: 'data',
-                            value: { result: outcome.finalOutput },
+                            value: {
+                              result: JSON.parse(encodedOutput) as unknown,
+                            },
                           },
                     mediaType:
                       typeof outcome.finalOutput === 'string'

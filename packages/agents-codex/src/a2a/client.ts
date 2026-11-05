@@ -72,7 +72,7 @@ export function bound(value: number | undefined, fallback: number): number {
   return result;
 }
 
-export function checkBytes(value: unknown, limit: number): void {
+export function checkBytes(value: unknown, limit: number): string {
   let encoded: string | undefined;
   try {
     encoded = JSON.stringify(value);
@@ -81,6 +81,7 @@ export function checkBytes(value: unknown, limit: number): void {
   }
   if (encoded === undefined || Buffer.byteLength(encoded) > limit)
     throw new A2AError('limit');
+  return encoded;
 }
 
 async function boundedResponse(
@@ -90,6 +91,11 @@ async function boundedResponse(
   if (!response.ok || !response.body) {
     await response.body?.cancel().catch(() => {});
     throw new A2AError('unavailable');
+  }
+  const encoding = response.headers.get('Content-Encoding');
+  if (encoding !== null && encoding.toLowerCase() !== 'identity') {
+    await response.body.cancel().catch(() => {});
+    throw new A2AError('unsupported');
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -166,6 +172,7 @@ export async function connectA2A(
         ...(init.signal ? [init.signal] : []),
       ]);
       const headers = new Headers(init.headers);
+      headers.set('Accept-Encoding', 'identity');
       if (credential !== undefined && parent)
         for (const [key, value] of Object.entries(parent.toHeaders()))
           headers.set(key, value);
