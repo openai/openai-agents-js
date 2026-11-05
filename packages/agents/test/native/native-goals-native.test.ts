@@ -901,8 +901,8 @@ describe('current local native goals through Core', () => {
         effects,
       });
       expect(refused.code).not.toBe(0);
-      expect(refused.stderr).toContain(
-        'local history contains unknown tool effects',
+      expect(refused.stderr).toMatch(
+        /LocalRecoveryRequired:.*unknown tool effects/,
       );
     }
     expect(await readFile(effects, 'utf8')).toBe('once\n');

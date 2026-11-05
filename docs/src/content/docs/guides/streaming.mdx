@@ -52,7 +52,7 @@ Use a `for await` loop to inspect each event as it arrives, including low-level 
   title="Listening to all events"
 />
 
-See [the streamed example](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts) for a fully worked script that prints both the plain text stream and the raw event stream.
+See [the streamed example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/streamed.ts) for a fully worked script that prints both the plain text stream and the raw event stream.
 
 ### Responses WebSocket transport (optional)
 
@@ -68,7 +68,7 @@ Continuation with `previousResponseId` works the same as with the HTTP transport
 
 If you build the provider yourself, call `await provider.close()` when shutting down. Websocket-backed model wrappers are cached for reuse by default, and closing the provider releases those connections. `withResponsesWebSocketSession(...)` gives you the same reuse but scopes cleanup to a single callback automatically.
 
-See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) for a complete example with streaming, tool calls, approvals, and `previousResponseId`.
+See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/basic/stream-ws.ts) for a complete example with streaming, tool calls, approvals, and `previousResponseId`.
 
 ## Event types
 
@@ -113,7 +113,7 @@ For these OpenAI model events, `RunRawModelStreamEvent.source` is also populated
 
 These helpers let you inspect Responses-only events such as `response.reasoning_summary_text.delta`, `response.output_item.done`, or MCP argument deltas with TypeScript types for the underlying events.
 
-See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts), [`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts), and [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors) for fuller OpenAI-specific streaming patterns.
+See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/basic/stream-ws.ts), [`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/tools/code-interpreter.ts), and [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/connectors) for fuller OpenAI-specific streaming patterns.
 
 ### run_item_stream_event
 
@@ -139,17 +139,24 @@ See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/t
 
 The `tool_search_*` events only appear on Responses runs that use `toolSearchTool()` to load deferred tools during the run.
 
-Example handoff payload:
+When a handoff occurs, the stream includes the following fields.
 
 ```json
 {
   "type": "run_item_stream_event",
   "name": "handoff_occurred",
   "item": {
-    "type": "handoff_call",
-    "id": "h1",
-    "status": "completed",
-    "name": "transfer_to_refund_agent"
+    "type": "handoff_output_item",
+    "rawItem": {
+      "type": "function_call_result",
+      "name": "transfer_to_refund_agent",
+      "callId": "h1",
+      "status": "completed",
+      "output": {
+        "type": "text",
+        "text": "{\"assistant\":\"Refund Agent\"}"
+      }
+    }
   }
 }
 ```
@@ -185,7 +192,7 @@ This Node.js example asks for approval in the terminal before running a sample o
   title="Handling human approval while streaming"
 />
 
-A fuller example that interacts with the user is [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts).
+A fuller example that interacts with the user is [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/human-in-the-loop-stream.ts).
 
 ## Stop a stream and continue the same turn
 

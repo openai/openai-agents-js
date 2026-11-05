@@ -60,9 +60,9 @@ The `Agent` constructor takes a single configuration object. The table lists its
 | `prompt` | no | OpenAI Responses API prompt configuration. Accepts a static prompt object or a function. See [Prompt](/openai-agents-js/guides/models#prompt). |
 | `handoffDescription` | no | Short description used when this agent is offered as a handoff tool. |
 | `handoffs` | no | Delegate the conversation to specialist agents. See [Composition patterns](#composition-patterns) and the [Handoffs guide](/openai-agents-js/guides/handoffs). |
-| `model` | no | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents/interfaces/model/) implementation. |
+| `model` | no | Model name **or** a custom [`Model`](/openai-agents-js/openai/agents-core/interfaces/model/) implementation. |
 | `modelSettings` | no | Tuning parameters (temperature, top_p, etc.). See [Models](/openai-agents-js/guides/models#modelsettings). If the properties you need aren’t at the top level, you can include them under `providerData`. |
-| `tools` | no | Array of [`Tool`](/openai-agents-js/openai/agents/type-aliases/tool/) instances the model can call. See [Tools](/openai-agents-js/guides/tools). |
+| `tools` | no | Array of [`Tool`](/openai-agents-js/openai/agents-core/type-aliases/tool/) instances the model can call. See [Tools](/openai-agents-js/guides/tools). |
 | `mcpServers` | no | MCP servers that provide tools to the agent. See the [MCP guide](/openai-agents-js/guides/mcp). |
 | `mcpConfig` | no | Options for local MCP tools, such as strict schemas, error handling, and server-prefixed tool names. See [Agent-level MCP configuration](/openai-agents-js/guides/mcp#agent-level-mcp-configuration). |
 | `inputGuardrails` | no | Guardrails applied to the first user input for this agent chain. See [Guardrails](/openai-agents-js/guides/guardrails). |

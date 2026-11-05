@@ -541,8 +541,15 @@ it('binds opted-in child forms to the actual child incarnation and leaves a sibl
     expect(
       (await (await session.submit('start both')).wait()).finalOutput,
     ).toBe('root done');
-    const children = await Array.fromAsync(session.subagents());
-    expect(children).toHaveLength(2);
+    const children = await vi.waitFor(
+      async () => {
+        const current = await Array.fromAsync(session.subagents());
+        expect(current).toHaveLength(2);
+        expect(current.every((child) => child.turn !== null)).toBe(true);
+        return current;
+      },
+      { timeout: 5_000 },
+    );
     const [alpha, beta] = children;
     const interruptedChildId = alpha.id;
     if (!alpha.turn || !beta.turn) throw new Error('Expected live child turns');
