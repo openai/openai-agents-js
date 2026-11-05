@@ -115,6 +115,13 @@ jobs:
           pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
           -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
           --reporter=verbose
+      - name: Qualify completed child history on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents/test/native/local-descendant-reopen-native.test.ts
+          -t settled --maxWorkers=4 --reporter=verbose
       - name: Qualify executor stop on macOS
         if: runner.os == 'macOS'
         env:

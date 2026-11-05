@@ -203,7 +203,11 @@
     {
       "path": "0054-native-history-write-reconciliation.patch",
       "sha256": "02abd4b0ab45907d179d315ea65063a196df6a96af7dcd7a6eb5211826543f71"
+    },
+    {
+      "path": "0055-native-tree-finalization-before-store-close.patch",
+      "sha256": "3001b286ecaf94bde058069bf82539be1fe361712479a1706aff8b78beab9008"
     }
   ],
-  "result_tree": "351461c9a6bd3e411558dd03a5e40dda2f551450"
+  "result_tree": "f755ef368ccb17c11cc042cf99a160906fdf31dc"
 }

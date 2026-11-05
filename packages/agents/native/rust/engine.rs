@@ -2973,6 +2973,15 @@ impl ThreadState {
                             }
                         }
                     }
+                    if id == self.id {
+                        // Keep the selected root's explicit termination ACK ahead of tree
+                        // cancellation. Core then joins child delivery before closing writers.
+                        let _shutdown = self
+                            .engine
+                            .manager
+                            .request_agent_tree_shutdown(self.id)
+                            .await?;
+                    }
                     tokio::time::timeout_at(shutdown_deadline, thread.shutdown_and_wait())
                         .await
                         .context("Codex thread shutdown timed out")??;
