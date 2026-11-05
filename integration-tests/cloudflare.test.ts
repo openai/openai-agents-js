@@ -58,6 +58,12 @@ describe('Cloudflare Workers', () => {
     expect(text).toContain('[RESPONSE]Hello there![/RESPONSE]');
   });
 
+  test('constructs the installed Realtime export in workerd', async () => {
+    const response = await fetch('http://localhost:8787/realtime');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ name: 'Workerd Realtime Agent' });
+  });
+
   test(
     'aisdk runner should not lose tracing context',
     { timeout: 60000 },

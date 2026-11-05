@@ -146,21 +146,21 @@
     "./experimental/mcp-tasks": {
       "import": {
         "types": "./dist/experimental/mcp-tasks/index.d.mts",
-        "default": "./experimental/mcp-tasks.mjs"
+        "default": "./dist/experimental/mcp-tasks/index.mjs"
       },
       "require": {
         "types": "./dist/experimental/mcp-tasks/index.d.ts",
-        "default": "./experimental/mcp-tasks.cjs"
+        "default": "./dist/experimental/mcp-tasks/index.js"
       }
     },
     "./a2a": {
       "import": {
         "types": "./dist/a2a/index.d.mts",
-        "default": "./a2a/index.mjs"
+        "default": "./dist/a2a/index.mjs"
       },
       "require": {
         "types": "./dist/a2a/index.d.ts",
-        "default": "./a2a/index.cjs"
+        "default": "./dist/a2a/index.js"
       }
     }
   },
@@ -168,23 +168,14 @@
     "prebuild": "node ../../scripts/embedMeta.mts",
     "build": "tsc",
     "build-check": "tsc --noEmit -p ./tsconfig.test.json",
-    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json",
-    "native:prepare": "node scripts/native.mjs prepare",
-    "native:build": "node scripts/native.mjs build",
-    "native:audit": "node scripts/native.mjs audit"
+    "dist:check": "tsc --noEmit -p ./tsconfig.dist-check.json"
   },
   "dependencies": {
+    "@openai/agents-codex": "workspace:*",
     "@openai/agents-core": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
-    "openai": "^7.2.0",
-    "ws": "^8.22.0",
-    "zod": "^4.3.5",
-    "email-addresses": "5.0.0",
-    "@hyperjump/json-schema": "1.18.0",
-    "@hyperjump/browser": "1.6.0",
-    "@hyperjump/uri": "1.3.9",
-    "zod-deferred": "npm:zod@4.6.7"
+    "openai": "^7.2.0"
   },
   "keywords": [
     "openai",
@@ -194,31 +185,14 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "zod": "^4.3.5",
-    "@types/ws": "^8.18.2"
+    "zod": "^4.3.5"
   },
   "peerDependencies": {
     "zod": "^4.0.0"
   },
   "files": [
     "dist",
-    "native/index.js",
-    "native/index.d.ts",
-    "native/codex.node",
-    "native/CODEX_REVISION",
-    "native/build-receipt.json",
-    "bin",
-    "NATIVE.md",
-    "examples/**/*.{ts,js,mjs,md,html}",
-    "!examples/**/node_modules/**",
-    "licenses",
-    "CLASSIC.md",
-    "TESTING.md",
-    "EXTERNAL_JOBS.md",
-    "MCP_TASKS.md",
-    "experimental",
-    "a2a",
-    "A2A.md"
+    "CLASSIC.md"
   ],
   "typesVersions": {
     "*": {
@@ -274,10 +248,5 @@
         "dist/a2a/index.d.ts"
       ]
     }
-  },
-  "optionalDependencies": {
-    "@a2a-js/sdk": "1.0.1",
-    "@modelcontextprotocol/client": "2.4.0",
-    "@modelcontextprotocol/core": "2.4.0"
   }
 }

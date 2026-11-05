@@ -13,6 +13,7 @@ import { parseArgs } from 'node:util';
 
 export const sdkNames = [
   '@openai/agents',
+  '@openai/agents-codex',
   '@openai/agents-core',
   '@openai/agents-openai',
   '@openai/agents-realtime',
@@ -155,6 +156,11 @@ export async function verifyAlphaPackage(directory) {
     const manifest = JSON.parse(
       await readFile(join(consumer, 'package.json'), 'utf8'),
     );
+    assert.equal(
+      typeof manifest.dependencies.zod,
+      'string',
+      'hello.mjs imports zod',
+    );
     for (const name of sdkNames) {
       assert.equal(
         manifest.dependencies[name],
@@ -196,12 +202,16 @@ export async function verifyAlphaPackage(directory) {
               'local-sdk-lock',
               'cjs',
               'esm',
+              'facade-runtime-identity',
+              'forwarded-subpaths',
+              'runtime-payload-ownership',
               'typescript-cjs',
               'typescript-esm',
               'native-receipt',
               'native-helpers',
               'starter-tool',
               'native-tool',
+              'native-sessions',
               'classic-sessions',
               'install-without-build-tools',
             ],

@@ -27,8 +27,8 @@ export default tseslint.config(
     'examples/nextjs/**',
     'examples/ai-sdk-ui/**',
     'integration-tests//**',
-    'packages/agents/native/.upstream/**',
-    'packages/agents/native/target/**',
+    'packages/agents-codex/native/.upstream/**',
+    'packages/agents-codex/native/target/**',
     'tsc-multi.json',
   ]),
   eslint.configs.recommended,
@@ -50,7 +50,7 @@ export default tseslint.config(
     },
     {
       files: [
-        'packages/agents/experimental/*.cjs',
+        'packages/agents-codex/experimental/*.cjs',
         'packages/agents/test/classic/fixtures/*.cjs',
       ],
       rules: {
