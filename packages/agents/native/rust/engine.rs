@@ -77,6 +77,11 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    pub(crate) fn local_storage_home(&self) -> Option<&std::path::Path> {
+        (self.local_checklist_store.is_some() || self.goals.is_some())
+            .then(|| self.service_config.sqlite_config().home())
+    }
+
     pub(crate) fn validate_hosted_search(config: &Config, info: &ModelInfo) -> anyhow::Result<()> {
         ensure!(
             config.web_search_mode.value() == codex_protocol::config_types::WebSearchMode::Disabled
@@ -185,9 +190,10 @@ impl EngineState {
         let telemetry = crate::telemetry::engine_starting().await?;
         let runtime_json = config::prepare_runtime(&runtime_json)?;
         let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
-        if let Some(environment) = config::environment(&runtime_json)? {
+        let environment_options = config::environment(&runtime_json)?;
+        if let Some(environment) = &environment_options {
             environment.restrict_network_approval(&mut config)?;
-            environment.check_network_config(&config)?;
+            environment.check_config(&config)?;
         }
         let sdk_selected_model = config::sdk_selected_model(&runtime_json)?;
         if let Some(settings) = &telemetry {
@@ -221,6 +227,13 @@ impl EngineState {
                     && !config.features.enabled(Feature::CodeMode),
                 "local storage requires current NativeAgents and no Code Mode"
             );
+        }
+        let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
+        // Check before opening SQLite or launching the executor.
+        if let Some(environment) = &environment_options {
+            let storage =
+                (goals_enabled || local_home.is_some()).then(|| config.sqlite_config().home());
+            environment.check_local_session_paths(&config, storage)?;
         }
         let responses = Arc::new(crate::response_control::ResponseContributor::default());
         let services = &config;
@@ -292,7 +305,6 @@ impl EngineState {
             })
         });
         let sentinel = Arc::new(RwLock::new(None));
-        let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
         let state_db = if goals_enabled || local_home.is_some() {
             // StateRuntime supplies the exact goal store used by the extension.
             // Avoid rollout::try_init's unrelated host rollout backfill.
@@ -380,12 +392,11 @@ impl EngineState {
         };
         // Retain the environment before startup can fail. The private context
         // owner drains this exact manager even when no EngineState is returned.
-        let remote_options = config::environment(&runtime_json)?;
         let environment = Arc::new(
-            if local_checklist_store.is_some() && remote_options.is_none() {
+            if local_checklist_store.is_some() && environment_options.is_none() {
                 EnvironmentManager::without_environments(config.http_client_factory())
             } else {
-                match remote_options.clone() {
+                match &environment_options {
                     Some(environment) => environment.prepare(&config).await?,
                     None => crate::environment::for_unattached_threads(&config).await?,
                 }
@@ -397,15 +408,8 @@ impl EngineState {
                 .map_err(|_| anyhow::anyhow!("candidate environment owner poisoned"))? =
                 Some(crate::RuntimeOwned::new(environment.clone()));
         }
-        if let Some(remote) = environment.get_environment(codex_exec_server::REMOTE_ENVIRONMENT_ID)
-        {
-            remote
-                .wait_until_ready()
-                .await
-                .map_err(|_| anyhow::anyhow!("remote executor failed to become ready"))?;
-            if let Some(options) = &remote_options {
-                options.check_network_target(&remote).await?;
-            }
+        if let Some(options) = &environment_options {
+            options.check_ready(&config, &environment).await?;
         }
         let manager = Arc::new_cyclic(|weak| {
             let extensions = extensions::build(
@@ -480,7 +484,7 @@ impl EngineState {
 
     pub async fn start_with_tools(
         self: &Arc<Self>,
-        options: options::ThreadOptions,
+        mut options: options::ThreadOptions,
         specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
     ) -> anyhow::Result<NativeThread> {
         let _guard = self.lifecycle.lock().await;
@@ -488,6 +492,11 @@ impl EngineState {
             options.validate_local_authority()?;
         }
         let resume = options.sdk_resume_thread_id;
+        let reconciled_calls = std::mem::take(&mut options.sdk_reconciled_calls);
+        ensure!(
+            reconciled_calls.is_empty() || resume.is_some(),
+            "reconciled calls require local resume"
+        );
         ensure!(
             config::sdk_resume_thread_id(&self.runtime_json)?.is_none_or(|id| Some(id) == resume),
             "SDK resume must match the current runtime admission"
@@ -506,18 +515,24 @@ impl EngineState {
             if startup.config.model.is_none() {
                 startup.config.model = saved.model.clone();
             }
-            startup.initial_history = self.history(id).await?;
+            let mut initial_history = self.history(id).await?;
             ensure!(
-                startup
-                    .initial_history
+                initial_history
                     .get_dynamic_tools()
                     .unwrap_or_default()
                     .is_empty(),
                 "SDK resume cannot authorize saved startup tools"
             );
-            let InitialHistory::Resumed(history) = &mut startup.initial_history else {
+            let executor_policy =
+                crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?;
+            let InitialHistory::Resumed(history) = &mut initial_history else {
                 anyhow::bail!("SDK resume requires the stored model context");
             };
+            if let Some(path) = history.rollout_path.as_deref() {
+                let home = self.local_storage_home().expect("checked local store");
+                crate::environment::check_local_resume_rollout_path(&startup, &home.join(path))
+                    .await?;
+            }
             let admission = self
                 .local_checklist_store
                 .as_ref()
@@ -541,6 +556,8 @@ impl EngineState {
                     },
                     saved.model,
                     instructions.clone(),
+                    executor_policy,
+                    reconciled_calls,
                 )
                 .await?;
             let prepared = admission.prepared_params()?;
@@ -548,13 +565,13 @@ impl EngineState {
             history.rollout_path = prepared.rollout_path.clone();
             history.history_revision = prepared.history_revision.clone();
             ensure!(
-                startup
-                    .initial_history
+                initial_history
                     .get_dynamic_tools()
                     .unwrap_or_default()
                     .is_empty(),
                 "SDK resume cannot authorize saved startup tools"
             );
+            startup.initial_history = initial_history;
             local_resume_admission = Some(admission);
         }
         if let Some(store) = &self.local_checklist_store {
@@ -673,6 +690,15 @@ impl EngineState {
         let extension_events = self.extension_events.subscribe();
 
         let new_thread = self.manager.start_thread(startup).await?;
+        if let Some(admission) = local_resume_admission {
+            if let Some(guard) = new_thread
+                .thread
+                .thread_extension_data()
+                .get::<crate::recovery_guard::Guard>()
+            {
+                guard.set_reconciled(admission.protected_call_ids().clone());
+            }
+        }
         if let Some(store) = &self.local_checklist_store {
             let created = match store.canonical_creation_time(new_thread.thread_id).await {
                 Ok(created) => created,
@@ -1209,7 +1235,26 @@ impl EngineState {
         // the final configuration as well as the engine's initial admission.
         if let Some(environment) = config::environment(&self.runtime_json)? {
             environment.restrict_network_approval(&mut startup.config)?;
-            environment.check_network_config(&startup.config)?;
+            environment.check_config(&startup.config)?;
+            if startup.environments.is_none() {
+                let (selection, strict) = environment
+                    .selection(
+                        &startup.config,
+                        &self.manager.environment_manager(),
+                        self.local_storage_home(),
+                    )
+                    .await?;
+                environment.configure_local_proxy(&mut startup.config, &selection)?;
+                if let Some(strict) = strict {
+                    startup.thread_extension_init.insert(strict);
+                }
+                startup.environments = Some(vec![selection]);
+            } else {
+                ensure!(
+                    !environment.strict_writes(),
+                    "strict executor policy cannot use raw environment overrides"
+                );
+            }
         }
         let config = &startup.config;
         let original = &self.service_config;
@@ -2873,6 +2918,18 @@ impl ThreadState {
                 }
             }
             tokio::time::timeout_at(shutdown_deadline, async {
+                // Core's per-thread join waits for loop exit. Check managed process
+                // cleanup across the exact tree before releasing its ownership.
+                if let Err(error) = self
+                    .thread
+                    .shutdown_agent_tree_and_check_managed_processes()
+                    .await
+                {
+                    ack_error = Some(match ack_error.take() {
+                        Some(message) => format!("{message}; {error}"),
+                        None => error.to_string(),
+                    });
+                }
                 // Retain ancestors until every descendant has stopped, even without a graph store.
                 for (id, thread) in stopped {
                     if id != self.id {
@@ -2985,15 +3042,30 @@ mod question_lifecycle_tests {
                 duration_ms: None,
             }),
         };
-        assert!(question_ended(source, Some("original-turn"), source, &canceled));
-        assert!(!question_ended(source, Some("successor-turn"), source, &canceled));
+        assert!(question_ended(
+            source,
+            Some("original-turn"),
+            source,
+            &canceled
+        ));
+        assert!(!question_ended(
+            source,
+            Some("successor-turn"),
+            source,
+            &canceled
+        ));
         assert!(!question_ended(
             Some((child, 2)),
             Some("original-turn"),
             source,
             &canceled
         ));
-        assert!(!question_ended(None, Some("original-turn"), source, &canceled));
+        assert!(!question_ended(
+            None,
+            Some("original-turn"),
+            source,
+            &canceled
+        ));
         assert!(question_ended(None, Some("original-turn"), None, &canceled));
     }
 
@@ -3005,14 +3077,24 @@ mod question_lifecycle_tests {
             id: String::new(),
             msg: EventMsg::ShutdownComplete,
         };
-        assert!(question_ended(source, Some("original-turn"), source, &shutdown));
+        assert!(question_ended(
+            source,
+            Some("original-turn"),
+            source,
+            &shutdown
+        ));
         assert!(!question_ended(
             Some((child, 2)),
             Some("original-turn"),
             source,
             &shutdown
         ));
-        assert!(!question_ended(None, Some("original-turn"), source, &shutdown));
+        assert!(!question_ended(
+            None,
+            Some("original-turn"),
+            source,
+            &shutdown
+        ));
     }
 }
 

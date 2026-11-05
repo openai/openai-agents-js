@@ -9,6 +9,10 @@ import { NativeError } from './native-error';
 
 import { Environment } from './environment';
 import {
+  loadInstructionFiles,
+  type InstructionFileReceipt,
+} from './turn-receipt';
+import {
   acquireEnvironment,
   releaseEnvironmentBeforeProvider,
   type EnvironmentAcquisition,
@@ -33,6 +37,7 @@ import {
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
+import { captureReconciledCalls, type ReconciledCall } from './local-recovery';
 import { captureTools, toolIdentity, type Tool } from './tools';
 import { validateMaxModelSteps, type OperationOptions } from './session';
 import type {
@@ -64,7 +69,14 @@ export interface SessionOptions<Context = undefined> {
   modelSettings?: ModelSettings;
   storage?: LocalStorage;
   resume?: string;
+  /** Application-confirmed outcomes for unknown calls on this local resume. */
+  reconciledCalls?: readonly ReconciledCall[];
   environment?: Environment<Context> | EnvironmentSource<Context>;
+  /**
+   * Load trusted UTF-8 instruction files in the supplied order at opening.
+   * Use files and parent directories that untrusted actors cannot modify.
+   */
+  instructionFiles?: readonly string[];
   /** Cancel opening and join cleanup. Agent.run retains this signal until completion. */
   signal?: AbortSignal;
   /**
@@ -78,7 +90,7 @@ export interface SessionOptions<Context = undefined> {
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionOptions<Context>,
-  'tools' | 'storage' | 'resume'
+  'tools' | 'storage' | 'resume' | 'reconciledCalls'
 > {
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
@@ -101,6 +113,7 @@ interface CapturedOpening {
   readonly agent: Agent<any, any>;
   readonly factory: Agent<any, any>['session'];
   readonly instructions: string;
+  readonly instructionFiles: readonly InstructionFileReceipt[];
   readonly name?: string;
   readonly model?: string;
   readonly settings?: ModelSettings;
@@ -322,7 +335,7 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Run tool selection is not supported; use Agent.session({ tools })',
       );
-    for (const key of ['storage', 'resume'])
+    for (const key of ['storage', 'resume', 'reconciledCalls'])
       if (key in options)
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
@@ -337,6 +350,7 @@ export class Agent<Context = undefined, Output = string> {
       context: options.context,
       state: options.state,
       environment: options.environment,
+      instructionFiles: options.instructionFiles,
       projectGuidance: options.projectGuidance,
       signal: options.signal,
       provider: options.provider,
@@ -385,7 +399,11 @@ export class Agent<Context = undefined, Output = string> {
         options.resume !== undefined)
     )
       throw new TypeError('Deferred opening requires a portable Session');
-    const { instructions, name, programmaticToolCalling } = opening ?? this;
+    const {
+      instructions: baseInstructions,
+      name,
+      programmaticToolCalling,
+    } = opening ?? this;
     const factory = opening ? opening.factory : this.session;
     const {
       provider: openingProvider,
@@ -465,7 +483,13 @@ export class Agent<Context = undefined, Output = string> {
 
     const storage =
       descriptor === undefined ? undefined : localStoragePath(descriptor);
-    // Capture mutable declarations before acquisition can invoke application code.
+    const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
+    if (
+      reconciledCalls !== undefined &&
+      (storage === undefined || typeof resume !== 'string' || !resume)
+    )
+      throw new TypeError('reconciledCalls requires local storage and resume');
+    // Capture mutable declarations before file reads or environment acquisition.
     const stateResult =
       suppliedState == null
         ? undefined
@@ -478,6 +502,17 @@ export class Agent<Context = undefined, Output = string> {
         ? Object.freeze({ ...declaredOutput })
         : declaredOutput;
     const output = opening ? opening.output : prepareOutput(outputType);
+    const { instructions, files } =
+      !opening && options.instructionFiles !== undefined
+        ? await loadInstructionFiles(
+            baseInstructions,
+            options.instructionFiles,
+            options.signal,
+          )
+        : {
+            instructions: baseInstructions,
+            files: opening?.instructionFiles ?? [],
+          };
     const environmentOwner = await acquireEnvironment(
       environmentInput,
       options.signal,
@@ -776,7 +811,11 @@ export class Agent<Context = undefined, Output = string> {
         },
         threadOptions: {
           ...(projectGuidance ? { _canonical_rules: true } : {}),
+          ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
           ...(resume === undefined ? {} : { _sdk_resume_thread_id: resume }),
+          ...(reconciledCalls?.length
+            ? { _sdk_reconciled_calls: reconciledCalls }
+            : {}),
           ...(nativeAgents
             ? {
                 _native_agent_roles: nativeAgents.additionalRoles.map(
@@ -843,6 +882,7 @@ export class Agent<Context = undefined, Output = string> {
           agent: this,
           factory,
           instructions,
+          instructionFiles: files,
           name,
           model,
           settings,

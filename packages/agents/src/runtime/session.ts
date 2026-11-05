@@ -68,6 +68,7 @@ import { nativeInput, type UserInput, type FunctionCallOutput } from './input';
 import {
   ObservationBuffer,
   type Observation,
+  type ObservationOptions,
   type ObservationPhase,
   type TurnObservationScope,
 } from './observation';
@@ -140,6 +141,7 @@ import {
 } from './run-events';
 import {
   projectHistory,
+  projectExecutionItem,
   threadHistorySchema,
   recordedTurnToWire,
   recordedTurnFromWire,
@@ -163,7 +165,7 @@ import {
 } from './state';
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
-import { Environment } from './environment';
+import { captureWritableRoots, Environment } from './environment';
 import {
   captureTools,
   toolIdentity,
@@ -268,6 +270,12 @@ export interface OperationOptions<Context = unknown> {
    * retries, output repairs, and child agents have separate lifecycles.
    */
   maxModelSteps?: number;
+  /**
+   * Replace the current extra writable directories when a new root starts.
+   * For a WSS macOS executor, choose the directories when opening the Session.
+   * Change the grant after earlier executor work finishes.
+   */
+  writableRoots?: readonly string[];
   /** Omission uses Session defaults; an empty list selects no tools. */
   tools?: readonly ToolSelector<Context>[];
   /**
@@ -420,7 +428,7 @@ export let issueTurn: <T, NativeId extends string | null = string>(
   turnId: NativeId | (() => NativeId),
   submissionId: string,
   completion: () => Promise<Completed<T>>,
-  events: (options: { after?: number }) => AsyncIterableIterator<Observation>,
+  events: (options: ObservationOptions) => AsyncIterableIterator<Observation>,
   steer: (input: UserInput) => Promise<void>,
   cancel: (mode: 'force' | 'graceful') => Promise<void>,
   identity?: { childId: string; instanceId: string },
@@ -444,9 +452,9 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
     private readonly nativeIdentity: NativeId | (() => NativeId),
     readonly submissionId: string,
     private readonly completion: () => Promise<Completed<OutputT>>,
-    private readonly observations: (options: {
-      after?: number;
-    }) => AsyncIterableIterator<Observation>,
+    private readonly observations: (
+      options: ObservationOptions,
+    ) => AsyncIterableIterator<Observation>,
     private readonly steerInput: (input: UserInput) => Promise<void>,
     private readonly cancelRoot: (mode: 'force' | 'graceful') => Promise<void>,
     identity?: { childId: string; instanceId: string },
@@ -494,8 +502,11 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
       : this.nativeIdentity;
   }
 
-  /** Observe this Turn's events. Closing the reader leaves execution unchanged. */
-  events(options: { after?: number } = {}): AsyncIterableIterator<Observation> {
+  /**
+   * Observe this Turn's events. Closing the reader leaves execution unchanged.
+   * Execution completions contain identity and status by default.
+   */
+  events(options: ObservationOptions = {}): AsyncIterableIterator<Observation> {
     return this.observations(options);
   }
 
@@ -737,6 +748,7 @@ class NativeTurn {
   readonly toolCleanupErrors: unknown[] = [];
   readonly executing = new Set<string>();
   selection?: OperationSelection;
+  writableRoots?: readonly string[];
   preparation?: AbortController;
   id: string | null = null;
   usage: JsonValue | null = null;
@@ -945,6 +957,7 @@ export class Session<OutputT = string, Context = unknown> {
     (run?: NativeTurn, mode?: 'force' | 'graceful') => Promise<void>
   >();
   private childObservationProducer: ChildObservationProducer = { ended: false };
+  private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
   private readonly childCallbacks = new ChildCallbacks();
   private readonly childSelections = new WeakMap<
@@ -1277,7 +1290,12 @@ export class Session<OutputT = string, Context = unknown> {
     void pending.finally(() => this.childContinuations.delete(pending));
   }
 
-  events(options: { after?: number } = {}) {
+  /**
+   * Observe this Session's events. Execution completions contain identity and status by default.
+   * Use includeExecutionDetails only in trusted code.
+   * Recover full retained execution records through items() after a gap.
+   */
+  events(options: ObservationOptions = {}) {
     return this.observations.events(options);
   }
 
@@ -2366,7 +2384,15 @@ export class Session<OutputT = string, Context = unknown> {
     const parts = nativeInput(input);
     const output = prepareOutput(outputType);
     const selection = this.captureSelection(options);
-    const run = this.startTurn(parts, true, output, true, selection);
+    const run = this.startTurn(
+      parts,
+      true,
+      output,
+      true,
+      selection,
+      undefined,
+      options?.writableRoots,
+    );
     await afterSubmissionRetirement(run, run.accepted.promise);
     // This root's parser was prepared from the same OutputSpec<Next>.
     return this.#turnFor(run) as Turn<Next>;
@@ -2409,8 +2435,13 @@ export class Session<OutputT = string, Context = unknown> {
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
     const selection = this.captureSelection(options);
+    const writableRoots =
+      options?.writableRoots === undefined
+        ? undefined
+        : captureWritableRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
     run.selection = selection;
+    run.writableRoots = writableRoots;
     this.pendingRoots.push({ run, parts });
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
@@ -2475,6 +2506,8 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const parts = nativeInput(input as UserInput);
     if (ifBusy === 'steer' && this.lifecycle.kind === 'turn') {
+      if (options?.writableRoots !== undefined)
+        throw new TypeError('Writable roots require a new root turn');
       if (
         options?.tools !== undefined ||
         options?.beforeStep !== undefined ||
@@ -2493,6 +2526,8 @@ export class Session<OutputT = string, Context = unknown> {
       this.defaultOutput,
       false,
       selection,
+      undefined,
+      options?.writableRoots,
     );
 
     await afterSubmissionRetirement(run, run.accepted.promise);
@@ -3055,6 +3090,7 @@ export class Session<OutputT = string, Context = unknown> {
     outputOverride = false,
     selection?: OperationSelection,
     callerSignal?: AbortSignal,
+    writableRoots?: readonly string[],
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -3064,7 +3100,12 @@ export class Session<OutputT = string, Context = unknown> {
       !this.canCheckpointManual(output)
     )
       throw new InteractionRequired();
+    const roots =
+      writableRoots === undefined
+        ? undefined
+        : captureWritableRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
+    run.writableRoots = roots;
     submissions.get(run)!.callerSignal =
       callerSignal ?? this.options.selectedModel?.callerSignal;
     run.selection = selection;
@@ -3092,6 +3133,9 @@ export class Session<OutputT = string, Context = unknown> {
           }
         : {}),
       mode: 'start_if_idle',
+      ...(run.writableRoots === undefined
+        ? {}
+        : { writable_roots: run.writableRoots }),
       input: output.prompt
         ? [...parts, { type: 'text', text: output.prompt }]
         : parts,
@@ -3174,6 +3218,7 @@ export class Session<OutputT = string, Context = unknown> {
               new TurnNotSubmitted(accepted.reason),
             );
           run.id = accepted.turn_id;
+          this.changedExecutorRoots ||= run.writableRoots !== undefined;
           this.#turnFor(run);
           this.observations.append({
             type: 'turn_started',
@@ -3717,7 +3762,10 @@ export class Session<OutputT = string, Context = unknown> {
           this.processChild(event, native, producer);
           continue;
         }
-        if (!run) continue;
+        if (!run) {
+          this.observeRootExecution(event);
+          continue;
+        }
         if (this.manualSuspending) {
           // A manual seal can refuse while an automatic request is queued.
           // Keep those events until native confirms that it suspended the turn.
@@ -3807,6 +3855,27 @@ export class Session<OutputT = string, Context = unknown> {
         ? event.id
         : undefined);
     if (typeof turnId !== 'string') return;
+    if (msg.type === 'item_completed' && msg.thread_id === id) {
+      const item = projectExecutionItem(msg.item, turnId, id);
+      if (item) {
+        const owner = this.childCallbacks.find(id, incarnation, turnId);
+        if (
+          owner &&
+          owner.observationPhase !== 'ended' &&
+          (!owner.instanceId || owner.instanceId === event.subagent_instance_id)
+        ) {
+          this.observations.append({
+            type: 'execution_item_completed',
+            turnId,
+            submissionId: `child:${id}:${incarnation}:${turnId}`,
+            item,
+          });
+        } else {
+          this.observations.gap();
+        }
+        return;
+      }
+    }
     const startsTurn =
       msg.type === 'task_started' || msg.type === 'turn_started';
     if (startsTurn)
@@ -4133,10 +4202,38 @@ export class Session<OutputT = string, Context = unknown> {
     return true;
   }
 
+  private observeRootExecution(event: NativeEvent): void {
+    const msg = event.msg;
+    if (
+      msg.type !== 'item_completed' ||
+      msg.thread_id !== this.id ||
+      typeof msg.turn_id !== 'string' ||
+      event.subagent_id !== undefined ||
+      event.subagent_incarnation !== undefined ||
+      event.subagent_instance_id !== undefined
+    )
+      return;
+    const item = projectExecutionItem(msg.item, msg.turn_id, this.id);
+    if (!item) return;
+    const owner = this.lastRun;
+    if (
+      owner?.id === msg.turn_id &&
+      submissions.get(owner)!.observation !== 'ended'
+    ) {
+      this.observations.append({
+        type: 'execution_item_completed',
+        turnId: msg.turn_id,
+        submissionId: this.submissionIds.get(owner)!,
+        item,
+      });
+    } else this.observations.gap();
+  }
+
   private process(run: NativeTurn, event: NativeEvent): void {
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     const msg = event.msg;
     const kind = msg.type;
+    this.observeRootExecution(event);
     if (
       [
         'exec_approval_request',
@@ -6881,7 +6978,10 @@ export class Session<OutputT = string, Context = unknown> {
       beforeRetirement();
       const checkpoint = await owner.change.prepare(summary);
       const current = decode(
-        z.object({ instructions: z.string() }),
+        z.object({
+          instructions: z.string(),
+          instruction_files: z.array(jsonObject),
+        }),
         await owner.change.options(),
       );
       const servers = mcpConfig(
@@ -6890,10 +6990,16 @@ export class Session<OutputT = string, Context = unknown> {
         this.codeModeEnabled,
         this.mcpBindings,
       );
+      // The candidate owns the effective Environment, including changes
+      // accepted since the original opening declaration.
+      const { environment: _openingEnvironment, ...runtime } =
+        this.threadOptions.runtime ?? {};
       const options: ThreadOptions = {
         ...this.threadOptions,
         instructions: current.instructions,
+        _sdk_instruction_files: current.instruction_files,
         config: { ...this.threadOptions.config, mcp_servers: servers },
+        runtime,
       };
       beforeRetirement();
       owner.creation = owner.change.createCandidateEngine(
@@ -7163,12 +7269,13 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Deferred start requires an original root request');
     const check = () => {
       if (
+        this.changedExecutorRoots ||
         this.catalog !== this.openingCatalog ||
         this.#native._application_instructions() !==
           this.threadOptions.instructions
       )
         throw new TypeError(
-          'Changed session tools or instructions require explicit preparation and restore',
+          'Changed session tools, instructions or writable roots require explicit preparation and restore',
         );
     };
     check();
@@ -8075,6 +8182,13 @@ export class Session<OutputT = string, Context = unknown> {
     return undefined;
   }
 
+  /**
+   * Closes the session and releases its resources.
+   *
+   * The call that closes the session can reject if command termination is
+   * unconfirmed. A later call on an already closed session returns without
+   * rechecking command termination.
+   */
   close(): Promise<void> {
     return this.closeOwned();
   }
@@ -8092,6 +8206,14 @@ export class Session<OutputT = string, Context = unknown> {
     if (state.kind === 'closed')
       return this.environmentCloseFailure ?? Promise.resolve();
     if (state.kind === 'closing') return state.completion;
+    const interceptionFailures: unknown[] = [];
+    // Resolving or declining a callback can wake the model loop. Fence new
+    // requests before revoking callbacks, and let native close own teardown.
+    try {
+      this.#native._stop_sampling_for_close();
+    } catch (error) {
+      interceptionFailures.push(error);
+    }
     if (this.starting)
       this.failStartup(new TurnAborted('Session closed while opening'));
     const done = Promise.withResolvers<void>();
@@ -8116,7 +8238,6 @@ export class Session<OutputT = string, Context = unknown> {
       });
       for (const stop of stops) this.graphStops.delete(stop);
     };
-    const interceptionFailures: unknown[] = [];
     const settleClose = (primary?: unknown) => {
       const failures = [
         ...(primary === undefined ? [] : [primary]),

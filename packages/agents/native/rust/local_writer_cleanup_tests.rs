@@ -8,6 +8,8 @@ async fn transferred_profile(home: &Path) -> (Arc<LocalChecklistStore>, ThreadId
             params,
             None,
             Arc::new(crate::options::ThreadInstructions::for_test(None, false)),
+            Default::default(),
+            Vec::new(),
         )
         .await
         .unwrap();

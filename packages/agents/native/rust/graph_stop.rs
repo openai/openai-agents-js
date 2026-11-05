@@ -2,8 +2,8 @@
 use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, ThreadManager};
 use codex_extension_api::{
-    ContextContributor, ExtensionData, ExtensionFuture, TurnLifecycleContributor, TurnStartInput,
-    TurnStartPhase, WorldStateContributionInput, WorldStateSectionContribution,
+    ContextContributor, ExtensionData, ExtensionFuture, TurnLifecycleContributor, TurnSamplingStop,
+    TurnStartInput, TurnStartPhase, WorldStateContributionInput, WorldStateSectionContribution,
 };
 use codex_protocol::protocol::Op;
 use std::sync::Weak;
@@ -46,6 +46,9 @@ impl State {
 pub(crate) struct Graph {
     pub(crate) state: Mutex<State>,
     pub(crate) changed: watch::Sender<()>,
+    // Every turn in this channel sees close, including a turn admitted while
+    // the native shutdown still owns cleanup.
+    pub(crate) close_sampling: TurnSamplingStop,
 }
 
 impl Default for Graph {
@@ -53,6 +56,7 @@ impl Default for Graph {
         Self {
             state: Mutex::default(),
             changed: watch::channel(()).0,
+            close_sampling: TurnSamplingStop::default(),
         }
     }
 }
@@ -117,6 +121,9 @@ impl Request {
                     .and_then(|s| s.active())
                 {
                     turn.request_graceful();
+                    if force {
+                        turn.stop_sampling();
+                    }
                     if scope == Scope::Tree || force {
                         turn.reject_model();
                     }
@@ -262,6 +269,7 @@ async fn settle(
                 if receipt.terminal() {
                     join_terminal(&thread, &owner, &receipt).await?;
                 } else if force {
+                    receipt.stop_sampling();
                     receipt.reject_model();
                     thread
                         .submit(Op::Interrupt)

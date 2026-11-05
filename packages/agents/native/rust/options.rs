@@ -6,8 +6,9 @@ use anyhow::Context;
 
 use codex_core_api::{InitialHistory, StartThreadOptions};
 use codex_extension_api::{
-    Instructions, LoadInstructionsFuture, LoadedUserInstructions, ThreadInstructionsProvider,
-    ToolPolicy, UserInstructionsProvider,
+    Instructions, LoadInstructionsFuture, LoadedUserInstructions,
+    SdkInheritedApplicationInstructions, ThreadInstructionsProvider, ToolPolicy,
+    UserInstructionsProvider,
 };
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::protocol::{SessionSource, ThreadHistoryMode, ThreadSource, W3cTraceContext};
@@ -19,7 +20,11 @@ use crate::{config, ops};
 
 enum InstructionState {
     Raw(Option<String>),
-    Pending { text: Option<String>, manual: bool },
+    Pending {
+        text: Option<String>,
+        manual: bool,
+        files: Vec<Value>,
+    },
     Accepted(crate::application_instructions::Accepted),
     Uncertain,
 }
@@ -33,15 +38,16 @@ pub struct ThreadInstructions {
 impl ThreadInstructions {
     #[cfg(test)]
     pub(crate) fn for_test(text: Option<String>, managed: bool) -> Self {
-        Self::new(text, managed, false)
+        Self::new(text, managed, false, Vec::new())
     }
 
-    fn new(text: Option<String>, managed: bool, shared: bool) -> Self {
+    fn new(text: Option<String>, managed: bool, shared: bool, files: Vec<Value>) -> Self {
         Self {
             state: RwLock::new(if managed {
                 InstructionState::Pending {
                     text,
                     manual: false,
+                    files,
                 }
             } else {
                 InstructionState::Raw(text)
@@ -96,7 +102,7 @@ impl ThreadInstructions {
 
     pub fn confirm(
         &self,
-        accepted: crate::application_instructions::Accepted,
+        mut accepted: crate::application_instructions::Accepted,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.managed,
@@ -110,6 +116,15 @@ impl ThreadInstructions {
             !matches!(&*state, InstructionState::Uncertain),
             "native application instruction acceptance is uncertain; close this Session"
         );
+        accepted.files = match &*state {
+            InstructionState::Pending { text, files, .. }
+                if text.as_deref().unwrap_or_default() == accepted.text =>
+            {
+                files.clone()
+            }
+            InstructionState::Accepted(prior) if prior.id == accepted.id => prior.files.clone(),
+            _ => Vec::new(),
+        };
         *state = InstructionState::Accepted(accepted);
         Ok(())
     }
@@ -160,7 +175,9 @@ impl ThreadInstructionsProvider for ThreadInstructions {
                     // declaration until its sealed turn has finished.
                     let text = match &*state {
                         InstructionState::Raw(text) => text.clone(),
-                        InstructionState::Pending { text, manual } if *manual || self.shared => {
+                        InstructionState::Pending { text, manual, .. }
+                            if *manual || self.shared =>
+                        {
                             text.clone()
                         }
                         InstructionState::Accepted(receipt) if self.shared => {
@@ -191,6 +208,8 @@ impl ThreadInstructionsProvider for ThreadInstructions {
 pub struct ThreadOptions {
     #[serde(rename = "_sdk_resume_thread_id")]
     pub(crate) sdk_resume_thread_id: Option<ThreadId>,
+    #[serde(rename = "_sdk_reconciled_calls")]
+    pub(crate) sdk_reconciled_calls: Vec<crate::local_reconciliation::Receipt>,
     #[serde(rename = "_native_agent_roles")]
     native_agent_roles: Option<Vec<String>>,
     #[serde(rename = "_native_agent_before_step")]
@@ -200,6 +219,8 @@ pub struct ThreadOptions {
     // Private native Agent.session admission, never the outer SDK Runner.
     #[serde(rename = "_managed_instructions")]
     managed_instructions: bool,
+    #[serde(rename = "_sdk_instruction_files")]
+    instruction_files: Vec<Value>,
     config: Map<String, Value>,
     runtime: Map<String, Value>,
     instructions: Option<String>,
@@ -324,11 +345,27 @@ impl ThreadOptions {
             );
             let max_depth = self.native_agent_max_depth.unwrap_or(1);
             anyhow::ensure!(max_depth > 0, "NativeAgents max_depth must be positive");
+            let inherited_instructions = self.instructions.as_deref().and_then(|text| {
+                (!self.instruction_files.is_empty()
+                    && options
+                        .config
+                        .multi_agent_v2
+                        .subagent_developer_instructions
+                        .as_deref()
+                        == Some(text))
+                .then(|| {
+                    Arc::new(SdkInheritedApplicationInstructions {
+                        developer_sha256: crate::application_instructions::sha256(text),
+                        files: self.instruction_files.clone(),
+                    })
+                })
+            });
             options
                 .thread_extension_init
                 .insert(crate::native_agents::Policy {
                     roles,
                     max_depth,
+                    inherited_instructions,
                     allowed: Default::default(),
                 });
         }
@@ -339,6 +376,7 @@ impl ThreadOptions {
                 self.instructions,
                 self.managed_instructions,
                 self.share_instructions_with_subagents,
+                self.instruction_files,
             ));
         let instructions = options
             .thread_extension_init
@@ -363,6 +401,7 @@ impl ThreadOptions {
                 .thread_extension_init
                 .insert(crate::canonical_rules::Rules::new(
                     trusted.trusted_root().clone(),
+                    trusted.id(),
                 ));
         }
         // An explicit empty selection also clears roots restored from history.
@@ -372,15 +411,12 @@ impl ThreadOptions {
                 .and_then(|env| env.capability_roots())
                 .unwrap_or_default(),
         );
-        options.environments = match self.environments {
-            Some(environments) => Some(ops::environments(environments)?),
-            None => environment.map(|env| {
-                options
-                    .thread_extension_init
-                    .insert(crate::native_interception::EagerCommandEnvironment(true));
-                vec![env.selection(&options.config)]
-            }),
-        };
+        if self.environments.is_none() && environment.is_some() {
+            options
+                .thread_extension_init
+                .insert(crate::native_interception::EagerCommandEnvironment(true));
+        }
+        options.environments = self.environments.map(ops::environments).transpose()?;
         options.reserved_thread_id = self.reserved_thread_id;
         options.disabled_plugin_ids = self.disabled_plugin_ids;
         options.client_mcp_extensions =

@@ -39,6 +39,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use crate::environment::StrictExecutorWrites;
+
 const FAILURE: &str = "Native tool interception failed or was denied";
 const MAX_PENDING: usize = 128;
 const MAX_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
@@ -380,7 +382,7 @@ struct DirectTurn {
     model: Mutex<Option<Arc<str>>>,
     command_admission: Mutex<Option<CommandAdmission>>,
     cancelled: CancellationToken,
-    settlement: Weak<crate::turn_settlement::Turn>,
+    settlement: Option<Weak<crate::turn_settlement::Turn>>,
     core_task: Option<Arc<codex_core_api::OwnedTurnTask>>,
     // Core starts, processes the result and finishes inside one spawned
     // dispatch task. The model's call_id can repeat across live invocations.
@@ -390,6 +392,10 @@ struct DirectTurn {
 impl DirectTurn {
     fn admits_policy(&self, retained: bool) -> bool {
         !self.policy_stopped.load(Ordering::Acquire) && (retained || !self.cancelled.is_cancelled())
+    }
+
+    fn settlement(&self) -> Option<Arc<crate::turn_settlement::Turn>> {
+        self.settlement.as_ref().and_then(Weak::upgrade)
     }
 }
 
@@ -415,9 +421,17 @@ struct CommandAdmission {
 pub(crate) struct CapturedTurnStop {
     control: Arc<Control>,
     owner: Option<Arc<DirectTurn>>,
+    // A successor can replace the current native receipt while cleanup waits.
+    settlement: Option<Arc<crate::turn_settlement::Turn>>,
     sessions: Mutex<Vec<Arc<Session>>>,
 }
 impl CapturedTurnStop {
+    pub(crate) fn local_exec_cancel_confirmed(&self) -> bool {
+        self.settlement
+            .as_ref()
+            .is_some_and(|turn| turn.terminal() && !turn.local_exec_cancel_failed())
+    }
+
     // The caller already owns channel.state during an admitted policy claim.
     fn stop_locked(&self) {
         if let Some(owner) = &self.owner {
@@ -517,7 +531,7 @@ impl HeldPolicyStop {
         );
         let settlement = match (
             control.settlement.get().and_then(Weak::upgrade),
-            owner.settlement.upgrade(),
+            owner.settlement(),
         ) {
             (Some(settlement), Some(receipt)) if settlement.is_current(&receipt) => {
                 receipt.reject_model();
@@ -553,6 +567,7 @@ pub struct Control {
     root: bool,
     native_depth: usize,
     native_agents: std::sync::OnceLock<Arc<crate::native_agents::Policy>>,
+    strict_executor_writes: std::sync::OnceLock<()>,
     agent_role: std::sync::OnceLock<Option<String>>,
     managed_response: std::sync::OnceLock<bool>,
     // Core starts Review delegates directly, outside ThreadManager.
@@ -685,6 +700,7 @@ impl Control {
             root,
             native_depth: if root { 0 } else { usize::MAX },
             native_agents: std::sync::OnceLock::new(),
+            strict_executor_writes: std::sync::OnceLock::new(),
             agent_role: std::sync::OnceLock::new(),
             managed_response: std::sync::OnceLock::new(),
             review_delegate: std::sync::OnceLock::new(),
@@ -726,6 +742,7 @@ impl Control {
             root: false,
             native_depth: parent.native_depth.saturating_add(1),
             native_agents: parent.native_agents.clone(),
+            strict_executor_writes: std::sync::OnceLock::new(),
             agent_role: std::sync::OnceLock::new(),
             managed_response: std::sync::OnceLock::new(),
             review_delegate: std::sync::OnceLock::new(),
@@ -743,6 +760,23 @@ impl Control {
             sentinel_request: Mutex::new(SentinelState::default()),
             channel: parent.channel.clone(),
         }
+    }
+
+    pub(crate) fn inherited_instruction_files(
+        &self,
+    ) -> Option<Arc<codex_extension_api::SdkInheritedApplicationInstructions>> {
+        self.native_ancestor.as_ref()?;
+        let policy = self.native_agents.get()?;
+        // Declared roles supply their own instructions, even when the bytes match.
+        if self
+            .agent_role
+            .get()?
+            .as_ref()
+            .is_some_and(|role| policy.roles.contains(role))
+        {
+            return None;
+        }
+        policy.inherited_instructions.clone()
     }
 
     /// Capture is inert: a declined/failed conditional cancellation must not
@@ -801,6 +835,7 @@ impl Control {
         }
         Some(Arc::new(CapturedTurnStop {
             control: self.clone(),
+            settlement: owner.as_ref().and_then(|owner| owner.settlement()),
             owner,
             sessions: Mutex::new(sessions),
         }))
@@ -858,6 +893,10 @@ impl Control {
     // never grants the child its parent's turn or managed steering authority.
     pub(crate) fn managed_response(&self) -> bool {
         self.managed_response.get().copied().unwrap_or(false)
+    }
+
+    pub(crate) fn strict_executor_writes(&self) -> bool {
+        self.strict_executor_writes.get().is_some()
     }
 
     fn compile_rules(rules: Vec<ToolRule>) -> Result<Rules> {
@@ -1327,6 +1366,7 @@ impl Control {
             owner.core_task.as_ref()?;
             Some(HeldPolicyStop {
                 captured: Arc::new(CapturedTurnStop {
+                    settlement: owner.settlement(),
                     owner: Some(owner),
                     control: pending.control.upgrade()?,
                     sessions: Mutex::default(),
@@ -1823,8 +1863,7 @@ impl Boundary {
             .lock()
             .expect("interception turn poisoned")
             .as_ref()?
-            .settlement
-            .upgrade()
+            .settlement()
     }
 
     pub fn new(
@@ -2272,6 +2311,15 @@ impl ThreadLifecycleContributor<Config> for Boundary {
             // parent_thread_id is native and returns Some only for ThreadSpawn.
             // Start is awaited before the first turn, unlike UI creation notices.
             let parent = self.parent_control(input.session_source).await;
+            // The root's canonical cwd is authority for root write changes.
+            // A child carries receipt provenance, and Core reads its cwd and
+            // policy from the executor actually selected for each sample.
+            let strict_executor_writes = input.thread_store.get::<StrictExecutorWrites>().is_some()
+                || (matches!(input.environments, [selection]
+                    if matches!(selection.config, EnvironmentConfigState::Ready(_)))
+                    && parent.as_ref().is_some_and(|owner| {
+                        !owner.stopped.is_cancelled() && owner.strict_executor_writes()
+                    }));
             let has_parent = parent.is_some();
             let managed_response = input
                 .thread_store
@@ -2287,6 +2335,9 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     None => Control::new(id, root),
                 }
             });
+            if strict_executor_writes {
+                let _ = control.strict_executor_writes.set(());
+            }
             let _ = control.review_delegate.set(matches!(
                 input.session_source,
                 SessionSource::SubAgent(codex_protocol::protocol::SubAgentSource::Review)
@@ -2393,8 +2444,7 @@ impl TurnLifecycleContributor for Boundary {
                 let settlement = input
                     .turn_store
                     .get::<crate::turn_settlement::Turn>()
-                    .map(|turn| Arc::downgrade(&turn))
-                    .unwrap_or_default();
+                    .map(|turn| Arc::downgrade(&turn));
                 let core_task = input.turn_store.get::<codex_core_api::OwnedTurnTask>();
                 let owner = input.turn_store.get_or_init(|| DirectTurn {
                     policy_stopped: AtomicBool::new(false),
@@ -2455,7 +2505,11 @@ impl ContextContributor for Boundary {
                     &input.model_info.shell_type,
                 ) {
                     (Some(control), [selection], ConfigShellToolType::UnifiedExec)
-                        if selection.environment_id == codex_exec_server::REMOTE_ENVIRONMENT_ID =>
+                        if matches!(
+                            selection.environment_id.as_str(),
+                            codex_exec_server::LOCAL_ENVIRONMENT_ID
+                                | codex_exec_server::REMOTE_ENVIRONMENT_ID
+                        ) =>
                     {
                         match (&selection.config, control.command_tty.get()) {
                             (EnvironmentConfigState::Ready(environment), Some(tty)) => {
@@ -2502,7 +2556,7 @@ impl ModelRequestContributor for Boundary {
         // A real model request samples prior completed steering, even without
         // sentinel or policy interception configured.
         if input.kind == ModelRequestKind::Generation
-            && let Some(turn) = owner.as_ref().and_then(|owner| owner.settlement.upgrade())
+            && let Some(turn) = owner.as_ref().and_then(|owner| owner.settlement())
         {
             turn.begin_generation();
         }
@@ -2798,6 +2852,17 @@ pub(crate) async fn sentinel_application(
     sentinel_validate(engine, provider_id, meta, Some((expected, operation))).await
 }
 
+fn sentinel_control(engine: &crate::engine::EngineState, id: &str) -> Result<Arc<Control>> {
+    engine
+        .interception
+        .threads
+        .lock()
+        .expect("interception index poisoned")
+        .get(id)
+        .and_then(Weak::upgrade)
+        .context("Missing native control")
+}
+
 async fn sentinel_validate(
     engine: &crate::engine::EngineState,
     provider_id: &str,
@@ -2811,14 +2876,7 @@ async fn sentinel_validate(
     let nonce = meta["sdk_sentinel_nonce"]
         .as_str()
         .context("Missing sentinel ticket")?;
-    let control = engine
-        .interception
-        .threads
-        .lock()
-        .expect("interception index poisoned")
-        .get(id)
-        .and_then(Weak::upgrade)
-        .context("Missing native control")?;
+    let control = sentinel_control(engine, id)?;
     let ticket = control
         .sentinel_request
         .lock()
@@ -2979,14 +3037,7 @@ pub(crate) async fn sentinel_restore_schemas(
     let nonce = meta["sdk_sentinel_nonce"]
         .as_str()
         .context("Missing sentinel ticket")?;
-    let control = engine
-        .interception
-        .threads
-        .lock()
-        .expect("interception index poisoned")
-        .get(id)
-        .and_then(Weak::upgrade)
-        .context("Missing native control")?;
+    let control = sentinel_control(engine, id)?;
     let review_delegate = control.review_delegate.get() == Some(&true);
     let tools = if review_delegate {
         // Core creates review delegates with no dynamic tools. They do not
@@ -3051,6 +3102,44 @@ pub(crate) async fn sentinel_restore_schemas(
     Ok(())
 }
 
+pub(crate) fn sentinel_http_turn(
+    engine: &crate::engine::EngineState,
+    provider_id: &str,
+    meta: &Value,
+) -> Result<Option<Arc<crate::turn_settlement::Turn>>> {
+    let id = meta["sdk_sentinel_thread"]
+        .as_str()
+        .context("Missing sentinel owner")?;
+    let nonce = meta["sdk_sentinel_nonce"]
+        .as_str()
+        .context("Missing sentinel ticket")?;
+    let control = sentinel_control(engine, id)?;
+    let current = control
+        .sentinel_request
+        .lock()
+        .expect("sentinel request poisoned");
+    let ticket = current
+        .request
+        .as_ref()
+        .context("No live sentinel request")?;
+    ensure!(
+        ticket.nonce == nonce
+            && ticket.admitted.load(Ordering::Acquire)
+            && control
+                .sentinel_provider
+                .get()
+                .is_some_and(|(selected, _)| selected == provider_id),
+        "Sentinel request retired"
+    );
+    let settlement = ticket
+        .owner
+        .as_ref()
+        .and_then(|owner| owner.settlement.as_ref());
+    settlement
+        .map(|turn| turn.upgrade().context("Native sentinel turn ended"))
+        .transpose()
+}
+
 // Only the originally admitted native request may retain its settled error.
 // Auth and HTTP outcomes continue through Core; no wire response can create
 // this receipt. Retirement/drop removes the ticket and its pending failure.
@@ -3067,14 +3156,7 @@ pub(crate) fn sentinel_failed(
     let nonce = meta["sdk_sentinel_nonce"]
         .as_str()
         .context("Missing sentinel ticket")?;
-    let control = engine
-        .interception
-        .threads
-        .lock()
-        .expect("interception index poisoned")
-        .get(id)
-        .and_then(Weak::upgrade)
-        .context("Missing native control")?;
+    let control = sentinel_control(engine, id)?;
     let (selected, _) = control
         .sentinel_provider
         .get()
@@ -5039,7 +5121,7 @@ fn test_tool_admission(
         model: Mutex::new(None),
         command_admission: Mutex::new(None),
         cancelled: CancellationToken::new(),
-        settlement: Weak::new(),
+        settlement: None,
         core_task: Some(Arc::new(codex_core_api::OwnedTurnTask::default())),
         mcp_calls: Mutex::default(),
     });
@@ -6746,6 +6828,7 @@ mod tests {
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
                     max_depth: 1,
+                    inherited_instructions: None,
                     allowed: Default::default(),
                 }))
                 .is_ok()
@@ -6967,7 +7050,7 @@ mod tests {
                 model: Mutex::new(None),
                 command_admission: Mutex::new(None),
                 cancelled: CancellationToken::new(),
-                settlement: Weak::new(),
+                settlement: None,
                 core_task: Some(Arc::new(codex_core_api::OwnedTurnTask::default())),
                 mcp_calls: Mutex::default(),
             });
@@ -7860,6 +7943,7 @@ mod mcp_policy_tests {
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
                     max_depth: 1,
+                    inherited_instructions: None,
                     allowed: Default::default(),
                 }))
                 .is_ok()

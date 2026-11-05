@@ -468,6 +468,72 @@ describe('recorded response observations', () => {
     },
   });
 
+  it('keeps received cache-write availability through normalized totals and portable history', () => {
+    for (const cacheWrite of [undefined, 0, 4]) {
+      const normalized = accounting('availability');
+      normalized.payload.turn_token_usage = {
+        input_tokens: 7,
+        cached_input_tokens: 2,
+        cache_write_input_tokens: cacheWrite ?? 0,
+        output_tokens: 2,
+        total_tokens: 9,
+      };
+      const turn = {
+        ...project([
+          observed('availability', {
+            input_tokens: 7,
+            cached_input_tokens: 2,
+            ...(cacheWrite === undefined
+              ? {}
+              : { cache_write_input_tokens: cacheWrite }),
+          }),
+          normalized,
+        ]),
+        receipt: {
+          threadId: 'session',
+          turnId: 't',
+          model: 'gpt-5.5',
+          reasoningEffort: null,
+          instructionRevision: null,
+          developerInstructionsSha256: null,
+          instructionFiles: [],
+          userConfigApplied: true,
+          codexRevision: CODEX_REVISION,
+          codexSourceTree: CODEX_REVISION,
+          approvalPolicy: 'never' as const,
+          executors: [],
+        },
+        parentSessionId: 'parent',
+        parentTurnId: 'parent-turn',
+      };
+      const expected = {
+        cachedTokens: 2,
+        ...(cacheWrite === undefined ? {} : { cacheWriteTokens: cacheWrite }),
+      };
+      expect(turn.usage?.inputTokensDetails).toEqual(expected);
+      const wire = repairTurnWireSchema.parse(
+        JSON.parse(JSON.stringify(recordedTurnToWire(turn))),
+      );
+      expect(recordedTurnFromWire(wire)).toEqual(turn);
+    }
+    const partial = accounting('known');
+    partial.payload.turn_token_usage = { cache_write_input_tokens: 4 };
+    for (const observations of [
+      [
+        observed('unknown', {}),
+        observed('known', { cache_write_input_tokens: 4 }),
+      ],
+      [
+        observed('known', { cache_write_input_tokens: 4 }),
+        observed('unknown', {}),
+      ],
+    ]) {
+      expect(
+        project([...observations, partial]).usage?.inputTokensDetails,
+      ).not.toHaveProperty('cacheWriteTokens');
+    }
+  });
+
   it('preserves optional received counters, exact counts and absent whole usage', () => {
     const turn = project([
       observed('o1', { input_tokens: large, cached_input_tokens: 0 }),

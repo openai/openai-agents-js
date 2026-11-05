@@ -22,6 +22,8 @@ Use on-demand HTTP connections in a fresh plain Session with a direct root. The 
 
 For a remote declaration, set `location: 'environment'` and use the executor's command and script path, such as `args: ['/workspace/mcp-server.mjs']`. Open the Session with its current `Environment`. The executor supplies the selected variable values; the SDK does not forward controller-host secret values. The remote MCP process can start even when `Environment.tools` is empty. Those tools control model-visible executor operations, not MCP startup. Choose a process and executor the application trusts. Session-scoped connections start during opening, before invocation approval can run.
 
+`Environment.writableRoots` and `Environment.network` govern executor command tools. A trusted stdio server runs with the permissions of its process on the selected machine.
+
 ## Choose a stdio process lifetime
 
 `StdioMCP` keeps its process alive across root turns when `lifetime` is omitted or set to `'session'`. Set `lifetime: 'turn'` to start a separate process for each root turn and stop it before the next turn starts. Process state does not carry across those turns. Choose this option when a stdio server must ask the application for forms tied to the original root turn. Server prompts from a persistent process without a trusted original turn are refused. Core-generated root MCP tool approvals remain available with either lifetime.
@@ -113,6 +115,8 @@ Call the helper again to refresh discovery for a future Session. It invalidates 
 Binding a method does not freeze its receiver's credentials. Before unsafe reauthentication, stop all activity that uses a shared mutable client, or use separate clients for separate authentication scopes. The helper never connects or closes the server. Aborting selection waits for authentication and discovery already in progress and prevents tools from being returned. A server whose `listTools` has no cancellation support may take time to settle.
 
 The bridge preserves raw input schemas and uses the existing managed function callback path. It forwards the per-call abort signal and calls the server once. The bridge preserves structured-content preference and peer error results. It does not add private result metadata to model text. Custom tool metadata resolvers, extractors, error handlers and guardrails are currently unsupported and fail before authentication. Existing classic MCP APIs remain available for those features.
+
+For a [local native profile](./state.md#local-native-profiles), use `selectMcpTools` with an explicit `toolNames` list and your application's approval policy. Pass the returned tools alongside `storage` when you open the Session. When you reopen, select the tools again using the current client, allowlist, and policy. The profile records managed calls and their results. Denial fails the turn before the call reaches the client. A call without a recorded result follows the profile's recovery rules. Your application owns the client, including its credentials and cleanup.
 
 ### Await observations on borrowed MCP calls
 

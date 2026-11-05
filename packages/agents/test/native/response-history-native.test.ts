@@ -283,3 +283,33 @@ it('keeps negative counters unknown in retained prompted-repair history across s
   expect(server.requests).toHaveLength(3);
   server.assertExhausted();
 }, 30_000);
+
+it('rejects a negative received usage count when restoring a checkpoint', async () => {
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({ instructions: 'Check restored state.', provider });
+  await using session = await agent.session();
+  const state = await session.saveState();
+  const observation = {
+    type: 'response_observation_record' as const,
+    payload: {
+      id: 'restored-observation',
+      thread_id: '00000000-0000-4000-8000-000000000001',
+      turn_id: 'restored-turn',
+      response_id: 'restored-response',
+      status: 'completed',
+      incomplete_reason: null,
+      usage: { input_tokens: -1, total_tokens: 3 },
+    },
+  };
+  const restore = async () => {
+    await using candidate = await agent.session({
+      state: { ...state, history: [...state.history, observation] },
+    });
+    await candidate.saveState();
+  };
+  await expect(restore()).rejects.toThrow(
+    'Received response usage counters must be nonnegative',
+  );
+  expect(server.requests).toHaveLength(0);
+});

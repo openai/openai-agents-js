@@ -8,10 +8,10 @@ use codex_code_mode::CodeModeNestedToolCall;
 use codex_core_api::{EnvironmentManager, Feature, ThreadManager};
 use codex_extension_api::{
     ContextContributor, ExtensionData, ExtensionFuture, PreviousWorldStateSection,
-    RenderedWorldStateFragment, ToolCallOutcome, ToolContributor, ToolFinishInput,
-    ToolLifecycleContributor, ToolLifecycleFuture, ToolPolicy, ToolStartInput, TurnAbortInput,
-    TurnLifecycleContributor, TurnStartInput, TurnStopInput, WorldStateContributionInput,
-    WorldStateSectionContribution,
+    RenderedWorldStateFragment, SdkStepInstructionFiles, ToolCallOutcome, ToolContributor,
+    ToolFinishInput, ToolLifecycleContributor, ToolLifecycleFuture, ToolPolicy, ToolStartInput,
+    TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
+    WorldStateContributionInput, WorldStateSectionContribution,
 };
 use codex_file_system::{
     CopyOptions, CreateDirectoryOptions, EnvironmentAccess, EnvironmentAccessKey,
@@ -30,6 +30,7 @@ use futures_util::StreamExt;
 use globset::GlobBuilder;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 const SOURCE_LIMIT: usize = 32_768;
 const CONTEXT_LIMIT: usize = 3_000;
@@ -40,7 +41,13 @@ mod access;
 pub use access::AccessContributor;
 
 // Installed only from current host thread options, never from saved history.
-pub struct Rules(Mutex<Scope>, PathUri, Mutex<Option<PathUri>>);
+pub struct Rules(Mutex<Scope>, PathUri, Mutex<Option<PathUri>>, &'static str);
+
+#[derive(Default)]
+struct RuleSnapshot {
+    body: String,
+    files: Vec<Value>,
+}
 
 struct RulesTurn(String);
 
@@ -123,8 +130,13 @@ pub(crate) struct CellImageOrigin {
 }
 
 impl Rules {
-    pub fn new(trusted_root: PathUri) -> Self {
-        Self(Mutex::new(Scope::default()), trusted_root, Mutex::new(None))
+    pub fn new(trusted_root: PathUri, environment_id: &'static str) -> Self {
+        Self(
+            Mutex::new(Scope::default()),
+            trusted_root,
+            Mutex::new(None),
+            environment_id,
+        )
     }
 
     pub(crate) fn cell_image_origin(self: &Arc<Self>, turn: &str) -> Option<CellImageOrigin> {
@@ -285,9 +297,9 @@ impl CanonicalRules {
         }
     }
 
-    async fn current(&self, input: &WorldStateContributionInput<'_>) -> Result<String> {
+    async fn current(&self, input: &WorldStateContributionInput<'_>) -> Result<RuleSnapshot> {
         let Some(rules) = input.thread_store.get::<Rules>() else {
-            return Ok(String::new());
+            return Ok(RuleSnapshot::default());
         };
         // A previous step's eligibility cannot authorize NEW starts during
         // discovery. Its already-proven native calls may still finish after
@@ -307,8 +319,7 @@ impl CanonicalRules {
         // The read tool uses the first native selection as its cwd as well.
         let selection = input.environments.first().context("no selected executor")?;
         ensure!(
-            selection.environment_id == codex_exec_server::REMOTE_ENVIRONMENT_ID
-                && selection.cwd == rules.1,
+            selection.environment_id == rules.3 && selection.cwd == rules.1,
             "trusted primary executor changed"
         );
         // The primary FromThread selection deliberately hides its normalized
@@ -504,7 +515,10 @@ impl CanonicalRules {
                 scope.native_view_image = eligible;
             }
         }
-        Ok(body.unwrap_or_else(Self::unavailable))
+        Ok(body.unwrap_or_else(|error| RuleSnapshot {
+            body: Self::unavailable(error),
+            files: Vec::new(),
+        }))
     }
 
     fn unavailable(error: anyhow::Error) -> String {
@@ -707,7 +721,12 @@ impl ContextContributor for CanonicalRules {
     ) -> ExtensionFuture<'a, Vec<WorldStateSectionContribution>> {
         Box::pin(async move {
             let body = match self.current(&input).await {
-                Ok(body) => body,
+                Ok(RuleSnapshot { body, files }) => {
+                    if !files.is_empty() {
+                        input.step_store.insert(SdkStepInstructionFiles(files));
+                    }
+                    body
+                }
                 Err(error) => {
                     // An error before validated rule loading is a real
                     // invalidation, not an inference rollover.
@@ -1037,15 +1056,15 @@ async fn load_rules(
     root: &PathUri,
     canonical_root: &PathUri,
     paths: &HashSet<PathUri>,
-) -> Result<String> {
+) -> Result<RuleSnapshot> {
     let directory = root.join(".claude/rules")?;
     let no_follow = GetMetadataOptions {
         follow_symlinks: false,
     };
     match fs.get_metadata(&directory, no_follow, None).await {
-        Ok(m) if m.is_symlink => return Ok(String::new()),
+        Ok(m) if m.is_symlink => return Ok(RuleSnapshot::default()),
         Ok(m) => ensure!(m.is_directory, ".claude/rules is not a directory"),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(RuleSnapshot::default()),
         Err(e) => return Err(e.into()),
     }
     ensure!(
@@ -1092,7 +1111,7 @@ async fn load_rules(
         .filter_map(|p| p.relative_path_from(root))
         .map(|s| if windows { s.replace('\\', "/") } else { s })
         .collect();
-    let mut result = String::new();
+    let mut result = RuleSnapshot::default();
     for path in files {
         let label = path
             .relative_path_from(root)
@@ -1109,10 +1128,15 @@ async fn load_rules(
         if applies {
             let labeled = format!("\n{label}:\n{body}\n");
             ensure!(
-                result.len() + labeled.len() <= CONTEXT_LIMIT,
+                result.body.len() + labeled.len() <= CONTEXT_LIMIT,
                 "applicable rules exceed 3000 bytes"
             );
-            result.push_str(&labeled);
+            result.body.push_str(&labeled);
+            result.files.push(json!({
+                "path": path.to_string(),
+                "source": "project_guidance",
+                "sha256": format!("{:x}", Sha256::digest(source.as_bytes())),
+            }));
         }
     }
     Ok(result)

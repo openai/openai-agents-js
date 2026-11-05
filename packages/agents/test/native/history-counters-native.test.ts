@@ -1781,3 +1781,68 @@ describe(
     );
   },
 );
+
+it('preserves cache-write availability through native totals, receipts and restored history', async () => {
+  try {
+    for (const cacheWrite of [undefined, 0, 4]) {
+      const raw = JSON.stringify({
+        input_tokens: 10,
+        input_tokens_details: {
+          cached_tokens: 2,
+          ...(cacheWrite === undefined
+            ? {}
+            : { cache_write_tokens: cacheWrite }),
+        },
+        output_tokens: 3,
+        output_tokens_details: { reasoning_tokens: 1 },
+        total_tokens: 13,
+      });
+      const server = new ModelServer([[message('done')]], [raw]);
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-cache-availability',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        model: 'gpt-5.5',
+        instructions: 'Answer.',
+        provider,
+      });
+      await using session = await agent.session();
+      const turn = await session.submit('one request');
+      await turn.wait();
+      const turns: RecordedTurn[] = [];
+      for await (const row of session.turns()) turns.push(row);
+      const recorded = turns[0];
+      const expected = {
+        cachedTokens: 2,
+        ...(cacheWrite === undefined ? {} : { cacheWriteTokens: cacheWrite }),
+      };
+      expect(recorded.usage?.inputTokensDetails).toEqual(expected);
+      expect(recorded.responses?.[0].usage?.inputTokensDetails).toEqual(
+        expected,
+      );
+      expect(recorded.receipt?.turnId).toBe(turn.turnId);
+      const state = await session.saveState();
+      const accounting = state.history.find(
+        (row) => row.type === 'token_usage_record',
+      );
+      expect(
+        (accounting?.payload as JsonObject | undefined)?.turn_token_usage,
+      ).toMatchObject({ cache_write_input_tokens: cacheWrite ?? 0 });
+      await using restored = await agent.session({ state });
+      const restoredTurns: RecordedTurn[] = [];
+      for await (const row of restored.turns()) restoredTurns.push(row);
+      expect(restoredTurns[0].usage?.inputTokensDetails).toEqual(expected);
+      expect(restoredTurns[0].responses).toEqual(recorded.responses);
+      expect(restoredTurns[0].receipt?.model).toBe(recorded.receipt?.model);
+      expect(restoredTurns[0].receipt?.turnId).toBe(recorded.receipt?.turnId);
+      expect(server.requests).toHaveLength(1);
+      server.assertExhausted();
+    }
+  } finally {
+    await ModelServer.closeAll();
+  }
+}, 60_000);
