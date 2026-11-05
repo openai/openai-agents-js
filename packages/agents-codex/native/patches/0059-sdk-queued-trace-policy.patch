@@ -231,7 +231,7 @@ index d5ee490..3744bc3 100644
          root_turn_id: None,
          residency_guard: None,
 diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
-index 6d56fba..b9ca36b 100644
+index 6d56fba..566cc51 100644
 --- a/codex-rs/otel/src/sdk_trace.rs
 +++ b/codex-rs/otel/src/sdk_trace.rs
 @@ -81,6 +81,10 @@ fn policies() -> &'static Mutex<HashMap<Identity, Weak<PolicyRegistration>>> {
@@ -258,19 +258,35 @@ index 6d56fba..b9ca36b 100644
  pub fn scoped_capture_allowed() -> bool {
      policy_for_context(&Context::current())
          .is_none_or(|policy| !policy.disabled && policy.include_sensitive_data)
-@@ -542,18 +540,36 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+@@ -542,18 +540,52 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
  pub fn context(key: &str) -> Result<Context, String> {
      Ok(resolve(key)?.context.clone())
  }
++struct ExplicitSubmissionContext;
++
++/// Mark the context selected by an SDK admission, including an explicit empty owner.
++pub fn explicit_submission_context(context: Context) -> Context {
++    context.with_value(ExplicitSubmissionContext)
++}
++
++fn current_submission_context() -> Context {
++    let context = Context::current();
++    if context.get::<ExplicitSubmissionContext>().is_some() {
++        context
++    } else {
++        crate::trace_context::current_span_context()
++    }
++}
++
 +pub fn current_scope_policy() -> Option<Arc<ScopePolicy>> {
-+    policy_for_context(&crate::trace_context::current_span_context())
++    policy_for_context(&current_submission_context())
 +}
 +
 +pub fn submission_trace() -> (
 +    Option<codex_protocol::protocol::W3cTraceContext>,
 +    Option<Arc<ScopePolicy>>,
 +) {
-+    let active = crate::trace_context::current_span_context();
++    let active = current_submission_context();
 +    (
 +        crate::trace_context::context_w3c_trace_context(&active),
 +        policy_for_context(&active),
@@ -303,7 +319,7 @@ index 6d56fba..b9ca36b 100644
          parent_span_id: None,
          ended: Mutex::new(true),
      });
-@@ -627,7 +643,9 @@ mod tests {
+@@ -627,7 +659,9 @@ mod tests {
              release_trace_span(key);
          }
          let carrier = trace_carrier(&lease).unwrap();
@@ -314,7 +330,7 @@ index 6d56fba..b9ca36b 100644
          assert_eq!(
              policy_for_context(&parent)
                  .unwrap()
-@@ -750,7 +768,9 @@ mod lifecycle_tests {
+@@ -750,7 +784,9 @@ mod lifecycle_tests {
          end_trace_span(root_key, r#"{"status":"error"}"#).unwrap();
          release_trace_span(root_key);
          let carrier = trace_carrier(&lease).unwrap();
@@ -325,10 +341,79 @@ index 6d56fba..b9ca36b 100644
          assert!(!policy_for_context(&parent).unwrap().include_sensitive_data);
          let child = global::tracer("native-fixture").start_with_context("native-child", &parent);
          let mut child = wrap_span(child, &parent);
-@@ -979,6 +999,187 @@ mod context_lease_tests {
+@@ -979,6 +1015,256 @@ mod context_lease_tests {
      use super::*;
      use opentelemetry_sdk::trace::{InMemorySpanExporter, Sampler, SdkTracerProvider};
 
++    #[test]
++    fn explicitly_admitted_context_wins_over_an_unrelated_native_span() {
++        use opentelemetry::trace::TracerProvider as _;
++        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
++        use tracing_subscriber::prelude::*;
++
++        const CHILD: &str = "CODEX_SDK_EXPLICIT_ADMISSION_OWNER_TEST";
++        if std::env::var_os(CHILD).is_none() {
++            let status = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "sdk_trace::context_lease_tests::explicitly_admitted_context_wins_over_an_unrelated_native_span", "--nocapture"])
++                .env(CHILD, "1")
++                .status()
++                .unwrap();
++            assert!(status.success());
++            return;
++        }
++        let provider = SdkTracerProvider::builder()
++            .with_sampler(Sampler::AlwaysOn)
++            .build();
++        global::set_tracer_provider(provider.clone());
++        let subscriber = tracing_subscriber::registry()
++            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("admission-test")));
++        let _subscriber = tracing::subscriber::set_default(subscriber);
++        configure_pipeline(true);
++        let start = |name: &str| {
++            let value: Value = serde_json::from_str(
++                &start_trace_span(&json!({"name":name,"kind":"workflow"}).to_string()).unwrap(),
++            )
++            .unwrap();
++            value["handle"].as_str().unwrap().to_owned()
++        };
++        let caller = start("admitted caller");
++        let other = start("unrelated native workflow");
++        let caller_context = context(&caller).unwrap();
++        let caller_policy = policy_for_context(&caller_context).unwrap();
++        let other_context = context(&other).unwrap();
++        let other_policy = policy_for_context(&other_context).unwrap();
++        let native = tracing::info_span!(parent: None, "active native span");
++        let _ = native.set_parent(other_context);
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .build()
++            .unwrap();
++        {
++            let _entered = native.enter();
++            assert!(Arc::ptr_eq(&current_scope_policy().unwrap(), &other_policy));
++            let inspect = |selected: Context| {
++                runtime.block_on(
++                    async { (current_scope_policy(), submission_trace()) }
++                        .with_context(explicit_submission_context(selected)),
++                )
++            };
++            let (policy, (carrier, queued_policy)) = inspect(caller_context);
++            assert!(
++                policy.is_some_and(|policy| Arc::ptr_eq(&policy, &caller_policy)),
++                "explicit admission borrowed the unrelated native workflow",
++            );
++            assert!(Arc::ptr_eq(&queued_policy.unwrap(), &caller_policy));
++            assert_eq!(carrier, Some(trace_carrier(&caller).unwrap()));
++            let (policy, (carrier, queued_policy)) = inspect(Context::new());
++            assert!(policy.is_none() && queued_policy.is_none() && carrier.is_none());
++        }
++        drop(native);
++        for handle in [&caller, &other] {
++            end_trace_span(handle, r#"{"status":"ok"}"#).unwrap();
++            release_trace_span(handle);
++        }
++        provider.shutdown().unwrap();
++    }
++
 +    #[test]
 +    fn remote_trace_identity_cannot_authorize_an_sdk_export_route() {
 +        const CHILD: &str = "CODEX_SDK_REMOTE_POLICY_ROUTE_TEST";
@@ -513,7 +598,7 @@ index 6d56fba..b9ca36b 100644
      #[test]
      fn captured_leases_retain_intermediate_identity_until_last_owner_releases() {
          const CHILD: &str = "CODEX_SDK_CONTEXT_LEASE_IDENTITY_CHILD";
-@@ -1040,8 +1241,10 @@ mod context_lease_tests {
+@@ -1040,8 +1326,10 @@ mod context_lease_tests {
                      let carrier = trace_carrier(first.token()).unwrap();
                      drop(active);
                      let assert_policy = || {
