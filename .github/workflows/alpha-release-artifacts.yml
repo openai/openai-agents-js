@@ -2,7 +2,7 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness]
+    branches: [feat/codex-harness, 'ci/native-bundle/**']
     paths-ignore:
       - '**/*.md'
       - '**/*.mdx'
@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: alpha-release-artifacts-${{ github.ref }}
@@ -20,10 +21,7 @@ concurrency:
 jobs:
   package:
     name: Package and test (${{ matrix.platform }})
-    if: >-
-      github.repository == 'openai/openai-agents-js' &&
-      (github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.repository == 'openai/openai-agents-js'
     strategy:
       fail-fast: false
       matrix:
@@ -44,38 +42,49 @@ jobs:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: '3'
+      CARGO_BUILD_JOBS: ${{ matrix.platform == 'darwin-arm64' && '3' || '8' }}
       CARGO_INCREMENTAL: '0'
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
+          fetch-depth: 2
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
-        with:
-          run_install: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
-          cache: pnpm
+          package-manager-cache: false
 
       - name: Check runner platform
         run: |
           node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
 
+      - name: Restore the pinned native bundle
+        id: native
+        env:
+          PIN_REF: ${{ github.event.pull_request.base.sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/restore-native-bundle.mjs
+
       - name: Install Rust
+        if: steps.native.outputs.restored != 'true'
         run: |
           echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: Install Linux build tools
+      - name: Install Linux worker prerequisites and any build tools
         if: runner.os == 'Linux'
+        env:
+          RESTORED: ${{ steps.native.outputs.restored }}
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+          packages=(apparmor-profiles bubblewrap)
+          if [[ "$RESTORED" != true ]]; then
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+            packages+=(clang cmake pkg-config protobuf-compiler libssl-dev)
+          fi
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            apparmor-profiles bubblewrap clang cmake pkg-config protobuf-compiler libssl-dev
+          sudo apt-get install --yes --no-install-recommends "${packages[@]}"
           # Ubuntu supplies a profile for bwrap that keeps its children restricted.
           if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
             sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
@@ -86,18 +95,56 @@ jobs:
           bwrap --version
           bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
       - name: Install macOS build tools
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.native.outputs.restored != 'true'
         run: brew install cmake pkgconf protobuf openssl@3
       - name: Install Windows build tools
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.native.outputs.restored != 'true'
         shell: pwsh
         run: choco install protoc --yes --no-progress
 
-      - name: Build the SDK and native runtime
+      - name: Build the native runtime
+        if: steps.native.outputs.restored != 'true'
+        run: node packages/agents/scripts/native.mjs package
+      - name: Build the macOS WSS test fixture
+        if: runner.os == 'macOS' && steps.native.outputs.restored != 'true'
+        working-directory: packages/agents/native
+        run: |
+          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
+          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
+          cargo build --locked --release --example exec-server-fixture
+          mkdir -p test-bin
+          install -m 0755 "$CARGO_TARGET_DIR/release/examples/exec-server-fixture" test-bin/exec-server-fixture
+      - name: Archive the native bundle
+        if: steps.native.outputs.restored != 'true'
+        working-directory: packages/agents
+        env:
+          INPUTS: ${{ steps.native.outputs.inputs }}
+        run: |
+          products=(native/codex.node native/build-receipt.json bin)
+          if [[ "$EXPECTED_PLATFORM" == darwin-arm64 ]]; then
+            products+=(native/test-bin/exec-server-fixture)
+          fi
+          tar -czf - "${products[@]}" > "$RUNNER_TEMP/native-$INPUTS-$EXPECTED_PLATFORM-$GITHUB_RUN_ATTEMPT.tar.gz"
+      - name: Upload the native bundle for pinning
+        if: steps.native.outputs.restored != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          path: ${{ runner.temp }}/native-${{ steps.native.outputs.inputs }}-${{ matrix.platform }}-${{ github.run_attempt }}.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Build the current SDK
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-          node packages/agents/scripts/native.mjs package
       - name: Qualify the Linux worker
         if: runner.os == 'Linux'
         env:
@@ -111,20 +158,10 @@ jobs:
             packages/agents/test/native/local-executor-policy-native.test.ts \
             -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home' \
             --reporter=verbose
-      - name: Build the macOS WSS test fixture
-        if: runner.os == 'macOS'
-        working-directory: packages/agents/native
-        run: |
-          # Reuse the verified V8 files and target from native.mjs package.
-          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
-          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
-          cargo build --locked --release --example exec-server-fixture
-          fixture="$CARGO_TARGET_DIR/release/examples/exec-server-fixture"
-          test -x "$fixture"
-          echo "CODEX_EXEC_SERVER_TEST_BINARY=$fixture" >> "$GITHUB_ENV"
       - name: Qualify local executor grants on macOS
         if: runner.os == 'macOS'
         env:
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents/native/test-bin/exec-server-fixture
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: >-
           pnpm test:native packages/agents/test/native/local-executor-policy-native.test.ts
