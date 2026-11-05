@@ -198,13 +198,23 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
             let first = started["turn_id"].as_str().unwrap();
             loop {
                 hold.entered.acquire().await.unwrap().forget();
-                let requests = provider.requests.lock().unwrap().len();
-                if requests != 0 {
-                    assert_eq!(requests, 1);
+                let post_response = engine
+                    .load_checkpoint_history(state.id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|item| matches!(item,
+                        codex_history::RolloutItem::EventMsg(EventMsg::TokenCount(event))
+                            if event.info.as_ref().is_some_and(|info|
+                                info.last_token_usage.input_tokens == 1
+                                    && info.last_token_usage.output_tokens == 1
+                                    && info.last_token_usage.total_tokens == 2)));
+                if post_response {
+                    assert_eq!(provider.requests.lock().unwrap().len(), 1);
                     break;
                 }
-                // Initial durability barriers precede the model request. Keep
-                // the same hold armed until sampling has actually started.
+                // Skip the initial and post-tool durability barriers. The
+                // response's actual usage precedes the finalization flush.
                 *store.next_flush_hold.lock().unwrap() = Some(hold.clone());
                 hold.release.add_permits(1);
             }
