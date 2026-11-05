@@ -8,6 +8,8 @@ import {
   Environment,
   NativeProvider,
   type ExecutionItem,
+  type ModelRequestDispatching,
+  type ModelResponseLinked,
   type SessionState,
 } from '@openai/agents';
 import { binding, type NativeThread } from '../../src/runtime/binding';
@@ -146,11 +148,16 @@ it('records sampled instructions, build identity and matching live and retained 
         projectGuidance: true,
       });
       const turn = await session.submit('Run the fixture command.');
+      const dispatches: ModelRequestDispatching[] = [];
+      const links: ModelResponseLinked[] = [];
       const completions = (async () => {
         const items: ExecutionItem[] = [];
         for await (const event of turn.events({
           includeExecutionDetails: true,
         })) {
+          if (event.type === 'model_request_dispatching')
+            dispatches.push(event);
+          if (event.type === 'model_response_linked') links.push(event);
           if (event.type === 'execution_item_completed') {
             if (!('command' in event.item))
               throw new Error('Expected command details');
@@ -199,6 +206,21 @@ it('records sampled instructions, build identity and matching live and retained 
         'permission_profile',
       );
       const live = await completions;
+      expect(dispatches).toHaveLength(2);
+      expect(links).toHaveLength(2);
+      expect(new Set(dispatches.map((event) => event.requestId)).size).toBe(2);
+      for (const event of [...dispatches, ...links]) {
+        expect(event.threadId).toBe(session.id);
+        expect(event.turnId).toBe(turnId);
+        expect(event.submissionId).toBe(turn.submissionId);
+      }
+      expect(new Set(links.map((event) => event.requestId))).toEqual(
+        new Set(dispatches.map((event) => event.requestId)),
+      );
+      expect(
+        new Set(links.map((event) => event.responseObservationId)),
+      ).toEqual(new Set(recorded?.responses?.map((response) => response.id)));
+
       const retained = (await collect(session.items())).filter(
         (item) => item.type === 'command_execution',
       );

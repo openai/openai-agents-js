@@ -110,6 +110,8 @@ export type { ChecklistState, SessionState } from './runtime/state';
 export { parseSessionState, readSessionInstructions } from './runtime/state';
 export type { TokenUsage, TokenUsageInfo } from './runtime/run-events';
 export type {
+  ModelRequestDispatching,
+  ModelResponseLinked,
   Observation,
   ObservationOptions,
   ExecutionItemSummary,

@@ -187,6 +187,7 @@ export class NativeThread {
   _complete_manual_continuation(
     outputSchemaJson?: string,
     selectionJson?: string,
+    observationSubmissionId?: string,
   ): Promise<string>;
   read_thread_history(subagent_id: string | null): Promise<string>;
   read_checklist(subagent_id?: string | null): Promise<string>;

@@ -278,6 +278,7 @@ impl Default for Mode {
 
 params!(TurnParams {
     input: Value,
+    observation_submission_id: Option<String>,
     client_id: Option<String>,
     #[serde(default, alias = "settings", with = "ThreadSettings")]
     thread_settings: ThreadSettingsOverrides,
@@ -559,14 +560,21 @@ async fn continue_managed<'a>(
 }
 
 pub async fn recover_prepared(
-    thread: &CodexThread,
+    state: &crate::engine::ThreadState,
     turn_id: String,
     original_call_ids: Vec<String>,
     thread_settings: ThreadSettingsOverrides,
     final_output_json_schema: Option<Value>,
     selection: Option<crate::python_tools::OperationSelection>,
+    observation_submission_id: Option<String>,
 ) -> Result<Value> {
+    let thread = &state.thread;
     let mut init = thread.config_snapshot().await.turn_extension_init;
+    if let Some(submission) = observation_submission_id {
+        state
+            .request_metadata
+            .seed(&mut init, submission, state.id.to_string());
+    }
     init.insert(selection);
     crate::recovery_guard::Seed::attach(&mut init, &turn_id, original_call_ids);
     let value = idle_submission(
@@ -603,6 +611,21 @@ async fn start_with_params<'a>(
             "exact_steering requires steer mode"
         )));
     }
+
+    let turn_init = if let (Some((state, _)), Some(submission)) =
+        (managed.as_ref(), p.observation_submission_id)
+    {
+        let mut init = match turn_init {
+            Some(init) => init,
+            None => thread.config_snapshot().await.turn_extension_init,
+        };
+        state
+            .request_metadata
+            .seed(&mut init, submission, state.id.to_string());
+        Some(init)
+    } else {
+        turn_init
+    };
     let input = if p.input.is_array() {
         TurnInput::UserInput {
             content: decode::<Vec<UserInput>>(p.input).map_err(pre_admission)?,

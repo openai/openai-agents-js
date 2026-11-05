@@ -2819,6 +2819,7 @@ impl NativeThread {
         &self,
         output_schema_json: Option<String>,
         selection_json: Option<String>,
+        observation_submission_id: Option<String>,
     ) -> napi::Result<String> {
         let output_schema = output_schema_json
             .map(|schema| serde_json::from_str::<Value>(&schema).map_err(native_error))
@@ -2863,12 +2864,13 @@ impl NativeThread {
                 .map_err(native_error)?;
         }
         let result = ops::recover_prepared(
-            &inner.thread,
+            &inner,
             frame.turn_id,
             frame.reply_order,
             settings,
             output_schema,
             selection,
+            observation_submission_id,
         )
         .await
         .map_err(native_error)?;
@@ -3512,3 +3514,5 @@ pub async fn configure_telemetry(config_json: String) -> napi::Result<()> {
 pub async fn shutdown_telemetry() -> napi::Result<()> {
     telemetry::shutdown().await.map_err(telemetry_error)
 }
+
+mod request_metadata;

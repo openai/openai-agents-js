@@ -1,3 +1,4 @@
+import { decodeRequestMetadata } from './request-metadata';
 import { networkPolicyDigest } from './network-policy';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
@@ -835,6 +836,7 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private readonly issuedRuns = new Map<string, NativeTurn>();
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
+  private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
   private defaultTools: readonly SessionTool[];
   private readonly admittedDeclarations = new Map<string, WeakSet<object>>();
@@ -3136,6 +3138,7 @@ export class Session<OutputT = string, Context = unknown> {
       ...(run.writableRoots === undefined
         ? {}
         : { writable_roots: run.writableRoots }),
+      observation_submission_id: this.submissionIds.get(run)!,
       input: output.prompt
         ? [...parts, { type: 'text', text: output.prompt }]
         : parts,
@@ -3161,18 +3164,28 @@ export class Session<OutputT = string, Context = unknown> {
     const run = new NativeTurn(() => this.assertCanWait(run));
     submissions.set(run, { output, outputOverride, observation: 'open' });
     this.submissionIds.set(run, randomUUID());
+    this.registerRequestObservationRoute(run);
     return run;
   }
 
+  private registerRequestObservationRoute(run: NativeTurn): void {
+    const routeId = this.submissionIds.get(run)!;
+    this.requestObservationRoutes.set(routeId, run);
+    const retire = () => {
+      this.requestObservationRoutes.delete(routeId);
+    };
+    run.completion.promise.then(retire, retire);
+  }
+
   private begin(
-    submit: () => Promise<string>,
+    submit: (run: NativeTurn) => Promise<string>,
     output = this.defaultOutput,
     outputOverride = false,
     selection?: OperationSelection,
   ): NativeTurn {
     const run = this.allocateRun(output, outputOverride);
     run.selection = selection;
-    this.dispatchRun(run, submit);
+    this.dispatchRun(run, () => submit(run));
     return run;
   }
 
@@ -3581,11 +3594,12 @@ export class Session<OutputT = string, Context = unknown> {
         // Native still decides admission from the exact managed Turn, never from
         // this event hint. Input is already in history and is not resubmitted.
         const next = this.begin(
-          () =>
+          (nextRun) =>
             this.#native._submit(
               encode({
                 input: [],
                 mode: 'continue_if_idle',
+                observation_submission_id: this.submissionIds.get(nextRun)!,
                 expected_previous_turn_id: run.id,
                 ...(submission.output.schema === undefined
                   ? {}
@@ -3660,12 +3674,23 @@ export class Session<OutputT = string, Context = unknown> {
           throw error;
         }
         if (!this.isOpen || this.#native !== native) return;
-        const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
         const msg = event.msg;
         if (msg.type === 'token_count') {
           const snapshot = apiRateLimits(msg.api_rate_limits);
           if (snapshot) this.apiRateLimitState.snapshot = snapshot;
         }
+        if (msg.type === '_sdk_request_metadata') {
+          const route =
+            typeof msg.submission_id === 'string'
+              ? this.requestObservationRoutes.get(msg.submission_id)
+              : undefined;
+          if (route) {
+            if (route.id === null) route.pending.push(event);
+            else this.observeRequestMetadata(route, event);
+          }
+          continue;
+        }
+        const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
         if (msg.type === 'elicitation_status') {
           await this.observeNativeUrlStatus(native, event);
           continue;
@@ -4229,7 +4254,33 @@ export class Session<OutputT = string, Context = unknown> {
     } else this.observations.gap();
   }
 
+  private observeRequestMetadata(run: NativeTurn, event: NativeEvent): void {
+    const msg = event.msg;
+    if (
+      run.controller.signal.aborted ||
+      typeof msg.submission_id !== 'string' ||
+      this.requestObservationRoutes.get(msg.submission_id) !== run
+    )
+      return;
+    const observation = decodeRequestMetadata(
+      msg.observation,
+      msg.submission_id,
+    );
+    if (
+      observation &&
+      'threadId' in observation &&
+      observation.threadId === this.id &&
+      observation.turnId === event.id &&
+      run.id === observation.turnId
+    )
+      this.observations.append(observation);
+  }
+
   private process(run: NativeTurn, event: NativeEvent): void {
+    if (event.msg.type === '_sdk_request_metadata') {
+      this.observeRequestMetadata(run, event);
+      return;
+    }
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     const msg = event.msg;
     const kind = msg.type;
@@ -5114,20 +5165,17 @@ export class Session<OutputT = string, Context = unknown> {
         this.manualRestoring = false;
         try {
           const schema = submissions.get(run)!.output.schema;
-          const wire = run.selection
-            ? await this.#native._complete_manual_continuation(
-                schema == null ? undefined : encodeReceipt(schema),
-                encode({
+          const wire = await this.#native._complete_manual_continuation(
+            schema == null ? undefined : encodeReceipt(schema),
+            run.selection
+              ? encode({
                   generation: this.catalog.generation.toString(),
                   names: run.selection.names ?? null,
                   before_step: run.selection.maxModelSteps !== undefined,
-                }),
-              )
-            : schema == null
-              ? await this.#native._complete_manual_continuation()
-              : await this.#native._complete_manual_continuation(
-                  encodeReceipt(schema),
-                );
+                })
+              : undefined,
+            this.submissionIds.get(run)!,
+          );
           const submission = decode(submissionSchema, wire);
           if (submission.status !== 'started' || submission.turn_id !== run.id)
             throw new NativeError(
@@ -5513,6 +5561,7 @@ export class Session<OutputT = string, Context = unknown> {
       observation: 'open',
     });
     this.submissionIds.set(run, randomUUID());
+    this.registerRequestObservationRoute(run);
     this.#turnFor(run);
     run.accepted.resolve({ status: 'started', turn_id: run.id });
     const usage = state.manual_context.usage;

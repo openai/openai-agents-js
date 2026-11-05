@@ -2470,6 +2470,7 @@ impl TurnLifecycleContributor for Boundary {
     }
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            crate::request_metadata::retire(input.turn_store);
             if let Some(control) = input.thread_store.get::<Control>() {
                 control.end_direct_turn(input.turn_store);
                 if let Some(owner) = input.turn_store.get::<DirectTurn>() {
@@ -2481,6 +2482,7 @@ impl TurnLifecycleContributor for Boundary {
     }
     fn on_turn_abort<'a>(&'a self, input: TurnAbortInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            crate::request_metadata::retire(input.turn_store);
             if let Some(control) = input.thread_store.get::<Control>() {
                 control.end_direct_turn(input.turn_store);
                 if let Some(owner) = input.turn_store.get::<DirectTurn>() {
