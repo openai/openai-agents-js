@@ -73,6 +73,12 @@ function sourcePathForExport(
   ) {
     distTarget = './dist/experimental/mcp-tasks/index.mjs';
   }
+  if (
+    workspacePackage.name === '@openai/agents-codex' &&
+    exportPath === './a2a'
+  ) {
+    distTarget = './dist/a2a/index.mjs';
+  }
   if (!distTarget.startsWith('./dist/')) {
     throw new Error(
       `Package export ${workspacePackage.name}${exportPath.slice(1)} does not point into dist: ${distTarget}`,

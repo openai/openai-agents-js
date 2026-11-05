@@ -77,6 +77,15 @@ describe('workspace package aliases', () => {
     );
   });
 
+  it('maps owner and facade A2A exports to their source entrypoints', () => {
+    expect(aliases['@openai/agents-codex/a2a']).toBe(
+      resolve(rootDir, 'packages/agents-codex/src/a2a/index.ts'),
+    );
+    expect(aliases['@openai/agents/a2a']).toBe(
+      resolve(rootDir, 'packages/agents/src/a2a/index.ts'),
+    );
+  });
+
   it('fails fast when a published export has no source entrypoint', () => {
     const invalidPackage: WorkspacePackage = {
       name: '@openai/invalid',

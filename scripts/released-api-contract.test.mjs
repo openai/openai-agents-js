@@ -2244,6 +2244,7 @@ test('the CLI validates complete selections in package profiles and promotion be
           if (command === 'promote') {
             for (const name of ['@openai/agents', owner]) {
               expect(runtimeFilters[0](name, '.')).toBe(true);
+              expect(runtimeFilters[0](name, './a2a')).toBe(false);
               expect(runtimeFilters[0](name, './experimental/mcp-tasks')).toBe(
                 false,
               );
@@ -2251,6 +2252,7 @@ test('the CLI validates complete selections in package profiles and promotion be
             expect(runtimeFilters[1]).toBeUndefined();
           } else if (command === 'package') {
             for (const name of ['@openai/agents', owner]) {
+              expect(runtimeFilters[0](name, './a2a')).toBe(true);
               expect(runtimeFilters[0](name, './experimental/mcp-tasks')).toBe(
                 true,
               );

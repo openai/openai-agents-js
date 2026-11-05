@@ -9,6 +9,8 @@ import * as facadeDeferred from '@openai/agents/experimental/deferred';
 import * as runtimeDeferred from '@openai/agents-codex/experimental/deferred';
 import * as facadeTasks from '@openai/agents/experimental/mcp-tasks';
 import * as runtimeTasks from '@openai/agents-codex/experimental/mcp-tasks';
+import * as facadeA2A from '@openai/agents/a2a';
+import * as runtimeA2A from '@openai/agents-codex/a2a';
 import {
   ScriptedModel,
   modelResponse,
@@ -30,6 +32,8 @@ const deferred: typeof facadeDeferred = runtimeDeferred;
 const reverseDeferred: typeof runtimeDeferred = facadeDeferred;
 const tasks: typeof facadeTasks = runtimeTasks;
 const reverseTasks: typeof runtimeTasks = facadeTasks;
+const a2a: typeof facadeA2A = runtimeA2A;
+const reverseA2A: typeof runtimeA2A = facadeA2A;
 void [
   facadeAgent,
   testing,
@@ -40,6 +44,8 @@ void [
   reverseDeferred,
   tasks,
   reverseTasks,
+  a2a,
+  reverseA2A,
 ];
 
 const greeting = tool({

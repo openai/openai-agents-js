@@ -57,6 +57,16 @@
         "types": "./dist/experimental/mcp-tasks/index.d.ts",
         "default": "./experimental/mcp-tasks.cjs"
       }
+    },
+    "./a2a": {
+      "import": {
+        "types": "./dist/a2a/index.d.mts",
+        "default": "./a2a/index.mjs"
+      },
+      "require": {
+        "types": "./dist/a2a/index.d.ts",
+        "default": "./a2a/index.cjs"
+      }
     }
   },
   "scripts": {
@@ -109,7 +119,9 @@
     "TESTING.md",
     "EXTERNAL_JOBS.md",
     "MCP_TASKS.md",
-    "experimental"
+    "experimental",
+    "a2a",
+    "A2A.md"
   ],
   "typesVersions": {
     "*": {
@@ -124,10 +136,14 @@
       ],
       "experimental/mcp-tasks": [
         "dist/experimental/mcp-tasks/index.d.ts"
+      ],
+      "a2a": [
+        "dist/a2a/index.d.ts"
       ]
     }
   },
   "optionalDependencies": {
+    "@a2a-js/sdk": "1.0.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/core": "2.4.0"
   }

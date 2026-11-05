@@ -152,6 +152,16 @@
         "types": "./dist/experimental/mcp-tasks/index.d.ts",
         "default": "./dist/experimental/mcp-tasks/index.js"
       }
+    },
+    "./a2a": {
+      "import": {
+        "types": "./dist/a2a/index.d.mts",
+        "default": "./dist/a2a/index.mjs"
+      },
+      "require": {
+        "types": "./dist/a2a/index.d.ts",
+        "default": "./dist/a2a/index.js"
+      }
     }
   },
   "scripts": {
@@ -233,6 +243,9 @@
       ],
       "experimental/mcp-tasks": [
         "dist/experimental/mcp-tasks/index.d.ts"
+      ],
+      "a2a": [
+        "dist/a2a/index.d.ts"
       ]
     }
   }

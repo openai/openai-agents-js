@@ -657,13 +657,13 @@ export async function installOptionalPeers(materialized, registry) {
   )
     .filter(([, metadata]) => metadata.optional)
     .map(([name]) => `${name}@${extensionManifest.peerDependencies[name]}`);
-  if (optionalSpecs.length === 0) return;
   await runNpm(
     [
       'install',
       '--ignore-scripts',
       '--no-package-lock',
       '--no-save',
+      '--include=optional',
       ...optionalSpecs,
       '--registry',
       registry,

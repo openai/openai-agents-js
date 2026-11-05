@@ -71,6 +71,7 @@ for (const esm of [false, true]) {
     '/migration',
     '/experimental/deferred',
     '/experimental/mcp-tasks',
+    '/a2a',
   ]) {
     const facade = esm
       ? await import(`@openai/agents${suffix}`)

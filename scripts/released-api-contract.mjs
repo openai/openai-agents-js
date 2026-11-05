@@ -278,12 +278,12 @@ async function promote(contract, version, contractPath) {
         );
       }
       // materializePublished omits optional dependencies as well as peers.
-      // Check MCP Tasks after the following install restores those dependencies.
+      // Check A2A and MCP Tasks after the following install restores those dependencies.
       const withoutOptionals = (name, subpath) =>
         isSafeWithoutOptionalPeers(name, subpath) &&
         !(
           ['@openai/agents', '@openai/agents-codex'].includes(name) &&
-          subpath === './experimental/mcp-tasks'
+          ['./a2a', './experimental/mcp-tasks'].includes(subpath)
         );
       errors.push(
         ...(await validateRuntime(packages, surfaces, withoutOptionals)),
