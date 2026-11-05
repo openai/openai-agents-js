@@ -1648,3 +1648,163 @@ async fn checkpoint_probe_cannot_hide_invalid_actual_instructions_with_a_prospec
         drop(_mutation);state.close().await.unwrap();engine.close().await.unwrap();
     }).await.expect("invalid source instruction evidence escaped passive validation");
 }
+
+
+#[test]
+fn raw_child_steering_and_retained_continuation_preserve_carrier() {
+    const CHILD: &str = "AGENTS_RAW_CHILD_CONTINUATION_TRACE_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "engine::settlement_tests::raw_child_steering_and_retained_continuation_preserve_carrier", "--nocapture"])
+            .env(CHILD, "1").status().unwrap();
+        assert!(status.success());
+        return;
+    }
+    // This real Core fixture installs a process-global tracing subscriber and
+    // constructs large turn futures. Keep both isolated from other unit cases.
+    std::thread::Builder::new()
+        .name("raw-child-carrier".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(raw_child_steering_and_retained_continuation_case());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn raw_child_steering_and_retained_continuation_case() {
+    use codex_otel::sdk_trace::FutureExt as _;
+    let telemetry_home = tempfile::tempdir().unwrap();
+    crate::telemetry::initialize(
+        r#"{"otel.trace_processors":true,"analytics.enabled":false}"#,
+        &json!({"codex_home":telemetry_home.path(),"cwd":telemetry_home.path()}).to_string(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        for flags in ["02", "03"] {
+            let provider = Provider::start().await;
+            let (_home, engine) = provider.engine().await;
+            let (mut startup, instructions) = engine.build_startup(serde_json::from_value(json!({"_managed_instructions":true})).unwrap()).await.unwrap();
+            startup.thread_extension_init.insert(crate::native_agents::Policy {
+                roles: Vec::new(), max_depth: 1, inherited_instructions: None,
+                allowed: Default::default(),
+            });
+            let parent = engine.start_prepared(startup, instructions, None).await.unwrap();
+            let parent_state = parent.current().unwrap();
+            let carrier = codex_protocol::protocol::W3cTraceContext {
+                traceparent: Some(format!("00-11111111111111111111111111111111-2222222222222222-{flags}")),
+                tracestate: Some("tenant=raw-child".into()),
+            };
+            let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent_state.id, depth: 1,
+                agent_path: Some(codex_protocol::AgentPath::root().join("raw_child").unwrap()),
+                agent_nickname: None, agent_role: None,
+            });
+            let options = serde_json::from_value(json!({"session_source":source,"thread_source":ThreadSource::Subagent})).unwrap();
+            let (startup, _) = engine.build_startup(options).await.unwrap();
+            let child = engine.manager.start_thread(startup)
+                .with_context(codex_otel::context_from_w3c_trace_context(&carrier).unwrap())
+                .await.unwrap();
+            let child_id = child.thread_id;
+            {
+                let mut events = parent_state.events.lock().await;
+                parent_state.discover_children(&mut events).await.unwrap();
+            }
+            let (instance, _, _) = crate::subagents::instance(&parent_state, child_id).await.unwrap().unwrap();
+            let store = engine.store.as_any().downcast_ref::<crate::storage::MemoryThreadStore>().unwrap();
+            let traces = Arc::new(std::sync::Mutex::new(Vec::new()));
+            *store.flush_traces.lock().unwrap() = Some(traces.clone());
+            let hold = Arc::new(CompletionHold {
+                parent: child_id, entered: Semaphore::new(0), release: Semaphore::new(0),
+            });
+            *store.completion_flush_hold.lock().unwrap() = Some(hold.clone());
+            let mut initial = request("initial child input");
+            initial.trace = child.thread.thread_extension_data()
+                .get::<crate::native_interception::Control>().unwrap().creation_trace().unwrap();
+            initial.start.final_output_json_schema = Some(json!({
+                "type":"object", "properties":{"answer":{"type":"string"}},
+                "required":["answer"], "additionalProperties":false,
+            }));
+            let seed = Arc::new(crate::turn_settlement::Seed::default());
+            let mut init = child.thread.config_snapshot().await.turn_extension_init;
+            init.insert(seed.clone());
+            let StartIfIdleSubmission::Started { turn_id } = child.thread.start_turn_if_idle(
+                codex_core_api::WithTurnExtensionData::new(initial, init)
+            ).await.unwrap() else { panic!("initial child was not admitted"); };
+            seed.confirm(&turn_id);
+            let original = loop {
+                if let Some((_, _, Some(turn))) = crate::subagents::instance(&parent_state, child_id).await.unwrap()
+                    && turn.turn_id == turn_id {
+                    break turn;
+                }
+                parent_state.next_session_event().await.unwrap();
+            };
+            hold.entered.acquire().await.unwrap().forget();
+            assert_eq!(provider.child_requests(child_id), 1);
+            let unrelated: Value = serde_json::from_str(&codex_otel::sdk_trace::start_trace_span(
+                r#"{"name":"unrelated","kind":"workflow","trace_id":"33333333333333333333333333333333","include_sensitive_data":true}"#
+            ).unwrap()).unwrap();
+            let handle = unrelated["handle"].as_str().unwrap();
+            let context = codex_otel::sdk_trace::context(handle).unwrap();
+            let steered = crate::subagents::submit(&parent_state, child_id, instance,
+                json!({"input":[{"type":"text","text":"RAW_RETAINED_AFTER_LAST_SAMPLE"}]}))
+                .with_context(context.clone()).await.unwrap();
+            assert!(Arc::ptr_eq(&original, &steered));
+            assert_eq!(provider.child_requests(child_id), 1);
+            hold.release.add_permits(1);
+            loop {
+                let event = parent_state.next_session_event().await.unwrap();
+                if event["subagent_id"] == child_id.to_string()
+                    && matches!(event["msg"]["type"].as_str(), Some("task_complete" | "turn_complete")) {
+                    break;
+                }
+            }
+            original.wait_with_usage().await.unwrap();
+            assert_eq!(child.thread.thread_extension_data().get::<Settlement>().unwrap().observe().receipt.unwrap().unsampled_steering(), Some(true));
+            let successor = crate::subagents::continue_retained(&parent_state, &original)
+                .with_context(context).await.unwrap().expect("real retained child successor");
+            assert_ne!(successor.turn_id, original.turn_id);
+            loop {
+                let event = parent_state.next_session_event().await.unwrap();
+                if event["subagent_id"] == child_id.to_string()
+                    && event["msg"]["turn_id"] == successor.turn_id
+                    && matches!(event["msg"]["type"].as_str(), Some("task_complete" | "turn_complete")) {
+                    break;
+                }
+            }
+            successor.wait_with_usage().await.unwrap();
+            assert_eq!(provider.child_requests(child_id), 2);
+            {
+            let requests = provider.requests.lock().unwrap();
+            let requests: Vec<_> = requests.iter().filter(|request| {
+                let metadata: Value = serde_json::from_str(request["client_metadata"]["x-codex-turn-metadata"].as_str().unwrap()).unwrap();
+                metadata["thread_id"] == child_id.to_string()
+            }).collect();
+            assert!(!requests[0]["input"].to_string().contains("RAW_RETAINED_AFTER_LAST_SAMPLE"));
+            assert!(requests[1]["input"].to_string().contains("RAW_RETAINED_AFTER_LAST_SAMPLE"));
+            }
+            {
+            let observed = traces.lock().unwrap();
+            let observed: Vec<_> = observed.iter().filter(|(id, _)| *id == child_id).collect();
+            assert!(observed.len() >= 2);
+            let last = &observed.last().unwrap().1;
+            assert_eq!(&last.traceparent.as_deref().unwrap()[3..35], "11111111111111111111111111111111", "retained successor completion");
+            for (_, trace) in observed {
+                assert_eq!(&trace.traceparent.as_deref().unwrap()[3..35], "11111111111111111111111111111111");
+                assert!(trace.traceparent.as_deref().unwrap().ends_with(&format!("-{flags}")));
+                assert_eq!(trace.tracestate, carrier.tracestate);
+            }
+            }
+            codex_otel::sdk_trace::end_trace_span(handle, r#"{"status":"ok"}"#).unwrap();
+            codex_otel::sdk_trace::release_trace_span(handle);
+            parent_state.close().await.unwrap();
+            engine.close().await.unwrap();
+        }
+    }).await.expect("raw child retained continuation must settle");
+}

@@ -632,8 +632,12 @@ impl Control {
             Some(tracing) => codex_otel::sdk_trace::trace_carrier(tracing.token())
                 .map(Some)
                 .map_err(anyhow::Error::msg),
-            None => Ok(self.creation_trace.get().cloned().flatten()),
+            None => Ok(self.raw_creation_trace()),
         }
+    }
+
+    pub(crate) fn raw_creation_trace(&self) -> Option<codex_protocol::protocol::W3cTraceContext> {
+        self.creation_trace.get().cloned().flatten()
     }
 
     pub(crate) fn tracing_context(&self) -> codex_otel::sdk_trace::CapturedContext {

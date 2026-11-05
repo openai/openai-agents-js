@@ -74,6 +74,12 @@ pub struct MemoryThreadStore {
     pub(crate) completion_hold: std::sync::Mutex<Option<Arc<CompletionHold>>>,
     #[cfg(test)]
     pub(crate) next_flush_hold: std::sync::Mutex<Option<Arc<CompletionHold>>>,
+    #[cfg(test)]
+    pub(crate) completion_flush_hold: std::sync::Mutex<Option<Arc<CompletionHold>>>,
+    #[cfg(test)]
+    pub(crate) flush_traces: std::sync::Mutex<
+        Option<Arc<std::sync::Mutex<Vec<(ThreadId, codex_protocol::protocol::W3cTraceContext)>>>>,
+    >,
     inner: Arc<dyn ThreadStore>,
     archived: Mutex<HashMap<ThreadId, SystemTime>>,
     // The native in-memory store applies this policy but does not expose it.
@@ -90,6 +96,10 @@ impl Default for MemoryThreadStore {
             completion_hold: std::sync::Mutex::new(None),
             #[cfg(test)]
             next_flush_hold: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            completion_flush_hold: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            flush_traces: std::sync::Mutex::new(None),
             manual_writers: Mutex::default(),
             inner: Arc::new(InMemoryThreadStore::default()),
             archived: Mutex::new(HashMap::new()),
@@ -548,14 +558,31 @@ impl ThreadStore for MemoryThreadStore {
         #[cfg(test)]
         {
             return Box::pin(async move {
-                let hold = {
+                let completing = at_turn_completion_flush();
+                if completing
+                    && let Some(probe) = self.flush_traces.lock().unwrap().clone()
+                    && let Some(trace) = codex_otel::current_span_w3c_trace_context()
+                {
+                    probe.lock().unwrap().push((id, trace));
+                }
+                let completion = if completing {
+                    let mut next = self.completion_flush_hold.lock().unwrap();
+                    if next.as_ref().is_some_and(|hold| hold.parent == id) {
+                        next.take()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let hold = completion.or_else(|| {
                     let mut next = self.next_flush_hold.lock().unwrap();
                     if next.as_ref().is_some_and(|hold| hold.parent == id) {
                         next.take()
                     } else {
                         None
                     }
-                };
+                });
                 if let Some(hold) = hold {
                     hold.entered.add_permits(1);
                     hold.release.acquire().await.unwrap().forget();
@@ -756,6 +783,32 @@ impl ThreadStore for MemoryThreadStore {
             Ok(())
         })
     }
+}
+
+// Core's "turn" span exports as session_task.turn. Its completion flush runs
+// after session_task.run returns and before publishing the terminal.
+// Ignore startup and in-sample flushes in the after-last-sample test barrier.
+#[cfg(test)]
+fn at_turn_completion_flush() -> bool {
+    use tracing_subscriber::registry::LookupSpan;
+    tracing::Span::current()
+        .with_subscriber(|(id, dispatch)| {
+            let Some(registry) = dispatch.downcast_ref::<tracing_subscriber::Registry>() else {
+                return false;
+            };
+            let Some(span) = registry.span(id) else {
+                return false;
+            };
+            for span in span.scope() {
+                match span.metadata().name() {
+                    "session_task.run" => return false,
+                    "turn" => return true,
+                    _ => {}
+                }
+            }
+            false
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

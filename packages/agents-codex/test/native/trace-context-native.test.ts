@@ -104,25 +104,34 @@ it('exports isolated root and compaction parents, queued snapshots, exact callba
         expectParent(dispatch(receipt.turn), PARENT.slice(0, -2) + flags);
     }
     for (const flags of ['02', '03']) {
-      const owned = await run('owned-children-' + flags);
-      expect(owned.rootCallback.traceparent.slice(3, 35)).toBe(
-        PARENT.slice(3, 35),
-      );
-      expect(owned.rootCallback.traceparent.endsWith('-' + flags)).toBe(true);
-      expect(owned.rootCallback.tracestate).toBe(STATE);
-      expect(owned.callbacks).toHaveLength(2);
-      for (const callback of owned.callbacks) {
-        expect(callback.traceparent.slice(3, 35)).toBe(PARENT.slice(3, 35));
-        expect(callback.traceparent.endsWith('-' + flags)).toBe(true);
-        expect(callback.tracestate).toBe(STATE);
-      }
-      if (flags === '03') {
-        const root = dispatch(owned.rootTurn);
-        expectParent(root, PARENT);
-        for (const turn of owned.childTurns) {
-          const child = dispatch(turn);
-          expect(child.traceId).toBe(root.traceId);
-          expect(descendsFrom(child, root)).toBe(true);
+      for (const kind of ['owned-children-', 'owned-steering-']) {
+        const firstSpan = spans.length;
+        const owned = await run(kind + flags);
+        expect(owned.rootCallback.traceparent.slice(3, 35)).toBe(
+          PARENT.slice(3, 35),
+        );
+        expect(owned.rootCallback.traceparent.endsWith('-' + flags)).toBe(true);
+        expect(owned.rootCallback.tracestate).toBe(STATE);
+        expect(owned.callbacks).toHaveLength(2);
+        for (const callback of owned.callbacks) {
+          expect(callback.traceparent.slice(3, 35)).toBe(PARENT.slice(3, 35));
+          expect(callback.traceparent.endsWith('-' + flags)).toBe(true);
+          expect(callback.tracestate).toBe(STATE);
+        }
+        for (const span of spans
+          .slice(firstSpan)
+          .filter((span) => span.name.startsWith('op.dispatch.turn_input')))
+          expect(span.traceId).toBe(PARENT.slice(3, 35));
+        if (kind === 'owned-steering-')
+          expect(owned.sampledMarker).toEqual([false, false, true, true]);
+        if (flags === '03') {
+          const root = dispatch(owned.rootTurn);
+          expectParent(root, PARENT);
+          for (const turn of owned.childTurns) {
+            const child = dispatch(turn);
+            expect(child.traceId).toBe(root.traceId);
+            expect(descendsFrom(child, root)).toBe(true);
+          }
         }
       }
     }

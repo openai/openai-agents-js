@@ -201,9 +201,15 @@ async function storeReopen(path: string) {
   return { id, turns, callbacks };
 }
 
-async function ownedChildren(flags?: string) {
+async function ownedChildren(flags?: string, steering = false) {
+  const callbackTurns: string[] = [];
   const callbacks: ReturnType<TraceContext['toHeaders']>[] = [];
   let rootCallback: ReturnType<TraceContext['toHeaders']> | undefined;
+  const sampled = Promise.withResolvers<void>();
+  const releaseSample = Promise.withResolvers<void>();
+  const continued = Promise.withResolvers<void>();
+  const marker = 'RAW_CHILD_RETAINED_TRACE';
+  const sampledMarker: boolean[] = [];
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let workflow: Awaited<ReturnType<typeof telemetry.startTrace>> | undefined;
@@ -221,7 +227,7 @@ async function ownedChildren(flags?: string) {
   let rootId: string | undefined;
   let roots = 0;
   let children = 0;
-  const respond = (request: Record<string, unknown>) => {
+  const respond = async (request: Record<string, unknown>) => {
     const metadata = request.client_metadata as Record<string, string>;
     const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
     rootId ??= id;
@@ -237,7 +243,13 @@ async function ownedChildren(flags?: string) {
               ),
             ]
           : [final('root done')];
-    return ++children % 2 === 1
+    children++;
+    sampledMarker.push(JSON.stringify(request.input).includes(marker));
+    if (steering && children === 2) {
+      sampled.resolve();
+      await releaseSample.promise;
+    }
+    return children % 2 === 1
       ? [call('observe', {}, { callId: `child-observe-${children}` })]
       : [final('child done')];
   };
@@ -270,6 +282,8 @@ async function ownedChildren(flags?: string) {
           checkPolicy();
           assert(context.traceContext);
           callbacks.push(context.traceContext.toHeaders());
+          callbackTurns.push(context.turnId);
+          if (callbacks.length === 2) continued.resolve();
           if (callbacks.length === 1) {
             entered.resolve();
             await release.promise;
@@ -328,29 +342,58 @@ async function ownedChildren(flags?: string) {
         }),
       ]);
       release.resolve();
-      assert.equal((await child.turn.wait()).finalOutput, 'child done');
-      const later = await telemetry.withTrace(
-        { name: 'unrelated.caller', includeSensitiveData: true },
-        () => child.submit('call observe again'),
-      );
-      assert.equal((await later.wait()).finalOutput, 'child done');
+      let later;
+      if (steering) {
+        await sampled.promise;
+        const steered = await telemetry.withTrace(
+          { name: 'unrelated.steering', includeSensitiveData: true },
+          () => child.submit(marker),
+        );
+        assert.equal(steered, child.turn);
+        releaseSample.resolve();
+        assert.equal((await child.turn.wait()).finalOutput, 'child done');
+        await continued.promise;
+        for await (const event of session.events()) {
+          if (
+            event.type === 'turn_finished' &&
+            event.turnId === callbackTurns[1]
+          ) {
+            assert.equal(event.status, 'completed');
+            break;
+          }
+        }
+        assert.deepEqual(sampledMarker.slice(0, 3), [false, false, true]);
+      } else {
+        assert.equal((await child.turn.wait()).finalOutput, 'child done');
+        later = await telemetry.withTrace(
+          { name: 'unrelated.caller', includeSensitiveData: true },
+          () => child.submit('call observe again'),
+        );
+      }
+      if (later) assert.equal((await later.wait()).finalOutput, 'child done');
+      if (steering) assert.deepEqual(sampledMarker, [false, false, true, true]);
       assert.equal(callbacks.length, 2);
       server.assertExhausted();
       return {
         flags,
+        steering,
+        sampledMarker,
         traceId,
         rootCallback,
         callbacks,
+        callbackTurns,
         rootTurn: root.turnId,
-        childTurns: [child.turn.turnId, later.turnId],
+        childTurns: callbackTurns,
         policyChecks,
       };
     } finally {
       release.resolve();
+      releaseSample.resolve();
       await session.close();
     }
   } finally {
     release.resolve();
+    releaseSample.resolve();
     await executor.close();
   }
 }
@@ -538,19 +581,21 @@ async function main() {
       ? await definedFlags(mode.slice(6))
       : mode === 'store-reopen'
         ? await storeReopen(path!)
-        : mode?.startsWith('owned-children-')
-          ? await ownedChildren(
-              mode === 'owned-children-scoped'
-                ? undefined
-                : mode.slice('owned-children-'.length),
-            )
-          : mode === 'graph'
-            ? await graph()
-            : mode === 'compact'
-              ? await compact()
-              : mode === 'review'
-                ? await review()
-                : await manual(mode!, path!);
+        : mode?.startsWith('owned-steering-')
+          ? await ownedChildren(mode.slice('owned-steering-'.length), true)
+          : mode?.startsWith('owned-children-')
+            ? await ownedChildren(
+                mode === 'owned-children-scoped'
+                  ? undefined
+                  : mode.slice('owned-children-'.length),
+              )
+            : mode === 'graph'
+              ? await graph()
+              : mode === 'compact'
+                ? await compact()
+                : mode === 'review'
+                  ? await review()
+                  : await manual(mode!, path!);
     console.log(JSON.stringify(result));
   } finally {
     await telemetry.shutdown();
