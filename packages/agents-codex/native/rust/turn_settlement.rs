@@ -13,6 +13,7 @@ use codex_extension_api::{
     ThreadLifecycleContributor, ThreadStopInput, TurnAbortInput, TurnErrorInput,
     TurnLifecycleContributor, TurnSamplingStop, TurnStartInput, TurnStopInput,
 };
+use codex_otel::sdk_trace::FutureExt as _;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::{EventMsg, Op};
 use codex_protocol::turn_input::{
@@ -328,7 +329,9 @@ impl Settlement {
         if let Some(receipt) = &receipt {
             receipt.reject_model();
         }
-        crate::ops::interrupt(thread).await?;
+        let context =
+            crate::lease_context(receipt.as_ref().and_then(|turn| turn.tracing.as_deref()))?;
+        crate::ops::interrupt(thread).with_context(context).await?;
         if let Some(receipt) = receipt {
             self.finish_interrupted(thread, &receipt).await?;
         }
@@ -348,6 +351,7 @@ impl Settlement {
                 turn_id: receipt.id.clone(),
                 reply,
             })
+            .with_context(crate::lease_context(receipt.tracing.as_deref())?)
             .await?;
         anyhow::ensure!(
             !acknowledged.await?,
@@ -436,6 +440,67 @@ impl Settlement {
                 !current.retired
                     && turn.accepted.load(Ordering::Acquire)
                     && turn.delivered.load(Ordering::Acquire)
+            })
+            .cloned()
+    }
+
+    /// Child submissions hold the parent's mutation lock throughout this wait.
+    /// Native completion and its idle receipt do not need that SDK lock.
+    pub(crate) async fn start_child(
+        &self,
+        state: &crate::engine::ThreadState,
+        thread: &CodexThread,
+        request: TurnInputRequest,
+        mut init: ExtensionDataInit,
+        revalidate: impl Fn() -> anyhow::Result<()>,
+    ) -> anyhow::Result<StartIfIdleSubmission> {
+        let mut changed = self.changed.subscribe();
+        let expected = self.completed_child();
+        let seed = Arc::new(Seed::default());
+        init.insert(seed.clone());
+        let deadline = Instant::now() + SETTLEMENT_GRACE;
+        loop {
+            let result = thread
+                .start_turn_if_idle(WithTurnExtensionData::new(request.clone(), init.clone()))
+                .await?;
+            if let StartIfIdleSubmission::Started { turn_id } = &result {
+                seed.confirm(turn_id);
+            }
+            if result
+                != (StartIfIdleSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::NotIdle,
+                })
+            {
+                return Ok(result);
+            }
+            let Some(expected) = &expected else {
+                return Ok(result);
+            };
+            if !self.is_current(expected) {
+                return Ok(result);
+            }
+            #[cfg(test)]
+            self.waiting.add_permits(1);
+            if !matches!(timeout_at(deadline, changed.changed()).await, Ok(Ok(()))) {
+                return Ok(result);
+            }
+            if Instant::now() >= deadline
+                || !self.is_current(expected)
+                || !crate::graph_stop::continuation_allowed(state)
+            {
+                return Ok(result);
+            }
+            revalidate()?;
+        }
+    }
+
+    pub(crate) fn completed_child(&self) -> Option<Arc<Turn>> {
+        let current = self.current.lock().expect("turn settlement poisoned");
+        current
+            .turn
+            .as_ref()
+            .filter(|turn| {
+                !current.retired && turn.terminal() && turn.delivered.load(Ordering::Acquire)
             })
             .cloned()
     }

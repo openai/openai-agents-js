@@ -907,12 +907,12 @@ it('keeps child tracing policy for explicit starts and active steering', async (
   const telemetry = await import('../../src/runtime/telemetry');
   await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
   try {
-    for (const { disabled, programmaticToolCalling } of [
-      { disabled: false, programmaticToolCalling: false },
-      { disabled: true, programmaticToolCalling: false },
-      { disabled: false, programmaticToolCalling: true },
-      { disabled: true, programmaticToolCalling: true },
-    ]) {
+    const modes = [false, true].flatMap((disabled) => [
+      { disabled, programmaticToolCalling: false, approve: true },
+      { disabled, programmaticToolCalling: true, approve: true },
+      { disabled, programmaticToolCalling: false, approve: false },
+    ]);
+    for (const { disabled, programmaticToolCalling, approve } of modes) {
       let rootId: string | undefined;
       let roots = 0;
       let childModels = 0;
@@ -972,7 +972,9 @@ it('keeps child tracing policy for explicit starts and active steering', async (
               ]
             : [message('explicit child done')];
       };
-      const model = new ModelServer(Array.from({ length: 5 }, () => respond));
+      const model = new ModelServer(
+        Array.from({ length: approve ? 5 : 4 }, () => respond),
+      );
       const executor = await startPublicExecutor();
       try {
         await using provider = await providerFor(model);
@@ -1012,7 +1014,7 @@ it('keeps child tracing policy for explicit starts and active steering', async (
                 programmaticToolCalling ? 'code' : 'direct',
               );
               approvals++;
-              return true;
+              return approve;
             },
           }),
         });
@@ -1048,11 +1050,20 @@ it('keeps child tracing policy for explicit starts and active steering', async (
               .submit('steer active child')
               .finally(release.resolve);
             expect(steered).toBe(second);
-            expect((await finished).finalOutput).toBe('explicit child done');
+            if (approve) {
+              expect((await finished).finalOutput).toBe('explicit child done');
+            } else {
+              await expect(finished).rejects.toThrow(NativeError);
+            }
           },
         );
         expect(approvals).toBe(1);
-        expect(childModels).toBe(3);
+        expect(childModels).toBe(approve ? 3 : 2);
+        if (!approve) {
+          expect(
+            executor.requests.some((rpc) => rpc.method === 'process/start'),
+          ).toBe(false);
+        }
         expect(steps).toBeGreaterThanOrEqual(3);
         model.assertExhausted();
       } finally {

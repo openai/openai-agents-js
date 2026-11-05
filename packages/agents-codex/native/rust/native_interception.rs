@@ -3351,7 +3351,12 @@ impl DirectRequest {
             // web/image, missing ids and malformed search are not client calls.
             _ => return Ok((item, false)),
         };
-        let tracing = self.control.tracing_context().context;
+        // Model output can arrive on another task. Keep the turn that issued
+        // the request, including an expired or untraced owner's empty context.
+        let tracing = match &self.owner.settlement {
+            Some(receipt) => receipt.upgrade().and_then(|turn| turn.tracing.clone()),
+            None => self.control.tracing_context().context,
+        };
         let request = Request {
             tracing_context: tracing.as_ref().map(|context| context.token()),
             phase: "before",
