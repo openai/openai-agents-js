@@ -92,6 +92,12 @@ Run `pnpm test:repo-skills` to check executable repository skill helpers indepen
 
 The runner isolates temporary files and Git configuration, passes only required environment variables to children, and limits Git fixture transports to local files. The changeset shell's prompt-generation check and all four milestone cases are excluded. The runner never invokes `run-fixtures.sh` or milestone assignment. `.github/workflows/repo-skills.yml` runs this command when its owning scripts, skills, or dependency manifests change.
 
+### Pinning the alpha native runtime
+
+CI for `feat/codex-harness` builds and tests the current SDK on Linux, macOS and Windows. For SDK-only changes, it downloads the native bundle in `.github/native-bundle.json` and verifies its SHA-256. A changed native input, a missing or expired bundle, or a pull request that edits the pin triggers a fresh native build.
+
+To update the pin, choose a successful run that built all three native bundles from a source revision you reviewed. Run `node scripts/pin-native-bundle.mjs RUN_ID` from the repository root and commit the generated manifest. The artifacts expire after 90 days. To renew a pin for unchanged native code, remove the manifest on a branch and use its fresh PR build to generate the replacement.
+
 ### Code style
 
 - Maintain existing TypeScript style.
