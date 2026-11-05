@@ -2,7 +2,7 @@
 
 Use `@openai/agents/testing` in Node to run a native Agent against scripted Responses events. The helper starts one loopback HTTP endpoint and supplies an ordinary `NativeProvider`. The native engine still executes the Agent loop and declared functions.
 
-Install Zod 4 in your application and save this example as `scripted-test.mts`.
+Use Node.js 24 with matching [SDK packages and native runtime](examples/guides/installation.md). The native engine still needs its addon and packaged helpers, even without model credentials. Install Zod 4 in your application and save the following example as `scripted-test.mts`.
 
 ```ts
 import assert from 'node:assert/strict';
@@ -45,8 +45,6 @@ Run `npx tsx scripted-test.mts` from your application directory. The script exit
 
 The script prescribes both the tool call and final answer. Assert the callback's application effect and submitted tool output, as above. These checks exercise scripted native and application behavior. Use separate live-model evaluations for tool choice and answer quality.
 
-Native execution still requires the matching addon and packaged runtime helpers, even though this example needs no model credentials.
-
 ## Define script steps
 
 Each complete JSON-object POST to `/v1/responses` consumes the next script step. An item array emits its items in order. An empty array is valid. `httpError(400, { error: { message: 'synthetic failure' } })` serves a terminal HTTP error through the native provider. Retryable statuses follow the native retry policy and may consume more steps.
@@ -77,7 +75,14 @@ Keep direct or bypassed loopback proxy routing stable for the whole scope, inclu
 
 ## Use classic test doubles separately
 
-Native helpers describe HTTP Responses items (`call_id`) and require a native Agent. Classic model doubles use `@openai/agents/classic/testing` when available, with a separate normalized Model interface and `callId` values.
+Use helpers for the API your application runs:
+
+| API | Helper contract |
+| --- | --- |
+| Native `@openai/agents/testing` | HTTP Responses items using `call_id`; requires a native Agent and runtime. |
+| Classic `@openai/agents/classic/testing`, when available | A normalized Model interface using `callId`. |
+
+A classic model double does not replace the native HTTP fixture.
 
 That classic testing entrypoint also exports `scriptedSandboxSession`. Retained Realtime tests use `ScriptedRealtimeTransport` from `@openai/agents/classic/realtime/testing`. Inspect recorded calls, use the applicable `assertComplete()` check, and close owned resources. Realtime also provides `assertClosed()`. Classic doubles do not use this native helper's automatic scope-exhaustion check.
 
@@ -85,4 +90,4 @@ That classic testing entrypoint also exports `scriptedSandboxSession`. Retained 
 
 The [configurable evaluation runner](examples/evaluation/README.md) adds repeated scripted or explicitly selected live trials, recorded configurations, safe failure artifacts, and baseline comparisons. Run it from a source checkout with its default JSON inputs. Scripted mode checks the evaluation runner. Live mode requires model credentials and measures model behavior.
 
-The [small catalog evaluation](examples/evaluate-catalog.ts) checks actual ordered tool calls as well as exact answers and completion. It writes a synthetic JSON artifact and can compare one compatible baseline. The [native telemetry walkthrough](examples/native-telemetry.ts) uses a bounded local trace receiver in a fresh process. See the [example commands and limits](examples/README.md#native-telemetry-and-a-small-evaluation).
+The [small catalog evaluation](examples/evaluate-catalog.ts) checks actual ordered tool calls as well as exact answers and completion. It writes a synthetic JSON artifact and can compare one compatible baseline. The [native telemetry walkthrough](examples/native-telemetry.ts) uses a bounded local trace receiver in a fresh process. See the [two-case evaluation commands](examples/evaluation/README.md#compare-two-fixed-catalog-cases) and [telemetry walkthrough](examples/observability/README.md#record-four-local-outcomes).

@@ -2,13 +2,17 @@
 
 [mcp-reports.ts](mcp-reports.ts) discovers a selected `report` tool through the classic SDK's `MCPServerStreamableHttp` client, then uses it in a native Session through `selectMcpTools`. The application owns the connection, report resolver, stored results and reader identity. This recipe adds no SDK storage service.
 
-Use Node.js 24 and complete the [native source setup](guides/building.md), including built workspace packages. Run from the repository root:
+## Configure and run
+
+Use Node.js 24 and complete the [native source setup](guides/building.md), including built workspace packages. Set `OPENAI_API_KEY` in the server environment before running this live-model command from the repository root:
+
+The example uses `NativeProvider` and `gpt-5.5`; `OPENAI_BASE_URL` can select a compatible Responses endpoint. The MCP endpoint must advertise a tool named `report` that accepts an empty object and returns a text block plus `structuredContent: { "reportId": "example" }`. The demo's application map resolves that ID to a report. Replace the map lookup with an awaited call to your application's report service. Do not interpret peer results as arbitrary URLs or filesystem paths.
 
 ```sh
 MCP_URL=http://localhost:8000/mcp pnpm exec tsx packages/agents-codex/examples/mcp-reports.ts
 ```
 
-This command makes live model calls. Set `OPENAI_API_KEY` in the server environment. The example uses `NativeProvider` and `gpt-5.5`; `OPENAI_BASE_URL` can select a compatible Responses endpoint. The MCP endpoint must advertise a tool named `report` that accepts an empty object and returns a text block plus `structuredContent: { "reportId": "example" }`. The demo's application map resolves that ID to a report. Replace the map lookup with an awaited call to your application's report service. Do not interpret peer results as arbitrary URLs or filesystem paths.
+## Follow the result through the application
 
 The example follows these steps:
 
@@ -26,9 +30,15 @@ For successful results, the example limits the JSON representation of text block
 
 The example accepts up to eight original content blocks. It stores at most four reports, 64 KiB per report and 128 KiB in total, measured as serialized JSON. When storage is full, the example rejects the new result. It does not evict a reference that the model or application may still hold. These are per-connection bounds, not a network response limit or a session-wide token budget.
 
+### Restrict access and lifetime
+
 An application-created symbol represents the authenticated reader. Keep it outside model arguments. Both enumeration and retrieval require that same identity. UUIDs alone do not grant access. References are process-local and expire when this server instance closes. They cannot be restored from saved conversation state. Use one instance per Session.
 
-Non-text blocks pass through unchanged. The selected SDK route keeps its existing handling. Images become image input, and other blocks become JSON. This recipe does not fetch resource URLs, decode media or qualify audio and video processing. Non-text blocks are outside that 4096-byte bound, including audio or resource blocks represented as text by the selected SDK route. The serialized blocks count toward the storage limit when the example stores an entire report. A large media-only result can pass through without being stored. Use a separate media policy when adapting this example to untrusted or large media results.
+### Apply a separate media policy
+
+The helper passes non-text blocks to the selected SDK route. Images become image input, and other blocks become JSON. The helper neither fetches resource URLs nor decodes media.
+
+The 4096-byte text limit excludes non-text blocks, including audio or resource blocks the SDK later represents as text. When the example stores a full report, the serialized blocks count toward its storage limit. A media-only result can pass through without being stored. Apply a separate media policy for large or untrusted results.
 
 ## Failure and cancellation
 

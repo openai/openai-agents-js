@@ -1,12 +1,19 @@
 # Agents and sessions
 
-Use `Agent.run()` for one task or open a Session for follow-up turns. This guide covers providers, streaming, cancellation, and telemetry.
+Use `Agent.run()` when the SDK should own a task's Session. Open a Session yourself when your application needs follow-up turns or direct control over observation and cleanup.
 
 ## Open and run a session
 
 `Agent` declares instructions, an optional model, tools, model settings, and an optional `outputType`. `name` is optional. Pass application `context`, a remote `environment`, or saved `state` when opening a session.
 
-`agent.run(input)` owns a session and closes it before returning a `Completed` result. `Runner.run(agent, input)` provides the same operation. Set `returnState: true` to capture a successful result's state before closing.
+Choose the lifetime before submitting work:
+
+| API | Who closes the Session | Result |
+| --- | --- | --- |
+| `agent.run(input)` or `Runner.run(agent, input)` | SDK, before returning | `Completed`; set `returnState: true` to capture successful state before close. |
+| `agent.session(options)` | Application, in `finally` or an async disposal scope | A Session that can accept follow-up submissions. |
+
+The following example keeps one conversation open for two turns.
 
 ```ts
 import { Agent } from '@openai/agents';
@@ -26,73 +33,17 @@ try {
 }
 ```
 
-`submit()` returns a `Turn`. Submitting again while it is active steers the same turn and returns it. Use `session.submit(input, { ifBusy: 'reject' })` to reject a busy submission or `session.enqueue()` to queue independent work.
+`await session.submit()` returns a Turn handle. Await `turn.wait()` for its completed result. Choose what a submission should do while another turn is active:
 
-`turn.wait()` follows that turn. `session.wait()` follows the Session's current continuation.
+- Ordinary `session.submit(input)` steers the active turn and returns it.
+- `session.submit(input, { ifBusy: 'reject' })` rejects a busy submission.
+- `session.enqueue()` queues independent work. See [queued turns](output.md#queue-independent-turns).
+
+Use `turn.wait()` to follow the captured turn. `session.wait()` follows the Session's current continuation.
 
 ### Update a session
 
 An idle Session can update one category at a time: instructions, model and settings, or tools. Tool updates can remove, restore, or replace opening declarations within their original names. A Session opened with `NativeAgents` keeps its instructions and model settings fixed from the start.
-
-### Provider connection and credentials
-
-`NativeProvider` uses Codex's built-in Responses client. Its options select the endpoint, key and WebSocket policy. It does not wrap an OpenAI JavaScript client. A custom endpoint must support Responses. Chat Completions compatibility alone is insufficient for this native route. The provider does not start a JavaScript model loop.
-
-`baseUrl` defaults to `https://api.openai.com/v1`. To use `OPENAI_BASE_URL`, pass `baseUrl: process.env.OPENAI_BASE_URL` explicitly. Custom endpoints default to HTTP. When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
-
-Close the provider's sessions before you call `provider.close()`. A closed provider cannot open new sessions.
-
-These rules describe `NativeProvider`. The [classic API and experimental Model migration route](../../../agents/CLASSIC.md) retain their separate client and custom-Model contracts.
-
-### Per-session configuration
-
-Pass `provider`, `model` or `modelSettings` to `agent.session(...)` or `agent.run(...)` for one conversation. An opening provider or model overrides the Agent default. Defined model-setting keys override the corresponding Agent settings; omitted or `undefined` keys keep them. An empty settings object keeps all defaults. Set `serviceTier: null` to clear an inherited tier. Model settings select behavior and grant no tools or workspace access.
-
-Each opening captures its effective configuration. Overrides do not change the Agent or another Session. The Session borrows a supplied provider, including one supplied through opening options. Closing a Session releases its own resources and leaves the provider available for other Sessions. The Agent keeps its default provider object across openings.
-
-Portable `state`, including state from `session.fork()`, retains the saved model and accepted settings. Restore through the same Agent even if its model default differs or is absent. Leave `model` and `modelSettings` undefined on restore. Even `modelSettings: {}` rejects.
-
-Pass a provider override for current credentials. After restore, use `session.update(...)` while idle to change settings where supported. `NativeAgents` sessions keep their model settings fixed. Checkpoints store neither provider credentials nor tool grants.
-
-### Connection retries and errors
-
-Connection recovery uses the provider's configured retry limits for requests and streams, with the existing backoff. The SDK disables unbounded connection retries. Startup fails if a managed requirement mandates them. These limits do not set a total operation timeout or cap server-requested delays.
-
-When a native request fails, `NativeError.retryable` reports whether Core classifies the error as eligible for retry before applying attempt limits. A terminal error can still have `retryable: true` after the request exhausts its retry budget. This field does not mean that attempts remain or that replaying a whole run is safe. An error without native retry information reports `null`.
-
-`NativeError.retryAfterMs` reports the server-advised delay remaining when native code reports the error. `null` means no observed advice; `0` includes expired advice. The value records the delay at that moment and does not count down. It does not change retry limits or authorize replaying tool effects. Use `turn.cancel()` to stop an active turn and join its cleanup, including while it waits to retry.
-
-`NativeError.effects` describes the failed operation.
-
-- `unknown` means the SDK cannot establish its effects. Transport failures and invalid or mismatched receipts report `unknown`, even for `TurnNotSubmitted`.
-- `notStarted` means a validated native `not_submitted` receipt rejected the operation before admission.
-- `recorded` is reserved for confirmed effects. The SDK does not currently produce this value.
-
-Neither this field nor retry eligibility authorizes replay of earlier work.
-
-For admitted WebSocket requests, the carrier checks the final JSON after schema restoration and continuation encoding. It rejects requests above 64 MiB of UTF-8 before sending them to the provider. Requests at the exact limit are allowed. Model context limits are separate. A send or disconnect failure has an unknown outcome and is not replayed. Oversized loopback messages rejected before admission can still report a generic connection failure.
-
-### Context compaction
-
-`await session.compact()` asks the model to summarize its context. For an idle, memory-backed root, `await session.compact({ summary: 'The user prefers vegetarian meals.' })` instead installs application-supplied model context without a model request or a new Turn. The SDK preserves canonical history, Session identity and current bindings. The summary remains context after saving and restoring state. Retained system/developer context is selected internally.
-
-A supplied summary must contain text. If you abort via `signal`, the operation waits for cleanup. An abort leaves an already published summary in place. Close also waits for publication. Incomplete cleanup retires the Session. Retry close.
-
-The SDK rejects supplied summaries for local profiles, goal-backed engines, active work, child or background work, pending effects, and used or previously compacted programmatic code. A declared code environment can accept its first supplied summary if the SDK can prove it is unused. Use ordinary `compact()` for model-driven compaction of supported code state.
-
-### Validate agent defaults
-
-`await agent.validate()` checks the Agent's default tool declarations and output schema without opening a Session, reading credentials, or connecting to services. It returns `undefined` on success and throws if a declaration is invalid. The packaged native addon must be available.
-
-Context, environment, opening overrides, and native model requirements still need checks when a Session opens. Validation checks the defaults at the time of the call. Changes to those defaults need another check. It does not verify credentials or model availability.
-
-### Override opening tools
-
-Open a Session with `agent.session({ tools })` to replace its initial tool declarations, as with Python's `agent.session(tools=...)`. Omit `tools` to inherit `agent.tools`. Pass `[]` to open without those declarations. The SDK captures each Session's opening configuration before its first await. Concurrent Sessions can use the same tool names with different callbacks or MCP connections. Application hooks keep the original Agent, and the SDK does not change `agent.tools`.
-
-Opening overrides do not remove a separately supplied Environment or programmatic execution capabilities. MCP declarations using the default activation connect during opening. To override tools, use a Session. `agent.run()` does not accept `tools`. Restore uses the current opening declarations and bindings after the existing checkpoint matching checks.
-
-See [the tenant tools example](../opening-tools.ts) for two Sessions with separate callbacks.
 
 ## Observations and interruption
 
@@ -172,35 +123,19 @@ Ordinary LocalStorage profiles retain the last accepted checklist across close a
 
 Native history and the checklist sidecar share the profile writer. Close retains both; native thread deletion removes the sidecar. Persistence failures remain visible to reads and close. The two files do not form a single power-loss transaction. Checklist reads add no cancellation or child-recovery guarantee.
 
+## Configure a session
+
+- <a name="validate-agent-defaults"></a>[Validate the default tools and output schema](session-configuration.md#validate-agent-defaults).
+- <a name="provider-connection-and-credentials"></a>[Choose an endpoint and credentials](session-configuration.md#provider-connection-and-credentials).
+- <a name="per-session-configuration"></a>[Override the model and settings for one Session](session-configuration.md#per-session-configuration).
+- <a name="override-opening-tools"></a>[Choose the tools for one Session](session-configuration.md#override-opening-tools).
+- <a name="connection-retries-and-errors"></a>[Interpret retries and failed requests](session-configuration.md#connection-retries-and-errors).
+- <a name="context-compaction"></a>[Compact model context](session-configuration.md#context-compaction).
+
 ## Native telemetry
 
-Await `telemetry.configure()` before opening the first session. Omitted or null signals disable their exporters, including native metrics. Defaults disable prompt text, final response text, and tool-result output. Configure owns one native process lifetime; call it once, close all sessions, then await `telemetry.shutdown()`.
+[Configure native telemetry](telemetry.md) to export traces, logs, or metrics.
 
-```ts
-import { Agent, telemetry } from '@openai/agents';
-
-await telemetry.configure({
-  logs: {
-    kind: 'otlp-http',
-    endpoint: 'http://127.0.0.1:4318/v1/logs',
-    protocol: 'json',
-  },
-  environment: 'dev',
-});
-try {
-  const agent = new Agent({ instructions: 'Answer clearly.' });
-  await agent.run('Hello.');
-} finally {
-  await telemetry.shutdown();
-}
-```
-
-Select `traces`, `logs`, and `metrics` independently. Each exporter accepts an endpoint and string headers. HTTP supports `binary` (the default) and `json`; gRPC uses `kind: 'otlp-grpc'`. `environment` labels exporter resources. `spanAttributes` adds string attributes to exported spans. Native transport libraries can also read OpenTelemetry environment settings.
-
-TLS options accept certificate file paths in `caCertificate`, `clientCertificate`, and `clientPrivateKey`. Relative paths resolve at configure time. HTTP and gRPC accept client certificates; supply the certificate and private key together. Server certificate verification remains enabled, and native network restrictions still apply. Client authentication for telemetry does not change a session's network permissions. Malformed or incomplete identities fail during native initialization. Start a new process if initialization failed after native claimed its tracing subscriber.
-
-`logUserPrompt` and `logAgentResponses` opt in to named native records. Response logging covers live final assistant responses with the `final_answer` phase, capped at 64 KiB. `toolResultMaxBytes` bounds the UTF-8 output prefix; native may append a truncation notice. Tool-result records can still include full tool arguments even when that limit is zero. These controls do not sanitize all telemetry. Saved session state omits configure-time destinations, headers, and TLS paths.
-
-Attempting to construct an engine prevents later configuration, even if construction fails. A failure after native claims its Rust subscriber requires a new process. Shutdown requests a flush and retires the owner. Repeated shutdown is harmless. Shutdown before successful configure rejects. This API does not close sessions, classic trace processors, or application-owned JavaScript providers. Core does not report every individual exporter error through shutdown. A flush timeout can leave native background work running.
-
-For workers, configure in a bootstrap isolate and keep it loaded through awaited shutdown. Load the same addon image in workers, close their sessions, and let workers exit gracefully before bootstrap shuts down. Tests cover shared admission, inherited payload controls, and continued export after a worker exits. Worker-first loading, forced termination, shutdown from another isolate, and addon unloading or reloading remain unqualified.
+- <a name="configure-transport-and-credentials"></a>[Set exporter transport and credentials](telemetry.md#configure-transport-and-credentials).
+- <a name="choose-recorded-payloads"></a>[Choose which payloads to record](telemetry.md#choose-recorded-payloads).
+- <a name="handle-shutdown-and-worker-lifetimes"></a>[Flush telemetry and close workers](telemetry.md#handle-shutdown-and-worker-lifetimes).

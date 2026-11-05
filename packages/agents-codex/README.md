@@ -1,12 +1,12 @@
 # Codex runtime for the Agents SDK
 
-`@openai/agents` runs agents through an embedded Codex runtime. Give an Agent instructions and tools, then run it to get an answer. Use a Session when you need follow-up messages, streamed output, or a saved conversation.
+<a name="native-agents-sdk-for-typescript"></a>`@openai/agents` runs agents through an embedded Codex runtime. Give an Agent instructions and tools, then run it to get an answer. Use a Session when you need follow-up messages, streamed output, or a saved conversation.
 
-`@openai/agents-codex` owns the native TypeScript runtime, addon and helper assets, migration adapters, scripted testing helpers, and experimental native integrations. The public `@openai/agents` package delegates its native entries to this package. Applications use `@openai/agents` and its supported subpaths.
+Applications import `@openai/agents` and its supported subpaths. Those imports load `@openai/agents-codex`, which contains the runtime, native helpers, migration adapters, and examples in this directory.
 
 ## Install
 
-[Install the native SDK](examples/guides/installation.md) to run the release starter or add the SDK to an existing application. See [Build from source](examples/guides/building.md) if you work on the SDK itself.
+[Install the native SDK](examples/guides/installation.md) to run the release starter or add the SDK to an existing application. Use the [source build](examples/guides/building.md) for current branch features such as the [A2A adapter](A2A.md) and [supervised-worker controls](examples/supervised-worker/README.md).
 
 ## Run an agent
 
@@ -41,8 +41,9 @@ Try the [greeting](examples/basic.ts) and [typed-context](examples/typed-context
 ## SDK guides
 
 - [Native API guide](NATIVE.md). Find the reference for sessions, output, tools, and native interactions.
-- <a name="sessions"></a>[Sessions](examples/guides/sessions.md). Open a session, choose its tools, and run multiple turns.
-- [Session history and state](examples/guides/state.md). Save a checkpoint or reopen a local profile.
+- <a name="sessions"></a>[Sessions](examples/guides/sessions.md). Open a conversation and run multiple turns. Use [session configuration](examples/guides/session-configuration.md) to choose a provider, model, and tools.
+- [Session history and state](examples/guides/state.md). Save a checkpoint, resume pending work, or choose a persistent store.
+- [Native telemetry](examples/guides/telemetry.md). Trace one workflow or send native signals to a collector.
 - [Examples](examples/README.md). Find runnable workflows and their setup requirements.
 - [Testing](TESTING.md). Run scripted responses without model credentials.
-- [Classic API](../agents/CLASSIC.md). Use the classic Agent and Runner APIs.
+- [Classic API](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md). Use the classic Agent and Runner APIs.

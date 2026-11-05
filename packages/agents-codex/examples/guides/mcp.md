@@ -1,6 +1,14 @@
 # MCP tools
 
-Declare a native HTTP or stdio connection, or use `selectMcpTools` to borrow an application-owned SDK MCP server.
+Choose an MCP connection according to who owns the client and where the server runs.
+
+| Route | Connection owner | Use it for |
+| --- | --- | --- |
+| `HttpMCP` | Native runtime | Selected tools at an HTTP service endpoint. |
+| `StdioMCP` | Native runtime | A trusted process on the controller host or selected executor. |
+| `selectMcpTools` | Application | An already connected SDK MCP client, including managed tools for a local profile. |
+
+Invocation approval does not necessarily precede connection or discovery. Choose the endpoint or executable in trusted application configuration.
 
 ## MCP connections
 
@@ -8,7 +16,15 @@ Add `StdioMCP` or `HttpMCP` declarations to `tools`, naming the MCP tools the se
 
 ## Connect HTTP tools on demand
 
-`HttpMCP` defaults to `activation: 'session'`, which connects and lists tools during opening. Set `activation: 'operation'` for a fresh ordinary root/direct HTTP Session to reserve its finite raw tool names without connecting. Opening and operations that omit that server perform no connection or discovery. A selected operation connects to the server, exposes only its admitted leaves and confirms the native generation before model submission. For example, a declaration named `records` with raw leaf `find-record` can select that leaf with `toolRef('find_record', 'mcp__records')`. Server discovery never adds authority beyond the opening declaration.
+`HttpMCP` defaults to `activation: 'session'`: it connects and lists tools during opening. To connect only when a root selects the server, set `activation: 'operation'` in a fresh ordinary root/direct HTTP Session.
+
+| Phase | Connection behavior |
+| --- | --- |
+| Opening | Reserves the declaration's finite raw tool names without connecting. |
+| Root selects the server | Connects, exposes only admitted leaves, and confirms the native generation before model submission. |
+| Root omits the server | Performs no connection or discovery for that server. |
+
+For example, a declaration named `records` with raw leaf `find-record` selects that leaf with `toolRef('find_record', 'mcp__records')`. Discovery adds no authority beyond the opening declaration.
 
 Omitted operation options use Session defaults. A first submission can activate tools selected by default. Use `tools: []` to leave them dormant. Omit a server from a later selection to make it dormant again.
 
@@ -20,13 +36,20 @@ Use on-demand HTTP connections in a fresh plain Session with a direct root. The 
 
 `StdioMCP` defaults to `location: 'host'`. For example, construct a host declaration with `new StdioMCP({ name: 'records', tools: ['lookup'], command: 'node', args: ['/application/mcp-server.mjs'], envVars: ['RECORDS_TOKEN'] })`. Import `StdioMCP` from `@openai/agents`. Install the command and script on the controller host, and provide `RECORDS_TOKEN` in that host process's environment. `envVars` lists variable names rather than secret values.
 
-For a remote declaration, set `location: 'environment'` and use the executor's command and script path, such as `args: ['/workspace/mcp-server.mjs']`. Open the Session with its current `Environment`. The executor supplies the selected variable values; the SDK does not forward controller-host secret values. The remote MCP process can start even when `Environment.tools` is empty. Those tools control model-visible executor operations, not MCP startup. Choose a process and executor the application trusts. Session-scoped connections start during opening, before invocation approval can run.
+To run the server on a trusted executor:
+
+1. Set `location: 'environment'` and use the executor's command and script path, such as `args: ['/workspace/mcp-server.mjs']`.
+2. Open the Session with its current `Environment`. The executor supplies the selected variable values. The SDK does not forward controller-host secret values.
+
+The remote MCP process can start even when `Environment.tools` is empty. Those tools control model-visible executor operations, not MCP startup. Choose a process and executor the application trusts. Session-scoped connections start during opening, before invocation approval can run.
 
 `Environment.writableRoots` and `Environment.network` govern executor command tools. A trusted stdio server runs with the permissions of its process on the selected machine.
 
 ## Choose a stdio process lifetime
 
-`StdioMCP` keeps its process alive across root turns when `lifetime` is omitted or set to `'session'`. Set `lifetime: 'turn'` to start a separate process for each root turn and stop it before the next turn starts. Process state does not carry across those turns. Choose this option when a stdio server must ask the application for forms tied to the original root turn. Server prompts from a persistent process without a trusted original turn are refused. Core-generated root MCP tool approvals remain available with either lifetime.
+`StdioMCP` keeps its process alive across root turns when `lifetime` is omitted or set to `'session'`. Set `lifetime: 'turn'` to start a separate process for each root turn and stop it before the next turn starts. Process state does not carry across those turns. Choose this option when a stdio server must ask the application for forms tied to the original root turn.
+
+Server prompts from a persistent process without a trusted original turn are refused. Core-generated root MCP tool approvals remain available with either lifetime.
 
 ## MCP call policy
 
@@ -112,11 +135,21 @@ try {
 
 Call the helper again to refresh discovery for a future Session. It invalidates only the selected server's tool cache and returns a new complete snapshot. Existing snapshots keep their schemas and bound methods; the Session's normal exact opening ceiling still limits updates. A failed selection returns no partial catalog. Authentication and cache side effects on the borrowed client cannot be rolled back.
 
+### Keep client ownership through cleanup
+
 Binding a method does not freeze its receiver's credentials. Before unsafe reauthentication, stop all activity that uses a shared mutable client, or use separate clients for separate authentication scopes. The helper never connects or closes the server. Aborting selection waits for authentication and discovery already in progress and prevents tools from being returned. A server whose `listTools` has no cancellation support may take time to settle.
 
 The bridge preserves raw input schemas and uses the existing managed function callback path. It forwards the per-call abort signal and calls the server once. The bridge preserves structured-content preference and peer error results. It does not add private result metadata to model text. Custom tool metadata resolvers, extractors, error handlers and guardrails are currently unsupported and fail before authentication. Existing classic MCP APIs remain available for those features.
 
-For a [local native profile](./state.md#local-native-profiles), use `selectMcpTools` with an explicit `toolNames` list and your application's approval policy. Pass the returned tools alongside `storage` when you open the Session. When you reopen, select the tools again using the current client, allowlist, and policy. The profile records managed calls and their results. Denial fails the turn before the call reaches the client. A call without a recorded result follows the profile's recovery rules. Your application owns the client, including its credentials and cleanup.
+### Reopen a local profile with selected tools
+
+For a [local native profile](local-state.md#local-native-profiles):
+
+1. Call `selectMcpTools` with an explicit `toolNames` list and your application's approval policy.
+2. Pass the returned tools alongside `storage` when you open the Session.
+3. When you reopen, select the tools again using the current client, allowlist, and policy.
+
+The profile records managed calls and their results. Denial fails the turn before the call reaches the client. A call without a recorded result follows the profile's recovery rules. Your application owns the client, including its credentials and cleanup.
 
 ### Await observations on borrowed MCP calls
 

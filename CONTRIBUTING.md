@@ -39,7 +39,7 @@ The repository also contains these directories:
 
 ```bash
 # Clone the repository
-git clone https://github.com/openai/openai-agents-js.git
+git clone --branch feat/codex-harness https://github.com/openai/openai-agents-js.git
 cd openai-agents-js
 
 # Install dependencies

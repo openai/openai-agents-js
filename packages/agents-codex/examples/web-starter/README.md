@@ -1,6 +1,12 @@
 # Local native web starter
 
-This single-process example runs a browser task through a real native Session. It uses scripted Responses and a trusted local HTTP MCP peer. It needs no API key and makes no billable model calls. Use Node.js 24 on Linux or macOS with a private local POSIX filesystem. Complete the [native source setup](../guides/building.md), including the matching addon, runtime helpers, and built workspace packages. The browser client uses plain JavaScript and needs no separate frontend build.
+Run a browser task through a real native Session, approve publication, and download the validated result. This single-process example uses scripted Responses and a trusted local HTTP MCP peer. It needs no API key and makes no billable model calls.
+
+Use this starter to explore persistent receipts and application-owned task recovery locally. For a browser service that makes live model calls, use the [HTTP report service](../http-report-service.md). For terminal-only UI protocol frames, use the [native UI adapters](../native-ui/README.md).
+
+## Before you start
+
+Use Node.js 24 on Linux or macOS with a private local POSIX filesystem. Complete the [native source setup](../guides/building.md), including the matching addon, runtime helpers, and built workspace packages. The browser client uses plain JavaScript and needs no separate frontend build.
 
 ## Start the service
 
@@ -10,9 +16,11 @@ From the repository root, start the service with a new private directory:
 pnpm exec tsx packages/agents-codex/examples/web-starter/server.ts --mode scripted --directory /tmp/agents-web-private --port 0
 ```
 
-The command prints `Web starter: http://127.0.0.1:PORT`. Open that address.
+The command prints `Web starter: http://127.0.0.1:PORT`. Open that address and keep the server terminal running. Use a new application-owned state directory for an independent demo; stopping the server does not delete retained state.
 
 Choose Alice or Bob, then send a task. The worker calls the selected `reports.report` MCP tool and reads a local audience note. It validates a JSON presentation and asks for publication approval. Approve to commit the download, or deny to finish without an artifact. The final summary appears only after typed output settles. The downloaded `presentation.json` contains exactly the validated, stored bytes.
+
+When finished, press Ctrl+C in the server terminal or send `SIGTERM`. Shutdown joins worker cleanup before closing the peer and store. Stop the application before deleting its state directory; see [private state and restart](#private-state-and-restart).
 
 ## Identity and request recovery
 
@@ -92,7 +100,7 @@ For work completed in another process, follow the [external-job example](../../E
 Run the focused native tests and type check from the repository root:
 
 ```sh
-OPENAI_AGENTS_NATIVE_TESTS=1 pnpm exec vitest run --project @openai/agents-codex packages/agents-codex/test/native/web-starter-example.test.ts
+pnpm test:native packages/agents-codex/test/native/web-starter-example.test.ts
 pnpm exec tsc -p packages/agents-codex/tsconfig.test.json --noEmit
 ```
 

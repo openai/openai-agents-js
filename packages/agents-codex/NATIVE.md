@@ -1,6 +1,6 @@
 # Native API
 
-Import from `@openai/agents`. The embedded Codex runtime owns model execution, tool admission, history, and compaction. TypeScript owns application callbacks and their cleanup. Choose a topic below or [run your first agent](README.md#run-an-agent).
+Import the SDK from `@openai/agents`. Codex runs model turns and maintains conversation history. Your application supplies tool callbacks and closes the resources it opens. Start by [running your first agent](README.md#run-an-agent), then choose a task below.
 
 ## Install
 
@@ -11,15 +11,20 @@ Import from `@openai/agents`. The embedded Codex runtime owns model execution, t
 
 ## Run and manage sessions
 
-- <a name="agents-and-sessions"></a><a name="update-a-session"></a><a name="provider-connection-and-credentials"></a><a name="per-session-configuration"></a><a name="connection-retries-and-errors"></a><a name="context-compaction"></a><a name="validate-agent-defaults"></a>[Agents and sessions](examples/guides/sessions.md#open-and-run-a-session)
+- <a name="agents-and-sessions"></a><a name="update-a-session"></a>[Open and update a Session](examples/guides/sessions.md#open-and-run-a-session)
+- <a name="provider-connection-and-credentials"></a><a name="per-session-configuration"></a><a name="connection-retries-and-errors"></a><a name="context-compaction"></a><a name="validate-agent-defaults"></a>[Configure providers, models, tools, and compaction](examples/guides/session-configuration.md)
 - <a name="observations-and-interruption"></a><a name="read-events-for-one-turn"></a><a name="interrupt-a-session"></a><a name="cancel-one-root-turn"></a><a name="cancel-one-child-turn"></a>[Stream, steer, and cancel turns](examples/guides/sessions.md#observations-and-interruption)
 - <a name="native-checklists"></a>[Native checklists](examples/guides/sessions.md#native-checklists)
-- <a name="native-telemetry"></a>[Native telemetry](examples/guides/sessions.md#native-telemetry)
-- <a name="history-and-state"></a><a name="save-or-suspend-a-session"></a><a name="restore-instructions-and-tools"></a><a name="output-and-checkpoint-versions"></a><a name="reconcile-external-effects"></a><a name="model-settings-on-restore"></a><a name="usage-counters"></a><a name="manual-suspension-and-repair-receipts"></a>[Read history and restore checkpoints](examples/guides/state.md#history-and-state)
-- <a name="live-capabilities-and-checkpoint-advice"></a><a name="check-capture-readiness"></a>[Check session capabilities and capture readiness](examples/guides/state.md#live-capabilities-and-checkpoint-advice)
-- <a name="resume-external-work"></a>[Resume external work](examples/guides/state.md#resume-external-work)
-- <a name="local-native-profiles"></a><a name="profile-ownership"></a><a name="supported-capabilities"></a><a name="reopen-with-descendant-history"></a><a name="persistence-failures-and-cleanup"></a>[Reopen a local profile](examples/guides/state.md#local-native-profiles)
-- <a name="native-local-goals"></a>[Native local goals](examples/guides/state.md#native-local-goals)
+- <a name="native-telemetry"></a>[Trace a workflow and export native telemetry](examples/guides/telemetry.md)
+
+## Save and recover a conversation
+
+- <a name="history-and-state"></a><a name="save-or-suspend-a-session"></a><a name="restore-instructions-and-tools"></a><a name="output-and-checkpoint-versions"></a><a name="model-settings-on-restore"></a><a name="usage-counters"></a><a name="manual-suspension-and-repair-receipts"></a>[Read history and restore checkpoints](examples/guides/state.md#history-and-state)
+- <a name="live-capabilities-and-checkpoint-advice"></a><a name="check-capture-readiness"></a>[Check session capabilities and capture readiness](examples/guides/recovery.md#live-capabilities-and-checkpoint-advice)
+- <a name="reconcile-external-effects"></a><a name="resume-external-work"></a>[Reconcile effects and resume external work](examples/guides/recovery.md#reconcile-external-effects)
+- <a name="local-native-profiles"></a><a name="profile-ownership"></a><a name="supported-capabilities"></a><a name="reopen-with-descendant-history"></a><a name="persistence-failures-and-cleanup"></a>[Reopen a local profile](examples/guides/local-state.md#local-native-profiles)
+- [Store canonical conversation state in application-owned files](examples/guides/session-store.md)
+- <a name="native-local-goals"></a>[Native local goals](examples/guides/local-state.md#native-local-goals)
 
 ## Choose an output contract
 
@@ -37,6 +42,9 @@ Import from `@openai/agents`. The embedded Codex runtime owns model execution, t
 - <a name="materialize-a-borrowed-sdk-mcp-namespace"></a><a name="await-observations-on-borrowed-mcp-calls"></a>[Borrow an SDK MCP server](examples/guides/mcp.md#materialize-a-borrowed-sdk-mcp-namespace)
 - <a name="remote-executor-tools"></a><a name="lease-an-executor"></a><a name="remote-skill-directories"></a><a name="native-child-agents"></a><a name="configured-shell"></a>[Connect remote executors and run child agents](examples/guides/executors.md#remote-executor-tools)
 - <a name="managed-executor-network-policy"></a>[Managed executor network policy](examples/guides/executors.md#managed-executor-network-policy)
+
+- [Connect or serve remote Agents over A2A](A2A.md) with the current source build.
+- [Supervise a native worker](examples/supervised-worker/README.md) in a local execution environment.
 
 ## Handle native interactions
 

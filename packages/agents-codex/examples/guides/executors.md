@@ -1,6 +1,15 @@
 # Remote executors and child agents
 
-Use an `Environment` to connect to a remote executor. See [timeout defaults](mcp.md#mcp-and-executor-timeouts) for MCP and Environment policies.
+Use an `Environment` to give a native Session access to selected tools on a remote executor. Your application chooses the endpoint, credentials, and permissions; the executor enforces its declared policy.
+
+Choose how your application owns that connection:
+
+| Declaration | Resource owner |
+| --- | --- |
+| `Environment` | The application keeps the executor available and disposes it separately. |
+| `EnvironmentSource` returning a lease | The application acquires the executor; the Session disposes the accepted lease after its native work and callbacks finish. |
+
+See [timeout defaults](mcp.md#mcp-and-executor-timeouts) for MCP and Environment policies.
 
 ## Remote executor tools
 
@@ -10,13 +19,41 @@ For admitted `exec_command`, `write_stdin`, and `apply_patch`, `transformResult`
 
 If the transform fails, times out, or is cancelled, the SDK withholds the output. It neither repeats nor undoes the effect. `write_stdin` requires `exec_command` and the real process identity.
 
+### Run the remote executor example
+
+[Build the native SDK and workspace packages](building.md), then provision a compatible executor. From the repository root, configure the following application-selected values:
+
+| Variable | Value |
+| --- | --- |
+| `EXECUTOR_URL` | Authenticated `wss://` executor endpoint. |
+| `EXECUTOR_CWD` | Absolute assigned workspace on that executor. |
+| `EXECUTOR_TOKEN` | Credential supplied through your application's secret mechanism. |
+| `EXECUTOR_CAPABILITIES` | Optional single absolute remote capability directory. |
+| `OPENAI_API_KEY` | Model-provider credential. |
+
+The command makes live model calls:
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/remote-executor.ts "Inspect the assigned workspace"
+```
+
+It selects `exec_command`, `write_stdin`, and `apply_patch`, then prints the settled answer and accepted checklist. Choose a workspace and permissions for this task. Keep unrelated host directories and executors shared with untrusted tenants outside the grant.
+
+The helper closes its Session and provider before returning. Your application still owns executor deprovisioning. Capability directories permit discovery reads, not general filesystem access.
+
 ## Lease an executor
 
 An application can instead supply an async `EnvironmentSource`. Acquire the resource inside that function, then return `Environment.lease(environment, dispose, sourceSignal?)` while its async-local resource scope is active. The SDK captures that scope for disposal and keeps the caller's scope unchanged. Return a fresh lease for each opening; a lease cannot be claimed twice or directly disposed while a Session owns it. Ordinary `Environment` values remain borrowed declarations.
 
 Output views accept the same source and signal options. For example, `agent.withOutputType(schema).run(input, { environment: source, signal })` retains the selected output contract while the source and caller cancellation follow their normal lifetimes.
 
-The factory receives `{ signal }` for acquisition cancellation. Before returning a lease, the factory owns rollback on failure. Once the SDK accepts the lease, acquisition cancellation ends and the SDK retains its resource until native use and callback cleanup finish. Dispose only from the supplied disposer after that handoff. The optional `sourceSignal` requests Session retirement if the resource owner is interrupted independently; it must not release a resource still in native use. Cleanup joins a late acquisition result even when cancellation has already won.
+The lease has three ownership stages:
+
+1. The factory receives `{ signal }` and owns acquisition and rollback if acquisition fails.
+2. After the SDK accepts the lease, acquisition cancellation ends. The Session retains the resource until native use and callback cleanup finish.
+3. The Session invokes the supplied disposer after that work finishes. Release the resource from this disposer.
+
+The optional `sourceSignal` requests Session retirement when the resource owner is interrupted independently. It must not release a resource still in native use. Cleanup also joins an acquisition that returns after cancellation.
 
 A Session `signal` cancels opening through publication. After `agent.session(...)` returns, the caller owns the Session. For `agent.run(..., { signal })`, cancellation stays in effect through run completion and cleanup.
 
@@ -24,9 +61,13 @@ Close retires the native transport, engine, carrier, and entered child callbacks
 
 ## Remote skill directories
 
-Set `Environment.capabilityDirectories` to absolute remote directories to discover their skills. The declaration copies the list. Later edits to the input array have no effect. Paths may use POSIX or Windows absolute spelling, or absolute file URIs. Omitted directories and `[]` both select no roots. The native request still distinguishes them. The SDK does not inherit controller-host, saved, or executor-advertised roots. Selecting directories permits discovery reads. It grants neither executor tools nor additional workspace write access.
+Set `Environment.capabilityDirectories` to absolute remote directories to discover their skills. Paths may use POSIX or Windows absolute spelling, or absolute file URIs. The declaration copies the list, so later edits to the input array have no effect.
 
-On idle restore, supply the destination's current Environment or a fresh source and directories. Historical messages may mention old skills, but they do not authorize fresh reads of source directories. A supported Environment manual checkpoint requires the destination to supply its current Environment and explicit grants; the checkpoint restores neither resources nor permissions. Saved state never retains a source function or an application lease. Direct executor filesystem RPCs remain the executor owner's responsibility; a selected directory is not a general filesystem sandbox.
+Omitted directories and `[]` both select no roots, though the native request distinguishes them. The SDK does not inherit controller-host, saved, or executor-advertised roots. Selecting directories permits discovery reads. It grants neither executor tools nor additional workspace write access.
+
+On idle restore, supply the destination's current Environment or a fresh source and directories. A supported Environment manual checkpoint also requires the destination's current Environment and explicit grants. The checkpoint restores neither resources nor permissions, and saved state never retains a source function or an application lease.
+
+Historical messages may mention old skills, but they do not authorize fresh reads of source directories. Direct executor filesystem RPCs remain the executor owner's responsibility. A selected directory is not a general filesystem sandbox.
 
 ## Configured shell
 
@@ -38,7 +79,31 @@ Putting `bash -lc ...` inside `cmd` asks the configured shell to launch a second
 
 ## Native child agents
 
-Add a `NativeAgents` declaration to `tools` to declare child roles and limits. Children require an explicit model and an environment with all executor tools. `session.subagents()` yields child snapshots; live children support `submit()`, and their issued turns support `wait()`. Application tool callbacks receive a `ChildInvocation` when invoked by a child. Add `new NativeAgents({ interactions: true })` to allow supported child approvals and forms through the same Session interaction APIs. This option defaults to `false` and does not add executor permissions.
+Add a `NativeAgents` declaration to `tools` to declare child roles and limits. Children require an explicit model and an environment with all executor tools.
+
+Use `session.subagents()` to get child snapshots. Live children support `submit()`, and their issued turns support `wait()`. Application tool callbacks receive a `ChildInvocation` when invoked by a child.
+
+Add `new NativeAgents({ interactions: true })` to allow supported child approvals and forms through the same Session interaction APIs. This option defaults to `false` and does not add executor permissions.
+
+### Configure native children
+
+Call the separate [runNativeChildren() helper](../native-children.ts) with the provisioned Environment. It declares an additional `NativeRole` with an explicit model and reasoning effort, `maxChildren: 1`, and `maxDepth: 1`.
+
+Roles provide instructions; children share the Session's admitted tools, context, and executor permissions. Asking a reviewer to avoid edits does not impose an operating-system restriction.
+
+### Wait for captured child Turns
+
+The helper waits for the root Turn, captures the current child snapshots, and awaits each captured child's issued `turn` when present. Root completion alone does not prove that every child finished. A child wait joins that exact Turn, not future turns or descendants that appear later. Returned statuses describe the captured snapshot.
+
+To cancel a child, call the captured child's `tryCancel(turn)` and join that Turn with `turn.wait()`. Before the helper returns, Session disposal stops and joins remaining owned work, then closes the provider. Completed external effects remain.
+
+### Apply collaboration policy
+
+`NativeAgents.approval` receives the application context, observed collaboration call, and cancellation signal. It can allow or deny dispatch, but cannot replace arguments or expand executor permissions. Executor approvals use `Environment.approval`; manual tools use their issued reply flow.
+
+A Session opened with `NativeAgents` keeps its instructions and model/settings fixed, even before a child exists. Open a new Session to change them. Managed-tool updates remain within opening tool names and do not replace the native-role declaration.
+
+### Select tools before a child step
 
 Use the optional `NativeAgents.beforeStep` hook to select tools before a child's model step. Its result uses the existing `ToolSelector` contract or `undefined`. Its `ChildBeforeStepContext` extends `BeforeStepContext` with `child: ChildInvocation`. Use `submission` for the original child Turn, `context` for application data, `stepIndex` for its preparation index, and `signal` for cancellation. Keep application policy tied to that child incarnation rather than looking up a later child with the same ID.
 
@@ -52,11 +117,17 @@ Set `Environment.network` to select the SDK-managed proxy policy for native comm
 
 The [remote execution example](../remote-executor.ts) accepts an application-selected Environment.
 
-Rules accept ASCII hosts, host patterns and IP addresses. They cover all ports. Rules cannot contain URLs, ports or IPv6 zone identifiers. The SDK captures an immutable canonical copy, removes duplicates and gives denials precedence. Equivalent case, trailing-dot and IPv4-mapped IPv6 forms share checkpoint identity. DNS can resolve before a request is denied.
+### Define network rules
+
+Rules accept ASCII hosts, host patterns, and IP addresses. They cover all ports. Rules cannot contain URLs, ports or IPv6 zone identifiers. The SDK captures an immutable canonical copy, removes duplicates and gives denials precedence. Equivalent case, trailing-dot and IPv4-mapped IPv6 forms share checkpoint identity. DNS can resolve before a request is denied.
+
+### Check platform requirements
 
 Admission uses the remote executor's platform and advertised managed-proxy capability. It requires Linux or macOS and a POSIX workspace. It refuses incompatible controller proxies, legacy sandbox paths and command escalation. The application must still trust its selected executor. An independently managed endpoint firewall does not replace this policy.
 
 Linux requires `allowAllUnixSockets: true`. This permits every reachable Unix socket, including abstract and privileged sockets. Individual socket-path grants are unsupported. Use an executor isolated from privileged host sockets. `allowLocalBinding: true` permits additional local traffic outside the domain rules; on macOS this can include direct traffic to reachable IPs on port 53, including non-DNS traffic. Do not treat domain rules as stronger host isolation.
+
+### Restore the same network policy
 
 Checkpoint policy metadata stores only a versioned digest, not the policy rules or transport credentials. Ordinary conversation and tool history still retain their content. Restoring requires a fresh Environment with an equivalent canonical policy. A changed policy, or an omitted-versus-empty mismatch, rejects before reconnecting or requesting the model. Default checkpoints continue to require the default policy. The explicit-policy envelope rejects older SDK readers rather than allowing them to drop the restriction.
 

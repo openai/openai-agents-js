@@ -1,44 +1,54 @@
 # Compare settled answers and actual tool effects
 
-This source-checkout example runs synthetic native Agent trials and writes a JSON result. Start with scripted responses to check the evaluation runner without an API key. Choose live mode explicitly when you want to compare model configurations.
+Run two catalog lookups and score both the answer and the tool calls that produced it. Start with scripted responses to check the runner. Use live mode to compare model configurations.
 
-From a built checkout with the native addon available, run:
+Run the commands from the repository root with [matching built packages and native runtime](../guides/building.md). The runner reads Git metadata, TypeScript source, and the default [cases](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/evaluation/cases.json) and [configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/evaluation/config.json) from the checkout. The npm package includes the example source and README. Its default JSON inputs live in the repository.
+
+Create a private output directory in a POSIX shell. Keep the shell open while you compare runs.
 
 ```sh
-pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode scripted --repeats 2 --output /tmp/evaluation-harness.json
-pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode scripted --repeats 2 --baseline /tmp/evaluation-harness.json --output /tmp/evaluation-comparison.json
+EVAL_DIRECTORY=$(mktemp -d)
+pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode scripted --repeats 2 --output "$EVAL_DIRECTORY/scripted.json"
+pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode scripted --repeats 2 --baseline "$EVAL_DIRECTORY/scripted.json" --output "$EVAL_DIRECTORY/comparison.json"
 ```
 
-The second command compares against the first artifact. Run from the source checkout. The runner reads Git metadata and its TypeScript source to identify the experiment. The package manifest includes the TypeScript files and README, but excludes the default `cases.json` and `config.json` inputs.
+The first run writes a baseline. The second reports any score regressions and the change in passing trials.
 
 ## Inputs and modes
 
-The synthetic catalog maps `A` to `violet` and `B` to `amber`. The `known` case asks for `A` and expects `violet`; the `absent` case asks for `Z` and expects `UNKNOWN`. Each case expects exactly one lookup of its code. Two repeats run each case twice.
+The catalog maps `A` to `violet` and `B` to `amber`. The `known` case asks for `A` and expects `violet`. The `absent` case asks for `Z` and expects `UNKNOWN`. Each case expects exactly one lookup. Two repeats run each case twice.
 
-Scripted mode is the default. It uses local mock responses, a real native Session, and the actual lookup callback. It needs no `OPENAI_API_KEY` and makes no live model request. It proves that the runner can record a tool round trip and score its result. It does not measure model quality.
+Scripted mode uses local responses, a real native Session, and the lookup callback. It checks the tool round trip and scorer without a model API key.
 
-Use `--mode live` only for live model trials. It requires a nonempty `OPENAI_API_KEY`. Missing credentials or live failure never switches to scripted responses. Run live trials only when you intend to use the configured provider.
+### Compare live configurations
 
-To compare live configurations, choose a model available to your account in a copy of `config.json`, then run:
+Set `OPENAI_API_KEY` in the environment and choose a model available to that account. The runner creates a `NativeProvider` with the key and its default endpoint. To use another endpoint, configure the provider in the application. Live failures stay visible as failures.
+
+Create the two configurations in the private directory from the first step.
 
 ```sh
-pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode live --config /private/task/baseline-config.json --repeats 3 --output /private/task/baseline.json
-pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode live --config /private/task/candidate-config.json --repeats 3 --baseline /private/task/baseline.json --output /private/task/candidate.json
+cp packages/agents-codex/examples/evaluation/config.json "$EVAL_DIRECTORY/baseline-config.json"
+cp "$EVAL_DIRECTORY/baseline-config.json" "$EVAL_DIRECTORY/candidate-config.json"
 ```
 
-Create both configuration files first. Change only the instructions or model setting you want to compare. Both runs use the default cases. This runner creates a `NativeProvider` with the captured API key and the default endpoint. It does not forward `OPENAI_BASE_URL`. To select another provider, change the application explicitly. Three repeats per case give six trials, not a reliability estimate.
+Choose the baseline model in both files, then change the instructions or model in the candidate. Run each configuration against the same cases. Three repeats produce six live trials per configuration.
 
-Optional `--cases <path>` and `--config <path>` select JSON inputs. Cases contain unique `id`, `prompt`, `expectedAnswer`, and ordered `expectedLookups` fields. Config contains `model`, `instructions`, optional `reasoningEffort`, and `timeoutMs`. Keep prompts and cases synthetic. Put credentials in the environment, not these files.
+```sh
+pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode live --config "$EVAL_DIRECTORY/baseline-config.json" --repeats 3 --output "$EVAL_DIRECTORY/baseline.json"
+pnpm exec tsx packages/agents-codex/examples/evaluation/run.ts --mode live --config "$EVAL_DIRECTORY/candidate-config.json" --repeats 3 --baseline "$EVAL_DIRECTORY/baseline.json" --output "$EVAL_DIRECTORY/candidate.json"
+```
+
+Use `--cases` and `--config` to select other JSON files. Each case has a unique `id`, a `prompt`, an `expectedAnswer`, and ordered `expectedLookups`. The configuration has `model`, `instructions`, optional `reasoningEffort`, and `timeoutMs`. Keep credentials in the environment and use synthetic prompts and cases.
 
 ## Read the scores
 
-Each trial reports three separate scores:
+Each trial reports three scores.
 
-- `completed`: the answer settled without execution, tool, receipt, or cleanup errors.
-- `answerExact`: completion succeeded and actual/expected answers match after trimming surrounding whitespace. Internal whitespace and case still matter.
-- `toolBehavior`: completion succeeded and actual lookup effects match the expected `{code, output}` sequence exactly. Missing, duplicate, extra, reordered, or wrong-output lookups fail.
+- **`completed`** checks that the answer settled without execution, tool, receipt, or cleanup errors.
+- **`answerExact`** requires successful completion and matching actual and expected answers after trimming surrounding whitespace. Internal whitespace and case still matter.
+- **`toolBehavior`** requires successful completion and actual lookup effects that match the expected `{code, output}` sequence exactly. Missing, duplicate, extra, reordered, or wrong-output lookups fail.
 
-A trial passes only when all three scores pass. Expected-looking text cannot hide an extra tool effect. The runner records effects from callback execution and checks scripted tool-output receipts; it does not infer calls from the answer.
+A trial passes only when all three scores pass. Expected-looking text cannot hide an extra tool effect. The runner records effects when the callback executes and checks the scripted tool-output receipts.
 
 For a comparison, hold mode, cases, catalog, repeats, and scorer identity fixed. The runner validates baseline compatibility before trials. Config may differ because the comparison tests changes to instructions or model settings.
 
@@ -53,3 +63,19 @@ The JSON retains failed and timed-out trials, including effects already observed
 `timeoutMs` defaults to 60000 ms and bounds the result wait after `submit()` returns. It does not bound Session opening, submit admission, or cleanup. The runner awaits Session cleanup before releasing the provider or scripted peer.
 
 A cleanup failure stops later trials, sets `aborted: true`, retains executed trials, and omits the comparison, even if it occurs on the last trial. Cleanup failures cannot earn a passing score. Cleanup may take longer than the wait, so this is not a hard wall-clock, token, or billing ceiling.
+
+## Compare two fixed catalog cases
+
+The smaller [catalog evaluation](../evaluate-catalog.ts) runs each of two scripted cases once. Use Node.js 24 and a private directory. Run these commands from the checkout root.
+
+```sh
+CATALOG_DIRECTORY=$(mktemp -d)
+pnpm exec tsx packages/agents-codex/examples/evaluate-catalog.ts "$CATALOG_DIRECTORY/candidate.json"
+pnpm exec tsx packages/agents-codex/examples/evaluate-catalog.ts "$CATALOG_DIRECTORY/next.json" "$CATALOG_DIRECTORY/candidate.json"
+```
+
+The first command writes an artifact. The second compares a new artifact with that baseline. The scorer checks completion, the trimmed exact answer, and the ordered tool arguments separately. A duplicate lookup fails the tool check even when the answer matches.
+
+The artifact records synthetic answers and calls, case and catalog fingerprints, model, instructions, and failure categories. It omits raw errors, headers, and keys. A failed trial still writes an artifact and returns a failing exit status.
+
+A baseline must match the artifact format, scripted mode, case and catalog fingerprint, scorer, and both unique case IDs. Model and instruction changes remain visible. Compare case regressions and the change in passed count. These two cases test the integration. Use a separate experiment to assess live model quality or speed.

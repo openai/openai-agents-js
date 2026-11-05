@@ -2,6 +2,14 @@
 
 Use these application helpers when your UI consumes Vercel UI Message Stream v1 or the demonstrated AG-UI event subset. They convert native text IDs and safe tool progress into UI events. They do not expose tool arguments, results or approval controls.
 
+## Choose an entrypoint
+
+| Goal | Start here |
+| --- | --- |
+| Inspect native-to-UI protocol frames in the terminal | Run this example with `vercel` or `ag-ui` below. |
+| Try a browser task, approval, and download without model credentials | Use the [scripted web starter](../web-starter/README.md). |
+| Connect a browser to a worker making live model calls | Use the [HTTP report service](../http-report-service.md). |
+
 ## Run the example
 
 Use Node.js 24 and complete the [source setup](../guides/building.md) with matching native products and built workspace packages. Set `OPENAI_API_KEY` privately, then run from the checkout root:
@@ -11,14 +19,23 @@ pnpm exec tsx packages/agents-codex/examples/native-ui/run.ts vercel
 pnpm exec tsx packages/agents-codex/examples/native-ui/run.ts ag-ui
 ```
 
-Both commands make live model calls. They print SSE to the terminal, without starting an HTTP server or opening a browser. Output wording and native IDs vary. Vercel emits text parts followed by `finish` and `[DONE]` for a complete view. AG-UI emits text messages followed by `RUN_FINISHED`. The example closes each Session before its provider.
+Choose one command for the protocol your client consumes. Both commands make live model calls. They print SSE to the terminal, without starting an HTTP server or opening a browser. Output wording and native IDs vary. Vercel emits text parts followed by `finish` and `[DONE]` for a complete view. AG-UI emits text messages followed by `RUN_FINISHED`. The example closes each Session before its provider.
 
 ## Choose who owns the work
+
+Copy [projection.ts](projection.ts) and your protocol helper, [vercel.ts](vercel.ts) or [ag-ui.ts](ag-ui.ts), into the same directory as your application handler. Compile them together so they use your application's SDK types.
+
+Choose ownership before attaching a response reader:
+
+| Helper | Session owner | What reader cancellation does |
+| --- | --- | --- |
+| `vercelResponse(turn, session)` or `agUiResponse(turn, session, outputType)` | Your application | Releases the reader and its local waits; work continues. |
+| `ownedVercelResponse(agent, input)` | The helper | Closes and joins its Session when the response closes; the provider remains caller-owned. |
 
 For work that should survive a response-reader disconnect, keep its worker and Session alive. Pass the actual issued Turn and owning Session to a passive helper:
 
 ```ts
-import { vercelResponse } from './vercel';
+import { vercelResponse } from './vercel.js';
 
 const turn = await session.submit('Summarize the results.');
 const response = vercelResponse(turn, session);
@@ -29,14 +46,14 @@ This Vercel helper requires plain default output. A `Turn<string>` alone does no
 For AG-UI, pass the actual selected declaration as the third argument. Retain a submission override instead when one was selected:
 
 ```ts
-import { agUiResponse } from './ag-ui';
+import { agUiResponse } from './ag-ui.js';
 
 const outputType = agent.outputType;
 const turn = await session.submit('Summarize the results.');
 const response = agUiResponse(turn, session, outputType);
 ```
 
-Typed and prompted AG-UI output can settle successfully without a fabricated text result. This is not a general structured-output UI protocol. Keep provider and Session ownership in the application.
+Typed and prompted AG-UI output can settle successfully without a fabricated text result. This is not a general structured-output UI protocol. Keep provider and Session ownership in the application. When the work ends, close the owning Session before its provider.
 
 ## Treat incomplete views as incomplete
 

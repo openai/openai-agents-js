@@ -2,6 +2,12 @@
 
 This example connects a small Node.js service to a browser without a frontend framework. A worker owns each native Session and its original Turn. Disconnecting an HTTP reader stops observation. The worker continues. The separate Stop action cancels that Turn and waits for cleanup.
 
+## Choose the service
+
+Use this recipe for a browser UI backed by live native model work and an in-memory job store. For a credential-free demo with persistent receipts and restart recovery, use the [scripted local web starter](web-starter/README.md). For terminal-only protocol conversion, use the [native UI adapters](native-ui/README.md).
+
+## Start the service
+
 Use Node.js 24 and build the matching SDK and native addon as the [native build guide](guides/building.md) describes. This example makes live model calls. Set `OPENAI_API_KEY` in the server's environment, then choose a local demo token and start the service from the checkout root:
 
 ```sh
@@ -10,6 +16,8 @@ pnpm exec tsx packages/agents-codex/examples/http-report-service.ts
 ```
 
 The command prints `http://127.0.0.1:3000`. Open that address and enter the token. The server maps it to one demo user. The page keeps the token in memory and sends it in an Authorization header. It does not save the token in browser storage or put it in a URL. `OPENAI_BASE_URL` optionally selects the server's model endpoint. Model credentials remain in the server process.
+
+Keep the server terminal running while testing the browser. The browser's reader-disconnect action leaves work running; the separate Stop action requests cancellation. To shut down the whole service, press Ctrl+C or send `SIGTERM`. The entrypoint joins Session cleanup before closing its provider. Restart clears the in-memory jobs, reply aliases, and artifacts.
 
 ## Try the ownership boundaries
 

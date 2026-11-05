@@ -10,7 +10,7 @@ The Windows x64 bundle uses the Microsoft Visual C++ runtime. If Windows reports
 
 ## Run the starter bundle
 
-Download the starter archive for the machine that will run your application from the [0.22.0-alpha.1 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.1).
+Choose the starter archive for the machine that will run your application from the [0.22.0-alpha.1 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.1). These prebuilt bundles and the current source checkout can expose different features. Use the guides and examples for the SDK version you install.
 
 | Platform            | Starter archive                                     |
 | ------------------- | --------------------------------------------------- |
@@ -18,16 +18,20 @@ Download the starter archive for the machine that will run your application from
 | macOS Apple silicon | `agents-starter-0.22.0-alpha.1-darwin-arm64.tar.gz` |
 | Windows x64         | `agents-starter-0.22.0-alpha.1-win32-x64.tar.gz`    |
 
-Each archive includes the built SDK, the compiled Codex runtime, a lockfile, and a JavaScript example. Verify the archive against `SHA256SUMS-<platform>` from the same release, then extract it. The release's `build-<platform>.json` records the package build.
+Each archive includes the built SDK, the compiled Codex runtime, a lockfile, and a JavaScript example.
 
-Set `OPENAI_API_KEY` in your environment and run these commands from the extracted `agents-starter` directory.
+1. Verify the archive against `SHA256SUMS-<platform>` from the same release. The release's `build-<platform>.json` records the package build.
+2. Extract the archive and open its `agents-starter` directory.
+3. Set `OPENAI_API_KEY` in your environment, then install dependencies and run the greeting example below.
+
+The greeting makes a live model request.
 
 ```sh
 npm ci --ignore-scripts
 node hello.mjs
 ```
 
-The example makes a live model request and prints a greeting. npm installs the SDK packages from the bundle and downloads third-party dependencies from your configured registry. Keep the lockfile and bundled packages together.
+The example prints a greeting. npm installs the SDK packages from the bundle and downloads third-party dependencies from your configured registry. Keep the lockfile and bundled packages together.
 
 ### If your registry is missing a dependency
 

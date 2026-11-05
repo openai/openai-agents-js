@@ -4,7 +4,15 @@ Use plain text, native structured output, or prompted JSON. Configure a default 
 
 ## Choose an output mode
 
-Set `outputType` to a Zod schema to request native structured output and validate the returned value. `Completed.finalOutput` retains the inferred output type. Omit `outputType`, or pass a bare unconstrained `z.string()`, for plain text.
+Choose how the model produces its final value. `Completed.finalOutput` retains the inferred output type.
+
+| `outputType` | Model request and validation |
+| --- | --- |
+| Omitted, or bare unconstrained `z.string()` | Plain text. |
+| A Zod schema, or `{ mode: 'native', schema }` | Native structured output followed by local schema validation. |
+| `{ mode: 'prompted', schema }` | JSON instructions in the prompt followed by local parsing and validation. |
+
+Use native structured output when the provider should enforce a closed schema. Choose prompted JSON when you need an open map or want the model to repair invalid formatting.
 
 ### Native structured output
 
@@ -18,7 +26,12 @@ Use `outputType: { mode: 'prompted', schema: answerSchema }` to ask for JSON in 
 
 ### Retry invalid prompted output
 
-Add `maxRetries` only to an explicit prompted declaration, such as `outputType: { mode: 'prompted', schema: answerSchema, maxRetries: 1 }`. The budget counts additional formatting attempts after the original output fails local validation. Omitted, `undefined`, and `0` keep validation-only behavior. A supplied budget must be a nonnegative safe integer. An explicit native declaration rejects the presence of `maxRetries`, even with an `undefined` value. LocalStorage rejects a positive budget before a model request, both at opening and for a per-root override.
+Set `outputType: { mode: 'prompted', schema: answerSchema, maxRetries: 1 }` to allow one additional formatting attempt after local validation fails. The budget must be a nonnegative safe integer. Omit it, pass `undefined`, or use `0` to validate the original output once.
+
+- An explicit native declaration rejects the `maxRetries` key, including `maxRetries: undefined`.
+- Sessions opened with `storage` reject a positive repair budget before a model request, both at opening and when you select a contract for one root. This applies to [native local profiles](local-state.md) and [custom Session stores](session-store.md).
+
+#### Repair resources and effects
 
 Each repair opens a fresh plain Session with fixed formatting instructions, the captured schema, and the latest invalid text. It uses the original provider connection and credentials plus the current accepted model settings. Configure the API key before opening the original Session. Without a captured key, repair fails before opening another Session.
 
@@ -26,9 +39,13 @@ The repair Session receives no original task instructions, history, application 
 
 The original root keeps its FIFO position until repair, receipt collection, and cleanup settle. Repeated waits observe the same work. Force cancellation stops the active correction; graceful stop can accept a valid current result but prevents another attempt. Closing the Session joins correction cleanup, and incomplete cleanup keeps close retryable. Root-only stops leave independent children under their own lifecycle. Repair does not accept steering input.
 
-Successful completion exposes `repairAttempts`, detached records of the actual correction turns with their IDs, status, usage, and original-parent links. Session `items()` and `turns()` also expose passive repair history. `Completed.usage` still reports the original conversation's usage separately. No attempt means an empty array; absent attempt usage remains null. If validation still fails after the budget is exhausted, `OutputValidationError.rawOutput` contains the latest invalid text. The error's fixed message excludes that text. Rejected text and repair history may contain sensitive data. Choose where to store or display them.
+#### Read repair results
 
-These options apply to the native prompted-output route. The classic API keeps its own behavior. The experimental selected Model migration route accepts text or supported Zod object output, but does not admit prompted repair. See [the adapter contract](../../../agents/CLASSIC.md#structured-final-output).
+Successful completion exposes `repairAttempts`, detached records of the actual correction turns with their IDs, status, usage, and original-parent links. Session `items()` and `turns()` also expose passive repair history. `Completed.usage` still reports the original conversation's usage separately. No attempt means an empty array; absent attempt usage remains null.
+
+If validation still fails after the budget is exhausted, `OutputValidationError.rawOutput` contains the latest invalid text. The error's fixed message excludes that text. Rejected text and repair history may contain sensitive data. Choose where to store or display them.
+
+These options apply to the native prompted-output route. The classic API keeps its own behavior. The experimental selected Model migration route accepts text or supported Zod object output, but does not admit prompted repair. See [the adapter contract](migrate-models.md#structured-final-output).
 
 The [output modes example](../output-modes.ts) shows a native greeting and prompted greetings keyed by name. Call its `runOutputModes()` function from an async application with a built native addon and configured model credentials. The example handles validation errors without printing rejected text.
 
@@ -54,11 +71,19 @@ If you force-cancel before the SDK receives the native admission acknowledgment,
 
 Legacy `submit` rejects an `outputType` field, including one hidden by an options alias; use `submitWithOutput` to select a contract.
 
-For an overridden root, `session.wait()` rejects even after completion. Implicit busy steering through `session.submit(input)` and result-returning `session.submit(reply)` also reject for that root. Use the returned Turn's `wait()` and `steer()` methods, and deliver manual replies through `session.respond(reply)`, which returns no final result. A later default submission restores the ordinary shortcuts. Existing default-only submissions keep their result types and steering behavior.
+Keep the Turn returned for the overridden root and use it throughout that operation:
 
-The [persistent output example](../output-overrides.ts) runs native, prompted, and manual operations in one conversation, then returns to its default. Pending suspension uses the selected root contract: plain, prompted and native structured output support explicit settled manual suspension. Restore with a current declaration that matches the saved output contract, including its repair budget. Per-operation selection makes repair requests only when the selected prompted contract has a positive budget and validation fails. It adds no implicit one-shot prompted transfer.
+- Await `turn.wait()` for its typed result. `session.wait()` rejects for this root, including after completion.
+- Use `turn.steer()` for input while it runs. Implicit busy steering through `session.submit(input)` rejects.
+- Deliver manual replies with `session.respond(reply)`, which returns no final result. Result-returning `session.submit(reply)` rejects.
 
-Usage reports native cumulative thread totals separately from the latest response.
+A later default submission restores the ordinary shortcuts. Existing default-only submissions keep their result types and steering behavior.
+
+The [output overrides example](../output-overrides.ts) runs native, prompted, and manual operations in one open Session, then returns to its default.
+
+To suspend a settled manual request, save it with its selected root contract. Plain text, prompted JSON, and native structured output all support this path. Restore with a matching declaration, including the repair budget. A per-operation choice makes a formatting request only when prompted validation fails and the selected budget permits repair.
+
+Usage reports native cumulative thread totals separately from the latest response. See [retained response usage](state.md#read-retained-response-usage) for provider observations, unknown counters, and their relationship to Turn success.
 
 ## Reusable output choices
 
@@ -87,7 +112,7 @@ Subclasses refuse output-view execution by default, before invoking their run/se
 Use `this.outputTypeFor(options)` in output policies. It reports the captured opening declaration during deferred reopening, even if the Agent defaults changed. It excludes separate per-operation output overrides. `this.outputType` reports the Agent default.
 
 ```ts
-import { type SessionOptions } from '@openai/agents';
+import { Agent, type SessionOptions } from '@openai/agents';
 
 class PolicyAgent extends Agent {
   protected override supportsOutputVariants(): boolean {
