@@ -17,4 +17,5 @@ export const nativeAgentTestIncludes =
         'test/classic/**/*.test.ts',
         'test/native/output-state.test.ts',
         'test/native/repair-observation.test.ts',
+        'test/native/request-metadata.test.ts',
       ];

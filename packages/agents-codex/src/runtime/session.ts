@@ -18,6 +18,7 @@ import {
   type TraceContext,
   type TraceContextHeaders,
 } from './trace-context';
+import { decodeRequestMetadata } from './request-metadata';
 import { networkPolicyDigest } from './network-policy';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
@@ -904,6 +905,7 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private readonly issuedRuns = new Map<string, NativeTurn>();
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
+  private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
   private defaultTools: readonly SessionTool[];
   private readonly admittedDeclarations = new Map<string, WeakSet<object>>();
@@ -3361,6 +3363,7 @@ export class Session<OutputT = string, Context = unknown> {
       ...(run.writableRoots === undefined
         ? {}
         : { writable_roots: run.writableRoots }),
+      observation_submission_id: this.submissionIds.get(run)!,
       input: output.prompt
         ? [...parts, { type: 'text', text: output.prompt }]
         : parts,
@@ -3410,11 +3413,21 @@ export class Session<OutputT = string, Context = unknown> {
         ),
     );
     this.submissionIds.set(run, randomUUID());
+    this.registerRequestObservationRoute(run);
     return run;
   }
 
+  private registerRequestObservationRoute(run: NativeTurn): void {
+    const routeId = this.submissionIds.get(run)!;
+    this.requestObservationRoutes.set(routeId, run);
+    const retire = () => {
+      this.requestObservationRoutes.delete(routeId);
+    };
+    run.completion.promise.then(retire, retire);
+  }
+
   private begin(
-    submit: (tracingContext?: string) => Promise<string>,
+    submit: (run: NativeTurn, tracingContext?: string) => Promise<string>,
     output = this.defaultOutput,
     outputOverride = false,
     selection?: OperationSelection,
@@ -3429,13 +3442,13 @@ export class Session<OutputT = string, Context = unknown> {
       : this.captureRootTracing(tracing);
     if (continuedFrom) continuedFrom.tracing = undefined;
     this.dispatchRun(run, () => {
-      if (!run.tracing) return submit();
+      if (!run.tracing) return submit(run);
       return this.tracingContext(run).then((context) => {
         if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
           throw new TurnAborted(
             'Tracing admission stopped before native submission',
           );
-        return submit(context);
+        return submit(run, context);
       });
     });
     return run;
@@ -3861,7 +3874,7 @@ export class Session<OutputT = string, Context = unknown> {
         // Native still decides admission from the exact managed Turn, never from
         // this event hint. Input is already in history and is not resubmitted.
         const next = this.begin(
-          (tracingContext) =>
+          (nextRun, tracingContext) =>
             this.#native._submit(
               encode({
                 ...(tracingContext ? { tracing_context: tracingContext } : {}),
@@ -3870,6 +3883,7 @@ export class Session<OutputT = string, Context = unknown> {
                 ...(run.parentTrace
                   ? { trace: run.parentTrace.toHeaders() }
                   : {}),
+                observation_submission_id: this.submissionIds.get(nextRun)!,
                 expected_previous_turn_id: run.id,
                 ...(submission.output.schema === undefined
                   ? {}
@@ -3947,12 +3961,23 @@ export class Session<OutputT = string, Context = unknown> {
           throw error;
         }
         if (!this.isOpen || this.#native !== native) return;
-        const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
         const msg = event.msg;
         if (msg.type === 'token_count') {
           const snapshot = apiRateLimits(msg.api_rate_limits);
           if (snapshot) this.apiRateLimitState.snapshot = snapshot;
         }
+        if (msg.type === '_sdk_request_metadata') {
+          const route =
+            typeof msg.submission_id === 'string'
+              ? this.requestObservationRoutes.get(msg.submission_id)
+              : undefined;
+          if (route) {
+            if (route.id === null) route.pending.push(event);
+            else this.observeRequestMetadata(route, event);
+          }
+          continue;
+        }
+        const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : null;
         if (msg.type === 'elicitation_status') {
           await this.observeNativeUrlStatus(native, event);
           continue;
@@ -4544,7 +4569,33 @@ export class Session<OutputT = string, Context = unknown> {
     } else this.observations.gap();
   }
 
+  private observeRequestMetadata(run: NativeTurn, event: NativeEvent): void {
+    const msg = event.msg;
+    if (
+      run.controller.signal.aborted ||
+      typeof msg.submission_id !== 'string' ||
+      this.requestObservationRoutes.get(msg.submission_id) !== run
+    )
+      return;
+    const observation = decodeRequestMetadata(
+      msg.observation,
+      msg.submission_id,
+    );
+    if (
+      observation &&
+      'threadId' in observation &&
+      observation.threadId === this.id &&
+      observation.turnId === event.id &&
+      run.id === observation.turnId
+    )
+      this.observations.append(observation);
+  }
+
   private process(run: NativeTurn, event: NativeEvent): void {
+    if (event.msg.type === '_sdk_request_metadata') {
+      this.observeRequestMetadata(run, event);
+      return;
+    }
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     const msg = event.msg;
     const kind = msg.type;
@@ -5580,6 +5631,7 @@ export class Session<OutputT = string, Context = unknown> {
               ? encode(this.options.parentTrace.toHeaders())
               : undefined,
             tracingContext,
+            this.submissionIds.get(run)!,
           );
           const submission = decode(submissionSchema, wire);
           if (submission.status !== 'started' || submission.turn_id !== run.id)
@@ -7165,7 +7217,7 @@ export class Session<OutputT = string, Context = unknown> {
     const previous = this.lastRun;
     const parentTrace = this.options.parentTrace;
     const run = this.begin(
-      (context) =>
+      (_run, context) =>
         this.#native._compact(
           parentTrace ? encode(parentTrace.toHeaders()) : null,
           context,
@@ -7207,7 +7259,7 @@ export class Session<OutputT = string, Context = unknown> {
         );
       const parentTrace = this.options.parentTrace;
       const run = this.begin(
-        (context) =>
+        (_run, context) =>
           native._execute_command(
             'review',
             command.arguments,

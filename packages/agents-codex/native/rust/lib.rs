@@ -2905,6 +2905,7 @@ impl NativeThread {
         selection_json: Option<String>,
         trace_json: Option<String>,
         tracing_context: Option<String>,
+        observation_submission_id: Option<String>,
     ) -> napi::Result<String> {
         let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
             .map_err(input_error)?;
@@ -2966,13 +2967,14 @@ impl NativeThread {
                     .map_err(native_error)?;
             }
             let result = ops::recover_prepared(
-                &inner.thread,
+                &inner,
                 frame.turn_id,
                 frame.reply_order,
                 settings,
                 output_schema,
                 selection,
                 trace,
+                observation_submission_id,
             )
             .await
             .map_err(native_error)?;
@@ -4003,3 +4005,5 @@ mod native_trace_merge_tests {
         codex_otel::sdk_trace::release_trace_span(token);
     }
 }
+
+mod request_metadata;
