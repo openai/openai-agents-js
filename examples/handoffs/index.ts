@@ -22,11 +22,10 @@ const randomNumberTool = tool({
   },
 });
 
-// Message filter for handoff (removes tool messages and first two history items)
 function spanishHandoffMessageFilter(handoffMessageData: HandoffInputData) {
   if (isGpt5Default()) {
     console.log(
-      'GPT-5 models do not work if you remove the tool call results, so this filter does nothing.',
+      'Keeping tool calls and results for the configured default model.',
     );
     return handoffMessageData;
   }

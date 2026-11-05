@@ -1339,6 +1339,12 @@ describe('exact request waits with the native pending owner', () => {
     let oldReply;
     try {
       const turn = await original.submit('begin');
+      await vi.waitFor(
+        async () => {
+          expect(await original.pendingInteractions()).toHaveLength(2);
+        },
+        { timeout: 5_000 },
+      );
       const batch = await turn.wait({ until: 'request' });
       if (!('requests' in batch))
         throw new Error('Expected pending original root');

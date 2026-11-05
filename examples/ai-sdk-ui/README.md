@@ -26,7 +26,7 @@ pnpm -F ai-sdk-ui start:script-simple
 ## Next.js route examples
 
 ```ts
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 import { createAiSdkUiMessageStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 
 export async function POST() {
@@ -41,7 +41,7 @@ export async function POST() {
 ```
 
 ```ts
-import { Agent, run } from '@openai/agents';
+import { Agent, run } from '@openai/agents/classic';
 import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 
 export async function POST() {

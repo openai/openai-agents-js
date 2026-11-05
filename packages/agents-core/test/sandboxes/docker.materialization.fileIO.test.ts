@@ -55,7 +55,8 @@ describe.skipIf(process.platform === 'win32')(
     it('stops a large directory before probing members beyond the limit', async () => {
       const source = join(root, 'many-files');
       await mkdir(source);
-      for (let index = 0; index < 20; index++) {
+      // The directory is one member, so four files exceed the limit below.
+      for (let index = 0; index < 4; index++) {
         await writeFile(join(source, `file-${index}`), 'content');
       }
       session.state.manifest.extraPathGrants.push({
@@ -73,7 +74,7 @@ describe.skipIf(process.platform === 'win32')(
       // A failed copy closes its reader and leaves the session usable.
       session.setArchiveLimits(null);
       await session.materializeEntry({ path: 'trusted', entry });
-      expect(await readFile(join(workspace, 'trusted/file-19'), 'utf8')).toBe(
+      expect(await readFile(join(workspace, 'trusted/file-3'), 'utf8')).toBe(
         'content',
       );
     });

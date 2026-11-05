@@ -2,7 +2,9 @@
 
 use anyhow::{Context, Result, ensure};
 use codex_core_api::WithTurnExtensionData;
-use codex_protocol::protocol::{Op, ReviewRequest, ReviewTarget, ThreadSettingsOverrides};
+use codex_protocol::protocol::{
+    Op, ReviewRequest, ReviewTarget, ThreadSettingsOverrides, W3cTraceContext,
+};
 use codex_thread_store::{StoredThread, ThreadMetadataPatch};
 use serde_json::{Value, json};
 
@@ -97,7 +99,11 @@ pub(crate) async fn check_review(state: &ThreadState) -> Result<()> {
 }
 
 // Call check_review under the same guards before submitting settings or review.
-pub(crate) async fn review(state: &ThreadState, instructions: &str) -> Result<String> {
+pub(crate) async fn review(
+    state: &ThreadState,
+    instructions: &str,
+    trace: Option<W3cTraceContext>,
+) -> Result<String> {
     validate_arguments("review", instructions)?;
     let mut init = state.thread.config_snapshot().await.turn_extension_init;
     init.insert(None::<crate::python_tools::OperationSelection>);
@@ -114,14 +120,17 @@ pub(crate) async fn review(state: &ThreadState, instructions: &str) -> Result<St
     crate::graph_stop::check_mutation(state)?;
     Ok(state
         .thread
-        .submit(Op::Review {
-            review_request: ReviewRequest {
-                target: ReviewTarget::Custom {
-                    instructions: instructions.to_owned(),
+        .submit_with_trace(
+            Op::Review {
+                review_request: ReviewRequest {
+                    target: ReviewTarget::Custom {
+                        instructions: instructions.to_owned(),
+                    },
+                    user_facing_hint: None,
                 },
-                user_facing_hint: None,
             },
-        })
+            trace,
+        )
         .await?)
 }
 

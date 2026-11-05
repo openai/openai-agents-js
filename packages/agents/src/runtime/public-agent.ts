@@ -1,3 +1,8 @@
+import {
+  captureTraceContext,
+  type TraceContext,
+  type TraceContextHeaders,
+} from './trace-context';
 import { assertOutputState, sessionStateSchema } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { nativeAgentConfig } from './agent-configuration';
@@ -59,6 +64,8 @@ export interface AgentOptions<Context = undefined, Output = string> {
 }
 
 export interface SessionOptions<Context = undefined> {
+  /** Explicit native parent; never read from ambient tracing or persisted state. */
+  parentTrace?: TraceContext | TraceContextHeaders | null;
   context?: Context;
   state?: SessionState;
   /** Borrow this provider instead of the Agent provider. */
@@ -279,7 +286,10 @@ export class Agent<Context = undefined, Output = string> {
   async session(
     ...args: SessionArguments<Context>
   ): Promise<Session<Output, Context>> {
-    const options = { ...(args[0] ?? {}) };
+    const options = {
+      ...(args[0] ?? {}),
+      parentTrace: captureTraceContext(args[0]?.parentTrace),
+    };
     options.signal?.throwIfAborted();
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
@@ -348,6 +358,7 @@ export class Agent<Context = undefined, Output = string> {
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
       context: options.context,
+      parentTrace: captureTraceContext(options.parentTrace),
       state: options.state,
       environment: options.environment,
       instructionFiles: options.instructionFiles,
@@ -839,6 +850,7 @@ export class Agent<Context = undefined, Output = string> {
         },
       };
       const session: CoreSessionOptions = {
+        parentTrace: captureTraceContext(options.parentTrace),
         state,
         localStorage: storage !== undefined,
         localResume: resume !== undefined,
@@ -856,7 +868,12 @@ export class Agent<Context = undefined, Output = string> {
         websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
         environmentOwner,
-        openCorrection: async (model, modelSettings, retainOpening) => {
+        openCorrection: async (
+          model,
+          modelSettings,
+          retainOpening,
+          parentTrace,
+        ) => {
           // Native fallback may read a later environment key; repair needs this snapshot.
           if (apiKey === undefined)
             throw new NativeError('Output repair requires a captured API key');
@@ -869,6 +886,7 @@ export class Agent<Context = undefined, Output = string> {
             tools: [],
           });
           const correctionOptions: OwnedSessionOptions<undefined> = {
+            parentTrace,
             [correctionOpening]: { apiKey, retainOpening },
           };
           return (await correction.session(
@@ -896,10 +914,16 @@ export class Agent<Context = undefined, Output = string> {
         });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
-        session.deferredReopen = async (state, active, outputOverride) => {
+        session.deferredReopen = async (
+          state,
+          active,
+          outputOverride,
+          parentTrace,
+        ) => {
           let owned: CoreSession<any, any> | undefined;
           try {
             const restoredOptions: OwnedSessionOptions<any> = {
+              parentTrace,
               context: captured.context,
               state,
               [deferredOpening]: {

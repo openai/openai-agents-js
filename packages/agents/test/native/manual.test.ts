@@ -3,7 +3,9 @@ import { z } from 'zod';
 import {
   createManualRequest,
   manualResultSchema,
+  prepareManualResult,
   manualTool,
+  type ManualTool,
   type ManualToolReply,
   type ManualToolRequest,
 } from '../../src/runtime/manual';
@@ -112,6 +114,42 @@ describe('manual tool declarations and exact reply ownership', () => {
       success: true,
       contentItems: [{ type: 'inputText', text: 'restored' }],
     });
+  });
+
+  it('carries a prepared conversion only into its matching live declaration', () => {
+    const conversion = vi.fn((value: number) => value * 2);
+    const lookup: ManualTool = manualTool({
+      name: 'number',
+      description: '',
+      parameters: z.object({}),
+      result: z.number().min(1).transform(conversion),
+    });
+    const foreign: ManualTool = manualTool({
+      name: 'number',
+      description: '',
+      parameters: z.object({}),
+      result: z.number(),
+    });
+    const authority = createManualRequest(lookup, identity, {}, () => true);
+    const request = authority.request();
+    if (!request) throw new Error('Expected current manual request');
+    expect(() =>
+      authority.takeReply(request.reply(prepareManualResult(foreign, 3))),
+    ).toThrow('Manual tool result failed validation');
+    expect(authority.request()).toBe(request);
+    expect(() => prepareManualResult(lookup, 0)).toThrow(
+      'Manual tool result failed validation',
+    );
+    expect(conversion).not.toHaveBeenCalled();
+    const prepared = prepareManualResult(lookup, 3);
+    expect(conversion).toHaveBeenCalledTimes(1);
+    const reply = request.reply(prepared);
+    expect(authority.takeReply(reply)).toEqual({
+      success: true,
+      contentItems: [{ type: 'inputText', text: '6' }],
+    });
+    expect(conversion).toHaveBeenCalledTimes(1);
+    expect(authority.takeReply(reply)).toBeUndefined();
   });
 
   it('allows retry after invalid result and validates each proposed reply only once', () => {

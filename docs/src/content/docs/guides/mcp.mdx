@@ -73,7 +73,7 @@ To stream incremental MCP results, pass `stream: true` when you run the `Agent`:
 
 For sensitive operations, you can require human approval of individual tool calls. Pass either `requireApproval: 'always'` or a fine‑grained object mapping tool names to `'never'`/`'always'`.
 
-If your code can determine whether a tool call is safe, use the [`onApproval` callback](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts) to approve or reject the tool call. If you require human approval, you can use the same [human-in-the-loop (HITL) approach](/openai-agents-js/guides/human-in-the-loop/) using `interruptions` as for local function tools.
+If your code can determine whether a tool call is safe, use the [`onApproval` callback](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/mcp/hosted-mcp-on-approval.ts) to approve or reject the tool call. If you require human approval, you can use the same [human-in-the-loop (HITL) approach](/openai-agents-js/guides/human-in-the-loop/) using `interruptions` as for local function tools.
 
 <Code
   lang="typescript"
@@ -114,9 +114,9 @@ Hosted MCP also supports OpenAI connectors. Instead of providing a `serverUrl`, 
   title="Connector-backed hosted MCP tool"
 />
 
-In this example the `GOOGLE_CALENDAR_AUTHORIZATION` environment variable holds an OAuth token obtained from the Google OAuth Playground, which authorizes the connector-backed server to call the Calendar API. For a runnable sample that also demonstrates streaming, see [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors).
+In this example the `GOOGLE_CALENDAR_AUTHORIZATION` environment variable holds an OAuth token obtained from the Google OAuth Playground, which authorizes the connector-backed server to call the Calendar API. For a runnable sample that also demonstrates streaming, see [`examples/connectors`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/connectors).
 
-See [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) for working samples of hosted tools, Streamable HTTP, and stdio with streaming, HITL, and `onApproval`.
+See [examples/mcp](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/mcp) for working samples of hosted tools, Streamable HTTP, and stdio with streaming, HITL, and `onApproval`.
 
 ## Agent-level MCP configuration
 
@@ -306,4 +306,4 @@ To restrict the tools exposed by each server, pass a static filter from `createM
 ## Further reading
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) – official specification.
-- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – runnable demos referenced above.
+- [examples/mcp](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/mcp) – runnable demos referenced above.
