@@ -1,3 +1,4 @@
+import process from 'node:process';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -118,11 +119,11 @@ test('starter lock rejects registry fallback and duplicate SDK installations', (
   assert.throws(() => verifyStarterLock(duplicate, packages), /Duplicate/);
 });
 
-test('release packaging verifies the full CI receipt but ships only runtime products and receipt', async () => {
+test('release packaging verifies the full build receipt but ships only runtime products and receipt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agents-alpha-receipt-'));
   const packageRoot = join(root, 'packages/agents');
   const revision = 'a'.repeat(40);
-  const platform = 'darwin-arm64';
+  const platform = `${process.platform}-${process.arch}`;
   const files = {
     'native/CODEX_REVISION': revision,
     'native/codex.node': 'addon',
@@ -198,7 +199,7 @@ test('release packaging verifies the full CI receipt but ships only runtime prod
       /product inventory/,
     );
     await writeFile(receiptPath, JSON.stringify(receipt));
-    const fixture = 'native/test-bin/exec-server-fixture';
+    const fixture = `native/test-bin/exec-server-fixture${process.platform === 'win32' ? '.exe' : ''}`;
     await mkdir(dirname(join(packageRoot, fixture)), { recursive: true });
     await writeFile(join(packageRoot, fixture), 'CI executor fixture');
     await chmod(join(packageRoot, fixture), 0o755);

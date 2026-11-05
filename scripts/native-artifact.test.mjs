@@ -153,7 +153,9 @@ test('native-only artifacts restore with no compiler and leave current SDK sourc
   }
 });
 
-test('Mac snapshots restore the verified CI fixture and executable mode without a compiler', async () => {
+test('Mac snapshots restore the verified CI fixture and executable mode without a compiler', async (context) => {
+  if (process.platform === 'win32')
+    return context.skip('Requires POSIX executable file modes.');
   const f = fixture('darwin-arm64');
   const executable = 'native/test-bin/exec-server-fixture';
   try {
@@ -186,8 +188,7 @@ test('Mac snapshots restore the verified CI fixture and executable mode without 
       readFileSync(join(f.packageRoot, executable), 'utf8'),
       executable,
     );
-    if (process.platform !== 'win32')
-      assert.ok(lstatSync(join(f.packageRoot, executable)).mode & 0o111);
+    assert.ok(lstatSync(join(f.packageRoot, executable)).mode & 0o111);
     assert.deepEqual(
       readFileSync(join(f.packageRoot, 'native/build-receipt.json')),
       receipt,
@@ -197,13 +198,15 @@ test('Mac snapshots restore the verified CI fixture and executable mode without 
   }
 });
 
-test('Mac snapshots reject missing, changed, nonregular and unexecutable CI fixtures before copying', async () => {
+test('Mac snapshots reject missing, changed, nonregular and unexecutable CI fixtures before copying', async (context) => {
+  if (process.platform === 'win32')
+    return context.skip('Requires POSIX executable file modes.');
   for (const mutation of [
     'inventory',
     'missing',
     'changed',
     'directory',
-    ...(process.platform === 'win32' ? [] : ['mode']),
+    'mode',
   ]) {
     const f = fixture('darwin-arm64');
     const executable = 'native/test-bin/exec-server-fixture';
@@ -231,7 +234,9 @@ test('Mac snapshots reject missing, changed, nonregular and unexecutable CI fixt
   }
 });
 
-test('restoring a Mac snapshot rejects fixture corruption and other platforms retain runtime-only snapshots', async () => {
+test('restoring a Mac snapshot rejects fixture corruption', async (context) => {
+  if (process.platform === 'win32')
+    return context.skip('Requires POSIX executable file modes.');
   const f = fixture('darwin-arm64');
   try {
     const staging = join(f.repository, 'donor');
@@ -247,7 +252,12 @@ test('restoring a Mac snapshot rejects fixture corruption and other platforms re
   } finally {
     f.dispose();
   }
-  for (const platform of ['linux-x64', 'win32-x64']) {
+});
+
+test('Linux and Windows snapshots reject test fixtures that local builds may include', async () => {
+  const platforms =
+    process.platform === 'win32' ? ['win32-x64'] : ['linux-x64', 'win32-x64'];
+  for (const platform of platforms) {
     const other = fixture(platform);
     try {
       const name = `native/test-bin/exec-server-fixture${platform === 'win32-x64' ? '.exe' : ''}`;
