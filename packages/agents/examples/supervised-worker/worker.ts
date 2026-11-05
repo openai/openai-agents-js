@@ -65,6 +65,7 @@ const snapshotSchema = z.strictObject({
       startupMs: z.number(),
       followUpSubmissionMs: z.number().nullable(),
       firstToolMs: z.number().nullable(),
+      firstToolResultMs: z.number().nullable().optional(),
       completionMs: z.number(),
     })
     .optional(),
@@ -341,6 +342,7 @@ export async function superviseArtifact(options: WorkerOptions) {
       ? performance.now() - submitted
       : null;
     let firstToolMs: number | null = null;
+    let firstToolResultMs: number | null = null;
     let steer = options.steer;
     let steeringWrite: Promise<void> | undefined;
     const observerFailure = Promise.withResolvers<never>();
@@ -361,6 +363,13 @@ export async function superviseArtifact(options: WorkerOptions) {
         }
         if (event.type === 'tool_started')
           firstToolMs ??= performance.now() - submitted;
+        if (
+          (event.type === 'tool_finished' && event.status !== 'cancelled') ||
+          (event.type === 'execution_item_completed' &&
+            (event.item.status === 'completed' ||
+              event.item.status === 'failed'))
+        )
+          firstToolResultMs ??= performance.now() - submitted;
       }
     })();
     void observations.catch(observerFailure.reject);
@@ -420,6 +429,7 @@ export async function superviseArtifact(options: WorkerOptions) {
       startupMs,
       followUpSubmissionMs,
       firstToolMs,
+      firstToolResultMs,
       completionMs: performance.now() - submitted,
     };
     const snapshot: WorkerSnapshot = {
