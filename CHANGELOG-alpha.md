@@ -21,7 +21,7 @@ This alpha introduces the embedded Codex harness through `@openai/agents`. Use t
 
 - Import the Codex harness API from `@openai/agents`. Use `@openai/agents/classic` for the classic Agent and Runner APIs, and `/classic/realtime` for the retained Realtime API.
 - Keep classic and native session state separate. Converting an active classic `RunState` into native `SessionState` is unsupported.
-- Use the experimental `@openai/agents/migration` adapter for supported classic declarations that run through the native engine. The [classic guide](packages/agents-codex/CLASSIC.md) describes its supported features and limits.
+- Use the experimental `@openai/agents/migration` adapter for supported classic declarations that run through the native engine. The [classic guide](packages/agents/CLASSIC.md) describes its supported features and limits.
 
 ### Documentation and examples
 
