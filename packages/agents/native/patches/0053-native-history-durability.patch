@@ -23,7 +23,7 @@ index e20b0a7f5cf5f6d4c5f8bc701facfb785aa900c0..6e4187502b5c4d414d1648a8964d0cd3
              .stream(
                  prompt,
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index fd2bfbf4382fac6f7ba2f14edb6fbdb21c3e1fde..fe03f7765f43b088ad5c727adf28b1f78843c82f 100644
+index bd4bc5a7fb83a9cc3746c626321692c948d27984..6def78c0c3ca19ff9ad05e55b0552651fe9ba075 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -1463,6 +1463,20 @@ impl Session {
@@ -48,12 +48,12 @@ index fd2bfbf4382fac6f7ba2f14edb6fbdb21c3e1fde..fe03f7765f43b088ad5c727adf28b1f7
          &self,
          context: PersistContext,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 62064639994fd8b172fdf06258cc045c46988440..a80da91efc6fd528d0b764fe7309c037ff7d6a7f 100644
+index d2dfca39fc47c7300b70cc9afd47dc03011d1ed8..7a211aa0637b2b40ffba5678aa34c66fb9ec7528 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -2494,9 +2494,7 @@ async fn drain_in_flight(
-                 )
-                 .await;
+@@ -2490,9 +2490,7 @@ async fn drain_in_flight(
+                 sess.record_tool_result(turn_context, &step_context.settings.model_info, result)
+                     .await;
              }
 -            Err(err) => {
 -                error_or_panic(format!("in-flight tool future failed during drain: {err}"));
@@ -62,7 +62,7 @@ index 62064639994fd8b172fdf06258cc045c46988440..a80da91efc6fd528d0b764fe7309c037
          }
      }
      Ok(())
-@@ -2596,6 +2594,8 @@ async fn try_run_sampling_request(
+@@ -2592,6 +2590,8 @@ async fn try_run_sampling_request(
              turn_context.extension_data.insert(LastSdkReceipt(receipt));
          }
      }
@@ -71,7 +71,7 @@ index 62064639994fd8b172fdf06258cc045c46988440..a80da91efc6fd528d0b764fe7309c037
      let request = client_session
          .stream(
              prompt,
-@@ -3203,6 +3203,9 @@ async fn try_run_sampling_request(
+@@ -3199,6 +3199,9 @@ async fn try_run_sampling_request(
          drain_in_flight(&mut in_flight, sess.clone(), &step_context).await?;
      }
  
@@ -82,10 +82,10 @@ index 62064639994fd8b172fdf06258cc045c46988440..a80da91efc6fd528d0b764fe7309c037
          // A tool call such as request_user_input can intentionally pause the turn. Emit token
          // counts only after pending tools resolve so clients do not see progress events while the
 diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
-index c2575979c395d88ee9105694a4dced32c09d0f4f..0890c299906142a89f2d84803010c53efad18de4 100644
+index 5f12497902be28f397b1ba190f3a65b1db9e2b0a..97e129269321fc2bf39a5242ac3c0df98038aec9 100644
 --- a/codex-rs/core/src/tasks/mod.rs
 +++ b/codex-rs/core/src/tasks/mod.rs
-@@ -61,6 +61,7 @@ use codex_protocol::protocol::WarningEvent;
+@@ -62,6 +62,7 @@ use codex_protocol::protocol::WarningEvent;
  use codex_thread_store::PersistContext;
  
  use codex_features::Feature;
@@ -93,7 +93,7 @@ index c2575979c395d88ee9105694a4dced32c09d0f4f..0890c299906142a89f2d84803010c53e
  use codex_protocol::error::CodexErrorDetails;
  use codex_protocol::error::Result as CodexResult;
  pub(crate) use compact::CompactTask;
-@@ -382,7 +383,7 @@ impl Session {
+@@ -383,7 +384,7 @@ impl Session {
          let storage_originator = AuthStorageOriginator::from_client_name(&turn_context.originator);
          let task_future = async move {
              let ctx_for_finish = Arc::clone(&ctx);
@@ -102,7 +102,7 @@ index c2575979c395d88ee9105694a4dced32c09d0f4f..0890c299906142a89f2d84803010c53e
                  Ok(()) => task_for_run
                      .run(
                          Arc::clone(&session),
-@@ -403,12 +404,14 @@ impl Session {
+@@ -404,12 +405,14 @@ impl Session {
                  && let Err(err) = sess.flush_rollout().await
              {
                  warn!("failed to flush rollout before completing turn: {err}");
@@ -121,10 +121,10 @@ index c2575979c395d88ee9105694a4dced32c09d0f4f..0890c299906142a89f2d84803010c53e
                  )
                  .await;
 diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
-index fb26fd6e8fbd79257d90fc8ba6f298eb65fdfa85..8a8b63cc439df0bd568d79e26b9084038252d3e5 100644
+index d58f23756ec43a7bd3608fdf75606d6f371f67b0..b825a5455982ece51150dae14579ec65be009609 100644
 --- a/codex-rs/core/src/tools/parallel.rs
 +++ b/codex-rs/core/src/tools/parallel.rs
-@@ -240,6 +240,13 @@ impl ToolCallRuntime {
+@@ -251,6 +251,13 @@ impl ToolCallRuntime {
                  } else {
                      Either::Right(lock.write().await)
                  };

@@ -1138,7 +1138,7 @@ export function projectHistory(
           native,
           done,
           id,
-          subagentId ?? sessionId,
+          text(payload.thread_id) ?? subagentId ?? sessionId,
         )) {
           const seenNative = identities.get(
             JSON.stringify([item.turnId, false, true, item.id]),

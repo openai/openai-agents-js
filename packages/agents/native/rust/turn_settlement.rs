@@ -7,7 +7,7 @@ use std::time::Duration;
 use codex_core::context::{
     ContextualUserFragment, InternalContextSource, InternalModelContextFragment,
 };
-use codex_core_api::{CodexThread, Config, WithTurnExtensionData};
+use codex_core_api::{CodexThread, Config, ManagedLocalExecCancelFailure, WithTurnExtensionData};
 use codex_extension_api::{
     ExtensionData, ExtensionDataInit, ExtensionFuture, ThreadIdleCause, ThreadIdleInput,
     ThreadLifecycleContributor, ThreadStopInput, TurnAbortInput, TurnErrorInput,
@@ -24,6 +24,7 @@ use tokio::time::{Instant, timeout_at};
 
 // This bounds settlement waits, not provider work or an accepted native start.
 const SETTLEMENT_GRACE: Duration = Duration::from_secs(1);
+const LOCAL_COMMAND_CLEANUP_FAILED: &str = "Native local command cleanup could not confirm exit";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Admission {
@@ -44,6 +45,7 @@ pub(crate) struct Turn {
     graceful: AtomicBool,
     input_recorded: AtomicBool,
     terminal: AtomicBool,
+    local_exec_cancel_failed: AtomicBool,
     born_fenced: bool,
     same_id_recovery: bool,
     provider_error: Mutex<
@@ -132,6 +134,9 @@ impl Turn {
     }
     pub(crate) fn terminal(&self) -> bool {
         self.terminal.load(Ordering::Acquire)
+    }
+    pub(crate) fn local_exec_cancel_failed(&self) -> bool {
+        self.local_exec_cancel_failed.load(Ordering::Acquire)
     }
     pub(crate) fn record_input(&self) {
         self.input_recorded.store(true, Ordering::Release);
@@ -330,6 +335,10 @@ impl Settlement {
         anyhow::ensure!(
             !acknowledged.await?,
             "Native managed turn restarted during interruption"
+        );
+        anyhow::ensure!(
+            !thread.managed_local_exec_cancel_failed(&receipt.id),
+            LOCAL_COMMAND_CLEANUP_FAILED
         );
         {
             let current = self.current.lock().expect("turn settlement poisoned");
@@ -539,6 +548,11 @@ impl TurnLifecycleContributor for Contributor {
             let owner = input
                 .thread_store
                 .get::<crate::native_interception::Control>();
+            if let Some(owner) = &owner {
+                input
+                    .turn_store
+                    .insert(owner.graph().close_sampling.clone());
+            }
             let graph = owner
                 .as_ref()
                 .map(|control| control.graph().state.lock().expect("graph stop poisoned"));
@@ -567,6 +581,7 @@ impl TurnLifecycleContributor for Contributor {
                 graceful: AtomicBool::new(false),
                 input_recorded: AtomicBool::new(false),
                 terminal: AtomicBool::new(false),
+                local_exec_cancel_failed: AtomicBool::new(false),
                 born_fenced,
                 same_id_recovery,
                 provider_error: Mutex::default(),
@@ -624,15 +639,44 @@ impl TurnLifecycleContributor for Contributor {
         })
     }
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
-        Box::pin(async move { terminal(input.thread_store, input.turn_store) })
+        Box::pin(async move { terminal(input.thread_store, input.turn_store, false) })
     }
     fn on_turn_abort<'a>(&'a self, input: TurnAbortInput<'a>) -> ExtensionFuture<'a, ()> {
-        Box::pin(async move { terminal(input.thread_store, input.turn_store) })
+        Box::pin(async move {
+            let local_exec_cancel_failed = input
+                .turn_store
+                .get::<ManagedLocalExecCancelFailure>()
+                .is_some();
+            if local_exec_cancel_failed
+                && let Some(owner) = input
+                    .thread_store
+                    .get::<crate::native_interception::Control>()
+            {
+                // A graph stop can finish as soon as the last turn goes terminal.
+                // Record the cleanup failure first, and only for a covered turn.
+                let mut graph = owner.graph().state.lock().expect("graph stop poisoned");
+                if graph.tree_stops != 0 || (graph.root_stops != 0 && owner.is_root()) {
+                    graph.failure.get_or_insert(LOCAL_COMMAND_CLEANUP_FAILED);
+                }
+            }
+            terminal(
+                input.thread_store,
+                input.turn_store,
+                local_exec_cancel_failed,
+            );
+        })
     }
 }
 
-fn terminal(thread_store: &ExtensionData, turn_store: &ExtensionData) {
+fn terminal(
+    thread_store: &ExtensionData,
+    turn_store: &ExtensionData,
+    local_exec_cancel_failed: bool,
+) {
     if let Some(turn) = turn_store.get::<Turn>() {
+        if local_exec_cancel_failed {
+            turn.local_exec_cancel_failed.store(true, Ordering::Release);
+        }
         turn.terminal.store(true, Ordering::Release);
         if let Some(owner) = thread_store.get::<crate::native_interception::Control>() {
             owner.graph().changed.send_replace(());
@@ -835,7 +879,7 @@ mod provider_error_tests {
         let started = settlement.observe();
         assert!(started.active);
         assert!(Arc::ptr_eq(started.receipt.as_ref().unwrap(), &receipt));
-        terminal(&thread, &store);
+        terminal(&thread, &store, false);
         assert!(receipt.terminal());
         // Terminal delivery alone cannot settle an unaccepted pending receipt.
         assert!(settlement.observe().active);
@@ -854,6 +898,25 @@ mod provider_error_tests {
         let retired = settlement.observe();
         assert!(retired.retired && !retired.active);
         assert!(Arc::ptr_eq(retired.receipt.as_ref().unwrap(), &receipt));
+    }
+
+    #[tokio::test]
+    async fn replacement_keeps_original_local_exec_cleanup_receipt() {
+        let thread = ExtensionData::new("child");
+        let original = {
+            let store = ExtensionData::new("original");
+            let receipt = start(&thread, &store, "original").await;
+            terminal(&thread, &store, true);
+            receipt
+        };
+        let replacement_store = ExtensionData::new("replacement");
+        let replacement = start(&thread, &replacement_store, "replacement").await;
+        terminal(&thread, &replacement_store, false);
+
+        let settlement = thread.get::<Settlement>().unwrap();
+        assert!(settlement.is_current(&replacement));
+        assert!(original.terminal() && original.local_exec_cancel_failed());
+        assert!(replacement.terminal() && !replacement.local_exec_cancel_failed());
     }
 
     async fn capture(

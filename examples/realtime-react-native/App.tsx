@@ -193,12 +193,6 @@ export default function App() {
 
   useEffect(() => disconnect, [disconnect]);
 
-  useEffect(() => {
-    if (E2E_MODE) {
-      void connect();
-    }
-  }, [connect]);
-
   const sendMessage = () => {
     const text = message.trim();
     if (!text || !sessionRef.current) {
@@ -220,10 +214,11 @@ export default function App() {
         <Text style={styles.status}>Status: {status}</Text>
         <Text style={styles.hint}>Token server: {TOKEN_URL}</Text>
         <TextInput
+          accessibilityLabel="Pairing token"
           autoCapitalize="none"
           autoCorrect={false}
           onChangeText={setPairingToken}
-          placeholder="Pairing token for physical device"
+          placeholder="Pairing token"
           secureTextEntry
           style={styles.input}
           value={pairingToken}
