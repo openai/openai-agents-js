@@ -1796,3 +1796,123 @@ it.each([true, false])(
     }
   },
 );
+
+it.each(['submit', 'submitWithOutput', 'enqueue'] as const)(
+  'snapshots W3C parent and scoped policy fields for %s',
+  async (method) => {
+    const { z } = await import('zod');
+    const { TraceContext } = await import('../src/runtime/trace-context');
+    const fallback = new TraceContext({
+      traceparent: '00-' + '3'.repeat(32) + '-' + '4'.repeat(16) + '-01',
+    });
+    const selected = {
+      traceparent: '00-' + '1'.repeat(32) + '-' + '2'.repeat(16) + '-01',
+    };
+    const original = selected.traceparent;
+    let submitted: Record<string, unknown> = {};
+    const session = await rootFixture(
+      async (wire) => {
+        submitted = JSON.parse(wire);
+        return JSON.stringify({ status: 'started', turn_id: 'root' });
+      },
+      { parentTrace: fallback },
+    );
+    try {
+      await withTrace({}, async () => {
+        const options = {
+          parentTrace: selected,
+          tracing: { disabled: true, includeSensitiveData: false },
+        };
+        const admitted =
+          method === 'submit'
+            ? session.submit('root', options)
+            : method === 'submitWithOutput'
+              ? session.submitWithOutput('root', z.string(), options)
+              : session.enqueue('root', undefined, options);
+        selected.traceparent = 'changed after admission capture';
+        await admitted;
+      });
+      // Native checks parent compatibility; this fixture verifies host forwarding only.
+      await vi.waitFor(() =>
+        expect(submitted.trace).toEqual({ traceparent: original }),
+      );
+      expect(
+        harness.contexts.get(submitted.tracing_context as string),
+      ).toMatchObject({ disabled: true, include_sensitive_data: false });
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+it.each([false, true])(
+  'keeps a Session usable after a parent conflict (operation MCP: %s)',
+  async (operationMcp) => {
+    const { HttpMCP } = await import('../src/runtime/mcp');
+    let calls = 0;
+    const publish = vi.fn(async () =>
+      JSON.stringify({
+        result: {
+          publication: 'published',
+          ready: true,
+          policy_generation: '1',
+          servers: {
+            records: {
+              accepted: true,
+              ready: true,
+              status: 'connected',
+              listing_error: false,
+              tools: ['read'],
+            },
+          },
+        },
+      }),
+    );
+    const session = await rootFixture(
+      async () => {
+        if (++calls === 1)
+          return JSON.stringify({
+            status: 'not_submitted',
+            reason: {
+              type: 'trace_context_conflict',
+              message:
+                'Explicit trace context must match the SDK tracing parent',
+            },
+          });
+        return JSON.stringify({ status: 'started', turn_id: 'healthy' });
+      },
+      operationMcp
+        ? {
+            mcpTools: [
+              new HttpMCP({
+                name: 'records',
+                tools: ['read'],
+                url: 'http://127.0.0.1:1/mcp',
+                activation: 'operation',
+              }),
+            ],
+          }
+        : {},
+      {},
+      undefined,
+      { _replace_mcp_servers: publish, _revoke_native_interception() {} },
+    );
+    try {
+      await withTrace({}, async () => {
+        await expect(
+          session.submit('conflicting', {
+            parentTrace: {
+              traceparent:
+                '00-' + '1'.repeat(32) + '-' + '2'.repeat(16) + '-01',
+            },
+          }),
+        ).rejects.toThrow('Explicit trace context must match');
+      });
+      expect((await session.submit('healthy')).turnId).toBe('healthy');
+      expect(calls).toBe(2);
+      expect(publish).toHaveBeenCalledTimes(operationMcp ? 1 : 0);
+    } finally {
+      await session.close();
+    }
+  },
+);

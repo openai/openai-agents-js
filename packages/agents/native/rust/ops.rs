@@ -354,9 +354,27 @@ pub(crate) fn pre_admission(error: anyhow::Error) -> anyhow::Error {
     error.context(marker)
 }
 
+/// Trace conflicts are known not to have admitted work, including submissions
+/// whose host has already published an operation MCP selection.
+pub(crate) fn prepare_submission_trace(value: &mut Value) -> Result<Option<Value>> {
+    match crate::prepare_submission_trace(value) {
+        Ok(()) => Ok(None),
+        Err(crate::TraceIngressError::Conflict) => Ok(Some(json!({
+            "status": "not_submitted",
+            "reason": {
+                "type": "trace_context_conflict",
+                "message": "Explicit trace context must match the SDK tracing parent"
+            }
+        }))),
+        Err(error) => Err(pre_admission(anyhow::Error::msg(error.to_string()))),
+    }
+}
+
 pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value) -> Result<Value> {
     let mut value = value;
-    codex_otel::sdk_trace::prepare_submission(&mut value).map_err(anyhow::Error::msg)?;
+    if let Some(receipt) = prepare_submission_trace(&mut value)? {
+        return Ok(receipt);
+    }
     let mut mutation = Some(state.mutations.lock().await);
     crate::graph_stop::check_after_wait(state, &value)?;
     let thread = &state.thread;
@@ -554,8 +572,15 @@ async fn continue_managed<'a>(
     }
     init.insert(selection);
     let value = submission(
-        crate::turn_settlement::continue_retained(state, mutation, &previous_id, p.start, init)
-            .await?,
+        crate::turn_settlement::continue_retained(
+            state,
+            mutation,
+            &previous_id,
+            p.trace,
+            p.start,
+            init,
+        )
+        .await?,
     );
     Ok(value)
 }
@@ -567,6 +592,7 @@ pub async fn recover_prepared(
     thread_settings: ThreadSettingsOverrides,
     final_output_json_schema: Option<Value>,
     selection: Option<crate::python_tools::OperationSelection>,
+    trace: Option<W3cTraceContext>,
 ) -> Result<Value> {
     let mut init = thread.config_snapshot().await.turn_extension_init;
     init.insert(selection);
@@ -578,7 +604,7 @@ pub async fn recover_prepared(
                     turn_id: turn_id.clone(),
                     thread_settings,
                     final_output_json_schema,
-                    trace: None,
+                    trace,
                     cyber_access_program: None,
                 },
                 init,

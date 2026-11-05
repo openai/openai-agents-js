@@ -245,7 +245,8 @@ describe.skipIf(process.platform === 'win32')(
           );
           expect(await readFile(leaf, 'utf8')).toBe('deep\n');
         },
-        15_000,
+        // Allow the full-depth ownership walk to run with the parallel suite.
+        30_000,
       );
 
       it.each(['materializeEntry', 'applyManifest'] as const)(

@@ -44,6 +44,7 @@ tokio-tungstenite = { version = "=0.28.0", default-features = false, features = 
 tokio-util = { version = "=0.7.18", features = ["rt"] }
 url = "=2.5.8"
 anyhow = "1"
+opentelemetry = { version = "=0.31.0", default-features = false, features = ["trace"] }
 codex-agent-graph-store = { path = ".upstream/reviewed-codex/codex-rs/agent-graph-store" }
 codex-app-server-protocol = { path = ".upstream/reviewed-codex/codex-rs/app-server-protocol" }
 codex-core-api = { path = ".upstream/reviewed-codex/codex-rs/core-api" }

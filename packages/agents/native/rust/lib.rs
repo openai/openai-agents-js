@@ -5,6 +5,7 @@
 use codex_otel::sdk_trace::FutureExt as _;
 use napi::bindgen_prelude::Either;
 use napi_derive::napi;
+use opentelemetry::trace::TraceContextExt as _;
 
 mod application_instructions;
 mod canonical_rules;
@@ -1940,7 +1941,13 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_compact")]
-    pub async fn _compact(&self, tracing_context: Option<String>) -> napi::Result<String> {
+    pub async fn _compact(
+        &self,
+        trace_json: Option<String>,
+        tracing_context: Option<String>,
+    ) -> napi::Result<String> {
+        let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
+            .map_err(input_error)?;
         let context = tracing_context
             .as_deref()
             .map(codex_otel::sdk_trace::context)
@@ -1981,7 +1988,7 @@ impl NativeThread {
             graph_stop::check_mutation(&inner).map_err(input_error)?;
             let turn_id = inner
                 .thread
-                .submit(codex_protocol::protocol::Op::Compact)
+                .submit_with_trace(codex_protocol::protocol::Op::Compact, trace)
                 .await
                 .map_err(native_error)?;
             serde_json::to_string(&serde_json::json!({"status": "started", "turn_id": turn_id}))
@@ -1996,8 +2003,11 @@ impl NativeThread {
         &self,
         name: String,
         arguments: String,
+        trace_json: Option<String>,
         tracing_context: Option<String>,
     ) -> napi::Result<String> {
+        let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
+            .map_err(input_error)?;
         let context = tracing_context
             .as_deref()
             .map(codex_otel::sdk_trace::context)
@@ -2007,7 +2017,9 @@ impl NativeThread {
         (async {
             commands::validate_arguments(&name, &arguments).map_err(input_error)?;
             if name == "compact" {
-                return self._compact(tracing_context.clone()).await;
+                return self
+                    ._compact(trace_json.clone(), tracing_context.clone())
+                    .await;
             }
             let inner = self.current()?;
             let _lifecycle = inner.engine.lifecycle.lock().await;
@@ -2032,7 +2044,7 @@ impl NativeThread {
                 }
                 "review" => {
                     commands::check_review(&inner).await.map_err(input_error)?;
-                    let turn = commands::review(&inner, &arguments)
+                    let turn = commands::review(&inner, &arguments, trace)
                         .await
                         .map_err(native_error)?;
                     serde_json::json!({"status": "started", "turn_id": turn})
@@ -2856,8 +2868,11 @@ impl NativeThread {
         &self,
         output_schema_json: Option<String>,
         selection_json: Option<String>,
+        trace_json: Option<String>,
         tracing_context: Option<String>,
     ) -> napi::Result<String> {
+        let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
+            .map_err(input_error)?;
         let context = tracing_context
             .as_deref()
             .map(codex_otel::sdk_trace::context)
@@ -2914,6 +2929,7 @@ impl NativeThread {
                 settings,
                 output_schema,
                 selection,
+                trace,
             )
             .await
             .map_err(native_error)?;
@@ -3643,4 +3659,209 @@ pub async fn force_flush_telemetry(timeout_ms: Option<u32>) -> napi::Result<Stri
 #[napi(js_name = "drain_trace_events")]
 pub async fn drain_trace_events(max_count: u32) -> napi::Result<String> {
     codex_otel::sdk_trace_routes::drain_trace_events(max_count as usize).map_err(native_error)
+}
+
+#[derive(Debug)]
+pub(crate) enum TraceIngressError {
+    Conflict,
+    Invalid(String),
+}
+impl std::fmt::Display for TraceIngressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict => {
+                f.write_str("Explicit trace context must match the SDK tracing parent")
+            }
+            Self::Invalid(message) => f.write_str(message),
+        }
+    }
+}
+
+fn trace_identity(
+    carrier: &codex_protocol::protocol::W3cTraceContext,
+) -> Result<(opentelemetry::trace::TraceId, opentelemetry::trace::SpanId), TraceIngressError> {
+    let context = codex_otel::context_from_w3c_trace_context(carrier)
+        .ok_or_else(|| TraceIngressError::Invalid("Invalid trace carrier".into()))?;
+    let span = context.span();
+    let parent = span.span_context();
+    Ok((parent.trace_id(), parent.span_id()))
+}
+
+fn resolve_trace_parent(
+    explicit: Option<codex_protocol::protocol::W3cTraceContext>,
+    tracing_context: Option<&str>,
+) -> Result<Option<codex_protocol::protocol::W3cTraceContext>, TraceIngressError> {
+    let explicit_identity = explicit.as_ref().map(trace_identity).transpose()?;
+    let scoped = tracing_context
+        .map(codex_otel::sdk_trace::trace_carrier)
+        .transpose()
+        .map_err(TraceIngressError::Invalid)?;
+    if let (Some(parent), Some(scoped)) = (explicit_identity, scoped.as_ref())
+        && parent != trace_identity(scoped)?
+    {
+        return Err(TraceIngressError::Conflict);
+    }
+    // Matching identities retain private policy through the existing native map;
+    // preserve the caller's explicit sampling flags and tracestate.
+    Ok(explicit.or(scoped))
+}
+
+fn resolve_trace_json(
+    trace_json: Option<&str>,
+    tracing_context: Option<&str>,
+) -> Result<Option<codex_protocol::protocol::W3cTraceContext>, TraceIngressError> {
+    let explicit = trace_json
+        .map(serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>)
+        .transpose()
+        .map_err(|_| TraceIngressError::Invalid("Invalid trace carrier".into()))?;
+    resolve_trace_parent(explicit, tracing_context)
+}
+
+pub(crate) fn prepare_submission_trace(value: &mut Value) -> Result<(), TraceIngressError> {
+    let Some(object) = value.as_object_mut() else {
+        return Ok(());
+    };
+    let token = object.remove("tracing_context");
+    let tracing_context = match &token {
+        None | Some(Value::Null) => None,
+        Some(Value::String(token)) => Some(token.as_str()),
+        Some(_) => {
+            return Err(TraceIngressError::Invalid(
+                "Invalid tracing context token".into(),
+            ));
+        }
+    };
+    let explicit = object
+        .remove("trace")
+        .filter(|trace| !trace.is_null())
+        .map(serde_json::from_value::<codex_protocol::protocol::W3cTraceContext>)
+        .transpose()
+        .map_err(|_| TraceIngressError::Invalid("Invalid trace carrier".into()))?;
+    if let Some(trace) = resolve_trace_parent(explicit, tracing_context)? {
+        object.insert(
+            "trace".into(),
+            serde_json::to_value(trace)
+                .map_err(|_| TraceIngressError::Invalid("Invalid trace carrier".into()))?,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod native_trace_merge_tests {
+    use super::*;
+    use codex_protocol::protocol::W3cTraceContext;
+    use serde_json::json;
+
+    fn carrier(span: &str, flags: &str, state: &str) -> W3cTraceContext {
+        W3cTraceContext {
+            traceparent: Some(format!(
+                "00-123456789012345678901234567890ab-{span}-{flags}"
+            )),
+            tracestate: Some(state.into()),
+        }
+    }
+
+    #[test]
+    fn parsed_identity_uses_trace_and_span_ids_not_flags_or_state() {
+        let sampled = carrier("12345678901234ab", "01", "fixture=one");
+        let unsampled = carrier("12345678901234ab", "00", "fixture=two");
+        assert_eq!(
+            trace_identity(&sampled).unwrap(),
+            trace_identity(&unsampled).unwrap()
+        );
+        assert_ne!(
+            trace_identity(&sampled).unwrap(),
+            trace_identity(&carrier("12345678901234ac", "01", "fixture=one")).unwrap()
+        );
+        assert!(
+            trace_identity(&W3cTraceContext {
+                traceparent: Some("invalid".into()),
+                tracestate: None
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_carrier_without_sdk_scope_keeps_flags_and_tracestate() {
+        let explicit = carrier("12345678901234ab", "00", "fixture=explicit");
+        let selected = resolve_trace_json(Some(&serde_json::to_string(&explicit).unwrap()), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.traceparent, explicit.traceparent);
+        assert_eq!(selected.tracestate, explicit.tracestate);
+    }
+
+    #[test]
+    fn sdk_submit_conflict_is_not_submitted_and_matching_parent_keeps_policy() {
+        const CHILD: &str = "AGENTS_TRACE_MERGE_NATIVE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "native_trace_merge_tests::sdk_submit_conflict_is_not_submitted_and_matching_parent_keeps_policy", "--nocapture"])
+                .env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        codex_otel::sdk_trace::configure_pipeline(false);
+        let readback: Value = serde_json::from_str(
+            &codex_otel::sdk_trace::start_trace_span(
+                r#"{"name":"merge-policy","kind":"workflow","disabled":true}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let token = readback["handle"].as_str().unwrap();
+        let explicit = W3cTraceContext {
+            traceparent: Some(format!(
+                "00-{}-{}-01",
+                readback["trace_id"].as_str().unwrap(),
+                readback["span_id"].as_str().unwrap()
+            )),
+            tracestate: Some("fixture=explicit".into()),
+        };
+        let mut mismatch = json!({"input":[],"trace":carrier("12345678901234ab","01","fixture=other"),"tracing_context":token});
+        let receipt = ops::prepare_submission_trace(&mut mismatch)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt["status"], "not_submitted");
+        assert_eq!(receipt["reason"]["type"], "trace_context_conflict");
+        assert!(codex_otel::sdk_trace::trace_span_context(token).is_ok());
+        let mut matching = json!({"input":[],"trace":explicit,"tracing_context":token});
+        assert!(
+            ops::prepare_submission_trace(&mut matching)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            matching["trace"]["traceparent"],
+            explicit.traceparent.as_deref().unwrap()
+        );
+        assert_eq!(matching["trace"]["tracestate"], "fixture=explicit");
+        assert!(matching.get("tracing_context").is_none());
+        let parsed = codex_otel::context_from_w3c_trace_context(&explicit).unwrap();
+        let restored = codex_otel::sdk_trace::policy_for_context(&parsed).unwrap();
+        let original = codex_otel::sdk_trace::policy_for_context(
+            &codex_otel::sdk_trace::context(token).unwrap(),
+        )
+        .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&restored, &original));
+        assert!(restored.disabled);
+        assert!(!restored.include_sensitive_data);
+        let mut scoped_only = json!({"input":[],"tracing_context":token});
+        assert!(
+            ops::prepare_submission_trace(&mut scoped_only)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            scoped_only["trace"]["traceparent"],
+            codex_otel::sdk_trace::trace_carrier(token)
+                .unwrap()
+                .traceparent
+                .unwrap()
+        );
+        codex_otel::sdk_trace::end_trace_span(token, r#"{"status":"ok"}"#).unwrap();
+        codex_otel::sdk_trace::release_trace_span(token);
+    }
 }
