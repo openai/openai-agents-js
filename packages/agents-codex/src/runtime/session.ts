@@ -441,6 +441,7 @@ export interface TurnCompletion<T> {
 
 /** @internal The Session supplies live requests; observations carry no authority. */
 export interface TurnRequestWait<T, NativeId extends string | null = string> {
+  rootResultReady?(): boolean;
   notify(): void;
   rateLimits(): ApiRateLimits;
   wait(
@@ -536,6 +537,11 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
    */
   events(options: ObservationOptions = {}): AsyncIterableIterator<Observation> {
     return this.observations(options);
+  }
+
+  /** @internal Check owner settlement without creating a result waiter. */
+  _rootResultReady(): boolean {
+    return this.requests?.rootResultReady?.() ?? false;
   }
 
   wait(): Promise<Completed<OutputT>>;
@@ -2280,6 +2286,7 @@ export class Session<OutputT = string, Context = unknown> {
         (mode) => this.cancelTurn(run, mode),
         undefined,
         {
+          rootResultReady: () => scope.phase() === 'ended',
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>

@@ -24,6 +24,7 @@ import {
   type Observation,
 } from '@openai/agents';
 import { expect, it, vi } from 'vitest';
+import { WorkerSignals } from '../../examples/supervised-worker/signals';
 import {
   publishAcceptedDraft,
   readWorkerSnapshot,
@@ -45,7 +46,7 @@ function runWorker(
   directory: string,
   options?: Pick<
     Parameters<typeof superviseArtifact>[0],
-    'reconcile' | 'startupMs' | 'steer' | 'turnMs'
+    'reconcile' | 'signals' | 'startupMs' | 'steer' | 'turnMs'
   >,
 ) {
   const server = new BorrowedPeer();
@@ -128,6 +129,68 @@ it.each([
     }
   },
 );
+
+it('records an account quota stop and closes its owned turn and session', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-worker-quota-'));
+  const entered = Promise.withResolvers<void>();
+  const signals = new WorkerSignals({
+    accountId: 'fixture-account',
+    generation: 1,
+  });
+  const close = vi.fn(async () => {});
+  const cancel = vi.fn(async () => {});
+  const submit = vi.fn(async () => ({
+    async *events() {},
+    cancel,
+    _rootResultReady: () => false,
+    waitForAttention({ signal }: { signal: AbortSignal }) {
+      entered.resolve();
+      return new Promise((_, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        }),
+      );
+    },
+  }));
+  const session = vi.spyOn(Agent.prototype, 'session').mockResolvedValue({
+    id: 'fixture-thread',
+    close,
+    submit,
+  } as unknown as Session);
+  const working = runWorker(directory, { signals });
+  void working.catch(() => {});
+  try {
+    await entered.promise;
+    const now = Date.now() / 1000;
+    signals.updateQuota({
+      generation: 1,
+      observedAt: now,
+      expiresAt: now + 60,
+      response: {
+        accountId: 'fixture-account',
+        ordinaryUsageAllowed: false,
+        rateLimits: {
+          credits: { hasCredits: false, unlimited: false },
+        },
+      },
+    });
+    await expect(working).rejects.toThrow('Account quota prevents');
+    await expect(readWorkerSnapshot(directory)).resolves.toMatchObject({
+      threadId: 'fixture-thread',
+      state: 'needs_attention',
+      attention: 'quota_blocked',
+    });
+    await expect(publishAcceptedDraft(directory)).rejects.toThrow(
+      'accepted draft',
+    );
+    expect(submit).toHaveBeenCalledOnce();
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+  } finally {
+    session.mockRestore();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it('reads older timing snapshots', async () => {
   const directory = await mkdtemp(
