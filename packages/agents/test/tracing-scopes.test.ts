@@ -1613,3 +1613,125 @@ it('clears registration ambient from the processor pump and callbacks', async ()
   await vi.waitFor(() => expect(delivered).toBe(1));
   await telemetry.setTraceProcessors([]);
 });
+
+it.each(['expired', 'live', 'entered'] as const)(
+  'discards only pre-entry expired question context: %s',
+  async (state) => {
+    const { parseEvent } = await import('../src/runtime/events');
+    let checks = 0;
+    const session = await rootFixture(
+      async () => JSON.stringify({ status: 'started', turn_id: 'root' }),
+      {},
+      {},
+      undefined,
+      {
+        _native_question_pending: async () =>
+          ++checks === 1 || state === 'live',
+      },
+    );
+    await session.submit('run');
+    const source = await startTrace();
+    const token = source.retain();
+    if (state !== 'entered') source.releaseContext(token);
+    const internals = session as unknown as {
+      issuedRuns: Map<string, unknown>;
+      trackNativeQuestion: (owner: never, event: never) => Promise<void>;
+      trackOwnedCallback: (
+        owner: unknown,
+        callback: () => Promise<void>,
+      ) => Promise<void>;
+      admitNativeQuestion: (...args: unknown[]) => Promise<void>;
+    };
+    const failure = new Error('entered question callback failure');
+    const admit = vi
+      .spyOn(internals, 'admitNativeQuestion')
+      .mockRejectedValue(failure);
+    vi.spyOn(internals, 'trackOwnedCallback').mockImplementation(
+      (_owner, callback) => callback(),
+    );
+    try {
+      const event = parseEvent(
+        JSON.stringify({
+          id: 'root',
+          msg: {
+            type: 'exec_approval_request',
+            turn_id: 'root',
+            _sdk_question_id: 'question',
+            tracing_context: token,
+          },
+        }),
+      );
+      const pending = internals.trackNativeQuestion(
+        internals.issuedRuns.get('root') as never,
+        event as never,
+      );
+      if (state === 'expired') await expect(pending).resolves.toBeUndefined();
+      else
+        await expect(pending).rejects.toThrow(
+          state === 'entered'
+            ? 'entered question callback failure'
+            : 'Unknown or released',
+        );
+      expect(admit).toHaveBeenCalledTimes(state === 'entered' ? 1 : 0);
+      expect(checks).toBe(state === 'entered' ? 1 : 2);
+    } finally {
+      if (state === 'entered') source.releaseContext(token);
+      source.close();
+      await session.close();
+    }
+  },
+);
+it('retains nested question callback context after admission and grant release', async () => {
+  let submitted: Record<string, unknown> = {};
+  const session = await rootFixture(async (wire) => {
+    submitted = JSON.parse(wire);
+    return JSON.stringify({ status: 'started', turn_id: 'root' });
+  });
+  let workflow: Awaited<ReturnType<typeof startTrace>>;
+  await withTrace({}, async (span) => {
+    workflow = span;
+    await session.submit('run');
+  });
+  const internals = session as unknown as {
+    issuedRuns: Map<string, unknown>;
+    trackQuestionCallback: (
+      owner: never,
+      callback: () => Promise<void>,
+    ) => Promise<void>;
+  };
+  const borrowed = harness.native.retain_trace_context(
+    submitted.tracing_context as string,
+  );
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let callback: Promise<void>;
+  try {
+    await withoutTracing(() =>
+      withNativeCallbackContext(
+        borrowed,
+        () => {
+          callback = internals.trackQuestionCallback(
+            internals.issuedRuns.get('root') as never,
+            async () => {
+              entered.resolve();
+              await release.promise;
+              expect(getCurrentTrace()).toBe(workflow!);
+              await withSpan({}, () =>
+                expect(getCurrentTrace()).toBe(workflow!),
+              );
+            },
+          );
+        },
+        undefined,
+        () => workflow!,
+      ),
+    );
+    await entered.promise;
+    harness.native.release_trace_context(borrowed);
+    release.resolve();
+    await callback!;
+  } finally {
+    release.resolve();
+    await session.close();
+  }
+});

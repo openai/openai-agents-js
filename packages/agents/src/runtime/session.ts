@@ -1628,6 +1628,72 @@ export class Session<OutputT = string, Context = unknown> {
     });
   }
 
+  private trackNativeQuestion(
+    run: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+  ): Promise<void> {
+    const native = this.#native;
+    const context =
+      typeof event.msg.tracing_context === 'string'
+        ? event.msg.tracing_context
+        : undefined;
+    const questionId =
+      typeof event.msg._sdk_question_id === 'string'
+        ? event.msg._sdk_question_id
+        : undefined;
+    return this.trackOwnedCallback(run, async () => {
+      if (context === undefined || questionId === undefined)
+        return this.admitNativeQuestion(run, event);
+      const pending = async () =>
+        this.#native === native &&
+        this.canAnswerNativeQuestions(run) &&
+        (await native._native_question_pending(questionId));
+      if (!(await pending())) return;
+      let entered = false;
+      try {
+        await withNativeCallbackContext(
+          context,
+          () => {
+            entered = true;
+            return this.admitNativeQuestion(run, event);
+          },
+          run.controller.signal,
+          (traceId, workflowSpanId) =>
+            this.workflowForTrace(traceId, workflowSpanId),
+        );
+      } catch (error) {
+        if (!entered && !(await pending())) return;
+        throw error;
+      }
+    });
+  }
+
+  private trackQuestionCallback(
+    run: NativeTurn | ChildCallbackOwner,
+    callback: () => Promise<void>,
+  ): Promise<void> {
+    const span = getCurrentSpan();
+    const context = span?.retain();
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (context !== undefined) span!.releaseContext(context);
+    };
+    const pending = this.trackOwnedCallback(
+      run,
+      async () => {
+        try {
+          await callback();
+        } finally {
+          release();
+        }
+      },
+      context,
+    );
+    return pending.finally(release);
+  }
+
   private async admitNativeQuestion(
     run: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
@@ -2065,7 +2131,7 @@ export class Session<OutputT = string, Context = unknown> {
       });
       this.interceptionCleanups.add(stopUrl);
       if (!(run instanceof NativeTurn)) {
-        void this.trackOwnedCallback(run, async () => {
+        void this.trackQuestionCallback(run, async () => {
           let failure: unknown;
           try {
             while (completion.pending() && this.current(run)) {
@@ -2124,13 +2190,13 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.oneShot) {
       const handler = this.oneShot.onNativeQuestion;
       if (!handler) {
-        void this.trackOwnedCallback(run, async () => {
+        void this.trackQuestionCallback(run, async () => {
           throw new InteractionRequired();
         }).catch(() => {});
         return;
       }
       const response: { reply?: NativeQuestionReply } = {};
-      void this.trackOwnedCallback(run, async () => {
+      void this.trackQuestionCallback(run, async () => {
         response.reply = await handler(grant.request, run.controller.signal);
         if (!grant.current()) return;
         if (!response.reply)
@@ -4150,9 +4216,7 @@ export class Session<OutputT = string, Context = unknown> {
     ) {
       if (owner.observationProducer !== producer || this.#native !== native)
         return;
-      void this.trackOwnedCallback(owner, () =>
-        this.admitNativeQuestion(owner, event),
-      ).catch(() => {});
+      void this.trackNativeQuestion(owner, event).catch(() => {});
       return;
     }
     if (!requestTypes.has(msg.type)) return;
@@ -4367,11 +4431,7 @@ export class Session<OutputT = string, Context = unknown> {
         'elicitation_request',
       ].includes(kind)
     ) {
-      this.track(
-        run,
-        this.admitNativeQuestion(run, event),
-        run.toolInvocations,
-      );
+      void this.trackNativeQuestion(run, event).catch(() => {});
       return;
     }
     if (kind === '_sdk_select_step') {

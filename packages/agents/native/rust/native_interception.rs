@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
@@ -576,6 +576,7 @@ pub struct Control {
     review_delegate: std::sync::OnceLock<bool>,
     native_ancestor: Option<Weak<Control>>,
     stopped: CancellationToken,
+    creation_tracing: OnceLock<Option<Arc<codex_otel::sdk_trace::ContextLease>>>,
     direct_turn: Mutex<Option<Arc<DirectTurn>>>,
     code_mode_sessions: Mutex<Vec<Weak<Session>>>,
     pending_code_import: Mutex<Option<Weak<PendingCodeImport>>>,
@@ -619,6 +620,10 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn creation_tracing(&self) -> Option<Arc<codex_otel::sdk_trace::ContextLease>> {
+        self.creation_tracing.get().cloned().flatten()
+    }
+
     pub(crate) fn code_import_poisoned(&self) -> bool {
         self.import_cleanup_failure.get().is_some_and(|failure| {
             failure
@@ -708,6 +713,7 @@ impl Control {
             review_delegate: std::sync::OnceLock::new(),
             native_ancestor: None,
             stopped: CancellationToken::new(),
+            creation_tracing: OnceLock::new(),
             direct_turn: Mutex::new(None),
             code_mode_sessions: Mutex::default(),
             pending_code_import: Mutex::default(),
@@ -750,6 +756,7 @@ impl Control {
             review_delegate: std::sync::OnceLock::new(),
             native_ancestor: Some(Arc::downgrade(parent)),
             stopped: CancellationToken::new(),
+            creation_tracing: OnceLock::new(),
             direct_turn: Mutex::new(None),
             code_mode_sessions: Mutex::default(),
             pending_code_import: Mutex::default(),
@@ -2308,6 +2315,7 @@ impl ThreadLifecycleContributor<Config> for Boundary {
         input: ThreadStartInput<'a, Config>,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            let creation_tracing = codex_otel::sdk_trace::CapturedContext::capture().context;
             let root = !matches!(
                 input.session_source,
                 SessionSource::Internal(_) | SessionSource::SubAgent(_)
@@ -2339,6 +2347,7 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     None => Control::new(id, root),
                 }
             });
+            let _ = control.creation_tracing.set(creation_tracing);
             if strict_executor_writes {
                 let _ = control.strict_executor_writes.set(());
             }
@@ -8193,5 +8202,62 @@ mod mcp_policy_tests {
         assert_eq!(control.channel.bytes.available_permits(), initial);
         drop(output);
         drop(tx);
+    }
+    #[tokio::test]
+    async fn child_receipt_retains_original_tracing_after_origin_scope_ends() {
+        const CHILD: &str = "AGENTS_CHILD_RECEIPT_TRACE_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "native_interception::mcp_policy_tests::child_receipt_retains_original_tracing_after_origin_scope_ends"]).env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        codex_otel::sdk_trace::configure_pipeline(false);
+        let original: serde_json::Value = serde_json::from_str(&codex_otel::sdk_trace::start_trace_span(
+            r#"{"name":"origin","kind":"workflow","trace_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","disabled":true,"include_sensitive_data":false}"#,
+        ).unwrap()).unwrap();
+        let handle = original["handle"].as_str().unwrap();
+        let attached = codex_otel::sdk_trace::context(handle).unwrap().attach();
+        let thread = ExtensionData::new("thread");
+        let turn = ExtensionData::new("original");
+        let session = ExtensionData::new("session");
+        let control = thread.get_or_init(|| Control::new("thread".into(), false));
+        let _ = control
+            .creation_tracing
+            .set(codex_otel::sdk_trace::CapturedContext::capture().context);
+        let mode = serde_json::from_value(serde_json::json!({"mode":"default", "settings":{"model":"test","reasoning_effort":null,"developer_instructions":null}})).unwrap();
+        crate::turn_settlement::Contributor
+            .on_turn_start(TurnStartInput {
+                turn_id: "original",
+                collaboration_mode: &mode,
+                token_usage_at_turn_start: None,
+                session_store: &session,
+                thread_store: &thread,
+                turn_store: &turn,
+            })
+            .await;
+        let receipt = turn.get::<crate::turn_settlement::Turn>().unwrap();
+        let creation = control.creation_tracing().unwrap();
+        let tracing = receipt.tracing.as_ref().unwrap().clone();
+        drop(attached);
+        codex_otel::sdk_trace::end_trace_span(handle, r#"{"status":"ok"}"#).unwrap();
+        codex_otel::sdk_trace::release_trace_span(handle);
+        let unrelated: serde_json::Value = serde_json::from_str(&codex_otel::sdk_trace::start_trace_span(
+            r#"{"name":"unrelated","kind":"workflow","trace_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","include_sensitive_data":true}"#,
+        ).unwrap()).unwrap();
+        let unrelated_handle = unrelated["handle"].as_str().unwrap();
+        let _unrelated = codex_otel::sdk_trace::context(unrelated_handle)
+            .unwrap()
+            .attach();
+        for owner in [creation, tracing] {
+            let snapshot: serde_json::Value = serde_json::from_str(
+                &codex_otel::sdk_trace::trace_span_context(owner.token()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(snapshot["trace_id"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            assert_eq!(snapshot["disabled"], true);
+            assert_eq!(snapshot["include_sensitive_data"], false);
+        }
+        codex_otel::sdk_trace::release_trace_span(unrelated_handle);
     }
 }

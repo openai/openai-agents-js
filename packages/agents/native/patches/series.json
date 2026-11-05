@@ -214,12 +214,12 @@
     },
     {
       "path": "0054-sdk-native-tracing.patch",
-      "sha256": "2324b54958b3cc18b3ffe7226e30b8618e8278b64f0d9d74c2165af2d269b934"
+      "sha256": "a6ea57be2d022a630184b3eed7d27c6897dc8b707b40b71144a9d688e0cc65fa"
     },
     {
       "path": "0055-sdk-workflow-identity.patch",
       "sha256": "baeeaf16744fb8e9248377988f19c10cca5ddafbb0431cc09a7939c1c8c9ba76"
     }
   ],
-  "result_tree": "2d0c3cf5f8f4cf1d979d09789a47987652545509"
+  "result_tree": "7e07071ebc3bc61dab807b10e2a690f909ffee8d"
 }
