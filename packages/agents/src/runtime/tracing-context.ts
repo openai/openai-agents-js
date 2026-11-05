@@ -106,6 +106,10 @@ export class TraceCapture {
       () => {},
     );
   }
+  /** @internal Workflow metadata only; native callback carriers own ancestry. */
+  get workflow(): TraceSpan | undefined {
+    return this.span?.kind === 'workflow' ? this.span : this.span?.workflow;
+  }
   /** @internal Retain synchronously when ready; otherwise reserve before closing. */
   retain(): Promise<{ token: string; span: TraceSpan }> {
     if (this.span)
@@ -283,6 +287,7 @@ export async function withNativeCallbackContext<T>(
   context: string | undefined,
   callback: () => T | Promise<T>,
   signal?: AbortSignal,
+  workflowForTrace?: (traceId: string) => TraceSpan | undefined,
 ): Promise<T> {
   if (context === undefined) return callback();
   const native = await binding();
@@ -295,7 +300,10 @@ export async function withNativeCallbackContext<T>(
       }),
     ),
   );
-  const span = spanFromWire(native, wire, 'callback', ambient.getStore());
+  const parent = workflowForTrace
+    ? workflowForTrace(wire.trace_id)
+    : ambient.getStore();
+  const span = spanFromWire(native, wire, 'callback', parent);
   try {
     return await ambient.run(span, () => callback());
   } catch (error) {

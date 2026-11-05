@@ -112,6 +112,8 @@ async function contextCase(batches: unknown[]) {
   const release = Promise.withResolvers<void>();
   let effects = 0;
   let callbackTrace = '';
+  let workflowHandle: telemetry.TraceSpan | undefined;
+  let stepCalls = 0;
   const server = new ModelServer(
     [
       [call('probe', { value: 'synthetic' }, { callId: 'probe-1' })],
@@ -144,13 +146,14 @@ async function contextCase(batches: unknown[]) {
           parameters: z.object({ value: z.string() }),
           execute: async () => {
             effects++;
+            assert.equal(telemetry.getCurrentTrace(), workflowHandle);
             callbackTrace = telemetry.getCurrentSpan()?.context.traceId ?? '';
             entered.resolve();
             await release.promise;
-            return telemetry.withSpan(
-              { name: 'application.tool_work' },
-              () => 'tool-result',
-            );
+            return telemetry.withSpan({ name: 'application.tool_work' }, () => {
+              assert.equal(telemetry.getCurrentTrace(), workflowHandle);
+              return 'tool-result';
+            });
           },
         }),
       ],
@@ -171,9 +174,23 @@ async function contextCase(batches: unknown[]) {
       async (span) => {
         firstTrace = span.context.traceId;
         firstHandle = span.handle;
+        workflowHandle = span;
         first = await telemetry.withSpan(
           { name: 'application.admit_first' },
-          () => session.submit('first'),
+          () =>
+            session.submit('first', {
+              beforeStep: async () => {
+                stepCalls++;
+                assert.equal(telemetry.getCurrentTrace(), workflowHandle);
+                await telemetry.withSpan(
+                  { name: 'application.step_work' },
+                  () => {
+                    assert.equal(telemetry.getCurrentTrace(), workflowHandle);
+                  },
+                );
+                return undefined;
+              },
+            }),
         );
         await entered.promise;
       },
@@ -184,6 +201,7 @@ async function contextCase(batches: unknown[]) {
     });
     release.resolve();
     assert.equal((await first!.wait()).finalOutput, 'first-answer');
+    assert(stepCalls >= 2, 'Both native model steps must restore the workflow');
     assert.equal((await queued!.wait()).finalOutput, 'second-answer');
     assert.equal(callbackTrace, firstTrace);
     assert.equal(firstTrace, 'abcdef0123456789abcdef0123456789');
@@ -835,6 +853,8 @@ async function restoreCase(batches: unknown[]) {
         },
       );
       const serialized = JSON.stringify(state);
+      assert(!serialized.includes('"strict_executor_writes":'));
+      assert(!/"executors":\[(?!\])/.test(serialized));
       assert(!serialized.includes(originalHandle));
       assert(
         matchingPaths(state, originalTrace).every((path) =>

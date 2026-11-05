@@ -3,6 +3,7 @@ import {
   getCurrentSpan,
   withoutTracing,
   TraceCapture,
+  type TraceSpan,
   withNativeCallbackContext,
 } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -3894,6 +3895,22 @@ export class Session<OutputT = string, Context = unknown> {
     return owner;
   }
 
+  private workflowForTrace(traceId: string): TraceSpan | undefined {
+    const current =
+      this.lifecycle.kind === 'turn'
+        ? this.lifecycle.run.tracing?.workflow
+        : this.lastRun?.tracing?.workflow;
+    if (current?.context.traceId === traceId) return current;
+    // Issued turns already retain exact result owners, including completed and
+    // retained steps. A child may first reach JS after a later root starts.
+    for (const run of this.issuedRuns.values()) {
+      const workflow = run.tracing?.workflow;
+      if (workflow?.context.traceId === traceId) return workflow;
+    }
+    const opening = this.options.tracingCapture?.workflow;
+    return opening?.context.traceId === traceId ? opening : undefined;
+  }
+
   private processChild(
     event: NativeEvent,
     native: NativeThread,
@@ -4732,6 +4749,7 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined,
           () => beforeStep(context),
           signal,
+          (traceId) => this.workflowForTrace(traceId),
         );
         signal.throwIfAborted();
         if (
@@ -4838,12 +4856,18 @@ export class Session<OutputT = string, Context = unknown> {
     tracingContext?: string,
   ): Promise<void> {
     const scope = { session: this, run, active: true };
+    const workflow = run.tracing?.workflow;
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
       .then(() =>
         toolInvocation.run(scope, () =>
           tracingContext !== undefined
-            ? withNativeCallbackContext(tracingContext, callback, signal)
+            ? withNativeCallbackContext(
+                tracingContext,
+                callback,
+                signal,
+                () => workflow,
+              )
             : run.tracing
               ? run.tracing.run('host.callback', 'callback', callback)
               : callback(),
@@ -5795,6 +5819,7 @@ export class Session<OutputT = string, Context = unknown> {
           : undefined,
         execute,
         owner.controller.signal,
+        (traceId) => this.workflowForTrace(traceId),
       );
   }
 
@@ -7784,6 +7809,7 @@ export class Session<OutputT = string, Context = unknown> {
                 tracingContext,
                 callback,
                 owner.controller.signal,
+                (traceId) => this.workflowForTrace(traceId),
               ),
             );
             pending.resolve();

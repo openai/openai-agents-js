@@ -88,6 +88,7 @@ import {
 
 import {
   captureTracing,
+  withoutTracing,
   withNativeCallbackContext,
 } from '../src/runtime/tracing-context';
 
@@ -208,6 +209,71 @@ describe('native tracing host ownership (REQ423-425)', () => {
     ).toMatchObject({ status: 'error', category: 'callback_error' });
     parent.releaseContext(token);
     parent.close();
+  });
+
+  it.each(['reader', 'unrelated ambient'])(
+    'restores the owning workflow in callbacks from %s',
+    async (entry) => {
+      let capture: ReturnType<typeof captureTracing>;
+      let workflow: Awaited<ReturnType<typeof startTrace>>;
+      await withTrace({}, async (trace) => {
+        workflow = trace;
+        capture = captureTracing();
+        await capture!.ready;
+      });
+      const token = await capture!.context();
+      const invoke = () =>
+        withNativeCallbackContext(
+          token,
+          async () => {
+            expect(getCurrentTrace()).toBe(workflow);
+            expect(getCurrentSpan()?.context.traceId).toBe(
+              workflow.context.traceId,
+            );
+            await withSpan({}, () => expect(getCurrentTrace()).toBe(workflow));
+          },
+          undefined,
+          () => capture?.workflow,
+        );
+      try {
+        if (entry === 'reader') await withoutTracing(invoke);
+        else await withTrace({}, invoke);
+      } finally {
+        capture!.finish();
+      }
+    },
+  );
+
+  it('does not attach an unrelated workflow to a native-only callback', async () => {
+    const nativeOnly = await startSpan();
+    const token = nativeOnly.retain();
+    try {
+      await withTrace({}, async () => {
+        const unrelated = captureTracing()!;
+        await unrelated.ready;
+        try {
+          await withNativeCallbackContext(
+            token,
+            async () => {
+              expect(getCurrentSpan()?.context.traceId).toBe(
+                nativeOnly.context.traceId,
+              );
+              expect(getCurrentTrace()).toBeUndefined();
+              await withSpan({}, () =>
+                expect(getCurrentTrace()).toBeUndefined(),
+              );
+            },
+            undefined,
+            () => unrelated.workflow,
+          );
+        } finally {
+          unrelated.finish();
+        }
+      });
+    } finally {
+      nativeOnly.releaseContext(token);
+      nativeOnly.close();
+    }
   });
 });
 
@@ -336,6 +402,7 @@ async function rootFixture(
   options: import('../src/runtime/session').SessionOptions = {},
   threadOptions: import('../src/runtime/options').ThreadOptions = {},
   events?: ReturnType<typeof Promise.withResolvers<string>>[],
+  nativeOverrides: Partial<import('../src/runtime/binding').NativeThread> = {},
 ) {
   const { Session } = await import('../src/runtime/session');
   const { captureTools } = await import('../src/runtime/tools');
@@ -355,6 +422,7 @@ async function rootFixture(
         return null;
       },
       _finish_child_event_reader: () => {},
+      ...nativeOverrides,
     } as unknown as import('../src/runtime/binding').NativeThread,
     captureTools([]),
     options,
@@ -363,6 +431,107 @@ async function rootFixture(
   if (events) await session._start();
   return session;
 }
+
+it('restores a late first child callback from the admitted root history', async () => {
+  const { NativeAgents } = await import('../src/runtime/native-agents');
+  const events = Array.from({ length: 3 }, () =>
+    Promise.withResolvers<string>(),
+  );
+  const submitted: Record<string, unknown>[] = [];
+  const replied = Promise.withResolvers<void>();
+  const interceptions = Promise.withResolvers<string>();
+  let original: Awaited<ReturnType<typeof startTrace>> | undefined;
+  let observed: Awaited<ReturnType<typeof startTrace>> | undefined;
+  const child = {
+    session_id: 'trace-fixture',
+    child_id: 'child',
+    incarnation: '1',
+    turn_id: 'child-turn',
+    instance_id: 'instance',
+  } as import('../native/index.js')._NativeChildTurn;
+  const session = await rootFixture(
+    async (wire) => {
+      submitted.push(JSON.parse(wire));
+      return JSON.stringify({
+        status: 'started',
+        turn_id: `root-${submitted.length}`,
+      });
+    },
+    {
+      nativeAgents: new NativeAgents({
+        beforeStep: async () => {
+          observed = getCurrentTrace();
+          await withSpan({}, () => expect(getCurrentTrace()).toBe(observed));
+          return undefined;
+        },
+      }),
+    },
+    {},
+    events,
+    {
+      _child_turn: async () => child,
+      _enable_native_interception: () => true,
+      _configure_native_interception: () => true,
+      _next_native_interception: () => interceptions.promise,
+      _revoke_native_interception: () => {
+        interceptions.resolve('null');
+      },
+      _finish_native_interception_reader: () => {},
+      _check_step: () => true,
+      _reply_child_step: () => {
+        replied.resolve();
+        return true;
+      },
+    },
+  );
+  let childToken: string | undefined;
+  try {
+    const first = await withTrace({}, async (workflow) => {
+      original = workflow;
+      return session.submit('original root');
+    });
+    // Native child work retains its own borrowed carrier before the root ends.
+    const operation = harness.contexts.get(
+      submitted[0].tracing_context as string,
+    )!;
+    childToken = harness.native.retain_trace_context(
+      operation.handle as string,
+    );
+    events[0].resolve(
+      JSON.stringify({
+        id: 'root-1',
+        msg: {
+          type: 'task_complete',
+          last_agent_message: 'done',
+        },
+      }),
+    );
+    await first.wait();
+    await withTrace({}, () => session.submit('unrelated later root'));
+    // No child owner was observed until after the unrelated root was admitted.
+    events[1].resolve(
+      JSON.stringify({
+        id: 'child-turn',
+        subagent_id: 'child',
+        subagent_incarnation: '1',
+        subagent_instance_id: 'instance',
+        msg: {
+          type: '_sdk_select_step',
+          thread: 'child',
+          turn_id: 'child-turn',
+          generation: '0',
+          request_id: 'step-1',
+          tracing_context: childToken,
+        },
+      }),
+    );
+    await replied.promise;
+    expect(observed).toBe(original);
+  } finally {
+    await session.close();
+    if (childToken) harness.native.release_trace_context(childToken);
+  }
+});
 
 it.each([
   { method: 'steer', traced: true },
