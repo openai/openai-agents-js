@@ -807,7 +807,7 @@ it('reopens completed idle LocalStorage history with only a freshly supplied edi
 });
 
 it('prepares again when outer stream recovery rebuilds the prompt', async () => {
-  // Match Python's authored recovery oracle: this is an SSE response.failed, not an HTTP status retry.
+  // A failed event on a successful HTTP response exercises outer stream recovery.
   const failure = JSON.stringify({
     type: 'response.failed',
     response: {
@@ -818,8 +818,13 @@ it('prepares again when outer stream recovery rebuilds the prompt', async () => 
       },
     },
   });
-  const server = new ModelServer([[], [message('recovered')]], [], undefined, [
-    failure,
+  const server = new ModelServer([
+    {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: `data: ${failure}\n\n`,
+    },
+    [message('recovered')],
   ]);
   await using provider = await providerFor(server);
   const indices: [number, number][] = [];
