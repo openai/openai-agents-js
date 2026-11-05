@@ -176,6 +176,19 @@ mod tests {
         }))
     }
 
+    #[test]
+    fn terminal_observation_does_not_grant_supported_output() {
+        let mut output = SupportedOutput::default();
+        let observation = codex_protocol::protocol::ResponseObservation {
+            response_id: Some("provider-completed".into()),
+            status: codex_protocol::protocol::ResponseObservationStatus::Completed,
+            incomplete_reason: None,
+            usage: None,
+        };
+        assert!(!output.rejects(&ResponseEvent::ResponseObserved(observation)));
+        assert!(output.rejects(&completed(None)));
+    }
+
     fn completed(end_turn: Option<bool>) -> ResponseEvent {
         ResponseEvent::Completed {
             response_id: "response".into(),

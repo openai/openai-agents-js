@@ -19,8 +19,8 @@ import gpt56RequestControlsExample from '../../../../../examples/docs/models/gpt
 
 Every Agent calls an LLM. The SDK represents models through two interfaces:
 
-- [`Model`](/openai-agents-js/openai/agents/interfaces/model) – knows how to make _one_ request against a specific API.
-- [`ModelProvider`](/openai-agents-js/openai/agents/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt-5.6-sol'`) to `Model` instances.
+- [`Model`](/openai-agents-js/openai/agents-core/interfaces/model) – knows how to make _one_ request against a specific API.
+- [`ModelProvider`](/openai-agents-js/openai/agents-core/interfaces/modelprovider) – resolves human‑readable model **names** (e.g. `'gpt-5.6-sol'`) to `Model` instances.
 
 You usually work with model **names** and occasionally `ModelSettings`.
 
@@ -197,7 +197,7 @@ Keepalive requires a WebSocket implementation that exposes ping and pong support
 
 If you create `OpenAIProvider` yourself, it caches websocket-backed Responses model wrappers by default to reuse connections. Call `await provider.close()` during shutdown to release those cached connections. `withResponsesWebSocketSession(...)` manages that lifecycle. It creates a websocket-enabled provider and runner, passes them to your callback, and always closes the provider afterward. Use `providerOptions` for the temporary provider and `runnerConfig` for callback-scoped runner defaults.
 
-See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) for a full streaming + HITL example using the Responses WebSocket transport.
+See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/basic/stream-ws.ts) for a full streaming + HITL example using the Responses WebSocket transport.
 
 #### Responses-only deferred tool loading
 
@@ -234,7 +234,7 @@ The experimental model uses a persistent Responses WebSocket. Local function out
   title="Run a hosted Multi-agent workflow"
 />
 
-For streaming observability, including hosted collaboration records and subagent messages, see the [complete example](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/hosted-multi-agent-beta.ts).
+For streaming observability, including hosted collaboration records and subagent messages, see the [complete example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/hosted-multi-agent-beta.ts).
 
 Omit `maxConcurrentSubagents` to keep the service default, currently three. A supplied value must be a positive integer.
 
@@ -386,7 +386,7 @@ An application can override a provider's unsafe classification for a non-streami
 - An agent can override only part of `retry.backoff` and keep sibling backoff fields from the runner.
 - If you need to remove an inherited `policy` or `backoff`, set that field to `undefined` explicitly.
 
-See [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts) and [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts) for fuller examples with logging.
+See [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/basic/retry.ts) and [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/ai-sdk/retry.ts) for fuller examples with logging.
 
 ---
 

@@ -1,3 +1,5 @@
+export { TraceContext } from './runtime/trace-context';
+export type { TraceContextHeaders } from './runtime/trace-context';
 export { Agent, Runner } from './runtime/public-agent';
 export type {
   AgentOptions,
@@ -131,6 +133,8 @@ export type {
   RecordedTurn,
   Failure,
   RecordedTokenUsage,
+  ReceivedTokenUsage,
+  RecordedResponse,
 } from './runtime/history';
 export { OutputValidationError } from './runtime/output';
 export type { OutputSpec } from './runtime/output';

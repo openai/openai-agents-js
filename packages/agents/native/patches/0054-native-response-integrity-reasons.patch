@@ -1,8 +1,8 @@
 diff --git a/codex-rs/app-server-protocol/src/protocol/thread_history.rs b/codex-rs/app-server-protocol/src/protocol/thread_history.rs
-index e7128a5..d306703 100644
+index b32ef6d..8b42fde 100644
 --- a/codex-rs/app-server-protocol/src/protocol/thread_history.rs
 +++ b/codex-rs/app-server-protocol/src/protocol/thread_history.rs
-@@ -4348,6 +4348,7 @@ mod tests {
+@@ -4349,6 +4349,7 @@ mod tests {
                  started_at: Some(10),
                  last_agent_message: None,
                  error: Some(ErrorEvent {
@@ -10,7 +10,7 @@ index e7128a5..d306703 100644
                      misalignment: None,
                      message: "Selected model is at capacity. Please try a different model.".into(),
                      codex_error_info: Some(CodexErrorInfo::ServerOverloaded),
-@@ -4743,6 +4744,7 @@ mod tests {
+@@ -4744,6 +4745,7 @@ mod tests {
                  questions: None,
              }),
              EventMsg::Error(ErrorEvent {
@@ -18,7 +18,7 @@ index e7128a5..d306703 100644
                  misalignment: None,
                  message: "rollback failed".into(),
                  codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-@@ -4788,6 +4790,7 @@ mod tests {
+@@ -4789,6 +4791,7 @@ mod tests {
                  time_to_first_token_ms: None,
              }),
              EventMsg::Error(ErrorEvent {
@@ -26,7 +26,7 @@ index e7128a5..d306703 100644
                  misalignment: None,
                  message: "request-level failure".into(),
                  codex_error_info: Some(CodexErrorInfo::BadRequest),
-@@ -4842,6 +4845,7 @@ mod tests {
+@@ -4843,6 +4846,7 @@ mod tests {
                  ..Default::default()
              }),
              EventMsg::Error(ErrorEvent {
@@ -34,7 +34,7 @@ index e7128a5..d306703 100644
                  misalignment: None,
                  message: "stream failure".into(),
                  codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
-@@ -4906,6 +4910,7 @@ mod tests {
+@@ -4907,6 +4911,7 @@ mod tests {
                  started_at: Some(10),
                  last_agent_message: None,
                  error: Some(ErrorEvent {
@@ -134,10 +134,10 @@ index 9c4cd1b..5444282 100644
 +    }
 +}
 diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-index 794b4d0..f8fdb16 100644
+index 867efce..8e0590d 100644
 --- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
 +++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-@@ -1022,6 +1022,74 @@ mod tests {
+@@ -1101,6 +1101,74 @@ mod tests {
          assert_eq!(wire_payload, expected_payload);
      }
  
@@ -228,10 +228,10 @@ index 2834137..e243324 100644
      InvalidPrompt { message: String },
      #[error("cyber policy: {message}")]
 diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
-index ab5901b..9be8b69 100644
+index d62e8eb..74bbeb8 100644
 --- a/codex-rs/codex-api/src/sse/responses.rs
 +++ b/codex-rs/codex-api/src/sse/responses.rs
-@@ -381,9 +381,9 @@ pub fn process_responses_event(
+@@ -436,9 +436,9 @@ pub fn process_responses_event(
                  .item
                  .and_then(|value| serde_json::from_value::<ResponseItem>(value).ok())
                  .ok_or_else(|| {
@@ -244,7 +244,7 @@ index ab5901b..9be8b69 100644
                      })
                  })?;
              return Ok(Some(if event.kind == "response.output_item.done" {
-@@ -675,7 +675,9 @@ async fn process_sse_with_treatment(
+@@ -738,7 +738,9 @@ async fn process_sse_with_treatment(
                  let error = error.into_api_error();
                  if matches!(
                      error,
@@ -255,7 +255,7 @@ index ab5901b..9be8b69 100644
                  ) {
                      let _ = tx_event.send(Err(error)).await;
                      return;
-@@ -759,8 +761,12 @@ mod tests {
+@@ -980,8 +982,12 @@ mod tests {
              let error = process_responses_event(invalid)
                  .unwrap_err()
                  .into_api_error();
@@ -270,7 +270,7 @@ index ab5901b..9be8b69 100644
              assert!(!format!("{error:?}").contains("private"));
          }
      }
-@@ -772,8 +778,13 @@ mod tests {
+@@ -993,8 +999,13 @@ mod tests {
                  let error = process_responses_event(serde_json::from_value(event).unwrap())
                      .unwrap_err()
                      .into_api_error();
@@ -286,8 +286,8 @@ index ab5901b..9be8b69 100644
              }
          }
      }
-@@ -835,8 +846,13 @@ mod tests {
-                 let results = collect_events(&[body.as_bytes()]).await;
+@@ -1056,8 +1067,13 @@ mod tests {
+                 let results = collect_legacy_events(&[body.as_bytes()]).await;
                  assert_eq!(results.len(), 2);
                  assert_matches!(&results[0], Ok(ResponseEvent::OutputTextDelta(text)) if text == "earlier commentary");
 -                assert_matches!(&results[1], Err(ApiError::InvalidRequest { message })
@@ -303,7 +303,7 @@ index ab5901b..9be8b69 100644
              }
          }
 diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
-index 1acd116..04f62d2 100644
+index 9c70ba9..f256cdb 100644
 --- a/codex-rs/core/src/agent/control_tests.rs
 +++ b/codex-rs/core/src/agent/control_tests.rs
 @@ -579,6 +579,7 @@ async fn on_event_updates_status_from_task_complete() {
@@ -411,10 +411,10 @@ index dbaa109..6d9ef60 100644
                                          message,
                                          codex_error_info: Some(CodexErrorInfo::BadRequest),
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 9b2639e..09f2c63 100644
+index 5cab6ca..fa6d176 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -13425,3 +13425,62 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
+@@ -13769,3 +13769,62 @@ async fn rejected_mcp_refresh_then_corrected_user_config_blocks_ordinary_replace
          "rejection must not permit same-name ordinary-auth replacement in this session"
      );
  }
@@ -478,10 +478,10 @@ index 9b2639e..09f2c63 100644
 +    );
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index d2dfca3..5e32836 100644
+index d156b94..7c46bdf 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -810,6 +810,7 @@ pub(crate) async fn run_turn(
+@@ -819,6 +819,7 @@ pub(crate) async fn run_turn(
                  sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone(), &codex_error)
                      .await;
                  let event = EventMsg::Error(ErrorEvent {
@@ -764,7 +764,7 @@ index bd37392..d5386ae 100644
 +    );
 +}
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index 181e430..29fe1bc 100644
+index cbf161c..2eb1a22 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
 @@ -2081,6 +2081,11 @@ impl fmt::Debug for MisalignmentSteer {
@@ -779,7 +779,7 @@ index 181e430..29fe1bc 100644
      pub message: String,
      #[serde(default)]
      pub codex_error_info: Option<CodexErrorInfo>,
-@@ -5866,6 +5871,7 @@ mod tests {
+@@ -5922,6 +5927,7 @@ mod tests {
      #[test]
      fn rollback_failed_error_does_not_affect_turn_status() {
          let event = ErrorEvent {
@@ -787,7 +787,7 @@ index 181e430..29fe1bc 100644
              misalignment: None,
              message: "rollback failed".into(),
              codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
-@@ -5876,6 +5882,7 @@ mod tests {
+@@ -5932,6 +5938,7 @@ mod tests {
      #[test]
      fn active_turn_not_steerable_error_does_not_affect_turn_status() {
          let event = ErrorEvent {
@@ -795,7 +795,7 @@ index 181e430..29fe1bc 100644
              misalignment: None,
              message: "cannot steer a review turn".into(),
              codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
-@@ -5888,6 +5895,7 @@ mod tests {
+@@ -5944,6 +5951,7 @@ mod tests {
      #[test]
      fn generic_error_affects_turn_status() {
          let event = ErrorEvent {
@@ -803,7 +803,7 @@ index 181e430..29fe1bc 100644
              misalignment: None,
              message: "generic".into(),
              codex_error_info: Some(CodexErrorInfo::Other),
-@@ -5898,6 +5906,7 @@ mod tests {
+@@ -5954,6 +5962,7 @@ mod tests {
      #[test]
      fn misalignment_explanation_and_steer_are_never_serialized_into_error_events() {
          let event = ErrorEvent {

@@ -102,7 +102,10 @@ export class AgentHooks<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
 > extends EventEmitterDelegate<AgentHookEvents<TContext, TOutput>> {
-  protected eventEmitter = new RuntimeEventEmitter<
+  protected eventEmitter: RuntimeEventEmitter<
+    AgentHookEvents<TContext, TOutput>
+  > &
+    EventEmitter<AgentHookEvents<TContext, TOutput>> = new RuntimeEventEmitter<
     AgentHookEvents<TContext, TOutput>
   >();
 }
@@ -174,7 +177,10 @@ export class RunHooks<
   TContext = UnknownContext,
   TOutput extends AgentOutputType = TextOutput,
 > extends EventEmitterDelegate<RunHookEvents<TContext, TOutput>> {
-  protected eventEmitter = new RuntimeEventEmitter<
+  protected eventEmitter: RuntimeEventEmitter<
+    RunHookEvents<TContext, TOutput>
+  > &
+    EventEmitter<RunHookEvents<TContext, TOutput>> = new RuntimeEventEmitter<
     RunHookEvents<TContext, TOutput>
   >();
 }
