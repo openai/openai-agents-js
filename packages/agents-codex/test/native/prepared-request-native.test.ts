@@ -982,6 +982,46 @@ it.each([true, false])(
   },
 );
 
+it.each([true, false])(
+  'preserves the completed answer at the post-turn threshold with editor=%s',
+  async (edited) => {
+    const { binding } = await import('../../src/runtime/binding');
+    const native = await binding();
+    const create = native.create_engine;
+    const spy = vi
+      .spyOn(native, 'create_engine')
+      .mockImplementation((config, ...args) =>
+        create(
+          JSON.stringify({
+            ...JSON.parse(config),
+            model_context_window: 200000,
+            model_auto_compact_token_limit: 10000,
+            model_post_turn_compact_threshold_percent: 1,
+          }),
+          ...args,
+        ),
+      );
+    const server = new ModelServer(
+      [[message('completed answer')], [message('summary')]],
+      ['{"input_tokens":12000,"output_tokens":1,"total_tokens":12001}'],
+    );
+    try {
+      await using provider = await providerFor(server);
+      const editor = vi.fn(() => undefined);
+      const result = await new Agent({
+        model: 'fixture-standard',
+        instructions: 'Answer.',
+        provider,
+      }).run('go', edited ? { prepareRequest: editor } : undefined);
+      expect(result.finalOutput).toBe('completed answer');
+      expect(server.requests).toHaveLength(edited ? 1 : 2);
+      expect(editor).toHaveBeenCalledTimes(edited ? 1 : 0);
+    } finally {
+      spy.mockRestore();
+    }
+  },
+);
+
 it('rejects a retired native reply capability while a later root awaits its own callback', async () => {
   const { binding } = await import('../../src/runtime/binding');
   const native = await binding();

@@ -11,10 +11,10 @@ index 295d1f826b19efa6e781761ca0c3d8bba6dd0d8a..61d3e12d4c59edaed9778a9bcc2cc4c6
   "tokio",
  ]
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 55f091582aa2ebfe4bee24de2f65285c3bc9f625..9ff682dfffe02ab464d03a64fa3349f8afd0f9e8 100644
+index 3d02d17fa16a24eee88d36407542b3ae97ab4f84..b5b634ea44ac24009e6f29a665bd606fc1bb6bb6 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -1781,6 +1781,9 @@ impl ModelClientSession {
+@@ -1787,6 +1787,9 @@ impl ModelClientSession {
              )
              .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
              crate::model_request::wait_if_sampling_stopped(prompt.sampling_stop.as_deref()).await;
@@ -22,7 +22,7 @@ index 55f091582aa2ebfe4bee24de2f65285c3bc9f625..9ff682dfffe02ab464d03a64fa3349f8
 +                admission.admit_request().map_err(CodexErr::Fatal)?;
 +            }
              let stream_result = client.stream_request(request, options).await;
-
+ 
              match stream_result {
 diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
 index 6188306e2ae26a96b758f2359697dc4ad4654b36..764b7b82562a831a482ce8c76187d4e1bc46e288 100644
@@ -31,14 +31,14 @@ index 6188306e2ae26a96b758f2359697dc4ad4654b36..764b7b82562a831a482ce8c76187d4e1
 @@ -34,6 +34,10 @@ pub struct Prompt {
      /// Stops new provider requests for this turn, including prompts without tools.
      pub(crate) sampling_stop: Option<Arc<TurnSamplingStop>>,
-
+ 
 +    /// Request-scoped host ownership, checked independently of response policies.
 +    pub(crate) prepared_request_admission:
 +        Option<Arc<dyn codex_extension_api::PreparedRequestAdmission>>,
 +
      /// Whether parallel tool calls are permitted for this prompt.
      pub(crate) parallel_tool_calls: bool,
-
+ 
 @@ -55,6 +59,7 @@ impl Default for Prompt {
              tools: Arc::default(),
              tool_admission: None,
@@ -367,7 +367,7 @@ index 0000000000000000000000000000000000000000..a70e5faf6d3b77f8fa6d90f9c92276ae
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe548a41720 100644
+index 030a65b21d390af8a7f90bdd674039d09f370316..9c43cb1685b0f4ea8a6a300282a8d54f7a2aafd5 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -1,3 +1,4 @@
@@ -375,7 +375,7 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
  use std::collections::HashMap;
  use std::collections::HashSet;
  use std::sync::Arc;
-@@ -1465,6 +1466,17 @@ async fn run_auto_compact(
+@@ -1465,6 +1466,20 @@ async fn run_auto_compact(
      phase: CompactionPhase,
  ) -> CodexResult<()> {
      let turn_context = &step_context.turn;
@@ -386,6 +386,9 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
 +        .iter()
 +        .any(|contributor| contributor.prepares_request(&turn_context.extension_data))
 +    {
++        if matches!(phase, CompactionPhase::PostTurn) {
++            return Ok(());
++        }
 +        let err = CodexErr::Fatal("automatic compaction is unsupported for an operation with prepare_request; shorten the input or start a new operation".into());
 +        return Err(err);
 +    }
@@ -393,7 +396,7 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
      if matches!(phase, CompactionPhase::PreTurn)
          && crate::guardian::is_basic_session_source(&turn_context.session_source)
          && !crate::guardian::should_compact_guardian_input(sess)?
-@@ -1608,6 +1620,7 @@ pub(crate) fn build_prompt(
+@@ -1608,6 +1623,7 @@ pub(crate) fn build_prompt(
          parallel_tool_calls: true,
          tool_admission: None,
          sampling_stop: None,
@@ -401,7 +404,7 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
          base_instructions,
          output_schema: turn_context.final_output_json_schema.clone(),
          output_schema_strict: !crate::guardian::is_basic_session_source(
-@@ -1659,6 +1672,7 @@ async fn run_sampling_request(
+@@ -1659,6 +1675,7 @@ async fn run_sampling_request(
      );
      let max_retries = turn_context.provider.info().stream_max_retries();
      let mut retry_state = ResponsesStreamRetryState::default();
@@ -409,7 +412,7 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
      let mut initial_input = Some(input);
      let mut original_input = None;
      let mut executed_tool_calls_by_output = HashMap::new();
-@@ -1691,6 +1705,27 @@ async fn run_sampling_request(
+@@ -1691,6 +1708,27 @@ async fn run_sampling_request(
          let responses_metadata = sess
              .responses_metadata(step_context.as_ref(), CodexResponsesRequestKind::Turn)
              .await;
@@ -437,7 +440,7 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
          if crate::guardian::is_basic_session_source(&turn_context.session_source) {
              crate::guardian::prepare_guardian_prompt(
                  &sess,
-@@ -1700,6 +1735,34 @@ async fn run_sampling_request(
+@@ -1700,6 +1738,34 @@ async fn run_sampling_request(
              )
              .await?;
          }
@@ -472,7 +475,7 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
          let err = match try_run_sampling_request(
              tool_runtime.clone(),
              Arc::clone(&sess),
-@@ -1708,7 +1771,7 @@ async fn run_sampling_request(
+@@ -1708,7 +1774,7 @@ async fn run_sampling_request(
              client_session,
              &responses_metadata,
              Arc::clone(&turn_diff_tracker),
@@ -481,7 +484,7 @@ index 030a65b21d390af8a7f90bdd674039d09f370316..0375cd4c8c0a0cd4d835bf006ca5bfe5
              cancellation_token.child_token(),
          )
          .await
-@@ -1765,6 +1828,7 @@ async fn run_sampling_request(
+@@ -1765,6 +1831,7 @@ async fn run_sampling_request(
              ));
          }
          retry??;
@@ -499,7 +502,7 @@ index 4b487226eb7deb0a44ad5d9ae16e53f90fd7ec8e..3e19d0358c23532df40aca4dff37125b
  codex-utils-path-uri = { workspace = true }
 +serde = { workspace = true }
  serde_json = { workspace = true }
-
+ 
  [dev-dependencies]
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
 index f2dbed8d89823999a82e89e43576ecf7efab7a5f..54d70d95f627509f85c177d38173c8568ebd5666 100644
@@ -508,7 +511,7 @@ index f2dbed8d89823999a82e89e43576ecf7efab7a5f..54d70d95f627509f85c177d38173c856
 @@ -126,6 +126,12 @@ pub use model_request::ModelToolAdmission;
  pub use model_request::ResponseEvent;
  pub use model_request::TurnSamplingStop;
-
+ 
 +pub use model_request::PreparedRequestAdmission;
 +pub use model_request::PreparedRequestData;
 +pub use model_request::PreparedRequestInput;
@@ -536,7 +539,7 @@ index 5263f85cd4517aa8b72186b02ac91d9c08d0b2e2..34d02776f0119a72955a827c3a5cf48c
 @@ -78,9 +81,25 @@ pub struct ModelRequestInput<'a> {
      pub model: &'a str,
  }
-
+ 
 -/// Creates request-scoped interceptors without delaying inference.
 +/// Contributes request-scoped preparation and response interception.
  /// Return None for requests this host does not manage.
@@ -559,11 +562,11 @@ index 5263f85cd4517aa8b72186b02ac91d9c08d0b2e2..34d02776f0119a72955a827c3a5cf48c
 +
      fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>>;
  }
-
+ 
 @@ -114,6 +133,46 @@ pub trait ModelResponseInterceptor: Send + Sync {
      fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream;
  }
-
+ 
 +/// Detached native sampling data. Unknown fields are rejected at the host reply boundary.
 +#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 +#[serde(deny_unknown_fields)]
