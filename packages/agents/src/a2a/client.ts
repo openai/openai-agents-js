@@ -282,8 +282,11 @@ export async function connectA2A(
           try {
             result = await response.json();
           } catch {
+            options.signal?.throwIfAborted();
+            init.signal?.throwIfAborted();
             throw new A2AError('unsupported');
           }
+          await current();
           if (
             !result ||
             typeof result !== 'object' ||

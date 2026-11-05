@@ -1436,3 +1436,322 @@ it('rejects a manual-reply challenge from another task before reservation or sen
   expect(remote.calls).toEqual(['SendMessage', 'GetTask']);
   expect(sent.join('')).not.toContain('confidential-answer-sentinel');
 });
+
+it.each(['respond', 'cancel'] as const)(
+  'preserves a known unsent provider %s limit and permits a corrected retry',
+  async (operation) => {
+    let conversation = '';
+    const remote = await peer({
+      execute: async (request, bus) => {
+        conversation = request.contextId;
+        const replying = request.userMessage.parts[0].content?.$case === 'data';
+        bus.publish(
+          AgentEvent.task({
+            ...Task.fromJSON({}),
+            id: request.taskId,
+            contextId: request.contextId,
+            status: {
+              state: replying
+                ? TaskState.TASK_STATE_COMPLETED
+                : TaskState.TASK_STATE_INPUT_REQUIRED,
+              timestamp: undefined,
+              message: replying
+                ? undefined
+                : {
+                    ...Message.fromJSON({}),
+                    role: Role.ROLE_AGENT,
+                    parts: [
+                      Part.fromJSON({
+                        data: {
+                          challenge: 'bounded-reply',
+                          generation: 1,
+                          tool: 'decision',
+                          arguments: {},
+                        },
+                      }),
+                    ],
+                  },
+            },
+          }),
+        );
+        bus.finished();
+      },
+      cancelTask: async (id, bus) => {
+        bus.publish(
+          AgentEvent.task({
+            ...Task.fromJSON({}),
+            id,
+            contextId: conversation,
+            status: {
+              state: TaskState.TASK_STATE_CANCELED,
+              timestamp: undefined,
+              message: undefined,
+            },
+          }),
+        );
+        bus.finished();
+      },
+    });
+    const credentials: string[] = [],
+      reservations: string[] = [];
+    const provider = (inputBytes?: number) =>
+      new A2AJobProvider({
+        endpoint: remote.endpoint,
+        authorize: async () => {},
+        authorization: async (op) => {
+          credentials.push(op);
+          return 'synthetic';
+        },
+        reserve: async (_claim, op) => {
+          reservations.push(op);
+        },
+        encode: () => [Part.fromJSON({ text: 'hello' })],
+        project: () => null,
+        limits: { inputBytes },
+      });
+    const admitted = await provider().start(claim(), null, context),
+      receipt = JSON.parse(admitted.receipt!);
+    expect(admitted.status).toBe('inputRequired');
+    const before = structuredClone(admitted),
+      reply = {
+        taskId: receipt.taskId,
+        contextId: receipt.contextId,
+        challenge: 'bounded-reply',
+        generation: 1,
+        result: 'x'.repeat(256),
+      };
+    credentials.length = 0;
+    reservations.length = 0;
+    remote.calls.length = 0;
+    const bounded = provider(
+      operation === 'respond' ? Buffer.byteLength(JSON.stringify(reply)) : 1,
+    );
+    await expect(
+      operation === 'respond'
+        ? bounded.respond(claim('respond', admitted), reply, context)
+        : bounded.cancel(claim('cancel', admitted), context),
+    ).rejects.toMatchObject({ reason: 'limit' });
+    expect(admitted).toEqual(before);
+    expect(reservations).toEqual([]);
+    expect(credentials).toEqual(operation === 'respond' ? ['observe'] : []);
+    expect(remote.calls).toEqual(operation === 'respond' ? ['GetTask'] : []);
+    const retried =
+      operation === 'respond'
+        ? await provider().respond(claim('respond', admitted), reply, context)
+        : await provider().cancel(claim('cancel', admitted), context);
+    expect(retried).toMatchObject({
+      status: operation === 'respond' ? 'completed' : 'cancelled',
+      receipt: admitted.receipt,
+    });
+    expect(reservations).toEqual([operation]);
+    expect(remote.calls).toEqual(
+      operation === 'respond'
+        ? ['GetTask', 'GetTask', 'SendMessage']
+        : ['CancelTask'],
+    );
+  },
+);
+
+it.each(['respond', 'cancel'] as const)(
+  'keeps a post-dispatch %s limit unknown with its receipt',
+  async (operation) => {
+    let conversation = '';
+    const remote = await peer({
+      execute: async (request, bus) => {
+        conversation = request.contextId;
+        const replying = request.userMessage.parts[0].content?.$case === 'data';
+        bus.publish(
+          AgentEvent.task({
+            ...Task.fromJSON({}),
+            id: request.taskId,
+            contextId: request.contextId,
+            status: {
+              state: replying
+                ? TaskState.TASK_STATE_COMPLETED
+                : TaskState.TASK_STATE_INPUT_REQUIRED,
+              timestamp: undefined,
+              message: replying
+                ? undefined
+                : {
+                    ...Message.fromJSON({}),
+                    role: Role.ROLE_AGENT,
+                    parts: [
+                      Part.fromJSON({
+                        data: {
+                          challenge: 'bounded-reply',
+                          generation: 1,
+                          tool: 'decision',
+                          arguments: {},
+                        },
+                      }),
+                    ],
+                  },
+            },
+          }),
+        );
+        bus.finished();
+      },
+      cancelTask: async (id, bus) => {
+        bus.publish(
+          AgentEvent.task({
+            ...Task.fromJSON({}),
+            id,
+            contextId: conversation,
+            status: {
+              state: TaskState.TASK_STATE_CANCELED,
+              timestamp: undefined,
+              message: undefined,
+            },
+          }),
+        );
+        bus.finished();
+      },
+    });
+    const reservations: string[] = [];
+    const options = {
+      endpoint: remote.endpoint,
+      authorize: async () => {},
+      authorization: async () => 'synthetic',
+      reserve: async (_claim: JobClaim, op: string) => {
+        reservations.push(op);
+      },
+      encode: () => [Part.fromJSON({ text: 'hello' })],
+      project: () => null,
+    };
+    const provider = new A2AJobProvider(options),
+      admitted = await provider.start(claim(), null, context),
+      receipt = JSON.parse(admitted.receipt!);
+    reservations.length = 0;
+    remote.calls.length = 0;
+    const broken = new A2AJobProvider({
+      ...options,
+      limits: { bodyBytes: 2048 },
+      fetch: async (url, init) => {
+        const response = await fetch(url, init);
+        if (
+          typeof init?.body === 'string' &&
+          JSON.parse(init.body).method ===
+            (operation === 'respond' ? 'SendMessage' : 'CancelTask')
+        )
+          return new Response('x'.repeat(4096));
+        return response;
+      },
+    });
+    const result =
+      operation === 'respond'
+        ? await broken.respond(
+            claim('respond', admitted),
+            {
+              taskId: receipt.taskId,
+              contextId: receipt.contextId,
+              challenge: 'bounded-reply',
+              generation: 1,
+              result: true,
+            },
+            context,
+          )
+        : await broken.cancel(claim('cancel', admitted), context);
+    expect(result).toEqual({ status: 'unknown', receipt: admitted.receipt });
+    expect(reservations).toEqual([operation]);
+    expect(
+      await provider.observe(claim('observe', result), context),
+    ).toMatchObject({
+      status: operation === 'respond' ? 'completed' : 'cancelled',
+      receipt: admitted.receipt,
+    });
+    expect(remote.calls).toEqual(
+      operation === 'respond'
+        ? ['GetTask', 'SendMessage', 'GetTask']
+        : ['CancelTask', 'GetTask'],
+    );
+  },
+);
+
+it.each(
+  ['send', 'observe'].flatMap((operation) =>
+    ['fetch', 'body'].flatMap((phase) =>
+      [true, false].map((allowed) => ({ operation, phase, allowed })),
+    ),
+  ),
+)(
+  'fences a revoked direct-client response for $operation/$phase with authority=$allowed',
+  async ({ operation, phase, allowed }) => {
+    const remote = await peer();
+    const request = {
+      tenant: '',
+      configuration: undefined,
+      metadata: undefined,
+      message: {
+        ...Message.fromJSON({}),
+        messageId: 'response-fence',
+        role: Role.ROLE_USER,
+        parts: [Part.fromJSON({ text: 'hello' })],
+      },
+    };
+    const initial = await (
+      await connectA2A(remote.endpoint, {
+        authorization: async () => 'synthetic',
+      })
+    ).sendMessage(request);
+    if (!('id' in initial)) throw new Error('Expected Task');
+    remote.calls.length = 0;
+    let current = true;
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const client = await connectA2A(remote.endpoint, {
+      authorization: async () => 'synthetic',
+      current: async () => {
+        if (!current) throw new Error('private revoked policy');
+      },
+      fetch: async (url, init) => {
+        const response = await fetch(url, init);
+        if (String(url) !== remote.endpoint.rpcUrl) return response;
+        if (phase === 'fetch') {
+          entered.resolve();
+          await release.promise;
+          return response;
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(stream) {
+              const split = Math.floor(bytes.length / 2);
+              stream.enqueue(bytes.subarray(0, split));
+              entered.resolve();
+              void release.promise.then(() => {
+                stream.enqueue(bytes.subarray(split));
+                stream.close();
+              });
+            },
+          }),
+          { headers: response.headers },
+        );
+      },
+    });
+    const pending =
+      operation === 'send'
+        ? client.sendMessage(request)
+        : client.getTask({ tenant: '', id: initial.id });
+    const result = pending.then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+    await entered.promise;
+    current = allowed;
+    release.resolve();
+    const settled = await result;
+    if (allowed) expect('value' in settled && 'id' in settled.value).toBe(true);
+    else {
+      expect('error' in settled && settled.error).toMatchObject({
+        reason: 'authorization',
+      });
+      expect(String('error' in settled && settled.error)).not.toContain(
+        'private revoked policy',
+      );
+    }
+    expect(remote.calls).toEqual([
+      operation === 'send' ? 'SendMessage' : 'GetTask',
+    ]);
+  },
+  30000,
+);

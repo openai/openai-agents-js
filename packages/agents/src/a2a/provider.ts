@@ -292,8 +292,9 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       challenge?.generation !== reply.generation
     )
       throw new A2AError('authorization');
+    let result;
     try {
-      const result = await client.sendMessage({
+      result = await client.sendMessage({
         tenant: '',
         metadata: undefined,
         configuration: undefined,
@@ -320,6 +321,12 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
           ],
         },
       });
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (error instanceof A2ARequestLimitError) throw error;
+      return { status: 'unknown', receipt: claim.update!.receipt };
+    }
+    try {
       if (!('id' in result)) throw new A2AError('unsupported');
       return await this.#update(claim, result, 'respond', context, receipt);
     } catch {
@@ -331,18 +338,20 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
   async cancel(claim: JobClaim, context: JobContext): Promise<JobUpdate> {
     const receipt = this.#receipt(claim);
     const client = await this.#connect(claim, 'cancel', context);
+    let task;
     try {
-      return await this.#update(
-        claim,
-        await client.cancelTask({
-          tenant: '',
-          id: receipt.taskId,
-          metadata: undefined,
-        }),
-        'cancel',
-        context,
-        receipt,
-      );
+      task = await client.cancelTask({
+        tenant: '',
+        id: receipt.taskId,
+        metadata: undefined,
+      });
+    } catch (error) {
+      context.signal.throwIfAborted();
+      if (error instanceof A2ARequestLimitError) throw error;
+      return { status: 'unknown', receipt: claim.update!.receipt };
+    }
+    try {
+      return await this.#update(claim, task, 'cancel', context, receipt);
     } catch {
       context.signal.throwIfAborted();
       return { status: 'unknown', receipt: claim.update!.receipt };
