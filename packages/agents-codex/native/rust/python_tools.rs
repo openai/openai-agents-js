@@ -1477,7 +1477,12 @@ impl ToolContributor for PythonContributor {
                 tools: tools.clone(),
                 id,
             };
-            let tracing = codex_otel::sdk_trace::ContextLease::capture();
+            let tracing = if tools.instance.is_some() {
+                turn.get::<codex_otel::sdk_trace::CapturedContext>()
+                    .and_then(|captured| captured.context.clone())
+            } else {
+                codex_otel::sdk_trace::ContextLease::capture().map(Arc::new)
+            };
             let mut request = json!({"id": active.turn, "msg": {
                 "type": "_sdk_select_step", "turn_id": turn.level_id(),
                 "thread": thread.level_id(), "native_step": step.level_id(),
