@@ -28,12 +28,15 @@ jobs:
         include:
           - platform: linux-x64
             runner: ubuntu-24.04
+            cargo_jobs: 64
           - platform: darwin-arm64
-            runner: macos-15
+            runner: macos-15-xlarge
+            cargo_jobs: 5
           - platform: win32-x64
             runner: windows-2025
+            cargo_jobs: 8
     # Keep macOS on its ARM runner and preserve standard runners for fork-owned repositories.
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
     timeout-minutes: 180
     defaults:
       run:
@@ -42,7 +45,7 @@ jobs:
       ALPHA_VERSION: 0.22.0-alpha.1
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: ${{ matrix.platform == 'darwin-arm64' && '3' || '8' }}
+      CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}
       CARGO_INCREMENTAL: '0'
 
     steps:
@@ -145,6 +148,14 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: Qualify canonical native storage
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: >-
+          pnpm test:native
+          packages/agents-codex/test/native/custom-storage-durability-native.test.ts
+          packages/agents-codex/test/custom-thread-store.test.ts
+          packages/agents-codex/test/file-thread-store.test.ts
+          --maxWorkers=4 --reporter=verbose
       - name: Qualify the Linux worker
         if: runner.os == 'Linux'
         env:
@@ -167,6 +178,21 @@ jobs:
           pnpm test:native packages/agents-codex/test/native/local-executor-policy-native.test.ts
           -t 'blocks delegation from a local command to launchd|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
           --reporter=verbose
+      - name: Qualify completed child history on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents-codex/test/native/local-descendant-reopen-native.test.ts
+          -t settled --maxWorkers=4 --reporter=verbose
+      - name: Qualify executor stop and process cleanup on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents-codex/test/native/executor-stop-native.test.ts
+          packages/agents-codex/test/native/selected-process-termination-native.test.ts
+          --maxWorkers=4 --reporter=verbose
       - name: Qualify owned child tracing on macOS
         if: runner.os == 'macOS'
         run: |

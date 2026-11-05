@@ -259,6 +259,7 @@ export interface SessionOptions {
   environment?: Environment;
   state?: SessionState;
   localStorage?: boolean;
+  customStore?: (request: string) => Promise<string>;
   localResume?: boolean;
   checklist?: boolean;
   websocketsAllowed?: boolean;
@@ -440,6 +441,7 @@ export interface TurnCompletion<T> {
 
 /** @internal The Session supplies live requests; observations carry no authority. */
 export interface TurnRequestWait<T, NativeId extends string | null = string> {
+  rootResultReady?(): boolean;
   notify(): void;
   rateLimits(): ApiRateLimits;
   wait(
@@ -535,6 +537,11 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
    */
   events(options: ObservationOptions = {}): AsyncIterableIterator<Observation> {
     return this.observations(options);
+  }
+
+  /** @internal Check owner settlement without creating a result waiter. */
+  _rootResultReady(): boolean {
+    return this.requests?.rootResultReady?.() ?? false;
   }
 
   wait(): Promise<Completed<OutputT>>;
@@ -2279,6 +2286,7 @@ export class Session<OutputT = string, Context = unknown> {
         (mode) => this.cancelTurn(run, mode),
         undefined,
         {
+          rootResultReady: () => scope.phase() === 'ended',
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
@@ -8622,8 +8630,16 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<void> {
     this.checkCallbackOperation('close');
     const state = this.lifecycle;
-    if (state.kind === 'closed')
-      return this.environmentCloseFailure ?? Promise.resolve();
+    if (state.kind === 'closed') {
+      if (this.environmentCloseFailure) return this.environmentCloseFailure;
+      // Completed persistent cleanup retains the engine's durability report.
+      // Release-only diagnostics have already been consumed by native close.
+      return this.options.localStorage
+        ? this.#engine._close_report().then((message) => {
+            if (message) throw new NativeError(message);
+          })
+        : Promise.resolve();
+    }
     if (state.kind === 'closing') return state.completion;
     const interceptionFailures: unknown[] = [];
     // Resolving or declining a callback can wake the model loop. Fence new

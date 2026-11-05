@@ -226,7 +226,7 @@
     },
     {
       "path": "0056-sdk-native-tracing.patch",
-      "sha256": "417c24b71ae57e8af5657bcadd763f9a758473f2a5a877d7360380616bcccd8a"
+      "sha256": "0e45e726652f4df20626a7f21be11a7eb1cdc81f65f9d3c4030470962e7cb6b1"
     },
     {
       "path": "0057-sdk-workflow-identity.patch",
@@ -235,7 +235,27 @@
     {
       "path": "0054-native-response-integrity-reasons.patch",
       "sha256": "006be27601ea216c750b5df1c0f9b0f9f4259b9206e1f33869400cf4ff61ea7a"
+    },
+    {
+      "path": "0054-native-history-durability.patch",
+      "sha256": "cda109edea1cb5a669e8be466c49b44259f7e1b0e6c79f0598005a1e4c176ca8"
+    },
+    {
+      "path": "0055-native-history-write-reconciliation.patch",
+      "sha256": "b37fa326977162283daf992214bc54bf13c19d6bd00221e77ea4c4c0933528ab"
+    },
+    {
+      "path": "0056-native-tree-finalization-before-store-close.patch",
+      "sha256": "af72648c78ad7efadae0054ef540090933138172b6bcbaf1e2b8dbdbd851eaa6"
+    },
+    {
+      "path": "0057-native-confirmed-remote-teardown.patch",
+      "sha256": "0dbfe2124d7bf0a0330dce01653a9607225fcb4b4c6246f0d1e46c2f821e4f0e"
+    },
+    {
+      "path": "0058-native-metadata-durability.patch",
+      "sha256": "10136a8852249737dbf7974c579cb84faf0d36fc495fcbaeeafe66a3dfa7e3d6"
     }
   ],
-  "result_tree": "1a6546142e4a9a1af351c0a4b987288110b0c7c1"
+  "result_tree": "7f082be8686f215dff9ee18b226ba21281a561e4"
 }
