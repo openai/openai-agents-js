@@ -119,6 +119,8 @@ export type {
   ObservationOptions,
   ExecutionItemSummary,
   ObservedEvent,
+  ModelRequestDispatching,
+  ModelResponseLinked,
   ApiRateLimitsUpdated,
 } from './runtime/observation';
 export type {

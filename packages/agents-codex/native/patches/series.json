@@ -267,7 +267,11 @@
     {
       "path": "0054-native-prepared-request.patch",
       "sha256": "616c979bd3accbfdfa978713e2a82f0049645cd3ae9c72ffacff1abcd2c517c2"
+    },
+    {
+      "path": "0059-native-request-metadata.patch",
+      "sha256": "00fb1ca9eff806e34ebd56521d4367c4905e6be285b773a2c32cc8ec617f17ae"
     }
   ],
-  "result_tree": "1c65094c37a0a4099f035256a8bd0cebb66d6bab"
+  "result_tree": "6e3ca2e842c1caf783abd91fb2aed74233b8366d"
 }

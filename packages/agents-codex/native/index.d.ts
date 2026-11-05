@@ -201,6 +201,7 @@ export class NativeThread {
     selectionJson?: string,
     traceJson?: string,
     tracing_context?: string,
+    observationSubmissionId?: string,
   ): Promise<string>;
   read_thread_history(subagent_id: string | null): Promise<string>;
   read_checklist(subagent_id?: string | null): Promise<string>;
