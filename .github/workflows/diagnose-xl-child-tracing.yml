@@ -50,10 +50,49 @@ jobs:
           assert source.count(before) == 1
           path.write_text(source.replace(before, "task_name: 'policy_child'"))
           PY
-      - name: Run both original Mac child-tracing checks twice
+      - name: Trace the waits without changing the test assertions
         run: |
-          for trial in 1 2; do
-            echo "Trial $trial"
-            pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering'
-            pnpm test:native packages/agents-codex/test/native/native-questions.test.ts -t 'keeps original child tracing through question reply and physical handler cleanup'
-          done
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("packages/agents-codex/test/native/child-turn-events-native.test.ts")
+          text = path.read_text()
+          marker = "it('keeps child tracing policy for explicit starts and active steering'"
+          before, case = text.split(marker, 1)
+          before = "import { appendFileSync } from 'node:fs';\n" + before
+          before += """function traceProbe(stage: string, detail?: unknown) {
+            appendFileSync(process.env.TRACE_PROBE_FILE!, JSON.stringify({ stage, detail }) + '\\n');
+          }
+          """
+          def append(needle, extra):
+              global case
+              assert case.count(needle) == 1, needle
+              case = case.replace(needle, needle + "\n" + extra)
+          append("      let approvals = 0;", "      traceProbe('loop', { disabled });")
+          append("        const span = telemetry.getCurrentSpan()!;", """        traceProbe('check', {
+                    steps, hasSpan: Boolean(span), sameTrace: telemetry.getCurrentTrace() === workflow,
+                    expectedDisabled: disabled, actualDisabled: span?.context.disabled,
+                    includeSensitiveData: span?.context.includeSensitiveData,
+                  });""")
+          append("        rootId ??= id;", """        traceProbe('model', { root: rootId === id, roots, childModels,
+                    outcomes: (Array.isArray(request.input) ? request.input : [])
+                      .filter((item) => item?.call_id === 'spawn-policy' && String(item.type).endsWith('output'))
+                      .map((item) => String(item.output).slice(0, 380)) });""")
+          append("              beforeStep: async () => {", "                traceProbe('beforeStep', { steps });")
+          append("                  entered.resolve();", "                  traceProbe('hook entered');")
+          append("                  await release.promise;", "                  traceProbe('hook released');")
+          append("            approval: () => {", "              traceProbe('approval', { approvals });")
+          append("        const { child, turn } = await oneChild(session);", "        traceProbe('one child', { roots, childModels, steps });")
+          append("        expect((await turn.wait()).finalOutput).toBe('initial child done');", "        traceProbe('initial turn done');")
+          append("            const second = await child.submit('new child turn');", "            traceProbe('second submit returned');")
+          append("            await entered.promise;", "            traceProbe('test saw entered');")
+          append("            expect(await child.submit('steer active child')).toBe(second);", "            traceProbe('steer returned');")
+          append("        expect(approvals).toBe(1);", "        traceProbe('approval checked');")
+          path.write_text(before + marker + case)
+          PY
+      - name: Identify the blocked operation
+        run: |
+          export TRACE_PROBE_FILE="$RUNNER_TEMP/child-trace-progress.jsonl"
+          status=0
+          pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering' --reporter=verbose || status=1
+          cat "$TRACE_PROBE_FILE"
+          exit "$status"
