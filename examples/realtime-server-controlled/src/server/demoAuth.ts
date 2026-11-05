@@ -4,6 +4,15 @@ import type { IncomingMessage } from 'node:http';
 const COOKIE_NAME = 'realtime_demo_session';
 const SESSION_TTL_SECONDS = 60 * 60;
 const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
+const MAX_DEMO_PRINCIPALS = 1_000;
+const EXPIRY_SWEEP_INTERVAL_MS = 60_000;
+
+export class DemoAuthCapacityError extends Error {
+  constructor() {
+    super('The demo authentication capacity has been reached.');
+    this.name = 'DemoAuthCapacityError';
+  }
+}
 
 export type DemoPrincipal = {
   csrfToken: string;
@@ -34,6 +43,7 @@ export class DemoAuthStore {
   readonly #principals = new Map<string, StoredPrincipal>();
   readonly #secureCookie: boolean;
   readonly #now: () => number;
+  #nextExpirySweepAt = 0;
 
   constructor(options: { secureCookie: boolean; now?: () => number }) {
     this.#secureCookie = options.secureCookie;
@@ -51,6 +61,13 @@ export class DemoAuthStore {
         principal: existing,
         setCookie: this.#serializeCookie(existing.token),
       };
+    }
+
+    if (this.#principals.size >= MAX_DEMO_PRINCIPALS) {
+      this.removeExpired();
+      if (this.#principals.size >= MAX_DEMO_PRINCIPALS) {
+        throw new DemoAuthCapacityError();
+      }
     }
 
     const token = randomBytes(32).toString('base64url');
@@ -72,6 +89,19 @@ export class DemoAuthStore {
 
   authenticate(request: IncomingMessage): DemoPrincipal | null {
     return this.#findStoredPrincipal(request);
+  }
+
+  removeExpired(): void {
+    const now = this.#now();
+    if (now < this.#nextExpirySweepAt) {
+      return;
+    }
+    this.#nextExpirySweepAt = now + EXPIRY_SWEEP_INTERVAL_MS;
+    for (const [token, principal] of this.#principals) {
+      if (principal.expiresAt <= now) {
+        this.#principals.delete(token);
+      }
+    }
   }
 
   #findStoredPrincipal(request: IncomingMessage): StoredPrincipal | null {

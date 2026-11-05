@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, type IncomingMessage } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApiServer } from '../src/server/apiServer';
 import { DemoAuthStore } from '../src/server/demoAuth';
@@ -39,6 +39,7 @@ afterEach(async () => {
 
 async function createHarness(hangup = vi.fn(async () => {}), now = Date.now) {
   const sessions = new SessionManager({ hangup, now });
+  const auth = new DemoAuthStore({ secureCookie: false, now });
   const start = vi.fn(
     async ({ ownerId, sessionId }: { ownerId: string; sessionId: string }) => {
       sessions.reserve(ownerId, sessionId);
@@ -50,7 +51,7 @@ async function createHarness(hangup = vi.fn(async () => {}), now = Date.now) {
   const controller = { start } as unknown as VoiceController;
   const server = createApiServer({
     appOrigin,
-    auth: new DemoAuthStore({ secureCookie: false, now }),
+    auth,
     controller,
     sessions,
   });
@@ -67,6 +68,7 @@ async function createHarness(hangup = vi.fn(async () => {}), now = Date.now) {
   }
 
   return {
+    auth,
     baseUrl,
     cookie,
     csrfToken: authBody.csrfToken,
@@ -77,6 +79,42 @@ async function createHarness(hangup = vi.fn(async () => {}), now = Date.now) {
 }
 
 describe('createApiServer', () => {
+  it('limits cookie-free bootstrap requests without denying an existing principal', async () => {
+    let now = 0;
+    const harness = await createHarness(
+      vi.fn(async () => {}),
+      () => now,
+    );
+    for (let index = 1; index < 1_000; index++) {
+      harness.auth.getOrCreate({ headers: {} } as IncomingMessage);
+    }
+
+    const overflow = await fetch(`${harness.baseUrl}/api/auth/session`);
+    expect(overflow.status).toBe(503);
+    expect(await overflow.json()).toEqual({
+      error: 'The demo authentication capacity has been reached.',
+    });
+    expect(overflow.headers.get('set-cookie')).toBeNull();
+
+    const unknownCookie = await fetch(`${harness.baseUrl}/api/auth/session`, {
+      headers: { Cookie: 'realtime_demo_session=unknown' },
+    });
+    expect(unknownCookie.status).toBe(503);
+
+    const renewed = await fetch(`${harness.baseUrl}/api/auth/session`, {
+      headers: { Cookie: harness.cookie },
+    });
+    expect(renewed.status).toBe(200);
+    expect((await renewed.json()) as { csrfToken: string }).toEqual({
+      csrfToken: harness.csrfToken,
+    });
+
+    now = 60 * 60 * 1000 + 1;
+    const afterExpiry = await fetch(`${harness.baseUrl}/api/auth/session`);
+    expect(afterExpiry.status).toBe(200);
+    expect(afterExpiry.headers.get('set-cookie')).toBeTruthy();
+  });
+
   it('recovers Stop and Start after cleanup failure and demo authentication expiry', async () => {
     let now = 1_000;
     const hangup = vi
@@ -322,6 +360,27 @@ describe('createApiServer', () => {
     await expect(createResponse.json()).resolves.toEqual({
       error: 'This voice session setup was cancelled.',
     });
+  });
+
+  it('returns a capacity error for new close-first IDs after the record budget fills', async () => {
+    const harness = await createHarness();
+    for (let index = 0; index < 1_000; index++) {
+      await harness.sessions.cancel(randomUUID(), 'owner-1');
+    }
+
+    const response = await fetch(
+      `${harness.baseUrl}/api/realtime/sessions/${randomUUID()}/close`,
+      {
+        method: 'POST',
+        headers: {
+          Cookie: harness.cookie,
+          Origin: appOrigin,
+          'X-CSRF-Token': harness.csrfToken,
+        },
+      },
+    );
+
+    expect(response.status).toBe(503);
   });
 
   it('rejects malformed cancellation identifiers', async () => {

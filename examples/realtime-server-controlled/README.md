@@ -44,6 +44,8 @@ This is not the Agents SDK's standard browser WebRTC transport with a data-chann
 
 The included cookie session provides only a runnable localhost authentication example. It does not identify a real user and does not prevent an arbitrary local caller from creating its own demo principal. Before deploying this pattern, replace `DemoAuthStore` with your application's authentication and authorization, apply production rate limits, and derive `OpenAI-Safety-Identifier` from a stable privacy-preserving user identifier.
 
+Anonymous demo authentication also has a 1,000-principal capacity limit. The server returns 503 for new principals at capacity and still renews existing cookies. Expiry sweeps run at most once per minute, so new principals may wait up to one sweep interval for expired entries to release capacity.
+
 ### Cleanup and retry behavior
 
 The browser disables Start until the previous session's cleanup request succeeds or confirms that no session is accessible to the current principal. If that request fails, the browser keeps the application session ID and enables Stop for another attempt. An authentication rejection triggers one authentication refresh and Close retry. The complete cleanup request sequence has a 15-second deadline, so a stalled request also leaves Stop retryable.
@@ -68,7 +70,7 @@ The public speaking state follows the Realtime API's [WebRTC output-buffer event
 
 ### Cancellation records
 
-The demo retains cancelled application session IDs in memory until the server stops, so a delayed request cannot recreate a cancelled session after the live-session expiry sweep. A production implementation must account for this storage growth and keep cancellation records for at least as long as it accepts delayed or replayed setup requests.
+The demo retains cancelled application session IDs until the server stops, independently of the live-session expiry sweep. Live sessions and cancellation records share a capacity budget of 1,000 distinct application session IDs; the server returns 503 when a new setup or close cannot be admitted. Existing sessions can still close at capacity. A production implementation should set a bounded setup-acceptance window and matching record expiry, as well as rate limits.
 
 ### Tool authorization and prompt injection
 

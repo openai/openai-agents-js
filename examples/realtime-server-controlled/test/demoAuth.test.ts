@@ -9,6 +9,29 @@ function request(cookie?: string): IncomingMessage {
 }
 
 describe('DemoAuthStore', () => {
+  it('recovers expired capacity within one sweep interval', () => {
+    let now = 0;
+    const auth = new DemoAuthStore({ now: () => now, secureCookie: false });
+    const initial = auth.getOrCreate(request());
+    const cookie = initial.setCookie!.split(';', 1)[0]!;
+    for (let index = 1; index < 1_000; index++) {
+      auth.getOrCreate(request());
+    }
+    now = 60 * 60 * 1000 - 1;
+    expect(() => auth.getOrCreate(request())).toThrow('capacity');
+    // Renewal remains available even while anonymous admission is full.
+    expect(auth.getOrCreate(request(cookie)).principal.ownerId).toBe(
+      initial.principal.ownerId,
+    );
+    now += 1;
+    expect(() => auth.getOrCreate(request())).toThrow('capacity');
+    now += 60_000;
+    expect(() => auth.getOrCreate(request())).not.toThrow();
+    expect(auth.authenticate(request(cookie))?.ownerId).toBe(
+      initial.principal.ownerId,
+    );
+  });
+
   it('renews the same principal when a voice session is about to start', () => {
     let now = 0;
     const auth = new DemoAuthStore({
