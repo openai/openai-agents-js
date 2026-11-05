@@ -501,6 +501,9 @@ async fn export_inner(
         .thread
         .thread_extension_data()
         .get::<crate::python_tools::PythonTools>();
+    if let Some(tools) = &tools {
+        tools.check_prepared_checkpoint()?;
+    }
     let managed_tool_specs = if let Some(tools) = &tools {
         if let Some(key) = pending {
             check_capture(state, key)?;

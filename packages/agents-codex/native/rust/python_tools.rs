@@ -38,6 +38,9 @@ pub(crate) use manual::{Continuation, ManualLedger, ManualSlot};
 #[path = "schema_fidelity.rs"]
 mod schema_fidelity;
 
+#[path = "prepared_requests.rs"]
+pub(crate) mod prepared_requests;
+
 struct Entry {
     name: ToolName,
     spec: ToolSpec,
@@ -115,11 +118,13 @@ pub struct PythonTools {
     manual: Mutex<ManualLedger>,
     selection: Mutex<Option<ActiveSelection>>,
     step_replies: Mutex<HashMap<u64, PendingStep>>,
+    prepared: Mutex<Option<Arc<prepared_requests::Owner>>>,
 }
 
 // The family inbox transports requests; reply authority stays with each issuer.
 enum FamilyRequest {
     Step(Weak<PythonTools>, u64, Value),
+    Prepared(Weak<prepared_requests::Owner>, u64, Value),
     Call(Weak<PythonTools>, PendingKey, Value),
     Retired { thread: String, instance: String },
 }
@@ -451,6 +456,7 @@ impl PythonTools {
             manual: Mutex::new(ManualLedger::default()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
+            prepared: Mutex::new(None),
         };
         let seed = Arc::new(tools.prepare(0, specs)?);
         tools.schema_receipts.register(&seed);
@@ -503,6 +509,7 @@ impl PythonTools {
             manual: Mutex::new(parent.child_manual_ledger()),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
+            prepared: Mutex::new(None),
         };
         // Validate the inherited catalog against this child's current ceiling.
         let parent_generation = parent.snapshot();
@@ -704,6 +711,11 @@ impl PythonTools {
         let mut receiver = self.family.receiver.lock().await;
         loop {
             match receiver.recv().await {
+                Some(FamilyRequest::Prepared(owner, id, request)) => {
+                    if owner.upgrade().is_some_and(|owner| owner.queued(id)) {
+                        return request;
+                    }
+                }
                 Some(FamilyRequest::Step(owner, id, request)) => {
                     if owner.upgrade().is_some_and(|tools| {
                         if tools.instance.is_some() {
@@ -952,6 +964,7 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
                 progress.0.send_replace(());
             }
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
+                tools.retire_preparation(None);
                 tools.retire_manual_wait();
                 tools
                     .step_replies
@@ -998,6 +1011,8 @@ pub(crate) struct OperationSelection {
     // Names select across all native families; slots remain the legacy JS ceiling.
     pub names: Option<Vec<ToolName>>,
     pub before_step: bool,
+    #[serde(default)]
+    pub prepare_request: bool,
 }
 #[derive(Clone)]
 struct ActiveSelection {
@@ -1006,6 +1021,7 @@ struct ActiveSelection {
     slots: Option<Vec<usize>>,
     names: Option<Vec<ToolName>>,
     before_step: bool,
+    prepare_request: bool,
 }
 struct PendingStep {
     turn: String,
@@ -1105,6 +1121,7 @@ impl Drop for StepWait {
 
 impl PythonTools {
     fn retire_selection(&self, turn: &str) {
+        self.retire_preparation(Some(turn));
         let mut active = self
             .selection
             .lock()
@@ -1132,6 +1149,7 @@ impl PythonTools {
                 slots: selection.slots.clone(),
                 names: selection.names.clone(),
                 before_step: selection.before_step,
+                prepare_request: selection.prepare_request,
             })
     }
 
@@ -1226,6 +1244,7 @@ impl PythonTools {
                 slots: None,
                 names: None,
                 before_step: true,
+                prepare_request: false,
             });
         }
         operation.map(|selection| ActiveSelection {
@@ -1234,6 +1253,7 @@ impl PythonTools {
             slots: selection.slots.clone(),
             names: selection.names.clone(),
             before_step: selection.before_step,
+            prepare_request: selection.prepare_request,
         })
     }
 
@@ -1662,6 +1682,7 @@ impl TurnLifecycleContributor for PythonContributor {
                     .selection
                     .lock()
                     .expect("JavaScript selection poisoned") = selection;
+                tools.begin_preparation(&input);
                 tools.begin_native_manual_turn(input);
             }
         })
@@ -1681,6 +1702,7 @@ impl TurnLifecycleContributor for PythonContributor {
                     .lock()
                     .expect("JavaScript step replies poisoned")
                     .retain(|_, pending| pending.turn != input.turn_store.level_id());
+                tools.retire_preparation(Some(input.turn_store.level_id()));
                 tools.stop_native_manual_turn(input);
             }
         })
@@ -1761,7 +1783,7 @@ mod pending_tests {
 
     // Exercise the actual registry and its lifetime owners without starting Core,
     // a runtime, a network service, or a native thread.
-    fn tools() -> Arc<PythonTools> {
+    pub(super) fn tools() -> Arc<PythonTools> {
         let tools = Arc::new(PythonTools {
             local_store: None,
             custom_store: None,
@@ -1785,6 +1807,7 @@ mod pending_tests {
             manual: Mutex::default(),
             selection: Mutex::new(None),
             step_replies: Mutex::new(HashMap::new()),
+            prepared: Mutex::new(None),
         });
         let specs = vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
             name: "decision".into(),
@@ -2055,6 +2078,7 @@ mod pending_tests {
             slots: None,
             names,
             before_step: true,
+            prepare_request: false,
         });
         (thread, tools)
     }
@@ -2076,6 +2100,7 @@ mod pending_tests {
             slots: Some(Vec::new()),
             names: None,
             before_step: false,
+            prepare_request: false,
         };
         *child.selection.lock().unwrap() =
             child.turn_selection("child-turn", Some(&root_operation));
@@ -2371,6 +2396,7 @@ mod pending_tests {
             slots: Some(Vec::new()),
             names: None,
             before_step: false,
+            prepare_request: false,
         });
         let successor = ExtensionData::new("successor-step");
         assert!(
@@ -2499,6 +2525,7 @@ mod pending_tests {
                 slots: operation.slots,
                 names: operation.names,
                 before_step: operation.before_step,
+                prepare_request: operation.prepare_request,
             });
             let continued = tools.continuation_selection("turn").unwrap();
             assert_eq!(continued.slots, expected_slots);

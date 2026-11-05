@@ -1159,6 +1159,41 @@ async function credentialsCase() {
   await telemetry.shutdown();
   console.log(JSON.stringify({ traceIds }));
 }
+async function preparedRequestCase() {
+  const server = new ModelServer([[message('traced answer')]]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-editor-trace',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5.5',
+    provider,
+  });
+  let callbacks = 0;
+  await telemetry.withTrace(
+    { name: 'prepared-request-workflow' },
+    async (workflow) => {
+      const result = await agent.run('answer', {
+        prepareRequest() {
+          callbacks++;
+          assert.equal(telemetry.getCurrentTrace(), workflow);
+          const callback = telemetry.getCurrentSpan();
+          assert.equal(callback?.context.traceId, workflow.context.traceId);
+          assert.notEqual(callback?.context.spanId, workflow.context.spanId);
+          return undefined;
+        },
+      });
+      assert.equal(result.finalOutput, 'traced answer');
+    },
+  );
+  assert.equal(callbacks, 1);
+  assert.equal(server.requests.length, 1);
+}
+
 async function main() {
   const mode = process.argv[2];
   if (mode === 'custom-only') {
@@ -1247,6 +1282,7 @@ async function main() {
       else if (mode === 'control') await controlCase(collector.batches);
       else if (mode === 'processors') await processorCase(collector.batches);
       else if (mode === 'restore') await restoreCase(collector.batches);
+      else if (mode === 'model-preparation') await preparedRequestCase();
       else if (mode === 'parent-policy') await parentPolicyCase(collector);
       else if (mode === 'retained')
         await retainedCase(collector.batches, collector.authorization);

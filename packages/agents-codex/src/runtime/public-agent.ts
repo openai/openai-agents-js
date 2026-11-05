@@ -109,6 +109,11 @@ export interface RunOptions<Context = undefined> extends Omit<
 > {
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
+  /**
+   * Edit requests for a new run with input. A resumed turn cannot add an editor.
+   * Manual tools require onInteraction because an edited run cannot save an active checkpoint.
+   */
+  prepareRequest?: import('./session').OperationOptions<Context>['prepareRequest'];
   returnState?: boolean;
   onNativeQuestion?: (
     request: NativeQuestion,
@@ -378,6 +383,8 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Cannot replace the model step budget when resuming a run',
       );
+    if (input === null && options.prepareRequest !== undefined)
+      throw new TypeError('Cannot add prepareRequest when resuming a run');
     const preparedInput = input === null ? null : nativeInput(input);
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
@@ -397,6 +404,7 @@ export class Agent<Context = undefined, Output = string> {
       ],
       [ownedRun]: {
         input: preparedInput,
+        prepareRequest: options.prepareRequest,
         onNativeQuestion: options.onNativeQuestion,
         onRequiredAction: options.onInteraction
           ? (action, signal) =>
@@ -559,6 +567,42 @@ export class Agent<Context = undefined, Output = string> {
         ? Object.freeze({ ...declaredOutput })
         : declaredOutput;
     const output = opening ? opening.output : prepareOutput(outputType);
+    if (
+      (options as OwnedSessionOptions<Context>)[ownedRun]?.prepareRequest !==
+      undefined
+    ) {
+      const prepareRequest = (options as OwnedSessionOptions<Context>)[
+        ownedRun
+      ]!.prepareRequest;
+      if (typeof prepareRequest !== 'function')
+        throw new TypeError('prepareRequest must be callable');
+      if (output.repair)
+        throw new TypeError(
+          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
+        );
+      if (
+        (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
+        false
+      )
+        throw new TypeError(
+          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
+        );
+      if (
+        programmaticToolCalling ||
+        environmentInput ||
+        declarations.nativeAgents ||
+        declarations.nativeGoals ||
+        declarations.checklist ||
+        declarations.webSearch ||
+        declarations.tools.some((tool) => tool.deferLoading) ||
+        declarations.mcp.some(
+          (tool) => tool.deferLoading || isHostedRegistration(tool),
+        )
+      )
+        throw new TypeError(
+          'prepareRequest supports only direct root eager function and ordinary MCP tools',
+        );
+    }
     const { instructions, files } =
       !opening && options.instructionFiles !== undefined
         ? await loadInstructionFiles(

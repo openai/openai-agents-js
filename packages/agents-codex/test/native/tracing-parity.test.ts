@@ -17,6 +17,7 @@ for (const mode of [
   'processors',
   'restore',
   'retained',
+  'model-preparation',
   'parent-policy',
   'no-export',
   'custom-only',

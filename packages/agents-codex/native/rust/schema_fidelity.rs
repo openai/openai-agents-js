@@ -7,11 +7,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use anyhow::{Result, ensure};
+use codex_extension_api::{PreparedRequestData, PreparedToolPresentation};
 use codex_protocol::ThreadId;
 use codex_tools::{ResponsesApiNamespaceTool, ToolSpec};
 use serde_json::Value;
 
-use super::{Generation, PythonTools, functions};
+use super::{Entry, Generation, PythonTools, functions};
+use codex_protocol::dynamic_tools::{DynamicToolNamespaceTool, DynamicToolSpec};
 
 static MARKER: LazyLock<String> =
     LazyLock::new(|| format!("\n[agents-schema:{}/", ThreadId::new()));
@@ -19,6 +21,19 @@ static MARKER: LazyLock<String> =
 struct Receipt {
     generation: Weak<Generation>,
     historical: Option<Arc<Generation>>,
+}
+
+struct ManagedSchema {
+    generation: Arc<Generation>,
+    slot: usize,
+}
+
+/// One clean callback view plus its private original presentation owners.
+/// This metadata never supplies executors or changes the live tool generation.
+pub(super) struct PreparedSchemas {
+    pub(super) data: PreparedRequestData,
+    original: Vec<PreparedToolPresentation>,
+    managed: Vec<Option<ManagedSchema>>,
 }
 
 #[derive(Default)]
@@ -162,12 +177,128 @@ impl Receipts {
         Ok(())
     }
 
-    fn function(&self, tool: &mut Value, namespace: &str) -> Result<()> {
+    pub(super) fn prepared(&self, mut data: PreparedRequestData) -> Result<PreparedSchemas> {
+        let original = data.tools.clone();
+        let mut managed = Vec::with_capacity(data.tools.len());
+        for tool in &mut data.tools {
+            let owner = self.resolve(
+                &serde_json::json!({
+                    "name":tool.name, "description":tool.description, "parameters":tool.parameters,
+                }),
+                tool.namespace.as_deref().unwrap_or("functions"),
+            )?;
+            if let Some(owner) = &owner {
+                let originals = functions(&owner.generation.specs);
+                tool.description = originals[owner.slot].1.description.clone();
+                // Core's projection omits raw JSON Schema keywords.
+                tool.parameters = originals[owner.slot].1.input_schema.clone();
+            }
+            managed.push(owner);
+        }
+        Ok(PreparedSchemas {
+            data,
+            original,
+            managed,
+        })
+    }
+
+    pub(super) fn reconcile_prepared(
+        &self,
+        captured: &PreparedSchemas,
+        data: &mut PreparedRequestData,
+    ) -> Result<Option<Arc<Generation>>> {
+        ensure!(
+            data.tools.len() == captured.data.tools.len(),
+            "Prepared tool count changed"
+        );
+        let token = ThreadId::new().to_string();
+        let mut entries = Vec::new();
+        let mut specs = Vec::new();
+        for (index, tool) in data.tools.iter_mut().enumerate() {
+            // Only this runtime's actual private syntax is reserved. Ordinary
+            // documentation that mentions agents-schema is still plain text.
+            ensure!(
+                !tool.description.contains(MARKER.as_str()),
+                "Prepared description contains a reserved schema reference"
+            );
+            let Some(owner) = &captured.managed[index] else {
+                continue;
+            };
+            let public = &captured.data.tools[index];
+            let description_changed = tool.description != public.description;
+            let parameters_changed = tool.parameters != public.parameters;
+            if !parameters_changed {
+                // Return the unchanged declaration in Core's original form.
+                tool.parameters = captured.original[index].parameters.clone();
+            }
+            if !description_changed && !parameters_changed {
+                tool.description = captured.original[index].description.clone();
+                continue;
+            }
+            let original_entry = &owner.generation.entries[owner.slot];
+            let originals = functions(&owner.generation.specs);
+            let (namespace, original) = originals[owner.slot];
+            let mut raw = original.clone();
+            raw.description = tool.description.clone();
+            if parameters_changed {
+                raw.input_schema = tool.parameters.clone();
+            }
+            let mut projected = original_entry.spec.clone();
+            let function = match &mut projected {
+                ToolSpec::Function(function) => function,
+                ToolSpec::Namespace(namespace) => match namespace.tools.first_mut() {
+                    Some(ResponsesApiNamespaceTool::Function(function)) => function,
+                    _ => anyhow::bail!("Invalid managed prepared namespace"),
+                },
+                _ => anyhow::bail!("Invalid managed prepared function"),
+            };
+            // Core validates the native projection. This captured sampling
+            // receipt restores the exact raw schema only after tool identity
+            // and projected declaration checks succeed at serialization.
+            if parameters_changed {
+                function.parameters = serde_json::from_value(tool.parameters.clone())
+                    .map_err(|_| anyhow::anyhow!("Invalid prepared schema projection"))?;
+                tool.parameters = serde_json::to_value(&function.parameters)
+                    .map_err(|_| anyhow::anyhow!("Invalid prepared schema projection"))?;
+            }
+            function.description = Self::description(&tool.description, &token, entries.len());
+            tool.description = function.description.clone();
+            entries.push(Entry {
+                name: original_entry.name.clone(),
+                spec: projected,
+                exposure: original_entry.exposure,
+            });
+            specs.push(match namespace {
+                None => DynamicToolSpec::Function(raw),
+                Some(namespace) => {
+                    let mut namespace = namespace.clone();
+                    namespace.tools = vec![DynamicToolNamespaceTool::Function(raw)];
+                    DynamicToolSpec::Namespace(namespace)
+                }
+            });
+        }
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let generation = Arc::new(Generation {
+            id: 0,
+            schema_token: Some(token),
+            entries,
+            specs,
+            defaults: Vec::new(),
+        });
+        // Register only presentation metadata. No executable plan, current
+        // generation, search-history retention, or application policy changes.
+        self.register(&generation);
+        Ok(Some(generation))
+    }
+
+    fn resolve(&self, tool: &Value, namespace: &str) -> Result<Option<ManagedSchema>> {
         let Some(description) = tool.get("description").and_then(Value::as_str) else {
-            return Ok(());
+            return Ok(None);
         };
         let Some((_, suffix)) = description.rsplit_once(MARKER.as_str()) else {
-            return Ok(());
+            return Ok(None);
         };
         let (token, slot) = suffix
             .split_once(']')
@@ -213,6 +344,25 @@ impl Receipts {
                 && tool.get("parameters") == Some(&serde_json::to_value(&projected.parameters)?),
             "Managed tool schema declaration does not match its native owner"
         );
+        Ok(Some(ManagedSchema { generation, slot }))
+    }
+
+    fn function(&self, tool: &mut Value, namespace: &str) -> Result<()> {
+        let Some(ManagedSchema { generation, slot }) = self.resolve(tool, namespace)? else {
+            return Ok(());
+        };
+        let description = tool
+            .get("description")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Invalid managed tool description"))?;
+        let projected = match &generation.entries[slot].spec {
+            ToolSpec::Function(function) => function,
+            ToolSpec::Namespace(namespace) => match namespace.tools.first() {
+                Some(ResponsesApiNamespaceTool::Function(function)) => function,
+                _ => unreachable!("resolved namespace function"),
+            },
+            _ => unreachable!("resolved function"),
+        };
         let originals = functions(&generation.specs);
         let (_, original) = originals
             .get(slot)
@@ -417,5 +567,181 @@ mod tests {
             assert!(actual.contains("record_lookup(args: {key: string})"));
             assert!(!actual.contains("[agents-schema:"));
         }
+    }
+}
+
+#[cfg(test)]
+mod prepared_tests {
+    use super::*;
+    use codex_protocol::dynamic_tools::DynamicToolFunctionSpec;
+    use codex_tools::{ToolExposure, ToolName, dynamic_tool_to_responses_api_tool};
+    use serde_json::json;
+
+    fn fixture(receipts: &Receipts) -> (Arc<Generation>, PreparedRequestData) {
+        let raw = DynamicToolFunctionSpec {
+            name: "lookup".into(),
+            description: "Original description.".into(),
+            input_schema: json!({"type":"object","properties":{"key":{"type":"string","minLength":3}},"required":["key"],"additionalProperties":false}),
+            defer_loading: false,
+        };
+        let token = ThreadId::new().to_string();
+        let mut projected = dynamic_tool_to_responses_api_tool(&raw).unwrap();
+        projected.description = Receipts::description(&raw.description, &token, 0);
+        let data = PreparedRequestData {
+            instructions: "original".into(),
+            input: Vec::new(),
+            tools: vec![PreparedToolPresentation {
+                namespace: None,
+                name: projected.name.clone(),
+                kind: "function".into(),
+                strict: projected.strict,
+                defer_loading: projected.defer_loading,
+                description: projected.description.clone(),
+                parameters: serde_json::to_value(&projected.parameters).unwrap(),
+            }],
+        };
+        let generation = Arc::new(Generation {
+            id: 7,
+            schema_token: Some(token),
+            entries: vec![Entry {
+                name: ToolName::plain("lookup"),
+                spec: ToolSpec::Function(projected),
+                exposure: ToolExposure::Direct,
+            }],
+            specs: vec![DynamicToolSpec::Function(raw)],
+            defaults: vec![0],
+        });
+        receipts.register(&generation);
+        (generation, data)
+    }
+    fn wire(data: &PreparedRequestData) -> Value {
+        json!({"tools":data.tools.iter().map(|tool|json!({"type":"function","name":tool.name,"description":tool.description,"parameters":serde_json::to_value(serde_json::from_value::<codex_tools::JsonSchema>(tool.parameters.clone()).unwrap()).unwrap()})).collect::<Vec<_>>()})
+    }
+    #[test]
+    fn field_intent_retains_raw_schema_until_parameters_actually_change() {
+        for (description_changed, parameters_changed) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let receipts = Receipts::default();
+            let (original, data) = fixture(&receipts);
+            let view = receipts.prepared(data).unwrap();
+            assert_eq!(view.data.tools[0].description, "Original description.");
+            assert!(!view.data.tools[0].description.contains(MARKER.as_str()));
+            assert_eq!(
+                view.data.tools[0].parameters,
+                functions(&original.specs)[0].1.input_schema
+            );
+            let mut edited = view.data.clone();
+            if description_changed {
+                edited.tools[0].description = "Edited description.".into();
+            }
+            if parameters_changed {
+                edited.tools[0].parameters = json!({"type":"object","properties":{"key":{"type":"string","enum":["allowed","wider"]}},"required":["key"],"additionalProperties":false});
+            }
+            let returned_parameters = edited.tools[0].parameters.clone();
+            let metadata = receipts.reconcile_prepared(&view, &mut edited).unwrap();
+            if parameters_changed {
+                let projected_parameters: codex_tools::JsonSchema =
+                    serde_json::from_value(returned_parameters.clone()).unwrap();
+                assert_eq!(
+                    edited.tools[0].parameters,
+                    serde_json::to_value(projected_parameters).unwrap()
+                );
+            } else {
+                assert_eq!(edited.tools[0].parameters, view.original[0].parameters);
+            }
+            assert_eq!(
+                metadata.is_some(),
+                description_changed || parameters_changed
+            );
+            let mut request = wire(&edited);
+            receipts.restore(&mut request).unwrap();
+            assert_eq!(
+                request["tools"][0]["description"],
+                if description_changed {
+                    "Edited description."
+                } else {
+                    "Original description."
+                }
+            );
+            if parameters_changed {
+                assert_eq!(request["tools"][0]["parameters"], returned_parameters);
+            } else {
+                assert_eq!(
+                    request["tools"][0]["parameters"],
+                    functions(&original.specs)[0].1.input_schema
+                );
+            }
+            if let Some(metadata) = metadata {
+                let mut stale = wire(&edited);
+                drop(metadata);
+                assert!(receipts.restore(&mut stale).is_err());
+            }
+        }
+    }
+    #[test]
+    fn partial_parameter_edits_keep_original_raw_keywords() {
+        let receipts = Receipts::default();
+        let (original, data) = fixture(&receipts);
+        let view = receipts.prepared(data).unwrap();
+        assert_eq!(
+            view.data.tools[0].parameters["properties"]["key"]["minLength"],
+            json!(3)
+        );
+        let mut edited = view.data.clone();
+        edited.tools[0].parameters["properties"]["key"]["maxLength"] = json!(9);
+        let expected = edited.tools[0].parameters.clone();
+        let _metadata = receipts.reconcile_prepared(&view, &mut edited).unwrap();
+        let mut request = wire(&edited);
+        receipts.restore(&mut request).unwrap();
+        assert_eq!(request["tools"][0]["parameters"], expected);
+        assert_eq!(
+            functions(&original.specs)[0].1.input_schema["properties"]["key"]["maxLength"],
+            Value::Null
+        );
+    }
+    #[test]
+    fn managed_schema_projection_keeps_immutable_identity_for_core() {
+        let receipts = Receipts::default();
+        let (_original, data) = fixture(&receipts);
+        let view = receipts.prepared(data).unwrap();
+        let mut edited = view.data.clone();
+        edited.tools[0].parameters["properties"]["key"]["unknown_null_key"] = Value::Null;
+        edited.tools[0].name = "renamed".into();
+        edited.tools[0].namespace = Some("changed_namespace".into());
+        edited.tools[0].kind = "changed_kind".into();
+        edited.tools[0].strict = !edited.tools[0].strict;
+        edited.tools[0].defer_loading = Some(true);
+        let submitted = edited.tools[0].clone();
+        let _metadata = receipts.reconcile_prepared(&view, &mut edited).unwrap();
+        assert_ne!(edited.tools[0].parameters, submitted.parameters);
+        assert!(
+            edited.tools[0].parameters["properties"]["key"]
+                .get("unknown_null_key")
+                .is_none()
+        );
+        assert_eq!(edited.tools[0].name, submitted.name);
+        assert_eq!(edited.tools[0].namespace, submitted.namespace);
+        assert_eq!(edited.tools[0].kind, submitted.kind);
+        assert_eq!(edited.tools[0].strict, submitted.strict);
+        assert_eq!(edited.tools[0].defer_loading, submitted.defer_loading);
+    }
+    #[test]
+    fn prepared_receipts_remain_strict_and_only_actual_private_syntax_is_reserved() {
+        let receipts = Receipts::default();
+        let (_original, data) = fixture(&receipts);
+        let private = data.tools[0].description.clone();
+        let view = receipts.prepared(data).unwrap();
+        let mut forged = view.data.clone();
+        forged.tools[0].description = private;
+        assert!(receipts.reconcile_prepared(&view, &mut forged).is_err());
+        let mut edited = view.data.clone();
+        edited.tools[0].description = "Docs mention [agents-schema:example] syntax.".into();
+        let _metadata = receipts.reconcile_prepared(&view, &mut edited).unwrap();
+        let mut request = wire(&edited);
+        request["tools"][0]["parameters"]["properties"]["key"]["type"] = json!("number");
+        let before = request.clone();
+        assert!(receipts.restore(&mut request).is_err());
+        assert_eq!(request, before);
     }
 }
