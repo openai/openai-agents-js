@@ -329,7 +329,8 @@ impl Settlement {
         if let Some(receipt) = &receipt {
             receipt.reject_model();
         }
-        let context = crate::lease_context(receipt.as_ref().and_then(|turn| turn.tracing.as_deref()))?;
+        let context =
+            crate::lease_context(receipt.as_ref().and_then(|turn| turn.tracing.as_deref()))?;
         crate::ops::interrupt(thread).with_context(context).await?;
         if let Some(receipt) = receipt {
             self.finish_interrupted(thread, &receipt).await?;
