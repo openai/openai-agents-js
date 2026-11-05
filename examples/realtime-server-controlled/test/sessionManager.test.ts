@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { NotFoundError } from 'openai';
 import {
@@ -155,6 +156,57 @@ describe('SessionManager', () => {
     expect(() => sessions.reserve('owner-1', sessionId)).toThrow(
       'voice session setup was cancelled',
     );
+  });
+
+  it('bounds close-first cancellation records while preserving admitted cleanup', async () => {
+    const sessions = new SessionManager({ hangup: vi.fn(async () => {}) });
+    const activeId = sessions.reserve('active-owner');
+    for (let index = 0; index < 999; index++) {
+      const id = `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`;
+      await expect(sessions.cancel(id, 'owner-1')).resolves.toBe(true);
+    }
+
+    const rejectedId = '00000000-0000-4000-8000-000000001000';
+    await expect(sessions.cancel(rejectedId, 'owner-1')).rejects.toThrow(
+      'capacity',
+    );
+    expect(() => sessions.reserve('owner-1', rejectedId)).toThrow('capacity');
+    await expect(sessions.cancel(activeId, 'active-owner')).resolves.toBe(true);
+    await expect(sessions.cancel(activeId, 'active-owner')).resolves.toBe(true);
+    expect(() => sessions.reserve('active-owner', activeId)).toThrow(
+      'voice session setup was cancelled',
+    );
+  });
+
+  it('counts a cancelled session once while its hangup is pending', async () => {
+    let finishHangup!: () => void;
+    const hangup = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishHangup = resolve;
+        }),
+    );
+    const sessions = new SessionManager({ hangup });
+    const activeId = sessions.reserve('active-owner');
+    sessions.attachCall(activeId, 'rtc_pending');
+    for (let index = 0; index < 998; index++) {
+      await sessions.cancel(randomUUID(), 'owner-1');
+    }
+
+    const closing = sessions.cancel(activeId, 'active-owner');
+    await vi.waitFor(() => expect(hangup).toHaveBeenCalledOnce());
+    const finalId = sessions.reserve('last-owner');
+    expect(() => sessions.reserve('overflow-owner')).toThrow('capacity');
+    await expect(sessions.cancel(randomUUID(), 'owner-1')).rejects.toThrow(
+      'capacity',
+    );
+    await expect(sessions.cancel(finalId, 'last-owner')).resolves.toBe(true);
+    finishHangup();
+    await expect(closing).resolves.toBe(true);
+    expect(() => sessions.reserve('active-owner', activeId)).toThrow(
+      'setup was cancelled',
+    );
+    expect(() => sessions.reserve('overflow-owner')).toThrow('capacity');
   });
 
   it('requires ownership for subscription and close', async () => {

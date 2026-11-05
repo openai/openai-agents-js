@@ -12,6 +12,7 @@ export type PublicEventClient = {
 };
 
 type SessionState = 'active' | 'closing' | 'creating';
+const SESSION_RECORD_CAPACITY = 1_000;
 
 export class SessionConflictError extends Error {
   constructor(message = 'This user already has an active voice session.') {
@@ -79,7 +80,10 @@ export class SessionManager {
         'This voice session identifier is already in use.',
       );
     }
-    if (this.#sessions.size >= this.#maxSessions) {
+    if (
+      this.#sessions.size >= this.#maxSessions ||
+      !this.#hasRecordCapacity()
+    ) {
       throw new SessionCapacityError();
     }
 
@@ -95,6 +99,17 @@ export class SessionManager {
     return id;
   }
 
+  #hasRecordCapacity(): boolean {
+    // A cancelled session keeps its live record until hangup succeeds.
+    let count = this.#cancelledSetups.size;
+    for (const id of this.#sessions.keys()) {
+      if (!this.#cancelledSetups.has(id)) {
+        count++;
+      }
+    }
+    return count < SESSION_RECORD_CAPACITY;
+  }
+
   async cancel(id: string, ownerId: string): Promise<boolean> {
     const session = this.#sessions.get(id);
     if (session && session.ownerId !== ownerId) {
@@ -106,6 +121,9 @@ export class SessionManager {
       return false;
     }
 
+    if (!session && !cancelledOwner && !this.#hasRecordCapacity()) {
+      throw new SessionCapacityError();
+    }
     this.#cancelledSetups.set(id, ownerId);
     if (session) {
       await this.close(id, ownerId);
