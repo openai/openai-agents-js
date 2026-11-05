@@ -26,6 +26,8 @@ Start the local token server in one terminal:
 OPENAI_API_KEY=sk-... pnpm -F realtime-react-native token-server
 ```
 
+The server prints a new pairing token at startup. Enter that token in the app before connecting, including on an emulator or simulator. The app sends it only in token requests; do not put it in an `EXPO_PUBLIC_*` variable or a URL.
+
 Build and launch the native app in another terminal:
 
 ```sh
@@ -38,14 +40,21 @@ Or, on macOS with Xcode installed:
 pnpm -F realtime-react-native ios
 ```
 
-The default token URL works with the Android emulator (`10.0.2.2`) and iOS simulator (`127.0.0.1`). For a physical device, point the app at the development machine's LAN address:
+The default token URL works with the Android emulator (`10.0.2.2`) and iOS simulator (`127.0.0.1`). For an Android device connected over USB, forward the device's loopback port to the local token server:
 
 ```sh
-HOST=0.0.0.0 OPENAI_API_KEY=sk-... pnpm -F realtime-react-native token-server
-EXPO_PUBLIC_REALTIME_TOKEN_URL=http://192.168.1.20:8787/token pnpm -F realtime-react-native start
+adb reverse tcp:8787 tcp:8787
+EXPO_PUBLIC_REALTIME_TOKEN_URL=http://127.0.0.1:8787/token pnpm -F realtime-react-native start
 ```
 
-Binding the development token server to `0.0.0.0` exposes it to the local network. Use it only on a trusted network and stop it when testing is complete.
+For a physical iOS device, connect the device and development machine to the same private Tailscale network. On the development machine, find its Tailscale IPv4 address with `tailscale ip -4`, then start the token server bound to that address:
+
+```sh
+HOST=<tailscale-ip> OPENAI_API_KEY=sk-... pnpm -F realtime-react-native token-server
+EXPO_PUBLIC_REALTIME_TOKEN_URL=http://<tailscale-ip>:8787/token pnpm -F realtime-react-native start
+```
+
+The private tunnel protects the pairing token in transit. The server permits six token requests per client per minute. Stop the server after testing.
 
 This example uses Expo SDK 57 with React Native 0.86. After upgrading from SDK 55, regenerate the ignored native projects and rebuild the development client:
 
@@ -68,7 +77,7 @@ On Xcode 26.6 with iOS 26.5 Simulator, microphone input and audio output are cur
 For now, use a physical iOS device to test microphone input and spoken responses:
 
 ```sh
-EXPO_PUBLIC_REALTIME_TOKEN_URL=http://192.168.1.20:8787/token pnpm -F realtime-react-native exec expo run:ios --device
+EXPO_PUBLIC_REALTIME_TOKEN_URL=http://<tailscale-ip>:8787/token pnpm -F realtime-react-native exec expo run:ios --device
 ```
 
 `Device.isDevice` then enables bidirectional audio automatically.
