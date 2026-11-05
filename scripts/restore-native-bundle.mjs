@@ -1,20 +1,14 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import console from 'node:console';
 import { createHash } from 'node:crypto';
-import {
-  appendFileSync,
-  createWriteStream,
-  existsSync,
-  readFileSync,
-} from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, existsSync } from 'node:fs';
 import process from 'node:process';
-import { pipeline } from 'node:stream/promises';
 
 const lockPath = '.github/native-bundle.json';
 const platform = process.platform + '-' + process.arch;
-const { GITHUB_OUTPUT, PIN_REF, RUNNER_TEMP } = process.env;
+const { GITHUB_OUTPUT, PIN_REF } = process.env;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 // Git includes file names, modes, and blob IDs, including newly added inputs.
 const inputs = sha256(
@@ -75,15 +69,18 @@ async function restore() {
     return false;
   }
   assert.ok(response.ok, 'Native download returned HTTP ' + response.status);
-  const archive = join(RUNNER_TEMP, 'pinned-native.tar.gz');
-  await pipeline(response.body, createWriteStream(archive, { flags: 'wx' }));
+  const archive = Buffer.from(await response.arrayBuffer());
   assert.equal(
-    sha256(readFileSync(archive)),
+    sha256(archive),
     asset.sha256,
     'Native bundle checksum mismatch',
   );
-  execFileSync('tar', ['-xzf', archive, '-C', 'packages/agents'], {
-    stdio: 'inherit',
+  const products = ['native/codex.node', 'native/build-receipt.json', 'bin'];
+  if (platform === 'darwin-arm64')
+    products.push('native/test-bin/exec-server-fixture');
+  execFileSync('tar', ['-xzf', '-', '-C', 'packages/agents', ...products], {
+    input: archive,
+    stdio: ['pipe', 'inherit', 'inherit'],
   });
   console.log(
     'Restored verified native artifact ' + asset.id + ' for ' + platform,

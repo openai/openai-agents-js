@@ -124,7 +124,7 @@ jobs:
           if [[ "$EXPECTED_PLATFORM" == darwin-arm64 ]]; then
             products+=(native/test-bin/exec-server-fixture)
           fi
-          tar -czf "$RUNNER_TEMP/native-$INPUTS-$EXPECTED_PLATFORM.tar.gz" "${products[@]}"
+          tar -czf - "${products[@]}" > "$RUNNER_TEMP/native-$INPUTS-$EXPECTED_PLATFORM.tar.gz"
       - name: Upload the native bundle for pinning
         if: steps.native.outputs.restored != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
