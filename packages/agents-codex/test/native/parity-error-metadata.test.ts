@@ -213,7 +213,8 @@ async function providerPeer(
         [...coreCarrierSockets].map(async (socket) => {
           if (socket.readyState === 3) return;
           const closed = once(socket, 'close');
-          socket.terminate();
+          // Await the Core pump's close handshake before the next model send.
+          socket.close();
           await closed;
         }),
       );
