@@ -323,37 +323,134 @@ describe('public native local profiles', () => {
     server.assertExhausted();
   }, 45000);
 
-  it('refuses unknown effects after kill before provider work or callback replay', async () => {
-    const p = await profile();
-    const server = new ModelServer([
-      [call('record', {}, { callId: 'unknown-call' })],
-    ]);
-    const first = await worker(server, {
-      profile: p.storage.path,
-      effects: p.effects,
-      label: 'source',
-      mode: 'hold-effect',
-    });
-    const { id } = await first.wait('opened');
-    await first.wait('effect');
-    first.child.kill('SIGKILL');
-    await first.exited;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const next = await worker(server, {
+  it.each([
+    ['hold-before', 'beforeEffect', 'not_applied'],
+    ['hold-effect', 'effect', 'applied'],
+  ])(
+    'requires a verified result after process loss in %s',
+    async (mode, milestone, outcome) => {
+      const p = await profile();
+      const server = new ModelServer([
+        [call('record', {}, { callId: 'unknown-call' })],
+        [message('Recovered the original conversation.')],
+        [call('record', {}, { callId: 'unknown-call' })],
+      ]);
+      const first = await worker(server, {
         profile: p.storage.path,
         effects: p.effects,
-        label: 'destination',
-        mode: 'run',
-        resume: id,
+        label: 'source',
+        mode,
       });
-      expect((await next.wait('failure')).message).toContain(
-        'unknown tool effects',
+      const { id } = await first.wait('opened');
+      await first.wait(milestone);
+      first.child.kill('SIGKILL');
+      await first.exited;
+
+      const reopen = (options: Record<string, unknown> = {}) =>
+        worker(server, {
+          profile: p.storage.path,
+          effects: p.effects,
+          label: 'destination',
+          mode: 'run',
+          resume: id,
+          ...options,
+        });
+      const next = await reopen();
+      const hold = await next.wait('failure');
+      expect(hold.message).toContain('unknown tool effects');
+      expect(hold.calls).toEqual([
+        {
+          threadId: id,
+          turnId: expect.any(String),
+          callId: 'unknown-call',
+          name: 'record',
+          namespace: null,
+          arguments: '{}',
+        },
+      ]);
+      const { threadId, turnId, callId } = hold.calls[0];
+      expect(hold.turns).toContainEqual({ id: turnId, status: 'interrupted' });
+      expect(hold.items).toContainEqual(
+        expect.objectContaining({ type: 'function_call', turnId, callId }),
       );
       expect((await next.exited).code).toBe(1);
-    }
-    expect(await readFile(p.effects, 'utf8')).toBe('source\n');
-    expect(server.requests).toHaveLength(1);
-  }, 45000);
+      expect(server.requests).toHaveLength(1);
+      // The sole effects worker exited. This append-only fixture journal is
+      // authoritative for whether this particular operation applied.
+      const effect = (await exists(p.effects))
+        ? await readFile(p.effects, 'utf8')
+        : '';
+      expect(effect).toBe(outcome === 'applied' ? 'source\n' : '');
+      const receipt = {
+        threadId,
+        turnId,
+        callId,
+        outcome,
+        result: `Verified by the application: ${outcome}`,
+      };
+      const foreign = await reopen({
+        reconciledCalls: [{ ...receipt, threadId: randomUUID() }],
+      });
+      expect((await foreign.wait('failure')).message).toContain(
+        'different thread',
+      );
+      expect((await foreign.exited).code).toBe(1);
+      expect(server.requests).toHaveLength(1);
+
+      const recovered = await reopen({ reconciledCalls: [receipt] });
+      const opened = await recovered.wait('opened');
+      expect(opened.id).toBe(id);
+      expect(opened.history.turns).toContainEqual(
+        expect.objectContaining({ id: receipt.turnId, status: 'cancelled' }),
+      );
+      expect(opened.history.items).toContainEqual(
+        expect.objectContaining({
+          type: 'function_call_output',
+          callId: receipt.callId,
+          turnId: receipt.turnId,
+          output: receipt.result,
+          reconciliation: outcome,
+        }),
+      );
+      expect((await recovered.wait('result')).output).toBe(
+        'Recovered the original conversation.',
+      );
+      expect((await recovered.exited).code).toBe(0);
+      expect(server.requests[1].input).toContainEqual(
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: receipt.callId,
+          output: receipt.result,
+        }),
+      );
+
+      const conflict = await reopen({
+        reconciledCalls: [{ ...receipt, result: 'changed' }],
+      });
+      expect((await conflict.wait('failure')).message).toContain(
+        'retained result',
+      );
+      expect((await conflict.exited).code).toBe(1);
+      expect(server.requests).toHaveLength(2);
+
+      const repeated = await reopen({ reconciledCalls: [receipt] });
+      const sameHistory = (await repeated.wait('opened')).history.items;
+      expect(
+        sameHistory.filter(
+          (item: { reconciliation?: string }) => item.reconciliation,
+        ),
+      ).toHaveLength(1);
+      expect((await repeated.wait('failure')).message).toContain(
+        'Cannot reuse an original call identity during recovery',
+      );
+      expect((await repeated.exited).code).toBe(1);
+      expect(
+        (await exists(p.effects)) ? await readFile(p.effects, 'utf8') : '',
+      ).toBe(effect);
+      server.assertExhausted();
+    },
+    60000,
+  );
 
   it('rejects portable operations before spending a live local manual grant', async () => {
     const p = await profile();

@@ -159,6 +159,12 @@ export type {
   InstructionFileReceipt,
   TurnReceipt,
 } from './runtime/turn-receipt';
+export { LocalRecoveryRequired } from './runtime/local-recovery';
+export type {
+  LocalRecoveryTurn,
+  ReconciledCall,
+  UncertainCall,
+} from './runtime/local-recovery';
 
 export { webSearch } from './runtime/web-search';
 export type { WebSearch, WebSearchOptions } from './runtime/web-search';
