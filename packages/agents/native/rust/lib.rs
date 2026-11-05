@@ -433,6 +433,9 @@ impl Engine {
         let work = async {
             let _permit = inner.operation(false).map_err(native_error)?;
             let route = inner.sentinel_route(&provider_id, &headers)?;
+            let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
+            let turn = native_interception::sentinel_http_turn(&inner, &provider_id, &ticket)
+                .map_err(native_error)?;
             let provider = route.provider.api_provider().await.map_err(native_error)?;
             let mut request = provider
                 .build_request("POST".parse().map_err(native_error)?, "responses")
@@ -444,6 +447,15 @@ impl Engine {
                         provider.retry.to_policy(),
                         || request.clone(),
                         |request, _attempt| async {
+                            // Each upstream attempt is newly admitted, including
+                            // retries of a request that began before the stop.
+                            if turn
+                                .as_deref()
+                                .is_some_and(turn_settlement::Turn::sampling_stopped)
+                            {
+                                // Keep the owning interrupt responsible for settlement.
+                                std::future::pending::<()>().await;
+                            }
                             route
                                 .transport
                                 .stream(request)
@@ -468,7 +480,6 @@ impl Engine {
                     ..
                 }) => NativeModelBody::http_error(status, headers, body)?,
                 Err(error) => {
-                    let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
                     native_interception::sentinel_failed(
                         &inner,
                         &provider_id,
