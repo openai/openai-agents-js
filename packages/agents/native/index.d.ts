@@ -270,6 +270,17 @@ export function _validate_application_instructions(
   history_json: string,
   instructions: string | null,
 ): boolean;
+export function reconcile_thread_store(
+  callback: (request: string) => Promise<string>,
+  result_json: string,
+): Promise<void>;
+export function create_store_engine(
+  config_json: string,
+  runtime_json: string,
+  api_key: string | null,
+  callback: (request: string) => Promise<string>,
+  application_apps_json?: string | null,
+): Promise<Engine>;
 export function create_engine(
   config_json: string,
   runtime_json: string,
@@ -308,6 +319,8 @@ declare const binding: {
   _read_session_instructions: typeof _read_session_instructions;
   _validate_application_instructions: typeof _validate_application_instructions;
   create_engine: typeof create_engine;
+  create_store_engine: typeof create_store_engine;
+  reconcile_thread_store: typeof reconcile_thread_store;
   create_checkpoint_engine: typeof create_checkpoint_engine;
   configure_telemetry: typeof configure_telemetry;
   shutdown_telemetry: typeof shutdown_telemetry;

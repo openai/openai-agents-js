@@ -119,7 +119,15 @@
     {
       "path": "0033-sdk-sampling-context-replay.patch",
       "sha256": "854e1cc69b0636638fa1b84989ee0841fa95f54840d7ebb0a531dbe2278a0d0d"
+    },
+    {
+      "path": "0034-native-history-durability.patch",
+      "sha256": "ad4ff1ddbf3f25ea7dfefeee11a74e123a59767867d8bfe919b8c08ca85cd5aa"
+    },
+    {
+      "path": "0035-native-history-write-reconciliation.patch",
+      "sha256": "02abd4b0ab45907d179d315ea65063a196df6a96af7dcd7a6eb5211826543f71"
     }
   ],
-  "result_tree": "8603013bd6542ccfcfa43f56c4d3ec5f4b5e3bf1"
+  "result_tree": "002dd3592e6dbcfc5feded964a45b2f59288a0e9"
 }

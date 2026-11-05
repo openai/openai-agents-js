@@ -195,7 +195,7 @@ fn observe_turn(turn: &mut Option<String>, item: &RolloutItem) {
 
 // Refuse unknown effects rather than allow Core recovery to fabricate cancelled
 // outputs or automatically replay a callback after process loss.
-fn validate_settled(history: &[RolloutItem]) -> ThreadStoreResult<()> {
+pub(crate) fn validate_settled(history: &[RolloutItem]) -> ThreadStoreResult<()> {
     let mut pending = HashSet::new();
     let mut seen = HashSet::new();
     let mut turn = None;
@@ -242,7 +242,7 @@ fn validate_settled(history: &[RolloutItem]) -> ThreadStoreResult<()> {
 // This validates recorded data only. It does not grant child execution or acquire
 // a writer. The caller must obtain the complete graph and histories under the
 // reviewed root-writer ownership boundary before publishing a Session.
-fn validate_root_header(id: ThreadId, history: &[RolloutItem]) -> ThreadStoreResult<()> {
+pub(crate) fn validate_root_header(id: ThreadId, history: &[RolloutItem]) -> ThreadStoreResult<()> {
     if !matches!(history.first(), Some(RolloutItem::SessionMeta(header))
         if header.meta.id == id
             && header.meta.source.parent_thread_id().is_none()

@@ -239,6 +239,7 @@ export interface SessionOptions {
   environment?: Environment;
   state?: SessionState;
   localStorage?: boolean;
+  customStore?: (request: string) => Promise<string>;
   localResume?: boolean;
   checklist?: boolean;
   websocketsAllowed?: boolean;
@@ -8155,8 +8156,16 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<void> {
     this.checkCallbackOperation('close');
     const state = this.lifecycle;
-    if (state.kind === 'closed')
-      return this.environmentCloseFailure ?? Promise.resolve();
+    if (state.kind === 'closed') {
+      if (this.environmentCloseFailure) return this.environmentCloseFailure;
+      // Completed persistent cleanup retains the engine's durability report.
+      // Release-only diagnostics have already been consumed by native close.
+      return this.options.localStorage
+        ? this.#engine._close_report().then((message) => {
+            if (message) throw new NativeError(message);
+          })
+        : Promise.resolve();
+    }
     if (state.kind === 'closing') return state.completion;
     if (this.starting)
       this.failStartup(new TurnAborted('Session closed while opening'));

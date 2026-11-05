@@ -244,12 +244,20 @@ export async function openSession(
         freshManual,
         setup.applicationAppsJson ?? null,
       )
-    : await native.create_engine(
-        encode(initialConfig),
-        encode(runtime),
-        apiKey ?? null,
-        setup.applicationAppsJson ?? null,
-      );
+    : options.customStore
+      ? await native.create_store_engine(
+          encode(initialConfig),
+          encode(runtime),
+          apiKey ?? null,
+          options.customStore,
+          setup.applicationAppsJson ?? null,
+        )
+      : await native.create_engine(
+          encode(initialConfig),
+          encode(runtime),
+          apiKey ?? null,
+          setup.applicationAppsJson ?? null,
+        );
   options.environmentOwner?.signal.throwIfAborted();
   await carrier.bindEngine(engine);
   options.environmentOwner?.signal.throwIfAborted();
