@@ -5,6 +5,8 @@ const harness = vi.hoisted(() => {
   const starts: Record<string, unknown>[] = [];
   const contexts = new Map<string, Record<string, unknown>>();
   const released = new Set<string>();
+  const aliases = new Set<string>();
+  const aliasedHandles = new Set<string>();
   const native = {
     configure_telemetry: vi.fn(async (_wire: string) => {}),
     start_trace_span: vi.fn((json: string) => {
@@ -56,6 +58,10 @@ const harness = vi.hoisted(() => {
         throw new Error('Unknown or released native tracing context');
       const token = `lease-${++id}`;
       contexts.set(token, contexts.get(handle)!);
+      if (handle.startsWith('span-') && !aliasedHandles.has(handle)) {
+        aliases.add(token);
+        aliasedHandles.add(handle);
+      }
       return token;
     }),
     release_trace_context: vi.fn((token: string) => {
@@ -78,7 +84,7 @@ const harness = vi.hoisted(() => {
     ),
     shutdown_telemetry: vi.fn(async () => {}),
   };
-  return { native, starts, contexts };
+  return { native, starts, contexts, aliases };
 });
 vi.mock('../src/runtime/binding', async (original) => ({
   ...(await original<typeof import('../src/runtime/binding')>()),
@@ -157,8 +163,15 @@ describe('native tracing host ownership (REQ423-425)', () => {
       expect(harness.starts.at(-1)?.restrictions_parent).toMatch(/^lease-/);
     });
     explicit.close();
-    expect(harness.native.release_trace_context.mock.calls.length).toBe(
-      harness.native.retain_trace_context.mock.calls.length,
+    expect(
+      harness.native.release_trace_context.mock.calls.filter(
+        ([token]) => !harness.aliases.has(token),
+      ).length,
+    ).toBe(
+      harness.native.retain_trace_context.mock.results.filter(
+        (result) =>
+          result.type === 'return' && !harness.aliases.has(result.value),
+      ).length,
     );
   });
 
@@ -680,8 +693,15 @@ it('captures queued root parents before dispatch and releases abandoned roots on
   await session.close();
   await Promise.resolve();
   expect(harness.native.release_trace_span).toHaveBeenCalledTimes(4);
-  expect(harness.native.release_trace_context.mock.calls.length).toBe(
-    harness.native.retain_trace_context.mock.calls.length,
+  expect(
+    harness.native.release_trace_context.mock.calls.filter(
+      ([token]) => !harness.aliases.has(token),
+    ).length,
+  ).toBe(
+    harness.native.retain_trace_context.mock.results.filter(
+      (result) =>
+        result.type === 'return' && !harness.aliases.has(result.value),
+    ).length,
   );
 });
 
@@ -696,8 +716,15 @@ it('releases a rejected admission without starting native work under a later sco
   });
   await session.close();
   await Promise.resolve();
-  expect(harness.native.release_trace_context.mock.calls.length).toBe(
-    harness.native.retain_trace_context.mock.calls.length,
+  expect(
+    harness.native.release_trace_context.mock.calls.filter(
+      ([token]) => !harness.aliases.has(token),
+    ).length,
+  ).toBe(
+    harness.native.retain_trace_context.mock.results.filter(
+      (result) =>
+        result.type === 'return' && !harness.aliases.has(result.value),
+    ).length,
   );
 });
 
@@ -944,8 +971,15 @@ it.each([
       defaultCredential.close();
     }
     await Promise.resolve();
-    expect(harness.native.release_trace_context.mock.calls.length).toBe(
-      harness.native.retain_trace_context.mock.calls.length,
+    expect(
+      harness.native.release_trace_context.mock.calls.filter(
+        ([token]) => !harness.aliases.has(token),
+      ).length,
+    ).toBe(
+      harness.native.retain_trace_context.mock.results.filter(
+        (result) =>
+          result.type === 'return' && !harness.aliases.has(result.value),
+      ).length,
     );
   },
 );
@@ -1069,7 +1103,7 @@ it('captures tracing and writable roots together before queued admission', async
 });
 
 it.each([false, true])(
-  'reserves workflow context before lexical close (detached: %s)',
+  'keeps ended workflow context usable (detached capture: %s)',
   async (detached) => {
     let capture: ReturnType<typeof captureTracing>;
     let workflow: Awaited<ReturnType<typeof startTrace>>;
@@ -1078,33 +1112,16 @@ it.each([false, true])(
       capture = captureTracing({ detached });
     });
     const operation = await capture!.ready;
-    if (detached) {
-      expect(operation.workflow).toBeUndefined();
-      await expect(startSpan({ parent: workflow! })).rejects.toThrow(
-        'Unknown or released',
-      );
-    } else {
-      const child = await startSpan({ parent: workflow! });
-      expect(child.context.parentSpanId).toBe(workflow!.context.spanId);
-      child.close();
-    }
+    expect(operation.workflow).toBe(detached ? undefined : workflow!);
     capture!.finish();
     capture!.finish(new Error('duplicate'));
-    await vi.waitFor(() =>
-      expect(harness.native.release_trace_context.mock.calls.length).toBe(
-        harness.native.retain_trace_context.mock.results.filter(
-          (result) => result.type === 'return',
-        ).length,
-      ),
-    );
-    await expect(startSpan({ parent: workflow! })).rejects.toThrow(
-      'Unknown or released',
-    );
+    const child = await startSpan({ parent: workflow! });
+    expect(child.context.parentSpanId).toBe(workflow!.context.spanId);
+    child.close();
   },
 );
-
 it.each([false, true])(
-  'releases issued workflow leases after joined close (hook fails: %s)',
+  'keeps workflow identity after joined close (hook fails: %s)',
   async (hookFails) => {
     const events = Array.from({ length: 2 }, () =>
       Promise.withResolvers<string>(),
@@ -1131,18 +1148,44 @@ it.each([false, true])(
       }),
     );
     await turn.wait();
-    const child = await startSpan({ parent: workflow! });
-    child.close();
     if (hookFails)
       await expect(session.close()).rejects.toThrow('synthetic close failure');
     else await session.close();
-    await expect(startSpan({ parent: workflow! })).rejects.toThrow(
-      'Unknown or released',
-    );
-    expect(harness.native.release_trace_context.mock.calls.length).toBe(
-      harness.native.retain_trace_context.mock.results.filter(
-        (result) => result.type === 'return',
-      ).length,
-    );
+    const child = await startSpan({ parent: workflow! });
+    expect(child.context.parentSpanId).toBe(workflow!.context.spanId);
+    child.close();
   },
 );
+it('inherits a lexical workflow in a delayed arbitrary Promise task', async () => {
+  const gate = Promise.withResolvers<void>();
+  let child: Promise<void>;
+  let workflow: Awaited<ReturnType<typeof startTrace>>;
+  await withTrace({}, (value) => {
+    workflow = value;
+    child = (async () => {
+      await gate.promise;
+      await withSpan({}, (span) => {
+        expect(span.context.parentSpanId).toBe(workflow.context.spanId);
+        expect(getCurrentTrace()).toBe(workflow);
+      });
+    })();
+  });
+  gate.resolve();
+  await child!;
+});
+it('suppresses processor descendants including detached scopes and captured operations', async () => {
+  const { suppressTracing } = await import('../src/runtime/tracing-context');
+  await suppressTracing(async () => {
+    await Promise.resolve();
+    await withTrace({ parent: null, disabled: false }, async (span) => {
+      expect(span.context.disabled).toBe(true);
+      await withSpan({ detached: true, disabled: false }, (child) =>
+        expect(child.context.disabled).toBe(true),
+      );
+    });
+    const captured = captureTracing()!;
+    expect((await captured.ready).context.disabled).toBe(true);
+    captured.finish();
+  });
+  await withTrace({}, (span) => expect(span.context.disabled).toBe(false));
+});

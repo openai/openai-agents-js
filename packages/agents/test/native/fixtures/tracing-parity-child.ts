@@ -131,6 +131,19 @@ async function contextCase(batches: unknown[]) {
       assert.equal(telemetry.getCurrentTrace(), outer);
     },
   );
+  const lateGate = Promise.withResolvers<void>();
+  let lateTask: Promise<void>;
+  await telemetry.withTrace({ name: 'arbitrary.parent' }, (parent) => {
+    lateTask = (async () => {
+      await lateGate.promise;
+      await telemetry.withSpan({ name: 'arbitrary.child' }, (child) => {
+        assert.equal(child.context.parentSpanId, parent.context.spanId);
+        assert.equal(telemetry.getCurrentTrace(), parent);
+      });
+    })();
+  });
+  lateGate.resolve();
+  await lateTask!;
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let effects = 0;
@@ -480,9 +493,13 @@ async function processorCase(batches: unknown[]) {
   const first: TraceEvent[] = [];
   const second: TraceEvent[] = [];
   await telemetry.addTraceProcessor({
-    onEvent: (event) => {
+    onEvent: async (event) => {
       assert(Object.isFrozen(event));
       first.push(event);
+      await telemetry.withSpan(
+        { name: 'processor.must_not_export', parent: null, disabled: false },
+        (span) => assert.equal(span.context.disabled, true),
+      );
     },
   });
   await telemetry.addTraceProcessor({
@@ -505,6 +522,10 @@ async function processorCase(batches: unknown[]) {
   assert(
     decoded(batches).some((span) => span.name === 'routes.before'),
     'add removed native default exporter',
+  );
+  assert(!first.some((event) => event.name === 'processor.must_not_export'));
+  assert(
+    !decoded(batches).some((span) => span.name === 'processor.must_not_export'),
   );
   const replacement: TraceEvent[] = [];
   await telemetry.setTraceProcessors([

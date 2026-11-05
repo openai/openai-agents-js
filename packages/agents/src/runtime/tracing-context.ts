@@ -5,13 +5,25 @@ import type { SpanContext, TraceOptions } from './telemetry';
 type Native = Awaited<ReturnType<typeof binding>>;
 
 const ambient = new AsyncLocalStorage<TraceSpan | undefined>();
+const processorSuppressed = new AsyncLocalStorage<boolean>();
+const contextFinalizer = new FinalizationRegistry<{
+  native: Native;
+  token: string;
+}>(({ native, token }) => {
+  native.release_trace_context(token);
+});
 
-/** Native-owned span. Close explicit handles when their work finishes. */
+/** @internal Suppress tracing in processor work, including its asynchronous descendants. */
+export function suppressTracing<T>(callback: () => T): T {
+  return processorSuppressed.run(true, callback);
+}
+
+/** Native-owned span. Close ends recording; its parent context lasts while this object is reachable. */
 export class TraceSpan {
   readonly context: SpanContext;
   private ended = false;
   private released = false;
-  private readonly retainedContexts = new Set<string>();
+  readonly #contextToken: string;
   constructor(
     private readonly native: Native,
     /** @internal Opaque process-local handle; never persist. */
@@ -21,18 +33,23 @@ export class TraceSpan {
     /** @internal */ readonly workflow?: TraceSpan,
   ) {
     this.context = Object.freeze(context);
+    let token: string | undefined;
+    try {
+      token = native.retain_trace_context(handle);
+      contextFinalizer.register(this, { native, token });
+      this.#contextToken = token;
+    } catch (error) {
+      if (token !== undefined) native.release_trace_context(token);
+      native.release_trace_span(handle);
+      throw error;
+    }
   }
   /** @internal */ retain(): string {
-    const source = this.released
-      ? (this.retainedContexts.values().next().value ?? this.handle)
-      : this.handle;
-    const token = this.native.retain_trace_context(source);
-    this.retainedContexts.add(token);
-    return token;
+    return this.native.retain_trace_context(this.#contextToken);
   }
-  /** @internal */ releaseContext(token: string): void {
+  /** @internal Release only a caller-owned lease, not this object's alias. */
+  releaseContext(token: string): void {
     this.native.release_trace_context(token);
-    this.retainedContexts.delete(token);
   }
   end(
     outcome: { status?: 'ok' | 'error' | 'cancelled'; category?: string } = {},
@@ -96,67 +113,28 @@ export function captureTracing(
   if (
     options === undefined &&
     ambient.getStore() === undefined &&
-    opening === undefined
+    opening === undefined &&
+    !processorSuppressed.getStore()
   )
     return undefined;
-  const parent =
-    options?.parent === undefined ? ambient.getStore() : options.parent;
-  const workflow = parent?.kind === 'workflow' ? parent : parent?.workflow;
-  // Reserve before start() can yield and the lexical workflow can close.
-  const workflowLease =
-    options?.detached || options?.parent === null
-      ? undefined
-      : workflow
-        ? Promise.resolve({ span: workflow, token: workflow.retain() })
-        : parent === undefined && options?.parent === undefined
-          ? opening?.retainWorkflow()
-          : undefined;
-  return new TraceCapture(
-    start(options ?? {}, 'operation', opening),
-    workflowLease,
-  );
+  return new TraceCapture(start(options ?? {}, 'operation', opening));
 }
-type WorkflowLease = { span: TraceSpan; token: string };
 /** @internal One captured native operation; settlement releases every host lease. */
 export class TraceCapture {
   private span?: TraceSpan;
   private contextToken?: string;
   private finished = false;
-  private sessionOwnsWorkflow = false;
-  constructor(
-    readonly ready: Promise<TraceSpan>,
-    private workflowLease?: Promise<WorkflowLease | undefined>,
-  ) {
-    void workflowLease?.catch(() => {});
+  constructor(readonly ready: Promise<TraceSpan>) {
     void ready.then(
       (span) => {
         this.span = span;
       },
-      () => {
-        void this.releaseWorkflow().catch(() => {});
-      },
+      () => {},
     );
   }
   /** @internal Workflow metadata only; native callback carriers own ancestry. */
   get workflow(): TraceSpan | undefined {
     return this.span?.kind === 'workflow' ? this.span : this.span?.workflow;
-  }
-  /** @internal Reserve an inherited workflow before its owner can finish. */
-  retainWorkflow(): Promise<WorkflowLease | undefined> | undefined {
-    return this.workflowLease?.then((lease) =>
-      lease ? { span: lease.span, token: lease.span.retain() } : undefined,
-    );
-  }
-  /** @internal Issued runs can receive their first child after completion. */
-  retainWorkflowForSession(): void {
-    this.sessionOwnsWorkflow = true;
-  }
-  /** @internal Release only after the owning Session joins native/child cleanup. */
-  async releaseWorkflow(): Promise<void> {
-    const lease = this.workflowLease;
-    this.workflowLease = undefined;
-    const value = await lease;
-    value?.span.releaseContext(value.token);
   }
   /** @internal Retain synchronously when ready; otherwise reserve before closing. */
   retain(): Promise<{ token: string; span: TraceSpan }> {
@@ -202,9 +180,6 @@ export class TraceCapture {
         });
         if (this.contextToken) span.releaseContext(this.contextToken);
         span.close();
-      })
-      .finally(() => {
-        if (!this.sessionOwnsWorkflow) return this.releaseWorkflow();
       })
       .catch(() => {});
   }
@@ -285,7 +260,8 @@ async function start(
           trace_id: snapshot.traceId ?? null,
           group_id: snapshot.groupId ?? null,
           metadata,
-          disabled: snapshot.disabled ?? false,
+          disabled:
+            processorSuppressed.getStore() || (snapshot.disabled ?? false),
           ...(snapshot.includeSensitiveData === undefined
             ? kind === 'workflow'
               ? { include_sensitive_data: false }

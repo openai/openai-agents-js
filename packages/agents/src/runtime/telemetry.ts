@@ -1,3 +1,4 @@
+import { suppressTracing } from './tracing-context';
 /** Optional native telemetry. Configure before scopes or Sessions; close Sessions before shutdown. */
 import { isAbsolute, resolve } from 'node:path';
 import { binding } from './binding';
@@ -328,7 +329,9 @@ async function route(
         for (const event of batch.events as TraceEvent[]) {
           for (const id of event.processor_ids) {
             try {
-              await processors.get(id)?.onEvent(freezeSnapshot(event));
+              await suppressTracing(() =>
+                processors.get(id)?.onEvent(freezeSnapshot(event)),
+              );
             } catch {
               failures++;
             }

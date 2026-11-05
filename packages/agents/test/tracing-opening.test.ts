@@ -14,6 +14,8 @@ const fixture = vi.hoisted(() => ({
       }),
     ),
     end_trace_span: vi.fn(),
+    retain_trace_context: vi.fn(() => 'opening-alias'),
+    release_trace_context: vi.fn(),
     release_trace_span: vi.fn(),
   },
   open: vi.fn(),

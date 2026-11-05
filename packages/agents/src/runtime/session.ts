@@ -2159,7 +2159,6 @@ export class Session<OutputT = string, Context = unknown> {
 
   private issuedTurn(step: NativeTurn): Turn<unknown, string | null> {
     if (step.id) {
-      step.tracing?.retainWorkflowForSession();
       step.issuedTracing ??= step.tracing;
       this.issuedRuns.set(step.id, step);
     }
@@ -8642,44 +8641,36 @@ export class Session<OutputT = string, Context = unknown> {
         phase = 'provider';
       }
       if (phase === 'provider') {
-        try {
-          if (!this.environmentDisposalFinished) {
-            try {
-              await this.options.environmentOwner?.dispose(async (dispose) => {
-                const scope = { session: this, active: true };
-                try {
-                  await toolInvocation.run(scope, dispose);
-                } finally {
-                  scope.active = false;
-                }
-              });
-            } catch (error) {
-              // Automatic source retirement may have no current waiter. Keep its
-              // failed close joinable after all remaining owners have retired.
-              this.environmentCloseFailure ??= done.promise;
-              acknowledgmentFailure = new NativeError(
-                'Environment lease cleanup failed',
-                {
-                  cause: acknowledgmentFailure
-                    ? new AggregateError(
-                        [acknowledgmentFailure, error],
-                        'Session and environment cleanup failed',
-                      )
-                    : error,
-                },
-              );
-            } finally {
-              this.environmentDisposalFinished = true;
-            }
+        if (!this.environmentDisposalFinished) {
+          try {
+            await this.options.environmentOwner?.dispose(async (dispose) => {
+              const scope = { session: this, active: true };
+              try {
+                await toolInvocation.run(scope, dispose);
+              } finally {
+                scope.active = false;
+              }
+            });
+          } catch (error) {
+            // Automatic source retirement may have no current waiter. Keep its
+            // failed close joinable after all remaining owners have retired.
+            this.environmentCloseFailure ??= done.promise;
+            acknowledgmentFailure = new NativeError(
+              'Environment lease cleanup failed',
+              {
+                cause: acknowledgmentFailure
+                  ? new AggregateError(
+                      [acknowledgmentFailure, error],
+                      'Session and environment cleanup failed',
+                    )
+                  : error,
+              },
+            );
+          } finally {
+            this.environmentDisposalFinished = true;
           }
-          await this.options.onClose?.();
-        } finally {
-          await Promise.all(
-            [...this.issuedRuns.values()].map((issued) =>
-              issued.issuedTracing?.releaseWorkflow(),
-            ),
-          );
         }
+        await this.options.onClose?.();
       }
       this.observations.finish('closed');
       if (run) this.finishObservation(run);
