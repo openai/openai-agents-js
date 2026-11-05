@@ -181,3 +181,5 @@ export type {
   MCPToolStartObservation,
   MCPToolEndObservation,
 } from '@openai/agents-core';
+
+export const nativeBundleTimingProbe = 'sdk-only-successor';
