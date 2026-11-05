@@ -59,7 +59,8 @@ export class NativeProvider {
 
   /** @internal Reserve synchronously after declaration validation, before opening resources. */
   _acquire(captured?: { readonly apiKey: string | undefined }): ProviderLease {
-    if (this.#closed) throw new Error('NativeProvider is closed');
+    if (this.#closed)
+      throw new Error('NativeProvider is closed to new sessions');
     const token: LeaseToken = { failed: false };
     this.#leases.add(token);
     const options = this.#options;
