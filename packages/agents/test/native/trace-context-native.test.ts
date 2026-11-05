@@ -26,7 +26,7 @@ const attributes = (span: Span) =>
     ]),
   );
 
-it('exports isolated root parents, queued snapshots, exact callback ancestry, and fresh-worker manual recovery', async () => {
+it('exports isolated root and compaction parents, queued snapshots, exact callback ancestry, and fresh-worker manual recovery', async () => {
   const spans: Span[] = [];
   const collector = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
@@ -78,7 +78,44 @@ it('exports isolated root parents, queued snapshots, exact callback ancestry, an
     expect(matches).toHaveLength(1);
     return matches[0]!;
   };
+  const descendsFrom = (span: Span, ancestor: Span) => {
+    for (
+      let current: Span | undefined = span;
+      current;
+      current = spans.find(
+        (candidate) =>
+          candidate.spanId === current!.parentSpanId &&
+          candidate.traceId === current!.traceId,
+      )
+    )
+      if (current.spanId === ancestor.spanId) return true;
+    return false;
+  };
   try {
+    const compact = await run('compact');
+    expectParent(dispatch(compact.first), OVERRIDE);
+    expectParent(dispatch(compact.compact), PARENT);
+    expectParent(dispatch(compact.commandCompact), PARENT);
+    expectParent(dispatch(compact.after), PARENT);
+    const review = await run('review');
+    expectParent(dispatch(review.first), OVERRIDE);
+    const reviewDispatch = dispatch(review.review);
+    expectParent(reviewDispatch, PARENT);
+    expectParent(dispatch(review.after), PARENT);
+    expect(
+      spans.some(
+        (span) =>
+          span.name === 'session_task.review' &&
+          descendsFrom(span, reviewDispatch),
+      ),
+    ).toBe(true);
+    const reviewRequests = spans.filter(
+      (span) =>
+        span.name === 'model_client.stream_responses_api' &&
+        descendsFrom(span, reviewDispatch),
+    );
+    expect(reviewRequests).toHaveLength(1);
+    expect(reviewRequests[0]!.traceId).toBe(PARENT.slice(3, 35));
     const result = await run('graph');
     for (const [name, parent] of Object.entries({
       first: PARENT,

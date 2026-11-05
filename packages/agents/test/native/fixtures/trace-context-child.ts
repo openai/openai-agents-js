@@ -33,6 +33,84 @@ async function providerFor(server: ModelServer) {
   return new FixtureProvider({ apiKey: 'fixture' });
 }
 
+async function compact() {
+  const server = new ModelServer([
+    [final('before')],
+    [final('Remember the synthetic label.')],
+    [final('Remember the synthetic label after command.')],
+    [final('after')],
+  ]);
+  const agent = new Agent({
+    instructions: 'Remember the synthetic label.',
+    model: 'gpt-5',
+    provider: await providerFor(server),
+  });
+  const session = await agent.session({ parentTrace: parent(PARENT) });
+  try {
+    const first = await session.submit('before', {
+      parentTrace: parent(OVERRIDE),
+    });
+    assert.equal((await first.wait()).finalOutput, 'before');
+    await session.compact();
+    await session.executeCommand('/compact');
+    const after = await session.submit('after');
+    assert.equal((await after.wait()).finalOutput, 'after');
+    const turns = [];
+    for await (const turn of session.turns()) turns.push(turn);
+    assert.equal(turns.length, 4);
+    server.assertExhausted();
+    return {
+      first: first.turnId,
+      compact: turns[1]!.id,
+      commandCompact: turns[2]!.id,
+      after: after.turnId,
+    };
+  } finally {
+    await session.close();
+  }
+}
+
+async function review() {
+  const reviewOutput = {
+    findings: [],
+    overall_correctness: 'patch is correct',
+    overall_explanation: 'Synthetic review found no issues.',
+    overall_confidence_score: 0.9,
+  };
+  const server = new ModelServer([
+    [final('before')],
+    [message(JSON.stringify(reviewOutput))],
+    [final('after')],
+  ]);
+  const agent = new Agent({
+    instructions: 'Review the synthetic change.',
+    model: 'gpt-5',
+    provider: await providerFor(server),
+  });
+  const session = await agent.session({ parentTrace: parent(PARENT) });
+  try {
+    const first = await session.submit('before', {
+      parentTrace: parent(OVERRIDE),
+    });
+    assert.equal((await first.wait()).finalOutput, 'before');
+    const command = await session.executeCommand(
+      '/review Inspect the synthetic change.',
+    );
+    if (command.command !== 'review') throw new Error('Missing review receipt');
+    assert.deepEqual((await command.turn.wait()).finalOutput, reviewOutput);
+    const after = await session.submit('after');
+    assert.equal((await after.wait()).finalOutput, 'after');
+    server.assertExhausted();
+    return {
+      first: first.turnId,
+      review: command.turn.turnId,
+      after: after.turnId,
+    };
+  } finally {
+    await session.close();
+  }
+}
+
 async function graph() {
   const remoteServer = new ModelServer([[final('remote')]]);
   const remote = new Agent({
@@ -213,7 +291,13 @@ async function main() {
   });
   try {
     const result =
-      mode === 'graph' ? await graph() : await manual(mode!, path!);
+      mode === 'graph'
+        ? await graph()
+        : mode === 'compact'
+          ? await compact()
+          : mode === 'review'
+            ? await review()
+            : await manual(mode!, path!);
     console.log(JSON.stringify(result));
   } finally {
     await telemetry.shutdown();

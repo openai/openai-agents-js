@@ -6699,7 +6699,13 @@ export class Session<OutputT = string, Context = unknown> {
 
   private beginCompaction(): NativeTurn {
     const previous = this.lastRun;
-    const run = this.begin(() => this.#native._compact());
+    const parentTrace = this.options.parentTrace;
+    const run = this.begin(() =>
+      this.#native._compact(
+        parentTrace ? encode(parentTrace.toHeaders()) : null,
+      ),
+    );
+    run.parentTrace = parentTrace;
     this.lastRun = previous;
     submissions.get(run)!.compaction = true;
     return run;
@@ -6726,11 +6732,18 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TypeError(
           'Native review is unavailable for a selected Model; use a NativeProvider-backed Session',
         );
+      const parentTrace = this.options.parentTrace;
       const run = this.begin(
-        () => native._execute_command('review', command.arguments),
+        () =>
+          native._execute_command(
+            'review',
+            command.arguments,
+            parentTrace ? encode(parentTrace.toHeaders()) : null,
+          ),
         prepareOutput(undefined),
         true,
       );
+      run.parentTrace = parentTrace;
       submissions.get(run)!.review = true;
       await afterSubmissionRetirement(run, run.accepted.promise);
       return Object.freeze({

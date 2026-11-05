@@ -3,4 +3,4 @@
 '@openai/agents-core': patch
 ---
 
-feat: add explicit native trace parents, tool callback context, and fresh resume parents; preserve hook declaration compatibility and reduce archive-limit test overhead.
+feat: add explicit native trace parents, tool callback context, fresh resume parents, and compaction and review ancestry; preserve hook declaration compatibility.
