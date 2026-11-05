@@ -630,7 +630,12 @@ async fn start_with_params<'a>(
     {
         let mut init = match turn_init {
             Some(init) => init,
-            None => thread.config_snapshot().await.turn_extension_init,
+            None => {
+                // Making metadata explicit must preserve the ordinary-root reset.
+                let mut init = thread.config_snapshot().await.turn_extension_init;
+                init.insert(None::<crate::python_tools::OperationSelection>);
+                init
+            }
         };
         state
             .request_metadata
