@@ -39,21 +39,25 @@ async function providerPeer(
   failureFor: (request: JsonObject) => Failure | null | Promise<Failure | null>,
   rejectWebsocketUpgrade = false,
   retries?: { request: number; stream: number },
+  websocketStatus: 401 | 426 = 401,
 ) {
   const config = await model.config();
   const upstream = (config['model_providers.fixture'] as { base_url: string })
     .base_url;
   const failures: unknown[] = [];
   let rejectedRequests = 0;
+  const rejectedBodies: JsonObject[] = [];
   let rejectedUpgrades = 0;
   const server = createServer(async (request, response) => {
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const body = Buffer.concat(chunks);
-      const failure = await failureFor(JSON.parse(body.toString()));
+      const parsedBody = JSON.parse(body.toString());
+      const failure = await failureFor(parsedBody);
       if (failure) {
         rejectedRequests++;
+        rejectedBodies.push(parsedBody);
         response.writeHead(failure.status, {
           'content-type': 'application/json',
           ...(failure.retryAfter === null
@@ -92,7 +96,7 @@ async function providerPeer(
     server.on('upgrade', (_request, socket) => {
       rejectedUpgrades++;
       socket.end(
-        'HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+        `HTTP/1.1 ${websocketStatus} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
       );
     });
   }
@@ -123,6 +127,9 @@ async function providerPeer(
     provider,
     get rejectedRequests() {
       return rejectedRequests;
+    },
+    get rejectedBodies() {
+      return rejectedBodies;
     },
     get rejectedUpgrades() {
       return rejectedUpgrades;
@@ -370,6 +377,202 @@ describe('native retry guidance', () => {
 });
 
 describe('Python-aligned native provider error metadata', () => {
+  it.each([401, 403])(
+    'cancels after a tool effect without a late authentication retry (%s)',
+    async (status) => {
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let effects = 0;
+      let rejectAfterEffect = true;
+      const model = new ModelServer([
+        [call('write_once', {}, { callId: 'write-once-call' })],
+        [message('fresh turn')],
+      ]);
+      const peer = await providerPeer(model, async () => {
+        if (!effects || !rejectAfterEffect) return null;
+        started.resolve();
+        await release.promise;
+        return { ...authentication, status };
+      });
+      try {
+        await using session = await new Agent({
+          instructions: 'Use write_once then answer.',
+          model: 'gpt-5',
+          provider: peer.provider,
+          tools: [
+            tool({
+              name: 'write_once',
+              parameters: z.object({}),
+              execute: () => {
+                effects++;
+                return 'receipt-1';
+              },
+            }),
+          ],
+        }).session();
+        const turn = await session.submit(
+          'Record one effect then hold the auth rejection.',
+        );
+        const outcome = turn.wait().catch((error: unknown) => error);
+        try {
+          await started.promise;
+          expect(effects).toBe(1);
+          await turn.cancel();
+          expect(await outcome).toBeInstanceOf(NativeError);
+        } finally {
+          release.resolve();
+        }
+        rejectAfterEffect = false;
+        expect(
+          (await (await session.submit('Answer after cancellation.')).wait())
+            .finalOutput,
+        ).toBe('fresh turn');
+        expect(effects).toBe(1);
+        expect(peer.rejectedRequests).toBe(1);
+        model.assertExhausted();
+      } finally {
+        release.resolve();
+        await peer.close();
+      }
+    },
+    30_000,
+  );
+
+  it.each([
+    { status: 401, attempts: 2 },
+    { status: 403, attempts: 1 },
+  ])(
+    'ends terminal HTTP authentication after normal recovery ($status)',
+    async ({ status, attempts }) => {
+      const model = new ModelServer([]);
+      const peer = await providerPeer(model, () => ({
+        ...authentication,
+        status,
+      }));
+      try {
+        await using session = await new Agent({
+          instructions: 'Answer.',
+          model: 'gpt-5',
+          provider: peer.provider,
+        }).session();
+        const turn = await session.submit('Reject the captured key.');
+        const error: unknown = await turn
+          .wait()
+          .catch((error: unknown) => error);
+        expectMetadata(error, {
+          statusCode: status,
+          code: 'invalid_api_key',
+          requestId: authentication.requestId,
+          category: 'authentication_error',
+        });
+        expect(error).toMatchObject({ retryable: false, retryAfterMs: 0 });
+        expect(peer.rejectedRequests).toBe(attempts);
+        await expect(turn.wait()).rejects.toBe(error);
+        await expect(turn.waitForAttention()).rejects.toBe(error);
+        model.assertExhausted();
+      } finally {
+        await peer.close();
+      }
+    },
+  );
+
+  it.each([
+    { status: 401, attempts: 2 },
+    { status: 403, attempts: 1 },
+  ])(
+    'retains one tool effect when later HTTP authentication fails ($status)',
+    async ({ status, attempts }) => {
+      const model = new ModelServer([
+        [call('write_once', {}, { callId: 'write-once-call' })],
+      ]);
+      let effects = 0;
+      const peer = await providerPeer(model, () =>
+        effects ? { ...authentication, status } : null,
+      );
+      try {
+        await using session = await new Agent({
+          instructions: 'Use write_once then answer.',
+          model: 'gpt-5',
+          provider: peer.provider,
+          tools: [
+            tool({
+              name: 'write_once',
+              parameters: z.object({}),
+              execute: () => {
+                effects++;
+                return 'receipt-1';
+              },
+            }),
+          ],
+        }).session();
+        const error: unknown = await (
+          await session.submit('Record one effect.')
+        )
+          .wait()
+          .catch((error: unknown) => error);
+        expectMetadata(error, {
+          statusCode: status,
+          code: 'invalid_api_key',
+          requestId: authentication.requestId,
+          category: 'authentication_error',
+        });
+        expect(error).toMatchObject({ retryable: false, retryAfterMs: 0 });
+        expect(effects).toBe(1);
+        expect(peer.rejectedRequests).toBe(attempts);
+        expect(model.requests).toHaveLength(1);
+        for (const body of peer.rejectedBodies) {
+          const input = body.input as {
+            type?: string;
+            call_id?: string;
+            output?: unknown;
+          }[];
+          const original = input.find((item) => item.type === 'function_call');
+          const outputs = input.filter(
+            (item) => item.type === 'function_call_output',
+          );
+          expect(outputs).toHaveLength(1);
+          expect(outputs[0]?.call_id).toBe(original?.call_id);
+          expect(original?.call_id).toBeTruthy();
+          expect(outputs[0]?.output).toBe('receipt-1');
+        }
+        model.assertExhausted();
+      } finally {
+        await peer.close();
+      }
+    },
+  );
+
+  it('keeps authentication recovery available to a later model request', async () => {
+    const model = new ModelServer([]);
+    const peer = await providerPeer(model, () => authentication);
+    try {
+      await using session = await new Agent({
+        instructions: 'Answer.',
+        model: 'gpt-5',
+        provider: peer.provider,
+      }).session();
+      for (const attempt of [1, 2]) {
+        const turn = await session.submit(
+          'Reject this request once recovery is spent.',
+        );
+        const error: unknown = await turn
+          .wait()
+          .catch((error: unknown) => error);
+        expectMetadata(error, {
+          statusCode: 401,
+          code: authentication.code,
+          requestId: authentication.requestId,
+          category: 'authentication_error',
+        });
+        expect(error).toMatchObject({ retryable: false });
+        expect(peer.rejectedRequests).toBe(attempt * 2);
+      }
+      model.assertExhausted();
+    } finally {
+      await peer.close();
+    }
+  });
+
   it.each([
     {
       name: 'authentication',
@@ -432,44 +635,64 @@ describe('Python-aligned native provider error metadata', () => {
     30_000,
   );
 
-  it('uses final HTTP failure metadata after rejected WebSocket upgrades', async () => {
-    const model = new ModelServer([]);
-    const finalHttpFailure: Failure = {
-      ...authentication,
-      status: 403,
-      code: 'final_http_rejection',
-      requestId: 'final-http-request',
-    };
-    const peer = await providerPeer(model, () => finalHttpFailure, true);
-    let session: Session | undefined;
-    try {
-      session = await new Agent({
-        instructions: 'Reply briefly.',
-        model: 'gpt-5',
-        provider: peer.provider,
-      }).session();
-      const turn = await session.submit('Reject WebSocket and HTTP requests.');
-      const error: unknown = await turn.wait().catch((error: unknown) => error);
-      expectMetadata(error, {
-        statusCode: 403,
+  it.each([
+    { status: 401, upgrade: 401 as const, upgrades: 2, httpAttempts: 2 },
+    { status: 403, upgrade: 401 as const, upgrades: 2, httpAttempts: 1 },
+    { status: 401, upgrade: 426 as const, upgrades: 1, httpAttempts: 2 },
+    { status: 403, upgrade: 426 as const, upgrades: 1, httpAttempts: 1 },
+  ])(
+    'keeps startup-preconnect recovery independent after WebSocket $upgrade ($status)',
+    async ({ status, upgrade, upgrades, httpAttempts }) => {
+      const model = new ModelServer([]);
+      const finalHttpFailure: Failure = {
+        ...authentication,
+        status,
         code: 'final_http_rejection',
         requestId: 'final-http-request',
-        category: 'authentication_error',
-      });
-      // Core retries upgrade failures and then switches to HTTP. The terminal
-      // metadata must describe that last failure, rather than an earlier 401.
-      expect(peer.rejectedUpgrades).toBeGreaterThan(0);
-      expect(peer.rejectedRequests).toBeGreaterThan(0);
-      await expect(turn.wait()).rejects.toBe(error);
-      model.assertExhausted();
-    } finally {
+      };
+      const peer = await providerPeer(
+        model,
+        () => finalHttpFailure,
+        true,
+        undefined,
+        upgrade,
+      );
+      let session: Session | undefined;
       try {
-        await session?.close();
+        session = await new Agent({
+          instructions: 'Reply briefly.',
+          model: 'gpt-5',
+          provider: peer.provider,
+        }).session();
+        const turn = await session.submit(
+          'Reject WebSocket and HTTP requests.',
+        );
+        const error: unknown = await turn
+          .wait()
+          .catch((error: unknown) => error);
+        expectMetadata(error, {
+          statusCode: status,
+          code: 'final_http_rejection',
+          requestId: 'final-http-request',
+          category: 'authentication_error',
+        });
+        // Startup preconnect owns a separate recovery budget. This first turn
+        // keeps normal HTTP recovery and owns the final failure metadata.
+        expect(error).toMatchObject({ retryable: false });
+        expect(peer.rejectedUpgrades).toBe(upgrades);
+        expect(peer.rejectedRequests).toBe(httpAttempts);
+        await expect(turn.wait()).rejects.toBe(error);
+        model.assertExhausted();
       } finally {
-        await peer.close();
+        try {
+          await session?.close();
+        } finally {
+          await peer.close();
+        }
       }
-    }
-  }, 30_000);
+    },
+    30_000,
+  );
 
   it('recovers and preserves a later callback NativeError without borrowed metadata', async () => {
     let failure: Failure | null = authentication;

@@ -235,7 +235,11 @@
     {
       "path": "0054-native-response-integrity-reasons.patch",
       "sha256": "006be27601ea216c750b5df1c0f9b0f9f4259b9206e1f33869400cf4ff61ea7a"
+    },
+    {
+      "path": "0058-terminal-authentication-retry.patch",
+      "sha256": "2064b337e86352296df7ac5bde428a11ad145ca568478f977dcfb2ef3a87cff8"
     }
   ],
-  "result_tree": "1a6546142e4a9a1af351c0a4b987288110b0c7c1"
+  "result_tree": "b15cd10e00fef8e10856dbe0aad012607a60ac9a"
 }
