@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  TraceContext,
   telemetry,
   tool,
   manualTool,
@@ -22,6 +23,7 @@ type Span = {
   traceId: string;
   spanId: string;
   parentSpanId?: string;
+  flags?: number;
   attributes?: {
     key: string;
     value: { stringValue?: string; intValue?: string | number };
@@ -985,6 +987,123 @@ async function restoreCase(batches: unknown[]) {
   );
 }
 
+async function parentPolicyCase(
+  collector: Awaited<ReturnType<typeof receiver>>,
+) {
+  const victimCredential = new telemetry.TraceExportCredentials({
+    headers: { authorization: 'Bearer synthetic-victim-parent' },
+  });
+  const callerCredential = new telemetry.TraceExportCredentials({
+    headers: { authorization: 'Bearer synthetic-caller-parent' },
+  });
+  const victim = await telemetry.startTrace({
+    name: 'parent-policy.victim',
+    includeSensitiveData: true,
+    exportCredential: victimCredential,
+  });
+  const server = new ModelServer([
+    [message('unscoped')],
+    [message('default')],
+    [message('caller')],
+  ]);
+  const config = await server.config();
+  const provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'model-only-synthetic',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Answer.',
+
+    provider,
+  });
+  const carrier = (traceId: string, spanId: string) =>
+    new TraceContext({ traceparent: `00-${traceId}-${spanId}-01` });
+  const submit = async (label: string, parentTrace?: TraceContext) => {
+    const session = await agent.session({ parentTrace });
+    try {
+      const turn = await session.submit(label);
+      assert.equal((await turn.wait()).finalOutput, label);
+      return turn.turnId;
+    } finally {
+      await session.close();
+    }
+  };
+  try {
+    assert.equal(telemetry.getCurrentSpan(), undefined);
+    // Keep the victim live, but admit this Session outside its workflow.
+    const unscoped = await submit(
+      'unscoped',
+      carrier(victim.context.traceId, victim.context.spanId),
+    );
+    const ordinary = await submit(
+      'default',
+      carrier('1'.repeat(32), '2'.repeat(16)),
+    );
+    const caller = await telemetry.withTrace(
+      {
+        name: 'parent-policy.caller',
+        includeSensitiveData: false,
+        exportCredential: callerCredential,
+      },
+      async (span) => {
+        assert.equal(span.context.includeSensitiveData, false);
+        return { turn: await submit('caller'), context: span.context };
+      },
+    );
+    server.assertExhausted();
+    await flush();
+    const allSpans = decoded(collector.batches);
+    const dispatch = (turn: string) => {
+      const matches = collector.batches.flatMap((batch, index) =>
+        decoded([batch])
+          .filter(
+            (span) =>
+              span.name.startsWith('op.dispatch.') &&
+              attrs(span)['submission.id'] === turn,
+          )
+          .map((span) => ({
+            span,
+            authorization: collector.authorization[index],
+          })),
+      );
+      assert.equal(matches.length, 1);
+      return matches[0]!;
+    };
+    const victimChild = dispatch(unscoped);
+    const defaultChild = dispatch(ordinary);
+    const callerChild = dispatch(caller.turn);
+    // Public ancestry and sampling flags survive independently of local policy.
+    assert.equal(identity(victimChild.span.traceId), victim.context.traceId);
+    assert.equal(
+      identity(victimChild.span.parentSpanId!),
+      victim.context.spanId,
+    );
+    assert.equal(identity(defaultChild.span.traceId), '1'.repeat(32));
+    assert.equal(identity(defaultChild.span.parentSpanId!), '2'.repeat(16));
+    for (const { span } of [victimChild, defaultChild, callerChild])
+      assert.equal((span.flags ?? 0) & 1, 1);
+    assert.equal(defaultChild.authorization, 'Bearer synthetic-default');
+    assert.equal(callerChild.authorization, 'Bearer synthetic-caller-parent');
+    const callerSpan = allSpans.find(
+      (span) => identity(span.spanId) === caller.context.spanId,
+    );
+    assert(callerSpan);
+    assert(descendant(callerChild.span, callerSpan, allSpans));
+    assert.equal(
+      victimChild.authorization,
+      'Bearer synthetic-default',
+      'A public parent carrier restored the live victim export credential',
+    );
+  } finally {
+    victim.close();
+    victimCredential.close();
+    callerCredential.close();
+    await provider.close();
+  }
+}
+
 async function credentialsCase() {
   const options: { traces: Exporter } = JSON.parse(
     await readFile(process.argv[3], 'utf8'),
@@ -1150,6 +1269,9 @@ async function main() {
         kind: 'otlp-http',
         endpoint: collector.endpoint,
         protocol: 'json',
+        ...(mode === 'parent-policy'
+          ? { headers: { authorization: 'Bearer synthetic-default' } }
+          : {}),
       },
       logUserPrompt: true,
       logAgentResponses: true,
@@ -1161,6 +1283,7 @@ async function main() {
       else if (mode === 'processors') await processorCase(collector.batches);
       else if (mode === 'restore') await restoreCase(collector.batches);
       else if (mode === 'model-preparation') await preparedRequestCase();
+      else if (mode === 'parent-policy') await parentPolicyCase(collector);
       else if (mode === 'retained')
         await retainedCase(collector.batches, collector.authorization);
       else throw new Error('Unknown qualification mode');

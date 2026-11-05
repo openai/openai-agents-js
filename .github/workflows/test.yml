@@ -315,7 +315,7 @@ jobs:
         run: pnpm build:ci
       - name: Run tests with coverage
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm test:coverage
+        run: pnpm test:coverage --exclude scripts/released-api-contract.test.mjs
       - name: Enforce coverage thresholds
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: |

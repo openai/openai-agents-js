@@ -261,9 +261,13 @@
       "sha256": "7bbc86c06556a9c21550cec75f2da1316fa69f37fb56510249704cf01c0c70ab"
     },
     {
+      "path": "0059-terminal-authentication-retry.patch",
+      "sha256": "2064b337e86352296df7ac5bde428a11ad145ca568478f977dcfb2ef3a87cff8"
+    },
+    {
       "path": "0054-native-prepared-request.patch",
       "sha256": "2b56a9551dcdd687e5aef834109d9ff5b4ab3914fde2eae81f4b42c54caaa21d"
     }
   ],
-  "result_tree": "01d4db0a5eae90739caa9ee6418e0d949b33345d"
+  "result_tree": "17ce59431c36f0d69e0cbac6d48bcfde37bdf830"
 }

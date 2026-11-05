@@ -18,6 +18,7 @@ for (const mode of [
   'restore',
   'retained',
   'model-preparation',
+  'parent-policy',
   'no-export',
   'custom-only',
 ]) {
