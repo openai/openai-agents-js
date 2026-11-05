@@ -193,9 +193,25 @@
       "sha256": "8f6395a1b8d253170db019319cdaeff855ce1798efcc20eed704689fe070d994"
     },
     {
+      "path": "0049-stop-auto-compaction-after-sdk-stop.patch",
+      "sha256": "cde791180c705294b252bdc2e97e047b003f462c70ef798afe8f397fd28e8b64"
+    },
+    {
+      "path": "0050-sdk-provider-compaction-admission.patch",
+      "sha256": "2ba1d52e29697dc3baf4148315eda0dbbc55f5d92a79cfe98b07953d912a8e26"
+    },
+    {
+      "path": "0051-stop-token-budget-auto-compaction.patch",
+      "sha256": "f06a855f695a3514361a1044a7c9c31099cb548d19f81845845314ffd0ae5537"
+    },
+    {
       "path": "0052-scan-deep-helper-hard-links.patch",
       "sha256": "dbdc0621cb4011fab3ca7ddd6812193c53c6b49851ddb4b24fdadb0cc0d93223"
+    },
+    {
+      "path": "0053-serialize-token-budget-context-commit.patch",
+      "sha256": "a2481ece54b2d1289b698035e6697e4e68fa6391d68bc2db47f0af8475daefd4"
     }
   ],
-  "result_tree": "5d88986cde90c855b3ea299405c1a85c69e4a3be"
+  "result_tree": "049bf9bbdd75072a30a7739245d79bd05391eda8"
 }
