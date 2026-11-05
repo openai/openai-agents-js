@@ -193,7 +193,7 @@ index d5ee490..3744bc3 100644
          root_turn_id: None,
          residency_guard: None,
 diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
-index 6d56fba..57dd15e 100644
+index 6d56fba..9127d03 100644
 --- a/codex-rs/otel/src/sdk_trace.rs
 +++ b/codex-rs/otel/src/sdk_trace.rs
 @@ -542,13 +542,21 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
@@ -224,7 +224,7 @@ index 6d56fba..57dd15e 100644
      let policy = policy_for_context(&context)?;
      let registration = retain_policy(context.span().span_context(), policy);
      let handle = Arc::new(Handle {
-@@ -979,6 +987,99 @@ mod context_lease_tests {
+@@ -979,6 +987,98 @@ mod context_lease_tests {
      use super::*;
      use opentelemetry_sdk::trace::{InMemorySpanExporter, Sampler, SdkTracerProvider};
 
@@ -271,7 +271,6 @@ index 6d56fba..57dd15e 100644
 +        let unrelated_policy = policy_for_context(&unrelated).unwrap();
 +        assert!(unrelated_policy.include_sensitive_data);
 +        assert!(!unrelated_policy.disabled);
-+        let attached = unrelated.attach();
 +
 +        // A is a valid instrumented native span with an explicit, unowned parent.
 +        // B stays attached on this thread, but must not supply A's workflow policy.
@@ -285,6 +284,7 @@ index 6d56fba..57dd15e 100644
 +        let _ = native.set_parent(explicit);
 +        let captured = {
 +            let _entered = native.enter();
++            let _attached_unrelated = unrelated.attach();
 +            let active = crate::trace_context::current_span_context();
 +            assert!(active.span().span_context().is_valid());
 +            assert_eq!(
@@ -310,7 +310,6 @@ index 6d56fba..57dd15e 100644
 +        });
 +        drop(captured);
 +        drop(native);
-+        drop(attached);
 +        end_trace_span(workflow_key, r#"{"status":"ok"}"#).unwrap();
 +        release_trace_span(workflow_key);
 +        provider.shutdown().unwrap();

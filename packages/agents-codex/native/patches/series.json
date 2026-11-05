@@ -258,8 +258,8 @@
     },
     {
       "path": "0059-sdk-queued-trace-policy.patch",
-      "sha256": "844fe703a60734bb92146558d23534357047ff15ccdc743790e4a32a9fb6837b"
+      "sha256": "1ec311d0ba35b0d41dba0ee319b85729039a55800f7477f4c5cb5e457462ffc5"
     }
   ],
-  "result_tree": "2c27f1adff2d62e35c5964c5b73e509ba70cf672"
+  "result_tree": "61a4406bf7acc950e4914f68a759059293a90457"
 }
