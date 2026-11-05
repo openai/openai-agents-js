@@ -1566,6 +1566,7 @@ pub struct ThreadState {
 
 #[derive(Clone)]
 struct CapturedQuestion {
+    tracing: Option<Arc<codex_otel::sdk_trace::ContextLease>>,
     thread: Weak<CodexThread>,
     incarnation: Option<String>,
     turn_id: Option<String>,
@@ -1747,7 +1748,9 @@ async fn capture_question(
     {
         return None;
     }
+    let tracing = grant.as_ref().and_then(|grant| grant.tracing_context());
     Some(CapturedQuestion {
+        tracing,
         thread: Arc::downgrade(thread),
         incarnation,
         turn_id,
@@ -1942,6 +1945,9 @@ impl ThreadState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.question_owner_current(&question) {
+            if let Some(tracing) = &question.captured.tracing {
+                event["msg"]["tracing_context"] = serde_json::json!(tracing.token());
+            }
             let id = ThreadId::new().to_string();
             questions.insert(id.clone(), question);
             event["msg"]["_sdk_question_id"] = serde_json::json!(id);

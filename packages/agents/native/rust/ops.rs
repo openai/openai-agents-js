@@ -355,7 +355,27 @@ pub(crate) fn pre_admission(error: anyhow::Error) -> anyhow::Error {
     error.context(marker)
 }
 
+/// Trace conflicts are known not to have admitted work, including submissions
+/// whose host has already published an operation MCP selection.
+pub(crate) fn prepare_submission_trace(value: &mut Value) -> Result<Option<Value>> {
+    match crate::prepare_submission_trace(value) {
+        Ok(()) => Ok(None),
+        Err(crate::TraceIngressError::Conflict) => Ok(Some(json!({
+            "status": "not_submitted",
+            "reason": {
+                "type": "trace_context_conflict",
+                "message": "Explicit trace context must match the SDK tracing parent"
+            }
+        }))),
+        Err(error) => Err(pre_admission(anyhow::Error::msg(error.to_string()))),
+    }
+}
+
 pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value) -> Result<Value> {
+    let mut value = value;
+    if let Some(receipt) = prepare_submission_trace(&mut value)? {
+        return Ok(receipt);
+    }
     let mut mutation = Some(state.mutations.lock().await);
     crate::graph_stop::check_after_wait(state, &value)?;
     let thread = &state.thread;

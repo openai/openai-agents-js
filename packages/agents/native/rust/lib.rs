@@ -2,8 +2,10 @@
 
 #![recursion_limit = "256"]
 
+use codex_otel::sdk_trace::FutureExt as _;
 use napi::bindgen_prelude::Either;
 use napi_derive::napi;
+use opentelemetry::trace::TraceContextExt as _;
 
 mod application_instructions;
 mod canonical_rules;
@@ -1939,50 +1941,61 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_compact")]
-    pub async fn _compact(&self, trace_json: Option<String>) -> napi::Result<String> {
-        let trace = trace_json
+    pub async fn _compact(
+        &self,
+        trace_json: Option<String>,
+        tracing_context: Option<String>,
+    ) -> napi::Result<String> {
+        let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
+            .map_err(input_error)?;
+        let context = tracing_context
             .as_deref()
-            .map(serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>)
+            .map(codex_otel::sdk_trace::context)
             .transpose()
-            .map_err(|_| input_error("Invalid trace carrier"))?;
-        let inner = self.current()?;
-        // Serialize admission with startup/engine close, then thread mutations.
-        // These guards end with the enqueue receipt, before the SDK waits for
-        // the internal compaction run or its model response.
-        let _lifecycle = inner.engine.lifecycle.lock().await;
-        let _context_operation = inner.engine.operation(false).map_err(native_error)?;
-        let _mutation = inner.mutations.lock().await;
-        inner.engine.operation(false).map_err(native_error)?;
-        inner.instructions.check_usable().map_err(native_error)?;
-        if inner.is_closed() {
-            return Err(native_error("Codex thread is closed"));
-        }
-        graph_stop::check_mutation(&inner).map_err(input_error)?;
-        let tools = inner
-            .thread
-            .thread_extension_data()
-            .get::<python_tools::PythonTools>()
-            .ok_or_else(|| input_error("compact requires a managed Session"))?;
-        tools.check_idle(&inner.thread).await.map_err(input_error)?;
-        if let Some(store) = &inner.engine.local_checklist_store {
-            store
-                .check_failure(Some(inner.id))
+            .map_err(input_error)?
+            .unwrap_or_default();
+        (async {
+            let inner = self.current()?;
+            // Serialize admission with startup/engine close, then thread mutations.
+            // These guards end with the enqueue receipt, before the SDK waits for
+            // the internal compaction run or its model response.
+            let _lifecycle = inner.engine.lifecycle.lock().await;
+            let _context_operation = inner.engine.operation(false).map_err(native_error)?;
+            let _mutation = inner.mutations.lock().await;
+            inner.engine.operation(false).map_err(native_error)?;
+            inner.instructions.check_usable().map_err(native_error)?;
+            if inner.is_closed() {
+                return Err(native_error("Codex thread is closed"));
+            }
+            graph_stop::check_mutation(&inner).map_err(input_error)?;
+            let tools = inner
+                .thread
+                .thread_extension_data()
+                .get::<python_tools::PythonTools>()
+                .ok_or_else(|| input_error("compact requires a managed Session"))?;
+            tools.check_idle(&inner.thread).await.map_err(input_error)?;
+            if let Some(store) = &inner.engine.local_checklist_store {
+                store
+                    .check_failure(Some(inner.id))
+                    .await
+                    .map_err(native_error)?;
+            }
+            inner.engine.operation(false).map_err(native_error)?;
+            inner.instructions.check_usable().map_err(native_error)?;
+            if inner.is_closed() {
+                return Err(native_error("Codex thread is closed"));
+            }
+            graph_stop::check_mutation(&inner).map_err(input_error)?;
+            let turn_id = inner
+                .thread
+                .submit_with_trace(codex_protocol::protocol::Op::Compact, trace)
                 .await
                 .map_err(native_error)?;
-        }
-        inner.engine.operation(false).map_err(native_error)?;
-        inner.instructions.check_usable().map_err(native_error)?;
-        if inner.is_closed() {
-            return Err(native_error("Codex thread is closed"));
-        }
-        graph_stop::check_mutation(&inner).map_err(input_error)?;
-        let turn_id = inner
-            .thread
-            .submit_with_trace(codex_protocol::protocol::Op::Compact, trace)
-            .await
-            .map_err(native_error)?;
-        serde_json::to_string(&serde_json::json!({"status": "started", "turn_id": turn_id}))
-            .map_err(native_error)
+            serde_json::to_string(&serde_json::json!({"status": "started", "turn_id": turn_id}))
+                .map_err(native_error)
+        })
+        .with_context(context)
+        .await
     }
 
     #[napi(js_name = "_execute_command")]
@@ -1991,47 +2004,57 @@ impl NativeThread {
         name: String,
         arguments: String,
         trace_json: Option<String>,
+        tracing_context: Option<String>,
     ) -> napi::Result<String> {
-        commands::validate_arguments(&name, &arguments).map_err(input_error)?;
-        if name == "compact" {
-            return self._compact(trace_json).await;
-        }
-        let trace = trace_json
+        let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
+            .map_err(input_error)?;
+        let context = tracing_context
             .as_deref()
-            .map(serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>)
+            .map(codex_otel::sdk_trace::context)
             .transpose()
-            .map_err(|_| input_error("Invalid trace carrier"))?;
-        let inner = self.current()?;
-        let _lifecycle = inner.engine.lifecycle.lock().await;
-        let _context_operation = inner.engine.operation(false).map_err(native_error)?;
-        let _mutation = inner.mutations.lock().await;
-        inner.engine.operation(false).map_err(native_error)?;
-        inner.instructions.check_usable().map_err(native_error)?;
-        if inner.is_closed() {
-            return Err(native_error("Codex thread is closed"));
-        }
-        graph_stop::check_mutation(&inner).map_err(input_error)?;
-        let receipt = match name.as_str() {
-            "rename" => {
-                let stored = commands::rename(&inner, &arguments)
-                    .await
-                    .map_err(native_error)?;
-                serde_json::json!({"session_id": stored.thread_id, "name": stored.name})
+            .map_err(input_error)?
+            .unwrap_or_default();
+        (async {
+            commands::validate_arguments(&name, &arguments).map_err(input_error)?;
+            if name == "compact" {
+                return self
+                    ._compact(trace_json.clone(), tracing_context.clone())
+                    .await;
             }
-            "stop" => {
-                let operation = commands::stop(&inner).await.map_err(native_error)?;
-                serde_json::json!({"session_id": inner.id, "operation_id": operation})
+            let inner = self.current()?;
+            let _lifecycle = inner.engine.lifecycle.lock().await;
+            let _context_operation = inner.engine.operation(false).map_err(native_error)?;
+            let _mutation = inner.mutations.lock().await;
+            inner.engine.operation(false).map_err(native_error)?;
+            inner.instructions.check_usable().map_err(native_error)?;
+            if inner.is_closed() {
+                return Err(native_error("Codex thread is closed"));
             }
-            "review" => {
-                commands::check_review(&inner).await.map_err(input_error)?;
-                let turn = commands::review(&inner, &arguments, trace)
-                    .await
-                    .map_err(native_error)?;
-                serde_json::json!({"status": "started", "turn_id": turn})
-            }
-            _ => return Err(input_error("Unsupported embedded command")),
-        };
-        serde_json::to_string(&receipt).map_err(native_error)
+            graph_stop::check_mutation(&inner).map_err(input_error)?;
+            let receipt = match name.as_str() {
+                "rename" => {
+                    let stored = commands::rename(&inner, &arguments)
+                        .await
+                        .map_err(native_error)?;
+                    serde_json::json!({"session_id": stored.thread_id, "name": stored.name})
+                }
+                "stop" => {
+                    let operation = commands::stop(&inner).await.map_err(native_error)?;
+                    serde_json::json!({"session_id": inner.id, "operation_id": operation})
+                }
+                "review" => {
+                    commands::check_review(&inner).await.map_err(input_error)?;
+                    let turn = commands::review(&inner, &arguments, trace)
+                        .await
+                        .map_err(native_error)?;
+                    serde_json::json!({"status": "started", "turn_id": turn})
+                }
+                _ => return Err(input_error("Unsupported embedded command")),
+            };
+            serde_json::to_string(&receipt).map_err(native_error)
+        })
+        .with_context(context)
+        .await
     }
 
     #[napi(js_name = "_check_step")]
@@ -2775,38 +2798,49 @@ impl NativeThread {
     pub async fn _restore_manual_continuation(
         &self,
         continuation_json: String,
+        tracing_context: Option<String>,
     ) -> napi::Result<String> {
-        let frame: python_tools::Continuation =
-            serde_json::from_str(&continuation_json).map_err(native_error)?;
-        let inner = self.current()?;
-        let control = self.response_control()?;
-        let _operation = inner.engine.operation(false).map_err(native_error)?;
-        let _mutation = inner.mutations.lock().await;
-        if !control.supports_manual_checkpoint() {
-            return Err(native_error(
-                "manual continuation requires a portable uncontrolled native session",
-            ));
-        }
-        let tools = inner
-            .thread
-            .thread_extension_data()
-            .get::<python_tools::PythonTools>()
-            .ok_or_else(|| native_error("manual continuation requires managed tools"))?;
-        let saved = checkpoint::export(&inner, None)
-            .await
-            .map_err(native_error)?;
-        let graph = checkpoint::manual_graph(&inner)
-            .await
-            .map_err(native_error)?
-            .ok_or_else(|| native_error("manual restore contains a busy descendant"))?;
-        checkpoint::check_manual_portability(&inner, &saved)
-            .await
-            .map_err(native_error)?;
-        graph.check(&inner, &saved).await.map_err(native_error)?;
-        let events = tools
-            .restore_manual(&inner.id.to_string(), frame, &saved["history"])
-            .map_err(native_error)?;
-        serde_json::to_string(&events).map_err(native_error)
+        let context = tracing_context
+            .as_deref()
+            .map(codex_otel::sdk_trace::context)
+            .transpose()
+            .map_err(input_error)?
+            .unwrap_or_default();
+        (async {
+            let frame: python_tools::Continuation =
+                serde_json::from_str(&continuation_json).map_err(native_error)?;
+            let inner = self.current()?;
+            let control = self.response_control()?;
+            let _operation = inner.engine.operation(false).map_err(native_error)?;
+            let _mutation = inner.mutations.lock().await;
+            if !control.supports_manual_checkpoint() {
+                return Err(native_error(
+                    "manual continuation requires a portable uncontrolled native session",
+                ));
+            }
+            let tools = inner
+                .thread
+                .thread_extension_data()
+                .get::<python_tools::PythonTools>()
+                .ok_or_else(|| native_error("manual continuation requires managed tools"))?;
+            let saved = checkpoint::export(&inner, None)
+                .await
+                .map_err(native_error)?;
+            let graph = checkpoint::manual_graph(&inner)
+                .await
+                .map_err(native_error)?
+                .ok_or_else(|| native_error("manual restore contains a busy descendant"))?;
+            checkpoint::check_manual_portability(&inner, &saved)
+                .await
+                .map_err(native_error)?;
+            graph.check(&inner, &saved).await.map_err(native_error)?;
+            let events = tools
+                .restore_manual(&inner.id.to_string(), frame, &saved["history"])
+                .map_err(native_error)?;
+            serde_json::to_string(&events).map_err(native_error)
+        })
+        .with_context(context)
+        .await
     }
 
     #[napi(js_name = "_respond_manual_continuation")]
@@ -2835,72 +2869,79 @@ impl NativeThread {
         output_schema_json: Option<String>,
         selection_json: Option<String>,
         trace_json: Option<String>,
+        tracing_context: Option<String>,
         observation_submission_id: Option<String>,
     ) -> napi::Result<String> {
-        let trace = trace_json
-            .map(|trace| {
-                serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>(&trace)
-                    .map_err(native_error)
-            })
-            .transpose()?;
-        let output_schema = output_schema_json
-            .map(|schema| serde_json::from_str::<Value>(&schema).map_err(native_error))
-            .transpose()?;
-        let selection = selection_json
-            .map(|selection| {
-                serde_json::from_str::<python_tools::OperationSelection>(&selection)
-                    .map_err(native_error)
-            })
-            .transpose()?;
-        // A restored root can use step preparation to enforce its remaining
-        // SDK budget. The SDK never serializes an application callback.
-        let inner = self.current()?;
-        let _operation = inner.engine.operation(false).map_err(native_error)?;
-        inner
-            .engine
-            .interception
-            .check_code_import_admission()
-            .map_err(native_error)?;
-        let _mutation = inner.mutations.lock().await;
-        let tools = inner
-            .thread
-            .thread_extension_data()
-            .get::<python_tools::PythonTools>()
-            .ok_or_else(|| native_error("manual continuation requires managed tools"))?;
-        if let Some(selection) = &selection {
-            tools.validate_operation(selection).map_err(native_error)?;
-        }
-        let saved = checkpoint::export(&inner, None)
-            .await
-            .map_err(native_error)?;
-        let (frame, items, settings) = tools
-            .manual_completion(&saved["history"])
-            .map_err(native_error)?;
-        if !items.is_empty() {
-            // Update Core's live model context as well as its rollout. A raw
-            // writer append alone would let prompt normalization invent "aborted".
+        let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
+            .map_err(input_error)?;
+        let context = tracing_context
+            .as_deref()
+            .map(codex_otel::sdk_trace::context)
+            .transpose()
+            .map_err(input_error)?
+            .unwrap_or_default();
+        (async {
+            let output_schema = output_schema_json
+                .map(|schema| serde_json::from_str::<Value>(&schema).map_err(native_error))
+                .transpose()?;
+            let selection = selection_json
+                .map(|selection| {
+                    serde_json::from_str::<python_tools::OperationSelection>(&selection)
+                        .map_err(native_error)
+                })
+                .transpose()?;
+            // A restored root can use step preparation to enforce its remaining
+            // SDK budget. The SDK never serializes an application callback.
+            let inner = self.current()?;
+            let _operation = inner.engine.operation(false).map_err(native_error)?;
             inner
+                .engine
+                .interception
+                .check_code_import_admission()
+                .map_err(native_error)?;
+            let _mutation = inner.mutations.lock().await;
+            let tools = inner
                 .thread
-                .inject_response_items_for_turn(items)
+                .thread_extension_data()
+                .get::<python_tools::PythonTools>()
+                .ok_or_else(|| native_error("manual continuation requires managed tools"))?;
+            if let Some(selection) = &selection {
+                tools.validate_operation(selection).map_err(native_error)?;
+            }
+            let saved = checkpoint::export(&inner, None)
                 .await
                 .map_err(native_error)?;
-        }
-        let result = ops::recover_prepared(
-            &inner,
-            frame.turn_id,
-            frame.reply_order,
-            settings,
-            output_schema,
-            selection,
-            trace,
-            observation_submission_id,
-        )
+            let (frame, items, settings) = tools
+                .manual_completion(&saved["history"])
+                .map_err(native_error)?;
+            if !items.is_empty() {
+                // Update Core's live model context as well as its rollout. A raw
+                // writer append alone would let prompt normalization invent "aborted".
+                inner
+                    .thread
+                    .inject_response_items_for_turn(items)
+                    .await
+                    .map_err(native_error)?;
+            }
+            let result = ops::recover_prepared(
+                &inner,
+                frame.turn_id,
+                frame.reply_order,
+                settings,
+                output_schema,
+                selection,
+                trace,
+                observation_submission_id,
+            )
+            .await
+            .map_err(native_error)?;
+            if result.get("status").and_then(Value::as_str) == Some("started") {
+                tools.retire_manual();
+            }
+            serde_json::to_string(&result).map_err(native_error)
+        })
+        .with_context(context)
         .await
-        .map_err(native_error)?;
-        if result.get("status").and_then(Value::as_str) == Some("started") {
-            tools.retire_manual();
-        }
-        serde_json::to_string(&result).map_err(native_error)
     }
 
     #[napi(js_name = "read_checklist")]
@@ -3518,7 +3559,11 @@ fn telemetry_error(error: anyhow::Error) -> napi::Error {
         "Codex telemetry can only be configured once per process"
         | "Configure telemetry before creating any Codex clients"
         | "A Rust tracing subscriber is already installed; Codex telemetry cannot replace it"
-        | "Configure telemetry successfully before shutdown" => message.as_str(),
+        | "Configure telemetry successfully before shutdown"
+        | "Configure native telemetry before starting traces; shutdown is terminal"
+        | "Configure a trace exporter or trace processors before starting native traces"
+        | "Telemetry timeout must be between 1 and 60000 milliseconds"
+        | "Telemetry shutdown timed out waiting for the telemetry owner" => message.as_str(),
         _ => {
             "Native telemetry operation failed. Check the exporter settings; a new process may be required."
         }
@@ -3534,8 +3579,293 @@ pub async fn configure_telemetry(config_json: String) -> napi::Result<()> {
 }
 
 #[napi(js_name = "shutdown_telemetry")]
-pub async fn shutdown_telemetry() -> napi::Result<()> {
-    telemetry::shutdown().await.map_err(telemetry_error)
+pub async fn shutdown_telemetry(timeout_ms: Option<u32>) -> napi::Result<()> {
+    telemetry::shutdown(timeout_ms)
+        .await
+        .map_err(telemetry_error)
+}
+
+#[napi(js_name = "start_trace_span")]
+pub fn start_trace_span(options_json: String) -> napi::Result<String> {
+    telemetry::scope_ready().map_err(telemetry_error)?;
+    codex_otel::sdk_trace::start_trace_span(&options_json).map_err(native_error)
+}
+
+#[napi(js_name = "end_trace_span")]
+pub fn end_trace_span(handle: String, outcome_json: String) -> napi::Result<()> {
+    codex_otel::sdk_trace::end_trace_span(&handle, &outcome_json).map_err(native_error)
+}
+
+#[napi(js_name = "retain_trace_context")]
+pub fn retain_trace_context(handle: String) -> napi::Result<String> {
+    codex_otel::sdk_trace::retain_trace_context(&handle).map_err(native_error)
+}
+
+#[napi(js_name = "trace_span_context")]
+pub fn trace_span_context(handle: String) -> napi::Result<String> {
+    codex_otel::sdk_trace::trace_span_context(&handle).map_err(native_error)
+}
+
+#[napi(js_name = "set_trace_routes")]
+pub fn set_trace_routes(options_json: String) -> napi::Result<f64> {
+    telemetry::tracing_ready().map_err(telemetry_error)?;
+    codex_otel::sdk_trace_routes::set_trace_routes(&options_json)
+        .map(|sequence| sequence as f64)
+        .map_err(native_error)
+}
+
+#[napi(js_name = "register_trace_credentials")]
+pub fn register_trace_credentials(headers_json: String) -> napi::Result<String> {
+    telemetry::tracing_ready().map_err(telemetry_error)?;
+    codex_otel::sdk_trace_routes::register_trace_credentials(&headers_json).map_err(native_error)
+}
+
+#[napi(js_name = "release_trace_credentials")]
+pub fn release_trace_credentials(credential_ref: String) -> napi::Result<()> {
+    codex_otel::sdk_trace_routes::release_trace_credentials(&credential_ref).map_err(native_error)
+}
+
+#[napi(js_name = "ack_trace_events")]
+pub fn ack_trace_events(through_sequence: f64, failed_deliveries: f64) -> napi::Result<()> {
+    if ![through_sequence, failed_deliveries]
+        .iter()
+        .all(|v| v.is_finite() && *v >= 0.0 && v.fract() == 0.0 && *v <= 9_007_199_254_740_991.0)
+    {
+        return Err(input_error(
+            "Trace acknowledgments require nonnegative safe integers",
+        ));
+    }
+    codex_otel::sdk_trace_routes::ack_trace_events(
+        through_sequence as u64,
+        failed_deliveries as u64,
+    )
+    .map_err(native_error)
+}
+
+#[napi(js_name = "release_trace_context")]
+pub fn release_trace_context(handle: String) {
+    codex_otel::sdk_trace::release_trace_context(&handle);
+}
+
+#[napi(js_name = "release_trace_span")]
+pub fn release_trace_span(handle: String) {
+    codex_otel::sdk_trace::release_trace_span(&handle);
+}
+
+#[napi(js_name = "force_flush_telemetry")]
+pub async fn force_flush_telemetry(timeout_ms: Option<u32>) -> napi::Result<String> {
+    telemetry::force_flush(timeout_ms)
+        .await
+        .map_err(telemetry_error)
+}
+#[napi(js_name = "drain_trace_events")]
+pub async fn drain_trace_events(max_count: u32) -> napi::Result<String> {
+    codex_otel::sdk_trace_routes::drain_trace_events(max_count as usize).map_err(native_error)
+}
+
+#[derive(Debug)]
+pub(crate) enum TraceIngressError {
+    Conflict,
+    Invalid(String),
+}
+impl std::fmt::Display for TraceIngressError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict => {
+                f.write_str("Explicit trace context must match the SDK tracing parent")
+            }
+            Self::Invalid(message) => f.write_str(message),
+        }
+    }
+}
+
+fn trace_identity(
+    carrier: &codex_protocol::protocol::W3cTraceContext,
+) -> Result<(opentelemetry::trace::TraceId, opentelemetry::trace::SpanId), TraceIngressError> {
+    let context = codex_otel::context_from_w3c_trace_context(carrier)
+        .ok_or_else(|| TraceIngressError::Invalid("Invalid trace carrier".into()))?;
+    let span = context.span();
+    let parent = span.span_context();
+    Ok((parent.trace_id(), parent.span_id()))
+}
+
+fn resolve_trace_parent(
+    explicit: Option<codex_protocol::protocol::W3cTraceContext>,
+    tracing_context: Option<&str>,
+) -> Result<Option<codex_protocol::protocol::W3cTraceContext>, TraceIngressError> {
+    let explicit_identity = explicit.as_ref().map(trace_identity).transpose()?;
+    let scoped = tracing_context
+        .map(codex_otel::sdk_trace::trace_carrier)
+        .transpose()
+        .map_err(TraceIngressError::Invalid)?;
+    if let (Some(parent), Some(scoped)) = (explicit_identity, scoped.as_ref())
+        && parent != trace_identity(scoped)?
+    {
+        return Err(TraceIngressError::Conflict);
+    }
+    // Matching identities retain private policy through the existing native map;
+    // preserve the caller's explicit sampling flags and tracestate.
+    Ok(explicit.or(scoped))
+}
+
+fn resolve_trace_json(
+    trace_json: Option<&str>,
+    tracing_context: Option<&str>,
+) -> Result<Option<codex_protocol::protocol::W3cTraceContext>, TraceIngressError> {
+    let explicit = trace_json
+        .map(serde_json::from_str::<codex_protocol::protocol::W3cTraceContext>)
+        .transpose()
+        .map_err(|_| TraceIngressError::Invalid("Invalid trace carrier".into()))?;
+    resolve_trace_parent(explicit, tracing_context)
+}
+
+pub(crate) fn prepare_submission_trace(value: &mut Value) -> Result<(), TraceIngressError> {
+    let Some(object) = value.as_object_mut() else {
+        return Ok(());
+    };
+    let token = object.remove("tracing_context");
+    let tracing_context = match &token {
+        None | Some(Value::Null) => None,
+        Some(Value::String(token)) => Some(token.as_str()),
+        Some(_) => {
+            return Err(TraceIngressError::Invalid(
+                "Invalid tracing context token".into(),
+            ));
+        }
+    };
+    let explicit = object
+        .remove("trace")
+        .filter(|trace| !trace.is_null())
+        .map(serde_json::from_value::<codex_protocol::protocol::W3cTraceContext>)
+        .transpose()
+        .map_err(|_| TraceIngressError::Invalid("Invalid trace carrier".into()))?;
+    if let Some(trace) = resolve_trace_parent(explicit, tracing_context)? {
+        object.insert(
+            "trace".into(),
+            serde_json::to_value(trace)
+                .map_err(|_| TraceIngressError::Invalid("Invalid trace carrier".into()))?,
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod native_trace_merge_tests {
+    use super::*;
+    use codex_protocol::protocol::W3cTraceContext;
+    use serde_json::json;
+
+    fn carrier(span: &str, flags: &str, state: &str) -> W3cTraceContext {
+        W3cTraceContext {
+            traceparent: Some(format!(
+                "00-123456789012345678901234567890ab-{span}-{flags}"
+            )),
+            tracestate: Some(state.into()),
+        }
+    }
+
+    #[test]
+    fn parsed_identity_uses_trace_and_span_ids_not_flags_or_state() {
+        let sampled = carrier("12345678901234ab", "01", "fixture=one");
+        let unsampled = carrier("12345678901234ab", "00", "fixture=two");
+        assert_eq!(
+            trace_identity(&sampled).unwrap(),
+            trace_identity(&unsampled).unwrap()
+        );
+        assert_ne!(
+            trace_identity(&sampled).unwrap(),
+            trace_identity(&carrier("12345678901234ac", "01", "fixture=one")).unwrap()
+        );
+        assert!(
+            trace_identity(&W3cTraceContext {
+                traceparent: Some("invalid".into()),
+                tracestate: None
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_carrier_without_sdk_scope_keeps_flags_and_tracestate() {
+        let explicit = carrier("12345678901234ab", "00", "fixture=explicit");
+        let selected = resolve_trace_json(Some(&serde_json::to_string(&explicit).unwrap()), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.traceparent, explicit.traceparent);
+        assert_eq!(selected.tracestate, explicit.tracestate);
+    }
+
+    #[test]
+    fn sdk_submit_conflict_is_not_submitted_and_matching_parent_keeps_policy() {
+        const CHILD: &str = "AGENTS_TRACE_MERGE_NATIVE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "native_trace_merge_tests::sdk_submit_conflict_is_not_submitted_and_matching_parent_keeps_policy", "--nocapture"])
+                .env(CHILD, "1").status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        codex_otel::sdk_trace::configure_pipeline(false);
+        let readback: Value = serde_json::from_str(
+            &codex_otel::sdk_trace::start_trace_span(
+                r#"{"name":"merge-policy","kind":"workflow","disabled":true}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let token = readback["handle"].as_str().unwrap();
+        let explicit = W3cTraceContext {
+            traceparent: Some(format!(
+                "00-{}-{}-01",
+                readback["trace_id"].as_str().unwrap(),
+                readback["span_id"].as_str().unwrap()
+            )),
+            tracestate: Some("fixture=explicit".into()),
+        };
+        let mut mismatch = json!({"input":[],"trace":carrier("12345678901234ab","01","fixture=other"),"tracing_context":token});
+        let receipt = ops::prepare_submission_trace(&mut mismatch)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt["status"], "not_submitted");
+        assert_eq!(receipt["reason"]["type"], "trace_context_conflict");
+        assert!(codex_otel::sdk_trace::trace_span_context(token).is_ok());
+        let mut matching = json!({"input":[],"trace":explicit,"tracing_context":token});
+        assert!(
+            ops::prepare_submission_trace(&mut matching)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            matching["trace"]["traceparent"],
+            explicit.traceparent.as_deref().unwrap()
+        );
+        assert_eq!(matching["trace"]["tracestate"], "fixture=explicit");
+        assert!(matching.get("tracing_context").is_none());
+        let parsed = codex_otel::context_from_w3c_trace_context(&explicit).unwrap();
+        let restored = codex_otel::sdk_trace::policy_for_context(&parsed).unwrap();
+        let original = codex_otel::sdk_trace::policy_for_context(
+            &codex_otel::sdk_trace::context(token).unwrap(),
+        )
+        .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&restored, &original));
+        assert!(restored.disabled);
+        assert!(!restored.include_sensitive_data);
+        let mut scoped_only = json!({"input":[],"tracing_context":token});
+        assert!(
+            ops::prepare_submission_trace(&mut scoped_only)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            scoped_only["trace"]["traceparent"],
+            codex_otel::sdk_trace::trace_carrier(token)
+                .unwrap()
+                .traceparent
+                .unwrap()
+        );
+        codex_otel::sdk_trace::end_trace_span(token, r#"{"status":"ok"}"#).unwrap();
+        codex_otel::sdk_trace::release_trace_span(token);
+    }
 }
 
 mod request_metadata;

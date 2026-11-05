@@ -1,0 +1,139 @@
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 2b1ed51..3a69f56 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -20,6 +20,7 @@ pub struct ScopePolicy {
+     pub disabled: bool,
+     pub include_sensitive_data: bool,
+     pub credential: Option<Arc<crate::sdk_trace_routes::TraceCredentials>>,
++    pub workflow_span_id: Option<SpanId>,
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -264,6 +265,7 @@ struct Readback {
+     trace_id: String,
+     span_id: String,
+     parent_span_id: Option<String>,
++    workflow_span_id: Option<String>,
+     disabled: bool,
+     include_sensitive_data: bool,
+ }
+@@ -276,6 +278,7 @@ fn readback(key: &str, handle: &Handle) -> Result<String, String> {
+         trace_id: span.trace_id().to_string(),
+         span_id: span.span_id().to_string(),
+         parent_span_id: handle.parent_span_id.clone(),
++        workflow_span_id: policy.workflow_span_id.map(|id| id.to_string()),
+         disabled: policy.disabled,
+         include_sensitive_data: policy.include_sensitive_data,
+     })
+@@ -374,7 +377,17 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+         Some(key) => Some(crate::sdk_trace_routes::credential(key)?),
+         None => inherited.as_ref().and_then(|p| p.credential.clone()),
+     };
++    use opentelemetry_sdk::trace::{IdGenerator, RandomIdGenerator};
++    let span_id = RandomIdGenerator::default().new_span_id();
++    let workflow_span_id = if options.kind == "workflow" {
++        Some(span_id)
++    } else if options.detached {
++        None
++    } else {
++        inherited.as_ref().and_then(|policy| policy.workflow_span_id)
++    };
+     let policy = Arc::new(ScopePolicy {
++        workflow_span_id,
+         disabled,
+         include_sensitive_data: capture,
+         credential,
+@@ -419,6 +432,7 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     let mut builder = opentelemetry::trace::SpanBuilder::from_name(options.name)
+         .with_attributes(attributes);
+     builder.trace_id = trace_id;
++    builder.span_id = Some(span_id);
+     let span = build_span("codex_agents_sdk", builder, &context);
+     let context = context.with_span(span);
+     let handle = Arc::new(Handle {
+@@ -555,12 +569,68 @@ mod tests {
+         assert!(metadata_attribute_value(&json!(["x".repeat(3000),"y".repeat(3000)])).is_err());
+         assert!(metadata_attribute_value(&json!({"key":[1,2]})).is_ok());
+     }
++    #[test]
++    fn workflow_identity_uses_selected_parent_and_survives_closed_nonrecording_scopes() {
++        const CHILD: &str = "CODEX_SDK_WORKFLOW_IDENTITY_CHILD";
++        if std::env::var_os(CHILD).is_none() {
++            let status = std::process::Command::new(std::env::current_exe().unwrap())
++                .args(["--exact", "sdk_trace::tests::workflow_identity_uses_selected_parent_and_survives_closed_nonrecording_scopes"])
++                .env(CHILD, "1").status().unwrap();
++            assert!(status.success());
++            return;
++        }
++        configure_pipeline(false);
++        let start = |value: Value| -> Value {
++            serde_json::from_str(&start_trace_span(&value.to_string()).unwrap()).unwrap()
++        };
++        let a = start(
++            json!({"name":"A","kind":"workflow","disabled":true,"trace_id":"123456789012345678901234567890ab"}),
++        );
++        let b = start(json!({"name":"B","kind":"workflow","parent":a["handle"]}));
++        assert_eq!(a["trace_id"], b["trace_id"]);
++        assert_eq!(a["workflow_span_id"], a["span_id"]);
++        assert_eq!(b["workflow_span_id"], b["span_id"]);
++        assert_ne!(a["workflow_span_id"], b["workflow_span_id"]);
++        let child = start(
++            json!({"name":"child","kind":"custom","parent":a["handle"],"restrictions_parents":[b["handle"]]}),
++        );
++        assert_eq!(child["workflow_span_id"], a["span_id"]);
++        let detached = start(
++            json!({"name":"detached","kind":"custom","parent":a["handle"],"detached":true,"restrictions_parents":[b["handle"]]}),
++        );
++        assert!(detached["workflow_span_id"].is_null());
++        let lease = retain_trace_context(child["handle"].as_str().unwrap()).unwrap();
++        for scope in [&a, &b, &child, &detached] {
++            let key = scope["handle"].as_str().unwrap();
++            end_trace_span(key, r#"{"status":"ok"}"#).unwrap();
++            release_trace_span(key);
++        }
++        let carrier = trace_carrier(&lease).unwrap();
++        let parent = crate::context_from_w3c_trace_context(&carrier).unwrap();
++        assert_eq!(
++            policy_for_context(&parent)
++                .unwrap()
++                .workflow_span_id
++                .unwrap()
++                .to_string(),
++            a["span_id"]
++        );
++        let guard = parent.attach();
++        let token = current_context_token().unwrap();
++        let callback: Value = serde_json::from_str(&trace_span_context(&token).unwrap()).unwrap();
++        assert_eq!(callback["workflow_span_id"], a["span_id"]);
++        release_trace_context(&token);
++        drop(guard);
++        release_trace_context(&lease);
++    }
++
+     #[test]
+     fn disabled_sampling_has_no_recording() {
+         let policy = Arc::new(ScopePolicy {
+             disabled: true,
+             include_sensitive_data: false,
+             credential: None,
++            workflow_span_id: None,
+         });
+         let context = Context::new().with_value(policy);
+         let sample = ScopeSampler::default().should_sample(
+@@ -639,6 +709,7 @@ mod lifecycle_tests {
+             .build();
+         global::set_tracer_provider(provider.clone());
+         let root:Value=serde_json::from_str(&start_trace_span(r#"{"name":"workflow","kind":"workflow","trace_id":"trace_123456789012345678901234567890ab"}"#).unwrap()).unwrap();
++        assert_eq!(root["workflow_span_id"], root["span_id"]);
+         let root_key = root["handle"].as_str().unwrap();
+         let lease = retain_trace_context(root_key).unwrap();
+         end_trace_span(root_key, r#"{"status":"ok"}"#).unwrap();
+@@ -839,6 +910,7 @@ mod disabled_pipeline_tests {
+                 .unwrap(),
+         )
+         .unwrap();
++        assert_eq!(root["workflow_span_id"], root["span_id"]);
+         let root_key = root["handle"].as_str().unwrap();
+         assert_ne!(root["trace_id"], TraceId::INVALID.to_string());
+         assert_ne!(root["span_id"], SpanId::INVALID.to_string());

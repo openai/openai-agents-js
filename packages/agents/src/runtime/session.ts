@@ -1,4 +1,13 @@
 import {
+  captureTracing,
+  getCurrentSpan,
+  withoutTracing,
+  TraceCapture,
+  type TraceSpan,
+  withNativeCallbackContext,
+} from './tracing-context';
+import type { TraceOptions } from './telemetry';
+import {
   captureTraceContext,
   nativeTraceContext,
   type TraceContext,
@@ -211,6 +220,8 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  /** @internal Captured opening scope; never stored in SessionState. */
+  tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
   openCorrection?: (
     model: string,
@@ -274,7 +285,12 @@ export type OneShotOptions = {
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
-  /** Explicit parent for this new root; omission or null inherits the Session parent. */
+  tracing?: TraceOptions;
+  /**
+   * Explicit parent for this new root; omission or null inherits the Session parent.
+   * Combined SDK scoped tracing must identify the same native parent; an active
+   * SDK scope can therefore conflict with an explicit external parent.
+   */
   parentTrace?: TraceContext | TraceContextHeaders | null;
   /**
    * Maximum root model preparations for this submission. Zero blocks the first
@@ -719,6 +735,7 @@ const submissions = new WeakMap<
     compaction?: boolean;
     review?: boolean;
     retirement?: Promise<never>;
+    tracingAdmissionFailed?: boolean;
     repair?: OutputRepair;
   }
 >();
@@ -760,6 +777,9 @@ class NativeTurn {
   readonly toolCallIds = new Set<string>();
   readonly toolCleanupErrors: unknown[] = [];
   readonly executing = new Set<string>();
+  tracing?: TraceCapture;
+  // Keep workflow ownership when a retained successor takes completion tracing.
+  issuedTracing?: TraceCapture;
   selection?: OperationSelection;
   writableRoots?: readonly string[];
   preparation?: AbortController;
@@ -941,6 +961,7 @@ export class Session<OutputT = string, Context = unknown> {
       event: NativeEvent;
       tool: ManualTool;
       grant: ReturnType<typeof createManualRequest>;
+      tracing?: TraceSpan;
       ready: boolean;
       identity: ToolIdentity;
     }
@@ -1158,7 +1179,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.environment !== null && hasExecutorPolicy(this.environment);
       if (this.catalog.tools.some((tool) => tool.kind === 'manual'))
         await this.configureManualTools();
-      this.ownReader(this.readEvents());
+      this.ownReader(withoutTracing(() => this.readEvents()));
       if (this.options.mcpTools) {
         const boundary = {
           id: randomUUID(),
@@ -1199,10 +1220,10 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (this.options.mcpTools) {
         this.mcpReaderStarted = true;
-        this.ownReader(this.readMcpResults());
+        this.ownReader(withoutTracing(() => this.readMcpResults()));
       }
       if (executorPolicy || this.options.nativeAgents || this.options.mcpTools)
-        this.ownReader(this.readInterceptions());
+        this.ownReader(withoutTracing(() => this.readInterceptions()));
       if (startup.cause) throw startup.cause.value;
       this.starting = undefined;
     } catch (error) {
@@ -1257,11 +1278,12 @@ export class Session<OutputT = string, Context = unknown> {
       this.environment !== null && hasExecutorPolicy(this.environment);
     this.readers = [];
     this.childObservationProducer = { ended: false };
-    this.ownReader(this.readEvents());
+    this.ownReader(withoutTracing(() => this.readEvents()));
     this.mcpReaderStarted = !!this.options.mcpTools;
-    if (this.mcpReaderStarted) this.ownReader(this.readMcpResults());
+    if (this.mcpReaderStarted)
+      this.ownReader(withoutTracing(() => this.readMcpResults()));
     if (executorPolicy || this.options.nativeAgents || this.options.mcpTools)
-      this.ownReader(this.readInterceptions());
+      this.ownReader(withoutTracing(() => this.readInterceptions()));
     this.watchChildObservationProducer();
   }
 
@@ -1622,6 +1644,82 @@ export class Session<OutputT = string, Context = unknown> {
       server_name: server,
       request_id: JSON.rawJSON(id),
     });
+  }
+
+  private trackNativeQuestion(
+    run: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+  ): Promise<void> {
+    const native = this.#native;
+    const context =
+      typeof event.msg.tracing_context === 'string'
+        ? event.msg.tracing_context
+        : undefined;
+    const questionId =
+      typeof event.msg._sdk_question_id === 'string'
+        ? event.msg._sdk_question_id
+        : undefined;
+    const callback = async () => {
+      if (context === undefined || questionId === undefined)
+        return this.admitNativeQuestion(run, event);
+      const pending = async () =>
+        this.#native === native &&
+        this.canAnswerNativeQuestions(run) &&
+        (await native._native_question_pending(questionId));
+      if (!(await pending())) return;
+      let entered = false;
+      try {
+        await withNativeCallbackContext(
+          context,
+          () => {
+            entered = true;
+            return this.admitNativeQuestion(run, event);
+          },
+          run.controller.signal,
+          (traceId, workflowSpanId) =>
+            this.workflowForTrace(traceId, workflowSpanId),
+        );
+      } catch (error) {
+        if (!entered && !(await pending())) return;
+        throw error;
+      }
+    };
+    if (
+      run instanceof NativeTurn &&
+      context !== undefined &&
+      questionId !== undefined
+    ) {
+      const pending = Promise.resolve().then(callback);
+      this.track(run, pending, run.toolInvocations);
+      return pending;
+    }
+    return this.trackOwnedCallback(run, callback);
+  }
+
+  private trackQuestionCallback(
+    run: NativeTurn | ChildCallbackOwner,
+    callback: () => Promise<void>,
+  ): Promise<void> {
+    const span = getCurrentSpan();
+    const context = span?.retain();
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (context !== undefined) span!.releaseContext(context);
+    };
+    const pending = this.trackOwnedCallback(
+      run,
+      async () => {
+        try {
+          await callback();
+        } finally {
+          release();
+        }
+      },
+      context,
+    );
+    return pending.finally(release);
   }
 
   private async admitNativeQuestion(
@@ -2061,7 +2159,7 @@ export class Session<OutputT = string, Context = unknown> {
       });
       this.interceptionCleanups.add(stopUrl);
       if (!(run instanceof NativeTurn)) {
-        void this.trackOwnedCallback(run, async () => {
+        void this.trackQuestionCallback(run, async () => {
           let failure: unknown;
           try {
             while (completion.pending() && this.current(run)) {
@@ -2120,13 +2218,13 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.oneShot) {
       const handler = this.oneShot.onNativeQuestion;
       if (!handler) {
-        void this.trackOwnedCallback(run, async () => {
+        void this.trackQuestionCallback(run, async () => {
           throw new InteractionRequired();
         }).catch(() => {});
         return;
       }
       const response: { reply?: NativeQuestionReply } = {};
-      void this.trackOwnedCallback(run, async () => {
+      void this.trackQuestionCallback(run, async () => {
         response.reply = await handler(grant.request, run.controller.signal);
         if (!grant.current()) return;
         if (!response.reply)
@@ -2156,7 +2254,10 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private issuedTurn(step: NativeTurn): Turn<unknown, string | null> {
-    if (step.id) this.issuedRuns.set(step.id, step);
+    if (step.id) {
+      step.issuedTracing ??= step.tracing;
+      this.issuedRuns.set(step.id, step);
+    }
     const run = this.rootRun(step);
     let turn = this.turnHandles.get(run);
     if (!turn) {
@@ -2407,8 +2508,9 @@ export class Session<OutputT = string, Context = unknown> {
       true,
       selection,
       undefined,
-      parentTrace,
+      options?.tracing,
       options?.writableRoots,
+      parentTrace ?? this.options.parentTrace,
     );
     await afterSubmissionRetirement(run, run.accepted.promise);
     // This root's parser was prepared from the same OutputSpec<Next>.
@@ -2462,6 +2564,7 @@ export class Session<OutputT = string, Context = unknown> {
     run.parentTrace = parentTrace;
     run.selection = selection;
     run.writableRoots = writableRoots;
+    run.tracing = this.captureRootTracing(options?.tracing);
     this.pendingRoots.push({ run, parts });
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
@@ -2536,7 +2639,8 @@ export class Session<OutputT = string, Context = unknown> {
       if (
         options?.tools !== undefined ||
         options?.beforeStep !== undefined ||
-        options?.maxModelSteps !== undefined
+        options?.maxModelSteps !== undefined ||
+        options?.tracing !== undefined
       )
         throw new TypeError('Operation selection applies only to new roots');
       const run = this.rootRun(this.lifecycle.run);
@@ -2552,8 +2656,9 @@ export class Session<OutputT = string, Context = unknown> {
       false,
       selection,
       undefined,
-      parentTrace ?? this.options.parentTrace,
+      options?.tracing,
       options?.writableRoots,
+      parentTrace ?? this.options.parentTrace,
     );
 
     await afterSubmissionRetirement(run, run.accepted.promise);
@@ -2696,6 +2801,7 @@ export class Session<OutputT = string, Context = unknown> {
       )
         throw new NativeError('Current turn cannot accept steering input');
       await run.accepted.promise;
+      const tracingContext = await run.tracing?.context();
       if (this.ownedStep(anchor) !== run) {
         if (expectedTurnId !== undefined)
           throw markNativeErrorNotStarted(
@@ -2722,6 +2828,7 @@ export class Session<OutputT = string, Context = unknown> {
             expected_turn_id: run.id,
             input,
             ...(expectedTurnId !== undefined ? { exact_steering: true } : {}),
+            ...(tracingContext ? { tracing_context: tracingContext } : {}),
           }),
         ),
       );
@@ -2977,6 +3084,7 @@ export class Session<OutputT = string, Context = unknown> {
               if (call.run !== current) continue;
               if (keys.has(key) && this.manualCurrent(call.event)) continue;
               call.grant.deactivate();
+              call.tracing = undefined;
               this.manualCalls.delete(key);
               removed = true;
             }
@@ -3116,8 +3224,9 @@ export class Session<OutputT = string, Context = unknown> {
     outputOverride = false,
     selection?: OperationSelection,
     callerSignal?: AbortSignal,
-    parentTrace = this.options.parentTrace,
+    tracing?: TraceOptions,
     writableRoots?: readonly string[],
+    parentTrace = this.options.parentTrace,
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -3137,11 +3246,25 @@ export class Session<OutputT = string, Context = unknown> {
     submissions.get(run)!.callerSignal =
       callerSignal ?? this.options.selectedModel?.callerSignal;
     run.selection = selection;
+    run.tracing = this.captureRootTracing(tracing);
     this.dispatchStart(
       run,
       typeof input === 'string' ? [{ type: 'text', text: input }] : input,
     );
     return run;
+  }
+
+  private captureRootTracing(options?: TraceOptions): TraceCapture | undefined {
+    return captureTracing(options, this.options.tracingCapture);
+  }
+
+  private async tracingContext(run: NativeTurn): Promise<string> {
+    try {
+      return await run.tracing!.context();
+    } catch (error) {
+      submissions.get(run)!.tracingAdmissionFailed = true;
+      throw error;
+    }
   }
 
   private dispatchStart(run: NativeTurn, parts: JsonValue[]): void {
@@ -3177,7 +3300,18 @@ export class Session<OutputT = string, Context = unknown> {
     this.manualCheckpointRun = run;
     this.dispatchRun(
       run,
-      () => this.#native._submit(wire),
+      () => {
+        if (!run.tracing) return this.#native._submit(wire);
+        return this.tracingContext(run).then((context) => {
+          if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
+            throw new TurnAborted(
+              'Tracing admission stopped before native submission',
+            );
+          return this.#native._submit(
+            JSON.stringify({ ...JSON.parse(wire), tracing_context: context }),
+          );
+        });
+      },
       this.hasOperationMcp,
     );
   }
@@ -3190,6 +3324,19 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Local storage does not support output repair');
     const run = new NativeTurn(() => this.assertCanWait(run));
     submissions.set(run, { output, outputOverride, observation: 'open' });
+    void run.completion.promise.then(
+      () => run.tracing?.finish(),
+      (error: unknown) =>
+        run.tracing?.finish(
+          error ?? null,
+          error instanceof TurnAborted,
+          error instanceof OutputValidationError
+            ? 'validation_error'
+            : error instanceof NativeError
+              ? 'provider_error'
+              : 'operation_error',
+        ),
+    );
     this.submissionIds.set(run, randomUUID());
     this.registerRequestObservationRoute(run);
     return run;
@@ -3205,14 +3352,30 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private begin(
-    submit: (run: NativeTurn) => Promise<string>,
+    submit: (run: NativeTurn, tracingContext?: string) => Promise<string>,
     output = this.defaultOutput,
     outputOverride = false,
     selection?: OperationSelection,
+    tracing?: TraceOptions,
+    continuedFrom?: NativeTurn,
   ): NativeTurn {
     const run = this.allocateRun(output, outputOverride);
     run.selection = selection;
-    this.dispatchRun(run, () => submit(run));
+    // A retained continuation is the same admitted operation, not a new root.
+    run.tracing = continuedFrom
+      ? continuedFrom.tracing
+      : this.captureRootTracing(tracing);
+    if (continuedFrom) continuedFrom.tracing = undefined;
+    this.dispatchRun(run, () => {
+      if (!run.tracing) return submit(run);
+      return this.tracingContext(run).then((context) => {
+        if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
+          throw new TurnAborted(
+            'Tracing admission stopped before native submission',
+          );
+        return submit(run, context);
+      });
+    });
     return run;
   }
 
@@ -3272,10 +3435,11 @@ export class Session<OutputT = string, Context = unknown> {
           // _submit reserves InvalidArg for native guards before Core
           // dispatch. Receipt decoding failures require retiring the Session.
           rejectedBeforeAdmission =
-            error instanceof Error &&
-            'code' in error &&
-            error.code === 'InvalidArg' &&
-            !activateMcp;
+            submissions.get(run)!.tracingAdmissionFailed === true ||
+            (error instanceof Error &&
+              'code' in error &&
+              error.code === 'InvalidArg' &&
+              !activateMcp);
           throw error;
         },
       )
@@ -3352,7 +3516,11 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         this.decodedOutputs.set(
           run,
-          await this.repairOutput(run, repair, output),
+          await (run.tracing
+            ? run.tracing.run('host.output_repair', 'validation', () =>
+                this.repairOutput(run, repair, output),
+              )
+            : this.repairOutput(run, repair, output)),
         );
       } catch (error) {
         failure = run.failure ?? error;
@@ -3576,7 +3744,12 @@ export class Session<OutputT = string, Context = unknown> {
       !this.decodedOutputs.has(run)
     ) {
       try {
-        this.decodedOutputs.set(run, submission.output.parse(output));
+        this.decodedOutputs.set(
+          run,
+          run.tracing
+            ? run.tracing.validate(() => submission.output.parse!(output))
+            : submission.output.parse(output),
+        );
       } catch (cause) {
         if (
           cause instanceof OutputValidationError &&
@@ -3626,9 +3799,10 @@ export class Session<OutputT = string, Context = unknown> {
         // Native still decides admission from the exact managed Turn, never from
         // this event hint. Input is already in history and is not resubmitted.
         const next = this.begin(
-          (nextRun) =>
+          (nextRun, tracingContext) =>
             this.#native._submit(
               encode({
+                ...(tracingContext ? { tracing_context: tracingContext } : {}),
                 input: [],
                 mode: 'continue_if_idle',
                 ...(run.parentTrace
@@ -3648,6 +3822,8 @@ export class Session<OutputT = string, Context = unknown> {
           submission.output,
           submission.outputOverride,
           run.selection,
+          undefined,
+          run,
         );
         next.parentTrace = run.parentTrace;
         submission.next = next;
@@ -3878,6 +4054,36 @@ export class Session<OutputT = string, Context = unknown> {
     return owner;
   }
 
+  private workflowForTrace(
+    traceId: string,
+    workflowSpanId: string,
+  ): TraceSpan | undefined {
+    const current =
+      this.lifecycle.kind === 'turn'
+        ? this.lifecycle.run.tracing?.workflow
+        : this.lastRun?.tracing?.workflow;
+    if (
+      current?.context.traceId === traceId &&
+      current.context.spanId === workflowSpanId
+    )
+      return current;
+    // Issued turns already retain exact result owners, including completed and
+    // retained steps. A child may first reach JS after a later root starts.
+    for (const run of this.issuedRuns.values()) {
+      const workflow = (run.issuedTracing ?? run.tracing)?.workflow;
+      if (
+        workflow?.context.traceId === traceId &&
+        workflow.context.spanId === workflowSpanId
+      )
+        return workflow;
+    }
+    const opening = this.options.tracingCapture?.workflow;
+    return opening?.context.traceId === traceId &&
+      opening.context.spanId === workflowSpanId
+      ? opening
+      : undefined;
+  }
+
   private processChild(
     event: NativeEvent,
     native: NativeThread,
@@ -4085,9 +4291,7 @@ export class Session<OutputT = string, Context = unknown> {
     ) {
       if (owner.observationProducer !== producer || this.#native !== native)
         return;
-      void this.trackOwnedCallback(owner, () =>
-        this.admitNativeQuestion(owner, event),
-      ).catch(() => {});
+      void this.trackNativeQuestion(owner, event).catch(() => {});
       return;
     }
     if (!requestTypes.has(msg.type)) return;
@@ -4328,11 +4532,7 @@ export class Session<OutputT = string, Context = unknown> {
         'elicitation_request',
       ].includes(kind)
     ) {
-      this.track(
-        run,
-        this.admitNativeQuestion(run, event),
-        run.toolInvocations,
-      );
+      void this.trackNativeQuestion(run, event).catch(() => {});
       return;
     }
     if (kind === '_sdk_select_step') {
@@ -4645,6 +4845,7 @@ export class Session<OutputT = string, Context = unknown> {
         }
       },
       signal,
+      typeof msg.tracing_context === 'string' ? msg.tracing_context : undefined,
     );
   }
 
@@ -4735,7 +4936,15 @@ export class Session<OutputT = string, Context = unknown> {
         if (!native._check_step(encode(receipt))) return;
         signal.throwIfAborted();
         capturedSelection.stepIndex++;
-        const selected = await beforeStep(context);
+        const selected = await withNativeCallbackContext(
+          typeof event.msg.tracing_context === 'string'
+            ? event.msg.tracing_context
+            : undefined,
+          () => beforeStep(context),
+          signal,
+          (traceId, workflowSpanId) =>
+            this.workflowForTrace(traceId, workflowSpanId),
+        );
         signal.throwIfAborted();
         if (
           !this.current(owner) ||
@@ -4821,22 +5030,44 @@ export class Session<OutputT = string, Context = unknown> {
     run: NativeTurn,
     callId: string,
     callback: () => Promise<void>,
+    tracingContext?: string,
   ): Promise<void> {
     if (run.toolCallIds.has(callId))
       return Promise.reject(new NativeError('Native tool call ID was reused'));
     run.toolCallIds.add(callId);
-    return this.invokeCallback(run, callback);
+    return this.invokeCallback(
+      run,
+      callback,
+      run.controller.signal,
+      tracingContext,
+    );
   }
 
   private invokeCallback(
     run: NativeTurn,
     callback: () => Promise<void>,
     signal: AbortSignal = run.controller.signal,
+    tracingContext?: string,
   ): Promise<void> {
     const scope = { session: this, run, active: true };
+    const tracing = run.tracing ?? run.issuedTracing;
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
-      .then(() => toolInvocation.run(scope, callback))
+      .then(() =>
+        toolInvocation.run(scope, () =>
+          tracingContext !== undefined
+            ? withNativeCallbackContext(
+                tracingContext,
+                callback,
+                signal,
+                (traceId, workflowSpanId) =>
+                  this.workflowForTrace(traceId, workflowSpanId),
+              )
+            : tracing
+              ? tracing.run('host.callback', 'callback', callback)
+              : callback(),
+        ),
+      )
       .catch((error) => {
         const callerSignal = submissions.get(this.rootRun(run))?.callerSignal;
         if (
@@ -4905,6 +5136,7 @@ export class Session<OutputT = string, Context = unknown> {
     for (const [key, call] of this.manualCalls) {
       if (run ? call.run !== run : this.current(call.run)) continue;
       call.grant.deactivate();
+      call.tracing = undefined;
       this.manualCalls.delete(key);
       removed = true;
     }
@@ -5036,6 +5268,7 @@ export class Session<OutputT = string, Context = unknown> {
           event,
           tool,
           grant,
+          tracing: getCurrentSpan(),
           identity,
           ready: false,
         });
@@ -5058,7 +5291,11 @@ export class Session<OutputT = string, Context = unknown> {
         throw error;
       }
     };
-    const admission = this.trackOwnedCallback(run, invoke);
+    const admission = this.trackOwnedCallback(
+      run,
+      invoke,
+      typeof msg.tracing_context === 'string' ? msg.tracing_context : undefined,
+    );
     void admission.then(reservation.resolve, reservation.reject).finally(() => {
       if (this.manualAdmissions.get(key) === reservation.promise)
         this.manualAdmissions.delete(key);
@@ -5105,35 +5342,44 @@ export class Session<OutputT = string, Context = unknown> {
           run,
           JSON.stringify(['one-shot-manual', key]),
           answer,
+          typeof event.msg.tracing_context === 'string'
+            ? event.msg.tracing_context
+            : undefined,
         );
         // Do not hold Core's model-completion callbacks; termination aborts
         // entered handlers before joining them.
         this.track(run, invocation, run.toolInvocations);
       } else {
-        this.trackOwnedCallback(run, async () => {
-          try {
-            await answer();
-          } catch (error) {
-            if (
-              !run.controller.signal.aborted ||
-              error !== run.controller.signal.reason
-            ) {
-              if (this.current(root) && root.failure === undefined) {
-                root.failure = error;
-                // Child cleanup is joined by close, never from the callback
-                // that close itself must drain.
-                toolInvocation.exit(() => {
-                  void this.#cancel(root).catch((cause) =>
-                    this.readerFailed(cause),
-                  );
-                });
-              } else if (error !== root.failure) {
-                this.oneShotChildCleanupErrors.push(error);
+        this.trackOwnedCallback(
+          run,
+          async () => {
+            try {
+              await answer();
+            } catch (error) {
+              if (
+                !run.controller.signal.aborted ||
+                error !== run.controller.signal.reason
+              ) {
+                if (this.current(root) && root.failure === undefined) {
+                  root.failure = error;
+                  // Child cleanup is joined by close, never from the callback
+                  // that close itself must drain.
+                  toolInvocation.exit(() => {
+                    void this.#cancel(root).catch((cause) =>
+                      this.readerFailed(cause),
+                    );
+                  });
+                } else if (error !== root.failure) {
+                  this.oneShotChildCleanupErrors.push(error);
+                }
               }
+              throw error;
             }
-            throw error;
-          }
-        });
+          },
+          typeof event.msg.tracing_context === 'string'
+            ? event.msg.tracing_context
+            : undefined,
+        );
       }
       return;
     }
@@ -5152,7 +5398,11 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<boolean> {
     for (const [key, call] of this.manualCalls) {
       if (expectedKey !== undefined && key !== expectedKey) continue;
-      const output = call.grant.takeReply(reply, beforeConsume);
+      if (!call.grant.matchesReply(reply)) continue;
+      const validate = () => call.grant.takeReply(reply, beforeConsume);
+      const output = call.tracing
+        ? call.tracing.validate(validate)
+        : withoutTracing(validate);
       if (!output) continue;
       // A taken grant is unavailable before its native reply and end hook
       // settle. An explicit save may keep waiting on other grants in this run.
@@ -5173,6 +5423,7 @@ export class Session<OutputT = string, Context = unknown> {
             encodeReceipt({ request: call.event.msg, response: output }),
           );
         }
+        call.tracing = undefined;
         this.manualCalls.delete(key);
         this.notifyManualProgress();
         this.observeToolEnd(
@@ -5201,6 +5452,16 @@ export class Session<OutputT = string, Context = unknown> {
         this.manualRestoring = false;
         try {
           const schema = submissions.get(run)!.output.schema;
+          const tracingContext = run.tracing
+            ? await run.tracing.context()
+            : undefined;
+          if (
+            tracingContext &&
+            (!this.current(run) || run.controller.signal.aborted)
+          )
+            throw new TurnAborted(
+              'Manual continuation stopped before native admission',
+            );
           const wire = await this.#native._complete_manual_continuation(
             schema == null ? undefined : encodeReceipt(schema),
             run.selection
@@ -5213,6 +5474,7 @@ export class Session<OutputT = string, Context = unknown> {
             this.options.parentTrace
               ? encode(this.options.parentTrace.toHeaders())
               : undefined,
+            tracingContext,
             this.submissionIds.get(run)!,
           );
           const submission = decode(submissionSchema, wire);
@@ -5566,13 +5828,30 @@ export class Session<OutputT = string, Context = unknown> {
   /** @internal Restore original pending calls with new native and JavaScript reply authority. */
   async _restoreManualContinuation(state: ManualSessionState): Promise<void> {
     this.idle('restore manual continuation');
-    const requests = decode(
-      z.array(jsonObject),
-      await this.#native._restore_manual_continuation(
-        encodeReceipt(state.manual_continuation),
-      ),
+    const tracing = this.captureRootTracing();
+    let requests: JsonObject[];
+    try {
+      const context = tracing ? await tracing.context() : undefined;
+      requests = decode(
+        z.array(jsonObject),
+        await this.#native._restore_manual_continuation(
+          encodeReceipt(state.manual_continuation),
+          context,
+        ),
+      );
+    } catch (error) {
+      tracing?.finish(error ?? null);
+      throw error;
+    }
+    const restoredOutput = this.options.restoredOutput ?? {
+      output: this.defaultOutput,
+      outputOverride: false,
+    };
+    const run = this.allocateRun(
+      restoredOutput.output,
+      restoredOutput.outputOverride,
     );
-    const run = new NativeTurn(() => this.assertCanWait(run));
+    run.tracing = tracing;
 
     run.parentTrace = this.options.parentTrace;
     run.id = state.manual_continuation.turn_id;
@@ -5593,15 +5872,6 @@ export class Session<OutputT = string, Context = unknown> {
         generation: this.catalog.generation,
         stepIndex: 0,
       };
-    submissions.set(run, {
-      ...(this.options.restoredOutput ?? {
-        output: this.defaultOutput,
-        outputOverride: false,
-      }),
-      observation: 'open',
-    });
-    this.submissionIds.set(run, randomUUID());
-    this.registerRequestObservationRoute(run);
     this.#turnFor(run);
     run.accepted.resolve({ status: 'started', turn_id: run.id });
     const usage = state.manual_context.usage;
@@ -5690,7 +5960,7 @@ export class Session<OutputT = string, Context = unknown> {
         family: 'function',
       };
       this.observeToolStart(owner, identity);
-      let status: ToolStatus = 'failed';
+      let status: ToolStatus | undefined;
       try {
         const args =
           typeof msg.arguments === 'string'
@@ -5721,7 +5991,10 @@ export class Session<OutputT = string, Context = unknown> {
             this.#native._check_python_tool(encodeReceipt(msg));
           },
         );
-        if (!this.current(owner)) return;
+        if (!this.current(owner)) {
+          status = 'cancelled';
+          return;
+        }
         this.#native._check_python_tool(encodeReceipt(msg));
         const accepted = await this.#native._respond_python_tool(
           encodeReceipt({
@@ -5729,23 +6002,37 @@ export class Session<OutputT = string, Context = unknown> {
             response,
           }),
         );
-        status = accepted
-          ? response.success
-            ? 'completed'
-            : 'failed'
-          : 'cancelled';
         if (accepted && root)
           this.options.selectedModel?.toolResult?.(
             context.callId,
             tool.name,
             response,
           );
+        status = accepted
+          ? response.success
+            ? 'completed'
+            : 'failed'
+          : 'cancelled';
       } finally {
-        this.observeToolEnd(
-          owner,
-          identity,
-          owner.controller.signal.aborted ? 'cancelled' : status,
-        );
+        const finalStatus = owner.controller.signal.aborted
+          ? 'cancelled'
+          : status;
+        if (finalStatus !== undefined)
+          getCurrentSpan()?.end({
+            status:
+              finalStatus === 'cancelled'
+                ? 'cancelled'
+                : finalStatus === 'failed'
+                  ? 'error'
+                  : 'ok',
+            category:
+              finalStatus === 'cancelled'
+                ? 'cancelled'
+                : finalStatus === 'failed'
+                  ? 'tool_error'
+                  : undefined,
+          });
+        this.observeToolEnd(owner, identity, finalStatus ?? 'failed');
       }
     };
     if (root)
@@ -5757,8 +6044,20 @@ export class Session<OutputT = string, Context = unknown> {
           msg.callId,
         ]),
         execute,
+        typeof msg.tracing_context === 'string'
+          ? msg.tracing_context
+          : undefined,
       );
-    else await execute();
+    else
+      await withNativeCallbackContext(
+        typeof msg.tracing_context === 'string'
+          ? msg.tracing_context
+          : undefined,
+        execute,
+        owner.controller.signal,
+        (traceId, workflowSpanId) =>
+          this.workflowForTrace(traceId, workflowSpanId),
+      );
   }
 
   private async childSubmission(
@@ -6750,13 +7049,19 @@ export class Session<OutputT = string, Context = unknown> {
     await this.beginCompaction().wait();
   }
 
-  private beginCompaction(): NativeTurn {
+  private beginCompaction(tracing?: TraceOptions): NativeTurn {
     const previous = this.lastRun;
     const parentTrace = this.options.parentTrace;
-    const run = this.begin(() =>
-      this.#native._compact(
-        parentTrace ? encode(parentTrace.toHeaders()) : null,
-      ),
+    const run = this.begin(
+      (_run, context) =>
+        this.#native._compact(
+          parentTrace ? encode(parentTrace.toHeaders()) : null,
+          context,
+        ),
+      undefined,
+      false,
+      undefined,
+      tracing,
     );
     run.parentTrace = parentTrace;
     this.lastRun = previous;
@@ -6764,14 +7069,17 @@ export class Session<OutputT = string, Context = unknown> {
     return run;
   }
   /** Execute a canonical embedded command using its native operation. */
-  async executeCommand(input: string): Promise<EmbeddedCommandResult> {
+  async executeCommand(
+    input: string,
+    options?: Pick<OperationOptions<Context>, 'tracing'>,
+  ): Promise<EmbeddedCommandResult> {
     this.checkCallbackOperation('execute a command on');
     const command = parseEmbeddedCommand(input);
     if (!this.isOpen || this.manualSealing || this.manualSealed)
       throw new NativeError('Commands require a healthy open Session');
     if (command.name === 'compact') {
       this.idle('compact');
-      const run = this.beginCompaction();
+      const run = this.beginCompaction(options?.tracing);
       await afterSubmissionRetirement(run, run.accepted.promise);
       return Object.freeze({
         command: 'compact',
@@ -6787,14 +7095,17 @@ export class Session<OutputT = string, Context = unknown> {
         );
       const parentTrace = this.options.parentTrace;
       const run = this.begin(
-        () =>
+        (_run, context) =>
           native._execute_command(
             'review',
             command.arguments,
             parentTrace ? encode(parentTrace.toHeaders()) : null,
+            context,
           ),
         prepareOutput(undefined),
         true,
+        undefined,
+        options?.tracing,
       );
       run.parentTrace = parentTrace;
       submissions.get(run)!.review = true;
@@ -7621,12 +7932,14 @@ export class Session<OutputT = string, Context = unknown> {
     while (this.isOpen && this.#native === native) {
       const raw = parseNative(await native._next_native_mcp_result());
       if (!this.isOpen || this.#native !== native || raw === null) return;
-      const { incarnation, ...notice } = nativeMcpResultInfoSchema
-        .extend({
-          incarnation: z.string().nullable().optional(),
-          generation: z.string().optional(),
-        })
-        .parse(raw);
+      const { incarnation, tracing_context, ...notice } =
+        nativeMcpResultInfoSchema
+          .extend({
+            incarnation: z.string().nullable().optional(),
+            generation: z.string().optional(),
+            tracing_context: z.string().optional(),
+          })
+          .parse(raw);
       const owner = this.callbackOwner(
         notice.thread_id,
         incarnation,
@@ -7642,7 +7955,7 @@ export class Session<OutputT = string, Context = unknown> {
         native._release_native_mcp_result(notice.nonce);
         continue;
       }
-      this.trackOwnedCallback(owner, async () => {
+      const callback = async () => {
         try {
           if (owner instanceof NativeTurn) await owner.accepted.promise;
           if (
@@ -7655,15 +7968,39 @@ export class Session<OutputT = string, Context = unknown> {
             )
           )
             return;
-          const response = await transformMcpResult(
-            this.mcpTools,
-            this.mcpGeneration,
-            this.options.context,
-            owner instanceof NativeTurn
-              ? this.#turnFor(owner)
-              : await this.childSubmission(owner),
-            { ...notice, generation: notice.generation ?? '' },
-          );
+          const transform = async () =>
+            transformMcpResult(
+              this.mcpTools,
+              this.mcpGeneration,
+              this.options.context,
+              owner instanceof NativeTurn
+                ? this.#turnFor(owner)
+                : await this.childSubmission(owner),
+              { ...notice, generation: notice.generation ?? '' },
+            );
+          let response: unknown;
+          if (owner instanceof NativeTurn && tracing_context !== undefined) {
+            await this.invokeCallback(
+              owner,
+              async () => {
+                try {
+                  response = await transform();
+                } catch {
+                  throw new NativeError('Native MCP result policy failed');
+                }
+              },
+              owner.controller.signal,
+              tracing_context,
+            );
+          } else {
+            response = await withNativeCallbackContext(
+              tracing_context,
+              transform,
+              owner.controller.signal,
+              (traceId, workflowSpanId) =>
+                this.workflowForTrace(traceId, workflowSpanId),
+            );
+          }
           if (this.current(owner)) {
             native._resolve_native_mcp_result(
               notice.nonce,
@@ -7692,7 +8029,13 @@ export class Session<OutputT = string, Context = unknown> {
             native._release_native_mcp_result(notice.nonce);
           }
         }
-      });
+      };
+      if (owner instanceof NativeTurn && tracing_context !== undefined) {
+        const pending = Promise.resolve().then(callback);
+        this.track(owner, pending, owner.toolInvocations);
+      } else {
+        this.trackOwnedCallback(owner, callback);
+      }
     }
   }
   private callbackOwner(
@@ -7725,9 +8068,15 @@ export class Session<OutputT = string, Context = unknown> {
   private trackOwnedCallback(
     owner: NativeTurn | ChildCallbackOwner,
     callback: () => Promise<void>,
+    tracingContext?: string,
   ): Promise<void> {
     if (owner instanceof NativeTurn) {
-      const pending = this.invokeCallback(owner, callback);
+      const pending = this.invokeCallback(
+        owner,
+        callback,
+        owner.controller.signal,
+        tracingContext,
+      );
       this.track(owner, pending);
       return pending;
     } else {
@@ -7738,7 +8087,15 @@ export class Session<OutputT = string, Context = unknown> {
         async () => {
           const scope = { session: this, child: owner, active: true };
           try {
-            await toolInvocation.run(scope, callback);
+            await toolInvocation.run(scope, () =>
+              withNativeCallbackContext(
+                tracingContext,
+                callback,
+                owner.controller.signal,
+                (traceId, workflowSpanId) =>
+                  this.workflowForTrace(traceId, workflowSpanId),
+              ),
+            );
             pending.resolve();
           } catch (error) {
             pending.reject(error);
@@ -8208,6 +8565,10 @@ export class Session<OutputT = string, Context = unknown> {
               // An abort-ignoring callback can return normally, after which
               // the SDK throws its supplied signal reason. That is a stop,
               // not an application failure or a reason to cancel a successor.
+              getCurrentSpan()?.end({
+                status: signal.aborted ? 'cancelled' : 'error',
+                category: signal.aborted ? 'cancelled' : 'callback_error',
+              });
               if (expectedCancellation(cause)) return;
               const cleanupFailure =
                 signal.aborted || (lease !== undefined && !this.current(owner));
@@ -8242,10 +8603,14 @@ export class Session<OutputT = string, Context = unknown> {
             }
           }
         };
+        const tracingContext =
+          typeof request?.tracing_context === 'string'
+            ? request.tracing_context
+            : undefined;
         const task: Promise<void> =
           lease && lease.run instanceof NativeTurn
-            ? this.invokeCallback(lease.run, callback, signal)
-            : this.trackOwnedCallback(owner, callback);
+            ? this.invokeCallback(lease.run, callback, signal, tracingContext)
+            : this.trackOwnedCallback(owner, callback, tracingContext);
         if (lease && lease.run instanceof NativeTurn) {
           // A native cell outlives normal root completion. Its reader owns
           // cleanup; the ordinary run result must not wait for this callback.
@@ -8323,6 +8688,13 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.starting)
       this.failStartup(new TurnAborted('Session closed while opening'));
     const done = Promise.withResolvers<void>();
+    const tracingCapture = this.options.tracingCapture;
+    void done.promise
+      .then(
+        () => tracingCapture?.finish(),
+        (error: unknown) => tracingCapture?.finish(error ?? null),
+      )
+      .catch(() => {});
     const run =
       state.kind === 'turn' || state.kind === 'retired' ? state.run : undefined;
     if (run && submissions.get(run)!.observation !== 'ended')
@@ -8529,36 +8901,51 @@ export class Session<OutputT = string, Context = unknown> {
         phase = 'provider';
       }
       if (phase === 'provider') {
-        if (!this.environmentDisposalFinished) {
-          try {
-            await this.options.environmentOwner?.dispose(async (dispose) => {
-              const scope = { session: this, active: true };
-              try {
-                await toolInvocation.run(scope, dispose);
-              } finally {
-                scope.active = false;
-              }
-            });
-          } catch (error) {
-            // Automatic source retirement may have no current waiter. Keep its
-            // failed close joinable after all remaining owners have retired.
-            this.environmentCloseFailure ??= done.promise;
-            acknowledgmentFailure = new NativeError(
-              'Environment lease cleanup failed',
-              {
-                cause: acknowledgmentFailure
-                  ? new AggregateError(
-                      [acknowledgmentFailure, error],
-                      'Session and environment cleanup failed',
-                    )
-                  : error,
-              },
-            );
-          } finally {
-            this.environmentDisposalFinished = true;
+        try {
+          if (!this.environmentDisposalFinished) {
+            try {
+              await this.options.environmentOwner?.dispose(async (dispose) => {
+                const scope = { session: this, active: true };
+                try {
+                  await toolInvocation.run(scope, dispose);
+                } finally {
+                  scope.active = false;
+                }
+              });
+            } catch (error) {
+              // Automatic source retirement may have no current waiter. Keep its
+              // failed close joinable after all remaining owners have retired.
+              this.environmentCloseFailure ??= done.promise;
+              acknowledgmentFailure = new NativeError(
+                'Environment lease cleanup failed',
+                {
+                  cause: acknowledgmentFailure
+                    ? new AggregateError(
+                        [acknowledgmentFailure, error],
+                        'Session and environment cleanup failed',
+                      )
+                    : error,
+                },
+              );
+            } finally {
+              this.environmentDisposalFinished = true;
+            }
+          }
+          await this.options.onClose?.();
+        } finally {
+          // Native, readers and child callbacks have joined; late discovery is now impossible.
+          this.options.tracingCapture = undefined;
+          for (const owned of [
+            run,
+            this.lastRun,
+            ...this.issuedRuns.values(),
+          ]) {
+            if (owned) {
+              owned.tracing = undefined;
+              owned.issuedTracing = undefined;
+            }
           }
         }
-        await this.options.onClose?.();
       }
       this.observations.finish('closed');
       if (run) this.finishObservation(run);
