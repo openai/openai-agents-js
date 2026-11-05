@@ -13,7 +13,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { handleRefundRequest } from './server/backendAgent.action';
-import { getToken } from './server/token.action';
+import { getToken } from './token';
 import { App } from '@/components/App';
 import { hostedMcpTool } from '@openai/agents/classic';
 import { CameraCapture } from '@/components/CameraCapture';
@@ -164,7 +164,10 @@ export default function Home() {
       session.current?.close();
       setIsConnected(false);
     } else {
-      const token = await getToken();
+      const token = getToken();
+      if (!token) {
+        return;
+      }
       try {
         await session.current?.connect({
           apiKey: token,

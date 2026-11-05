@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import { WavRecorder, WavStreamPlayer } from 'wavtools';
 import { handleRefundRequest } from '../server/backendAgent.action';
-import { getToken } from '../server/token.action';
+import { getToken } from '../token';
 import { App } from '@/components/App';
 import { hostedMcpTool } from '@openai/agents/classic';
 import { CameraCapture } from '@/components/CameraCapture';
@@ -237,11 +237,14 @@ export default function Home() {
         setIsConnected(false);
       }
     } else {
+      const token = getToken();
+      if (!token) {
+        return;
+      }
       const activePlayer =
         player.current ?? new WavStreamPlayer({ sampleRate: 24000 });
       player.current = activePlayer;
       await activePlayer.connect();
-      const token = await getToken();
       await session.current?.connect({
         apiKey: token,
       });

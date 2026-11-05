@@ -286,10 +286,6 @@ export class CloudflareSandboxSession implements SandboxSession<CloudflareSandbo
         url: buildCloudflarePtyWebSocketUrl(this.state),
         providerName: 'CloudflareSandboxClient',
         headers: buildCloudflarePtyWebSocketHeaders(this.apiKey),
-        headersUnsupportedUrl: buildCloudflarePtyWebSocketUrl(
-          this.state,
-          this.apiKey,
-        ),
         configure: (pendingSocket) => {
           removeMessageListener = addPtyWebSocketListener(
             pendingSocket,
@@ -1486,16 +1482,12 @@ async function fetchWithOptionalTimeout(
 
 function buildCloudflarePtyWebSocketUrl(
   state: CloudflareSandboxSessionState,
-  apiKey?: string,
 ): string {
   const base = state.workerUrl.replace(/\/$/u, '');
   const wsBase = base.replace(/^https:/u, 'wss:').replace(/^http:/u, 'ws:');
   const url = new URL(`${wsBase}/v1/sandbox/${state.sandboxId}/pty`);
   url.searchParams.set('cols', '80');
   url.searchParams.set('rows', '24');
-  if (apiKey) {
-    url.searchParams.set('authorization', `Bearer ${apiKey}`);
-  }
   return url.toString();
 }
 

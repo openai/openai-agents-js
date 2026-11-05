@@ -8,6 +8,7 @@ import {
   readFile,
   realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -68,6 +69,52 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() !== 0)(
       await session?.close();
       if (root) await rm(root, { recursive: true, force: true });
     });
+
+    it.each(['materializeEntry', 'applyManifest'] as const)(
+      'transfers a new local mount source to runAs during %s without following child symlinks',
+      async (entryPoint) => {
+        const source = join(root, 'ownership-source');
+        const file = join(source, 'note.txt');
+        const outsideFile = join(root, 'outside.txt');
+        await mkdir(source, { mode: 0o700 });
+        await writeFile(file, 'mounted\n', { mode: 0o600 });
+        await writeFile(outsideFile, 'private\n', { mode: 0o600 });
+        await symlink(outsideFile, join(source, 'link.txt'));
+        const entry = {
+          type: 'mount' as const,
+          source,
+          mountPath: '/workspace/effective-mount',
+          readOnly: false,
+          mountStrategy: { type: 'local_bind' as const },
+        };
+
+        if (entryPoint === 'materializeEntry') {
+          await session.materializeEntry({
+            path: 'mount-declaration',
+            entry,
+            runAs: 'nobody',
+          });
+        } else {
+          await session.applyManifest(
+            new Manifest({ entries: { 'mount-declaration': entry } }),
+            'nobody',
+          );
+        }
+
+        expect(await stat(source)).toMatchObject({ uid, gid });
+        expect(await stat(file)).toMatchObject({ uid, gid });
+        expect(await stat(outsideFile)).toMatchObject({ uid: 0 });
+        expect((await lstat(join(source, 'link.txt'))).isSymbolicLink()).toBe(
+          true,
+        );
+        expect(
+          await session.readFile({
+            path: 'effective-mount/note.txt',
+            runAs: 'nobody',
+          }),
+        ).toEqual(Buffer.from('mounted\n'));
+      },
+    );
 
     it('reads an owner-only file as root and denies the same read as nobody', async () => {
       expect(
