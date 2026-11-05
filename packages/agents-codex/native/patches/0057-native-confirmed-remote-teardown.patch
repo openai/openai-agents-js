@@ -1,0 +1,1047 @@
+diff --git a/codex-rs/core-api/src/lib.rs b/codex-rs/core-api/src/lib.rs
+index 41792b1ee9c5b91e37310c57caeaa968c41fa871..b109bf950384d01e1ffce122567e561cff35d1d4 100644
+--- a/codex-rs/core-api/src/lib.rs
++++ b/codex-rs/core-api/src/lib.rs
+@@ -32,6 +32,7 @@ pub use codex_core::AgentTreeShutdown;
+ pub use codex_core::CodexAppsToolsCache;
+ pub use codex_core::CodexThread;
+ pub use codex_core::CodexThreadSettingsOverrides;
++pub use codex_core::ConfirmRemoteProcessTermination;
+ pub use codex_core::EnvironmentConfig;
+ pub use codex_core::EnvironmentMcpPolicy;
+ pub use codex_core::EnvironmentNetworkPolicy;
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index a7af5100a8f851a02c2a25c2d5b61eff71d62107..8870ad370e6533a8c69f39915fe44a9f1c0cba55 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -62,6 +62,7 @@ pub(crate) use self::runtime::AgentTreeMembership;
+ pub(crate) use self::runtime::AgentTreeShutdownState;
+ pub(crate) use self::runtime::AgentTreeTeardownGuard;
+ pub(crate) use self::runtime::LocalAgentRuntime;
++pub(crate) use self::runtime::RemoteProcessTerminationPolicy;
+ pub(crate) use self::watch::StatusSubscription;
+ 
+ mod api;
+diff --git a/codex-rs/core/src/agent/control/runtime.rs b/codex-rs/core/src/agent/control/runtime.rs
+index 4a37b39d14e72d099a3bd3c03230fdf3aaaeaa17..081e7ac250bf942a2348ca7cbded9b984757aab2 100644
+--- a/codex-rs/core/src/agent/control/runtime.rs
++++ b/codex-rs/core/src/agent/control/runtime.rs
+@@ -32,6 +32,7 @@ pub(crate) struct AgentTreeShutdownState {
+     tasks: TaskTracker,
+     failed: AtomicBool,
+     managed_process_shutdown_failed: AtomicBool,
++    remote_process_shutdown_failed: Arc<AtomicBool>,
+ }
+ 
+ impl AgentTreeShutdownState {
+@@ -39,6 +40,7 @@ impl AgentTreeShutdownState {
+         self.members.wait().await;
+         if self.failed.load(Ordering::Acquire)
+             || self.managed_process_shutdown_failed.load(Ordering::Acquire)
++            || self.remote_process_shutdown_failed.load(Ordering::Acquire)
+         {
+             return Err(CodexErr::Fatal(
+                 "agent tree shutdown did not complete cleanly".to_owned(),
+@@ -57,11 +59,51 @@ impl AgentTreeShutdownState {
+         Ok(())
+     }
+ 
++    pub(crate) async fn wait_for_process_shutdown(&self) -> CodexResult<()> {
++        self.wait_for_managed_process_shutdown().await?;
++        if self.remote_process_shutdown_failed.load(Ordering::Acquire) {
++            return Err(CodexErr::Fatal(
++                "A remote process termination attempt was not acknowledged".to_owned(),
++            ));
++        }
++        Ok(())
++    }
++
+     fn record_failure(&self) {
+         self.failed.store(true, Ordering::Release);
+     }
+ }
+ 
++/// Runtime-only process authority: per-thread health and the exact tree's operation ownership.
++#[derive(Clone)]
++pub(crate) struct RemoteProcessTerminationPolicy {
++    failed: Arc<AtomicBool>,
++    requests: TaskTracker,
++    tree: Arc<AgentTreeShutdownState>,
++}
++
++impl RemoteProcessTerminationPolicy {
++    pub(crate) fn failed(&self) -> bool {
++        self.failed.load(Ordering::Acquire)
++    }
++    pub(crate) fn record_failure(&self) {
++        self.failed.store(true, Ordering::Release);
++        self.tree
++            .remote_process_shutdown_failed
++            .store(true, Ordering::Release);
++    }
++    pub(crate) fn track(&self) -> TaskTrackerToken {
++        self.tree.members.token()
++    }
++    pub(crate) fn track_request(&self) -> TaskTrackerToken {
++        self.requests.token()
++    }
++    pub(crate) async fn wait_for_requests(&self) {
++        self.requests.close();
++        self.requests.wait().await;
++    }
++}
++
+ #[derive(Clone)]
+ pub(crate) struct AgentTreeMembership {
+     state: Arc<AgentTreeShutdownState>,
+@@ -250,6 +292,14 @@ impl LocalAgentRuntime {
+         self.shutdown_state.record_failure();
+     }
+ 
++    pub(crate) fn remote_process_termination_policy(&self) -> RemoteProcessTerminationPolicy {
++        RemoteProcessTerminationPolicy {
++            failed: Arc::new(AtomicBool::new(false)),
++            requests: TaskTracker::new(),
++            tree: Arc::clone(&self.shutdown_state),
++        }
++    }
++
+     pub(crate) fn record_managed_process_shutdown_failure(&self) {
+         self.shutdown_state
+             .managed_process_shutdown_failed
+diff --git a/codex-rs/core/src/agent/control/runtime_tests.rs b/codex-rs/core/src/agent/control/runtime_tests.rs
+index 23de453fd6955ce690bf79a0fc3bcdcd18dbc1ac..3b8779379bcdebebd93211c2461b3deff82286d1 100644
+--- a/codex-rs/core/src/agent/control/runtime_tests.rs
++++ b/codex-rs/core/src/agent/control/runtime_tests.rs
+@@ -79,3 +79,23 @@ async fn writer_shutdown_joins_tasks_without_waiting_for_session_membership() {
+         .await
+         .expect("session teardown finishes separately");
+ }
++
++#[tokio::test]
++async fn remote_cleanup_health_is_thread_scoped_and_tree_aggregated() {
++    let runtime = LocalAgentRuntime::new(Weak::default(), default_thread_id_generator(), None);
++    let first = runtime.remote_process_termination_policy();
++    let sibling = runtime.remote_process_termination_policy();
++    first.record_failure();
++    assert!(first.failed());
++    assert!(
++        !sibling.failed(),
++        "a sibling's exact interrupt is independent"
++    );
++    let tree = runtime.request_shutdown();
++    tree.wait_for_process_shutdown()
++        .await
++        .expect_err("owning tree retains remote failure");
++    tree.wait_for_managed_process_shutdown()
++        .await
++        .expect("remote failure does not broaden managed-local-only classification");
++}
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index d5df079cdae3dc8069901f2bc9fa02fabfd37e63..f9c5f8ebd2c85065f9d478c4b4cc3c5a86fc5670 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -237,6 +237,11 @@ pub struct BackgroundTerminalInfo {
+ #[derive(Clone, Debug)]
+ pub struct ManagedLocalExecCancelFailure(pub(crate) String);
+ 
++/// Runtime-only opt-in to acknowledged remote process cleanup during interruption and shutdown.
++/// Install in the thread extension store before the thread starts executing commands.
++#[derive(Clone, Copy, Debug, Default)]
++pub struct ConfirmRemoteProcessTermination;
++
+ /// Conduit for the bidirectional stream of messages that compose a thread
+ /// (formerly called a conversation) in Codex.
+ impl CodexThread {
+@@ -820,6 +825,14 @@ impl CodexThread {
+             .is_some_and(|failure| failure.0 == turn_id)
+     }
+ 
++    /// Read after the interrupt barrier or tree shutdown; failure is sticky across empty drains.
++    pub fn remote_process_termination_failed(&self) -> bool {
++        self.session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    }
++
+     pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
+         self.io.agent_status.clone()
+     }
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index ba7896a2533635a63324a2f58dd4724d9dcf125a..258b670961950f71e3a8dc29edb8a961158bdb6d 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -49,6 +49,7 @@ pub use codex_protocol::mcp_policy::EnvironmentMcpPolicy;
+ pub use codex_protocol::protocol::EnvironmentConfig;
+ pub use codex_thread::BackgroundTerminalInfo;
+ pub use codex_thread::CodexThread;
++pub use codex_thread::ConfirmRemoteProcessTermination;
+ pub use codex_thread::ManagedLocalExecCancelFailure;
+ pub use session::owned_turn_stop::OwnedTurnStop;
+ pub use session::owned_turn_stop::OwnedTurnTask;
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index ae32eac33a093d535792d4aa82d072dc089e09d0..f6fcf14f3e061609508353cb37d5315c8c5e7709 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -321,17 +321,9 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+     sess.hooks().shutdown().await;
+     sess.async_hook_results.close();
+     while sess.async_hook_results.try_recv().is_ok() {}
+-    if !sess
+-        .services
+-        .unified_exec_manager
+-        .terminate_all_processes()
+-        .await
+-    {
+-        sess.services
+-            .local_agent_runtime
+-            .record_managed_process_shutdown_failure();
+-        warn!("failed to confirm managed local command shutdown");
+-    }
++    // Use the same opted-in confirmation as interruption; an earlier drain can already
++    // have removed a process, so its failed acknowledgment must remain in tree health.
++    sess.close_unified_exec_processes().await;
+     if let Err(err) = sess.services.code_mode_service.shutdown().await {
+         sess.services.local_agent_runtime.record_shutdown_failure();
+         warn!("failed to shutdown code mode session: {err}");
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 6d8a9a49837f2054019683123a1199504ae16204..8f48e3c77a9a75b9b1c8ef41a5b3372ec77b7095 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -1718,6 +1718,9 @@ impl Session {
+                 mcp_handler_cache: Default::default(),
+                 unified_exec_manager: UnifiedExecProcessManager::new(
+                     config.background_terminal_max_timeout,
++                ).with_remote_confirmation(
++                    thread_extension_data.get::<crate::ConfirmRemoteProcessTermination>()
++                        .map(|_| local_agent_runtime.remote_process_termination_policy()),
+                 ),
+                 elicitations: crate::elicitation::ElicitationService::new(),
+                 shell_zsh_path: config.zsh_path.clone(),
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 8bec3ca115f621f9c8a94d5ead66760a6adfa43e..dc482d15bde61ff683f08ff4abf1c035480f3b9e 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -1029,12 +1029,29 @@ impl Session {
+     }
+ 
+     pub(crate) async fn close_unified_exec_processes(&self) {
+-        if !self
++        let checked = self
+             .services
+-            .unified_exec_manager
+-            .terminate_all_processes()
+-            .await
+-        {
++            .thread_extension_data
++            .get::<crate::ConfirmRemoteProcessTermination>()
++            .is_some();
++        let (local_acknowledged, _) = if checked {
++            self.services
++                .unified_exec_manager
++                .remote_confirmation_policy(&self.services.local_agent_runtime);
++            self.services
++                .unified_exec_manager
++                .terminate_all_processes_checked()
++                .await
++        } else {
++            (
++                self.services
++                    .unified_exec_manager
++                    .terminate_all_processes()
++                    .await,
++                true,
++            )
++        };
++        if !local_acknowledged {
+             self.services
+                 .local_agent_runtime
+                 .record_managed_process_shutdown_failure();
+diff --git a/codex-rs/core/src/thread_manager/shutdown.rs b/codex-rs/core/src/thread_manager/shutdown.rs
+index 9526a48b31f73a23870252d91c6e880dc5a4b633..bf0a0476899a8977377d96b918cf650e1c051f4a 100644
+--- a/codex-rs/core/src/thread_manager/shutdown.rs
++++ b/codex-rs/core/src/thread_manager/shutdown.rs
+@@ -47,6 +47,17 @@ impl ThreadManager {
+ }
+ 
+ impl CodexThread {
++    /// Shut down this exact tree and check acknowledged local and opted-in remote cleanup.
++    #[doc(hidden)]
++    pub async fn shutdown_agent_tree_and_check_processes(&self) -> CodexResult<()> {
++        self.session
++            .services
++            .local_agent_runtime
++            .request_shutdown()
++            .wait_for_process_shutdown()
++            .await
++    }
++
+     /// Shut down this handle's exact tree and report unconfirmed managed process cleanup.
+     #[doc(hidden)]
+     pub async fn shutdown_agent_tree_and_check_managed_processes(&self) -> CodexResult<()> {
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index 901c81c4beed3d9a9b9123e1ace1bc4197d71b69..997c7ad7354ff726d61519be1c84391dfcb51964 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -186,18 +186,47 @@ impl ProcessStore {
+ pub(crate) struct UnifiedExecProcessManager {
+     process_store: Mutex<ProcessStore>,
+     max_write_stdin_yield_time_ms: u64,
++    remote_confirmation: std::sync::OnceLock<crate::agent::control::RemoteProcessTerminationPolicy>,
+ }
+ 
+ impl UnifiedExecProcessManager {
+     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
+         Self {
+             process_store: Mutex::new(ProcessStore::default()),
++            remote_confirmation: std::sync::OnceLock::new(),
+             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
+                 .max(MIN_EMPTY_YIELD_TIME_MS),
+         }
+     }
+ }
+ 
++impl UnifiedExecProcessManager {
++    pub(crate) fn with_remote_confirmation(
++        self,
++        policy: Option<crate::agent::control::RemoteProcessTerminationPolicy>,
++    ) -> Self {
++        if let Some(policy) = policy {
++            let _ = self.remote_confirmation.set(policy);
++        }
++        self
++    }
++
++    pub(crate) fn remote_confirmation_policy(
++        &self,
++        runtime: &crate::agent::control::LocalAgentRuntime,
++    ) -> crate::agent::control::RemoteProcessTerminationPolicy {
++        self.remote_confirmation
++            .get_or_init(|| runtime.remote_process_termination_policy())
++            .clone()
++    }
++
++    pub(crate) fn remote_process_termination_failed(&self) -> bool {
++        self.remote_confirmation
++            .get()
++            .is_some_and(|policy| policy.failed())
++    }
++}
++
+ impl Default for UnifiedExecProcessManager {
+     fn default() -> Self {
+         Self::new(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS)
+diff --git a/codex-rs/core/src/unified_exec/process.rs b/codex-rs/core/src/unified_exec/process.rs
+index b129559570ddf741286c2dbcd5533e1737f8db25..cac8de4aa1fb03bafaba99eff7daa546d5c4ced0 100644
+--- a/codex-rs/core/src/unified_exec/process.rs
++++ b/codex-rs/core/src/unified_exec/process.rs
+@@ -19,6 +19,10 @@ use tokio::task::JoinHandle;
+ use tokio::time::Duration;
+ use tokio_util::sync::CancellationToken;
+ 
++use futures::FutureExt;
++use futures::future::BoxFuture;
++use futures::future::Shared;
++
+ use codex_exec_server::ExecProcess;
+ use codex_exec_server::ExecProcessEvent;
+ use codex_exec_server::ProcessSignal as ExecServerProcessSignal;
+@@ -114,10 +118,32 @@ struct LinuxSandboxCancellation {
+     exit_unconfirmed: AtomicBool,
+ }
+ 
+-/// Unified wrapper over directly spawned PTY sessions and exec-server-backed
+-/// processes.
++// Failure or cancellation stays failure after a process leaves the inventory.
++pub(super) struct RemoteTerminationAcknowledgment {
++    pub(super) policy: crate::agent::control::RemoteProcessTerminationPolicy,
++    pub(super) acknowledged: bool,
++    pub(super) _membership: Option<tokio_util::task::task_tracker::TaskTrackerToken>,
++    pub(super) _request: Option<tokio_util::task::task_tracker::TaskTrackerToken>,
++}
++
++impl Drop for RemoteTerminationAcknowledgment {
++    fn drop(&mut self) {
++        if !self.acknowledged {
++            self.policy.record_failure();
++        }
++    }
++}
++
++type RemoteTermination = Shared<BoxFuture<'static, Result<(), String>>>;
++
++/// Unified wrapper over directly spawned PTY sessions and exec-server-backed processes.
+ pub(crate) struct UnifiedExecProcess {
+     process_handle: ProcessHandle,
++    remote_confirmation: OnceLock<(
++        crate::agent::control::RemoteProcessTerminationPolicy,
++        tokio_util::task::task_tracker::TaskTrackerToken,
++    )>,
++    remote_termination: OnceLock<RemoteTermination>,
+     #[cfg(target_os = "linux")]
+     sandbox_cancel: Option<LinuxSandboxCancellation>,
+     #[cfg(target_os = "macos")]
+@@ -166,6 +192,8 @@ impl UnifiedExecProcess {
+ 
+         Self {
+             process_handle,
++            remote_confirmation: OnceLock::new(),
++            remote_termination: OnceLock::new(),
+             #[cfg(target_os = "linux")]
+             sandbox_cancel: None,
+             #[cfg(target_os = "macos")]
+@@ -271,6 +299,61 @@ impl UnifiedExecProcess {
+         }
+     }
+ 
++    pub(super) fn confirm_remote_termination(
++        &self,
++        policy: crate::agent::control::RemoteProcessTerminationPolicy,
++    ) {
++        self.remote_confirmation.get_or_init(|| {
++            let membership = policy.track();
++            (policy, membership)
++        });
++    }
++
++    fn remote_termination(&self, process: &Arc<dyn ExecProcess>) -> RemoteTermination {
++        self.remote_termination
++            .get_or_init(|| {
++                let process = Arc::clone(process);
++                let (policy, membership) = self
++                    .remote_confirmation
++                    .get()
++                    .expect("confirmed remote policy");
++                let membership = membership.clone();
++                let request = policy.track_request();
++                let mut acknowledgment = RemoteTerminationAcknowledgment {
++                    policy: policy.clone(),
++                    acknowledged: false,
++                    _membership: Some(membership),
++                    _request: Some(request),
++                };
++                let task = tokio::spawn(async move {
++                    let result = process.terminate().await.map_err(|error| error.to_string());
++                    acknowledgment.acknowledged = result.is_ok();
++                    drop(acknowledgment);
++                    result
++                });
++                async move { task.await.map_err(|error| error.to_string())? }
++                    .boxed()
++                    .shared()
++            })
++            .clone()
++    }
++
++    async fn terminate_remote(
++        &self,
++        process: &Arc<dyn ExecProcess>,
++    ) -> Result<(), UnifiedExecError> {
++        if self.remote_confirmation.get().is_some() {
++            self.remote_termination(process)
++                .await
++                .map_err(UnifiedExecError::process_failed)
++        } else {
++            process
++                .terminate()
++                .await
++                .map_err(|error| UnifiedExecError::process_failed(error.to_string()))
++        }
++    }
++
+     pub(super) fn terminate(&self) {
+         match &self.process_handle {
+             ProcessHandle::Local(process_handle) => {
+@@ -285,10 +368,16 @@ impl UnifiedExecProcess {
+                 process_handle.terminate();
+             }
+             ProcessHandle::ExecServer(process_handle) => {
+-                let process_handle = Arc::clone(process_handle);
+-                tokio::spawn(async move {
+-                    let _ = process_handle.terminate().await;
+-                });
++                if self.remote_confirmation.get().is_some() {
++                    if !self.has_exited() || self.remote_termination.get().is_some() {
++                        drop(self.remote_termination(process_handle));
++                    }
++                } else {
++                    let process_handle = Arc::clone(process_handle);
++                    tokio::spawn(async move {
++                        let _ = process_handle.terminate().await;
++                    });
++                }
+             }
+         }
+         self.finish_termination();
+@@ -307,10 +396,7 @@ impl UnifiedExecProcess {
+         match &self.process_handle {
+             ProcessHandle::Local(process_handle) => process_handle.terminate(),
+             ProcessHandle::ExecServer(process_handle) => {
+-                process_handle
+-                    .terminate()
+-                    .await
+-                    .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?;
++                self.terminate_remote(process_handle).await?;
+             }
+         }
+         self.signal_exit(self.exit_code());
+@@ -377,10 +463,16 @@ impl UnifiedExecProcess {
+         match &self.process_handle {
+             ProcessHandle::Local(process) => self.request_local_termination(process),
+             ProcessHandle::ExecServer(process) => {
+-                let process = Arc::clone(process);
+-                tokio::spawn(async move {
+-                    let _ = process.terminate().await;
+-                });
++                if self.remote_confirmation.get().is_some() {
++                    if !self.has_exited() || self.remote_termination.get().is_some() {
++                        drop(self.remote_termination(process));
++                    }
++                } else {
++                    let process = Arc::clone(process);
++                    tokio::spawn(async move {
++                        let _ = process.terminate().await;
++                    });
++                }
+             }
+         }
+     }
+@@ -391,7 +483,7 @@ impl UnifiedExecProcess {
+             match &self.process_handle {
+                 ProcessHandle::Local(process) => self.request_local_termination(process),
+                 ProcessHandle::ExecServer(process) => {
+-                    if process.terminate().await.is_err() {
++                    if self.terminate_remote(process).await.is_err() {
+                         return false;
+                     }
+                 }
+@@ -645,7 +737,7 @@ impl UnifiedExecProcess {
+     pub(super) async fn from_exec_server_started(
+         started: StartedExecProcess,
+     ) -> Result<Self, UnifiedExecError> {
+-        Self::from_exec_server_started_with_output_policy(started, false).await
++        Self::from_exec_server_started_with_output_policy(started, false, None).await
+     }
+ 
+     pub(super) fn withhold_output_diagnostics(&self) {
+@@ -656,12 +748,16 @@ impl UnifiedExecProcess {
+     pub(super) async fn from_exec_server_started_with_output_policy(
+         started: StartedExecProcess,
+         controlled: bool,
++        remote_confirmation: Option<crate::agent::control::RemoteProcessTerminationPolicy>,
+     ) -> Result<Self, UnifiedExecError> {
+         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
+         // Older peers do not report this field. In that case, skip local
+         // classification rather than attributing a violation to a guessed backend.
+         let sandbox_type = started.sandbox_type;
+         let mut managed = Self::new(process_handle, sandbox_type, /*spawn_lifecycle*/ None);
++        if let Some(policy) = remote_confirmation {
++            managed.confirm_remote_termination(policy);
++        }
+         if controlled {
+             managed.withhold_output_diagnostics();
+         }
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index 707cfe1b7cbc59926b9ea2ad454fa54440157d34..d3a4ecf6bb9152ec40c3d7c7c32d7362a71f48d0 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
+ use uuid::Uuid;
+ 
+ use super::oneshot::Completion;
++use super::process::RemoteTerminationAcknowledgment;
+ 
+ use crate::codex_thread::BackgroundTerminalInfo;
+ use crate::exec_env::CODEX_PERMISSION_PROFILE_ENV_VAR;
+@@ -1614,7 +1615,9 @@ impl UnifiedExecProcessManager {
+             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
+             spawn_lifecycle.after_spawn();
+             return UnifiedExecProcess::from_exec_server_started_with_output_policy(
+-                started, controlled,
++                started,
++                controlled,
++                self.remote_confirmation.get().cloned(),
+             )
+             .await
+             .map(Arc::new);
+@@ -2172,6 +2175,29 @@ impl UnifiedExecProcessManager {
+     }
+ 
+     pub(crate) async fn terminate_all_processes(&self) -> bool {
++        self.terminate_all_processes_with_confirmation(None).await.0
++    }
++
++    /// Local and remote acknowledgment results remain separate for the host's cleanup policy.
++    pub(crate) async fn terminate_all_processes_checked(&self) -> (bool, bool) {
++        let policy = self
++            .remote_confirmation
++            .get()
++            .expect("confirmed remote policy")
++            .clone();
++        let result = self
++            .terminate_all_processes_with_confirmation(Some(policy.clone()))
++            .await;
++        // Earlier pruning or cancellation can remove an entry while its owned RPC is
++        // still pending. The interrupt barrier must join those requests as well.
++        policy.wait_for_requests().await;
++        result
++    }
++
++    async fn terminate_all_processes_with_confirmation(
++        &self,
++        remote_failure: Option<crate::agent::control::RemoteProcessTerminationPolicy>,
++    ) -> (bool, bool) {
+         let (entries, mut starting) = {
+             let mut store = self.process_store.lock().await;
+             let entries = store
+@@ -2210,15 +2236,49 @@ impl UnifiedExecProcessManager {
+             (entries, starting)
+         };
+ 
++        // Arm before any post-drain await: cancellation must not turn a removed live
++        // remote process into an empty-inventory success on a later close.
++        if let Some(failed) = &remote_failure {
++            for entry in &entries {
++                entry.process.confirm_remote_termination(failed.clone());
++            }
++        }
++        let mut acknowledgment =
++            remote_failure
++                .as_ref()
++                .map(|failed| RemoteTerminationAcknowledgment {
++                    policy: failed.clone(),
++                    _membership: None,
++                    _request: None,
++                    acknowledged: !entries.iter().any(|entry| {
++                        !entry.process.uses_managed_local_sandbox() && !entry.process.has_exited()
++                    }),
++                });
++        let mut remote_acknowledged = true;
+         for entry in entries {
+             unregister_network_approval_for_entry(&entry).await;
+             if entry.process.uses_managed_local_sandbox() {
+                 starting.push((None, entry.process));
++            } else if let Some(failed) = &remote_failure {
++                // Match terminate_process: an already exited remote process needs no new attempt.
++                if !entry.process.has_exited() && entry.process.terminate_confirmed().await.is_err()
++                {
++                    failed.record_failure();
++                    remote_acknowledged = false;
++                    // Release local readers without issuing a replacement remote request.
++                    entry.process.terminate();
++                }
+             } else {
+                 entry.process.terminate();
+             }
+         }
+-        self.join_owned_processes(starting).await
++        if let Some(acknowledgment) = &mut acknowledgment {
++            acknowledgment.acknowledged = remote_acknowledged;
++        }
++        (
++            self.join_owned_processes(starting).await,
++            remote_acknowledged,
++        )
+     }
+ 
+     pub(crate) async fn pending_local_exec(
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+index 14eec7a955ece7e72759d68dc27c4bd1e66a2126..85681a9d2c178bd2076434bc069df1c82f602a72 100644
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -912,3 +912,216 @@ async fn shutdown_joins_published_managed_linux_process() {
+         assert_eq!(shutdown.await, confirmed);
+     }
+ }
++
++async fn insert_remote_shutdown_process(
++    session: &crate::session::session::Session,
++    turn: &crate::TurnContext,
++    terminate_error: Option<String>,
++) {
++    let process = Arc::new(
++        crate::unified_exec::process_tests::remote_process(
++            codex_exec_server::WriteStatus::Accepted,
++            terminate_error,
++            codex_sandboxing::SandboxType::None,
++        )
++        .await,
++    );
++    insert_remote_shutdown_process_instance(session, turn, process).await;
++}
++
++async fn insert_remote_shutdown_process_instance(
++    session: &crate::session::session::Session,
++    turn: &crate::TurnContext,
++    process: Arc<UnifiedExecProcess>,
++) {
++    session
++        .services
++        .unified_exec_manager
++        .process_store
++        .lock()
++        .await
++        .processes
++        .insert(
++            1000,
++            ProcessEntry {
++                output_policy_store: None,
++                process,
++                plugin_metrics_sidecar: None,
++                call_id: "remote-shutdown".to_owned(),
++                process_id: 1000,
++                cwd: PathUri::parse("file:///tmp").expect("test cwd"),
++                initial_exec_command_active: Arc::new(AtomicBool::new(false)),
++                initial_exec_command_returned: Arc::new(AtomicBool::new(true)),
++                hook_command: "remote-command".to_owned(),
++                tty: false,
++                environment_id: "remote-test".to_owned(),
++                permissions: super::super::TerminalPermissions::for_launch(
++                    turn.initial_environments
++                        .primary()
++                        .expect("turn environment"),
++                    turn,
++                    super::super::TerminalSandboxSource::Native,
++                    crate::sandboxing::SandboxPermissions::UseDefault,
++                    None,
++                    None,
++                ),
++                network_approval: None,
++                session: std::sync::Weak::new(),
++                last_used: Instant::now(),
++            },
++        );
++}
++
++#[tokio::test]
++async fn checked_remote_shutdown_retains_earlier_abort_failure_after_empty_final_drain() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    session
++        .services
++        .thread_extension_data
++        .insert(crate::ConfirmRemoteProcessTermination);
++    insert_remote_shutdown_process(&session, &turn, Some("terminate rejected".to_owned())).await;
++
++    // This is the same earlier drain used by interrupt, before final shutdown runs.
++    session.close_unified_exec_processes().await;
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .list_processes()
++            .await
++            .is_empty()
++    );
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    session.close_unified_exec_processes().await;
++    let shutdown = session.services.local_agent_runtime.request_shutdown();
++    shutdown
++        .wait_for_process_shutdown()
++        .await
++        .expect_err("failed remote ACK remains fatal");
++    shutdown
++        .wait_for_managed_process_shutdown()
++        .await
++        .expect("remote failure keeps its own classification");
++}
++
++#[tokio::test]
++async fn checked_remote_shutdown_accepts_positive_acknowledgment() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    session
++        .services
++        .thread_extension_data
++        .insert(crate::ConfirmRemoteProcessTermination);
++    insert_remote_shutdown_process(&session, &turn, None).await;
++    session.close_unified_exec_processes().await;
++    assert!(
++        !session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    session
++        .services
++        .local_agent_runtime
++        .request_shutdown()
++        .wait_for_process_shutdown()
++        .await
++        .expect("positive remote ACK permits checked shutdown");
++}
++
++#[tokio::test]
++async fn unmarked_remote_shutdown_preserves_raw_core_cleanup_policy() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    insert_remote_shutdown_process(&session, &turn, Some("terminate rejected".to_owned())).await;
++    session.close_unified_exec_processes().await;
++    assert!(
++        !session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    session
++        .services
++        .local_agent_runtime
++        .request_shutdown()
++        .wait_for_process_shutdown()
++        .await
++        .expect("unmarked raw Core retains its existing unconfirmed remote policy");
++}
++
++#[tokio::test]
++async fn checked_remote_shutdown_retains_canceled_confirmation_after_empty_drain() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    let session = Arc::new(session);
++    session
++        .services
++        .thread_extension_data
++        .insert(crate::ConfirmRemoteProcessTermination);
++    let entered = Arc::new(tokio::sync::Notify::new());
++    let release = Arc::new(tokio::sync::Notify::new());
++    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let process = Arc::new(
++        crate::unified_exec::process_tests::remote_process_with_termination_controls(
++            codex_exec_server::WriteStatus::Accepted,
++            None,
++            codex_sandboxing::SandboxType::None,
++            calls.clone(),
++            Some(entered.clone()),
++            Some(release.clone()),
++        )
++        .await,
++    );
++    insert_remote_shutdown_process_instance(&session, &turn, process.clone()).await;
++    let closing = tokio::spawn({
++        let session = session.clone();
++        async move {
++            session.close_unified_exec_processes().await;
++        }
++    });
++    entered.notified().await;
++    closing.abort();
++    closing.await.expect_err("abort waiting drain");
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    let final_drain = tokio::spawn({
++        let session = session.clone();
++        async move {
++            session.close_unified_exec_processes().await;
++        }
++    });
++    tokio::task::yield_now().await;
++    assert!(
++        !final_drain.is_finished(),
++        "empty drain joins original pending request"
++    );
++    release.notify_one();
++    final_drain.await.expect("final drain joins original RPC");
++    process
++        .terminate_confirmed()
++        .await
++        .expect("original request eventually acknowledges");
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    drop(process);
++    session
++        .services
++        .local_agent_runtime
++        .request_shutdown()
++        .wait_for_process_shutdown()
++        .await
++        .expect_err("empty later drain cannot repair uncertain acknowledgment");
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed(),
++        "first uncertain close remains failed"
++    );
++}
+diff --git a/codex-rs/core/src/unified_exec/process_tests.rs b/codex-rs/core/src/unified_exec/process_tests.rs
+index ed59dfd4865406ae472bbae1fd95c2abe20d21a3..a3ef0e800f96185f5c23a8189687415e5c0e8750 100644
+--- a/codex-rs/core/src/unified_exec/process_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_tests.rs
+@@ -21,6 +21,9 @@ struct MockExecProcess {
+     write_response: WriteResponse,
+     read_responses: Mutex<VecDeque<ReadResponse>>,
+     terminate_error: Option<String>,
++    terminate_calls: Arc<std::sync::atomic::AtomicUsize>,
++    terminate_entered: Option<Arc<tokio::sync::Notify>>,
++    terminate_release: Option<Arc<tokio::sync::Notify>>,
+     wake_tx: watch::Sender<u64>,
+ }
+ 
+@@ -43,6 +46,14 @@ impl MockExecProcess {
+     }
+ 
+     async fn terminate(&self) -> Result<(), ExecServerError> {
++        self.terminate_calls
++            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++        if let Some(entered) = &self.terminate_entered {
++            entered.notify_one();
++        }
++        if let Some(release) = &self.terminate_release {
++            release.notified().await;
++        }
+         if let Some(message) = &self.terminate_error {
+             return Err(ExecServerError::Protocol(message.clone()));
+         }
+@@ -89,6 +100,25 @@ pub(super) async fn remote_process(
+     write_status: WriteStatus,
+     terminate_error: Option<String>,
+     sandbox_type: impl Into<Option<codex_sandboxing::SandboxType>>,
++) -> UnifiedExecProcess {
++    remote_process_with_termination_controls(
++        write_status,
++        terminate_error,
++        sandbox_type,
++        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
++        None,
++        None,
++    )
++    .await
++}
++
++pub(super) async fn remote_process_with_termination_controls(
++    write_status: WriteStatus,
++    terminate_error: Option<String>,
++    sandbox_type: impl Into<Option<codex_sandboxing::SandboxType>>,
++    terminate_calls: Arc<std::sync::atomic::AtomicUsize>,
++    terminate_entered: Option<Arc<tokio::sync::Notify>>,
++    terminate_release: Option<Arc<tokio::sync::Notify>>,
+ ) -> UnifiedExecProcess {
+     let (wake_tx, _wake_rx) = watch::channel(0);
+     let started = StartedExecProcess {
+@@ -99,6 +129,9 @@ pub(super) async fn remote_process(
+             },
+             read_responses: Mutex::new(VecDeque::new()),
+             terminate_error,
++            terminate_calls,
++            terminate_entered,
++            terminate_release,
+             wake_tx,
+         }),
+         sandbox_type: sandbox_type.into(),
+@@ -213,3 +246,112 @@ async fn remote_process_preserves_executor_sandbox_type() {
+         assert_eq!(process.sandbox_type(), sandbox_type);
+     }
+ }
++
++#[tokio::test]
++async fn confirmed_remote_termination_reuses_success_or_failure_through_drop() {
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    for rejected in [false, true] {
++        let calls = Arc::new(AtomicUsize::new(0));
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        let failed = session
++            .services
++            .local_agent_runtime
++            .remote_process_termination_policy();
++        let process = remote_process_with_termination_controls(
++            WriteStatus::Accepted,
++            rejected.then(|| "rejected".to_owned()),
++            codex_sandboxing::SandboxType::None,
++            calls.clone(),
++            None,
++            None,
++        )
++        .await;
++        process.confirm_remote_termination(failed.clone());
++        assert_eq!(process.terminate_confirmed().await.is_err(), rejected);
++        assert_eq!(process.terminate_confirmed().await.is_err(), rejected);
++        process.request_terminate();
++        process.terminate();
++        drop(process);
++        tokio::task::yield_now().await;
++        assert_eq!(
++            calls.load(Ordering::SeqCst),
++            1,
++            "cleanup never retries the remote operation"
++        );
++        assert_eq!(failed.failed(), rejected);
++    }
++}
++
++#[tokio::test]
++async fn confirmed_remote_termination_keeps_one_owned_request_after_waiter_cancellation() {
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    let calls = Arc::new(AtomicUsize::new(0));
++    let (session, _) = crate::session::tests::make_session_and_context().await;
++    let failed = session
++        .services
++        .local_agent_runtime
++        .remote_process_termination_policy();
++    let entered = Arc::new(tokio::sync::Notify::new());
++    let release = Arc::new(tokio::sync::Notify::new());
++    let process = Arc::new(
++        remote_process_with_termination_controls(
++            WriteStatus::Accepted,
++            None,
++            codex_sandboxing::SandboxType::None,
++            calls.clone(),
++            Some(entered.clone()),
++            Some(release.clone()),
++        )
++        .await,
++    );
++    process.confirm_remote_termination(failed.clone());
++    let closing = tokio::spawn({
++        let process = process.clone();
++        async move { process.terminate_confirmed().await }
++    });
++    entered.notified().await;
++    closing.abort();
++    closing.await.expect_err("cancel first waiter");
++    process.request_terminate();
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    release.notify_one();
++    process
++        .terminate_confirmed()
++        .await
++        .expect("join original acknowledgment");
++    drop(process);
++    tokio::task::yield_now().await;
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    assert!(!failed.failed());
++}
++
++#[tokio::test]
++async fn confirmed_remote_termination_does_not_attempt_an_already_exited_process() {
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    let (session, _) = crate::session::tests::make_session_and_context().await;
++    let policy = session
++        .services
++        .local_agent_runtime
++        .remote_process_termination_policy();
++    let calls = Arc::new(AtomicUsize::new(0));
++    let process = remote_process_with_termination_controls(
++        WriteStatus::UnknownProcess,
++        None,
++        codex_sandboxing::SandboxType::None,
++        calls.clone(),
++        None,
++        None,
++    )
++    .await;
++    process
++        .write(b"input")
++        .await
++        .expect_err("backend already retired the process");
++    assert!(process.has_exited());
++    process.confirm_remote_termination(policy.clone());
++    process.request_terminate();
++    drop(process);
++    tokio::task::yield_now().await;
++    assert_eq!(calls.load(Ordering::SeqCst), 0);
++    assert!(!policy.failed());
++}
