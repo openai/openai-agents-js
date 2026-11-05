@@ -5,7 +5,7 @@ import type {
   NativeA2AClaim,
   NativeA2AStore,
   NativeA2ATask,
-} from '@openai/agents-codex/a2a';
+} from '@openai/agents/a2a';
 
 /** Single-process demonstration only. Production hosts supply durable fenced storage. */
 export class ExampleA2AStore

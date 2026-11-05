@@ -1,18 +1,9 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { z } from 'zod';
-import {
-  Agent,
-  TraceContext,
-  tool,
-  type ToolContext,
-} from '@openai/agents-codex';
-import { connectA2A, NativeA2AExecutor } from '@openai/agents-codex/a2a';
-import {
-  withScriptedResponses,
-  text,
-  toolCall,
-} from '@openai/agents-codex/testing';
+import { Agent, TraceContext, tool, type ToolContext } from '@openai/agents';
+import { connectA2A, NativeA2AExecutor } from '@openai/agents/a2a';
+import { withScriptedResponses, text, toolCall } from '@openai/agents/testing';
 import { AgentCard, Message, Part, Role, TaskState } from '@a2a-js/sdk';
 import {
   DefaultRequestHandler,
