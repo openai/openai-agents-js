@@ -146,7 +146,7 @@ impl Fixture {
         // stored rows from this boundary through candidate rollback.
         let before = stored_audit(&source).await.unwrap();
         let checkpoint = change
-            .prepare("The lookup is complete.".into())
+            .prepare("The lookup is complete.".into(), vec![])
             .await
             .unwrap();
         let servers = json!({"startup":{"command":"node","args":[peer, if question { "question" } else { "clean" }],

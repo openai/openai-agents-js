@@ -65,8 +65,9 @@ export class Engine {
 
 export class _ContextChange {
   private constructor();
+  context(): Promise<string>;
   options(): Promise<string>;
-  prepare(summary: string): Promise<string>;
+  prepare(summary: string, retainedIndices: number[]): Promise<string>;
   createCandidateEngine(
     apiKey?: string | null,
     mcpServersJson?: string | null,
@@ -99,6 +100,7 @@ export class NativeThread {
   /** Negative retirement only. Positive replies require a captured question. */
   _respond_native_question(response_json: string): Promise<void>;
   _selected_model_root(): string;
+  _read_model_context(): Promise<string>;
   _begin_context_change(): Promise<_ContextChange>;
   _application_instructions(): string | null;
   private constructor();
