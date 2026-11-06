@@ -214,58 +214,62 @@ describe('remote sandbox path identity', () => {
     };
   };
 
-  test('rejects newline paths and symlink targets before they can change identity', async () => {
-    const temp = await mkdtemp(join(tmpdir(), 'agents-path-identity-'));
-    try {
-      const root = join(await realpath(temp), 'workspace');
-      await mkdir(root);
-      const outside = join(temp, 'outside');
-      await mkdir(outside);
-      await writeFile(join(outside, 'secret'), 'outside');
-      const multiline = `${root}/prefix\n${outside}`;
-      await mkdir(multiline, { recursive: true });
-      const safe = join(root, 'safe');
-      await mkdir(safe);
-      // A dangling target must not become the existing path without its newline.
-      await symlink(`${safe}\n`, join(root, 'trailing-target'));
-      const physical = join(root, 'physical\n');
-      await mkdir(physical);
-      await symlink(physical, join(root, 'physical-link'));
+  // The real-shell fixture requires POSIX filenames, symlinks, and /bin/sh.
+  test.skipIf(process.platform === 'win32')(
+    'rejects newline paths and symlink targets before they can change identity',
+    async () => {
+      const temp = await mkdtemp(join(tmpdir(), 'agents-path-identity-'));
+      try {
+        const root = join(await realpath(temp), 'workspace');
+        await mkdir(root);
+        const outside = join(temp, 'outside');
+        await mkdir(outside);
+        await writeFile(join(outside, 'secret'), 'outside');
+        const multiline = `${root}/prefix\n${outside}`;
+        await mkdir(multiline, { recursive: true });
+        const safe = join(root, 'safe');
+        await mkdir(safe);
+        // A dangling target must not become the existing path without its newline.
+        await symlink(`${safe}\n`, join(root, 'trailing-target'));
+        const physical = join(root, 'physical\n');
+        await mkdir(physical);
+        await symlink(physical, join(root, 'physical-link'));
 
-      for (const path of [
-        `${multiline}/secret`,
-        'trailing-target/new.txt',
-        'physical-link/new.txt',
-      ]) {
+        for (const path of [
+          `${multiline}/secret`,
+          'trailing-target/new.txt',
+          'physical-link/new.txt',
+        ]) {
+          await expect(
+            validateRemoteSandboxPath({ root, path, runCommand }),
+          ).rejects.toThrow(/carriage returns or newlines/);
+        }
+
+        // Ordinary aliases and missing write leaves retain their exact spelling.
+        const filename = "space ' Unicode-雪 .txt ";
+        await writeFile(join(safe, filename), 'inside');
+        await symlink(join(safe, filename), join(root, 'safe-link'));
         await expect(
-          validateRemoteSandboxPath({ root, path, runCommand }),
-        ).rejects.toThrow(/carriage returns or newlines/);
+          validateRemoteSandboxPath({
+            root,
+            path: 'safe-link',
+            options: { forWrite: true },
+            runCommand,
+          }),
+        ).resolves.toBe(join(safe, filename));
+        await expect(
+          validateRemoteSandboxPath({
+            root,
+            path: 'safe/new.txt',
+            options: { forWrite: true },
+            runCommand,
+          }),
+        ).resolves.toBe(join(safe, 'new.txt'));
+      } finally {
+        await rm(temp, { recursive: true, force: true });
       }
-
-      // Ordinary aliases and missing write leaves retain their exact spelling.
-      const filename = "space ' Unicode-雪 .txt ";
-      await writeFile(join(safe, filename), 'inside');
-      await symlink(join(safe, filename), join(root, 'safe-link'));
-      await expect(
-        validateRemoteSandboxPath({
-          root,
-          path: 'safe-link',
-          options: { forWrite: true },
-          runCommand,
-        }),
-      ).resolves.toBe(join(safe, filename));
-      await expect(
-        validateRemoteSandboxPath({
-          root,
-          path: 'safe/new.txt',
-          options: { forWrite: true },
-          runCommand,
-        }),
-      ).resolves.toBe(join(safe, 'new.txt'));
-    } finally {
-      await rm(temp, { recursive: true, force: true });
-    }
-  });
+    },
+  );
 
   test.each([
     '/workspace/file\n/outside/secret\n',
