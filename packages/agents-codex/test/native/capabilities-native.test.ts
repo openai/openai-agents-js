@@ -1037,7 +1037,7 @@ describe('public live capabilities and checkpoint advice', () => {
     vi.spyOn(prototype, '_next_session_events').mockImplementation(
       async function (this: NativeThread) {
         const result = await next.call(this);
-        for (const wire of result.events) {
+        for (const wire of result) {
           const event = parseEvent(wire);
           if (event.msg._sdk_python_tool) {
             // Keep the exact receiver for the later capability assertion.

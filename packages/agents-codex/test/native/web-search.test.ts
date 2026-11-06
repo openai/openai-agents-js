@@ -183,7 +183,6 @@ describe('captured native WebSearch', () => {
       const provider = new NativeProvider({ apiKey: 'synthetic-capture' });
       const release = vi.fn(async () => {});
       const lease: ProviderLease = {
-        httpClients: vi.fn(async () => ({ close: async () => {} })),
         failedOpeningCleanup: undefined,
         websocketsAllowed: false,
         apiKey: 'synthetic-capture',
