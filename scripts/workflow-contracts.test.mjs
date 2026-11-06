@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CODEX_SANDBOX_AUTO_SKIP,
   DEFAULT_AUTO_SKIP,
+  DEFAULT_INTERACTIVE_INPUTS,
   getConditionalAutoSkipReason,
 } from './run-example-starts.mjs';
 
@@ -70,6 +71,36 @@ describe('repository workflow contracts', () => {
       ).toContain('Codex sandbox');
       expect(getConditionalAutoSkipReason(name, {})).toBeNull();
     }
+  });
+
+  it('offers the SQLite memory launcher as a local interactive example', () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        path.join(repositoryRoot, 'scripts/run-example-starts.mjs'),
+        '--dry-run',
+        '--filter',
+        'start:sqlite',
+        '--include-interactive',
+        '--verbose',
+      ],
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          EXAMPLES_INCLUDE_EXTERNAL: '0',
+          EXAMPLES_AUTO_SKIP: '',
+        },
+        encoding: 'utf8',
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      '→ memory:start:sqlite [tags: interactive]',
+    );
+    expect(result.stdout).toContain('node sqlite.ts');
+    expect(DEFAULT_INTERACTIVE_INPUTS.get('memory:start:sqlite')).toBe('n\n');
   });
 
   it('exposes the example lifecycle through pnpm scripts without rerun state', async () => {

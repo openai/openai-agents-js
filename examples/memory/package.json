@@ -3,12 +3,10 @@
   "name": "memory",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "@prisma/adapter-better-sqlite3": "^7.10.0",
-    "@prisma/client": "^7.10.0",
     "zod": "^4.3.5"
   },
   "scripts": {
-    "build-check": "prisma generate && tsc --noEmit",
+    "build-check": "tsc --noEmit",
     "start:memory": "node memory.ts",
     "start:memory-hitl": "node memory-hitl.ts",
     "start:hitl-session-scenario": "node hitl-session-scenario.ts",
@@ -18,11 +16,8 @@
     "start:oai-compact-stateless": "node oai-compact-stateless.ts",
     "start:file": "node file.ts",
     "start:file-hitl": "node file-hitl.ts",
-    "start:prisma": "tsx start-prisma.ts",
-    "test:prisma": "prisma generate && vitest run --config vitest.prisma.config.ts"
-  },
-  "devDependencies": {
-    "prisma": "^7.10.0"
+    "start:sqlite": "node sqlite.ts",
+    "test:sqlite": "vitest run --config vitest.sqlite.config.ts"
   },
   "engines": {
     "node": "^22.18.0 || ^24.0.0 || >=26.0.0"

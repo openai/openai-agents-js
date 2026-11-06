@@ -1,10 +1,8 @@
-// Prisma-backed Session implementation example. To try it out:
-//   pnpm --filter memory start:prisma
-// The startup command prepares the database and generates the Prisma client.
+// Run the SQLite-backed session example with pnpm --filter memory start:sqlite.
 
 import { Agent, run, withTrace } from '@openai/agents/classic';
-import { createPrismaSession } from './sessions';
-import { createLookupCustomerProfileTool, fetchImageData } from './tools';
+import { createSQLiteSession } from './sessions/index.ts';
+import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
 
 const directory: Record<string, string> = {
   '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',
@@ -18,8 +16,7 @@ const lookupCustomerProfile = createLookupCustomerProfileTool({
 });
 
 async function main() {
-  await withTrace('memory:prisma:main', async () => {
-    const { session, prisma } = await createPrismaSession();
+  await withTrace('memory:sqlite:main', async () => {
     const agent = new Agent({
       name: 'Assistant',
       instructions:
@@ -27,6 +24,7 @@ async function main() {
       tools: [lookupCustomerProfile, fetchImageData],
     });
 
+    const { session, database } = await createSQLiteSession();
     try {
       let result = await run(
         agent,
@@ -40,14 +38,13 @@ async function main() {
       });
       console.log(result.finalOutput);
     } finally {
-      await prisma.$disconnect().catch(() => {});
+      database.close();
     }
   });
 }
 
 async function mainStream() {
-  await withTrace('memory:prisma:mainStream', async () => {
-    const { session, prisma } = await createPrismaSession();
+  await withTrace('memory:sqlite:mainStream', async () => {
     const agent = new Agent({
       name: 'Assistant',
       instructions:
@@ -55,6 +52,7 @@ async function mainStream() {
       tools: [lookupCustomerProfile, fetchImageData],
     });
 
+    const { session, database } = await createSQLiteSession();
     try {
       let result = await run(
         agent,
@@ -87,7 +85,7 @@ async function mainStream() {
 
       // Additional tool invocations happen earlier in the turn.
     } finally {
-      await prisma.$disconnect().catch(() => {});
+      database.close();
     }
   });
 }
