@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # The root pnpm workspace includes packages/*, examples/*, and docs.
+  # The root pnpm workspace includes packages/*, examples/classic/*, and docs.
   - package-ecosystem: "npm"
     directory: "/"
     schedule:

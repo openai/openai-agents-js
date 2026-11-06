@@ -89,7 +89,10 @@ describe('MCP tool filter integration', () => {
   beforeAll(() => {
     setDefaultModelProvider(new ScriptedModelProvider());
   });
-  const samplesDir = path.join(__dirname, '../../../examples/mcp/sample_files');
+  const samplesDir = path.join(
+    __dirname,
+    '../../../examples/classic/mcp/sample_files',
+  );
   const filter = createMCPToolStaticFilter({
     allowed: ['read_file', 'list_directory', 'write_file'],
     blocked: ['write_file'],

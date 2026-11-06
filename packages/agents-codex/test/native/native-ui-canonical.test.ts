@@ -4,7 +4,7 @@ import {
   completeDisplay,
   nativeBlank,
   type ViewSession,
-} from '../../examples/native-ui/projection';
+} from '../../../../examples/codex/native-ui/projection';
 
 type Message = Extract<SessionItem, { type: 'message' }>;
 

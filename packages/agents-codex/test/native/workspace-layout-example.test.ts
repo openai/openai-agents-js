@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runWorkspaceCatalog } from '../../examples/workspace-layout';
+import { runWorkspaceCatalog } from '../../../../examples/codex/workspace-layout';
 import { ModelServer, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 

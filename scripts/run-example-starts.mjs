@@ -45,7 +45,7 @@ export const EXTERNAL_STARTS = new Set(['ai-sdk:start']);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
-const examplesDir = path.join(rootDir, 'examples');
+const examplesDir = path.join(rootDir, 'examples', 'classic');
 
 export const DEFAULT_INTERACTIVE_INPUTS = new Map([
   ['agent-patterns:start:agents-as-tools', 'Hello to Spanish and French\n'],

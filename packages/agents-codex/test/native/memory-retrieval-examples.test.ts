@@ -11,13 +11,13 @@ import {
   forgetFact,
   memoryAgent,
   runPersistentMemory,
-} from '../../examples/persistent-memory';
+} from '../../../../examples/codex/persistent-memory';
 import {
   answerQuestion,
   checkSources,
   search,
   type RetrievalScope,
-} from '../../examples/retrieval';
+} from '../../../../examples/codex/retrieval';
 import { invokeFunctionTool } from '../../src/runtime/tools';
 import type { FunctionTool } from '../../src/runtime/tools';
 import type { JsonObject } from '../../src/runtime/binding';

@@ -2,21 +2,21 @@ import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 import { Agent } from '@openai/agents';
 import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
-import { runConcurrentTools } from '../../examples/concurrency-effects/concurrent-tools';
+import { runConcurrentTools } from '../../../../examples/codex/concurrency-effects/concurrent-tools';
 import {
   FakeWriter,
   effectContext,
   runSafeEffects,
   writeRecord,
   type EffectContext,
-} from '../../examples/concurrency-effects/safe-effects';
+} from '../../../../examples/codex/concurrency-effects/safe-effects';
 
 import {
   createFactStore,
   factTools,
   runMemoryLifecycle,
   type FactContext,
-} from '../../examples/concurrency-effects/memory-lifecycle';
+} from '../../../../examples/codex/concurrency-effects/memory-lifecycle';
 
 // A failed witness unwinds its enclosing Session and releases held cleanup.
 async function bounded<T>(promise: Promise<T>): Promise<T> {

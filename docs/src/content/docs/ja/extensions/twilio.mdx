@@ -19,8 +19,8 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
-import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
-import twilioConnectExample from '../../../../../../examples/docs/extensions/twilio-connect.ts?raw';
+import twilioBasicExample from '../../../../../../examples/classic/docs/extensions/twilio-basic.ts?raw';
+import twilioConnectExample from '../../../../../../examples/classic/docs/extensions/twilio-connect.ts?raw';
 
 Twilio は、通話の元の音声を WebSocket サーバーに送信する [Media Streams API](https://www.twilio.com/docs/voice/media-streams) を提供しています。この構成を使うと、音声エージェントを Twilio に接続できます（[音声エージェントの概要](/openai-agents-js/ja/guides/voice-agents)）。デフォルトの Realtime セッショントランスポートを `websocket` モードで使用すると、Twilio から届くイベントを Realtime セッションに接続できます。ただし、電話では Web ベースの会話よりも遅延が大きくなるため、適切な音声形式を設定し、割り込みのタイミングを自分で調整する必要があります。
 
@@ -83,6 +83,6 @@ Twilio は、通話の元の音声を WebSocket サーバーに送信する [Med
 
 ## サーバーの完全なコード例
 
-[実行可能な Twilio のコード例](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-twilio) には、認証を行う Fastify ルートと Realtime セッションのセットアップが含まれています。README では、サーバー側で必要な `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN`、`TWILIO_PUBLIC_BASE_URL` の設定について説明しています。公開ベース URL は、パスプレフィックス、クエリ文字列、フラグメントを含まない HTTPS オリジンです。トンネルの公開オリジンが変わった場合は、この設定を更新してください。
+[実行可能な Twilio のコード例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-twilio) には、認証を行う Fastify ルートと Realtime セッションのセットアップが含まれています。README では、サーバー側で必要な `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN`、`TWILIO_PUBLIC_BASE_URL` の設定について説明しています。公開ベース URL は、パスプレフィックス、クエリ文字列、フラグメントを含まない HTTPS オリジンです。トンネルの公開オリジンが変わった場合は、この設定を更新してください。
 
 サーバーは、Realtime 接続を開く前に、着信とアップグレードの無効な署名を拒否します。Twilio Media Stream の URL は `wss://` を使用し、クエリパラメーターはサポートしていません。カスタムパラメーターについては、[Twilio Stream のドキュメント](https://www.twilio.com/docs/voice/twiml/stream) を参照してください。

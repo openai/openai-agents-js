@@ -3,7 +3,10 @@ import { createServer } from 'node:http';
 import { afterEach, expect, it } from 'vitest';
 import { NativeProvider } from '../../src';
 import type { CallToolResult } from '@openai/agents/classic';
-import { ReportServer, openReportSession } from '../../examples/mcp-reports';
+import {
+  ReportServer,
+  openReportSession,
+} from '../../../../examples/codex/mcp-reports';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 const releases: Array<() => void> = [];

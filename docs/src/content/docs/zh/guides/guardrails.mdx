@@ -40,9 +40,9 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import inputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
-import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
-import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
+import inputGuardrailExample from '../../../../../../examples/classic/docs/guardrails/guardrails-input.ts?raw';
+import outputGuardrailExample from '../../../../../../examples/classic/docs/guardrails/guardrails-output.ts?raw';
+import toolGuardrailsExample from '../../../../../../examples/classic/docs/guardrails/toolGuardrails.ts?raw';
 
 护栏可以与智能体并行运行，也可以阻塞执行，直到自身运行完成，从而对用户输入或智能体输出进行检查和验证。例如，可以在调用高成本模型之前，先运行一个轻量级模型作为护栏。如果护栏检测到恶意使用，就可以触发错误，阻止高成本模型运行。
 

@@ -14,11 +14,11 @@ import {
   imageAgent,
   imageMessage,
   syntheticPng,
-} from '../../examples/input-retrieval-specialist/image-input';
+} from '../../../../examples/codex/input-retrieval-specialist/image-input';
 import {
   answerQuestion,
   corpus,
-} from '../../examples/input-retrieval-specialist/retrieval';
+} from '../../../../examples/codex/input-retrieval-specialist/retrieval';
 import {
   consult,
   readCatalog,
@@ -26,7 +26,7 @@ import {
   type Application,
   type Catalog,
   type Summary,
-} from '../../examples/input-retrieval-specialist/specialist-tool';
+} from '../../../../examples/codex/input-retrieval-specialist/specialist-tool';
 
 // Read the public wire snapshot, including Core's function namespace envelope.
 function declarations(request: Record<string, unknown>): Record<string, any>[] {

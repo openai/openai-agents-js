@@ -7,18 +7,21 @@ import { setImmediate } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { expect, it } from 'vitest';
-import { startCollector } from '../../examples/observability/collector';
+import { startCollector } from '../../../../examples/codex/observability/collector';
 import {
   artifactJson,
   readHistory,
-} from '../../examples/observability/history-reader';
-import type { walkthrough } from '../../examples/observability/trace-walkthrough';
+} from '../../../../examples/codex/observability/history-reader';
+import type { walkthrough } from '../../../../examples/codex/observability/trace-walkthrough';
 
 type WalkthroughArtifact = Awaited<ReturnType<typeof walkthrough>>;
 
 const exec = promisify(execFile);
 const child = fileURLToPath(
-  new URL('../../examples/observability/trace-walkthrough.ts', import.meta.url),
+  new URL(
+    '../../../../examples/codex/observability/trace-walkthrough.ts',
+    import.meta.url,
+  ),
 );
 type ObjectRow = Record<string, any>; // The fixture inspects received JSON, not an SDK event schema.
 

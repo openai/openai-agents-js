@@ -4,15 +4,15 @@ description: Persist multi-turn conversation history so agents can resume contex
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import sessionsQuickstart from '../../../../../examples/docs/sessions/basicSession.ts?raw';
-import manageHistory from '../../../../../examples/docs/sessions/manageHistory.ts?raw';
-import customSession from '../../../../../examples/docs/sessions/customSession.ts?raw';
-import contextAwareSession from '../../../../../examples/docs/sessions/contextAwareSession.ts?raw';
-import sessionInputCallback from '../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
-import responsesCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
-import manualCompactionSession from '../../../../../examples/docs/sessions/responsesCompactionManualSession.ts?raw';
-import memorySessionExample from '../../../../../examples/docs/sessions/memorySession.ts?raw';
-import resumableRunExample from '../../../../../examples/docs/sessions/resumableRun.ts?raw';
+import sessionsQuickstart from '../../../../../examples/classic/docs/sessions/basicSession.ts?raw';
+import manageHistory from '../../../../../examples/classic/docs/sessions/manageHistory.ts?raw';
+import customSession from '../../../../../examples/classic/docs/sessions/customSession.ts?raw';
+import contextAwareSession from '../../../../../examples/classic/docs/sessions/contextAwareSession.ts?raw';
+import sessionInputCallback from '../../../../../examples/classic/docs/sessions/sessionInputCallback.ts?raw';
+import responsesCompactionSession from '../../../../../examples/classic/docs/sessions/responsesCompactionSession.ts?raw';
+import manualCompactionSession from '../../../../../examples/classic/docs/sessions/responsesCompactionManualSession.ts?raw';
+import memorySessionExample from '../../../../../examples/classic/docs/sessions/memorySession.ts?raw';
+import resumableRunExample from '../../../../../examples/classic/docs/sessions/resumableRun.ts?raw';
 
 Sessions persist conversation history between Agents SDK runs. Pass an object that implements `Session` to `Runner.run`. The runner automatically:
 
@@ -24,7 +24,7 @@ You do not need to call `toInputList()` or combine history between turns yoursel
 
 - `OpenAIConversationsSession` uses the Conversations API.
 - `MemorySession` stores history in process memory for local development.
-- A custom `Session` uses your own storage backend. Try the [file and SQLite session examples](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/memory).
+- A custom `Session` uses your own storage backend. Try the [file and SQLite session examples](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/memory).
 
 With an OpenAI Responses model, `OpenAIResponsesCompactionSession` can automatically shrink stored history via [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact). See the compaction section below for backing-session restrictions.
 

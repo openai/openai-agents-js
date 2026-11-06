@@ -13,7 +13,7 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
-import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+import cloudflareBasicExample from '../../../../../../examples/classic/docs/extensions/cloudflare-basic.ts?raw';
 
 Cloudflare Workers 및 기타 workerd 런타임에서는 전역 `WebSocket` 생성자로 아웃바운드 WebSocket 연결을 열 수 없습니다. 이러한 환경에서 음성 에이전트를 더 쉽게 연결할 수 있도록, 확장 패키지는 내부적으로 `fetch()` 기반 업그레이드를 수행하는 전용 전송 계층을 제공합니다.
 

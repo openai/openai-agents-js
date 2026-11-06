@@ -1,7 +1,7 @@
 import { setTimeout } from 'node:timers/promises';
 import { MCPServerStreamableHttp } from '@openai/agents/classic';
 import type { ReconciledCall } from '@openai/agents';
-import { superviseArtifact } from '../../../examples/supervised-worker/worker';
+import { superviseArtifact } from '../../../../../examples/codex/supervised-worker/worker';
 
 const config = JSON.parse(process.argv[2]) as {
   directory: string;

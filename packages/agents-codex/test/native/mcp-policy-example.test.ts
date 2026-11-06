@@ -95,21 +95,17 @@ async function cli(model: ModelServer, mcpUrl: string) {
   const config = await model.config();
   const baseUrl = (config['model_providers.fixture'] as { base_url: string })
     .base_url;
-  const child = spawn(
-    'pnpm',
-    ['exec', 'tsx', 'packages/agents-codex/examples/mcp-policy.ts'],
-    {
-      cwd: resolve(import.meta.dirname, '../../../..'),
-      env: {
-        ...process.env,
-        OPENAI_API_KEY: 'synthetic-loopback-example-key',
-        OPENAI_BASE_URL: baseUrl,
-        MCP_URL: mcpUrl,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32',
+  const child = spawn('pnpm', ['exec', 'tsx', 'examples/codex/mcp-policy.ts'], {
+    cwd: resolve(import.meta.dirname, '../../../..'),
+    env: {
+      ...process.env,
+      OPENAI_API_KEY: 'synthetic-loopback-example-key',
+      OPENAI_BASE_URL: baseUrl,
+      MCP_URL: mcpUrl,
     },
-  );
+    stdio: ['ignore', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
+  });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (data) => {

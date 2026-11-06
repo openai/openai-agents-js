@@ -60,7 +60,7 @@ For audit or proposal-only requests, report findings without editing. When the u
    - Exclude `docs/src/content/docs/openai` from review and updates.
    - Do **not** edit `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, or `docs/src/content/docs/zh`.
    - Keep changes aligned with the existing docs style and navigation.
-   - Do not add TypeScript or TSX fenced blocks directly to MDX. Place every TypeScript or TSX snippet in a compilable source file under `examples/docs/<doc-area>/`, import it into MDX with `?raw`, and render that imported source using the existing docs pattern.
+   - Do not add TypeScript or TSX fenced blocks directly to MDX. Place every TypeScript or TSX snippet in a compilable source file under `examples/classic/docs/<doc-area>/`, import it into MDX with `?raw`, and render that imported source using the existing docs pattern.
    - If code is not useful enough to maintain as a complete example, explain the behavior in prose instead of adding an unverified snippet.
    - Run the focused verification required by the highest applicable Documentation Change Verification Tier in `AGENTS.md`. When the complete diff changes a rendered TypeScript or TSX snippet source or its MDX import/rendering, run `pnpm -F docs-code build-check` and fix issues before handoff.
 

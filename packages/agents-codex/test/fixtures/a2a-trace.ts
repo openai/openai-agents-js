@@ -1,5 +1,5 @@
 import { telemetry } from '../../src/index';
-import { runA2AExample } from '../../examples/a2a/two-agents';
+import { runA2AExample } from '../../../../examples/codex/a2a/two-agents';
 
 async function main() {
   await telemetry.configure({

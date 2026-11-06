@@ -11,7 +11,7 @@ import {
 import {
   readMemory,
   type MemoryContext,
-} from '../../../examples/application-memory';
+} from '../../../../../examples/codex/application-memory';
 
 const config = JSON.parse(process.argv[2]) as {
   url: string;

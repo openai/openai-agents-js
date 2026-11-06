@@ -6,7 +6,7 @@ Build agents in TypeScript with an embedded Codex runtime. Give an Agent instruc
 
 ## Install
 
-Use Node.js 24. Follow the [installation guide](packages/agents-codex/examples/guides/installation.md) to run the `0.22.0-alpha.1` starter for your platform or [add its packages to an existing application](packages/agents-codex/examples/guides/installation.md#add-the-sdk-to-an-existing-application). The starter includes the compiled runtime and a JavaScript example.
+Use Node.js 24. Follow the [installation guide](examples/codex/guides/installation.md) to run the `0.22.0-alpha.1` starter for your platform or [add its packages to an existing application](examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application). The starter includes the compiled runtime and a JavaScript example.
 
 ## Example
 
@@ -51,20 +51,20 @@ These guides follow the current source checkout. Features marked as requiring a 
 
 | Task | Guide |
 | --- | --- |
-| Start a conversation, stream events, or cancel a Turn | [Agents and sessions](packages/agents-codex/examples/guides/sessions.md) |
-| Choose a model, configure its provider, or compact model context | [Session configuration](packages/agents-codex/examples/guides/session-configuration.md) |
-| Declare functions, select tools, or validate output | [Tools and input](packages/agents-codex/examples/guides/tools.md) and [output contracts](packages/agents-codex/examples/guides/output.md) |
-| Run local commands or control workspace access | [Local execution](packages/agents-codex/examples/guides/local-execution.md) and [workspace grants](packages/agents-codex/examples/guides/workspace-grants.md) |
-| Prepare model requests or inspect traces | [Request preparation](packages/agents-codex/examples/guides/request-preparation.md), [request metadata](packages/agents-codex/examples/guides/request-metadata.md), and [telemetry](packages/agents-codex/examples/guides/telemetry.md) |
-| Connect an MCP server or a remote workspace | [MCP tools](packages/agents-codex/examples/guides/mcp.md) and [remote executors](packages/agents-codex/examples/guides/executors.md) |
-| Restore a conversation or handle a pending request | [Session history and state](packages/agents-codex/examples/guides/state.md) and [native interactions](packages/agents-codex/examples/guides/interactions.md) |
-| Supervise a worker or connect a remote Agent | [Supervised workers](packages/agents-codex/examples/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md) use the current [source build](packages/agents-codex/examples/guides/building.md). |
+| Start a conversation, stream events, or cancel a Turn | [Agents and sessions](examples/codex/guides/sessions.md) |
+| Choose a model, configure its provider, or compact model context | [Session configuration](examples/codex/guides/session-configuration.md) |
+| Declare functions, select tools, or validate output | [Tools and input](examples/codex/guides/tools.md) and [output contracts](examples/codex/guides/output.md) |
+| Run local commands or control workspace access | [Local execution](examples/codex/guides/local-execution.md) and [workspace grants](examples/codex/guides/workspace-grants.md) |
+| Prepare model requests or inspect traces | [Request preparation](examples/codex/guides/request-preparation.md), [request metadata](examples/codex/guides/request-metadata.md), and [telemetry](examples/codex/guides/telemetry.md) |
+| Connect an MCP server or a remote workspace | [MCP tools](examples/codex/guides/mcp.md) and [remote executors](examples/codex/guides/executors.md) |
+| Restore a conversation or handle a pending request | [Session history and state](examples/codex/guides/state.md) and [native interactions](examples/codex/guides/interactions.md) |
+| Supervise a worker or connect a remote Agent | [Supervised workers](examples/codex/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md) use the current [source build](examples/codex/guides/building.md). |
 
 The [native SDK overview](packages/agents-codex/README.md) shows a minimal run. The [native guide index](packages/agents-codex/NATIVE.md) links to individual API topics.
 
 ## More examples
 
-Use [the examples catalog](packages/agents-codex/examples/README.md) to choose a runnable program or a helper to import. Start with a [function tool](packages/agents-codex/examples/basic.ts), [typed application context](packages/agents-codex/examples/typed-context.ts), a [streamed conversation](packages/agents-codex/examples/conversation.ts), or a [validated artifact](packages/agents-codex/examples/validated-artifact.ts).
+Use [the Codex examples catalog](examples/codex/README.md) to choose a runnable program or a helper to import. Start with a [function tool](examples/codex/basic.ts), [typed application context](examples/codex/typed-context.ts), a [streamed conversation](examples/codex/conversation.ts), or a [validated artifact](examples/codex/validated-artifact.ts). The retained SDK examples are in [examples/classic](examples/classic/README.md).
 
 ## Get help
 
@@ -72,4 +72,4 @@ Use [GitHub issues](https://github.com/openai/openai-agents-js/issues) for quest
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and tests. The [source build instructions](packages/agents-codex/examples/guides/building.md) cover the native runtime and SDK packages.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and tests. The [source build instructions](examples/codex/guides/building.md) cover the native runtime and SDK packages.

@@ -4,7 +4,7 @@ description: Use Zod, Standard Schema, or JSON Schema with agents, tools, and ha
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
-import standardSchemaExample from '../../../../../examples/docs/schemas/standardSchema.ts?raw';
+import standardSchemaExample from '../../../../../examples/classic/docs/schemas/standardSchema.ts?raw';
 
 The SDK uses schemas to describe structured data to the model and validate data in your application. Choose the schema form based on whether you need local validation and type inference.
 
@@ -20,7 +20,7 @@ Use Zod when it already fits your application. Use Standard Schema when you want
 
 A compatible value must implement Standard Schema V1 validation and Standard JSON Schema conversion. Some libraries expose both capabilities directly. Others provide an adapter. This example uses Valibot with `toStandardJsonSchema()` from `@valibot/to-json-schema`.
 
-Install the example dependencies with `npm install valibot @valibot/to-json-schema` in an application that already uses `@openai/agents`. To run a complete agent or check the schemas locally, follow the [weather agent example](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/standard-schema).
+Install the example dependencies with `npm install valibot @valibot/to-json-schema` in an application that already uses `@openai/agents`. To run a complete agent or check the schemas locally, follow the [weather agent example](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/standard-schema).
 
 <Code
   lang="typescript"

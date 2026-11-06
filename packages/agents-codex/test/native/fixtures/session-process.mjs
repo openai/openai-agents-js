@@ -5,7 +5,7 @@ import { register } from 'tsx/esm/api';
 
 register();
 const { openFileSession, runMigrationSessionPhase } =
-  await import('../../../examples/migration-session.ts');
+  await import('../../../../../examples/codex/migration-session.ts');
 const [phase, path, effectsPath] = process.argv.slice(2);
 const session = await openFileSession(path, path);
 const retained = await session.getItems();

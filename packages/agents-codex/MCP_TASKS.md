@@ -82,12 +82,12 @@ If a mutation acknowledgment is lost, the adapter keeps the receipt and the rese
 
 ## Run the local example
 
-The [MCP thumbnail example](examples/mcp-tasks.ts) uses the shared application-owned SQLite journal. It requires Node.js 24 or later, a local POSIX filesystem, and built checkout packages and native runtime. Follow [the external-job setup](EXTERNAL_JOBS.md#run-the-process-restart-example) for private directory requirements.
+The [MCP thumbnail example](../../examples/codex/mcp-tasks.ts) uses the shared application-owned SQLite journal. It requires Node.js 24 or later, a local POSIX filesystem, and built checkout packages and native runtime. Follow [the external-job setup](EXTERNAL_JOBS.md#run-the-process-restart-example) for private directory requirements.
 
 Start trusted local MCP and Responses-compatible model peers separately. Supply their ports. This command does not provision either service:
 
 ```sh
-pnpm exec tsx packages/agents-codex/examples/mcp-tasks.ts run ORDER --directory /private/state --mcp-port PORT --model-port PORT
+pnpm exec tsx examples/codex/mcp-tasks.ts run ORDER --directory /private/state --mcp-port PORT --model-port PORT
 ```
 
 Both connections use `127.0.0.1` and a synthetic `local-only` credential. No external API key is needed for those local peers. Reuse the same order and directory when advancing saved work. The application prints its current outcome and closes its local resources.

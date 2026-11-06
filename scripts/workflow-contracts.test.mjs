@@ -40,7 +40,7 @@ describe('repository workflow contracts', () => {
   it('requires manual execution of both host shell aliases without injecting approval', async () => {
     const toolsPackage = JSON.parse(
       await readFile(
-        path.join(repositoryRoot, 'examples/tools/package.json'),
+        path.join(repositoryRoot, 'examples/classic/tools/package.json'),
         'utf8',
       ),
     );

@@ -3,7 +3,7 @@ import { Agent, NativeProvider, ToolOutput } from '../../src';
 import {
   createRecordRecipe,
   type RecordApplication,
-} from '../../examples/operation-selection';
+} from '../../../../examples/codex/operation-selection';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());

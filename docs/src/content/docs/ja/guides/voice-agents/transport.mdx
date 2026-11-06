@@ -76,12 +76,12 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
-import customWebRTCTransportExample from '../../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
-import websocketSessionExample from '../../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
-import sipTransportExample from '../../../../../../../examples/docs/voice-agents/sipTransport.ts?raw';
-import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
-import thinClientExample from '../../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
-import cloudflareTransportExample from '../../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+import customWebRTCTransportExample from '../../../../../../../examples/classic/docs/voice-agents/customWebRTCTransport.ts?raw';
+import websocketSessionExample from '../../../../../../../examples/classic/docs/voice-agents/websocketSession.ts?raw';
+import sipTransportExample from '../../../../../../../examples/classic/docs/voice-agents/sipTransport.ts?raw';
+import transportEventsExample from '../../../../../../../examples/classic/docs/voice-agents/transportEvents.ts?raw';
+import thinClientExample from '../../../../../../../examples/classic/docs/voice-agents/thinClient.ts?raw';
+import cloudflareTransportExample from '../../../../../../../examples/classic/docs/extensions/cloudflare-basic.ts?raw';
 
 セッションの実行場所と、元のメディアやイベントをどの程度制御する必要があるかに応じて、トランスポートを選択してください。
 
@@ -157,13 +157,13 @@ GA を使用する場合は、`session.type` を削除しないでください�
   モデルが指定したツール引数に基づいて認可することは絶対に避けてください。
 </Aside>
 
-音声のみのブラウザーピア接続、サーバーで適用する SDP ポリシー、サイドバンドの `RealtimeSession`、ブラウザー向けに変換したイベント、クリーンアップ処理を備えた完全なアプリケーションについては、[`realtime-server-controlled` のコード例](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-server-controlled)を参照してください。
+音声のみのブラウザーピア接続、サーバーで適用する SDP ポリシー、サイドバンドの `RealtimeSession`、ブラウザー向けに変換したイベント、クリーンアップ処理を備えた完全なアプリケーションについては、[`realtime-server-controlled` のコード例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-server-controlled)を参照してください。
 
 ### React Native でのアプリ管理トランスポートの使用
 
 `@openai/agents-core` と `@openai/agents-realtime` は、React Native 向けのパッケージ条件を公開しているため、Metro は Node.js 組み込みモジュールを使わずに、移植可能な SDK シムを解決できます。組み込みの `OpenAIRealtimeWebRTC` は、ブラウザーの WebRTC グローバルオブジェクトと DOM 音声要素に依存するため、引き続きブラウザー向けのトランスポートです。React Native では、ネイティブ WebRTC 実装をインストールしてアプリ側で管理し、カスタムの `RealtimeTransportLayer` を介して `RealtimeSession` に接続してください。
 
-[`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) の Expo 開発ビルドのコード例では、アプリが管理する `react-native-webrtc` トランスポート、マイクの権限、音声ルーティング、サーバー側の一時トークンエンドポイントを示しています。`react-native-webrtc` にはネイティブコードが含まれるため、Expo Go はサポートされていません。標準の OpenAI API キーはサーバー上に保持し、モバイルアプリには有効期間の短い一時クライアントトークンだけを渡してください。
+[`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-react-native) の Expo 開発ビルドのコード例では、アプリが管理する `react-native-webrtc` トランスポート、マイクの権限、音声ルーティング、サーバー側の一時トークンエンドポイントを示しています。`react-native-webrtc` にはネイティブコードが含まれるため、Expo Go はサポートされていません。標準の OpenAI API キーはサーバー上に保持し、モバイルアプリには有効期間の短い一時クライアントトークンだけを渡してください。
 
 ### サーバーのデフォルトとなる WebSocket
 

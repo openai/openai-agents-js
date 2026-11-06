@@ -16,7 +16,7 @@ import { z } from 'zod';
 import {
   runPreparedDeclarationsExample,
   withPreparedRequest,
-} from '../../examples/prepared-model-declarations';
+} from '../../../../examples/codex/prepared-model-declarations';
 
 function scenario(name = 'reserve_seats', args = '{"seats":2}') {
   const execute = vi.fn(({ seats }: { seats: number }) => `original:${seats}`);

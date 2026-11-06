@@ -10,7 +10,7 @@ import {
 import {
   borrowSelectedModalProbe,
   ownSelectedModalProbe,
-} from '../../examples/selected-modal-sandbox';
+} from '../../../../examples/codex/selected-modal-sandbox';
 
 beforeAll(() => setTracingDisabled(true));
 afterAll(() => setTracingDisabled(false));

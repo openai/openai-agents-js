@@ -4,15 +4,15 @@ description: Connect your Agents SDK agents to any model through Vercel's AI SDK
 ---
 
 import { Steps, Code } from '@astrojs/starlight/components';
-import aiSdkImportsExample from '../../../../../examples/docs/extensions/ai-sdk-imports.ts?raw';
-import aiSdkModelExample from '../../../../../examples/docs/extensions/ai-sdk-model.ts?raw';
-import aiSdkProviderDataExample from '../../../../../examples/docs/extensions/ai-sdk-providerData.ts?raw';
-import aiSdkProviderMetadataExample from '../../../../../examples/docs/extensions/ai-sdk-providerMetadata.ts?raw';
-import aiSdkSetupExample from '../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
-import aiSdkTransformOutputTextExample from '../../../../../examples/docs/extensions/ai-sdk-transform-output-text.ts?raw';
-import aiSdkUiMessageStreamExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream.ts?raw';
-import aiSdkUiMessageStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
-import aiSdkTextStreamResponseExample from '../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
+import aiSdkImportsExample from '../../../../../examples/classic/docs/extensions/ai-sdk-imports.ts?raw';
+import aiSdkModelExample from '../../../../../examples/classic/docs/extensions/ai-sdk-model.ts?raw';
+import aiSdkProviderDataExample from '../../../../../examples/classic/docs/extensions/ai-sdk-providerData.ts?raw';
+import aiSdkProviderMetadataExample from '../../../../../examples/classic/docs/extensions/ai-sdk-providerMetadata.ts?raw';
+import aiSdkSetupExample from '../../../../../examples/classic/docs/extensions/ai-sdk-setup.ts?raw';
+import aiSdkTransformOutputTextExample from '../../../../../examples/classic/docs/extensions/ai-sdk-transform-output-text.ts?raw';
+import aiSdkUiMessageStreamExample from '../../../../../examples/classic/docs/extensions/ai-sdk-ui-message-stream.ts?raw';
+import aiSdkUiMessageStreamResponseExample from '../../../../../examples/classic/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
+import aiSdkTextStreamResponseExample from '../../../../../examples/classic/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
 The Agents SDK uses OpenAI models through the Responses API or Chat Completions API by default. To use another model, connect a model supported by the [Vercel AI SDK](https://sdk.vercel.ai/) through this adapter.
 
@@ -20,7 +20,7 @@ The Agents SDK uses OpenAI models through the Responses API or Chat Completions 
 
 <Steps>
 
-1. [Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/installation.md#run-the-classic-extensions). The checkout includes the OpenAI provider used here. See the [AI SDK provider list](https://ai-sdk.dev/docs/foundations/providers-and-models) for other model packages.
+1. [Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#run-the-classic-extensions). The checkout includes the OpenAI provider used here. See the [AI SDK provider list](https://ai-sdk.dev/docs/foundations/providers-and-models) for other model packages.
 
 2. Import the adapter and model to connect to your agent:
 
@@ -100,7 +100,7 @@ Use the same retry configuration as for other models:
 - Compose `retryPolicies` such as `networkError()`, `httpStatus([...])`, or `providerSuggested()`.
 - `providerSuggested()` only helps when the wrapped AI SDK model can provide retry advice through the adapter.
 
-For a complete example using `aisdk(openai(...))`, see [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/ai-sdk/retry.ts). For the retry API itself, including safety boundaries for streaming and stateful follow-up requests, see the [Models guide](/openai-agents-js/guides/models#model-retries).
+For a complete example using `aisdk(openai(...))`, see [`examples/classic/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/ai-sdk/retry.ts). For the retry API itself, including safety boundaries for streaming and stateful follow-up requests, see the [Models guide](/openai-agents-js/guides/models#model-retries).
 
 ## Picking the right integration
 
@@ -113,7 +113,7 @@ There are two related integrations in `@openai/agents-extensions`:
 
 - The `@openai/agents-extensions/ai-sdk` adapter is still in beta. Test it carefully with your chosen provider, especially smaller providers.
 - If you are using OpenAI models, prefer the default OpenAI model provider instead of this adapter.
-- Supported AI SDK providers must expose `specificationVersion` `v2`, `v3`, or `v4`. The legacy v1 provider example has been retired. See [examples/ai-sdk](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/ai-sdk) for examples that use the supported provider interfaces.
+- Supported AI SDK providers must expose `specificationVersion` `v2`, `v3`, or `v4`. The legacy v1 provider example has been retired. See [examples/classic/ai-sdk](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/ai-sdk) for examples that use the supported provider interfaces.
 - Computer tools require display metadata when used through this adapter. Include both `environment` and `dimensions` metadata on the tool.
 - Deferred Responses tool-loading flows are not supported here. That includes `toolNamespace()`, function tools with `deferLoading: true`, and `toolSearchTool()`. If you need tool search, use an OpenAI Responses model directly. See the [Tools guide](/openai-agents-js/guides/tools#deferred-tool-loading-with-tool-search) and [Models guide](/openai-agents-js/guides/models#responses-only-deferred-tool-loading).
 - Programmatic Tool Calling is not supported by the AI SDK model adapter. It rejects `programmaticToolCallingTool()`, tools whose `allowedCallers` includes `'programmatic'`, Programmatic Tool Calling history items, and Responses `outputSchema`. Use an OpenAI Responses model directly for these features.
@@ -122,7 +122,7 @@ There are two related integrations in `@openai/agents-extensions`:
 
 The adapter preserves `ToolOutputImage` values returned by function tools, including remote URLs, base64 data, and OpenAI file IDs. AI SDK v2 models receive `media` parts. AI SDK v3 models receive `image-url`, `image-data`, or `image-file-id` parts. AI SDK v4 models receive `file` parts whose data is represented as a URL, inline data, or a provider reference for file IDs. This lets each supported model version consume the original image representation.
 
-See [`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/ai-sdk/image-tool-output.ts) for a complete example.
+See [`examples/classic/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/ai-sdk/image-tool-output.ts) for a complete example.
 
 ## AI SDK UI stream helpers
 
@@ -168,4 +168,4 @@ Example Next.js route for text-only streaming:
   title="Text stream response"
 />
 
-For end-to-end usage, see the `examples/ai-sdk-ui` app in this repository.
+For end-to-end usage, see the `examples/classic/ai-sdk-ui` app in this repository.

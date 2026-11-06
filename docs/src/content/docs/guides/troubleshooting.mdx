@@ -35,7 +35,7 @@ The core SDK can be bundled for browser use, but tracing is disabled by default 
 
 - `@openai/agents-core` and `@openai/agents-realtime` provide React Native package conditions for portable shims, but the built-in `OpenAIRealtimeWebRTC` remains browser-only.
 - Realtime apps must provide an app-owned transport backed by a native WebRTC implementation such as `react-native-webrtc`, and the app remains responsible for permissions, audio routing, and transport lifecycle.
-- Expo Go cannot load native WebRTC modules. Use an Expo development build or a native React Native project. See the [`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/realtime-react-native) example.
+- Expo Go cannot load native WebRTC modules. Use an Expo development build or a native React Native project. See the [`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/realtime-react-native) example.
 
 #### v8 isolates
 

@@ -12,7 +12,10 @@ import {
   modelResponse,
   ScriptedModel,
 } from '@openai/agents/classic/testing';
-import { askOrderAgent, createOrderAgent } from '../../examples/live/agent';
+import {
+  askOrderAgent,
+  createOrderAgent,
+} from '../../../../examples/codex/live/agent';
 
 const runner = () => new Runner({ tracingDisabled: true });
 

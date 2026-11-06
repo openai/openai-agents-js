@@ -1,8 +1,8 @@
 ---
 import { Code, TabItem, Tabs } from '@astrojs/starlight/components';
-import helloWorldSandboxExample from '../../../examples/docs/toppage/sandboxAgent.ts?raw';
-import helloWorldExample from '../../../examples/docs/toppage/textAgent.ts?raw';
-import helloWorldRealtimeExample from '../../../examples/docs/toppage/voiceAgent.ts?raw';
+import helloWorldSandboxExample from '../../../examples/classic/docs/toppage/sandboxAgent.ts?raw';
+import helloWorldExample from '../../../examples/classic/docs/toppage/textAgent.ts?raw';
+import helloWorldRealtimeExample from '../../../examples/classic/docs/toppage/voiceAgent.ts?raw';
 const path = Astro.url.pathname;
 const pathPrefix =
   path !== '/' ? (!path.endsWith('/') ? path + '/' : path) : '';

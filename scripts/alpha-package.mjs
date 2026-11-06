@@ -357,7 +357,7 @@ Use Node.js 24 and its bundled npm on ${platform}. Linux requires glibc 2.39 or 
 
 Run \`npm ci --ignore-scripts\`, set OPENAI_API_KEY, then run \`node hello.mjs\`. The example sends a live API request. npm downloads third-party dependencies. Keep package.json, package-lock.json and all five vendor archives together.
 
-After installing, use the [installation guide](node_modules/@openai/agents-codex/examples/guides/installation.md) and [offline native startup check](node_modules/@openai/agents-codex/TESTING.md) included with these matching packages. Applications import from \`@openai/agents\` and its supported subpaths.
+After installing, use the [installation guide for this source revision](https://github.com/openai/openai-agents-js/blob/${sourceCommit}/examples/codex/guides/installation.md) and the included [offline native startup check](node_modules/@openai/agents-codex/TESTING.md). Applications import from \`@openai/agents\` and its supported subpaths.
 `,
     );
     run(

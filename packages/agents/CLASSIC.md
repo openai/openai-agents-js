@@ -15,7 +15,7 @@ const result = await runner.run(agent, 'Hello');
 console.log(result.finalOutput);
 ```
 
-For an offline run, try the [scripted classic example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/classic.ts). Its custom Model needs no OpenAI credentials or native helpers.
+For an offline run, try the [scripted classic example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/classic.ts). Its custom Model needs no OpenAI credentials or native helpers.
 
 ## Retained classic APIs
 
@@ -45,7 +45,7 @@ An `Agent.asTool()` call starts a separate nested Runner. That Runner does not i
 
 ### Prepare model declarations
 
-To edit model-facing instructions, history, or tool declarations, use the application-owned wrapper in the [prepared Model declarations example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/prepared-model-declarations/README.md). It clones request data before editing it. Set the wrapper as the Agent's `model`, or pass `new Runner({ modelOverride: wrappedModel })` to select it across a classic run's handoffs.
+To edit model-facing instructions, history, or tool declarations, use the application-owned wrapper in the [prepared Model declarations example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/prepared-model-declarations/README.md). It clones request data before editing it. Set the wrapper as the Agent's `model`, or pass `new Runner({ modelOverride: wrappedModel })` to select it across a classic run's handoffs.
 
 The Runner still uses the original registered tools, schemas, and approval policy for execution. Editing a sampled declaration cannot enable a disabled tool or expand its executable arguments.
 
@@ -57,26 +57,26 @@ Classic `toTextStream()` emits text from all responses, including intermediate a
 
 ## Experimental native Model migration
 
-Use `SDKRunner` to run a supported classic Agent through the native loop. Start with [models and run options](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-models.md), then choose [tools and delegation](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-tools.md) or [streaming and completed session history](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-sessions.md). The adapter supports specific combinations. For example, its terminal handoff requires two text Agents with the same explicit Model and excludes Session storage and live streaming.
+Use `SDKRunner` to run a supported classic Agent through the native loop. Start with [models and run options](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md), then choose [tools and delegation](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md) or [streaming and completed session history](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md). The adapter supports specific combinations. For example, its terminal handoff requires two text Agents with the same explicit Model and excludes Session storage and live streaming.
 
-- <a name="supported-declarations-and-settings"></a>[Supported declarations and settings](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-models.md#supported-declarations-and-settings)
-- <a name="resolve-instructions-for-each-model-request"></a>[Resolve instructions for each Model request](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-models.md#resolve-instructions-for-each-model-request)
-- <a name="select-models-and-control-attempts"></a><a name="argument-conversion"></a><a name="retries-and-cancellation"></a><a name="execution-and-cleanup-errors"></a>[Select Models and control attempts](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-models.md#select-models-and-control-attempts)
-- <a name="structured-final-output"></a>[Structured final output](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-models.md#structured-final-output)
-- <a name="guardrails-and-lifecycle-events"></a><a name="guardrail-order"></a><a name="lifecycle-listeners"></a>[Guardrails and lifecycle events](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-models.md#guardrails-and-lifecycle-events)
-- <a name="finish-with-a-tool-result"></a><a name="completion-and-cleanup"></a>[Finish with a tool result](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-tools.md#finish-with-a-tool-result)
-- <a name="use-an-agent-as-a-native-tool"></a><a name="child-configuration"></a><a name="output-extraction-and-cleanup"></a>[Use an Agent as a native tool](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-tools.md#use-an-agent-as-a-native-tool)
-- <a name="transfer-to-one-terminal-agent"></a>[Transfer to one terminal Agent](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-tools.md#transfer-to-one-terminal-agent)
-- <a name="hold-one-function-for-approval"></a><a name="paused-carrier"></a><a name="decide-and-join-continuation"></a><a name="approval-scope"></a>[Hold one function for approval](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-tools.md#hold-one-function-for-approval)
-- <a name="live-model-events-and-accepted-semantic-replay"></a><a name="tentative-raw-events"></a><a name="accepted-semantic-replay"></a><a name="completed-results"></a><a name="backlog-and-cancellation"></a>[Live Model events and accepted semantic replay](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-sessions.md#live-model-events-and-accepted-semantic-replay)
-- <a name="completed-session-history"></a><a name="select-and-append-history"></a>[Completed Session history](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-sessions.md#completed-session-history)
-- <a name="reopen-an-application-owned-file-session"></a><a name="storage-ownership-and-failure-recovery"></a>[Reopen an application-owned file Session](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-sessions.md#reopen-an-application-owned-file-session)
+- <a name="supported-declarations-and-settings"></a>[Supported declarations and settings](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#supported-declarations-and-settings)
+- <a name="resolve-instructions-for-each-model-request"></a>[Resolve instructions for each Model request](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#resolve-instructions-for-each-model-request)
+- <a name="select-models-and-control-attempts"></a><a name="argument-conversion"></a><a name="retries-and-cancellation"></a><a name="execution-and-cleanup-errors"></a>[Select Models and control attempts](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#select-models-and-control-attempts)
+- <a name="structured-final-output"></a>[Structured final output](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#structured-final-output)
+- <a name="guardrails-and-lifecycle-events"></a><a name="guardrail-order"></a><a name="lifecycle-listeners"></a>[Guardrails and lifecycle events](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#guardrails-and-lifecycle-events)
+- <a name="finish-with-a-tool-result"></a><a name="completion-and-cleanup"></a>[Finish with a tool result](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#finish-with-a-tool-result)
+- <a name="use-an-agent-as-a-native-tool"></a><a name="child-configuration"></a><a name="output-extraction-and-cleanup"></a>[Use an Agent as a native tool](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#use-an-agent-as-a-native-tool)
+- <a name="transfer-to-one-terminal-agent"></a>[Transfer to one terminal Agent](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#transfer-to-one-terminal-agent)
+- <a name="hold-one-function-for-approval"></a><a name="paused-carrier"></a><a name="decide-and-join-continuation"></a><a name="approval-scope"></a>[Hold one function for approval](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-tools.md#hold-one-function-for-approval)
+- <a name="live-model-events-and-accepted-semantic-replay"></a><a name="tentative-raw-events"></a><a name="accepted-semantic-replay"></a><a name="completed-results"></a><a name="backlog-and-cancellation"></a>[Live Model events and accepted semantic replay](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md#live-model-events-and-accepted-semantic-replay)
+- <a name="completed-session-history"></a><a name="select-and-append-history"></a>[Completed Session history](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md#completed-session-history)
+- <a name="reopen-an-application-owned-file-session"></a><a name="storage-ownership-and-failure-recovery"></a>[Reopen an application-owned file Session](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-sessions.md#reopen-an-application-owned-file-session)
 
-<a name="choose-the-full-classic-runtime"></a>Use the [full classic runtime](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/migrate-models.md#choose-the-full-classic-runtime) when the adapter cannot represent your Agent, pending work, or output contract.
+<a name="choose-the-full-classic-runtime"></a>Use the [full classic runtime](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/migrate-models.md#choose-the-full-classic-runtime) when the adapter cannot represent your Agent, pending work, or output contract.
 
 ## Use a selected Modal sandbox
 
-The [selected Modal example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/selected-modal-sandbox.ts) attaches a pre-created handle to a classic `SandboxAgent`. Import `shell()` from `@openai/agents/classic/sandbox` and set `capabilities: [shell()]`. The example runs one blocking `python -V` probe with `login: false`, suppresses command output, and returns the exit code.
+The [selected Modal example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/selected-modal-sandbox.ts) attaches a pre-created handle to a classic `SandboxAgent`. Import `shell()` from `@openai/agents/classic/sandbox` and set `capabilities: [shell()]`. The example runs one blocking `python -V` probe with `login: false`, suppresses command output, and returns the exit code.
 
 Choose who owns the handle.
 

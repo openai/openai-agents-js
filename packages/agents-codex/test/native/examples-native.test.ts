@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   PAGE_CHARS,
   SelectedDocuments,
-} from '../../examples/document-workspace';
+} from '../../../../examples/codex/document-workspace';
 import { invokeFunctionTool } from '../../src/runtime/tools';
 import type { JsonObject } from '../../src/runtime/binding';
 

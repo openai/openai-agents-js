@@ -1,10 +1,10 @@
 # Public results for external jobs
 
-Declare a deferred tool for a call that the application will answer. Pass that same object to `jobs.register` and to the agent's `tools` list. The [thumbnail example](examples/external-job.ts) uses an application-owned SQLite journal to authorize each order and save its checkpoint. A separate worker writes the image. The projector exposes only its byte count to the model.
+Declare a deferred tool for a call that the application will answer. Pass that same object to `jobs.register` and to the agent's `tools` list. The [thumbnail example](../../examples/codex/external-job.ts) uses an application-owned SQLite journal to authorize each order and save its checkpoint. A separate worker writes the image. The projector exposes only its byte count to the model.
 
 ## Run the process-restart example
 
-Use Node.js 24 or later on a local POSIX filesystem. Build this checkout's packages and native runtime using [the source build guide](examples/guides/building.md) before running the example. Run the following commands from the repository root with `pnpm` using Node.js 24. The mock uses the public `@openai/agents/testing` fixture and the real native loop over loopback HTTP. It needs no API key or external model service.
+Use Node.js 24 or later on a local POSIX filesystem. Build this checkout's packages and native runtime using [the source build guide](../../examples/codex/guides/building.md) before running the example. Run the following commands from the repository root with `pnpm` using Node.js 24. The mock uses the public `@openai/agents/testing` fixture and the real native loop over loopback HTTP. It needs no API key or external model service.
 
 Choose an absolute private directory outside every model-visible mount. Its parent must already exist and be trusted by the application. The example creates the directory with mode `0700`. Keep its database, SQLite sidecars, lock databases and private receipts outside those mounts for the entire job lifetime. The host trusts the parent directory and processes with the same effective UID.
 
@@ -12,13 +12,13 @@ Choose an absolute private directory outside every model-visible mount. Its pare
 # Choose a path under an existing trusted parent; do not put it in a model mount.
 export THUMBNAIL_STATE_DIR=/absolute/private/thumbnail-state
 
-pnpm exec tsx packages/agents-codex/examples/external-job.ts run sample-01 --mock --directory "$THUMBNAIL_STATE_DIR"
+pnpm exec tsx examples/codex/external-job.ts run sample-01 --mock --directory "$THUMBNAIL_STATE_DIR"
 # pending
 
-pnpm exec tsx packages/agents-codex/examples/external-job.ts worker sample-01 --directory "$THUMBNAIL_STATE_DIR"
+pnpm exec tsx examples/codex/external-job.ts worker sample-01 --directory "$THUMBNAIL_STATE_DIR"
 # Rendered.
 
-pnpm exec tsx packages/agents-codex/examples/external-job.ts run sample-01 --mock --directory "$THUMBNAIL_STATE_DIR"
+pnpm exec tsx examples/codex/external-job.ts run sample-01 --mock --directory "$THUMBNAIL_STATE_DIR"
 # completed
 ```
 
@@ -139,14 +139,14 @@ To request authorized remote cancellation, call `jobs.advance(restored, request,
 
 After `failed` or `cancelled`, close the local Session if the host stops the workflow. If the application chooses to continue the model with a safe failure explanation, answer the still-live matched manual request through `restored.respond(request.reply(...))`, await the original Turn, and durably record that separate completion. The helper does not project failed/cancelled provider payloads or manufacture their model-facing results. A `continued` outcome alone supplies a Turn to await; pending siblings can still require their own replies.
 
-For an MCP Tasks integration, see [the existing MCP task example](examples/mcp-tasks.ts). It uses the same coordinator and application journal with `MCPTasksProvider`; the adapter does not replace the application's authorization or uncertain-creation reconciliation.
+For an MCP Tasks integration, see [the existing MCP task example](../../examples/codex/mcp-tasks.ts). It uses the same coordinator and application journal with `MCPTasksProvider`; the adapter does not replace the application's authorization or uncertain-creation reconciliation.
 
 ## Try recovery with a normal manual tool
 
-The separate [synthetic order example](examples/external-order-recovery.ts) shows application-managed recovery without `DeferredTools`. After the same native source setup, run it from the repository root with a trusted private directory:
+The separate [synthetic order example](../../examples/codex/external-order-recovery.ts) shows application-managed recovery without `DeferredTools`. After the same native source setup, run it from the repository root with a trusted private directory:
 
 ```sh
-pnpm exec tsx packages/agents-codex/examples/external-order-recovery.ts /absolute/private/order-demo
+pnpm exec tsx examples/codex/external-order-recovery.ts /absolute/private/order-demo
 ```
 
 The scripted run prints `The synthetic order is fulfilled.` It saves the original pending checkpoint, reconciles a synthetic effect in a separate application record, answers a newly issued live request, and records the final answer. Running it again returns that saved answer without another model request. No real order is placed and no model key is needed.

@@ -76,15 +76,15 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import sessionsQuickstart from '../../../../../../examples/docs/sessions/basicSession.ts?raw';
-import manageHistory from '../../../../../../examples/docs/sessions/manageHistory.ts?raw';
-import customSession from '../../../../../../examples/docs/sessions/customSession.ts?raw';
-import contextAwareSession from '../../../../../../examples/docs/sessions/contextAwareSession.ts?raw';
-import sessionInputCallback from '../../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
-import responsesCompactionSession from '../../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
-import manualCompactionSession from '../../../../../../examples/docs/sessions/responsesCompactionManualSession.ts?raw';
-import memorySessionExample from '../../../../../../examples/docs/sessions/memorySession.ts?raw';
-import resumableRunExample from '../../../../../../examples/docs/sessions/resumableRun.ts?raw';
+import sessionsQuickstart from '../../../../../../examples/classic/docs/sessions/basicSession.ts?raw';
+import manageHistory from '../../../../../../examples/classic/docs/sessions/manageHistory.ts?raw';
+import customSession from '../../../../../../examples/classic/docs/sessions/customSession.ts?raw';
+import contextAwareSession from '../../../../../../examples/classic/docs/sessions/contextAwareSession.ts?raw';
+import sessionInputCallback from '../../../../../../examples/classic/docs/sessions/sessionInputCallback.ts?raw';
+import responsesCompactionSession from '../../../../../../examples/classic/docs/sessions/responsesCompactionSession.ts?raw';
+import manualCompactionSession from '../../../../../../examples/classic/docs/sessions/responsesCompactionManualSession.ts?raw';
+import memorySessionExample from '../../../../../../examples/classic/docs/sessions/memorySession.ts?raw';
+import resumableRunExample from '../../../../../../examples/classic/docs/sessions/resumableRun.ts?raw';
 
 セッションは、Agents SDK に **永続的なメモリ層** を提供します。`Session` インターフェースを実装した任意のオブジェクトを `Runner.run` に渡すだけで、残りの処理は SDK が行います。セッションがある場合、ランナーは次の処理を自動的に行います。
 
@@ -92,7 +92,7 @@ import resumableRunExample from '../../../../../../examples/docs/sessions/resuma
 2. 各実行の完了後に、新しいユーザー入力とアシスタントの出力を永続化します。
 3. 新しいユーザーテキストでランナーを呼び出す場合も、中断された `RunState` から再開する場合も、以降のターンでセッションを利用できる状態に保ちます。
 
-これにより、`toInputList()` を手動で呼び出したり、ターン間で履歴をつなぎ合わせたりする必要がなくなります。TypeScript SDK には、Conversations API 向けの `OpenAIConversationsSession` と、ローカル開発向けの `MemorySession` という 2 つの実装が付属しています。どちらも `Session` インターフェースを共有しているため、独自のストレージバックエンドに差し替えられます。Conversations API 以外の実装の参考として、`examples/memory/` にあるセッションバックエンドのコード例（Prisma、ファイルベースなど）をご覧ください。OpenAI Responses モデルを使用する場合は、任意のセッションを `OpenAIResponsesCompactionSession` でラップすると、[`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact) を通じて保存済みの会話履歴を自動的に縮小できます。
+これにより、`toInputList()` を手動で呼び出したり、ターン間で履歴をつなぎ合わせたりする必要がなくなります。TypeScript SDK には、Conversations API 向けの `OpenAIConversationsSession` と、ローカル開発向けの `MemorySession` という 2 つの実装が付属しています。どちらも `Session` インターフェースを共有しているため、独自のストレージバックエンドに差し替えられます。Conversations API 以外の実装の参考として、`examples/classic/memory/` にあるセッションバックエンドのコード例（Prisma、ファイルベースなど）をご覧ください。OpenAI Responses モデルを使用する場合は、任意のセッションを `OpenAIResponsesCompactionSession` でラップすると、[`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact) を通じて保存済みの会話履歴を自動的に縮小できます。
 
 > ヒント：このページの `OpenAIConversationsSession` のコード例を実行するには、SDK が Conversations API を呼び出せるように、環境変数 `OPENAI_API_KEY` を設定してください（またはセッションの構築時に `apiKey` を指定してください）。
 

@@ -103,23 +103,23 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
-import multiAgentsExample from '../../../../../../../examples/docs/voice-agents/multiAgents.ts?raw';
-import configureSessionExample from '../../../../../../../examples/docs/voice-agents/configureSession.ts?raw';
-import handleAudioExample from '../../../../../../../examples/docs/voice-agents/handleAudio.ts?raw';
-import defineToolExample from '../../../../../../../examples/docs/voice-agents/defineTool.ts?raw';
-import toolApprovalEventExample from '../../../../../../../examples/docs/voice-agents/toolApprovalEvent.ts?raw';
-import guardrailsExample from '../../../../../../../examples/docs/voice-agents/guardrails.ts?raw';
-import guardrailSettingsExample from '../../../../../../../examples/docs/voice-agents/guardrailSettings.ts?raw';
-import audioInterruptedExample from '../../../../../../../examples/docs/voice-agents/audioInterrupted.ts?raw';
-import sessionInterruptExample from '../../../../../../../examples/docs/voice-agents/sessionInterrupt.ts?raw';
-import updateHistoryExample from '../../../../../../../examples/docs/voice-agents/updateHistory.ts?raw';
-import transportEventsExample from '../../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
-import toolHistoryExample from '../../../../../../../examples/docs/voice-agents/toolHistory.ts?raw';
-import sendMessageExample from '../../../../../../../examples/docs/voice-agents/sendMessage.ts?raw';
-import addImageExample from '../../../../../../../examples/docs/voice-agents/addImage.ts?raw';
-import serverAgentExample from '../../../../../../../examples/docs/voice-agents/serverAgent.ts?raw';
-import delegationAgentExample from '../../../../../../../examples/docs/voice-agents/delegationAgent.ts?raw';
-import turnDetectionExample from '../../../../../../../examples/docs/voice-agents/turnDetection.ts?raw';
+import multiAgentsExample from '../../../../../../../examples/classic/docs/voice-agents/multiAgents.ts?raw';
+import configureSessionExample from '../../../../../../../examples/classic/docs/voice-agents/configureSession.ts?raw';
+import handleAudioExample from '../../../../../../../examples/classic/docs/voice-agents/handleAudio.ts?raw';
+import defineToolExample from '../../../../../../../examples/classic/docs/voice-agents/defineTool.ts?raw';
+import toolApprovalEventExample from '../../../../../../../examples/classic/docs/voice-agents/toolApprovalEvent.ts?raw';
+import guardrailsExample from '../../../../../../../examples/classic/docs/voice-agents/guardrails.ts?raw';
+import guardrailSettingsExample from '../../../../../../../examples/classic/docs/voice-agents/guardrailSettings.ts?raw';
+import audioInterruptedExample from '../../../../../../../examples/classic/docs/voice-agents/audioInterrupted.ts?raw';
+import sessionInterruptExample from '../../../../../../../examples/classic/docs/voice-agents/sessionInterrupt.ts?raw';
+import updateHistoryExample from '../../../../../../../examples/classic/docs/voice-agents/updateHistory.ts?raw';
+import transportEventsExample from '../../../../../../../examples/classic/docs/voice-agents/transportEvents.ts?raw';
+import toolHistoryExample from '../../../../../../../examples/classic/docs/voice-agents/toolHistory.ts?raw';
+import sendMessageExample from '../../../../../../../examples/classic/docs/voice-agents/sendMessage.ts?raw';
+import addImageExample from '../../../../../../../examples/classic/docs/voice-agents/addImage.ts?raw';
+import serverAgentExample from '../../../../../../../examples/classic/docs/voice-agents/serverAgent.ts?raw';
+import delegationAgentExample from '../../../../../../../examples/classic/docs/voice-agents/delegationAgent.ts?raw';
+import turnDetectionExample from '../../../../../../../examples/classic/docs/voice-agents/turnDetection.ts?raw';
 
 <Aside type="caution">
 
@@ -283,7 +283,7 @@ Realtime 语音到语音会话也可以包含图像。在 SDK 中，使用 `addI
 
 函数工具在与 `RealtimeSession` 相同的环境中运行。这意味着，如果会话在浏览器中运行，工具也会在浏览器中执行。如果需要执行敏感操作，请在工具内部调用后端，让服务器执行需要特权的工作。
 
-这样，浏览器端工具就可以作为通往服务器端逻辑的轻量级后向通道。例如，[`examples/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-next) 代码示例在浏览器中定义了一个 `refundBackchannel` 工具，将请求和当前对话历史记录转发给服务器上的 `handleRefundRequest(...)`。在服务器上，单独的 `Runner` 可以使用不同的智能体或模型评估退款请求，再将结果返回给语音会话。
+这样，浏览器端工具就可以作为通往服务器端逻辑的轻量级后向通道。例如，[`examples/classic/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-next) 代码示例在浏览器中定义了一个 `refundBackchannel` 工具，将请求和当前对话历史记录转发给服务器上的 `handleRefundRequest(...)`。在服务器上，单独的 `Runner` 可以使用不同的智能体或模型评估退款请求，再将结果返回给语音会话。
 
 #### 托管 MCP 工具
 

@@ -1,8 +1,0 @@
-{
-  "extends": "../../tsconfig.examples.json",
-  "compilerOptions": {
-    "moduleResolution": "bundler",
-    "noUnusedLocals": false,
-    "skipLibCheck": true
-  }
-}

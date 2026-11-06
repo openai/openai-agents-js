@@ -4,19 +4,19 @@ description: Provide your agents with capabilities via hosted tools or custom fu
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import toolsFunctionExample from '../../../../../examples/docs/tools/functionTools.ts?raw';
-import toolsHostedToolsExample from '../../../../../examples/docs/tools/hostedTools.ts?raw';
-import localBuiltInToolsExample from '../../../../../examples/docs/tools/localBuiltInTools.ts?raw';
-import computerSafetyChecksExample from '../../../../../examples/docs/tools/computerSafetyChecks.ts?raw';
-import nonStrictSchemaTools from '../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
-import toolSearchExample from '../../../../../examples/docs/tools/toolSearch.ts?raw';
-import agentsAsToolsExample from '../../../../../examples/docs/tools/agentsAsTools.ts?raw';
-import agentsAsToolsStreamingExample from '../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
-import agentToolRunContextExample from '../../../../../examples/docs/tools/agentToolRunContext.ts?raw';
-import mcpLocalServer from '../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
-import codexToolExample from '../../../../../examples/docs/tools/codexTool.ts?raw';
-import codexRunContextThreadExample from '../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
-import programmaticToolCallingExample from '../../../../../examples/docs/tools/programmaticToolCalling.ts?raw';
+import toolsFunctionExample from '../../../../../examples/classic/docs/tools/functionTools.ts?raw';
+import toolsHostedToolsExample from '../../../../../examples/classic/docs/tools/hostedTools.ts?raw';
+import localBuiltInToolsExample from '../../../../../examples/classic/docs/tools/localBuiltInTools.ts?raw';
+import computerSafetyChecksExample from '../../../../../examples/classic/docs/tools/computerSafetyChecks.ts?raw';
+import nonStrictSchemaTools from '../../../../../examples/classic/docs/tools/nonStrictSchemaTools.ts?raw';
+import toolSearchExample from '../../../../../examples/classic/docs/tools/toolSearch.ts?raw';
+import agentsAsToolsExample from '../../../../../examples/classic/docs/tools/agentsAsTools.ts?raw';
+import agentsAsToolsStreamingExample from '../../../../../examples/classic/docs/tools/agentsAsToolsStreaming.ts?raw';
+import agentToolRunContextExample from '../../../../../examples/classic/docs/tools/agentToolRunContext.ts?raw';
+import mcpLocalServer from '../../../../../examples/classic/docs/tools/mcpLocalServer.ts?raw';
+import codexToolExample from '../../../../../examples/classic/docs/tools/codexTool.ts?raw';
+import codexRunContextThreadExample from '../../../../../examples/classic/docs/tools/codexRunContextThread.ts?raw';
+import programmaticToolCallingExample from '../../../../../examples/classic/docs/tools/programmaticToolCalling.ts?raw';
 
 Tools let an Agent fetch data, call external APIs, execute code, or use a computer. The JavaScript/TypeScript SDK supports seven categories:
 
@@ -164,7 +164,7 @@ Hosted `container_auto` environments support:
 
 Hosted shell environments do not accept `shell`, `needsApproval`, or `onApproval`, because the execution happens in the hosted container environment instead of your local process.
 
-See `examples/tools/local-shell.ts`, `examples/tools/container-shell-skill-ref.ts`, and `examples/tools/container-shell-inline-skill.ts` for end-to-end usage.
+See `examples/classic/tools/local-shell.ts`, `examples/classic/tools/container-shell-skill-ref.ts`, and `examples/classic/tools/container-shell-inline-skill.ts` for end-to-end usage.
 
 #### Apply-patch tool specifics
 
@@ -338,7 +338,7 @@ You can expose tools via [Model Context Protocol (MCP)](https://modelcontextprot
 
 <Code lang="typescript" code={mcpLocalServer} title="Local MCP server" />
 
-For a complete example, see [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/mcp/filesystem-example.ts). The [MCP guide](/openai-agents-js/guides/mcp) covers MCP server tool integration. When managing multiple servers (or partial failures), use `connectMcpServers` and the lifecycle guidance in the [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle).
+For a complete example, see [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/mcp/filesystem-example.ts). The [MCP guide](/openai-agents-js/guides/mcp) covers MCP server tool integration. When managing multiple servers (or partial failures), use `connectMcpServers` and the lifecycle guidance in the [MCP guide](/openai-agents-js/guides/mcp#managing-mcp-server-lifecycle).
 
 ---
 
@@ -346,7 +346,7 @@ For a complete example, see [`filesystem-example.ts`](https://github.com/openai/
 
 `@openai/agents-extensions/experimental/codex` provides `codexTool()`, a function tool that routes model tool calls to the Codex SDK so the agent can run workspace-scoped tasks (shell, file edits, MCP tools) autonomously. This API is experimental and may change.
 
-[Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/installation.md#run-the-classic-extensions). The checkout includes the Codex SDK dependency.
+[Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#run-the-classic-extensions). The checkout includes the Codex SDK dependency.
 
 <Code
   lang="typescript"
@@ -414,7 +414,7 @@ Structured outputs also change failure handling:
 
 Programmatic Tool Calling is Responses-only. Chat Completions, Voice agents, and the AI SDK model adapter reject these options. When an eligible tool is deferred, tool search must load it before a later generated program can call it.
 
-See [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/tools/programmatic-tool-calling.ts) for a complete example.
+See [`examples/classic/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/tools/programmatic-tool-calling.ts) for a complete example.
 
 ---
 

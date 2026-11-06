@@ -24,12 +24,12 @@ import {
   type Observation,
 } from '@openai/agents';
 import { expect, it, vi } from 'vitest';
-import { WorkerSignals } from '../../examples/supervised-worker/signals';
+import { WorkerSignals } from '../../../../examples/codex/supervised-worker/signals';
 import {
   publishAcceptedDraft,
   readWorkerSnapshot,
   superviseArtifact,
-} from '../../examples/supervised-worker/worker';
+} from '../../../../examples/codex/supervised-worker/worker';
 import { BorrowedPeer, borrowedDeclaration } from './fixtures/borrowed-mcp';
 
 vi.mock(import('node:fs/promises'), async (importOriginal) => {

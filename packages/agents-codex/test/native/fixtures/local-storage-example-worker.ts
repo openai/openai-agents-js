@@ -1,4 +1,4 @@
-import { useLocalStorage } from '../../../examples/local-storage';
+import { useLocalStorage } from '../../../../../examples/codex/local-storage';
 import type { NativeProviderOptions } from '../../../src';
 
 const input = JSON.parse(process.argv[2]!) as {

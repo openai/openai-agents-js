@@ -8,7 +8,7 @@ import type { NativeProviderOptions } from '@openai/agents';
 import {
   runLocalConversation,
   useLocalStorage,
-} from '../../examples/local-storage';
+} from '../../../../examples/codex/local-storage';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 const directories: string[] = [];

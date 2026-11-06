@@ -14,7 +14,7 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
-import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+import cloudflareBasicExample from '../../../../../../examples/classic/docs/extensions/cloudflare-basic.ts?raw';
 
 Cloudflare Workers やその他の workerd ランタイムでは、グローバルの `WebSocket` コンストラクターを使用して外向きの WebSocket 接続を確立できません。これらの環境から音声エージェントを簡単に接続できるように、extensions パッケージには、`fetch()` ベースのアップグレードを内部で実行する専用のトランスポートが用意されています。
 

@@ -6,9 +6,9 @@ import {
   MCPInputReply,
   MCPTasksProvider,
 } from '@openai/agents/experimental/mcp-tasks';
-import { Journal } from '../../../examples/external-job-journal';
-import { ThumbnailStore } from '../../../examples/external-job-store';
-import { publicSize, render } from '../../../examples/external-job';
+import { Journal } from '../../../../../examples/codex/external-job-journal';
+import { ThumbnailStore } from '../../../../../examples/codex/external-job-store';
+import { publicSize, render } from '../../../../../examples/codex/external-job';
 
 const REQUESTS = {
   approval: {

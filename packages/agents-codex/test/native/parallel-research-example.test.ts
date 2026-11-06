@@ -17,7 +17,7 @@ import {
   researchInParallel,
   type ParallelResearchOptions,
   type ResearchProgress,
-} from '../../examples/parallel-research';
+} from '../../../../examples/codex/parallel-research';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';

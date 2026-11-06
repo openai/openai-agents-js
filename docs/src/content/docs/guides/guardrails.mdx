@@ -4,9 +4,9 @@ description: Validate or transform agent input and output
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import inputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
-import outputGuardrailExample from '../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
-import toolGuardrailsExample from '../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
+import inputGuardrailExample from '../../../../../examples/classic/docs/guardrails/guardrails-input.ts?raw';
+import outputGuardrailExample from '../../../../../examples/classic/docs/guardrails/guardrails-output.ts?raw';
+import toolGuardrailsExample from '../../../../../examples/classic/docs/guardrails/toolGuardrails.ts?raw';
 
 Guardrails check and validate user input or agent output. They can run alongside your agents or block agent execution until they complete. For example, you may run a lightweight model as a guardrail before invoking an expensive model. If the guardrail detects malicious usage, it can trigger an error and stop the costly model from running.
 

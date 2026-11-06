@@ -21,11 +21,11 @@ const testAliases = createWorkspacePackageAliases(workspacePackages);
 const maxWorkers = recommendedTestWorkers(availableParallelism());
 const financialResearchExampleRoot = resolve(
   rootDir,
-  'examples/financial-research-agent',
+  'examples/classic/financial-research-agent',
 );
 const realtimeReactNativeExampleRoot = resolve(
   rootDir,
-  'examples/realtime-react-native',
+  'examples/classic/realtime-react-native',
 );
 
 const baseTestConfig = {
@@ -114,24 +114,24 @@ function createProjects(reviewTestProfile: boolean) {
           'scripts/run-integration-tests-managed.test.mjs',
           'scripts/workflow-contracts.test.mjs',
           'docs/src/scripts/headingAnchors.test.ts',
-          'examples/agent-patterns/human-in-the-loop-server.test.ts',
-          'examples/realtime-twilio-sip/server.test.ts',
-          'examples/realtime-twilio/server.test.ts',
-          'examples/tools/local-shell.test.ts',
-          'examples/tools/apply-patch.test.ts',
-          'examples/tools/computer-use-hitl.test.ts',
-          'examples/live/**/*.test.{ts,mjs}',
-          'examples/realtime-next/src/app/server/backendAgent.action.test.ts',
+          'examples/classic/agent-patterns/human-in-the-loop-server.test.ts',
+          'examples/classic/realtime-twilio-sip/server.test.ts',
+          'examples/classic/realtime-twilio/server.test.ts',
+          'examples/classic/tools/local-shell.test.ts',
+          'examples/classic/tools/apply-patch.test.ts',
+          'examples/classic/tools/computer-use-hitl.test.ts',
+          'examples/classic/live/**/*.test.{ts,mjs}',
+          'examples/classic/realtime-next/src/app/server/backendAgent.action.test.ts',
         ],
       },
     },
     ...packageProjects,
     {
-      root: resolve(rootDir, 'examples/ai-sdk-ui'),
+      root: resolve(rootDir, 'examples/classic/ai-sdk-ui'),
       resolve: {
         alias: {
           ...testAliases,
-          '@': resolve(rootDir, 'examples/ai-sdk-ui/src'),
+          '@': resolve(rootDir, 'examples/classic/ai-sdk-ui/src'),
         },
       },
       test: {
@@ -141,11 +141,11 @@ function createProjects(reviewTestProfile: boolean) {
       },
     },
     {
-      root: resolve(rootDir, 'examples/nextjs'),
+      root: resolve(rootDir, 'examples/classic/nextjs'),
       resolve: {
         alias: {
           ...testAliases,
-          '@': resolve(rootDir, 'examples/nextjs/src'),
+          '@': resolve(rootDir, 'examples/classic/nextjs/src'),
         },
       },
       test: {

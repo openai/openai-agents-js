@@ -70,18 +70,18 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import hostedAgentExample from '../../../../../../examples/docs/mcp/hostedAgent.ts?raw';
-import hostedExample from '../../../../../../examples/docs/mcp/hosted.ts?raw';
-import hostedStreamExample from '../../../../../../examples/docs/mcp/hostedStream.ts?raw';
-import hostedHITLExample from '../../../../../../examples/docs/mcp/hostedHITL.ts?raw';
-import hostedConnectorExample from '../../../../../../examples/docs/mcp/hostedConnector.ts?raw';
-import streamableHttpExample from '../../../../../../examples/docs/mcp/streamableHttp.ts?raw';
-import stdioExample from '../../../../../../examples/docs/mcp/stdio.ts?raw';
-import toolFilterExample from '../../../../../../examples/docs/mcp/tool-filter.ts?raw';
-import mcpServersExample from '../../../../../../examples/docs/mcp/mcpServers.ts?raw';
-import agentMcpConfigExample from '../../../../../../examples/docs/mcp/agentMcpConfig.ts?raw';
-import asyncDisposeExample from '../../../../../../examples/docs/mcp/asyncDispose.ts?raw';
-import serverPrefixedToolNamesExample from '../../../../../../examples/docs/mcp/serverPrefixedToolNames.ts?raw';
+import hostedAgentExample from '../../../../../../examples/classic/docs/mcp/hostedAgent.ts?raw';
+import hostedExample from '../../../../../../examples/classic/docs/mcp/hosted.ts?raw';
+import hostedStreamExample from '../../../../../../examples/classic/docs/mcp/hostedStream.ts?raw';
+import hostedHITLExample from '../../../../../../examples/classic/docs/mcp/hostedHITL.ts?raw';
+import hostedConnectorExample from '../../../../../../examples/classic/docs/mcp/hostedConnector.ts?raw';
+import streamableHttpExample from '../../../../../../examples/classic/docs/mcp/streamableHttp.ts?raw';
+import stdioExample from '../../../../../../examples/classic/docs/mcp/stdio.ts?raw';
+import toolFilterExample from '../../../../../../examples/classic/docs/mcp/tool-filter.ts?raw';
+import mcpServersExample from '../../../../../../examples/classic/docs/mcp/mcpServers.ts?raw';
+import agentMcpConfigExample from '../../../../../../examples/classic/docs/mcp/agentMcpConfig.ts?raw';
+import asyncDisposeExample from '../../../../../../examples/classic/docs/mcp/asyncDispose.ts?raw';
+import serverPrefixedToolNamesExample from '../../../../../../examples/classic/docs/mcp/serverPrefixedToolNames.ts?raw';
 
 [**Model Context Protocol (MCP)**](https://modelcontextprotocol.io) は、アプリケーションが LLM にツールやコンテキストを提供する方法を標準化するオープンプロトコルです。MCP のドキュメントでは、次のように説明されています。
 
@@ -139,7 +139,7 @@ MCP の結果を逐次ストリーミングするには、`Agent` の実行時�
 
 機密性の高い操作については、個々のツール呼び出しに人間の承認を必須にできます。`requireApproval: 'always'` を渡すか、ツール名を `'never'` / `'always'` にマッピングするオブジェクトを渡して細かく設定してください。
 
-ツール呼び出しが安全かどうかをプログラムで判断できる場合は、[`onApproval` コールバック](https://github.com/openai/openai-agents-js/blob/main/examples/mcp/hosted-mcp-on-approval.ts)を使用してツール呼び出しを承認または拒否できます。人間の承認が必要な場合は、ローカルの関数ツールと同様に、`interruptions` を使用する[人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop/)のアプローチを利用できます。
+ツール呼び出しが安全かどうかをプログラムで判断できる場合は、[`onApproval` コールバック](https://github.com/openai/openai-agents-js/blob/main/examples/classic/mcp/hosted-mcp-on-approval.ts)を使用してツール呼び出しを承認または拒否できます。人間の承認が必要な場合は、ローカルの関数ツールと同様に、`interruptions` を使用する[人間の介入（HITL）](/openai-agents-js/ja/guides/human-in-the-loop/)のアプローチを利用できます。
 
 <Code
   lang="typescript"
@@ -180,9 +180,9 @@ MCP の結果を逐次ストリーミングするには、`Agent` の実行時�
   title="コネクターを利用するリモート MCP ツール"
 />
 
-この例では、`GOOGLE_CALENDAR_AUTHORIZATION` 環境変数に Google OAuth Playground から取得した OAuth トークンを格納しています。このトークンにより、コネクターを利用するサーバーに Calendar API を呼び出す権限を付与します。ストリーミングも示した実行可能なコード例については、[`examples/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)を参照してください。
+この例では、`GOOGLE_CALENDAR_AUTHORIZATION` 環境変数に Google OAuth Playground から取得した OAuth トークンを格納しています。このトークンにより、コネクターを利用するサーバーに Calendar API を呼び出す権限を付与します。ストリーミングも示した実行可能なコード例については、[`examples/classic/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/connectors)を参照してください。
 
-完全に動作するコード例（組み込みツール（Hosted）/ Streamable HTTP / stdio + ストリーミング、HITL、onApproval）は、GitHub リポジトリの [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) にあります。
+完全に動作するコード例（組み込みツール（Hosted）/ Streamable HTTP / stdio + ストリーミング、HITL、onApproval）は、GitHub リポジトリの [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/classic/mcp) にあります。
 
 ## エージェントレベルの MCP 設定
 
@@ -368,4 +368,4 @@ MCP の結果を逐次ストリーミングするには、`Agent` の実行時�
 ## 関連資料
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) – 公式仕様
-- [examples/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/mcp) – 上記で参照した実行可能なコード例
+- [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/classic/mcp) – 上記で参照した実行可能なコード例

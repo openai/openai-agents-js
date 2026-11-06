@@ -5,7 +5,7 @@ import {
   resumeLookup,
   runLookupWithHandler,
   savePendingLookup,
-} from '../../examples/manual-replies';
+} from '../../../../examples/codex/manual-replies';
 import type { JsonObject } from '../../src/runtime/binding';
 import { CODEX_REVISION } from '../../src/runtime/state';
 import { ModelServer, call, message } from './fixtures/model-server';

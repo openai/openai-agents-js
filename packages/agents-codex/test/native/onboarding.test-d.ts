@@ -1,7 +1,10 @@
 import { expectTypeOf } from 'vitest';
 import type { NativeProviderOptions } from '@openai/agents';
-import { runGreeting } from '../../examples/basic';
-import { runTypedContext, type Answer } from '../../examples/typed-context';
+import { runGreeting } from '../../../../examples/codex/basic';
+import {
+  runTypedContext,
+  type Answer,
+} from '../../../../examples/codex/typed-context';
 
 const endpoint: NativeProviderOptions = { baseUrl: 'http://127.0.0.1:1234/v1' };
 expectTypeOf(runGreeting(endpoint)).toEqualTypeOf<Promise<string>>();

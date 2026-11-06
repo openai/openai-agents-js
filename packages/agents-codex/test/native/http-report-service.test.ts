@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeProvider, Turn, type Session } from '@openai/agents';
-import { startReportService } from '../../examples/http-report-service';
+import { startReportService } from '../../../../examples/codex/http-report-service';
 import { text, toolCall, withScriptedResponses } from '../../src/testing';
 import { ModelServer, message } from './fixtures/model-server';
 

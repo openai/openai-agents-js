@@ -1,7 +1,7 @@
 /** Test-only crash at the durable public-result boundary, before native delivery. */
-import { Journal } from '../../../examples/external-job-journal';
-import { ThumbnailStore } from '../../../examples/external-job-store';
-import { advanceMCPOrder } from '../../../examples/mcp-tasks';
+import { Journal } from '../../../../../examples/codex/external-job-journal';
+import { ThumbnailStore } from '../../../../../examples/codex/external-job-store';
+import { advanceMCPOrder } from '../../../../../examples/codex/mcp-tasks';
 
 class CrashAfterSave extends Journal {
   override async saveResult(...args: Parameters<Journal['saveResult']>) {

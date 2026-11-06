@@ -7,8 +7,8 @@ import { Agent, NativeProvider } from '@openai/agents';
 import {
   PAGE_CHARS,
   SelectedDocuments,
-} from '../../examples/document-workspace';
-import { runSelectedDocuments } from '../../examples/selected-documents';
+} from '../../../../examples/codex/document-workspace';
+import { runSelectedDocuments } from '../../../../examples/codex/selected-documents';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 

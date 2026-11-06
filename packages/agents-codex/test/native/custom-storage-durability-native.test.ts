@@ -18,7 +18,7 @@ import {
   type SessionStore,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
-import { readRecoveryIntent } from '../../examples/custom-storage-recovery';
+import { readRecoveryIntent } from '../../../../examples/codex/custom-storage-recovery';
 
 const directories: string[] = [];
 const children: ChildProcess[] = [];

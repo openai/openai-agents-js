@@ -12,8 +12,8 @@ import {
 import {
   vercelResponse,
   ownedVercelResponse,
-} from '../../examples/native-ui/vercel';
-import { agUiResponse } from '../../examples/native-ui/ag-ui';
+} from '../../../../examples/codex/native-ui/vercel';
+import { agUiResponse } from '../../../../examples/codex/native-ui/ag-ui';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 

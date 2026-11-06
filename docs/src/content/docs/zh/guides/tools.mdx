@@ -111,19 +111,19 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import toolsFunctionExample from '../../../../../../examples/docs/tools/functionTools.ts?raw';
-import toolsHostedToolsExample from '../../../../../../examples/docs/tools/hostedTools.ts?raw';
-import localBuiltInToolsExample from '../../../../../../examples/docs/tools/localBuiltInTools.ts?raw';
-import computerSafetyChecksExample from '../../../../../../examples/docs/tools/computerSafetyChecks.ts?raw';
-import nonStrictSchemaTools from '../../../../../../examples/docs/tools/nonStrictSchemaTools.ts?raw';
-import toolSearchExample from '../../../../../../examples/docs/tools/toolSearch.ts?raw';
-import agentsAsToolsExample from '../../../../../../examples/docs/tools/agentsAsTools.ts?raw';
-import agentsAsToolsStreamingExample from '../../../../../../examples/docs/tools/agentsAsToolsStreaming.ts?raw';
-import agentToolRunContextExample from '../../../../../../examples/docs/tools/agentToolRunContext.ts?raw';
-import mcpLocalServer from '../../../../../../examples/docs/tools/mcpLocalServer.ts?raw';
-import codexToolExample from '../../../../../../examples/docs/tools/codexTool.ts?raw';
-import codexRunContextThreadExample from '../../../../../../examples/docs/tools/codexRunContextThread.ts?raw';
-import programmaticToolCallingExample from '../../../../../../examples/docs/tools/programmaticToolCalling.ts?raw';
+import toolsFunctionExample from '../../../../../../examples/classic/docs/tools/functionTools.ts?raw';
+import toolsHostedToolsExample from '../../../../../../examples/classic/docs/tools/hostedTools.ts?raw';
+import localBuiltInToolsExample from '../../../../../../examples/classic/docs/tools/localBuiltInTools.ts?raw';
+import computerSafetyChecksExample from '../../../../../../examples/classic/docs/tools/computerSafetyChecks.ts?raw';
+import nonStrictSchemaTools from '../../../../../../examples/classic/docs/tools/nonStrictSchemaTools.ts?raw';
+import toolSearchExample from '../../../../../../examples/classic/docs/tools/toolSearch.ts?raw';
+import agentsAsToolsExample from '../../../../../../examples/classic/docs/tools/agentsAsTools.ts?raw';
+import agentsAsToolsStreamingExample from '../../../../../../examples/classic/docs/tools/agentsAsToolsStreaming.ts?raw';
+import agentToolRunContextExample from '../../../../../../examples/classic/docs/tools/agentToolRunContext.ts?raw';
+import mcpLocalServer from '../../../../../../examples/classic/docs/tools/mcpLocalServer.ts?raw';
+import codexToolExample from '../../../../../../examples/classic/docs/tools/codexTool.ts?raw';
+import codexRunContextThreadExample from '../../../../../../examples/classic/docs/tools/codexRunContextThread.ts?raw';
+import programmaticToolCallingExample from '../../../../../../examples/classic/docs/tools/programmaticToolCalling.ts?raw';
 
 工具让智能体能够**执行操作**——获取数据、调用外部 API、执行代码，甚至操作计算机。JavaScript/TypeScript SDK 支持七个类别：
 
@@ -252,7 +252,7 @@ Responses API 可以在 `computer_call` 中包含 `pending_safety_checks`，标�
 
 托管 shell 环境不接受 `shell`、`needsApproval` 或 `onApproval`，因为执行发生在托管容器环境中，而非您的本地进程中。
 
-有关端到端用法，请参阅 `examples/tools/local-shell.ts`、`examples/tools/container-shell-skill-ref.ts` 和 `examples/tools/container-shell-inline-skill.ts`。
+有关端到端用法，请参阅 `examples/classic/tools/local-shell.ts`、`examples/classic/tools/container-shell-skill-ref.ts` 和 `examples/classic/tools/container-shell-inline-skill.ts`。
 
 #### 补丁应用工具详解
 
@@ -415,7 +415,7 @@ SDK 在内部会：
 
 <Code lang="typescript" code={mcpLocalServer} title="本地 MCP 服务器" />
 
-完整示例请参阅 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/mcp/filesystem-example.ts)。如果您需要 MCP 服务器工具集成的完整指南，也请参阅 [MCP 集成](/openai-agents-js/zh/guides/mcp)。管理多个服务器（或部分连接失败）时，请使用 `connectMcpServers`，并参考 [MCP 集成](/openai-agents-js/zh/guides/mcp#managing-mcp-server-lifecycle)中的生命周期指导。
+完整示例请参阅 [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/mcp/filesystem-example.ts)。如果您需要 MCP 服务器工具集成的完整指南，也请参阅 [MCP 集成](/openai-agents-js/zh/guides/mcp)。管理多个服务器（或部分连接失败）时，请使用 `connectMcpServers`，并参考 [MCP 集成](/openai-agents-js/zh/guides/mcp#managing-mcp-server-lifecycle)中的生命周期指导。
 
 ---
 
@@ -493,7 +493,7 @@ Structured outputs 还会改变失败处理方式：
 
 程序化工具调用仅适用于 Responses。Chat Completions、语音智能体和 AI SDK 模型适配器会拒绝这些选项。如果符合条件的工具采用延迟加载，工具搜索必须先加载它，之后生成的程序才能调用它。
 
-完整示例请参阅 [`examples/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/programmatic-tool-calling.ts)。
+完整示例请参阅 [`examples/classic/tools/programmatic-tool-calling.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/tools/programmatic-tool-calling.ts)。
 
 ---
 

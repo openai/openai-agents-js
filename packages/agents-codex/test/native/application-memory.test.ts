@@ -13,7 +13,7 @@ import {
   runMemoryNote,
   type ApplicationMemory,
   type MemoryContext,
-} from '../../examples/application-memory';
+} from '../../../../examples/codex/application-memory';
 import { invokeFunctionTool } from '../../src/runtime/tools';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -249,11 +249,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const options = await providerOptions(server);
       const result = await exec(
         process.execPath,
-        [
-          '--import',
-          'tsx',
-          resolve('packages/agents-codex/examples/application-memory.ts'),
-        ],
+        ['--import', 'tsx', resolve('examples/codex/application-memory.ts')],
         {
           env: {
             ...process.env,

@@ -39,9 +39,9 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import inputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-input.ts?raw';
-import outputGuardrailExample from '../../../../../../examples/docs/guardrails/guardrails-output.ts?raw';
-import toolGuardrailsExample from '../../../../../../examples/docs/guardrails/toolGuardrails.ts?raw';
+import inputGuardrailExample from '../../../../../../examples/classic/docs/guardrails/guardrails-input.ts?raw';
+import outputGuardrailExample from '../../../../../../examples/classic/docs/guardrails/guardrails-output.ts?raw';
+import toolGuardrailsExample from '../../../../../../examples/classic/docs/guardrails/toolGuardrails.ts?raw';
 
 ガードレールはエージェントと並行して実行することも、完了するまでエージェントの実行をブロックすることもでき、ユーザー入力やエージェント出力のチェックと検証を行えます。たとえば、高コストのモデルを呼び出す前に、軽量なモデルをガードレールとして実行できます。ガードレールが悪意のある使用を検出した場合、エラーを発生させて高コストのモデルの実行を防ぐことができます。
 

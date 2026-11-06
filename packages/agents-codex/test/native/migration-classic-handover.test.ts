@@ -18,7 +18,7 @@ import {
 } from '@openai/agents-core/testing';
 import { parseSessionState } from '../../src';
 import { SDKRunner } from '../../src/migration';
-import { runClassicHandover } from '../../examples/migration-classic-handover';
+import { runClassicHandover } from '../../../../examples/codex/migration-classic-handover';
 
 setTracingDisabled(true);
 

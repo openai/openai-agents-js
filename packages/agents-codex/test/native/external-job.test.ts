@@ -13,7 +13,7 @@ import {
   reconcileJob,
   syntheticOrder,
   writeJobJson,
-} from '../../examples/external-order-recovery';
+} from '../../../../examples/codex/external-order-recovery';
 import { CODEX_REVISION } from '../../src/runtime/state';
 
 // Keep real file writes and disposal while injecting otherwise hard-to-reproduce cleanup failures.

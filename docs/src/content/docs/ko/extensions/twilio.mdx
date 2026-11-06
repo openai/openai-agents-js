@@ -18,8 +18,8 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
-import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
-import twilioConnectExample from '../../../../../../examples/docs/extensions/twilio-connect.ts?raw';
+import twilioBasicExample from '../../../../../../examples/classic/docs/extensions/twilio-basic.ts?raw';
+import twilioConnectExample from '../../../../../../examples/classic/docs/extensions/twilio-connect.ts?raw';
 
 Twilio는 통화의 원문 오디오를 WebSocket 서버로 전송하는 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)를 제공합니다. 이 구성을 사용하면 [음성 에이전트 개요](/openai-agents-js/ko/guides/voice-agents)에 소개된 음성 에이전트를 Twilio에 연결할 수 있습니다. 기본 Realtime Session 전송 계층을 `websocket` 모드로 사용하여 Twilio에서 수신한 이벤트를 Realtime Session에 연결할 수 있습니다. 다만, 전화 통화는 웹 기반 대화보다 본질적으로 지연 시간이 길기 때문에 올바른 오디오 형식을 설정하고 인터럽션(중단 처리) 타이밍을 직접 조정해야 합니다.
 
@@ -82,6 +82,6 @@ Twilio는 통화의 원문 오디오를 WebSocket 서버로 전송하는 [Media 
 
 ## 전체 서버 코드 예제
 
-[실행 가능한 Twilio 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-twilio)에는 인증 기능이 포함된 Fastify 라우트와 Realtime 세션 설정이 포함되어 있습니다. 해당 README에는 필수 서버 측 설정인 `OPENAI_API_KEY`, `TWILIO_AUTH_TOKEN`, `TWILIO_PUBLIC_BASE_URL`이 설명되어 있습니다. 공개 기본 URL은 경로 접두사, 쿼리 문자열, 프래그먼트가 없는 HTTPS 오리진입니다. 터널의 공개 오리진이 변경되면 해당 설정을 업데이트하세요.
+[실행 가능한 Twilio 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-twilio)에는 인증 기능이 포함된 Fastify 라우트와 Realtime 세션 설정이 포함되어 있습니다. 해당 README에는 필수 서버 측 설정인 `OPENAI_API_KEY`, `TWILIO_AUTH_TOKEN`, `TWILIO_PUBLIC_BASE_URL`이 설명되어 있습니다. 공개 기본 URL은 경로 접두사, 쿼리 문자열, 프래그먼트가 없는 HTTPS 오리진입니다. 터널의 공개 오리진이 변경되면 해당 설정을 업데이트하세요.
 
 서버는 Realtime 연결을 열기 전에 서명이 유효하지 않은 통화 및 업그레이드 요청을 거부합니다. Twilio Media Stream URL은 `wss://`를 사용하며 쿼리 매개변수를 지원하지 않습니다. 사용자 지정 매개변수에 대해서는 [Twilio Stream 문서](https://www.twilio.com/docs/voice/twiml/stream)를 참고하세요.

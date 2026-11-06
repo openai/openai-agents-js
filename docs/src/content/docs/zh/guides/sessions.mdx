@@ -80,15 +80,15 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import sessionsQuickstart from '../../../../../../examples/docs/sessions/basicSession.ts?raw';
-import manageHistory from '../../../../../../examples/docs/sessions/manageHistory.ts?raw';
-import customSession from '../../../../../../examples/docs/sessions/customSession.ts?raw';
-import contextAwareSession from '../../../../../../examples/docs/sessions/contextAwareSession.ts?raw';
-import sessionInputCallback from '../../../../../../examples/docs/sessions/sessionInputCallback.ts?raw';
-import responsesCompactionSession from '../../../../../../examples/docs/sessions/responsesCompactionSession.ts?raw';
-import manualCompactionSession from '../../../../../../examples/docs/sessions/responsesCompactionManualSession.ts?raw';
-import memorySessionExample from '../../../../../../examples/docs/sessions/memorySession.ts?raw';
-import resumableRunExample from '../../../../../../examples/docs/sessions/resumableRun.ts?raw';
+import sessionsQuickstart from '../../../../../../examples/classic/docs/sessions/basicSession.ts?raw';
+import manageHistory from '../../../../../../examples/classic/docs/sessions/manageHistory.ts?raw';
+import customSession from '../../../../../../examples/classic/docs/sessions/customSession.ts?raw';
+import contextAwareSession from '../../../../../../examples/classic/docs/sessions/contextAwareSession.ts?raw';
+import sessionInputCallback from '../../../../../../examples/classic/docs/sessions/sessionInputCallback.ts?raw';
+import responsesCompactionSession from '../../../../../../examples/classic/docs/sessions/responsesCompactionSession.ts?raw';
+import manualCompactionSession from '../../../../../../examples/classic/docs/sessions/responsesCompactionManualSession.ts?raw';
+import memorySessionExample from '../../../../../../examples/classic/docs/sessions/memorySession.ts?raw';
+import resumableRunExample from '../../../../../../examples/classic/docs/sessions/resumableRun.ts?raw';
 
 会话为 Agents SDK 提供了一个**持久化记忆层**。将任何实现了 `Session` 接口的对象传给 `Runner.run`，SDK 就会处理其余工作。使用会话时，运行器会自动：
 
@@ -96,7 +96,7 @@ import resumableRunExample from '../../../../../../examples/docs/sessions/resuma
 2. 在每次运行完成后，持久化新的用户输入和助手输出。
 3. 保留会话以供后续轮次使用，无论您是使用新的用户文本调用运行器，还是从中断的 `RunState` 恢复运行。
 
-这样就无需手动调用 `toInputList()`，也不必在轮次之间拼接历史记录。TypeScript SDK 内置了两种实现：面向 Conversations API 的 `OpenAIConversationsSession`，以及用于本地开发的 `MemorySession`。由于它们共用 `Session` 接口，您可以接入自己的存储后端。如果希望参考 Conversations API 之外的方案，可以查看 `examples/memory/` 下的会话后端代码示例（Prisma、基于文件的存储等）。使用 OpenAI Responses 模型时，可以通过 `OpenAIResponsesCompactionSession` 包装任意会话，利用 [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact) 自动压缩已存储的对话历史记录。
+这样就无需手动调用 `toInputList()`，也不必在轮次之间拼接历史记录。TypeScript SDK 内置了两种实现：面向 Conversations API 的 `OpenAIConversationsSession`，以及用于本地开发的 `MemorySession`。由于它们共用 `Session` 接口，您可以接入自己的存储后端。如果希望参考 Conversations API 之外的方案，可以查看 `examples/classic/memory/` 下的会话后端代码示例（Prisma、基于文件的存储等）。使用 OpenAI Responses 模型时，可以通过 `OpenAIResponsesCompactionSession` 包装任意会话，利用 [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact) 自动压缩已存储的对话历史记录。
 
 > 提示：要运行本页中的 `OpenAIConversationsSession` 代码示例，请设置 `OPENAI_API_KEY` 环境变量（或在构造会话时提供 `apiKey`），以便 SDK 调用 Conversations API。
 
