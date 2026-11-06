@@ -1,0 +1,413 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -467,6 +467,46 @@
+     let mut headers = ApiHeaderMap::new();
+     api_auth.add_auth_headers(&mut headers);
+     headers
++}
++
++// Keep EndpointSession's existing HttpTransport boundary. Only a trusted
++// contributor can claim streaming; execute always uses physical transport.
++struct ModelResponsesTransport<F> {
++    direct: Option<codex_extension_api::ModelHttpStream>,
++    fallback: F,
++    defaults: ApiHeaderMap,
++}
++
++impl<F> codex_client::HttpTransport for ModelResponsesTransport<F>
++where
++    F: Fn() -> std::result::Result<ReqwestTransport, codex_client::TransportError> + Send + Sync,
++{
++    async fn execute(
++        &self,
++        req: codex_client::Request,
++    ) -> std::result::Result<codex_client::Response, codex_client::TransportError> {
++        codex_client::HttpTransport::execute(&(self.fallback)()?, req).await
++    }
++
++    async fn stream(
++        &self,
++        mut req: codex_client::Request,
++    ) -> std::result::Result<codex_client::StreamResponse, codex_client::TransportError> {
++        if let Some(direct) = &self.direct {
++            // Match the physical client's merge: explicit/auth/trace headers win,
++            // including all values of a repeated header. Preserve the same snapshot.
++            for name in self.defaults.keys() {
++                if !req.headers.contains_key(name) {
++                    for value in self.defaults.get_all(name) {
++                        req.headers.append(name, value.clone());
++                    }
++                }
++            }
++            direct(req).await
++        } else {
++            codex_client::HttpTransport::stream(&(self.fallback)()?, req).await
++        }
++    }
+ }
+ 
+ impl ModelClient {
+@@ -1696,11 +1736,49 @@
+                 .client
+                 .responses_headers(client_setup.auth.as_ref(), &model_info.slug);
+             tracing::Span::current().record("api.path", "/responses");
+-            let transport = self.client.build_api_transport(
+-                &client_setup.api_provider,
+-                "/responses",
+-                client_setup.redirect_policy,
+-            )?;
++            let url = client_setup.api_provider.url_for_path("/responses");
++            let mut selected = self
++                .client
++                .request_contributors
++                .iter()
++                .filter_map(|contributor| contributor.http_stream(&url));
++            let direct = selected.next();
++            if selected.next().is_some() {
++                return Err(CodexErr::Fatal(
++                    "Multiple model HTTP dispatchers claimed the route".into(),
++                ));
++            }
++            // Preserve the original construction point and error mapping for
++            // declined routes, before prepared admission, observations and auth.
++            let physical = if direct.is_none() {
++                Some(self.client.build_api_transport(
++                    &client_setup.api_provider,
++                    "/responses",
++                    client_setup.redirect_policy,
++                )?)
++            } else {
++                None
++            };
++            let fallback_provider = client_setup.api_provider.clone();
++            let fallback_redirect_policy = client_setup.redirect_policy;
++            let transport = ModelResponsesTransport {
++                direct,
++                // Claimed streams never construct a physical client. Only a
++                // claimed transport's hypothetical unary call needs lazy fallback.
++                fallback: || {
++                    if let Some(physical) = &physical {
++                        return Ok(physical.clone());
++                    }
++                    self.client
++                        .build_api_transport(
++                            &fallback_provider,
++                            "/responses",
++                            fallback_redirect_policy,
++                        )
++                        .map_err(|error| codex_client::TransportError::Build(error.to_string()))
++                },
++                defaults: codex_login::default_client::default_headers(),
++            };
+             let request_auth_context = AuthRequestTelemetryContext::new(
+                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+                 client_setup.api_auth.as_ref(),
+diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+--- a/codex-rs/core/src/client_tests.rs
++++ b/codex-rs/core/src/client_tests.rs
+@@ -2867,3 +2867,239 @@
+         assert_eq!(destination.received_requests().await.unwrap().len(), 2);
+     }
+ }
++
++mod direct_model_http_transport {
++    use super::*;
++    use codex_client::HttpTransport as _;
++    use codex_extension_api::{
++        ModelHttpStream, ModelRequestContributor, ModelRequestInput, ModelResponseInterceptor,
++        PreparedRequestAdmission,
++    };
++    use pretty_assertions::assert_eq;
++
++    #[derive(Debug)]
++    struct RefuseAdmission;
++    impl PreparedRequestAdmission for RefuseAdmission {
++        fn admit_request(&self) -> std::result::Result<(), String> {
++            Err("prepared admission refused".into())
++        }
++    }
++
++    #[derive(Debug)]
++    struct Claim {
++        claims: bool,
++        requests: Arc<AtomicUsize>,
++        streams: Arc<AtomicUsize>,
++    }
++    impl ModelRequestContributor for Claim {
++        fn http_stream(&self, _: &str) -> Option<ModelHttpStream> {
++            if !self.claims {
++                return None;
++            }
++            let streams = self.streams.clone();
++            Some(Arc::new(move |_| {
++                let streams = streams.clone();
++                Box::pin(async move {
++                    streams.fetch_add(1, Ordering::SeqCst);
++                    Err(TransportError::Build("direct dispatch observed".into()))
++                })
++            }))
++        }
++        fn request(&self, _: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>> {
++            self.requests.fetch_add(1, Ordering::SeqCst);
++            None
++        }
++    }
++
++    #[tokio::test]
++    async fn claimed_stream_does_not_construct_the_physical_transport() {
++        let requests = Arc::new(AtomicUsize::new(0));
++        let streams = Arc::new(AtomicUsize::new(0));
++        let mut client = test_model_client(SessionSource::Cli);
++        client.request_contributors = vec![Arc::new(Claim {
++            claims: true,
++            requests: requests.clone(),
++            streams: streams.clone(),
++        })];
++        let mut session = client.new_session();
++        let error = auth_recovery_stream(&mut session)
++            .await
++            .err()
++            .expect("direct error");
++        assert!(error.to_string().contains("direct dispatch observed"));
++        assert_eq!(requests.load(Ordering::SeqCst), 1);
++        assert_eq!(streams.load(Ordering::SeqCst), 1);
++        // This is the actual cache initialized by transport0060's constructor,
++        // rather than a mock of the code that decides whether to construct it.
++        assert!(client.state.api_transports.lock().unwrap().is_none());
++    }
++
++    #[tokio::test]
++    async fn declined_stream_constructs_before_prepared_admission_is_refused() {
++        let requests = Arc::new(AtomicUsize::new(0));
++        let streams = Arc::new(AtomicUsize::new(0));
++        let mut client = test_model_client(SessionSource::Cli);
++        client.request_contributors = vec![Arc::new(Claim {
++            claims: false,
++            requests: requests.clone(),
++            streams: streams.clone(),
++        })];
++        let mut session = client.new_session();
++        let metadata = test_responses_metadata_for_client(
++            &client,
++            None,
++            format!("{}:0", client.state.thread_id),
++            None,
++            TestCodexResponsesRequestKind::Turn,
++        );
++        let prompt = Prompt {
++            prepared_request_admission: Some(Arc::new(RefuseAdmission)),
++            ..Prompt::default()
++        };
++        let error = session
++            .stream(
++                &prompt,
++                &test_model_info(),
++                &test_session_telemetry(),
++                None,
++                codex_protocol::config_types::ReasoningSummary::None,
++                None,
++                &metadata,
++                &InferenceTraceContext::disabled(),
++            )
++            .await
++            .err()
++            .expect("admission error");
++        assert!(error.to_string().contains("prepared admission refused"));
++        assert_eq!(requests.load(Ordering::SeqCst), 1);
++        assert_eq!(streams.load(Ordering::SeqCst), 0);
++        let cache = client.state.api_transports.lock().unwrap();
++        assert!(
++            cache
++                .as_ref()
++                .is_some_and(|cache| cache.by_redirect_policy.iter().any(Option::is_some))
++        );
++        // No upstream send occurs: the actual prepared-admission gate refused it.
++        // This proves construction order, not an injected constructor failure.
++    }
++
++    #[tokio::test]
++    async fn conflicting_claims_fail_before_admission_or_physical_construction() {
++        let requests = Arc::new(AtomicUsize::new(0));
++        let streams = Arc::new(AtomicUsize::new(0));
++        let mut client = test_model_client(SessionSource::Cli);
++        client.request_contributors = (0..2)
++            .map(|_| {
++                Arc::new(Claim {
++                    claims: true,
++                    requests: requests.clone(),
++                    streams: streams.clone(),
++                }) as Arc<dyn ModelRequestContributor>
++            })
++            .collect();
++        let mut session = client.new_session();
++        let error = auth_recovery_stream(&mut session)
++            .await
++            .err()
++            .expect("claim conflict");
++        assert!(
++            error
++                .to_string()
++                .contains("Multiple model HTTP dispatchers")
++        );
++        assert_eq!(requests.load(Ordering::SeqCst), 0);
++        assert_eq!(streams.load(Ordering::SeqCst), 0);
++        assert!(client.state.api_transports.lock().unwrap().is_none());
++    }
++
++    #[tokio::test]
++    async fn direct_transport_preserves_defaults_explicit_auth_repeated_and_obs_text() {
++        let captured = Arc::new(std::sync::Mutex::new(None));
++        let target = captured.clone();
++        let mut defaults = http::HeaderMap::new();
++        defaults.insert("originator", "default-origin".parse().unwrap());
++        defaults.insert("authorization", "Bearer default".parse().unwrap());
++        defaults.insert("x-repeated", "default-value".parse().unwrap());
++        defaults.insert(
++            "x-obs-text",
++            http::HeaderValue::from_bytes(b"\xe9").unwrap(),
++        );
++        let transport = super::super::ModelResponsesTransport {
++            direct: Some(Arc::new(move |request| {
++                *target.lock().unwrap() = Some(request.headers);
++                Box::pin(async { Err(TransportError::Build("captured".into())) })
++            })),
++            fallback: || -> std::result::Result<codex_client::ReqwestTransport, TransportError> {
++                panic!("claimed stream constructed physical transport")
++            },
++            defaults,
++        };
++        let mut request = codex_client::Request::new(
++            http::Method::POST,
++            "http://127.0.0.1/private/responses".into(),
++        );
++        request
++            .headers
++            .insert("authorization", "Bearer current".parse().unwrap());
++        request
++            .headers
++            .append("x-repeated", "first".parse().unwrap());
++        request
++            .headers
++            .append("x-repeated", "second".parse().unwrap());
++        request
++            .headers
++            .insert("traceparent", "trace-marker".parse().unwrap());
++        assert!(transport.stream(request).await.is_err());
++        let captured = captured.lock().unwrap();
++        let headers = captured.as_ref().unwrap();
++        assert_eq!(headers["originator"], "default-origin");
++        assert_eq!(headers["authorization"], "Bearer current");
++        assert_eq!(
++            headers
++                .get_all("x-repeated")
++                .iter()
++                .map(|value| value.as_bytes())
++                .collect::<Vec<_>>(),
++            vec![b"first".as_slice(), b"second".as_slice()]
++        );
++        assert_eq!(headers["x-obs-text"].as_bytes(), b"\xe9");
++        assert_eq!(headers["traceparent"], "trace-marker");
++    }
++    #[tokio::test]
++    async fn claimed_transport_execute_uses_ordinary_physical_fallback() {
++        let server = MockServer::start().await;
++        Mock::given(method("GET"))
++            .and(path("/unary"))
++            .respond_with(ResponseTemplate::new(200).set_body_string("physical response"))
++            .expect(1)
++            .mount(&server)
++            .await;
++        let physical = codex_login::default_client::create_client_for_route(
++            &HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
++            &server.uri(),
++            codex_http_client::ClientRouteClass::Api,
++            codex_login::default_client::ClientRedirectPolicy::Default,
++        )
++        .unwrap();
++        let physical = codex_client::ReqwestTransport::from_http_client(physical);
++        let constructions = AtomicUsize::new(0);
++        let transport = super::super::ModelResponsesTransport {
++            direct: Some(Arc::new(|_| panic!("execute invoked streaming callback"))),
++            fallback: || {
++                constructions.fetch_add(1, Ordering::SeqCst);
++                Ok(physical.clone())
++            },
++            defaults: http::HeaderMap::new(),
++        };
++        let response = transport
++            .execute(codex_client::Request::new(
++                http::Method::GET,
++                format!("{}/unary", server.uri()),
++            ))
++            .await
++            .unwrap();
++        assert_eq!(response.body.as_ref(), b"physical response");
++        assert_eq!(constructions.load(Ordering::SeqCst), 1);
++    }
++}
+diff --git a/codex-rs/ext/extension-api/Cargo.toml b/codex-rs/ext/extension-api/Cargo.toml
+--- a/codex-rs/ext/extension-api/Cargo.toml
++++ b/codex-rs/ext/extension-api/Cargo.toml
+@@ -15,6 +15,7 @@
+ 
+ [dependencies]
+ codex-api = { workspace = true }
++codex-client = { workspace = true }
+ futures = { workspace = true }
+ codex-guardian-context = { workspace = true }
+ codex-history = { workspace = true }
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -123,6 +123,7 @@
+     ModelResponseLinked,
+ };
+ 
++pub use model_request::ModelHttpStream;
+ pub use model_request::ModelRequestContributor;
+ pub use model_request::ModelRequestInput;
+ pub use model_request::ModelRequestKind;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -81,9 +81,28 @@
+     pub model: &'a str,
+ }
+ 
++/// Trusted in-process HTTP stream dispatch. The endpoint session still prepares,
++/// authenticates, observes and retries the request through HttpTransport.
++/// A selected dispatcher owns the route: failures must never fall back to I/O.
++pub type ModelHttpStream = Arc<
++    dyn Fn(
++            codex_client::Request,
++        )
++            -> BoxFuture<'static, Result<codex_client::StreamResponse, codex_client::TransportError>>
++        + Send
++        + Sync,
++>;
++
+ /// Contributes request-scoped preparation and response interception.
+ /// Return None for requests this host does not manage.
+ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
++    /// Select solely from the provider endpoint before physical-client creation.
++    /// Declining must not mutate request admission or execute application code.
++    /// The returned dispatcher must revalidate the exact authenticated request.
++    fn http_stream(&self, _url: &str) -> Option<ModelHttpStream> {
++        None
++    }
++
+     /// Whether this exact operation opted into prepared-request editing.
+     /// Keep this captured marker true through retirement; it is not an owner-liveness check.
+     /// Hosts must reject unsupported operation settings before starting work.
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -3347,6 +3347,7 @@
+ version = "0.0.0"
+ dependencies = [
+  "codex-api",
++ "codex-client",
+  "codex-config",
+  "codex-context-fragments",
+  "codex-exec-server-protocol",

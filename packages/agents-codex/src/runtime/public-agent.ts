@@ -314,15 +314,16 @@ export class Agent<Context = undefined, Output = string> {
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
     try {
-      const { setup, session, lease, environmentOwner } = await this.prepare(
-        options,
-        (owner) => {
-          acquiredEnvironment = owner;
-        },
-        () => {
-          providerOwnsCleanup = true;
-        },
-      );
+      const { setup, session, lease, environmentOwner, catalog } =
+        await this.prepare(
+          options,
+          (owner) => {
+            acquiredEnvironment = owner;
+          },
+          () => {
+            providerOwnsCleanup = true;
+          },
+        );
       let openingError: unknown;
       try {
         session.tracingCapture = tracingCapture;
@@ -343,6 +344,7 @@ export class Agent<Context = undefined, Output = string> {
           session,
           lease,
           (options as OwnedSessionOptions<Context>)[ownedRun],
+          catalog,
         );
         environmentOwner.opened();
         (options as OwnedSessionOptions<Context>)[deferredOpening]?.opened(
@@ -830,7 +832,10 @@ export class Agent<Context = undefined, Output = string> {
     const native = await binding();
     native._validate_python_tool_declarations(catalog.specsJson);
     environmentOwner.signal.throwIfAborted();
-    const lease = provider._acquire(correction ?? opening);
+    const lease = provider._acquire(
+      correction ?? opening,
+      native._try_remove_empty_provider_home,
+    );
     const previousOpeningCleanup: (() => Promise<void>) | undefined =
       lease.retainOpeningCleanup(() =>
         releaseEnvironmentBeforeProvider(
@@ -1064,7 +1069,7 @@ export class Agent<Context = undefined, Output = string> {
           }
         };
       }
-      return { setup, session, lease, environmentOwner };
+      return { setup, session, lease, environmentOwner, catalog };
     } catch (error) {
       return lease.failOpening(error);
     }

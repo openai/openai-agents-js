@@ -145,7 +145,7 @@ export class ObservationBuffer {
   private characters = 0;
   private sequence = 0;
   private closed = false;
-  private changed = Promise.withResolvers<void>();
+  private changed?: PromiseWithResolvers<void>;
   private repairParent?: {
     buffer: ObservationBuffer;
     submissionId: string;
@@ -161,12 +161,14 @@ export class ObservationBuffer {
 
   /** Wake readers when requests or their producers change. */
   notify(): void {
-    this.changed.resolve();
-    this.changed = Promise.withResolvers<void>();
+    const changed = this.changed;
+    this.changed = undefined;
+    changed?.resolve();
   }
 
   /** @internal Capture before inspecting live owners; this never consumes events. */
   waitForChange(): Promise<void> {
+    this.changed ??= Promise.withResolvers<void>();
     return this.changed.promise;
   }
 
@@ -284,7 +286,7 @@ export class ObservationBuffer {
         reading = true;
         try {
           while (!closed) {
-            const changed = this.changed.promise;
+            const changed = this.waitForChange();
             if (seen) {
               for (const request of this.options.pendingManual?.() ?? []) {
                 if (!seen.has(request)) {

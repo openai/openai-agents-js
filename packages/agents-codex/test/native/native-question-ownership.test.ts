@@ -220,6 +220,19 @@ async function ownershipPeer() {
   };
 }
 
+async function waitForChildTurn(session: Session) {
+  return vi.waitFor(
+    async () => {
+      const children = await Array.fromAsync(session.subagents());
+      expect(children).toHaveLength(1);
+      const [child] = children;
+      if (!child?.turn) throw new Error('Expected the actual child turn');
+      return { child, turn: child.turn };
+    },
+    { timeout: 5_000 },
+  );
+}
+
 async function providerFor(model: ModelServer) {
   const config = await model.config();
   return new NativeProvider({
@@ -663,16 +676,15 @@ for (const interactions of [false, true]) {
       expect(
         (await (await session.submit('delegate')).wait()).finalOutput,
       ).toBe('root done');
-      const [child] = await Array.fromAsync(session.subagents());
-      if (!child?.turn) throw new Error('Expected the actual child turn');
+      const { child, turn } = await waitForChildTurn(session);
       if (interactions) {
         const request = await question(session, child.id, 'approval_request');
         if (request.type !== 'approval_request')
           throw new Error('Expected a native approval');
         expect(request).toMatchObject({
           subagentId: child.id,
-          turnId: child.turn.turnId,
-          submissionId: child.turn.submissionId,
+          turnId: turn.turnId,
+          submissionId: turn.submissionId,
         });
         expect(peer.calls.size).toBe(0);
         await session.respond(request.reply('allow_once'));
@@ -680,7 +692,7 @@ for (const interactions of [false, true]) {
         expect(() => request.reply('allow_once')).toThrow('expired');
       }
       releaseChild.resolve();
-      expect((await child.turn.wait()).finalOutput).toBe('child done');
+      expect((await turn.wait()).finalOutput).toBe('child done');
       expect(peer.calls.size).toBe(interactions ? 1 : 0);
       expect(await session.pendingInteractions()).toEqual([]);
       const next = model.requests
@@ -757,11 +769,7 @@ it('denies an actual opted-in child command approval before any file effect and 
     expect((await (await session.submit('delegate')).wait()).finalOutput).toBe(
       'root done',
     );
-    const children = await Array.fromAsync(session.subagents());
-    expect(children).toHaveLength(1);
-    const child = children[0];
-    if (!child.turn) throw new Error('Expected the actual pending child turn');
-    const turn = child.turn;
+    const { child, turn } = await waitForChildTurn(session);
     const request = await question(session, child.id, 'approval_request');
     if (request.type !== 'approval_request')
       throw new Error('Expected an actual child approval');
@@ -1035,11 +1043,7 @@ it('preserves an inherited callable stdio process for default children when the 
       ).toBe('root done');
       if (rootPid === undefined)
         throw new Error('Root model never observed its admitted process');
-      const children = await Array.fromAsync(session.subagents());
-      expect(children).toHaveLength(1);
-      const child = children[0];
-      if (!child.turn)
-        throw new Error('Expected the actual ordinary child turn');
+      const { child, turn } = await waitForChildTurn(session);
       await vi.waitFor(
         () => {
           if (!childFollowup)
@@ -1067,7 +1071,7 @@ it('preserves an inherited callable stdio process for default children when the 
       await stdioStopped(rootPid);
       expect(stdioAlive(childPid)).toBe(true);
       releaseChild.resolve();
-      expect((await child.turn.wait()).finalOutput).toBe(
+      expect((await turn.wait()).finalOutput).toBe(
         'child inherited lookup done',
       );
       expect(stdioAlive(childPid)).toBe(true);

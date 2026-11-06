@@ -49,6 +49,11 @@ impl Queue {
         init.insert(ModelRequestObservationRoute(route.clone()));
         init.insert(route);
     }
+    pub(crate) fn has_pending(&self) -> bool {
+        self.receiver
+            .try_lock()
+            .map_or(true, |receiver| !receiver.is_empty())
+    }
     pub(crate) fn try_next(&self) -> Option<Value> {
         self.receiver.try_lock().ok()?.try_recv().ok()
     }

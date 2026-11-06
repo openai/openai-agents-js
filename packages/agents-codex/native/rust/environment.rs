@@ -70,17 +70,10 @@ async fn local_environment_manager(
     } else {
         paths
     };
-    // The pinned public constructor reads a file; never read or replace the caller's home.
-    // Shared Codex sessions may admit a current local MCP roster after manager
-    // construction. Reserve its lazy executor here: only configured MCP starts
-    // it without a workspace selection. No default grants ordinary threads a
-    // shell. SDK execution uses the explicitly assigned environment.
-    let home = tempfile::tempdir().context("prepare native MCP environment")?;
-    std::fs::write(
-        home.path().join("environments.toml"),
-        "default = \"none\"\ninclude_local = true\n",
-    )?;
-    let prepared = EnvironmentManager::prepare_from_codex_home(home.path()).await?;
+    // Keep a fresh lazy executor for later admitted local MCP changes, with no
+    // default shell grant. This is the same fixed snapshot as the former private
+    // staging file; it never reads or replaces the caller's home configuration.
+    let prepared = EnvironmentManager::prepare_local_without_default()?;
     // Noise takes precedence over the file upstream. Do not start an ambient executor.
     ensure!(
         !prepared.default_environment_is_remote(),
@@ -2109,5 +2102,212 @@ mod tests {
                 "location": { "type": "environment", "environmentId": "remote", "path": "file:///remote/catalog" }
             }])
         );
+    }
+
+    #[test]
+    fn local_snapshot_preserves_helper_and_noise_error_order() {
+        const CASE: &str = "SDK_LOCAL_SNAPSHOT_WRAPPER_CASE";
+        const MARKER: &str = "SDK_LOCAL_SNAPSHOT_WRAPPER_MARKER";
+        const KEYS: [&str; 5] = [
+            "CODEX_EXEC_SERVER_URL",
+            "CODEX_EXEC_SERVER_NOISE_REGISTRY_URL",
+            "CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID",
+            "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN",
+            "CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID",
+        ];
+        if std::env::var_os(CASE).is_none() {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            for case in [
+                "local",
+                "restricted-local",
+                "no-helper-partial",
+                "no-helper-header",
+                "helper-first",
+                "sandbox-first",
+                "partial",
+                "noise",
+                "noise-url",
+                "noise-header",
+                "noise-account",
+            ] {
+                if !cfg!(unix) && matches!(case, "helper-first" | "sandbox-first") {
+                    continue;
+                }
+                let witness = tempfile::tempdir().unwrap();
+                let marker = witness.path().join("passed");
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "environment::tests::local_snapshot_preserves_helper_and_noise_error_order",
+                        "--nocapture",
+                    ])
+                    .env(CASE, case)
+                    .env(MARKER, &marker)
+                    .env("RUST_MIN_STACK", "33554432");
+                for key in KEYS {
+                    command.env_remove(key);
+                }
+                command.env(KEYS[0], format!("ws://{}", listener.local_addr().unwrap()));
+                if !matches!(case, "local" | "restricted-local") {
+                    command.env(
+                        KEYS[1],
+                        if case == "noise-url" {
+                            "not-a-url"
+                        } else {
+                            &url
+                        },
+                    );
+                }
+                if matches!(
+                    case,
+                    "noise" | "noise-url" | "noise-header" | "noise-account" | "no-helper-header"
+                ) {
+                    command.env(KEYS[2], "environment").env(KEYS[3], "token");
+                    if matches!(case, "noise-header" | "no-helper-header") {
+                        command.env(KEYS[3], "bad\ntoken");
+                    }
+                    if case == "noise-account" {
+                        command.env(KEYS[4], "bad\naccount");
+                    }
+                }
+                let mut child = command.spawn().unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            assert!(status.success(), "case {case}");
+                            break;
+                        }
+                        Ok(None) if std::time::Instant::now() < deadline => {
+                            std::thread::sleep(Duration::from_millis(10))
+                        }
+                        result => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            panic!("isolated case {case} failed or timed out: {result:?}");
+                        }
+                    }
+                }
+                assert_eq!(
+                    std::fs::read_to_string(marker).unwrap(),
+                    "passed",
+                    "child selected no test: {case}"
+                );
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    ErrorKind::WouldBlock,
+                    "rejected opening connected: {case}"
+                );
+            }
+            return;
+        }
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let case = std::env::var(CASE).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let (mut config, _) = crate::config::load(
+            &json!({"features.apps":false,"features.plugins":false,"features.code_mode":false,"agents.enabled":false}).to_string(),
+            &json!({"codex_home":home.path(),"cwd":home.path(),"loader":{"ignore_user_config":true,"ignore_project_config":true}}).to_string(),
+            None,
+        ).await.unwrap();
+        config.codex_self_exe = Some(std::env::current_exe().unwrap());
+        config.codex_linux_sandbox_exe = None;
+        if case.starts_with("no-helper-") {
+            config.codex_self_exe = None;
+            config.codex_linux_sandbox_exe = Some(PathBuf::from("relative-sandbox"));
+        }
+        if case == "helper-first" {
+            config.codex_self_exe = Some(PathBuf::from("relative-helper"));
+        }
+        if case == "sandbox-first" {
+            config.codex_linux_sandbox_exe = Some(PathBuf::from("relative-sandbox"));
+        }
+        // Relative paths are supported. A removed cwd makes resolving one fail
+        // before the incomplete Noise configuration can be inspected.
+        let original_cwd = if matches!(case.as_str(), "helper-first" | "sandbox-first") {
+            assert!(cfg!(unix));
+            let original = std::env::current_dir().unwrap();
+            let removed = tempfile::tempdir().unwrap();
+            std::env::set_current_dir(removed.path()).unwrap();
+            std::fs::remove_dir(removed.path()).unwrap();
+            Some(original)
+        } else {
+            None
+        };
+        // Caller-owned environment files must remain irrelevant, even when invalid.
+        std::fs::write(
+            home.path().join("environments.toml"),
+            "this is not valid TOML [",
+        )
+        .unwrap();
+        let restricted = case == "restricted-local";
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            local_environment_manager(&config, restricted),
+        )
+        .await
+        .unwrap();
+        if let Some(original) = original_cwd {
+            std::env::set_current_dir(original).unwrap();
+        }
+        match case.as_str() {
+            "no-helper-partial" | "no-helper-header" => {
+                let manager = result.unwrap();
+                assert!(manager.default_environment().is_none());
+                assert!(manager.try_local_environment().is_none());
+                assert!(manager.get_environment(REMOTE_ENVIRONMENT_ID).is_none());
+                assert_eq!(manager.http_client_factory(), &config.http_client_factory());
+            }
+            "helper-first" | "sandbox-first" => {
+                let error = result.unwrap_err();
+                let io = error
+                    .downcast_ref::<std::io::Error>()
+                    .expect("helper validation must precede invalid Noise");
+                assert_eq!(io.kind(), ErrorKind::InvalidInput);
+            }
+            "partial" | "noise-header" | "noise-account" => {
+                let old_home = tempfile::tempdir().unwrap();
+                std::fs::write(
+                    old_home.path().join("environments.toml"),
+                    "default = \"none\"\ninclude_local = true\n",
+                )
+                .unwrap();
+                let old = EnvironmentManager::prepare_from_codex_home(old_home.path())
+                    .await
+                    .unwrap_err();
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<ExecServerError>().unwrap().to_string(),
+                    old.to_string()
+                );
+            }
+            "noise" | "noise-url" => {
+                assert!(result.unwrap_err().to_string().contains(
+                    "native local MCP configuration cannot select an ambient remote environment"
+                ));
+            }
+            "local" | "restricted-local" => {
+                let manager = result.unwrap();
+                assert!(manager.default_environment().is_none());
+                assert!(manager.get_environment(REMOTE_ENVIRONMENT_ID).is_none());
+                assert_eq!(manager.http_client_factory(), &config.http_client_factory());
+                let local = manager.try_local_environment().unwrap();
+                assert!(!local.is_remote());
+                let runtime = local.local_runtime_paths().unwrap();
+                assert_eq!(
+                    runtime.codex_self_exe.as_path(),
+                    std::env::current_exe().unwrap()
+                );
+                assert_eq!(runtime.join_unreturned_local_exec_on_interrupt, restricted);
+                #[cfg(target_os = "macos")]
+                assert_eq!(runtime.restricted_macos_process_sandbox, restricted);
+                assert!(local.info().await.is_ok());
+            }
+            _ => panic!("unknown isolated case"),
+        }
+        std::fs::write(std::env::var_os(MARKER).unwrap(), "passed").unwrap();
+        });
     }
 }

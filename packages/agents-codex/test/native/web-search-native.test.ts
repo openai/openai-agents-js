@@ -1015,11 +1015,19 @@ async function savedAgentModels(
       }),
     });
     await (await session.submit('Finish')).wait();
-    const children = [];
-    for await (const child of session.subagents()) children.push(child);
     if (childModel) {
-      expect(children).toHaveLength(1);
-      expect((await children[0].turn!.wait()).finalOutput).toBe('child done');
+      const turn = await vi.waitFor(
+        async () => {
+          const children = await Array.fromAsync(session.subagents());
+          expect(children).toHaveLength(1);
+          const [child] = children;
+          const turn = child?.turn;
+          if (!turn) throw new Error('Expected the saved child turn');
+          return turn;
+        },
+        { timeout: 5_000 },
+      );
+      expect((await turn.wait()).finalOutput).toBe('child done');
     }
     const state = await session.saveState();
     if (childModel) {

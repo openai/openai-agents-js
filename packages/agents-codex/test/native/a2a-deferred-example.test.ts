@@ -6,7 +6,13 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// Load SQLite before the remaining imports; keep every unrelated warning guarded.
+await vi.hoisted(async () => {
+  const { loadSqliteForTest } = await import('./fixtures/sqlite-warning');
+  loadSqliteForTest();
+});
 
 const example = fileURLToPath(
   new URL(

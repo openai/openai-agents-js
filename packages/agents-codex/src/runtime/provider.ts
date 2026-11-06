@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import type { SharedHttpClients } from '../../native/index.js';
+import { mkdtemp, mkdir, rm, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from './config';
@@ -29,11 +30,47 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
   return token.pending;
 }
 
+// Preserve rm's fallback/error behavior for anything except the ordinary
+// empty home/workspace shape. Probe the root first: starting at workspace
+// would follow a stable replacement root symlink into an unrelated directory.
+async function removeProviderHome(
+  home: string,
+  nativeCleanup?: (home: string) => Promise<boolean>,
+): Promise<void> {
+  if (nativeCleanup) {
+    try {
+      if ((await nativeCleanup(home)) === true) return;
+    } catch {
+      // Native runtime/dispatch failure must never strand the provider home.
+    }
+    await rm(home, { recursive: true, force: true });
+    return;
+  }
+  try {
+    await rmdir(home);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOTEMPTY') {
+      await rm(home, { recursive: true, force: true });
+      return;
+    }
+  }
+  // Like Node's rm after its failed root rmdir, these pathname operations are
+  // not an atomic defense against concurrent path replacement.
+  try {
+    await rmdir(join(home, 'workspace'));
+    await rmdir(home);
+  } catch {
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
 /** A lazy native Responses connection. Close sessions before closing their provider. */
 export class NativeProvider {
   #options: Readonly<NativeProviderOptions>;
   #leases = new Set<LeaseToken>();
   #closed = false;
+  #httpClients: Promise<SharedHttpClients> | undefined;
 
   constructor(options: NativeProviderOptions = {}) {
     for (const key of ['baseUrl', 'apiKey'] as const) {
@@ -58,7 +95,10 @@ export class NativeProvider {
   }
 
   /** @internal Reserve synchronously after declaration validation, before opening resources. */
-  _acquire(captured?: { readonly apiKey: string | undefined }): ProviderLease {
+  _acquire(
+    captured?: { readonly apiKey: string | undefined },
+    nativeHomeCleanup?: (home: string) => Promise<boolean>,
+  ): ProviderLease {
     if (this.#closed) throw new Error('NativeProvider is closed');
     const token: LeaseToken = { failed: false };
     this.#leases.add(token);
@@ -69,13 +109,25 @@ export class NativeProvider {
     let released = false;
     const release = async () => {
       if (released) return;
-      if (home) await rm(home, { recursive: true, force: true });
+      if (home) await removeProviderHome(home, nativeHomeCleanup);
       released = true;
       this.#leases.delete(token);
       token.cleanup = undefined;
     };
     token.cleanup = release;
     return {
+      httpClients: (create) => {
+        if (released || this.#closed)
+          throw new Error('NativeProvider lease is closed');
+        if (!this.#httpClients) {
+          const pending = create();
+          this.#httpClients = pending;
+          void pending.catch(() => {
+            if (this.#httpClients === pending) this.#httpClients = undefined;
+          });
+        }
+        return this.#httpClients;
+      },
       get failedOpeningCleanup() {
         return token.failed && token.cleanup
           ? () => cleanFailedOpening(token)
@@ -144,6 +196,13 @@ export class NativeProvider {
       throw new AggregateError(failures, 'NativeProvider cleanup failed', {
         cause: failures[0],
       });
+    // No live/opening leases remain. Join creation before clearing the owner;
+    // native close also fences publication from detached physical builds.
+    const clients = this.#httpClients;
+    if (clients) {
+      await (await clients).close();
+      if (this.#httpClients === clients) this.#httpClients = undefined;
+    }
   }
 
   [Symbol.asyncDispose](): Promise<void> {
@@ -153,6 +212,9 @@ export class NativeProvider {
 
 /** @internal */
 export interface ProviderLease {
+  httpClients(
+    create: () => Promise<SharedHttpClients>,
+  ): Promise<SharedHttpClients>;
   readonly chatGPT?: Readonly<ChatGPTAuth>;
   readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
   readonly websocketsAllowed: boolean;

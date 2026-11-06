@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest';
 import { once } from 'node:events';
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createServer, get, type Server } from 'node:http';
+import { Agent as HttpAgent, createServer, get, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Agent, Environment, NativeProvider } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -338,6 +338,7 @@ it.skipIf(
   async () => {
     const received: string[] = [];
     const listeners: Server[] = [];
+    const localAgent = new HttpAgent({ keepAlive: false });
     const executor = await startPublicExecutor();
     try {
       const urls: string[] = [];
@@ -351,7 +352,8 @@ it.skipIf(
         await once(server, 'listening');
         const url = `http://${host}:${(server.address() as AddressInfo).port}/`;
         const body = await new Promise<string>((resolve, reject) => {
-          get(url, (response) => {
+          // Probe this test's local servers independently of the host HTTP proxy.
+          get(url, { agent: localAgent }, (response) => {
             let text = '';
             response.setEncoding('utf8');
             response.on('data', (chunk) => {
@@ -432,6 +434,7 @@ it.skipIf(
         await provider.close();
       }
     } finally {
+      localAgent.destroy();
       try {
         await Promise.all(
           listeners

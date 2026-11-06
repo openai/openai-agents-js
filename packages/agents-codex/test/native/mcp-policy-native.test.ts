@@ -1,3 +1,4 @@
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -340,7 +341,7 @@ it('REQ133 reconnects native streamable HTTP after an SSE response closes before
 it('joins registered MCP and interception readers across replacement and manual suspension', async () => {
   const addon = await binding();
   const prototype = addon.NativeThread.prototype;
-  const nextEvent = prototype._next_session_event;
+  const nextEvent = prototype._next_session_events;
   const nextMcp = prototype._next_native_mcp_result;
   const nextInterception = prototype._next_native_interception;
   const revokeMcp = prototype._revoke_native_mcp_results;
@@ -383,10 +384,10 @@ it('joins registered MCP and interception readers across replacement and manual 
   onTestFinished(releaseAll);
   const spies = [
     vi
-      .spyOn(prototype, '_next_session_event')
+      .spyOn(prototype, '_next_session_events')
       .mockImplementation(async function (this: NativeThread) {
         const raw = await nextEvent.call(this);
-        const event = JSON.parse(raw);
+        const event = JSON.parse(firstNativeBatchWire(raw));
         if (!event.subagent_id && event.msg?.type === 'shutdown_complete')
           stateFor(this).shutdown = true;
         return raw;

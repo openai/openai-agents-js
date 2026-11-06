@@ -1,0 +1,426 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 2a5f53e..763335b 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -71,6 +71,7 @@ use codex_api::create_text_param_for_request;
+ use codex_api::response_create_client_metadata;
+ use codex_http_client::ClientRouteClass;
+ use codex_http_client::HttpClientFactory;
++use codex_http_client::OutboundProxyPolicy;
+ use codex_login::AuthManager;
+ use codex_login::CodexAuth;
+ use codex_login::RefreshTokenError;
+@@ -78,6 +79,8 @@ use codex_login::UnauthorizedRecovery;
+ use codex_login::default_client::ClientRedirectPolicy;
+ use codex_login::default_client::add_originator_header;
+ use codex_login::default_client::create_client_for_route;
++use codex_login::default_client::create_client_for_route_with_headers;
++use codex_login::default_client::default_headers;
+ use codex_otel::SessionTelemetry;
+ use codex_otel::WEBSOCKET_CONTINUATION_COUNT_METRIC;
+ use codex_otel::current_span_w3c_trace_context;
+@@ -221,6 +224,13 @@ struct ModelClientState {
+     cached_websocket_session: StdMutex<WebsocketSession>,
+     /// Last full tool list used for sampling, retained across turns and connection resets.
+     last_inference_tools: StdMutex<Option<Arc<[ToolSpec]>>>,
++    api_transports: StdMutex<Option<ApiTransports>>,
++}
++
++#[derive(Debug)]
++struct ApiTransports {
++    headers: ApiHeaderMap,
++    by_redirect_policy: [Option<ReqwestTransport>; 2],
+ }
+ 
+ enum ClientRouting {
+@@ -535,6 +545,7 @@ impl ModelClient {
+                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
+                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                 last_inference_tools: StdMutex::new(None),
++                api_transports: StdMutex::new(None),
+             }),
+             agent_identity_policy,
+             prompt_cache_key_override: None,
+@@ -1194,14 +1205,50 @@ impl ModelClient {
+         } else {
+             redirect_policy
+         };
+-        let client = create_client_for_route(
++        let url = api_provider.url_for_path(endpoint);
++        // URL-specific system/PAC routes must still be resolved for each request.
++        if self.http_client_factory.outbound_proxy_policy() != OutboundProxyPolicy::ReqwestDefault {
++            let client = create_client_for_route(
++                &self.http_client_factory,
++                &url,
++                ClientRouteClass::Api,
++                redirect_policy,
++            )
++            .map_err(std::io::Error::from)?;
++            return Ok(ReqwestTransport::from_http_client(client));
++        }
++        let headers = default_headers();
++        let mut cached = self
++            .state
++            .api_transports
++            .lock()
++            .expect("model API transport cache poisoned");
++        if cached.as_ref().is_none_or(|cache| cache.headers != headers) {
++            *cached = Some(ApiTransports {
++                headers: headers.clone(),
++                by_redirect_policy: [None, None],
++            });
++        }
++        let cache = cached.as_mut().expect("initialized API transport cache");
++        let index = match redirect_policy {
++            ClientRedirectPolicy::Default => 0,
++            ClientRedirectPolicy::Reject => 1,
++        };
++        if let Some(transport) = &cache.by_redirect_policy[index] {
++            return Ok(transport.clone());
++        }
++        // Use the same snapshot for cache identity and construction, including residency.
++        let client = create_client_for_route_with_headers(
+             &self.http_client_factory,
+-            &api_provider.url_for_path(endpoint),
++            &url,
+             ClientRouteClass::Api,
+             redirect_policy,
++            headers,
+         )
+         .map_err(std::io::Error::from)?;
+-        Ok(ReqwestTransport::from_http_client(client))
++        let transport = ReqwestTransport::from_http_client(client);
++        cache.by_redirect_policy[index] = Some(transport.clone());
++        Ok(transport)
+     }
+ 
+     pub(crate) async fn prewarm_auth(&self) -> Result<()> {
+diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+index e1587ed..ba306b1 100644
+--- a/codex-rs/core/src/client_tests.rs
++++ b/codex-rs/core/src/client_tests.rs
+@@ -2594,3 +2594,276 @@ async fn authentication_recovery_rotates_websocket_credentials() -> anyhow::Resu
+     assert_eq!(server.received_requests().await.unwrap().len(), 3);
+     Ok(())
+ }
++
++mod api_transport_reuse {
++    use super::*;
++    use codex_client::HttpTransport;
++    use codex_login::default_client::ClientRedirectPolicy;
++    use pretty_assertions::assert_eq;
++    use tokio::io::AsyncBufReadExt;
++    use tokio::io::AsyncReadExt;
++    use tokio::io::AsyncWriteExt;
++    use tokio::io::BufReader;
++    use tokio::net::TcpListener;
++    use tokio::sync::mpsc;
++    use tokio::task::JoinHandle;
++    use tokio::task::JoinSet;
++
++    struct Peer {
++        url: String,
++        connections: Arc<AtomicUsize>,
++        requests: mpsc::UnboundedReceiver<String>,
++        task: JoinHandle<()>,
++    }
++
++    impl Peer {
++        async fn start() -> Self {
++            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++            let url = format!("http://{}", listener.local_addr().unwrap());
++            let connections = Arc::new(AtomicUsize::new(0));
++            let observed = connections.clone();
++            let (send, requests) = mpsc::unbounded_channel();
++            let task = tokio::spawn(async move {
++                let mut connections = JoinSet::new();
++                loop {
++                    let (socket, _) = listener.accept().await.unwrap();
++                    observed.fetch_add(1, Ordering::Relaxed);
++                    let send = send.clone();
++                    connections.spawn(async move {
++                        let mut socket = BufReader::new(socket);
++                        loop {
++                            let mut headers = String::new();
++                            let mut length = 0;
++                            loop {
++                                let mut line = String::new();
++                                if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
++                                    return;
++                                }
++                                if line == "\r\n" {
++                                    break;
++                                }
++                                if let Some((name, value)) = line.split_once(':')
++                                    && name.eq_ignore_ascii_case("content-length")
++                                {
++                                    length = value.trim().parse::<usize>().unwrap();
++                                }
++                                headers.push_str(&line);
++                            }
++                            socket.read_exact(&mut vec![0; length]).await.unwrap();
++                            send.send(headers).unwrap();
++                            if socket
++                                .get_mut()
++                                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
++                                .await
++                                .is_err()
++                            {
++                                return;
++                            }
++                        }
++                    });
++                    while connections.try_join_next().is_some() {}
++                }
++            });
++            Self {
++                url,
++                connections,
++                requests,
++                task,
++            }
++        }
++    }
++
++    impl Drop for Peer {
++        fn drop(&mut self) {
++            self.task.abort();
++        }
++    }
++
++    async fn request(client: &ModelClient, peer: &Peer, token: &str) {
++        let mut provider = client.state.provider.api_provider().await.unwrap();
++        provider.base_url = peer.url.clone();
++        let transport = client
++            .build_api_transport(&provider, "/responses", ClientRedirectPolicy::Default)
++            .unwrap();
++        let mut request = provider.build_request(http::Method::GET, "/responses");
++        request
++            .headers
++            .insert(http::header::AUTHORIZATION, token.parse().unwrap());
++        assert_eq!(
++            transport.execute(request).await.unwrap().status,
++            http::StatusCode::OK
++        );
++    }
++
++    #[tokio::test]
++    async fn turns_reuse_connections_without_retaining_request_headers_or_other_clients() {
++        let mut peer = Peer::start().await;
++        let client = test_model_client(SessionSource::Exec);
++        for token in ["Bearer first", "Bearer second", "Bearer third"] {
++            let turn = client.new_session();
++            request(&turn.client, &peer, token).await;
++            assert!(peer.requests.recv().await.unwrap().contains(token));
++        }
++        assert_eq!(peer.connections.load(Ordering::Relaxed), 1);
++        let other = test_model_client(SessionSource::Exec);
++        request(&other, &peer, "Bearer isolated").await;
++        assert!(
++            peer.requests
++                .recv()
++                .await
++                .unwrap()
++                .contains("Bearer isolated")
++        );
++        assert_eq!(peer.connections.load(Ordering::Relaxed), 2);
++    }
++
++    #[tokio::test]
++    async fn reused_managed_transport_rechecks_live_network_policy() {
++        let mut peer = Peer::start().await;
++        let controller = codex_http_client::NetworkPolicyController::default();
++        let policy = controller.policy();
++        assert!(controller.publish(
++            policy.revision(),
++            codex_http_client::DestinationPolicy::Unrestricted
++        ));
++        let mut client = test_model_client(SessionSource::Exec);
++        client.http_client_factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
++            .with_network_policy(policy.clone());
++        for token in ["Bearer first", "Bearer second"] {
++            request(&client, &peer, token).await;
++            peer.requests.recv().await.unwrap();
++        }
++        assert_eq!(peer.connections.load(Ordering::Relaxed), 1);
++        controller.unavailable(policy.revision());
++        let mut provider = client.state.provider.api_provider().await.unwrap();
++        provider.base_url = peer.url.clone();
++        let transport = client
++            .build_api_transport(&provider, "/responses", ClientRedirectPolicy::Default)
++            .unwrap();
++        assert!(
++            transport
++                .execute(provider.build_request(http::Method::GET, "/responses"))
++                .await
++                .is_err()
++        );
++        assert!(peer.requests.try_recv().is_err());
++        assert_eq!(peer.connections.load(Ordering::Relaxed), 1);
++        assert!(controller.publish(
++            policy.revision(),
++            codex_http_client::DestinationPolicy::Unrestricted
++        ));
++        request(&client, &peer, "Bearer recovered").await;
++        assert!(
++            peer.requests
++                .recv()
++                .await
++                .unwrap()
++                .contains("Bearer recovered")
++        );
++    }
++
++    #[tokio::test]
++    async fn changed_defaults_reach_the_next_request() {
++        const CHILD: &str = "CODEX_TEST_API_TRANSPORT_DEFAULTS";
++        if std::env::var_os(CHILD).is_none() {
++            let output = std::process::Command::new(std::env::current_exe().unwrap())
++                .args([
++                    "--exact",
++                    concat!(module_path!(), "::changed_defaults_reach_the_next_request")
++                        .trim_start_matches("codex_core::"),
++                    "--nocapture",
++                ])
++                .env(CHILD, "1")
++                .output()
++                .unwrap();
++            assert!(
++                output.status.success(),
++                "{}\n{}",
++                String::from_utf8_lossy(&output.stdout),
++                String::from_utf8_lossy(&output.stderr)
++            );
++            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
++            return;
++        }
++        let mut peer = Peer::start().await;
++        let client = test_model_client(SessionSource::Exec);
++        *codex_login::default_client::USER_AGENT_SUFFIX
++            .lock()
++            .unwrap() = Some("first-defaults".into());
++        codex_login::default_client::set_default_client_residency_requirement(None);
++        request(&client, &peer, "Bearer first").await;
++        let first = peer.requests.recv().await.unwrap();
++        assert!(first.contains("first-defaults"));
++        assert!(
++            !first
++                .to_lowercase()
++                .contains(codex_login::default_client::RESIDENCY_HEADER_NAME)
++        );
++        *codex_login::default_client::USER_AGENT_SUFFIX
++            .lock()
++            .unwrap() = Some("second-defaults".into());
++        codex_login::default_client::set_default_client_residency_requirement(Some(
++            codex_login::default_client::ResidencyRequirement::Us,
++        ));
++        request(&client, &peer, "Bearer second").await;
++        let second = peer.requests.recv().await.unwrap();
++        assert!(second.contains("second-defaults"));
++        assert!(!second.contains("first-defaults"));
++        assert!(second.to_lowercase().contains(&format!(
++            "{}: us",
++            codex_login::default_client::RESIDENCY_HEADER_NAME,
++        )));
++    }
++
++    #[tokio::test]
++    async fn redirect_policy_remains_separate_after_connection_reuse() {
++        let origin = MockServer::start().await;
++        let destination = MockServer::start().await;
++        Mock::given(method("GET"))
++            .respond_with(ResponseTemplate::new(307).insert_header("Location", destination.uri()))
++            .mount(&origin)
++            .await;
++        Mock::given(method("GET"))
++            .respond_with(ResponseTemplate::new(200))
++            .mount(&destination)
++            .await;
++        let client = test_model_client(SessionSource::Exec);
++        let mut provider = client.state.provider.api_provider().await.unwrap();
++        provider.base_url = origin.uri();
++        for (policy, routed, followed) in [
++            (ClientRedirectPolicy::Default, false, true),
++            (ClientRedirectPolicy::Reject, false, false),
++            (ClientRedirectPolicy::Default, true, false),
++            (ClientRedirectPolicy::Default, false, true),
++        ] {
++            if routed {
++                provider.headers.insert(
++                    codex_model_provider::ACCOUNT_ROUTING_HEADER,
++                    http::HeaderValue::from_static("synthetic-account"),
++                );
++            } else {
++                provider
++                    .headers
++                    .remove(codex_model_provider::ACCOUNT_ROUTING_HEADER);
++            }
++            let transport = client
++                .build_api_transport(&provider, "/responses", policy)
++                .unwrap();
++            let result = transport
++                .execute(provider.build_request(http::Method::GET, "/responses"))
++                .await;
++            if followed {
++                assert_eq!(result.unwrap().status, http::StatusCode::OK);
++            } else {
++                assert!(matches!(
++                    result,
++                    Err(TransportError::Http {
++                        status: http::StatusCode::TEMPORARY_REDIRECT,
++                        ..
++                    })
++                ));
++            }
++        }
++        assert_eq!(destination.received_requests().await.unwrap().len(), 2);
++    }
++}
+diff --git a/codex-rs/login/src/auth/default_client.rs b/codex-rs/login/src/auth/default_client.rs
+index 28a952e..2462fee 100644
+--- a/codex-rs/login/src/auth/default_client.rs
++++ b/codex-rs/login/src/auth/default_client.rs
+@@ -261,9 +261,27 @@ pub fn create_client_for_route(
+     route_class: ClientRouteClass,
+     redirect_policy: ClientRedirectPolicy,
+ ) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
++    create_client_for_route_with_headers(
++        http_client_factory,
++        request_url,
++        route_class,
++        redirect_policy,
++        default_headers(),
++    )
++}
++
++/// Builds a routed client using the exact default-header snapshot retained by its owner.
++pub fn create_client_for_route_with_headers(
++    http_client_factory: &HttpClientFactory,
++    request_url: &str,
++    route_class: ClientRouteClass,
++    redirect_policy: ClientRedirectPolicy,
++    headers: HeaderMap,
++) -> Result<HttpClient, BuildRouteAwareHttpClientError> {
++    let builder = default_http_client_builder_with_headers(headers);
+     let builder = match redirect_policy {
+-        ClientRedirectPolicy::Default => default_http_client_builder(),
+-        ClientRedirectPolicy::Reject => default_http_client_builder().without_redirects(),
++        ClientRedirectPolicy::Default => builder,
++        ClientRedirectPolicy::Reject => builder.without_redirects(),
+     };
+     create_client_for_route_with_builder(http_client_factory, request_url, route_class, builder)
+ }
+@@ -414,8 +432,12 @@ pub async fn create_transport_for_routes_async(
+ }
+ 
+ fn default_http_client_builder() -> HttpClientBuilder {
++    default_http_client_builder_with_headers(default_headers())
++}
++
++fn default_http_client_builder_with_headers(headers: HeaderMap) -> HttpClientBuilder {
+     HttpClientBuilder::new()
+-        .default_headers(default_headers())
++        .default_headers(headers)
+         .with_chatgpt_cloudflare_cookie_store()
+ }
+ 

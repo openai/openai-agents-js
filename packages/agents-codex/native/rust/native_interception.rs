@@ -1866,6 +1866,7 @@ impl StartedExec {
 }
 
 pub struct Boundary {
+    engine: std::sync::OnceLock<Weak<crate::engine::EngineState>>,
     // Historical failure fences admission even after every receiver is joined.
     import_cleanup_failure: Arc<Mutex<Option<String>>>,
     code_imports: Mutex<Vec<Arc<PendingCodeImport>>>,
@@ -1886,6 +1887,13 @@ struct NumericFork {
 }
 
 impl Boundary {
+    pub(crate) fn bind_engine(&self, engine: Weak<crate::engine::EngineState>) {
+        assert!(
+            self.engine.set(engine).is_ok(),
+            "native HTTP engine already bound"
+        );
+    }
+
     // Capture the exact managed generation receipt when creating a request
     // interceptor; callers must not look up the latest turn on response events.
     pub(crate) fn response_admission(
@@ -1911,6 +1919,7 @@ impl Boundary {
         sentinel: Arc<RwLock<Option<(String, String, Option<String>)>>>,
     ) -> Self {
         Self {
+            engine: std::sync::OnceLock::new(),
             import_cleanup_failure: Arc::default(),
             code_imports: Mutex::default(),
             restored_code: Mutex::default(),
@@ -2586,6 +2595,46 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
+        let engine = self.engine.get()?.upgrade()?;
+        // A selected JavaScript Model owns one-use admission on Node. Decline
+        // before looking up or mutating any retained request ticket.
+        if engine.sdk_selected_model {
+            return None;
+        }
+        let base = engine
+            .sentinel
+            .read()
+            .expect("sentinel poisoned")
+            .as_ref()?
+            .0
+            .clone();
+        // Claim the entire private namespace, including malformed private paths.
+        // Claiming never permits fallback after validation fails.
+        if !url.starts_with(&format!("{}/p-", base.trim_end_matches('/'))) {
+            return None;
+        }
+        let expected_url = url.to_owned();
+        let engine = Arc::downgrade(&engine);
+        Some(Arc::new(move |request| {
+            let engine = engine.clone();
+            let expected_url = expected_url.clone();
+            Box::pin(async move {
+                let engine =
+                    engine
+                        .upgrade()
+                        .ok_or_else(|| codex_client::TransportError::Http {
+                            status: http::StatusCode::UNAUTHORIZED,
+                            url: Some(expected_url.clone()),
+                            headers: Some(http::HeaderMap::new()),
+                            body: Some(String::new()),
+                            retry_after: None,
+                        })?;
+                crate::direct_sentinel_stream(&engine, &expected_url, request).await
+            })
+        }))
+    }
+
     fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>> {
         let control = self
             .threads
@@ -8356,3 +8405,7 @@ mod mcp_policy_tests {
         codex_otel::sdk_trace::release_trace_span(unrelated_handle);
     }
 }
+
+#[cfg(test)]
+#[path = "direct_transport_tests.rs"]
+mod direct_http_transport_tests;

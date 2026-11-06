@@ -1,3 +1,4 @@
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -18,7 +19,7 @@ afterEach(async () => {
 it('drains genuine usage after manual suspension overtakes the next native read', async () => {
   const native = await binding();
   const prototype = native.NativeThread.prototype;
-  const next = prototype._next_session_event;
+  const next = prototype._next_session_events;
   const seal = prototype._seal_manual_checkpoint;
   const held = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -33,38 +34,37 @@ it('drains genuine usage after manual suspension overtakes the next native read'
   };
   // Also release gates if the test deadline interrupts an awaited operation.
   onTestFinished(unblock);
-  vi.spyOn(prototype, '_next_session_event').mockImplementation(async function (
-    this: NativeThread,
-    ...args
-  ) {
-    // The regression must read from this same native receiver after suspension.
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    target ??= this;
-    if (
-      this === target &&
-      completedTurnId !== undefined &&
-      requestedTurnId === completedTurnId &&
-      !heldRead
-    ) {
-      heldRead = true;
-      held.resolve();
-      await release.promise;
-    }
-    const raw = await next.apply(this, args);
-    if (this === target) {
-      const event = JSON.parse(raw);
-      if (event.msg?.type === 'raw_response_completed')
-        completedTurnId = event.id;
-      // Native root events and tool requests may arrive in either order.
-      // Let the real manual request through before holding the usage tail.
+  vi.spyOn(prototype, '_next_session_events').mockImplementation(
+    async function (this: NativeThread, ...args) {
+      // The regression must read from this same native receiver after suspension.
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      target ??= this;
       if (
-        event.msg?.type === 'dynamic_tool_call_request' &&
-        event.msg.callId === 'decision1'
-      )
-        requestedTurnId = event.msg.turnId;
-    }
-    return raw;
-  });
+        this === target &&
+        completedTurnId !== undefined &&
+        requestedTurnId === completedTurnId &&
+        !heldRead
+      ) {
+        heldRead = true;
+        held.resolve();
+        await release.promise;
+      }
+      const raw = await next.apply(this, args);
+      if (this === target) {
+        const event = JSON.parse(firstNativeBatchWire(raw));
+        if (event.msg?.type === 'raw_response_completed')
+          completedTurnId = event.id;
+        // Native root events and tool requests may arrive in either order.
+        // Let the real manual request through before holding the usage tail.
+        if (
+          event.msg?.type === 'dynamic_tool_call_request' &&
+          event.msg.callId === 'decision1'
+        )
+          requestedTurnId = event.msg.turnId;
+      }
+      return raw;
+    },
+  );
   vi.spyOn(prototype, '_seal_manual_checkpoint').mockImplementation(
     async function (this: NativeThread, ...args) {
       if (this !== target) return seal.apply(this, args);
@@ -133,7 +133,7 @@ it('drains genuine usage after manual suspension overtakes the next native read'
     expect(await outcome).toBeInstanceOf(InteractionRequired);
     if (!target) throw new Error('Missing native event reader');
     // Explicit close must also release a read after Core has retired.
-    const remainingRead = target._next_session_event();
+    const remainingRead = target._next_session_events();
     void remainingRead.catch(() => {});
     await session.close();
     await expect(remainingRead).rejects.toThrow(/closed/i);

@@ -1,0 +1,524 @@
+diff --git a/codex-rs/models-manager/src/manager.rs b/codex-rs/models-manager/src/manager.rs
+--- a/codex-rs/models-manager/src/manager.rs
++++ b/codex-rs/models-manager/src/manager.rs
+@@ -112,6 +112,35 @@
+ 
+ type SharedModelsEndpointClient = Arc<dyn ModelsEndpointClient>;
+ 
++// Copy only picker metadata while the catalog is borrowed. Sort after releasing its guard.
++fn project_model_presets(models: &[ModelInfo]) -> Vec<(i32, ModelPreset)> {
++    models
++        .iter()
++        .map(|model| (model.priority, ModelPreset::from(model)))
++        .collect()
++}
++
++fn build_available_projection(
++    mut projected: Vec<(i32, ModelPreset)>,
++    auth_manager: Option<&AuthManager>,
++) -> Vec<ModelPreset> {
++    // Stable sorting retains catalog order on ties, as in the owned path.
++    projected.sort_by_key(|(priority, _)| *priority);
++    let presets = projected.into_iter().map(|(_, preset)| preset).collect();
++    build_available_presets(presets, auth_manager)
++}
++
++// Call after releasing the catalog guard, as in the owned-catalog path.
++fn build_available_presets(
++    mut presets: Vec<ModelPreset>,
++    auth_manager: Option<&AuthManager>,
++) -> Vec<ModelPreset> {
++    let uses_codex_backend = auth_manager.is_some_and(AuthManager::current_auth_uses_codex_backend);
++    presets = ModelPreset::filter_by_auth(presets, uses_codex_backend);
++    ModelPreset::mark_default_by_picker_visibility(&mut presets);
++    presets
++}
++
+ /// Coordinates model discovery plus cached metadata on disk.
+ pub trait ModelsManager: fmt::Debug + Send + Sync {
+     /// Supply startup API-key discovery policy; live changes require a new session.
+@@ -171,15 +200,8 @@
+     fn build_available_models(&self, mut remote_models: Vec<ModelInfo>) -> Vec<ModelPreset> {
+         remote_models.sort_by_key(|model| model.priority);
+ 
+-        let mut presets: Vec<ModelPreset> = remote_models.into_iter().map(Into::into).collect();
+-        let uses_codex_backend = self
+-            .auth_manager()
+-            .is_some_and(AuthManager::current_auth_uses_codex_backend);
+-        presets = ModelPreset::filter_by_auth(presets, uses_codex_backend);
+-
+-        ModelPreset::mark_default_by_picker_visibility(&mut presets);
+-
+-        presets
++        let presets = remote_models.into_iter().map(Into::into).collect();
++        build_available_presets(presets, self.auth_manager())
+     }
+ 
+     /// List collaboration mode presets.
+@@ -387,6 +409,40 @@
+ }
+ 
+ impl ModelsManager for OpenAiModelsManager {
++    fn list_models(
++        &self,
++        refresh_strategy: RefreshStrategy,
++        http_client_factory: HttpClientFactory,
++    ) -> ModelsManagerFuture<'_, Vec<ModelPreset>> {
++        Box::pin(
++            async move {
++                if let Err(err) = self
++                    .refresh_available_models(refresh_strategy, &http_client_factory)
++                    .await
++                {
++                    error!("failed to refresh available models: {err}");
++                }
++                let presets = {
++                    let entry = self.remote_models.read().await;
++                    self.project_current_presets(&entry)
++                };
++                build_available_projection(presets, self.auth_manager())
++            }
++            .instrument(tracing::info_span!(
++                "list_models",
++                refresh_strategy = %refresh_strategy
++            )),
++        )
++    }
++
++    fn try_list_models(&self) -> Result<Vec<ModelPreset>, TryLockError> {
++        let presets = {
++            let entry = self.remote_models.try_read()?;
++            self.project_current_presets(&entry)
++        };
++        Ok(build_available_projection(presets, self.auth_manager()))
++    }
++
+     fn set_api_key_model_discovery_enabled(&self, enabled: bool) {
+         self.api_key_model_discovery_enabled
+             .store(enabled, Ordering::SeqCst);
+@@ -518,6 +574,20 @@
+ }
+ 
+ impl OpenAiModelsManager {
++    fn project_current_presets(&self, entry: &ModelsCacheEntry) -> Vec<(i32, ModelPreset)> {
++        let models = if !self.api_key_discovery_disabled()
++            && entry.identity.is_some()
++            && entry.identity == self.endpoint_client.identity()
++        {
++            entry.models.as_slice()
++        } else {
++            self.catalog_source
++                .fallback_models_ref()
++                .unwrap_or_default()
++        };
++        project_model_presets(models)
++    }
++
+     async fn raw_model_catalog(
+         &self,
+         refresh_strategy: RefreshStrategy,
+@@ -786,6 +856,29 @@
+ }
+ 
+ impl ModelsManager for StaticModelsManager {
++    fn list_models(
++        &self,
++        refresh_strategy: RefreshStrategy,
++        http_client_factory: HttpClientFactory,
++    ) -> ModelsManagerFuture<'_, Vec<ModelPreset>> {
++        Box::pin(
++            async move {
++                drop(http_client_factory);
++                let presets = project_model_presets(&self.remote_models);
++                build_available_projection(presets, self.auth_manager())
++            }
++            .instrument(tracing::info_span!(
++                "list_models",
++                refresh_strategy = %refresh_strategy
++            )),
++        )
++    }
++
++    fn try_list_models(&self) -> Result<Vec<ModelPreset>, TryLockError> {
++        let presets = project_model_presets(&self.remote_models);
++        Ok(build_available_projection(presets, self.auth_manager()))
++    }
++
+     fn get_model_info<'a>(
+         &'a self,
+         model: &'a str,
+diff --git a/codex-rs/models-manager/src/manager_tests.rs b/codex-rs/models-manager/src/manager_tests.rs
+--- a/codex-rs/models-manager/src/manager_tests.rs
++++ b/codex-rs/models-manager/src/manager_tests.rs
+@@ -1988,3 +1988,233 @@
+         );
+     }
+ }
++
++#[tokio::test]
++async fn preset_projection_preserves_stable_order_auth_and_default_selection() {
++    let hidden = remote_model_with_visibility("hidden", "Hidden", -3, "hide");
++    let mut backend_only = remote_model("backend-only", "Backend Only", -2);
++    backend_only.supported_in_api = false;
++    let first_tie = remote_model("tie-b", "First Tie", 0);
++    let mut second_tie = remote_model("tie-a", "Second Tie", 0);
++    second_tie.default_reasoning_level = Some(
++        codex_protocol::openai_models::ReasoningEffort::Custom("provider:custom".to_string()),
++    );
++    let duplicate = remote_model("tie-b", "Duplicate Slug", 0);
++    let last = remote_model("last", "Last", 7);
++    let models = vec![last, first_tie, hidden, backend_only, second_tie, duplicate];
++
++    for uses_codex_backend in [false, true] {
++        let auth = uses_codex_backend.then(|| {
++            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing())
++        });
++        let manager = StaticModelsManager::new(
++            auth,
++            ModelsResponse {
++                models: models.clone(),
++            },
++        );
++        let actual = manager
++            .list_models(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
++            .await;
++        assert_eq!(actual, manager.build_available_models(models.clone()));
++        assert_eq!(manager.try_list_models().unwrap(), actual);
++        let expected_names = if uses_codex_backend {
++            vec![
++                "Hidden",
++                "Backend Only",
++                "First Tie",
++                "Second Tie",
++                "Duplicate Slug",
++                "Last",
++            ]
++        } else {
++            vec![
++                "Hidden",
++                "First Tie",
++                "Second Tie",
++                "Duplicate Slug",
++                "Last",
++            ]
++        };
++        assert_eq!(
++            actual
++                .iter()
++                .map(|preset| preset.display_name.as_str())
++                .collect::<Vec<_>>(),
++            expected_names
++        );
++        assert_eq!(
++            actual
++                .iter()
++                .filter(|preset| preset.is_default)
++                .map(|preset| preset.id.as_str())
++                .collect::<Vec<_>>(),
++            vec![if uses_codex_backend {
++                "backend-only"
++            } else {
++                "tie-b"
++            }]
++        );
++        assert!(!actual[0].show_in_picker);
++        assert_eq!(
++            actual
++                .iter()
++                .find(|preset| preset.id == "tie-a")
++                .unwrap()
++                .default_reasoning_effort
++                .as_str(),
++            "provider:custom"
++        );
++    }
++}
++
++#[tokio::test]
++async fn preset_projection_handles_hidden_only_and_empty_static_catalogs() {
++    let models = vec![
++        remote_model_with_visibility("second", "Second", 1, "none"),
++        remote_model_with_visibility("first", "First", 0, "hide"),
++    ];
++    let manager = static_manager_for_tests(ModelsResponse { models });
++    let actual = manager
++        .list_models(RefreshStrategy::Offline, DEFAULT_HTTP_CLIENT_FACTORY)
++        .await;
++    assert_eq!(
++        actual
++            .iter()
++            .map(|preset| preset.id.as_str())
++            .collect::<Vec<_>>(),
++        vec!["first", "second"]
++    );
++    assert!(actual[0].is_default);
++    assert!(!actual[1].is_default);
++    assert!(actual.iter().all(|preset| !preset.show_in_picker));
++    assert_eq!(manager.try_list_models().unwrap(), actual);
++
++    let empty = static_manager_for_tests(ModelsResponse { models: Vec::new() });
++    assert!(
++        empty
++            .list_models(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
++            .await
++            .is_empty()
++    );
++    assert!(empty.try_list_models().unwrap().is_empty());
++}
++
++#[tokio::test]
++async fn preset_projection_obeys_identity_empty_catalog_and_try_lock_authority() {
++    let bundled = load_remote_models_from_file().unwrap();
++    assert!(!bundled.is_empty(), "fallback control must have models");
++    for explicit in [false, true] {
++        for identity in [Some("test-provider"), Some("other-provider"), None] {
++            for empty in [false, true] {
++                let endpoint = TestModelsEndpoint::without_refresh(Vec::new());
++                let mut manager = OpenAiModelsManager::new_without_cache(endpoint.clone(), None);
++                if explicit {
++                    manager = manager.with_provider_catalog();
++                }
++                let models = if empty {
++                    Vec::new()
++                } else {
++                    vec![remote_model("selected", "Selected", 0)]
++                };
++                {
++                    let mut entry = manager.remote_models.write().await;
++                    entry.identity = identity.map(str::to_string);
++                    entry.models = models.clone();
++                }
++                let expected_source = if identity == Some("test-provider") {
++                    models
++                } else if explicit {
++                    Vec::new()
++                } else {
++                    bundled.clone()
++                };
++                let expected = manager.build_available_models(expected_source);
++                assert_eq!(
++                    manager.try_list_models().unwrap(),
++                    expected,
++                    "explicit={explicit}, identity={identity:?}, empty={empty}"
++                );
++                assert_eq!(
++                    manager
++                        .list_models(RefreshStrategy::Offline, DEFAULT_HTTP_CLIENT_FACTORY)
++                        .await,
++                    expected
++                );
++                assert_eq!(endpoint.fetch_count(), 0);
++
++                // Even a fallback catalog must not turn lock contention into a successful read.
++                let guard = manager.remote_models.write().await;
++                assert!(manager.try_list_models().is_err());
++                drop(guard);
++                assert_eq!(manager.try_list_models().unwrap(), expected);
++            }
++        }
++    }
++}
++
++#[tokio::test]
++async fn preset_projection_obeys_api_key_discovery_rollback_for_both_catalog_sources() {
++    let models = vec![remote_model("dynamic-preset", "Dynamic Preset", 0)];
++    let bundled = load_remote_models_from_file().unwrap();
++    for explicit in [false, true] {
++        let endpoint = TestModelsEndpoint::without_refresh(vec![models.clone()]);
++        let auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-key"));
++        let mut manager = OpenAiModelsManager::new_without_cache(endpoint.clone(), Some(auth));
++        if explicit {
++            manager = manager.with_provider_catalog();
++        }
++        manager.set_api_key_model_discovery_enabled(true);
++        let expected_dynamic = manager.build_available_models(models.clone());
++        assert_eq!(
++            manager
++                .list_models(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
++                .await,
++            expected_dynamic
++        );
++        assert_eq!(endpoint.fetch_count(), 1);
++
++        manager.set_api_key_model_discovery_enabled(false);
++        let expected_fallback = manager.build_available_models(if explicit {
++            Vec::new()
++        } else {
++            bundled.clone()
++        });
++        assert_eq!(
++            manager
++                .list_models(RefreshStrategy::Offline, DEFAULT_HTTP_CLIENT_FACTORY)
++                .await,
++            expected_fallback
++        );
++        assert_eq!(manager.try_list_models().unwrap(), expected_fallback);
++        let guard = manager.remote_models.write().await;
++        assert!(manager.try_list_models().is_err());
++        drop(guard);
++
++        manager.set_api_key_model_discovery_enabled(true);
++        assert_eq!(
++            manager
++                .list_models(RefreshStrategy::Offline, DEFAULT_HTTP_CLIENT_FACTORY)
++                .await,
++            expected_dynamic
++        );
++        assert_eq!(manager.try_list_models().unwrap(), expected_dynamic);
++        assert_eq!(endpoint.fetch_count(), 1);
++    }
++}
++
++#[tokio::test]
++async fn preset_projection_keeps_refresh_errors_best_effort() {
++    let endpoint = TestModelsEndpoint::with_command_auth(vec![Err(CodexErr::RequestTimeout)]);
++    let manager = OpenAiModelsManager::new_without_cache(endpoint.clone(), None);
++    let expected = manager.build_available_models(load_remote_models_from_file().unwrap());
++    assert!(!expected.is_empty(), "fallback control must have presets");
++    assert_eq!(
++        manager
++            .list_models(RefreshStrategy::Online, DEFAULT_HTTP_CLIENT_FACTORY)
++            .await,
++        expected
++    );
++    assert_eq!(manager.try_list_models().unwrap(), expected);
++    assert_eq!(endpoint.fetch_count(), 1);
++}
+diff --git a/codex-rs/protocol/src/openai_models.rs b/codex-rs/protocol/src/openai_models.rs
+--- a/codex-rs/protocol/src/openai_models.rs
++++ b/codex-rs/protocol/src/openai_models.rs
+@@ -976,6 +976,43 @@
+             availability_nux: info.availability_nux,
+             supported_in_api: info.supported_in_api,
+             input_modalities: info.input_modalities,
++        }
++    }
++}
++
++impl From<&ModelInfo> for ModelPreset {
++    fn from(info: &ModelInfo) -> Self {
++        ModelPreset {
++            id: info.slug.clone(),
++            model: info.slug.clone(),
++            display_name: info.display_name.clone(),
++            description: info.description.clone().unwrap_or_default(),
++            model_specialty: info.model_specialty.clone(),
++            default_reasoning_effort: info
++                .default_reasoning_level
++                .clone()
++                .unwrap_or(ReasoningEffort::None),
++            supported_reasoning_efforts: info.supported_reasoning_levels.clone(),
++            supports_personality: false,
++            additional_speed_tiers: info.additional_speed_tiers.clone(),
++            service_tiers: info.service_tiers.clone(),
++            default_service_tier: info.default_service_tier.clone(),
++            available_access_programs: info.available_access_programs.clone(),
++            is_default: false, // default is the highest priority available model
++            upgrade: info.upgrade.as_ref().map(|upgrade| ModelUpgrade {
++                id: upgrade.model.clone(),
++                migration_config_key: info.slug.clone(),
++                // todo(aibrahim): add the model link here.
++                model_link: None,
++                upgrade_copy: None,
++                migration_markdown: Some(upgrade.migration_markdown.clone()),
++                retirement_at: upgrade.retirement_at,
++            }),
++            show_in_picker: info.visibility == ModelVisibility::List,
++            multi_agent_version: info.multi_agent_version,
++            availability_nux: info.availability_nux.clone(),
++            supported_in_api: info.supported_in_api,
++            input_modalities: info.input_modalities.clone(),
+         }
+     }
+ }
+@@ -2015,3 +2052,90 @@
+         assert_eq!(model.service_tier_for_request(/*service_tier*/ None), None);
+     }
+ }
++
++#[cfg(test)]
++mod borrowed_model_preset_tests {
++    use super::*;
++
++    #[test]
++    fn borrowed_preset_matches_owned_conversion_with_populated_metadata() {
++        let custom = ReasoningEffort::Custom("provider:deliberate".to_string());
++        let mut info = super::tests::test_model(Some(ModelMessages {
++            instructions_template: Some("instructions not included in a preset".repeat(1024)),
++            ..ModelMessages::default()
++        }));
++        info.slug = "provider/模型".to_string();
++        info.display_name = "Model Δ".to_string();
++        info.description = Some("Description".to_string());
++        info.model_specialty = Some("specialty".to_string());
++        info.default_reasoning_level = Some(custom.clone());
++        info.supported_reasoning_levels = vec![ReasoningEffortPreset {
++            effort: custom.clone(),
++            description: "Provider effort".to_string(),
++        }];
++        info.additional_speed_tiers = vec!["priority".to_string()];
++        info.service_tiers = vec![ModelServiceTier {
++            id: "priority".to_string(),
++            name: "Priority".to_string(),
++            description: "Priority processing".to_string(),
++        }];
++        info.default_service_tier = Some("priority".to_string());
++        info.available_access_programs = Some(ModelAccessPrograms {
++            cyber: vec![crate::turn_input::CyberAccessProgram::DaybreakBlue],
++        });
++        info.upgrade = Some(ModelInfoUpgrade {
++            model: "next-model".to_string(),
++            migration_markdown: "Migration details".to_string(),
++            retirement_at: Some(
++                chrono::DateTime::parse_from_rfc3339("2027-01-02T03:04:05Z")
++                    .unwrap()
++                    .with_timezone(&chrono::Utc),
++            ),
++        });
++        info.availability_nux = Some(ModelAvailabilityNux {
++            message: "Available now".to_string(),
++        });
++        info.visibility = ModelVisibility::Hide;
++        info.supported_in_api = false;
++        info.input_modalities = vec![InputModality::Audio, InputModality::Text];
++        info.multi_agent_version = Some(MultiAgentVersion::V2);
++        info.multi_agent_reasoning_effort = Some(custom.clone());
++        info.used_fallback_model_metadata = true;
++
++        let expected = ModelPreset::from(info.clone());
++        let actual = ModelPreset::from(&info);
++        // Compare the Rust values: JSON equality would omit multi_agent_version.
++        assert_eq!(actual, expected);
++        assert_eq!(actual.multi_agent_version, Some(MultiAgentVersion::V2));
++        assert_eq!(actual.default_reasoning_effort, custom);
++        assert!(!actual.show_in_picker);
++        assert!(!actual.supported_in_api);
++        assert_eq!(
++            actual.upgrade.as_ref().unwrap().migration_config_key,
++            info.slug
++        );
++    }
++
++    #[test]
++    fn borrowed_preset_preserves_defaults_and_internal_backend_selection() {
++        for backend in [
++            None,
++            Some(MultiAgentVersion::Disabled),
++            Some(MultiAgentVersion::V1),
++            Some(MultiAgentVersion::V2),
++        ] {
++            for description in [None, Some(String::new())] {
++                let mut info = super::tests::test_model(None);
++                info.multi_agent_version = backend;
++                info.description = description;
++                let actual = ModelPreset::from(&info);
++                assert_eq!(actual, ModelPreset::from(info));
++                assert_eq!(actual.multi_agent_version, backend);
++                assert_eq!(actual.default_reasoning_effort, ReasoningEffort::None);
++                assert_eq!(actual.description, "");
++                assert!(actual.show_in_picker);
++                assert!(!actual.is_default);
++            }
++        }
++    }
++}

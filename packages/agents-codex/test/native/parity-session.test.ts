@@ -49,6 +49,7 @@ describe('Python-aligned Session lifecycle', () => {
       provider,
       tools: [check],
     }).session();
+    const sessionId = session.id;
     try {
       const turn = await session.submit('begin');
       const external = turn.wait();
@@ -61,6 +62,7 @@ describe('Python-aligned Session lifecycle', () => {
       await session.close();
       await provider.close();
     }
+    expect(session.id).toBe(sessionId);
     server.assertExhausted();
   });
 

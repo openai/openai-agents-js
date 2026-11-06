@@ -31,6 +31,9 @@ export interface OutputIdentity {
   readonly fingerprint: string;
 }
 
+// This identity contains only frozen primitive fields, not a parser or schema.
+let plainOutputIdentity: OutputIdentity | undefined;
+
 function captureOutputIdentity(
   mode: OutputIdentity['mode'],
   schema: JsonObject | null,
@@ -73,13 +76,13 @@ export function prepareOutput<Output>(
 ): PreparedOutput<Output> {
   if (!output)
     return {
-      identity: captureOutputIdentity(
+      identity: (plainOutputIdentity ??= captureOutputIdentity(
         'plain',
         decode(
           jsonObject,
           JSON.stringify(z.toJSONSchema(z.string(), { io: 'input' })),
         ),
-      ),
+      )),
     };
   const explicit = 'mode' in output;
   let budget = 0;

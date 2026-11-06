@@ -179,6 +179,11 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: Qualify provider home cleanup
+        run: >-
+          pnpm test:native
+          packages/agents-codex/test/native/provider-home-batching-native.test.ts
+          --maxWorkers=1 --reporter=verbose
       - name: Qualify canonical native storage
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: >-

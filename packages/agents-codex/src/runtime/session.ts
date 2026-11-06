@@ -150,6 +150,7 @@ import {
 } from './binding';
 import {
   parseEvent,
+  parseCertifiedRootTextEvent,
   parseEvents,
   requestTypes,
   type NativeEvent,
@@ -1057,7 +1058,10 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly interceptionStops = new Set<
     (run?: NativeTurn, mode?: 'force' | 'graceful') => Promise<void>
   >();
-  private childObservationProducer: ChildObservationProducer = { ended: false };
+  private childObservationProducer: ChildObservationProducer = {
+    ended: false,
+    eventReaderEnded: false,
+  };
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
   private readonly childCallbacks = new ChildCallbacks();
@@ -1068,6 +1072,7 @@ export class Session<OutputT = string, Context = unknown> {
   // Only one-shot manual handlers report child cleanup to the owning run.
   private readonly oneShotChildCleanupErrors: unknown[] = [];
   #native: NativeThread;
+  #nativeId: string;
   #engine: Engine;
   private environmentDisposalFinished = false;
   private environmentCloseFailure?: Promise<void>;
@@ -1137,6 +1142,7 @@ export class Session<OutputT = string, Context = unknown> {
         }),
     });
     this.#native = native;
+    this.#nativeId = native.id;
     this.#engine = engine;
     this.#modelApiKey = modelApiKey;
     this.capabilityView = createCapabilities(
@@ -1146,7 +1152,7 @@ export class Session<OutputT = string, Context = unknown> {
     );
   }
   get id(): string {
-    return this.#native.id;
+    return this.#nativeId;
   }
   private get isOpen(): boolean {
     return (
@@ -1347,7 +1353,7 @@ export class Session<OutputT = string, Context = unknown> {
     const executorPolicy =
       this.environment !== null && hasExecutorPolicy(this.environment);
     this.readers = [];
-    this.childObservationProducer = { ended: false };
+    this.childObservationProducer = { ended: false, eventReaderEnded: false };
     this.ownReader(withoutTracing(() => this.readEvents()));
     this.mcpReaderStarted = !!this.options.mcpTools;
     if (this.mcpReaderStarted)
@@ -3002,10 +3008,17 @@ export class Session<OutputT = string, Context = unknown> {
     const run = call.run;
     if (returnHandle && run instanceof NativeTurn)
       this.requireDefaultOutput(run);
-    const thread = this.#native;
-    const producer = this.childObservationProducer;
+    const producer =
+      run instanceof NativeTurn
+        ? this.childObservationProducer
+        : run.observationProducer;
     const native =
-      run instanceof NativeTurn ? null : await thread._child_turn(run.childId);
+      run instanceof NativeTurn
+        ? null
+        : await this.childNativeTurn(
+            run,
+            () => new TypeError('Manual child reply is expired'),
+          );
     if (
       !(run instanceof NativeTurn) &&
       (!native ||
@@ -3991,12 +4004,27 @@ export class Session<OutputT = string, Context = unknown> {
   private async readEvents(): Promise<void> {
     const native = this.#native;
     const producer = this.childObservationProducer;
+    let batch: string[] = [];
+    let batchIndex = 0;
+    let rootTextOnly = false;
     try {
       while (this.isOpen && this.#native === native) {
         let event: NativeEvent;
         try {
-          const raw = await native._next_session_event();
-          event = parseEvent(raw);
+          if (batchIndex === batch.length) {
+            const received = await native._next_session_events();
+            batch = received.events;
+            rootTextOnly =
+              Object.hasOwn(received, 'rootTextOnly') &&
+              received.rootTextOnly === true;
+            batchIndex = 0;
+            if (batch.length === 0)
+              throw new NativeError('Native event batch was empty');
+          }
+          const raw = batch[batchIndex++]!;
+          event = rootTextOnly
+            ? parseCertifiedRootTextEvent(raw)
+            : parseEvent(raw);
           if (event.msg.type === 'elicitation_request') {
             // The generic event schema drops prototype-named record keys.
             // Preserve raw form data; prepareNativeForm validates it separately.
@@ -4143,8 +4171,11 @@ export class Session<OutputT = string, Context = unknown> {
         else this.process(run, event);
       }
     } finally {
-      // The reader may have ended for a replacement or suspension. Retire
-      // receipts from exactly its native owner, without closing the new one.
+      // Release callbacks waiting for this reader before auxiliary readers
+      // join their callback work during replacement, suspension, or close.
+      producer.eventReaderEnded = true;
+      this.observations.notify();
+      // Retire receipts from this native owner, without closing the new one.
       native._finish_child_event_reader();
     }
   }
@@ -4302,7 +4333,10 @@ export class Session<OutputT = string, Context = unknown> {
     if (!owner) return;
     // An acknowledged future turn can exist before an older start is read.
     // Only starts from this ordered reader establish prior-turn ownership.
-    if (startsTurn) owner.nativeStartObserved = true;
+    if (startsTurn) {
+      owner.nativeStartObserved = true;
+      this.observations.notify();
+    }
     owner.instanceId ??= event.subagent_instance_id;
     const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
@@ -4459,9 +4493,9 @@ export class Session<OutputT = string, Context = unknown> {
       },
       async () => {
         if (msg._sdk_python_tool)
-          await this.#native._cancel_child_callback(encodeReceipt(msg));
+          await native._cancel_child_callback(encodeReceipt(msg));
         else {
-          const turn = await this.#native._child_turn(id);
+          const turn = await native._child_turn(id);
           if (turn?.incarnation === incarnation && turn.turn_id === turnId)
             await turn.cancel();
         }
@@ -6177,6 +6211,11 @@ export class Session<OutputT = string, Context = unknown> {
       const submission = root
         ? this.#turnFor(owner)
         : await this.childSubmission(owner);
+      if (!submission) return;
+      if (!root) {
+        if (!this.current(owner)) return;
+        this.#native._check_python_tool(encodeReceipt(msg));
+      }
       const context = {
         traceContext: nativeTraceContext(
           msg._sdk_trace_context as TraceContextHeaders | null | undefined,
@@ -6303,19 +6342,72 @@ export class Session<OutputT = string, Context = unknown> {
       );
   }
 
+  private async childNativeTurn(
+    owner: ChildCallbackOwner,
+    expiredError: () => Error = () =>
+      new NativeError('Native child callback belongs to an expired turn'),
+  ): Promise<import('../../native/index.js')._NativeChildTurn | null> {
+    const thread = this.#native;
+    const producer = owner.observationProducer;
+    const current = () =>
+      this.#native === thread &&
+      this.childObservationProducer === producer &&
+      this.current(owner);
+    // These stops own pending native senders. A tentative manual seal can
+    // resume, so it owns retirement only after sealing or reader EOF.
+    const retired = () =>
+      !current() ||
+      this.replacingNative === thread ||
+      this.manualSealed ||
+      (producer.eventReaderEnded && this.manualSuspending);
+    const matches = (
+      turn: import('../../native/index.js')._NativeChildTurn | null,
+    ): turn is import('../../native/index.js')._NativeChildTurn =>
+      turn?.incarnation === owner.incarnation && turn.turn_id === owner.turnId;
+    if (!current()) return null;
+    try {
+      // Existing handles remain usable before JS observes a start, including
+      // restored manual turns. Only a missing publication needs the reader.
+      const startObserved = owner.nativeStartObserved;
+      let native = await thread._child_turn(owner.childId);
+      if (!current()) return null;
+      if (!matches(native) && retired()) return null;
+      if (!matches(native) && !startObserved) {
+        const aborted = Promise.withResolvers<void>();
+        const signal = owner.controller.signal;
+        const abort = () => aborted.resolve();
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+        try {
+          for (;;) {
+            const changed = this.observations.waitForChange();
+            if (!current()) return null;
+            if (owner.nativeStartObserved) break;
+            if (retired()) return null;
+            if (producer.eventReaderEnded) throw expiredError();
+            await Promise.race([changed, aborted.promise]);
+          }
+        } finally {
+          signal.removeEventListener('abort', abort);
+        }
+        native = await thread._child_turn(owner.childId);
+        if (!current()) return null;
+      }
+      if (!matches(native)) throw expiredError();
+      return native;
+    } catch (error) {
+      if (retired()) return null;
+      throw error;
+    }
+  }
+
   private async childSubmission(
     owner: ChildCallbackOwner,
-  ): Promise<Turn<string>> {
-    const thread = this.#native;
-    const producer = this.childObservationProducer;
-    const native = await thread._child_turn(owner.childId);
-    if (
-      !native ||
-      native.incarnation !== owner.incarnation ||
-      native.turn_id !== owner.turnId
-    )
-      throw new NativeError('Native child callback belongs to an expired turn');
-    return this.publicChildTurn(native, producer);
+  ): Promise<Turn<string> | null> {
+    const native = await this.childNativeTurn(owner);
+    return native
+      ? this.publicChildTurn(native, owner.observationProducer)
+      : null;
   }
 
   /** Request a stop and return once it is accepted. Cleanup remains owned by
@@ -7788,6 +7880,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (owner.completedFailure) throw owner.completedFailure;
       // Retirement is irreversible: finish publication even if close or abort arrived.
       this.#native = owner.thread;
+      this.#nativeId = owner.thread.id;
       this.#engine = owner.candidate;
       this.nativeManualCheckpoint = manualCheckpoint;
       owner.published = true;
@@ -8298,16 +8391,33 @@ export class Session<OutputT = string, Context = unknown> {
             )
           )
             return;
-          const transform = async () =>
-            transformMcpResult(
+          let requestExpired = false;
+          const transform = async () => {
+            const submission =
+              owner instanceof NativeTurn
+                ? this.#turnFor(owner)
+                : await this.childSubmission(owner);
+            if (
+              !submission ||
+              (!(owner instanceof NativeTurn) &&
+                (!this.current(owner) ||
+                  !native._check_native_mcp_result(
+                    notice.nonce,
+                    notice.turn_id,
+                    notice.call_id,
+                  )))
+            ) {
+              requestExpired = true;
+              return;
+            }
+            return transformMcpResult(
               this.mcpTools,
               this.mcpGeneration,
               this.options.context,
-              owner instanceof NativeTurn
-                ? this.#turnFor(owner)
-                : await this.childSubmission(owner),
+              submission,
               { ...notice, generation: notice.generation ?? '' },
             );
+          };
           let response: unknown;
           if (owner instanceof NativeTurn && tracing_context !== undefined) {
             await this.invokeCallback(
@@ -8331,7 +8441,7 @@ export class Session<OutputT = string, Context = unknown> {
                 this.workflowForTrace(traceId, workflowSpanId),
             );
           }
-          if (this.current(owner)) {
+          if (!requestExpired && this.current(owner)) {
             native._resolve_native_mcp_result(
               notice.nonce,
               notice.turn_id,
@@ -8834,6 +8944,14 @@ export class Session<OutputT = string, Context = unknown> {
                 owner instanceof NativeTurn
                   ? this.#turnFor(owner)
                   : await this.childSubmission(owner);
+              if (!submission) return;
+              if (
+                !(owner instanceof NativeTurn) &&
+                (!active() ||
+                  reservation.cancelled ||
+                  !native._check_native_interception(notice.nonce))
+              )
+                return;
               const toolName = request!.tool_name;
               const collaboration =
                 toolName &&

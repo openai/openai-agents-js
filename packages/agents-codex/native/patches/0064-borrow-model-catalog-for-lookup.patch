@@ -1,0 +1,369 @@
+--- a/codex-rs/models-manager/src/lib.rs
++++ b/codex-rs/models-manager/src/lib.rs
+@@ -14,12 +14,18 @@
+ /// Load the bundled model catalog shipped with `codex-models-manager`.
+ pub fn bundled_models_response()
+ -> std::result::Result<codex_protocol::openai_models::ModelsResponse, serde_json::Error> {
++    bundled_models_response_ref().cloned()
++}
++
++/// Borrow the immutable bundled catalog without copying unrelated model metadata.
++pub(crate) fn bundled_models_response_ref()
++-> std::result::Result<&'static codex_protocol::openai_models::ModelsResponse, serde_json::Error> {
+     static CATALOG: OnceLock<codex_protocol::openai_models::ModelsResponse> = OnceLock::new();
+     if let Some(catalog) = CATALOG.get() {
+-        return Ok(catalog.clone());
++        return Ok(catalog);
+     }
+     let parsed = serde_json::from_str(include_str!("../models.json"))?;
+-    Ok(CATALOG.get_or_init(|| parsed).clone())
++    Ok(CATALOG.get_or_init(|| parsed))
+ }
+ 
+ /// Convert the client version string to a whole version string (e.g. "1.2.3-alpha.4" -> "1.2.3").
+--- a/codex-rs/models-manager/src/manager.rs
++++ b/codex-rs/models-manager/src/manager.rs
+@@ -268,8 +268,16 @@
+ 
+ impl CatalogSource {
+     fn fallback_models(&self) -> Option<Vec<ModelInfo>> {
++        self.fallback_models_ref().map(|models| models.to_vec())
++    }
++
++    fn fallback_models_ref(&self) -> Option<&'static [ModelInfo]> {
+         match self {
+-            Self::Default => Some(load_remote_models_from_file().unwrap_or_default()),
++            Self::Default => Some(
++                crate::bundled_models_response_ref()
++                    .map(|catalog| catalog.models.as_slice())
++                    .unwrap_or_default(),
++            ),
+             Self::ExplicitProvider(_) => None,
+         }
+     }
+@@ -465,14 +473,27 @@
+         config: &'a ModelsManagerConfig,
+     ) -> ModelsManagerFuture<'a, ModelInfo> {
+         Box::pin(async move {
+-            let models = self.get_remote_models().await;
++            let entry = self.remote_models.read().await;
++            let models = if !self.api_key_discovery_disabled()
++                && entry.identity.is_some()
++                && entry.identity == self.endpoint_client.identity()
++            {
++                entry.models.as_slice()
++            } else {
++                self.catalog_source
++                    .fallback_models_ref()
++                    .unwrap_or_default()
++            };
+             match &self.catalog_source {
+                 CatalogSource::Default => {
+-                    construct_model_info_from_candidates(model, &models, config)
++                    construct_model_info_from_candidates(model, models, config)
+                 }
+                 CatalogSource::ExplicitProvider(_) => construct_model_info(
+                     model,
+-                    models.into_iter().find(|candidate| candidate.slug == model),
++                    models
++                        .iter()
++                        .find(|candidate| candidate.slug == model)
++                        .cloned(),
+                     config,
+                 ),
+             }
+@@ -765,6 +786,17 @@
+ }
+ 
+ impl ModelsManager for StaticModelsManager {
++    fn get_model_info<'a>(
++        &'a self,
++        model: &'a str,
++        config: &'a ModelsManagerConfig,
++    ) -> ModelsManagerFuture<'a, ModelInfo> {
++        Box::pin(
++            async move { construct_model_info_from_candidates(model, &self.remote_models, config) }
++                .instrument(tracing::info_span!("get_model_info", model = model)),
++        )
++    }
++
+     fn get_default_model<'a>(
+         &'a self,
+         model: &'a Option<String>,
+@@ -862,8 +894,11 @@
+     })
+ }
+ 
+-fn find_model_by_longest_prefix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
+-    let mut best: Option<ModelInfo> = None;
++fn find_model_by_longest_prefix<'a>(
++    model: &str,
++    candidates: &'a [ModelInfo],
++) -> Option<&'a ModelInfo> {
++    let mut best: Option<&ModelInfo> = None;
+     for candidate in candidates {
+         if !model.starts_with(&candidate.slug) {
+             continue;
+@@ -874,13 +909,16 @@
+             true
+         };
+         if is_better_match {
+-            best = Some(candidate.clone());
++            best = Some(candidate);
+         }
+     }
+     best
+ }
+ 
+-fn find_model_by_namespaced_suffix(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
++fn find_model_by_namespaced_suffix<'a>(
++    model: &str,
++    candidates: &'a [ModelInfo],
++) -> Option<&'a ModelInfo> {
+     // Retry metadata lookup for a single namespaced slug like `namespace/model-name`.
+     //
+     // This only strips one leading namespace segment and only when the namespace looks
+@@ -907,7 +945,8 @@
+     // First use the normal longest-prefix match. If that misses, allow a narrowly scoped
+     // retry for namespaced slugs like `custom/gpt-5.3-codex`.
+     let remote = find_model_by_longest_prefix(model, candidates)
+-        .or_else(|| find_model_by_namespaced_suffix(model, candidates));
++        .or_else(|| find_model_by_namespaced_suffix(model, candidates))
++        .cloned();
+     construct_model_info(model, remote, config)
+ }
+ 
+--- a/codex-rs/models-manager/src/manager_tests.rs
++++ b/codex-rs/models-manager/src/manager_tests.rs
+@@ -1760,3 +1760,231 @@
+         expected
+     );
+ }
++
++#[tokio::test]
++async fn metadata_lookup_selects_from_active_and_static_catalogs_without_sharing_results() {
++    let candidates = vec![
++        remote_model("fixture-model", "Short", 0),
++        remote_model("fixture-model-long", "Long", 1),
++    ];
++    let endpoint = TestModelsEndpoint::with_command_auth(vec![Ok(candidates.clone())]);
++    let remote = OpenAiModelsManager::new_without_cache(endpoint.clone(), None);
++    remote
++        .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
++        .await
++        .expect("remote catalog should load");
++    let managers: Vec<SharedModelsManager> = vec![
++        Arc::new(remote),
++        Arc::new(StaticModelsManager::new(
++            None,
++            ModelsResponse { models: candidates },
++        )),
++    ];
++    let config = ModelsManagerConfig {
++        model_context_window: Some(1234),
++        base_instructions: Some("Current application instructions".into()),
++        ..Default::default()
++    };
++    for manager in managers {
++        for slug in ["fixture-model-long-preview", "custom/fixture-model-long"] {
++            let mut selected = manager.get_model_info(slug, &config).await;
++            assert_eq!(selected.slug, slug);
++            assert_eq!(selected.display_name, "Long");
++            assert!(!selected.used_fallback_model_metadata);
++            assert_eq!(selected.context_window, Some(1234));
++            assert_eq!(
++                selected
++                    .model_messages
++                    .as_ref()
++                    .unwrap()
++                    .instructions_template
++                    .as_deref(),
++                Some("Current application instructions")
++            );
++            selected.display_name.clear();
++            selected
++                .model_messages
++                .as_mut()
++                .unwrap()
++                .instructions_template = None;
++            let untouched = manager
++                .get_model_info(slug, &ModelsManagerConfig::default())
++                .await;
++            assert_eq!(untouched.display_name, "Long");
++            assert_eq!(untouched.context_window, Some(272_000));
++            assert_eq!(
++                untouched
++                    .model_messages
++                    .as_ref()
++                    .unwrap()
++                    .instructions_template
++                    .as_deref(),
++                Some("base instructions")
++            );
++        }
++        let missing = manager
++            .get_model_info("fixture-unknown-model", &config)
++            .await;
++        assert!(missing.used_fallback_model_metadata);
++        assert_eq!(missing.slug, "fixture-unknown-model");
++        assert_eq!(missing.context_window, Some(1234));
++    }
++    assert_eq!(
++        endpoint.fetch_count(),
++        1,
++        "metadata lookup must not refresh"
++    );
++}
++
++#[tokio::test]
++async fn metadata_lookup_honors_api_discovery_rollback_and_preserves_bundled_values() {
++    let expected = crate::bundled_models_response_ref()
++        .expect("bundled catalog should load")
++        .models[0]
++        .clone();
++    let replacement = remote_model(&expected.slug, "Remote replacement", 0);
++    let endpoint = TestModelsEndpoint::without_refresh(vec![vec![replacement]]);
++    let auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test-key"));
++    let manager = OpenAiModelsManager::new_without_cache(endpoint.clone(), Some(auth));
++    manager.set_api_key_model_discovery_enabled(true);
++    manager
++        .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
++        .await
++        .expect("remote catalog should load");
++    let config = ModelsManagerConfig::default();
++    assert_eq!(
++        manager
++            .get_model_info(&expected.slug, &config)
++            .await
++            .display_name,
++        "Remote replacement"
++    );
++    manager.set_api_key_model_discovery_enabled(false);
++    let mut selected = manager.get_model_info(&expected.slug, &config).await;
++    assert_eq!(selected, expected);
++    selected.display_name.clear();
++    selected.model_messages = None;
++    assert_eq!(
++        manager.get_model_info(&expected.slug, &config).await,
++        expected
++    );
++    assert_eq!(endpoint.fetch_count(), 1);
++}
++
++#[tokio::test]
++async fn metadata_lookup_keeps_explicit_provider_exact_matching_and_failure_fallback() {
++    let model = remote_model("fixture-provider", "Provider model", 0);
++    let endpoint = TestModelsEndpoint::with_command_auth(vec![
++        Ok(vec![model.clone()]),
++        Err(CodexErr::RequestTimeout),
++    ]);
++    let manager =
++        OpenAiModelsManager::new_without_cache(endpoint.clone(), None).with_provider_catalog();
++    let config = ModelsManagerConfig::default();
++    let bundled_slug = crate::bundled_models_response_ref()
++        .expect("bundled catalog should load")
++        .models[0]
++        .slug
++        .clone();
++    assert!(
++        manager
++            .get_model_info(&bundled_slug, &config)
++            .await
++            .used_fallback_model_metadata
++    );
++    manager
++        .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
++        .await
++        .expect("explicit catalog should load");
++    assert_eq!(manager.get_model_info(&model.slug, &config).await, model);
++    for unknown in ["fixture-provider-extra", "custom/fixture-provider"] {
++        assert!(
++            manager
++                .get_model_info(unknown, &config)
++                .await
++                .used_fallback_model_metadata
++        );
++    }
++    manager
++        .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
++        .await
++        .expect_err("failed refresh must clear explicit catalog");
++    assert!(
++        manager
++            .get_model_info(&model.slug, &config)
++            .await
++            .used_fallback_model_metadata
++    );
++    assert_eq!(endpoint.fetch_count(), 2);
++}
++
++#[tokio::test]
++async fn metadata_lookup_rejects_stale_catalog_after_identity_change_and_auth_removal() {
++    let bundled = crate::bundled_models_response_ref()
++        .expect("bundled catalog should load")
++        .models[0]
++        .clone();
++    for explicit_provider in [false, true] {
++        let auth =
++            AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
++        let replacement = remote_model(&bundled.slug, "Authenticated replacement", 0);
++        let endpoint =
++            TestAuthAwareModelsEndpoint::new(Some(auth.clone()), vec![vec![replacement]]);
++        let mut manager =
++            OpenAiModelsManager::new_without_cache(endpoint.clone(), Some(auth.clone()));
++        if explicit_provider {
++            manager = manager.with_provider_catalog();
++        }
++        // Keep API-key discovery enabled so the changed-identity phase tests the
++        // identity guard rather than the independent discovery rollback guard.
++        manager.set_api_key_model_discovery_enabled(true);
++        manager
++            .refresh_available_models(RefreshStrategy::Online, &DEFAULT_HTTP_CLIENT_FACTORY)
++            .await
++            .expect("initial authenticated catalog should load");
++        let original_identity = endpoint.identity().expect("initial authenticated identity");
++        let config = ModelsManagerConfig::default();
++        assert_eq!(
++            manager
++                .get_model_info(&bundled.slug, &config)
++                .await
++                .display_name,
++            "Authenticated replacement"
++        );
++        assert_eq!(endpoint.fetch_count(), 1);
++
++        auth.set_external_auth(Arc::new(TestExternalApiKeyAuth))
++            .await
++            .expect("test API-key auth should resolve");
++        assert!(endpoint.identity().is_some());
++        assert_ne!(endpoint.identity().as_ref(), Some(&original_identity));
++        let fallback = if explicit_provider {
++            model_info::model_info_from_slug(&bundled.slug)
++        } else {
++            bundled.clone()
++        };
++        assert_eq!(
++            manager.get_model_info(&bundled.slug, &config).await,
++            fallback,
++            "a changed identity must not reuse the authenticated catalog"
++        );
++        assert_eq!(
++            endpoint.fetch_count(),
++            1,
++            "metadata lookup must not refresh"
++        );
++
++        auth.clear_external_auth();
++        assert_eq!(endpoint.identity(), None);
++        assert_eq!(
++            manager.get_model_info(&bundled.slug, &config).await,
++            fallback,
++            "an unavailable identity must not reuse the authenticated catalog"
++        );
++        assert_eq!(
++            endpoint.fetch_count(),
++            1,
++            "metadata lookup must not refresh"
++        );
++    }
++}

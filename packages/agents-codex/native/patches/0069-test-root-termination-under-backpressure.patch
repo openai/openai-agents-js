@@ -1,0 +1,302 @@
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index 3744bc33153d88bc520b5315e13d7621e6dbf8dd..da50a2df14e110c885c5fb59c1b98a06bb1cf056 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -13848,3 +13848,297 @@ async fn response_integrity_reason_tracks_the_originating_terminal_error_event()
+         Some(ResponseIntegrityReason::UndecodableOutputItem)
+     );
+ }
++
++// Exercise the same shared termination wait used by CodexThread without a
++// production hook. Lifecycle contributors are the existing controlled seam.
++struct HeldRootStop {
++    entered: tokio::sync::Semaphore,
++    release: tokio::sync::Semaphore,
++    aborted: std::sync::atomic::AtomicBool,
++    stopped: std::sync::atomic::AtomicUsize,
++    finished: std::sync::atomic::AtomicBool,
++}
++
++impl codex_extension_api::TurnLifecycleContributor for HeldRootStop {
++    fn on_turn_abort<'a>(
++        &'a self,
++        input: codex_extension_api::TurnAbortInput<'a>,
++    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
++        Box::pin(async move {
++            assert_eq!(input.reason, TurnAbortReason::Interrupted);
++            self.aborted
++                .store(true, std::sync::atomic::Ordering::SeqCst);
++        })
++    }
++}
++
++impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config> for HeldRootStop {
++    fn on_thread_stop<'a>(
++        &'a self,
++        _input: codex_extension_api::ThreadStopInput<'a>,
++    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
++        Box::pin(async move {
++            assert!(self.aborted.load(std::sync::atomic::Ordering::SeqCst));
++            self.stopped
++                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++            self.entered.add_permits(1);
++            self.release
++                .acquire()
++                .await
++                .expect("release thread stop")
++                .forget();
++            self.finished
++                .store(true, std::sync::atomic::Ordering::SeqCst);
++        })
++    }
++}
++
++struct HeldRootShutdown {
++    session: Arc<Session>,
++    io: SessionIo,
++    gate: Arc<HeldRootStop>,
++    loop_finished: Arc<std::sync::atomic::AtomicBool>,
++    health: Arc<crate::agent::control::AgentTreeShutdownState>,
++}
++
++impl Drop for HeldRootShutdown {
++    fn drop(&mut self) {
++        // A failed assertion must not leave the real loop parked on our gate.
++        self.gate.release.add_permits(1);
++    }
++}
++
++async fn held_root_shutdown_with_full_queue(capacity: usize) -> HeldRootShutdown {
++    let (mut session, context) = make_session_and_context().await;
++    let gate = Arc::new(HeldRootStop {
++        entered: tokio::sync::Semaphore::new(0),
++        release: tokio::sync::Semaphore::new(0),
++        aborted: std::sync::atomic::AtomicBool::new(false),
++        stopped: std::sync::atomic::AtomicUsize::new(0),
++        finished: std::sync::atomic::AtomicBool::new(false),
++    });
++    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
++    builder.thread_lifecycle_contributor(gate.clone());
++    builder.turn_lifecycle_contributor(gate.clone());
++    session.services.extensions = Arc::new(builder.build());
++    let session = Arc::new(session);
++    session
++        .spawn_task(
++            Arc::new(context),
++            Vec::new(),
++            NeverEndingTask {
++                kind: TaskKind::Regular,
++                listen_to_cancellation_token: true,
++            },
++        )
++        .await;
++    let (tx_sub, rx_sub) = async_channel::bounded(capacity);
++    for index in 0..capacity {
++        tx_sub
++            .try_send(Submission {
++                turn_extension_init: None,
++                id: format!("queued-before-root-shutdown-{index}"),
++                op: Op::Interrupt,
++                trace_policy: None,
++                parent_turn_id: None,
++                root_turn_id: None,
++                residency_guard: None,
++                trace: None,
++            })
++            .expect("fill actual submission queue");
++    }
++    assert!(tx_sub.is_full());
++    // This is the exact request behind ThreadManager::request_agent_tree_shutdown.
++    let health = session.services.local_agent_runtime.request_shutdown();
++    let loop_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let handle = {
++        let session = Arc::clone(&session);
++        let finished = Arc::clone(&loop_finished);
++        tokio::spawn(async move {
++            let config = session.get_config().await;
++            submission_loop(session, config, rx_sub).await;
++            finished.store(true, std::sync::atomic::Ordering::SeqCst);
++        })
++    };
++    let (_tx_event, rx_event) = async_channel::unbounded();
++    HeldRootShutdown {
++        session,
++        io: SessionIo {
++            tx_sub,
++            rx_event,
++            agent_status: watch::channel(AgentStatus::PendingInit).1,
++            session_loop_termination: session_loop_termination_from_handle(handle),
++        },
++        gate,
++        loop_finished,
++        health,
++    }
++}
++
++#[tokio::test]
++async fn root_cancellation_joins_full_teardown_with_a_saturated_submission_queue() {
++    tokio::time::timeout(StdDuration::from_secs(10), async {
++        let fixture = held_root_shutdown_with_full_queue(SUBMISSION_CHANNEL_CAPACITY).await;
++        fixture
++            .gate
++            .entered
++            .acquire()
++            .await
++            .expect("entered teardown")
++            .forget();
++        assert!(fixture.session.active_turn.lock().await.is_none());
++        let mut tasks_joined = Box::pin(
++            fixture
++                .session
++                .services
++                .local_agent_runtime
++                .wait_for_tasks_before_writer_shutdown(),
++        );
++        assert!(futures::poll!(tasks_joined.as_mut()).is_ready());
++        drop(tasks_joined);
++        assert!(
++            fixture.io.tx_sub.is_full(),
++            "root cancellation must precede queued work"
++        );
++        let mut redundant_shutdown = Box::pin(fixture.io.shutdown_and_wait());
++        assert!(futures::poll!(redundant_shutdown.as_mut()).is_pending());
++        drop(redundant_shutdown);
++        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
++        let mut joined = Box::pin(tokio::time::timeout_at(
++            deadline,
++            fixture.io.session_loop_termination.clone(),
++        ));
++        assert!(futures::poll!(joined.as_mut()).is_pending());
++        assert!(
++            !fixture
++                .gate
++                .finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        fixture.gate.release.add_permits(1);
++        joined
++            .await
++            .expect("full root teardown must join before deadline");
++        assert!(
++            fixture
++                .loop_finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert!(
++            fixture
++                .gate
++                .finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert_eq!(
++            fixture
++                .gate
++                .stopped
++                .load(std::sync::atomic::Ordering::SeqCst),
++            1
++        );
++        assert!(fixture.io.tx_sub.is_closed());
++        fixture
++            .health
++            .wait()
++            .await
++            .expect("owned tasks terminated cleanly");
++    })
++    .await
++    .expect("saturated root shutdown test timed out");
++}
++
++#[tokio::test]
++async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_health() {
++    tokio::time::timeout(StdDuration::from_secs(10), async {
++        let fixture = held_root_shutdown_with_full_queue(1).await;
++        fixture
++            .gate
++            .entered
++            .acquire()
++            .await
++            .expect("entered teardown")
++            .forget();
++        assert!(fixture.session.active_turn.lock().await.is_none());
++        let mut tasks_joined = Box::pin(
++            fixture
++                .session
++                .services
++                .local_agent_runtime
++                .wait_for_tasks_before_writer_shutdown(),
++        );
++        assert!(futures::poll!(tasks_joined.as_mut()).is_ready());
++        drop(tasks_joined);
++        fixture
++            .session
++            .services
++            .local_agent_runtime
++            .record_shutdown_failure();
++        // An expired absolute deadline must still report timeout while teardown is held.
++        assert!(
++            tokio::time::timeout_at(
++                tokio::time::Instant::now(),
++                fixture.io.session_loop_termination.clone(),
++            )
++            .await
++            .is_err()
++        );
++        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
++        let mut cancelled = Box::pin(tokio::time::timeout_at(
++            deadline,
++            fixture.io.session_loop_termination.clone(),
++        ));
++        assert!(futures::poll!(cancelled.as_mut()).is_pending());
++        drop(cancelled);
++        assert!(
++            !fixture
++                .loop_finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        let mut retry = Box::pin(tokio::time::timeout_at(
++            deadline,
++            fixture.io.session_loop_termination.clone(),
++        ));
++        assert!(futures::poll!(retry.as_mut()).is_pending());
++        fixture.gate.release.add_permits(1);
++        retry
++            .await
++            .expect("retry must retain the original deadline");
++        assert!(
++            fixture
++                .loop_finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert!(
++            fixture
++                .gate
++                .finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert_eq!(
++            fixture
++                .gate
++                .stopped
++                .load(std::sync::atomic::Ordering::SeqCst),
++            1
++        );
++        assert!(fixture.io.tx_sub.is_closed());
++        let first = fixture
++            .health
++            .wait()
++            .await
++            .expect_err("health failure survives termination");
++        let second = fixture
++            .health
++            .wait()
++            .await
++            .expect_err("health failure survives retry");
++        assert_eq!(
++            first.to_string(),
++            "Fatal error: agent tree shutdown did not complete cleanly"
++        );
++        assert_eq!(second.to_string(), first.to_string());
++    })
++    .await
++    .expect("cancelled root termination wait test timed out");
++}

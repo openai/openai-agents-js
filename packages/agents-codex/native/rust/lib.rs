@@ -31,6 +31,7 @@ mod node_runtime;
 mod ops;
 mod options;
 mod provider_error;
+mod provider_home;
 mod python_tools;
 mod recovery_guard;
 mod response_control;
@@ -175,6 +176,13 @@ impl napi::bindgen_prelude::FromNapiValue for NativeBuffer {
     }
 }
 
+/// Private batch certificate; scalar event readers keep their original API.
+#[napi(object)]
+pub struct NativeSessionEventBatch {
+    pub events: Vec<String>,
+    pub root_text_only: bool,
+}
+
 // Native finalizers may run after napi has retired its current runtime.
 // Retain the originating handle instead of looking up a newer or empty runtime.
 struct RuntimeOwned<T> {
@@ -216,6 +224,35 @@ impl<T> Drop for RuntimeOwned<T> {
     }
 }
 
+/// Private provider resource: physical clients only, without an Engine back-reference.
+#[napi]
+pub struct SharedHttpClients {
+    inner: RuntimeOwned<codex_http_client::SharedApiClients>,
+}
+
+impl Drop for SharedHttpClients {
+    fn drop(&mut self) {
+        let _entered = self.inner.runtime.enter();
+        self.inner.close();
+    }
+}
+
+#[napi]
+impl SharedHttpClients {
+    #[napi]
+    pub async fn close(&self) -> napi::Result<()> {
+        self.inner.close();
+        Ok(())
+    }
+}
+
+#[napi(js_name = "_create_shared_http_clients")]
+pub async fn _create_shared_http_clients() -> napi::Result<SharedHttpClients> {
+    Ok(SharedHttpClients {
+        inner: RuntimeOwned::new(Arc::new(codex_http_client::SharedApiClients::default())),
+    })
+}
+
 #[napi(js_name = "Engine")]
 pub struct Engine {
     inner: Arc<std::sync::Mutex<EngineOwner>>,
@@ -242,9 +279,11 @@ impl Engine {
             store.bind_fork_boundary(&state.interception);
         }
         let startup_warnings = state.startup_warnings.clone();
+        let state = Arc::new(state);
+        state.interception.bind_engine(Arc::downgrade(&state));
         Self {
             inner: Arc::new(std::sync::Mutex::new(EngineOwner {
-                live: Some(RuntimeOwned::new(Arc::new(state))),
+                live: Some(RuntimeOwned::new(state)),
                 remote_drain: None,
                 close_diagnostic: None,
             })),
@@ -261,13 +300,28 @@ impl Engine {
         options_json: &str,
         specs_json: &str,
     ) -> anyhow::Result<NativeThread> {
+        self.start_native_thread_inner(options_json, specs_json, false)
+            .await
+    }
+
+    async fn start_native_thread_inner(
+        &self,
+        options_json: &str,
+        specs_json: &str,
+        first_root: bool,
+    ) -> anyhow::Result<NativeThread> {
         let inner = self
             .current()
             .map_err(|error| anyhow::anyhow!(error.reason))?;
+        let _attempt = inner.first_root_attempt();
         let options = config::decode(serde_json::from_str(options_json)?)?;
         let specs = serde_json::from_str(specs_json)?;
         let _context_operation = inner.operation(false)?;
-        inner.start_with_tools(options, specs).await
+        if first_root {
+            inner.start_first_root(options, specs).await
+        } else {
+            inner.start_with_tools(options, specs).await
+        }
     }
 
     fn current_owner(
@@ -291,12 +345,20 @@ impl Engine {
         base: String,
         grant: String,
         excluded_base: Option<String>,
+        shared_clients: Option<napi::bindgen_prelude::ClassInstance<'_, SharedHttpClients>>,
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let _permit = inner.operation(false).map_err(native_error)?;
         let mut binding = inner.sentinel.write().expect("sentinel poisoned");
         if binding.is_some() || grant.is_empty() {
             return Err(native_error("Sentinel already bound or empty"));
+        }
+        if let Some(clients) = shared_clients {
+            let clients: &SharedHttpClients = &clients;
+            inner
+                .shared_api_clients
+                .set(Arc::clone(&clients.inner))
+                .map_err(|_| native_error("HTTP clients already attached"))?;
         }
         *binding = Some((base, grant, excluded_base));
         Ok(())
@@ -434,72 +496,10 @@ impl Engine {
         let inner = self.current()?;
         let cancelled = request.cancelled.clone();
         let work = async {
-            let _permit = inner.operation(false).map_err(native_error)?;
-            let route = inner.sentinel_route(&provider_id, &headers)?;
             let ticket = serde_json::from_str(&ticket).map_err(native_error)?;
-            let turn = native_interception::sentinel_http_turn(&inner, &provider_id, &ticket)
-                .map_err(native_error)?;
-            let provider = route.provider.api_provider().await.map_err(native_error)?;
-            let mut request = provider
-                .build_request("POST".parse().map_err(native_error)?, "responses")
-                .with_raw_body(body);
-            request.headers = model_websocket::sentinel_headers(&headers, &provider)?;
-            let result = match request.into_prepared() {
-                Ok(request) => {
-                    codex_client::run_with_retry(
-                        provider.retry.to_policy(),
-                        || request.clone(),
-                        |request, _attempt| async {
-                            // Each upstream attempt is newly admitted, including
-                            // retries of a request that began before the stop.
-                            if turn
-                                .as_deref()
-                                .is_some_and(turn_settlement::Turn::sampling_stopped)
-                            {
-                                // Keep the owning interrupt responsible for settlement.
-                                std::future::pending::<()>().await;
-                            }
-                            route
-                                .transport
-                                .stream(request)
-                                .await
-                                .map_err(model_transport_error)
-                        },
-                    )
-                    .await
-                }
-                Err(error) => Err(TransportError::Build(error)),
-            };
-            let (status, headers, body) = match result {
-                Ok(response) => (
-                    response.status,
-                    response.headers,
-                    NativeModelBody::Streaming(response.bytes),
-                ),
-                Err(TransportError::Http {
-                    status,
-                    headers,
-                    body,
-                    ..
-                }) => NativeModelBody::http_error(status, headers, body)?,
-                Err(error) => {
-                    native_interception::sentinel_failed(
-                        &inner,
-                        &provider_id,
-                        &ticket,
-                        native_interception::SentinelFailure::Transport(error),
-                    )
-                    .map_err(native_error)?;
-                    // This private success carrier owns no provider events.
-                    // The admitted ticket supplies the settled native error.
-                    let mut headers = http::HeaderMap::new();
-                    headers.insert(
-                        http::header::CONTENT_TYPE,
-                        http::HeaderValue::from_static("text/event-stream"),
-                    );
-                    (http::StatusCode::OK, headers, NativeModelBody::Closed)
-                }
-            };
+            let (status, headers, body) =
+                sentinel_stream_dispatch(&inner, &provider_id, &headers, body.into(), &ticket)
+                    .await?;
             Ok(NativeModelResponse {
                 inner: RuntimeOwned::new(Arc::new(tokio::sync::Mutex::new(body))),
                 cancelled: cancelled.clone(),
@@ -535,6 +535,7 @@ impl Engine {
         let specs_json = specs_json.as_deref();
 
         let inner = self.current()?;
+        inner.discard_first_root();
         let raw = checkpoint_wire_value(payload_json).map_err(native_error)?;
         let options: options::ThreadOptions =
             config::decode(serde_json::from_str(options_json).map_err(native_error)?)
@@ -573,6 +574,17 @@ impl Engine {
         specs_json: String,
     ) -> napi::Result<NativeThread> {
         self.start_native_thread(&options_json, &specs_json)
+            .await
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_start_first_root")]
+    pub async fn start_first_root(
+        &self,
+        options_json: String,
+        specs_json: String,
+    ) -> napi::Result<NativeThread> {
+        self.start_native_thread_inner(&options_json, &specs_json, true)
             .await
             .map_err(native_error)
     }
@@ -3178,6 +3190,19 @@ impl NativeThread {
         })
     }
 
+    #[napi(js_name = "_next_session_events")]
+    pub async fn next_session_events(&self) -> napi::Result<NativeSessionEventBatch> {
+        let (events, root_text_only) = self
+            .current()?
+            .next_session_events()
+            .await
+            .map_err(native_error)?;
+        Ok(NativeSessionEventBatch {
+            events,
+            root_text_only,
+        })
+    }
+
     #[napi(js_name = "_next_session_event")]
     pub async fn next_session_event(&self) -> napi::Result<String> {
         let inner = self.current()?;
@@ -3432,6 +3457,18 @@ pub async fn create_store_engine(
     Ok(Engine::new(inner))
 }
 
+#[napi(js_name = "_create_first_root_engine")]
+pub async fn create_first_root_engine(
+    config_json: String,
+    runtime_json: String,
+    api_key: Option<String>,
+) -> napi::Result<Engine> {
+    let state = engine::EngineState::new_owned_for_first_root(config_json, runtime_json, api_key)
+        .await
+        .map_err(native_error)?;
+    Ok(Engine::new(state))
+}
+
 #[napi(js_name = "create_engine")]
 pub async fn create_engine(
     config_json: String,
@@ -3508,6 +3545,313 @@ pub async fn create_checkpoint_engine(
         Ok(Engine::new(inner))
     })
     .await
+}
+
+// Only the exact trusted private HTTP route reaches this function. EndpointSession
+// has already prepared/authenticated the request and admitted prepared editing.
+async fn direct_sentinel_stream(
+    inner: &engine::EngineState,
+    expected_url: &str,
+    request: codex_client::Request,
+) -> Result<codex_client::StreamResponse, TransportError> {
+    use base64::Engine as _;
+    use futures_util::StreamExt as _;
+
+    let reject = |status| TransportError::Http {
+        status,
+        url: Some(request.url.clone()),
+        headers: Some(http::HeaderMap::new()),
+        body: Some(String::new()),
+        retry_after: None,
+    };
+    // Match NativeProviderRoutes.start: an unmatched route/grant is 401;
+    // a handler exception before response headers is 502. These remain HTTP
+    // errors so Core keeps its existing auth recovery and retry classification.
+    let unmatched = || reject(http::StatusCode::UNAUTHORIZED);
+    let invalid = || reject(http::StatusCode::BAD_GATEWAY);
+    // Current ResponsesOptions never supplies these transport limits. Reject a
+    // future incompatible caller explicitly rather than silently dropping limits.
+    if request.timeout.is_some() || request.response_body_limit_bytes.is_some() {
+        return Err(invalid());
+    }
+    if request.url != expected_url || inner.sdk_selected_model {
+        return Err(unmatched());
+    }
+    let binding = inner
+        .sentinel
+        .read()
+        .expect("sentinel poisoned")
+        .clone()
+        .ok_or_else(unmatched)?;
+    let prefix = format!("{}/p-", binding.0.trim_end_matches('/'));
+    let encoded = request
+        .url
+        .strip_prefix(&prefix)
+        .and_then(|path| path.strip_suffix("/responses"))
+        .filter(|encoded| {
+            !encoded.is_empty()
+                && encoded
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
+        .ok_or_else(unmatched)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| unmatched())?;
+    if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&decoded) != encoded {
+        return Err(unmatched());
+    }
+    // Node joins duplicate grant values, which cannot match the single grant.
+    if !request
+        .headers
+        .get_all("x-sdk-sentinel-grant")
+        .iter()
+        .map(|value| value.as_bytes().trim_ascii())
+        .eq(std::iter::once(binding.1.as_bytes()))
+    {
+        return Err(unmatched());
+    }
+    // The old route decoder throws for canonical base64 containing invalid
+    // UTF-8, rather than declining the matched route.
+    let provider_id = std::str::from_utf8(&decoded).map_err(|_| invalid())?;
+    if request.method != http::Method::POST {
+        return Err(reject(http::StatusCode::METHOD_NOT_ALLOWED));
+    }
+    let prepared = request.prepare_body_for_send().map_err(|_| invalid())?;
+    // Node joins repeated Content-Encoding values before comparing the single
+    // value with identity. Two identity fields therefore still produce 415.
+    let mut encodings = prepared
+        .headers
+        .get_all(http::header::CONTENT_ENCODING)
+        .iter();
+    if encodings
+        .next()
+        .is_some_and(|value| value.as_bytes().trim_ascii() != b"identity")
+        || encodings.next().is_some()
+    {
+        return Err(reject(http::StatusCode::UNSUPPORTED_MEDIA_TYPE));
+    }
+    let raw = prepared.body_bytes();
+    if raw.len() > 64 * 1024 * 1024 {
+        return Err(reject(http::StatusCode::PAYLOAD_TOO_LARGE));
+    }
+    let _permit = inner.operation(false).map_err(|_| invalid())?;
+    let mut body: serde_json::Value = serde_json::from_slice(&raw).map_err(|_| invalid())?;
+    let metadata = body
+        .get("client_metadata")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if !body.is_object() || !metadata.is_object() {
+        return Err(invalid());
+    }
+    let ticket = serde_json::json!({
+        "sdk_sentinel_thread": metadata.get("sdk_sentinel_thread"),
+        "sdk_sentinel_nonce": metadata.get("sdk_sentinel_nonce"),
+    });
+    // Reuse exact control, provider, nonce, turn, cancellation and one-use gates.
+    let receipt = native_interception::sentinel_admit(inner, provider_id, &metadata)
+        .await
+        .map_err(|_| invalid())?;
+    let receipt: serde_json::Value = serde_json::from_str(&receipt).map_err(|_| invalid())?;
+    if receipt.get("model") != body.get("model")
+        || !matches!(receipt["kind"].as_str(), Some("generation" | "warmup"))
+    {
+        return Err(invalid());
+    }
+    let mut metadata = metadata.as_object().cloned().ok_or_else(invalid)?;
+    metadata.remove("sdk_sentinel_thread");
+    metadata.remove("sdk_sentinel_nonce");
+    body["client_metadata"] = serde_json::Value::Object(metadata);
+    native_interception::sentinel_restore_schemas(inner, provider_id, &ticket, &mut body)
+        .await
+        .map_err(|_| invalid())?;
+    let headers: Vec<_> = prepared
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str(),
+                value
+                    .as_bytes()
+                    .trim_ascii()
+                    .iter()
+                    .copied()
+                    .map(char::from)
+                    .collect::<String>(),
+            )
+        })
+        .collect();
+    // Match Node rawHeaders' Latin-1 decode. Native sentinel_headers remains
+    // authoritative for provider/grant/Host resolution.
+    let headers = serde_json::to_string(&headers).map_err(|_| invalid())?;
+    let body = serde_json::to_vec(&body).map_err(|_| invalid())?;
+    let (status, headers, body) =
+        sentinel_stream_dispatch(inner, provider_id, &headers, body.into(), &ticket)
+            .await
+            .map_err(|_| invalid())?;
+    let headers = sentinel_response_headers(headers).map_err(|_| invalid())?;
+    match body {
+        NativeModelBody::HttpError(text) => {
+            // The carrier sends UTF-8 diagnostics, then the outer transport
+            // decodes again. Keep BOM/charset behavior and filtered Retry-After.
+            let mut response = http::Response::new(bytes::Bytes::from(text.unwrap_or_default()));
+            *response.headers_mut() = headers.clone();
+            let body = codex_http_client::HttpResponse::from(response)
+                .text()
+                .await
+                .ok();
+            Err(TransportError::Http {
+                status,
+                url: Some(request.url),
+                retry_after: codex_client::RetryAfter::from_headers(&headers),
+                headers: Some(headers),
+                body,
+            })
+        }
+        NativeModelBody::Streaming(bytes) => Ok(codex_client::StreamResponse {
+            status,
+            headers,
+            // A carrier read failure closes the outer HTTP body. Preserve that
+            // transport failure category instead of exposing a raw native error.
+            bytes: bytes
+                .map(|chunk| {
+                    chunk
+                        .map_err(|_| TransportError::Network("error decoding response body".into()))
+                })
+                .boxed(),
+        }),
+        NativeModelBody::Closed => Ok(codex_client::StreamResponse {
+            status,
+            headers,
+            bytes: futures_util::stream::empty().boxed(),
+        }),
+    }
+}
+
+// Match NativeProviderRoutes.responseHeaders, including Connection nominees.
+fn sentinel_response_headers(
+    mut headers: http::HeaderMap,
+) -> Result<http::HeaderMap, TransportError> {
+    let nominated: Vec<String> = headers
+        .get_all(http::header::CONNECTION)
+        .iter()
+        .flat_map(|value| {
+            String::from_utf8_lossy(value.as_bytes())
+                .split(',')
+                .map(|name| name.trim().to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for name in nominated {
+        headers.remove(name.as_str());
+    }
+    for name in [
+        "connection",
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "upgrade",
+        "x-agents-model-grant",
+        "x-codex-agents-native-route",
+        "x-sdk-sentinel-grant",
+    ] {
+        headers.remove(name);
+    }
+    // N-API decodes native response values as UTF-8; Node's writeHead then
+    // accepts only Latin-1. Retain that encoding/error boundary without a socket.
+    let mut carrier = http::HeaderMap::new();
+    for (name, value) in headers.iter() {
+        let value = String::from_utf8_lossy(value.as_bytes())
+            .chars()
+            .map(|character| u8::try_from(u32::from(character)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| TransportError::Network("Invalid native response header".into()))?;
+        let value = http::HeaderValue::from_bytes(value.trim_ascii())
+            .map_err(|_| TransportError::Network("Invalid native response header".into()))?;
+        carrier.append(name, value);
+    }
+    Ok(carrier)
+}
+
+// One native upstream dispatcher serves the N-API carrier and in-process route.
+async fn sentinel_stream_dispatch(
+    inner: &engine::EngineState,
+    provider_id: &str,
+    headers: &str,
+    body: bytes::Bytes,
+    ticket: &serde_json::Value,
+) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
+    let _permit = inner.operation(false).map_err(native_error)?;
+    let route = inner.sentinel_route(provider_id, headers)?;
+    let turn = native_interception::sentinel_http_turn(inner, provider_id, ticket)
+        .map_err(native_error)?;
+    let provider = route.provider.api_provider().await.map_err(native_error)?;
+    let mut request = provider
+        .build_request("POST".parse().map_err(native_error)?, "responses")
+        .with_raw_body(body);
+    request.headers = model_websocket::sentinel_headers(headers, &provider)?;
+    let result = match request.into_prepared() {
+        Ok(request) => {
+            codex_client::run_with_retry(
+                provider.retry.to_policy(),
+                || request.clone(),
+                |request, _attempt| async {
+                    // Each upstream attempt is newly admitted, including
+                    // retries of a request that began before the stop.
+                    if turn
+                        .as_deref()
+                        .is_some_and(turn_settlement::Turn::sampling_stopped)
+                    {
+                        // Keep the owning interrupt responsible for settlement.
+                        std::future::pending::<()>().await;
+                    }
+                    route
+                        .transport
+                        .stream(request)
+                        .await
+                        .map_err(model_transport_error)
+                },
+            )
+            .await
+        }
+        Err(error) => Err(TransportError::Build(error)),
+    };
+    let (status, headers, body) = match result {
+        Ok(response) => (
+            response.status,
+            response.headers,
+            NativeModelBody::Streaming(response.bytes),
+        ),
+        Err(TransportError::Http {
+            status,
+            headers,
+            body,
+            ..
+        }) => NativeModelBody::http_error(status, headers, body)?,
+        Err(error) => {
+            native_interception::sentinel_failed(
+                inner,
+                provider_id,
+                ticket,
+                native_interception::SentinelFailure::Transport(error),
+            )
+            .map_err(native_error)?;
+            // This private success carrier owns no provider events.
+            // The admitted ticket supplies the settled native error.
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                http::header::CONTENT_TYPE,
+                http::HeaderValue::from_static("text/event-stream"),
+            );
+            (http::StatusCode::OK, headers, NativeModelBody::Closed)
+        }
+    };
+    Ok((status, headers, body))
 }
 
 fn model_transport_error(error: TransportError) -> TransportError {

@@ -1,3 +1,7 @@
+import {
+  firstNativeBatchWire,
+  replaceSingletonNativeBatchEvent,
+} from '../fixtures/native-event-batches';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -312,7 +316,7 @@ describe('exact root Turn controls', () => {
 
   it('keeps the original handle through real native continuation requests and manual replies', async () => {
     const native = await binding();
-    const nextEvent = native.NativeThread.prototype._next_session_event;
+    const nextEvent = native.NativeThread.prototype._next_session_events;
     const submit = native.NativeThread.prototype._submit;
     let originalId: string | undefined;
     const admitting = Promise.withResolvers<void>();
@@ -321,10 +325,10 @@ describe('exact root Turn controls', () => {
     // Project that hint and conditional admission only; all turns and tool grants are native.
     vi.spyOn(
       native.NativeThread.prototype,
-      '_next_session_event',
+      '_next_session_events',
     ).mockImplementation(async function (this: NativeThread) {
       const raw = await nextEvent.call(this);
-      const event = JSON.parse(raw);
+      const event = JSON.parse(firstNativeBatchWire(raw));
       if (
         !originalId &&
         event &&
@@ -333,7 +337,7 @@ describe('exact root Turn controls', () => {
       ) {
         originalId = event.id;
         event.sdk_unsampled_steering = true;
-        return JSON.stringify(event);
+        return replaceSingletonNativeBatchEvent(raw, event);
       }
       return raw;
     });

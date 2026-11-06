@@ -285,7 +285,13 @@ async fn native_local_json_rejects_unsupported_authority_and_keeps_checkpoints_i
     .await
     .err()
     .unwrap();
-    assert!(error.reason.contains("root threads"), "{}", error.reason);
+    assert!(
+        error
+            .reason
+            .contains("current NativeAgents and no Code Mode"),
+        "{}",
+        error.reason
+    );
     let portable = create_checkpoint_engine(
         provider.config().to_string(),
         runtime(work.path(), profile.path()).to_string(),
@@ -471,24 +477,50 @@ async fn native_local_creation_rejects_native_authority_before_peer_or_process_a
     assert!(published_threads.is_empty());
     no_peer_acquired(&peer, &marker);
     assert!(provider.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_local_creation_admits_remote_environment_and_reports_connection_failure() {
+    let provider = Provider::start().await;
+    let profile = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let peer = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    peer.set_nonblocking(true).unwrap();
     let mut remote = runtime(work.path(), profile.path());
-    remote["environment"] =
-        json!({"url":url,"cwd":format!("file://{}",work.path().display()),"connect_timeout":0.05});
-    let failure = create_engine(provider.config().to_string(), remote.to_string(), None, None)
-        .await
-        .err()
-        .unwrap();
+    remote["environment"] = json!({
+        "url": format!("ws://{}", peer.local_addr().unwrap()),
+        "cwd": format!("file://{}", work.path().display()),
+        "connect_timeout": 0.05
+    });
+    let failure = tokio::time::timeout(
+        Duration::from_secs(5),
+        create_engine(
+            provider.config().to_string(),
+            remote.to_string(),
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("remote executor connection did not settle")
+    .err()
+    .expect("a peer that never completes its WebSocket handshake cannot become ready");
+    let (stream, _) = peer
+        .accept()
+        .expect("the admitted executor must reach its configured peer");
+    drop(stream);
     assert!(
-        failure.reason.contains("executor environments"),
+        failure
+            .reason
+            .contains("remote executor failed to become ready: WebSocket connection timed out"),
         "{}",
         failure.reason
     );
-    no_peer_acquired(&peer, &marker);
     assert!(provider.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn native_local_start_and_mutation_reject_authority_before_native_publication() {
+async fn native_local_start_and_mutation_reject_unsupported_authority_before_native_publication() {
     let provider = Provider::start().await;
     let profile = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
@@ -522,10 +554,6 @@ async fn native_local_start_and_mutation_reject_authority_before_native_publicat
             "WebSearch is excluded by the current ToolPolicy",
         ),
         (
-            json!({"environments":[{"environment_id":"local","cwd":format!("file://{}",work.path().display())}]}),
-            "executor environments",
-        ),
-        (
             json!({"client_mcp_extensions":{"unsupported":{}}}),
             "client MCP extensions",
         ),
@@ -552,6 +580,44 @@ async fn native_local_start_and_mutation_reject_authority_before_native_publicat
         );
         no_peer_acquired(&peer, &marker);
     }
+    // This model-only engine has no registered executor. Raw thread input
+    // cannot register one; Core filters selections for unknown environment IDs.
+    let environment_manager = engine.current().unwrap().manager.environment_manager();
+    assert!(environment_manager.get_environment("local").is_none());
+    let mut local_options: Value = serde_json::from_str(&options(None)).unwrap();
+    local_options["environments"] = json!([{
+        "environment_id": "local",
+        "cwd": format!("file://{}", work.path().display())
+    }]);
+    let local = engine
+        .start_replaceable_thread(local_options.to_string(), specs())
+        .await
+        .unwrap();
+    let selected = local
+        .current()
+        .unwrap()
+        .thread
+        .config_snapshot()
+        .await
+        .environments;
+    assert!(
+        selected.environments.is_empty(),
+        "unregistered thread input must not grant an executor"
+    );
+    assert!(environment_manager.get_environment("local").is_none());
+    drop(environment_manager);
+    local.close().await.unwrap();
+    assert!(
+        engine
+            .current()
+            .unwrap()
+            .manager
+            .list_thread_ids()
+            .await
+            .is_empty()
+    );
+    no_peer_acquired(&peer, &marker);
+    assert!(provider.requests.lock().unwrap().is_empty());
     let native = engine
         .start_replaceable_thread(options(None), specs())
         .await
@@ -585,9 +651,22 @@ async fn native_local_start_and_mutation_reject_authority_before_native_publicat
     );
     let failure = native._submit(json!({"input":[],"settings":{"environments":{"legacy_fallback_cwd":work.path(),"environments":[{"environment_id":"local","cwd":format!("file://{}",work.path().display())}]}}}).to_string()).await.unwrap_err();
     assert!(
-        failure.reason.contains("executor environments"),
+        failure
+            .reason
+            .contains("native executor overrides cannot replace trusted environment policy"),
         "{}",
         failure.reason
+    );
+    assert!(
+        native
+            .current()
+            .unwrap()
+            .thread
+            .config_snapshot()
+            .await
+            .environments
+            .environments
+            .is_empty()
     );
     let failure = native
         ._update_model_settings(json!({"environments":[]}).to_string())
@@ -1001,4 +1080,39 @@ async fn native_local_close_report_remote_drain_retains_diagnostic_on_retry() {
     );
     assert!(engine.inner.lock().unwrap().remote_drain.is_none());
     assert!(engine.close().await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_local_close_joins_an_already_terminated_root_and_releases_its_owner() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let provider = Provider::start().await;
+        let profile = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let engine = create_engine(
+            provider.config().to_string(),
+            runtime(work.path(), profile.path()).to_string(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let native = engine
+            .start_replaceable_thread(options(None), specs())
+            .await
+            .unwrap();
+        let owned = native.current().unwrap();
+        // Stop Core first while retaining the SDK root owner.
+        owned.thread.shutdown_and_wait().await.unwrap();
+        assert!(native.live().unwrap().is_some());
+        assert!(native._close_report().await.unwrap().is_none());
+        assert!(native.live().unwrap().is_none());
+        assert!(owned.engine.manager.get_thread(owned.id).await.is_err());
+        // Explicit close remains inert after releasing its exact root owner.
+        assert!(native._close_report().await.unwrap().is_none());
+        drop(owned);
+        assert!(engine._close_report().await.unwrap().is_none());
+        assert!(provider.requests.lock().unwrap().is_empty());
+    })
+    .await
+    .expect("already-terminated root cleanup timed out");
 }

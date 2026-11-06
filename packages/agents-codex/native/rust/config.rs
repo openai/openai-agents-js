@@ -32,7 +32,7 @@ pub fn decode<T: DeserializeOwned>(value: Value) -> Result<T> {
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct RuntimeOptions {
+pub(crate) struct RuntimeOptions {
     #[serde(rename = "_native_agents")]
     native_agents: bool,
     #[serde(rename = "_sdk_selected_model")]
@@ -89,9 +89,69 @@ struct RuntimeOptions {
     workspace_roots: Option<Vec<AbsolutePathBuf>>,
 }
 
+impl RuntimeOptions {
+    pub(crate) fn from_json(runtime_json: &str) -> Result<Self> {
+        decode(serde_json::from_str(runtime_json)?)
+    }
+
+    pub(crate) fn environment(&self) -> Option<crate::environment::EnvironmentOptions> {
+        self.environment.clone()
+    }
+
+    pub(crate) fn native_agents(&self) -> bool {
+        self.native_agents
+    }
+
+    pub(crate) fn sdk_selected_model(&self) -> bool {
+        self.sdk_selected_model
+    }
+
+    pub(crate) fn sdk_native_config(&self) -> bool {
+        self.sdk_native_config
+    }
+
+    pub(crate) fn native_thread_store(&self) -> Option<AbsolutePathBuf> {
+        self.native_thread_store.clone()
+    }
+
+    pub(crate) fn native_goal_store_enabled(&self) -> bool {
+        self.native_goal_store.is_some()
+    }
+
+    pub(crate) fn sdk_resume_thread_id(&self) -> Option<codex_protocol::ThreadId> {
+        self.sdk_resume_thread_id
+    }
+
+    pub(crate) fn code_mode_provider(
+        &self,
+        config: &Config,
+    ) -> Option<Arc<dyn codex_code_mode::CodeModeSessionProvider>> {
+        if !code_mode_host_enabled(config) {
+            return None;
+        }
+        self.code_mode_host_exe.clone().map(|program| {
+            Arc::new(codex_code_mode::ProcessOwnedCodeModeSessionProvider::with_host_program(program))
+                as Arc<dyn codex_code_mode::CodeModeSessionProvider>
+        })
+    }
+}
+
 /// Supply native path metadata without creating a home or loading ambient config.
 pub fn prepare_runtime(runtime_json: &str) -> Result<String> {
+    prepare_runtime_for_first_root(runtime_json).map(|(runtime, _)| runtime)
+}
+
+pub(crate) fn prepare_runtime_for_first_root(runtime_json: &str) -> Result<(String, bool)> {
     let mut runtime: serde_json::Map<String, Value> = serde_json::from_str(runtime_json)?;
+    // Preserve provenance before preparation supplies isolated system/managed
+    // paths. Explicit loader paths/profiles/policy overrides always reload.
+    let isolated_loader = runtime.get("loader").is_none_or(|loader| {
+        loader.as_object().is_some_and(|fields| {
+            fields
+                .keys()
+                .all(|key| matches!(key.as_str(), "ignore_user_config" | "ignore_project_config"))
+        })
+    });
     let home =
         std::env::temp_dir().join(format!("codex-agents-{}", codex_protocol::ThreadId::new()));
     if runtime.get("codex_home").is_none_or(Value::is_null) {
@@ -148,7 +208,7 @@ pub fn prepare_runtime(runtime_json: &str) -> Result<String> {
             .entry("managed_preferences_base64")
             .or_insert(Value::String(String::new()));
     }
-    Ok(serde_json::to_string(&runtime)?)
+    Ok((serde_json::to_string(&runtime)?, isolated_loader))
 }
 
 fn strict_by_default() -> bool {
@@ -163,11 +223,6 @@ pub fn environment(runtime_json: &str) -> Result<Option<crate::environment::Envi
 pub fn native_agents(runtime_json: &str) -> Result<bool> {
     let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
     Ok(options.native_agents)
-}
-
-pub fn sdk_native_config(runtime_json: &str) -> Result<bool> {
-    let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
-    Ok(options.sdk_native_config)
 }
 
 pub fn native_thread_store(runtime_json: &str) -> Result<Option<AbsolutePathBuf>> {
@@ -225,20 +280,6 @@ pub fn native_goal_store_enabled(runtime_json: &str) -> Result<bool> {
     Ok(options.native_goal_store.is_some())
 }
 
-pub fn code_mode_provider(
-    runtime_json: &str,
-    config: &Config,
-) -> Result<Option<Arc<dyn codex_code_mode::CodeModeSessionProvider>>> {
-    let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
-    if !code_mode_host_enabled(config) {
-        return Ok(None);
-    }
-    Ok(options.code_mode_host_exe.map(|program| {
-        Arc::new(codex_code_mode::ProcessOwnedCodeModeSessionProvider::with_host_program(program))
-            as Arc<dyn codex_code_mode::CodeModeSessionProvider>
-    }))
-}
-
 pub fn code_mode_host_enabled(config: &Config) -> bool {
     config
         .features
@@ -292,11 +333,45 @@ fn toml_value(value: Value) -> Result<toml::Value> {
     })
 }
 
+// On success, validating the existing value avoids a TOML text round trip.
+// Keep the old path for every failure so diagnostics retain their exact wording
+// and ordering. Empty source text is never used to report an error.
+fn validate_effective_config(effective: toml::Value, sdk_native_config: bool) -> Result<()> {
+    if codex_config::config_error_from_ignored_toml_value_fields::<
+        codex_config::config_toml::ConfigToml,
+    >("JavaScript configuration", "", effective.clone())
+    .is_none()
+    {
+        return Ok(());
+    }
+    let contents = toml::to_string(&effective)?;
+    if let Some(error) = codex_config::config_error_from_ignored_toml_fields::<
+        codex_config::config_toml::ConfigToml,
+    >("JavaScript configuration", &contents)
+    {
+        if sdk_native_config {
+            bail!("Unsupported isolated SDK configuration");
+        }
+        bail!("{}", error.message);
+    }
+    Ok(())
+}
+
 pub async fn load(
     config_json: &str,
     runtime_json: &str,
     cloud: Option<CloudConfigBundleLoader>,
 ) -> Result<(Config, CloudConfigBundleLoader)> {
+    load_with_first_root(config_json, runtime_json, cloud)
+        .await
+        .map(|(config, cloud, _)| (config, cloud))
+}
+
+pub(crate) async fn load_with_first_root(
+    config_json: &str,
+    runtime_json: &str,
+    cloud: Option<CloudConfigBundleLoader>,
+) -> Result<(Config, CloudConfigBundleLoader, bool)> {
     let values: serde_json::Map<String, Value> = serde_json::from_str(config_json)
         .context("config must be an object of native TOML options")?;
     let mut overrides = vec![
@@ -334,6 +409,24 @@ pub async fn load(
         options.allowed_symlinked_codex_home.is_none(),
         "Configure executor startup options on the remote exec-server"
     );
+    // Only the isolated SDK model path can retain one opening snapshot. Managed
+    // requirements, storage, executors, selected models and NativeAgents reload.
+    let first_root_eligible = options
+        .cwd
+        .as_ref()
+        .or(options.fallback_cwd.as_ref())
+        .is_some_and(|path| path.is_absolute())
+        && !options.sdk_selected_model
+        && !options.native_agents
+        && options.environment.is_none()
+        && options.native_thread_store.is_none()
+        && options.native_goal_store.is_none()
+        && options.sdk_resume_thread_id.is_none()
+        && options.loader.ignore_managed_requirements
+        && options.loader.ignore_login_requirements
+        && options.loader.ignore_user_config
+        && options.loader.ignore_project_config
+        && options.loader.ignore_user_and_project_exec_policy_rules;
     let loader = options.loader;
     let loader = LoaderOverrides {
         packaged_defaults_path: loader.packaged_defaults_path,
@@ -515,17 +608,10 @@ pub async fn load(
     if options.strict_config {
         // Validate after merging: a partial provider override may not deserialize
         // on its own, which prevents the native loader's early ignored-key check.
-        let effective = config.config_layer_stack.effective_config();
-        let contents = toml::to_string(&effective)?;
-        if let Some(error) = codex_config::config_error_from_ignored_toml_fields::<
-            codex_config::config_toml::ConfigToml,
-        >("JavaScript configuration", &contents)
-        {
-            if options.sdk_native_config {
-                bail!("Unsupported isolated SDK configuration");
-            }
-            bail!("{}", error.message);
-        }
+        validate_effective_config(
+            config.config_layer_stack.effective_config(),
+            options.sdk_native_config,
+        )?;
     }
     if let Some(enabled) = options.model_provider_include_internal_metadata {
         config.model_provider.include_internal_metadata = enabled;
@@ -564,12 +650,10 @@ pub async fn load(
             "Selected Model requires managed discovery/connection retries disabled and HTTP with zero retries"
         );
     }
-    Ok((config, cloud))
-}
-
-pub(crate) fn sdk_selected_model(runtime_json: &str) -> Result<bool> {
-    let options: RuntimeOptions = serde_json::from_str(runtime_json)?;
-    Ok(options.sdk_selected_model)
+    let first_root_eligible = first_root_eligible
+        && !config.features.enabled(codex_core_api::Feature::CodeMode)
+        && !config.model_provider.supports_websockets;
+    Ok((config, cloud, first_root_eligible))
 }
 
 #[cfg(test)]
@@ -712,3 +796,37 @@ mod selected_model_tests {
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "config_strict_value_tests.rs"]
+mod strict_value_tests;
+
+#[cfg(test)]
+mod first_root_loader_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_ordinary_loader_shape_can_supply_a_first_root_snapshot() {
+        let (_, ordinary) = prepare_runtime_for_first_root(
+            r#"{"loader":{"ignore_user_config":true,"ignore_project_config":true}}"#,
+        )
+        .unwrap();
+        assert!(ordinary);
+        for key in [
+            "managed_config_path",
+            "system_config_path",
+            "system_requirements_path",
+            "packaged_defaults_path",
+            "user_config_path",
+            "user_config_profile",
+            "ignore_managed_requirements",
+            "macos_managed_config_requirements_base64",
+        ] {
+            let mut loader = serde_json::Map::new();
+            loader.insert(key.to_owned(), Value::String("explicit".into()));
+            let runtime = serde_json::json!({"loader":loader});
+            let (_, isolated) = prepare_runtime_for_first_root(&runtime.to_string()).unwrap();
+            assert!(!isolated, "explicit loader field {key} must reload");
+        }
+    }
+}

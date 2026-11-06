@@ -304,3 +304,68 @@ it('runs captured stdio before and application approval before the selected peer
   await stopped(fixture.starts);
   model.assertExhausted();
 }, 15_000);
+it('rejects MCP updates that were not declared at Session opening before peer effects', async () => {
+  const selected = await peer('ungranted', 'key');
+  const model = new ModelServer([]);
+  const session = await (await agent(model, selected.declaration)).session({
+    tools: [],
+  });
+  sessions.push(session);
+  await expect(session.update({ tools: [selected.declaration] })).rejects.toThrow(
+    'MCP schema discovery mode must match the Session opening',
+  );
+  expect(await records(selected.starts)).toHaveLength(0);
+  expect(await records(selected.calls)).toHaveLength(0);
+  expect(model.requests).toHaveLength(0);
+  await session.close();
+  expect(await records(selected.starts)).toHaveLength(0);
+  model.assertExhausted();
+}, 15_000);
+
+it('captures the first local MCP at opening and closes same-provider managers independently', async () => {
+  const first = await peer('opening-a', 'key');
+  const second = await peer('opening-b', 'key');
+  const model = new ModelServer([
+    [lookup('key', 'a-call')],
+    [message('a result')],
+    [lookup('key', 'b-call')],
+    [message('b result')],
+    [lookup('key', 'b-after-close')],
+    [message('b still live')],
+  ]);
+  const sharedAgent = await agent(model, first.declaration);
+  const a = await sharedAgent.session();
+  sessions.push(a);
+  const b = await sharedAgent.session({ tools: [second.declaration] });
+  sessions.push(b);
+  const aPids = await pids(first.starts);
+  const bPids = await pids(second.starts);
+  expect(aPids.every(alive)).toBe(true);
+  expect(bPids.every(alive)).toBe(true);
+  expect(aPids.some((pid) => bPids.includes(pid))).toBe(false);
+  expect(await records(first.calls)).toHaveLength(0);
+  expect(await records(second.calls)).toHaveLength(0);
+  expect(model.requests).toHaveLength(0);
+  expect((await (await a.submit('use first')).wait()).finalOutput).toBe(
+    'a result',
+  );
+  expect((await (await b.submit('use second')).wait()).finalOutput).toBe(
+    'b result',
+  );
+  expect(JSON.stringify(model.requests[1].input)).toContain('opening-a-record');
+  expect(JSON.stringify(model.requests[3].input)).toContain('opening-b-record');
+  await a.close();
+  await stopped(first.starts);
+  expect(bPids.every(alive)).toBe(true);
+  expect(
+    (await (await b.submit('survive first close')).wait()).finalOutput,
+  ).toBe('b still live');
+  expect(JSON.stringify(model.requests[5].input)).toContain('opening-b-record');
+  expect(await records(first.calls)).toHaveLength(1);
+  expect(await records(second.calls)).toHaveLength(2);
+  for (const request of model.requests)
+    expect(JSON.stringify(request.tools ?? [])).not.toContain('exec_command');
+  model.assertExhausted();
+  await b.close();
+  await stopped(second.starts);
+}, 30_000);

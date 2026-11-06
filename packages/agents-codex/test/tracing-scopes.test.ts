@@ -1,3 +1,4 @@
+import { nativeEventBatch } from './fixtures/native-event-batches';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const harness = vi.hoisted(() => {
@@ -443,7 +444,8 @@ async function rootFixture(
     {
       id: 'trace-fixture',
       _submit: submit,
-      _next_session_event: () => events![eventIndex++].promise,
+      _next_session_events: () =>
+        events![eventIndex++].promise.then((raw) => nativeEventBatch([raw])),
       _close_report: async () => {
         for (const event of events ?? [])
           event.reject(new Error('reader closed'));

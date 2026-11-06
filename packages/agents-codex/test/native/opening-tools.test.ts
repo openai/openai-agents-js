@@ -243,6 +243,20 @@ describe('opening tool declarations', () => {
         expect(JSON.stringify(request.input)).toContain('captured callback');
         return [message('captured')];
       },
+      (request) => {
+        expect(request.reasoning).toMatchObject({ effort: 'high' });
+        expect(request.tools).toEqual([
+          expect.objectContaining({
+            name: 'lookup',
+            parameters: expect.objectContaining({ properties: {} }),
+          }),
+        ]);
+        return [call('lookup', {}, { callId: 'later-opening' })];
+      },
+      (request) => {
+        expect(JSON.stringify(request.input)).toContain('later');
+        return [message('later opening')];
+      },
     ]);
     const provider = await providerFor(server);
     const selected = {
@@ -280,6 +294,15 @@ describe('opening tool declarations', () => {
         'captured',
       );
       expect(observedContext).toBe(originalContext);
+      // A later opening captures the changed Agent defaults independently.
+      const later = await agent.session({ context: { tenant: 'later' } });
+      try {
+        expect(
+          (await (await later.submit('Lookup again')).wait()).finalOutput,
+        ).toBe('later opening');
+      } finally {
+        await later.close();
+      }
     } finally {
       release.resolve();
       binding.mockRestore();

@@ -1,0 +1,224 @@
+--- a/codex-rs/config/src/state.rs
++++ b/codex-rs/config/src/state.rs
+@@ -18,6 +18,7 @@
+ use std::collections::HashMap;
+ use std::path::Path;
+ use std::path::PathBuf;
++use std::sync::Arc;
+ use toml::Value as TomlValue;
+ 
+ /// User-facing config loading behavior that is not part of the config document.
+@@ -252,8 +253,8 @@
+     /// so `effective_config()` can replace complete entries without a fallible conversion.
+     model_provider_requirements: Option<TomlValue>,
+     /// Layers are listed from lowest precedence (base) to highest (top), so
+-    /// later entries in the Vec override earlier ones.
+-    layers: Vec<ConfigLayerEntry>,
++    /// later entries override earlier ones. Clones share these immutable layers.
++    layers: Arc<[ConfigLayerEntry]>,
+ 
+     /// Constraints that must be enforced when deriving a [Config] from the
+     /// layers.
+@@ -288,7 +289,7 @@
+             is_projectless,
+         } = self;
+         model_provider_requirements == &other.model_provider_requirements
+-            && layers == &other.layers
++            && layers.as_ref() == other.layers.as_ref()
+             && requirements == &other.requirements
+             && requirements_toml == &other.requirements_toml
+             && *ignore_user_and_project_exec_policy_rules
+@@ -312,7 +313,7 @@
+         Ok(Self {
+             cloud_config_binding: None,
+             model_provider_requirements,
+-            layers,
++            layers: layers.into(),
+             requirements,
+             requirements_toml,
+             ignore_user_and_project_exec_policy_rules: false,
+@@ -457,7 +458,7 @@
+         );
+         validate_enabled_config_layers(std::slice::from_ref(&user_layer))?;
+ 
+-        let mut layers = self.layers.clone();
++        let mut layers = self.layers.to_vec();
+         if let Some(index) = layers.iter().position(|layer| {
+             matches!(
+                 &layer.name,
+@@ -474,7 +475,7 @@
+             None => layers.push(user_layer),
+         }
+         Ok(Self {
+-            layers,
++            layers: layers.into(),
+             cloud_config_binding: self.cloud_config_binding.clone(),
+             model_provider_requirements: self.model_provider_requirements.clone(),
+             requirements: self.requirements.clone(),
+@@ -511,7 +512,7 @@
+             }
+         }
+         Self {
+-            layers,
++            layers: layers.into(),
+             cloud_config_binding: self.cloud_config_binding.clone(),
+             model_provider_requirements: self.model_provider_requirements.clone(),
+             requirements: self.requirements.clone(),
+--- a/codex-rs/config/src/state_tests.rs
++++ b/codex-rs/config/src/state_tests.rs
+@@ -1,6 +1,155 @@
+ use super::*;
+ use pretty_assertions::assert_eq;
+ use tempfile::TempDir;
++
++#[test]
++fn clones_share_layers_without_changing_config_or_metadata() {
++    let temp = TempDir::new().expect("tempdir");
++    let file = test_user_config_path(&temp, "config.toml");
++    let raw = "model = \"base\"\n";
++    let stack = ConfigLayerStack::new(
++        vec![
++            ConfigLayerEntry::new_with_raw_toml(
++                ConfigLayerSource::User {
++                    file: file.clone(),
++                    profile: None,
++                },
++                toml::from_str(raw).expect("user config"),
++                raw.to_owned(),
++                file.parent().expect("config folder"),
++            ),
++            ConfigLayerEntry::new_disabled(
++                ConfigLayerSource::Project {
++                    dot_codex_folder: test_user_config_path(&temp, ".codex"),
++                },
++                toml::from_str("model = \"disabled\"").expect("project config"),
++                "project is untrusted",
++            ),
++            ConfigLayerEntry::new(
++                ConfigLayerSource::SessionFlags,
++                toml::from_str("model = \"session\"").expect("session config"),
++            ),
++        ],
++        ConfigRequirements::default(),
++        ConfigRequirementsToml::default(),
++    )
++    .expect("layer stack")
++    .with_user_and_project_exec_policy_rules_ignored(true)
++    .with_startup_warnings(vec!["retained warning".to_owned()]);
++    let cloned = stack.clone();
++
++    assert!(Arc::ptr_eq(&stack.layers, &cloned.layers));
++    assert_eq!(stack, cloned);
++    assert_eq!(stack.effective_config(), cloned.effective_config());
++    assert_eq!(stack.origins(), cloned.origins());
++    assert_eq!(cloned.layers[0].raw_toml(), Some(raw));
++    assert_eq!(
++        cloned.layers[1].disabled_reason.as_deref(),
++        Some("project is untrusted")
++    );
++    assert_eq!(cloned.effective_config()["model"].as_str(), Some("session"));
++    assert_eq!(cloned.all_layers_low_to_high().count(), 3);
++    assert_eq!(cloned.layers_low_to_high().count(), 2);
++}
++
++#[test]
++fn replacing_user_config_does_not_mutate_a_shared_clone() {
++    let temp = TempDir::new().expect("tempdir");
++    let file = test_user_config_path(&temp, "config.toml");
++    let stack = ConfigLayerStack::new(
++        vec![ConfigLayerEntry::new(
++            ConfigLayerSource::User {
++                file: file.clone(),
++                profile: None,
++            },
++            toml::from_str("[nested]\nvalue = \"original\"").expect("user config"),
++        )],
++        ConfigRequirements::default(),
++        ConfigRequirementsToml::default(),
++    )
++    .expect("layer stack");
++    let cloned = stack.clone();
++    let before = stack.effective_config();
++    let updated = cloned
++        .with_user_config(
++            &file,
++            toml::from_str("[nested]\nvalue = \"updated\"").unwrap(),
++        )
++        .expect("updated user config");
++
++    assert!(Arc::ptr_eq(&stack.layers, &cloned.layers));
++    assert!(!Arc::ptr_eq(&stack.layers, &updated.layers));
++    assert_eq!(stack, cloned);
++    assert_eq!(stack.effective_config(), before);
++    assert_eq!(
++        updated.effective_config()["nested"]["value"].as_str(),
++        Some("updated")
++    );
++    assert_ne!(updated.layers[0].version, stack.layers[0].version);
++    assert_eq!(stack.with_user_layer_from(&updated), updated);
++    assert_eq!(stack.effective_config(), before);
++
++    let invalid = toml::from_str(
++        "[shell_environment_policy]\nexclude = [\"LEGACY_*\"]\n[shell_environment_policy.filters]\n\"CANONICAL_*\" = \"include\"",
++    )
++    .expect("invalid policy TOML");
++    assert!(cloned.with_user_config(&file, invalid).is_err());
++    assert!(Arc::ptr_eq(&stack.layers, &cloned.layers));
++    assert_eq!(stack.effective_config(), before);
++}
++
++#[test]
++fn layer_equality_remains_value_based_including_nonreflexive_toml() {
++    let empty = ConfigLayerStack::default();
++    assert_eq!(empty.all_layers_low_to_high().count(), 0);
++    assert_eq!(empty, empty.clone());
++    let make = |text: &str| {
++        ConfigLayerStack::new(
++            vec![ConfigLayerEntry::new(
++                ConfigLayerSource::SessionFlags,
++                toml::from_str(text).expect("session config"),
++            )],
++            ConfigRequirements::default(),
++            ConfigRequirementsToml::default(),
++        )
++        .expect("layer stack")
++    };
++    let one = make("value = 1");
++    let two = make("value = 1");
++    assert!(!Arc::ptr_eq(&one.layers, &two.layers));
++    assert_eq!(one, two);
++    let nan = make("value = nan");
++    assert_ne!(nan, nan.clone());
++}
++
++#[test]
++fn layer_validation_still_precedes_precedence_validation() {
++    let temp = TempDir::new().expect("tempdir");
++    let error = ConfigLayerStack::new(
++        vec![
++            ConfigLayerEntry::new(
++                ConfigLayerSource::SessionFlags,
++                toml::from_str("[shell_environment_policy]\nexclude = [\"LEGACY_*\"]\n[shell_environment_policy.filters]\n\"CANONICAL_*\" = \"include\"").unwrap(),
++            ),
++            ConfigLayerEntry::new(
++                ConfigLayerSource::User {
++                    file: test_user_config_path(&temp, "config.toml"),
++                    profile: None,
++                },
++                toml::from_str("value = 1").unwrap(),
++            ),
++        ],
++        ConfigRequirements::default(),
++        ConfigRequirementsToml::default(),
++    )
++    .expect_err("both layer contents and order are invalid");
++    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
++    assert!(
++        error
++            .to_string()
++            .contains("cannot mix `filters` with legacy `exclude` or `include_only`")
++    );
++}
+ 
+ fn test_user_config_path(temp_dir: &TempDir, file_name: &str) -> AbsolutePathBuf {
+     AbsolutePathBuf::from_absolute_path(temp_dir.path().join(file_name))

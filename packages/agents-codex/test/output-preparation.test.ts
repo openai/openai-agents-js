@@ -3,6 +3,28 @@ import { z } from 'zod';
 import { prepareOutput } from '../src/runtime/output';
 
 describe('output schema preparation', () => {
+  it('shares only the frozen primitive plain identity between fresh captures', () => {
+    const first = prepareOutput(undefined);
+    const second = prepareOutput(undefined);
+    expect(first).not.toBe(second);
+    expect(first.identity).toBe(second.identity);
+    expect(Object.isFrozen(first.identity)).toBe(true);
+    expect(
+      Object.values(first.identity).every(
+        (value) => typeof value === 'string' || typeof value === 'number',
+      ),
+    ).toBe(true);
+    expect(Reflect.set(first.identity, 'mode', 'native')).toBe(false);
+    Object.defineProperty(first, 'schema', { value: { type: 'number' } });
+    expect(second).toEqual({ identity: second.identity });
+    const next = prepareOutput(undefined);
+    expect(next).not.toBe(first);
+    expect(next).not.toBe(second);
+    expect(next.schema).toBeUndefined();
+    expect(next.identity.mode).toBe('plain');
+    expect(next.identity).toEqual(prepareOutput(z.string()).identity);
+  });
+
   it('captures plain output without serializing schema implementation metadata', () => {
     const implicit = prepareOutput(undefined);
     const explicit = prepareOutput(z.string());

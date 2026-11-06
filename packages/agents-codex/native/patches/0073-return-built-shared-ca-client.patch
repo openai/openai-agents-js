@@ -1,0 +1,13 @@
+diff --git a/codex-rs/http-client/src/custom_ca.rs b/codex-rs/http-client/src/custom_ca.rs
+index 0dd0d91822efe96d71264062b4f329762168afb4..e6c95b2718f4463f6876529a942a39897126f3c1 100644
+--- a/codex-rs/http-client/src/custom_ca.rs
++++ b/codex-rs/http-client/src/custom_ca.rs
+@@ -405,7 +405,7 @@ fn build_reqwest_client_from_loaded_ca(
+                 source,
+             })
+         }
+-    };
++    }
+ }
+ 
+ #[derive(Clone)]

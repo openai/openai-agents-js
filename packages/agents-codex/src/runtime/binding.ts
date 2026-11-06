@@ -152,6 +152,11 @@ export function encode(value: unknown): string {
   return JSON.stringify(jsonValue.parse(value));
 }
 
+/** @internal Only for a fixed-shape root text event certified by the native batch. */
+export function parseCertifiedRootText(source: string): unknown {
+  return JSON.parse(source);
+}
+
 // Convert only an authority's exact integer token; never return a rounded JS number.
 export function parseNative(source: string): unknown {
   const tokens = new WeakMap<object, Map<string, string>>();

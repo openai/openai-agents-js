@@ -1,0 +1,71 @@
+diff --git a/codex-rs/models-manager/src/lib.rs b/codex-rs/models-manager/src/lib.rs
+--- a/codex-rs/models-manager/src/lib.rs
++++ b/codex-rs/models-manager/src/lib.rs
+@@ -1,3 +1,5 @@
++use std::sync::OnceLock;
++
+ pub mod cache;
+ pub mod collaboration_mode_presets;
+ pub(crate) mod config;
+@@ -12,7 +14,12 @@
+ /// Load the bundled model catalog shipped with `codex-models-manager`.
+ pub fn bundled_models_response()
+ -> std::result::Result<codex_protocol::openai_models::ModelsResponse, serde_json::Error> {
+-    serde_json::from_str(include_str!("../models.json"))
++    static CATALOG: OnceLock<codex_protocol::openai_models::ModelsResponse> = OnceLock::new();
++    if let Some(catalog) = CATALOG.get() {
++        return Ok(catalog.clone());
++    }
++    let parsed = serde_json::from_str(include_str!("../models.json"))?;
++    Ok(CATALOG.get_or_init(|| parsed).clone())
+ }
+ 
+ /// Convert the client version string to a whole version string (e.g. "1.2.3-alpha.4" -> "1.2.3").
+diff --git a/codex-rs/models-manager/src/manager_tests.rs b/codex-rs/models-manager/src/manager_tests.rs
+--- a/codex-rs/models-manager/src/manager_tests.rs
++++ b/codex-rs/models-manager/src/manager_tests.rs
+@@ -1719,3 +1719,44 @@
+         "bundled models.json should contain at least one model"
+     );
+ }
++
++#[test]
++fn bundled_catalog_matches_source_and_returns_independent_values() {
++    let expected: ModelsResponse = serde_json::from_str(include_str!("../models.json"))
++        .expect("bundled models.json should parse");
++    let mut response = crate::bundled_models_response().expect("bundled catalog should load");
++    assert_eq!(response, expected);
++
++    response.models.clear();
++    assert_eq!(
++        crate::bundled_models_response().expect("bundled catalog should remain available"),
++        expected
++    );
++}
++
++#[test]
++fn bundled_catalog_returns_independent_values_to_concurrent_callers() {
++    let expected: ModelsResponse = serde_json::from_str(include_str!("../models.json"))
++        .expect("bundled models.json should parse");
++    let barrier = std::sync::Barrier::new(8);
++    std::thread::scope(|scope| {
++        let workers = (0..8)
++            .map(|_| {
++                scope.spawn(|| {
++                    barrier.wait();
++                    let mut response =
++                        crate::bundled_models_response().expect("bundled catalog should load");
++                    assert_eq!(response, expected);
++                    response.models.clear();
++                })
++            })
++            .collect::<Vec<_>>();
++        for worker in workers {
++            worker.join().expect("catalog reader should finish");
++        }
++    });
++    assert_eq!(
++        crate::bundled_models_response().expect("bundled catalog should remain available"),
++        expected
++    );
++}

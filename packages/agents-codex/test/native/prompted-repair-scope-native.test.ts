@@ -1,3 +1,7 @@
+import {
+  firstNativeBatchWire,
+  replaceSingletonNativeBatchEvent,
+} from '../fixtures/native-event-batches';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, NativeProvider, tool } from '../../src';
@@ -122,17 +126,17 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
 
     it('repairs the actual completing automatic successor under the captured operation override', async () => {
       const native = await binding();
-      const nextEvent = native.NativeThread.prototype._next_session_event;
+      const nextEvent = native.NativeThread.prototype._next_session_events;
       const submit = native.NativeThread.prototype._submit;
       let originalThreadId: string | undefined;
       let originalId: string | undefined;
       let successorId: string | undefined;
       vi.spyOn(
         native.NativeThread.prototype,
-        '_next_session_event',
+        '_next_session_events',
       ).mockImplementation(async function (this: NativeThread) {
         const raw = await nextEvent.call(this);
-        const event = JSON.parse(raw);
+        const event = JSON.parse(firstNativeBatchWire(raw));
         if (
           !event.subagent_id &&
           ['task_complete', 'turn_complete'].includes(event.msg.type)
@@ -142,7 +146,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             originalId = event.id;
             // Project only the hard-to-schedule tail admission boundary.
             event.sdk_unsampled_steering = true;
-            return JSON.stringify(event);
+            return replaceSingletonNativeBatchEvent(raw, event);
           }
           if (
             this.id === originalThreadId &&

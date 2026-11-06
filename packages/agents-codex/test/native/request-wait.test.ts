@@ -1,3 +1,4 @@
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -33,16 +34,19 @@ async function providerFor(server: ModelServer) {
 
 async function holdReader() {
   const { NativeThread: Thread } = await binding();
-  const next = Thread.prototype._next_session_event;
+  const next = Thread.prototype._next_session_events;
   const entered = Promise.withResolvers<NativeThread>();
   const delivered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  vi.spyOn(Thread.prototype, '_next_session_event').mockImplementation(
+  vi.spyOn(Thread.prototype, '_next_session_events').mockImplementation(
     async function (this: NativeThread) {
       entered.resolve(this);
       await release.promise;
       const raw = await next.call(this);
-      if (JSON.parse(raw).msg?.type === 'dynamic_tool_call_request')
+      if (
+        JSON.parse(firstNativeBatchWire(raw)).msg?.type ===
+        'dynamic_tool_call_request'
+      )
         delivered.resolve();
       return raw;
     },
