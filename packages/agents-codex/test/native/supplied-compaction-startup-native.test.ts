@@ -2,7 +2,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
+import type { _ContextChange } from '../../native/index.js';
 import { Agent, NativeProvider, StdioMCP, type Session } from '../../src';
+import { binding } from '../../src/runtime/binding';
 import { ModelServer, message } from './fixtures/model-server';
 
 const PEER = String.raw`
@@ -84,11 +86,12 @@ function alive(pid: number): boolean {
   }
 }
 
-// Exercise startup-form refusal, source retirement and candidate reuse.
-// This does not force a particular publication/witness interleaving.
-it.each([false, true])(
-  'uses public supplied compaction with startup question=%s',
-  async (question) => {
+it.each(['plain', 'question', 'publication failure'] as const)(
+  'uses retained compaction with candidate startup mode %s',
+  async (mode) => {
+    const question = mode === 'question';
+    const originalInput = 'Record original conversation.';
+    const summary = 'The original conversation is retained.';
     const directory = await mkdtemp(
       join(tmpdir(), 'public-compaction-startup-'),
     );
@@ -102,7 +105,18 @@ it.each([false, true])(
     ]);
     const model = new ModelServer([
       [message('original')],
-      [message('continued')],
+      (request) => {
+        const input = JSON.stringify(request.input);
+        expect(input).toContain(originalInput);
+        if (mode === 'publication failure') {
+          expect(input).toContain('"text":"original"');
+          expect(input).not.toContain(summary);
+        } else {
+          expect(input).toContain(summary);
+          expect(input).not.toContain('"text":"original"');
+        }
+        return [message('continued')];
+      },
     ]);
     let provider: NativeProvider | undefined;
     let session: Session | undefined;
@@ -132,7 +146,7 @@ it.each([false, true])(
         ],
       });
       session = await agent.session();
-      const original = await session.submit('Record original conversation.');
+      const original = await session.submit(originalInput);
       const completed = await original.wait();
       const id = session.id;
       const items = await values(session.items());
@@ -144,14 +158,44 @@ it.each([false, true])(
           (record) => !record.candidate && record.event === 'list-replied',
         ),
       ).toBe(true);
+      const snapshot = await session.modelContext();
+      const user = snapshot.items.findIndex((item) =>
+        JSON.stringify(item).includes(originalInput),
+      );
+      expect(user).toBeGreaterThanOrEqual(0);
       await writeFile(phase, 'candidate');
 
-      if (question) {
-        await expect(
-          session.compact({
-            summary: 'The original conversation is retained.',
-          }),
-        ).resolves.toBeUndefined();
+      const options = { summary, snapshot, retain: [user] };
+      if (mode === 'publication failure') {
+        const addon = await binding();
+        const publish =
+          addon._ContextChange.prototype.publishCandidateMcpServers;
+        const failure = new Error('Candidate publication did not complete');
+        vi.spyOn(
+          addon._ContextChange.prototype,
+          'publishCandidateMcpServers',
+        ).mockImplementationOnce(async function (
+          this: _ContextChange,
+          ...args
+        ) {
+          await publish.call(this, ...args);
+          throw failure;
+        });
+        await expect(session.compact(options)).rejects.toBe(failure);
+        expect(await session.modelContext()).toEqual(snapshot);
+        const peers = await trace(log);
+        const candidates = peers.filter(
+          (record) => record.candidate && record.event === 'started',
+        );
+        expect(candidates.length).toBeGreaterThan(0);
+        await vi.waitFor(
+          () => {
+            for (const { pid } of candidates) expect(alive(pid)).toBe(false);
+          },
+          { timeout: 8000 },
+        );
+      } else if (question) {
+        await expect(session.compact(options)).resolves.toBeUndefined();
         await vi.waitFor(async () => {
           const emitted = (await trace(log)).filter(
             (record) => record.candidate,
@@ -195,9 +239,7 @@ it.each([false, true])(
         expect(await values(session.turns())).toEqual(turns);
         expect(await original.wait()).toBe(completed);
       } else {
-        await session.compact({
-          summary: 'The original conversation is retained.',
-        });
+        await session.compact(options);
         expect(
           (await trace(log)).some(
             (record) => record.candidate && record.event === 'list-replied',
@@ -222,6 +264,7 @@ it.each([false, true])(
         ).toBe(false);
       }
     } finally {
+      vi.restoreAllMocks();
       await session?.close();
       await provider?.close();
       await ModelServer.closeAll();

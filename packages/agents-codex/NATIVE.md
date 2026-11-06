@@ -2,6 +2,8 @@
 
 Import the SDK from `@openai/agents`. Codex runs model turns and maintains conversation history. Your application supplies tool callbacks and closes the resources it opens. Start by [running your first agent](README.md#run-an-agent), then choose a task below.
 
+Read [the architecture guide](examples/guides/architecture.md) for runtime ownership, the differences from v0 and Classic, and the contracts for turns, observations, and recovery.
+
 ## Install
 
 - [Install the SDK and run the starter](examples/guides/installation.md)

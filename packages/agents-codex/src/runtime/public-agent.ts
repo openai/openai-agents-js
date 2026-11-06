@@ -210,6 +210,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'checklist'
   | 'update'
   | 'interrupt'
+  | 'modelContext'
   | 'compact'
   | 'executeCommand'
   | 'saveState'

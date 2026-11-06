@@ -40,6 +40,7 @@ Try the [greeting](examples/basic.ts) and [typed-context](examples/typed-context
 
 ## SDK guides
 
+- [Architecture](examples/guides/architecture.md). Understand the native runtime, how it differs from v0, and which adoption route fits your application.
 - [Native API guide](NATIVE.md). Find the reference for sessions, output, tools, and native interactions.
 - <a name="sessions"></a>[Sessions](examples/guides/sessions.md). Open a conversation and run multiple turns. Use [session configuration](examples/guides/session-configuration.md) to choose a provider, model, and tools.
 - [Session history and state](examples/guides/state.md). Save a checkpoint, resume pending work, or choose a persistent store.

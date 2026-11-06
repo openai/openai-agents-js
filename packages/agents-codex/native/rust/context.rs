@@ -6,10 +6,6 @@ use crate::engine::ThreadState;
 use crate::environment::StrictExecutorWrites;
 
 async fn check_idle(state: &ThreadState) -> anyhow::Result<()> {
-    let _mutation = state
-        .mutations
-        .try_lock()
-        .map_err(|_| anyhow::anyhow!("native thread mutation is in progress"))?;
     ensure!(
         state
             .thread
@@ -30,6 +26,30 @@ async fn check_idle(state: &ThreadState) -> anyhow::Result<()> {
         tools.check_idle(&state.thread).await?;
     }
     Ok(())
+}
+
+pub async fn read(state: &ThreadState) -> anyhow::Result<Value> {
+    let _mutation = state
+        .mutations
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("native thread mutation is in progress"))?;
+    check_idle(state).await?;
+    let snapshot = state.thread.conversation_history_snapshot().await;
+    Ok(snapshot_value(state, snapshot.as_ref()))
+}
+
+fn snapshot_value(
+    state: &ThreadState,
+    snapshot: &dyn codex_extension_api::ConversationHistorySnapshot,
+) -> Value {
+    json!({
+        "thread_id": state.id,
+        "history_version": snapshot.history_version(),
+        "user_message_revision": snapshot.user_message_revision(),
+        "guardian_review_context_revision": snapshot.guardian_review_context_revision(),
+        "retained_context": snapshot.retained_context(),
+        "items": snapshot.items().collect::<Vec<_>>(),
+    })
 }
 
 // A short-lived SDK transaction owns this lease. Ordinary public native ingress
@@ -119,13 +139,12 @@ pub async fn begin(state: std::sync::Arc<ThreadState>) -> anyhow::Result<Change>
     {
         control.check_context_idle()?;
     }
-    // Check idle ownership under a short, nonwaiting root mutation scope.
-    check_idle(&state).await?;
     let mut checkpoint = {
         let _mutation = state
             .mutations
             .try_lock()
             .map_err(|_| anyhow::anyhow!("native thread mutation is in progress"))?;
+        check_idle(&state).await?;
         crate::checkpoint::export(&state, None).await?
     };
     // Public checkpoints export defaults only. Internal context replacement
@@ -168,6 +187,10 @@ pub async fn begin(state: std::sync::Arc<ThreadState>) -> anyhow::Result<Change>
 }
 
 impl Change {
+    pub fn context(&self) -> Value {
+        snapshot_value(&self.state, self.snapshot.as_ref())
+    }
+
     pub fn fence(&self) {
         self.state
             .engine
@@ -268,27 +291,32 @@ impl Change {
         Ok(())
     }
 
-    pub fn prepare(&self, summary: &str) -> anyhow::Result<Value> {
+    pub fn prepare(&self, summary: &str, retained_indices: Vec<u32>) -> anyhow::Result<Value> {
         ensure!(
             !summary.trim().is_empty(),
             "summary must contain non-whitespace text"
         );
-        let retained_indices = self.snapshot.items().enumerate().filter_map(|(index, item)| {
-            matches!(item, codex_protocol::models::ResponseItem::Message { role, .. } if role == "system" || role == "developer").then_some(index)
-        }).collect::<Vec<_>>();
-        let retained_indices = retained_indices.as_slice();
         use anyhow::Context;
         use codex_history::{
             CompactedItem, GuardianHistoryCheckpoint, ResponseItemEnvelope, RolloutItem,
         };
         use codex_protocol::models::ResponseItem;
         let live = self.snapshot.items().cloned().collect::<Vec<_>>();
+        let mut retained_indices: Vec<usize> = retained_indices
+            .into_iter()
+            .map(|index| index as usize)
+            .collect();
         ensure!(
-            retained_indices.windows(2).all(|pair| pair[0] < pair[1])
-                && retained_indices.iter().all(|index| *index < live.len()),
-            "retained indices must be unique, increasing and within the current model context"
+            retained_indices.iter().all(|index| *index < live.len()),
+            "retained indices must be within the current model context"
         );
-        check_pairs(&live, retained_indices)?;
+        retained_indices.extend(live.iter().enumerate().filter_map(|(index, item)| {
+            matches!(item, ResponseItem::Message { role, .. } if role == "system" || role == "developer")
+                .then_some(index)
+        }));
+        retained_indices.sort_unstable();
+        retained_indices.dedup();
+        check_pairs(&live, &retained_indices)?;
         let history: Vec<RolloutItem> = serde_json::from_value(self.checkpoint["history"].clone())?;
         ensure!(
             matches!(history.first(), Some(RolloutItem::SessionMeta(header))
