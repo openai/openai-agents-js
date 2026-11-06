@@ -1,5 +1,20 @@
 # @openai/agents-openai
 
+## 0.22.0
+
+### Patch Changes
+
+- 50f6b68: fix: refresh compatible SDK, toolchain, and example dependencies
+- 52fcb57: fix: allow sandbox clients to prepare manifest environments in their execution context (#2077).
+- be4f1f9: fix: Preserve bounded JSON usage metadata and reuse OpenAI wire types; breaking types require narrowing usage details, Realtime image content, nullable MCP descriptions, unknown schemas/tracing metadata, and optional transcription breakdowns; saved states retain schema 1.23 when compatible and use 1.24 for richer metadata or newer nested runs.
+- 35b24d7: Update Zod to 4.6.6 while preserving saved guardrail checkpoints with omitted metadata.
+- Updated dependencies [50f6b68]
+- Updated dependencies [9b33d73]
+- Updated dependencies [52fcb57]
+- Updated dependencies [be4f1f9]
+- Updated dependencies [35b24d7]
+  - @openai/agents-core@0.22.0
+
 ## 0.21.0
 
 ### Patch Changes
