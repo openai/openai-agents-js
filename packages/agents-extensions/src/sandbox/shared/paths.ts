@@ -60,7 +60,31 @@ if [ $(( $# % 2 )) -ne 0 ]; then
   exit 64
 fi
 
+# Command substitution strips trailing newlines. Check path bytes before any
+# substitution can change the pathname that the caller will use.
+carriage_return=$(printf '\r')
+assert_single_line_path() {
+  case "$1" in
+    *'
+'*|*"$carriage_return"*)
+      printf 'sandbox paths must not contain carriage returns or newlines\n' >&2
+      exit 115
+      ;;
+  esac
+}
+
+read_single_line_path() {
+  # The marker preserves trailing newlines from pwd/readlink, including the
+  # command's record terminator. Remove only that terminator before checking.
+  output=$("$@" && printf '.') || exit "$?"
+  output=${'$'}{output%.}
+  output=${'$'}{output%?}
+  assert_single_line_path "$output"
+  printf '%s\n' "$output"
+}
+
 resolve_path() {
+  assert_single_line_path "$1"
   path="$1"
   depth="$2"
   seen=""
@@ -76,8 +100,8 @@ resolve_path() {
     exit 112
   fi
   if [ -d "$path" ]; then
-    (cd "$path" && pwd -P)
-    return 0
+    (cd "$path" && read_single_line_path pwd -P)
+    return "$?"
   fi
   parent=$(dirname "$path")
   base=$(basename "$path")
@@ -93,7 +117,7 @@ resolve_path() {
         exit 112
         ;;
     esac
-    target=$(readlink "$candidate_path")
+    target=$(read_single_line_path readlink "$candidate_path")
     next_depth=$((depth + 1))
     next_seen="$seen:$candidate_path"
     case "$target" in
@@ -216,6 +240,18 @@ export async function validateRemoteSandboxPath({
   options = {},
   runCommand,
 }: ValidateRemoteSandboxPathArgs): Promise<string> {
+  if (
+    [
+      root,
+      path ?? '',
+      ...(options.extraPathGrants ?? []).map((grant) => grant.path),
+    ].some((value) => /[\r\n]/u.test(value))
+  ) {
+    throw new SandboxPathResolutionError(
+      `Sandbox path "${path ?? ''}" failed remote validation: sandbox paths must not contain carriage returns or newlines.`,
+      { root, path: path ?? '', forWrite: options.forWrite ?? false },
+    );
+  }
   const candidate = resolveSandboxAbsolutePath(root, path, options);
   const helperDir = `/tmp/openai-agents-resolve-path-${createRemotePathHelperId()}`;
   const helperArgs = [
@@ -263,8 +299,8 @@ export async function validateRemoteSandboxPath({
     );
   }
 
-  const resolvedPath = result.stdout?.trim().split(/\r?\n/u).pop();
-  if (!resolvedPath?.startsWith('/')) {
+  const resolvedPath = result.stdout?.replace(/\n$/u, '');
+  if (!resolvedPath?.startsWith('/') || /[\r\n]/u.test(resolvedPath)) {
     throw new SandboxPathResolutionError(
       `Sandbox path "${path ?? ''}" failed remote validation: validator did not return an absolute resolved path.`,
       {
@@ -281,16 +317,20 @@ export async function resolveRemoteSandboxEffectivePath(args: {
   path: string;
   runCommand(command: string): Promise<RemotePathCommandResult>;
 }): Promise<string> {
+  if (/[\r\n]/u.test(args.path)) {
+    throw new SandboxPathResolutionError(
+      `Sandbox credential path "${args.path}" failed effective-path resolution: sandbox paths must not contain carriage returns or newlines.`,
+      { path: args.path },
+    );
+  }
   const result = await args.runCommand(
     `PATH=/usr/bin:/bin HOME=/root LD_PRELOAD= LD_LIBRARY_PATH= LD_AUDIT= /usr/bin/realpath -m -- ${shellQuote(args.path)}`,
   );
-  const resolvedPathLines = result.stdout?.trim().split(/\r?\n/u) ?? [];
-  const resolvedPath =
-    resolvedPathLines.length === 1 ? resolvedPathLines[0] : undefined;
+  const resolvedPath = result.stdout?.replace(/\n$/u, '');
   if (
     result.status !== 0 ||
     !resolvedPath?.startsWith('/') ||
-    resolvedPath.includes('\n')
+    /[\r\n]/u.test(resolvedPath)
   ) {
     const message = (
       result.stderr ||
