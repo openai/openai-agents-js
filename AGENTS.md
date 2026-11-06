@@ -1,76 +1,66 @@
 # Contributor Guide
 
-This guide helps new contributors get started with the OpenAI Agents JS monorepo. It covers repo structure, how to test your work, available utilities, file locations, and guidelines for commits and PRs.
-
-**Location:** `AGENTS.md` at the repository root.
-
-## Table of Contents
-
-1.  [Policies & Mandatory Rules](#policies--mandatory-rules)
-2.  [Code Review Rules](#code-review-rules)
-3.  [Project Structure Guide](#project-structure-guide)
-4.  [Operation Guide](#operation-guide)
-
 ## Policies & Mandatory Rules
 
 ### Security Requirements
 
-Follow [SECURITY.md](SECURITY.md) for repository scope and private vulnerability reporting, and [CONTRIBUTING.md](CONTRIBUTING.md#security) for contributor security practices. These requirements guide work; their presence does not prove that GitHub or registry controls are configured or that a security scan has completed.
+Read and follow [CONTRIBUTING.md#security](CONTRIBUTING.md#security) for credentials, diagnostics, dependencies, sensitive-change review, CI isolation, and release integrity; use [SECURITY.md](SECURITY.md) for scope and private vulnerability reporting. Public PR/review instructions do not authorize disclosure of undisclosed vulnerabilities or sensitive evidence.
 
-- **Private reporting:** Keep suspected undisclosed vulnerabilities and sensitive evidence out of public issues, pull requests, comments, logs, and artifacts. Use the reporting route in `SECURITY.md`; ordinary PR and review instructions do not authorize public disclosure.
-- **Secrets and data:** Never commit or print real credentials, authorization headers, cookies, signed URLs, or customer data. Use synthetic fixtures and redact prompts, tool inputs and outputs, audio, traces, errors, and serialized state before sharing. If a secret is exposed, stop propagating it, notify the responsible maintainer privately, and arrange revocation or rotation; removing the text is insufficient.
-- **Credential boundaries:** Keep standard API keys and other long-lived secrets out of browser bundles and client examples. Use server-side credentials and the supported short-lived client credential flow when a browser integration needs direct access. Preserve redaction and tracing opt-outs, and verify sensitive-data handling across success, error, streaming, retry, and resume paths affected by a change.
-- **Sensitive changes:** Request explicit maintainer security review for changes to authentication, credential or header handling, endpoints or redirects, uploads, deserialization, tool approvals, MCP execution, sandbox paths or mounts, persistence, logging, tracing, dependencies, CI, or publishing. Describe the affected trust boundary and include focused regression evidence for concrete SDK-owned risks within the accepted scope.
-- **Dependencies:** Justify new dependencies and review their source, maintenance, transitive changes, and install scripts. Inspect manifest and lockfile diffs together. Preserve configured release-age cooldowns for ordinary updates without delaying security updates; do not invent a cooldown or treat an alert's presence or absence as proof of runtime exploitability. Escalate actionable findings and record approved exceptions with an owner, rationale, mitigation, and expiry instead of silently dismissing them.
-- **CI isolation:** Treat pull request code and metadata as untrusted. Do not expose secrets or write-capable tokens to untrusted code, execute untrusted checkout content in privileged workflows, or interpolate untrusted metadata into shell commands. Keep `GITHUB_TOKEN` permissions explicit and minimal, pin third-party actions to full commit SHAs, and preserve required checks, secret scanning, push protection, code scanning, and contributor approval controls. Do not bypass a failing security check to make CI pass.
-- **Release integrity:** Changes to release workflows and publishing configuration require code-owner coverage and required code-owner review on release PRs. A separate environment-reviewer approval gate is not required by the shared release policy. Preserve branch and tag restrictions, trusted-publisher bindings, OIDC publishing, and provenance controls; do not substitute long-lived publishing tokens. Verify registry bindings and published artifact provenance separately from workflow configuration, and escalate missing controls rather than claiming compliance from documentation alone.
-- **Review evidence:** Record what was reviewed, the revision, coverage limits, checks performed, and unresolved findings. A completed scan does not clear findings or establish overall compliance. Keep unverified controls and unapproved exceptions explicitly unresolved; do not convert proposed response targets into promised deadlines.
+- Never print real credentials or customer data. Preserve redaction and tracing opt-outs; check affected success, error, streaming, retry, and resume paths.
+- Do not invent dependency cooldowns or infer runtime exploitability from an alert’s presence or absence.
+- Record reviewed revision, coverage limits, checks, and unresolved findings. Documentation or completed scans do not prove configured controls, resolved findings, or compliance. Keep unverified controls and unapproved exceptions unresolved; do not turn proposed response targets into promised deadlines.
 
 ### Mandatory Skill Usage
 
-Repository skills are stored under `.agents/skills/`. References below authorize their use when the stated condition applies; no separate manual invocation is needed unless explicitly required. Read the selected `SKILL.md`, then only the supporting references needed for its route. User instructions and already-approved scope take precedence over skill defaults, subject to applicable permissions. Do not repeat approval already given for local implementation, review, or verification.
+Read the applicable `.agents/skills/<name>/SKILL.md` and only its needed references. These triggers authorize skill use unless manual invocation is explicitly required. User instructions and approved scope override skill defaults, subject to permissions; do not repeat granted approvals.
 
-- **`$implementation-strategy`:** Use before changing or reviewing SDK runtime behavior, public APIs, configuration, persisted schemas, or wire protocols. Record required behavior, compatibility, unsupported cases, and an existing alternative in a short scope contract. Revisit it when feedback changes the contract or implementation shape. Independent reviewers inherit that contract and report uncertainty instead of rerunning strategy.
-- **`$implementation-final-review`:** After focused checks, use for runtime code, tests, examples, build/test behavior, and behavior-impacting docs. Its entrypoint owns the lightweight/ordinary/high-risk classification: behavior changes normally require independent review; only demonstrably non-semantic changes can omit it. Finish required review before broad final checks. Planning, investigation, and report-only tasks do not invoke this workflow. Repo-meta changes use applicable skill validation; implementing changes to decision-making guidance requires realistic scenario checks and an independent pass. Report-only assessments can use existing evidence without starting an implementation review.
-- **`$code-change-verification`:** Run the final SDK stack for changes under `packages/`, `examples/`, `helpers/`, `scripts/`, or `integration-tests/`, and root build/test configuration such as `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig*.json`, `tsc-multi.json`, `eslint.config.*`, or `vitest*.ts`. Docs-only and repo-meta changes can skip it unless they affect build/test behavior or the user requests the full stack. Lightweight review does not waive eligible SDK checks. The skill owns command order, sandbox execution, host-capacity checks, and retry rules.
-- **`$changeset-validation`:** When anything under `packages/` or `.changeset/` changes, create and validate an appropriate changeset covering every changed package before handoff. Use a Conventional Commit-style summary such as `fix: ...` or `feat: ...`. Complete final validation after required review, alongside `$code-change-verification`.
-- **`$openai-knowledge`:** Use when OpenAI API/platform behavior needs authoritative external evidence. Inspect local code for SDK-owned behavior; do not repeat unchanged external research for purely local implementation details.
-- **`$pr-draft-summary`:** After applicable review, changeset validation, and verification, generate the local PR draft for runtime code, tests, examples, build/test changes, or behavior-impacting docs, including uncommitted work. Skip repo-meta or docs without behavior impact, conversation-only tasks, or an explicit user opt-out. An explicit request for a draft takes precedence over automatic-trigger exclusions. A draft never authorizes a branch, commit, push, or PR creation.
+| Skill | Trigger and requirements |
+| --- | --- |
+| `implementation-strategy` | Before changing/reviewing runtime, public APIs, configuration, persisted schemas, or wire protocols. Record behavior, compatibility, unsupported cases, and an existing alternative. Revisit changed contracts/designs; independent reviewers inherit the contract and report uncertainty rather than rerunning strategy. |
+| `implementation-final-review` | After focused checks, before broad checks: runtime, tests, examples, build/test behavior, behavior-impacting docs. Entrypoint classifies lightweight/ordinary/high-risk; only demonstrably non-semantic changes may omit independent review. |
+| `code-change-verification` | Final SDK stack for `packages/`, `examples/`, `helpers/`, `scripts/`, `integration-tests/`, or root build/test config (`package.json`, lock/workspace files, `tsconfig*`, `tsc-multi.json`, ESLint/Vitest config). Skill owns command order, installation/build barriers, sandbox/capacity checks, and retries. Lightweight review does not waive it. |
+| `changeset-validation` | Any `packages/` or `.changeset/` change: create/validate changesets for every changed package, with Conventional Commit summaries. Final validation follows review, alongside SDK verification, before handoff. |
+| `openai-knowledge` | External evidence for OpenAI API/platform behavior. Use local code for SDK-owned behavior; do not repeat unchanged external research for local details. |
+| `pr-draft-summary` | After review, changeset validation, and verification: local draft for runtime, tests, examples, build/test changes, or behavior-impacting docs, including uncommitted work. |
 
-Continue authorized local work through fixes, applicable review, verification, and handoff. Stop for a concrete unresolved contract or scope decision, missing authority, or an external blocker. When a skill causes a stop, identify the exact instruction and explain the missing decision; do not ask for a generic continuation prompt. Never push, open a PR, or otherwise mutate GitHub.
+- Planning/investigation/report-only work skips implementation review. Repo-meta uses applicable skill validation; changed decision-making guidance requires realistic scenarios and an independent pass.
+- Docs-only/repo-meta skips the final SDK stack unless build/test behavior changes or the user requests it.
+- Automatic drafts exclude repo-meta, non-behavioral docs, conversation-only work, and user opt-outs. Explicit draft requests override exclusions; drafts authorize no Git mutation.
+- Continue authorized fixes, review, verification, and handoff. Stop only for unresolved scope/contracts, missing authority, or external blockers; cite the blocking skill instruction and missing decision. Never ask for generic continuation or mutate GitHub.
 
 ### Documentation Change Verification Tiers
 
-Classify the complete task-owned diff, including committed, staged, unstaged, and task-owned untracked files, by the highest applicable documentation risk tier. This section is the source of truth for documentation-specific verification; skills that edit or audit docs must reference these tiers instead of defining a second verification policy. These tiers add focused documentation checks only. They do not change the existing eligibility rules for `$implementation-final-review`, `$code-change-verification`, `$changeset-validation`, or `$pr-draft-summary`.
+Apply the highest tier across the complete task-owned diff: committed, staged, unstaged, and untracked. Skills must reference this policy, not duplicate it. These checks supplement all applicable skill gates.
 
-- **Editorial**: Changes only spelling, grammar, punctuation, formatting, or wording that preserves the exact technical meaning. The complete diff must not change technical claims, links, anchors, frontmatter, snippets, snippet imports, navigation, Astro configuration, or generators. Run `git diff --check` and Prettier check for the changed Markdown or MDX files. Skip `pnpm docs:build`, `pnpm -F docs-code build-check`, and independent behavior review unless another changed path or existing eligibility rule requires them.
-- **Content**: Changes technical claims, API names, defaults, behavior descriptions, links, anchors, frontmatter, snippet imports, rendered snippet wiring, or TypeScript/TSX sources under `examples/docs/`. Verify every changed claim against the implementation or another authoritative source, and write authored English that explicitly names actors, objects, and lifecycle subjects for reliable translation. Run `git diff --check` and Prettier check for the changed authored docs and snippet files. When the diff changes a rendered TypeScript/TSX snippet source or its MDX import/rendering, run `pnpm -F docs-code build-check`. Skip `pnpm docs:build` when the diff has no Structural change.
-- **Structural**: Changes documentation navigation, routes, page layout, `docs/astro.config.mjs`, sidebar configuration, docs build configuration, or documentation and translation generators such as `docs/src/scripts/**`. Run the applicable Content checks, `pnpm docs:build`, and `pnpm docs:scripts:check` when `docs/src/scripts/**` changes. Do not run `pnpm docs:translate` as routine verification; use the manual translation workflow below only when translation work is requested.
+| Tier | Changes | Required checks |
+| --- | --- | --- |
+| Editorial | Spelling/grammar/punctuation/formatting or wording with identical technical meaning; no claims, links, anchors, frontmatter, snippets/imports, navigation, Astro config, or generators changed | `git diff --check`; Prettier on changed Markdown/MDX. No docs build, snippet check, or independent behavior review unless another gate requires it. |
+| Content | Technical claims, API names/defaults/behavior, links, anchors, frontmatter, snippet imports/rendering, or `examples/docs/` TS/TSX | Verify changed claims against implementation/authoritative sources; diff/Prettier checks on changed docs/snippets; `pnpm -F docs-code build-check` for changed rendered TS/TSX sources or wiring. No docs build without Structural changes. |
+| Structural | Navigation, routes, layout, sidebar, Astro/docs-build config, documentation/translation generators | Content checks plus `pnpm docs:build`; `pnpm docs:scripts:check` for `docs/src/scripts/**`. |
 
-For ordinary documentation work in every tier, update authored English docs only. A requested translation refresh is the exception: generated changes under `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, and `docs/src/content/docs/zh` are expected deliverables of the manual workflow below. TypeScript and TSX rendered in docs must continue to live under `examples/docs/`, be imported into MDX with `?raw`, and pass `pnpm -F docs-code build-check` whenever the complete diff changes that snippet source or wiring. If the complete diff also contains runtime code, tests, examples, build/test behavior, behavior-impacting docs, package files, or changesets, run every broader repository gate already required for those paths.
+Edit authored English only unless translation is requested; generated `docs/src/content/docs/{ja,ko,zh}` then becomes expected output. Follow [snippet/authoring rules](#repo-structure--important-files). Never translate as routine verification.
 
 ### Manual Documentation Translation
 
-Translation generation is a manual workflow, not an expected CI step. The translation CI job was deliberately removed as unused in [#1321](https://github.com/openai/openai-agents-js/pull/1321). Current docs CI builds and checks documentation; it does not regenerate translations. Do not wait for CI to generate locale files or restore translation CI merely to complete a requested refresh.
+Use the repository translator, not independent localized rewrites. CI builds/checks docs but does not regenerate translations ([#1321](https://github.com/openai/openai-agents-js/pull/1321)); do not wait for or restore translation CI.
 
-- Use the repository translator for requested translation work rather than independently rewriting localized prose. Run `pnpm docs:translate` from the repository root with the required dependencies, workspace build, and authorized API credentials available. Its default `only-changes` mode uses commit timestamps; a skipped file is not proof that its translation matches the current English source.
-- For a specific source page, use `pnpm docs:translate -- --mode full --file guides/sandbox-agents/clients.mdx`, substituting the requested source-relative path. For a requested complete authored-docs refresh, use `pnpm docs:translate -- --mode full` without a file filter. Full mode covers the authored index, guides, and extensions, not generated API-reference pages.
-- Keep translation runs separate from routine verification because they make API calls and write locale files. Use `OPENAI_MODEL` only when an alternative model is authorized; CI does not enforce a translation model.
-- Preserve completed outputs when recovering an interrupted run. Record the actual command, model, covered and remaining locale/page pairs, and any recovery wrapper or post-generation correction. Distinguish direct CLI generation from calls to the translator's exported functions; do not describe a custom recovery path as an unchanged CLI run.
-- Preserve code, API identifiers, links, canonical heading IDs, and historical aliases. Do not replace generated prose with ad hoc translations. If a narrow correction is needed for valid MDX or unambiguous headings, document it and rerun the existing validation rather than bypassing it.
-- Review the resulting locale diff, apply repository formatting, and run `git diff --check` and `pnpm docs:build`. Apply the documentation tiers above for affected snippets or generator changes and the required independent review for changed technical meaning. Report actual coverage and validation, including partial runs; coordinate publication with the relevant release when translating unreleased English guidance.
+- From repo root, with dependencies, workspace build, and authorized API credentials: `pnpm docs:translate`. Default `only-changes` uses commit timestamps; skipping does not prove freshness.
+- One page: `pnpm docs:translate -- --mode full --file <source-relative-path>`. All authored index/guides/extensions: `pnpm docs:translate -- --mode full` (excludes generated API references).
+- Translation calls APIs and writes locale files. Use `OPENAI_MODEL` overrides only when authorized; CI enforces no model.
+- Preserve completed outputs on interruption; report actual command/model, completed/remaining locale-page pairs, recovery wrappers, and corrections. Distinguish CLI runs from exported-function recovery.
+- Preserve code, API identifiers, links, canonical heading IDs, and historical aliases. Document narrow MDX/heading corrections and rerun validation; do not replace generated prose ad hoc.
+- Review/format locale diffs; run `git diff --check`, `pnpm docs:build`, applicable snippet/generator checks, and independent review for changed technical meaning. Report actual/partial coverage and validation; time unreleased translations to their release.
 
 ### Work Status Reporting
 
-- Use `RUNNING` only in commentary while autonomous work remains and no user action is required. Do not end a turn with a final response that says the task is still running or asks the user to send a generic continuation prompt.
-- Use `COMPLETE` in the final response only when the requested work and every applicable review, verification, and local handoff step are complete.
-- Use `NEEDS_DECISION` in the final response only when progress requires a concrete user choice, expanded authority, or an unresolved external condition. State the exact decision or condition instead of asking the user to say "continue".
+- `RUNNING`: commentary only; autonomous work remains, no user action needed.
+- `COMPLETE`: final only after requested work, review, verification, and handoff.
+- `NEEDS_DECISION`: final only for a specific choice, authority gap, or external blocker.
+- Never end with “still running” or request generic continuation.
 
 ### Git Worktree and Branch Safety
 
-Work in the user's current checkout and on the current branch by default. If the Codex task is already running in a selected Git worktree or primary checkout, use that checkout without requesting additional permission, including for commands that operate on its dependency tree. Do not create or switch to another Git worktree, and do not create or switch branches, unless the user explicitly asks for or approves that exact action in the current conversation. A request to implement, investigate, review, test, or verify changes does not by itself authorize changing the active worktree or branch.
-
-If isolation or a different checkout is needed, explain why and ask the user before changing Git state. This requirement also applies when another rule or workflow recommends a linked worktree: stop and request approval instead of choosing or creating one automatically.
+Use the selected checkout and branch, including its dependency tree, without re-requesting permission. Creating or switching branches/worktrees requires explicit authorization for that action in this conversation; implementation/review/test requests and skill recommendations do not provide it. If isolation is needed, explain why and obtain approval first.
 
 ### pnpm Safety
 
@@ -78,9 +68,7 @@ Use pnpm in the user's selected checkout without changing worktrees or branches.
 
 ### Documentation Release Timing
 
-When a feature or bug fix introduces behavior that is not yet available in the latest published release, do not include `docs/` changes that describe that unreleased behavior in the feature or bug-fix pull request, and do not expect those changes as part of that pull request. Handle them in a separate docs-only pull request so maintainers can coordinate its merge timing with the release that makes the documentation accurate. This exception applies only when the documentation would be incorrect for the latest published release; documentation that is already accurate for released behavior remains part of the normal change scope.
-
-Determine whether documentation is required separately from deciding which pull request should carry it. When required `docs/` content would describe behavior that is not available in the latest published release, classify it as separately timed documentation work rather than a missing deliverable or blocking finding for the feature or bug-fix pull request. This timing rule takes precedence over general documentation-completeness requirements in code-review rules, pull-request guidance, and repository skills. It applies to `docs/` content, not automatically to examples or code-level documentation that ships with the changed API.
+Determine documentation necessity separately from delivery timing. Required `docs/` describing behavior unavailable in the latest published release belongs in a separate docs-only PR timed to that release; record it as deferred work, not a missing deliverable or blocking finding. Docs already accurate for released behavior remain in scope. This rule overrides documentation-completeness requirements in reviews, PR guidance, and skills; it does not automatically defer examples or code-level documentation shipped with the API.
 
 ### Scope Discipline and Complexity Reset
 
@@ -96,93 +84,58 @@ When writing complex features or significant refactors, use an ExecPlan (as desc
 
 ### Finding threshold and supported scope
 
-- Report a runtime defect only when the changed code causes a concrete incorrect behavior on a supported path. State the triggering scenario and the caller-visible, compatibility, security, persistence, or lifecycle consequence; omit the finding when no such consequence can be established.
-- Treat added abstractions, state, validation, compatibility handling, fallback behavior, dependencies, or parallel paths as actionable only when the machinery does not map to the task, a released contract, supported durable state, or a verified runtime or platform risk. Identify the exact unnecessary machinery and recommend the smallest safe removal or direct replacement.
-- Flag runtime validation, compatibility handling, fallback behavior, or tests added only for synthetic or unsupported values when no ordinary supported producer, released contract, durable boundary, or actual untrusted-input path can produce the value with a concrete consequence. Constructibility through TypeScript structural typing, manually fabricated typed objects, monkeypatched state, and direct helper calls that bypass the owning public or wire boundary are not sufficient justification. This includes non-finite or extreme numbers and impossible enum or discriminated-union members unless the exact category is intentionally supported.
-- Do not duplicate client-side runtime validation solely for values already excluded by the public type contract or authoritatively rejected by the upstream provider. Add fail-fast SDK validation only when delayed rejection creates a concrete SDK-owned problem before the authoritative rejection, such as an irreversible side effect, persistent corruption, security or privacy exposure, avoidable billable work, repeated resource consumption, or an error that arrives too late or is too opaque for reasonable correction. A security label alone is insufficient without a complete trace from attacker-controlled input through an actual trust boundary to the protected outcome.
-- Do not report a defect merely because another semantic choice appears cleaner, more symmetric, or easier to explain. When repository evidence does not select one contract, report only a concrete inconsistency with an already supported path or an established caller-visible expectation.
-- Flag a new public option, callback, class, compatibility branch, or parallel execution path when the exact required outcome, including its lifecycle and compatibility constraints, is already available through a reasonable supported API or composition path. Name that path and recommend removal or narrower reuse of the existing source of truth.
-- Report compatibility findings only against behavior shipped in the latest release, an explicitly supported public contract, or a durable external state or protocol boundary. Do not require compatibility shims for unreleased branch-local helpers, same-branch tests, or intermediate persisted formats that are intentionally unsupported.
+- Report runtime defects only with a supported trigger and concrete caller-visible, compatibility, security, persistence, or lifecycle consequence.
+- Flag abstractions, state, validation, compatibility/fallbacks, dependencies, or parallel paths lacking a task requirement, released contract, supported durable state, or verified runtime/platform risk. Identify the machinery and smallest safe removal/replacement.
+- Flag validation/compatibility/fallbacks/tests for synthetic values without a supported producer, released contract, durable boundary, or actual untrusted-input path causing concrete consequences. TypeScript constructibility, fabricated objects, monkeypatches, and helper calls bypassing public/wire owners do not establish support—including extreme/non-finite numbers and impossible enum/union members unless intentionally supported.
+- Do not duplicate public-type exclusions or authoritative provider validation. SDK fail-fast validation requires harm before upstream rejection: irreversible effects, persistent corruption, security/privacy exposure, avoidable billing, repeated resource use, or errors too late/opaque to correct reasonably. Security claims require tracing attacker input through a real trust boundary to the protected outcome.
+- Cleaner semantics or symmetry alone are not defects. If evidence selects no contract, require inconsistency with a supported path or established caller expectation.
+- Flag new options/callbacks/classes/compatibility branches/parallel paths when a reasonable supported API/composition already meets the exact lifecycle and compatibility requirements. Name it; recommend removal or narrower reuse.
+- Compatibility findings require latest-released behavior, an explicit supported public contract, or durable external state/protocol. No shims for unreleased branch-local helpers, same-branch tests, or intentionally unsupported intermediate formats.
 
 ### Contract and lifecycle coverage
 
-- For every added or modified public field, configuration value, event, serialized value, or wire value, inspect all supported construction, forwarding, adapter, and consumption paths. Flag partial implementations where normal, specialized, default, missing-value, or error paths silently drop, reshape, or reject the value inconsistently. Include intended public imports and generated package surfaces when they are part of the changed contract.
-- Require parity across streaming and non-streaming, sync and async, initial and resumed, direct and wrapped, or provider-specific paths only when the accepted requirement or existing contract covers those paths. Do not report missing parity solely for API symmetry or conceptual similarity.
-- When changed code mutates shared state across an `await`, callback, retry, reconnect, cancellation, cleanup, or rollback boundary, check whether stale or failing work can overwrite, revert, or dispose state owned by surviving work. Report the concrete interleaving and the missing ownership, generation, identity, transaction, revalidation, or serialization invariant at the actual mutation boundary; sequential happy-path tests are insufficient.
-- When a new validation or failure path can run after resources or observable state are acquired, verify cleanup explicitly and preserve the primary failure. Report concrete leaked resources, stale state, lost handlers, or survivor corruption rather than assuming normal teardown runs after failed construction or context entry.
-- Flag persisted, resumed, serialized, provider-controlled, or manifest data that is treated as authority for a host-owned runtime, security, identity, or cleanup decision unless the supported trust boundary explicitly grants that authority. Preserve trusted current configuration and validate untrusted state before it can affect side effects, replay, or resource ownership.
+- Trace every changed public/config/event/serialized/wire value through supported construction, forwarding, adapters, consumption, public imports, and generated surfaces. Check normal/specialized/default/missing/error paths for inconsistent dropping, reshaping, or rejection.
+- Require streaming/non-streaming, sync/async, initial/resumed, direct/wrapped, or provider parity only where requirements/contracts demand it; symmetry is insufficient.
+- Across awaits, callbacks, retries, reconnects, cancellation, cleanup, and rollback, check whether stale/failing work overwrites, reverts, or disposes survivor-owned state. Report the concrete interleaving and missing ownership/generation/identity/transaction/revalidation/serialization invariant at mutation; sequential happy-path tests are insufficient.
+- New failures after acquisition must clean up resources/state and preserve the primary failure. Report concrete leaks, stale state, lost handlers, or survivor corruption; do not assume failed construction/context entry invokes teardown.
+- Flag persisted/resumed/serialized/provider/manifest data authorizing host-owned runtime/security/identity/cleanup decisions unless the supported trust boundary grants it. Preserve trusted current configuration; validate before side effects, replay, or resource ownership.
 
 ### Test and documentation evidence
 
-- Treat tests as contract evidence only when they exercise the highest stable caller-visible boundary that controls the observable result and derive expected behavior from the requirement, released behavior, a worked example, a baseline, or another independent oracle. Do not accept helper-only call-shape assertions or expected values recomputed with the implementation's own logic when another layer owns the outcome.
-- Require representative regression coverage for the accepted behavior and intentionally unsupported category. For concurrency findings, require controlled completion ordering plus assertions about the surviving operation and final shared state. Do not request exhaustive tests for every constructible permutation.
-- Report missing documentation or examples only when the patch makes existing guidance materially false, unsafe, or misleading; correct use depends on a non-obvious migration, compatibility boundary, constraint, or operational warning; or the accepted feature would otherwise be practically unusable. Do not report optional completeness or discoverability improvements as blocking findings.
-- Decide `docs/` delivery timing separately from documentation necessity. If required `docs/` content would describe behavior unavailable in the latest published release, apply [Documentation Release Timing](#documentation-release-timing): record it as separately timed work, and do not report its absence as a blocking finding for the feature or bug-fix pull request. This exception does not automatically defer examples or code-level documentation that ships with the changed API.
-- Do not report formatting, lint, full-suite status, commit history, or pull-request description quality as code findings; those are CI or repository-readiness conditions.
+- Contract tests must exercise the highest stable caller-visible boundary controlling the result and use independent expectations: requirements, released behavior, worked examples, or baselines. Helper call-shape assertions or implementation-derived expectations are insufficient when another layer owns the outcome.
+- Cover representative accepted behavior and intentionally unsupported categories, not every constructible permutation. Concurrency tests control completion order and assert survivor behavior plus final shared state.
+- Require docs/examples only for materially false/unsafe/misleading guidance, non-obvious migration/compatibility/constraints/operational warnings, or otherwise unusable features. Optional completeness/discoverability is nonblocking.
+- Apply [Documentation Release Timing](#documentation-release-timing) separately from necessity.
+- Formatting, lint, full-suite status, commit history, and PR-description quality are readiness conditions, not code findings.
 
 ### Review scope
 
-- Review the complete diff from the merge base of the intended target branch, or from the latest release tag when it is the compatibility baseline, not only the latest incremental fix. Passing tests do not justify branch-local machinery that no longer matches the original requirement.
-- Keep findings scoped to consequences introduced, exposed, or worsened by the patch. Do not block on unrelated cleanup, pre-existing bugs, optional refactors, or speculative extensibility merely discovered while reading adjacent code. A pre-existing condition is in scope when the patch newly reaches it on a supported path, relies on it for correctness, or otherwise makes its consequence part of the changed behavior.
-- Require a broader refactor only when concrete evidence shows the focused change would otherwise remain incorrect, unsafe, incompatible, or dependent on duplicated sources of truth that can observably diverge.
+- Review the complete merge-base diff, or latest-release baseline for compatibility—not only incremental fixes. Passing tests do not justify machinery outside the original requirement.
+- Findings must concern consequences introduced, exposed, or worsened by the patch. Pre-existing issues qualify when newly reached on supported paths, relied upon for correctness, or made consequential by the change; unrelated cleanup, bugs, optional refactors, and speculative extensibility do not.
+- Broader refactors require evidence that a focused fix remains incorrect, unsafe, incompatible, or dependent on observably divergent duplicated sources of truth.
 
 ## Project Structure Guide
 
 ### Overview
 
-The OpenAI Agents JS repository is a pnpm-managed monorepo that provides:
-
-- `packages/agents`: A convenience bundle exporting core and OpenAI packages.
-- `packages/agents-core`: Core abstractions and runtime for agent workflows.
-- `packages/agents-openai`: OpenAI-specific bindings and implementations.
-- `packages/agents-realtime`: Realtime bindings and implementations.
-- `packages/agents-extensions`: Extensions for agent workflows.
-- `docs`: Documentation site powered by Astro.
-- `examples`: Sample projects demonstrating usage patterns.
-- `scripts`: Automation scripts (`dev.mts`, `embedMeta.mts`).
-- `helpers`: Shared utilities for testing and other internal use.
+See [CONTRIBUTING.md#repository-structure](CONTRIBUTING.md#repository-structure) for package/directory roles, [README.md](README.md) for installation and overview, and [package.json](package.json) for commands. Packages have their own `package.json`, `src/`, `test/`, and build scripts; examples have their own package/start scripts. Workspace membership lives in `pnpm-workspace.yaml`; TypeScript, Vitest, and ESLint settings live in `tsconfig.json`/`tsc-multi.json`, `vitest.config.ts`, and `eslint.config.mjs`. Shared test utilities are in `helpers/tests/`. Root `pnpm dev` runs package watchers and docs together; `scripts/embedMeta.mts` generates package `src/metadata.ts` before builds.
 
 ### Repo Structure & Important Files
 
-- `packages/agents-core/`, `packages/agents-openai/`, `packages/agents-realtime/`, `packages/agents-extensions/`: Each has its own `package.json`, `src/`, `test/`, and build scripts.
-- `docs/`: Documentation source; develop with `pnpm docs:dev` or build with `pnpm docs:build`. Write and review authored English source docs for reliable translation: explicitly name actors, objects, and lifecycle subjects; avoid ambiguous pronouns and slash-compressed concepts; preserve exact API identifiers and established SDK terminology; and do not weaken or strengthen technical claims merely to simplify translation. Translated docs under `docs/src/content/docs/ja`, `docs/src/content/docs/ko`, and `docs/src/content/docs/zh` are generated via `pnpm docs:translate` for requested manual refreshes; follow Manual Documentation Translation above rather than expecting CI to update them.
-- Every TypeScript or TSX snippet shown in authored docs must come from a compilable source file under `examples/docs/`, be imported into MDX with `?raw`, and pass `pnpm -F docs-code build-check`. Do not add ad hoc TypeScript or TSX fenced blocks directly to MDX. If an example is not useful enough to maintain and build-check as a complete source file, explain the behavior in prose instead. Do not add artificial runtime side effects, such as `console.log`, solely to mark declarations as used; the `examples/docs/` TypeScript project permits unused declarations so documentation examples can stay focused on the behavior they teach.
-- `examples/`: Subdirectories (e.g. `basic`, `agent-patterns`) with their own `package.json` and start scripts.
-- Root `pnpm dev`: Runs package build-watchers and the docs dev server in parallel using pnpm.
-- `scripts/embedMeta.mts`: Generates `src/metadata.ts` for each package before build.
-- `helpers/tests/`: Shared test utilities.
-- `.agents/references/`: Durable SDK maintainer architecture references. Start with [the reference map](.agents/references/README.md) and open only the files relevant to the affected boundary.
-- `README.md`: High-level overview and installation instructions.
-- `CONTRIBUTING.md`: Official contribution guidelines (this guide is complementary).
-- `pnpm-workspace.yaml`: Defines workspace packages.
-- `tsconfig.json`, `tsc-multi.json`: TypeScript configuration.
-- `vitest.config.ts`: Test runner configuration.
-- `eslint.config.mjs`: ESLint configuration.
-- `package.json` (root): Common scripts (`build`, `test`, `lint`, `dev`, `docs:dev`, `examples:*`).
+- Docs: `pnpm docs:dev` / `pnpm docs:build`. English must name actors, objects, and lifecycle subjects; avoid ambiguous pronouns/slash compression. Preserve API identifiers, SDK terminology, and technical strength for translation. Refresh locales only through [Manual Documentation Translation](#manual-documentation-translation).
+- Render TS/TSX only from compilable `examples/docs/` files imported with `?raw`; no ad hoc MDX fences. Changed snippet sources/wiring require `pnpm -F docs-code build-check`. Use prose if an example is not worth maintaining/build-checking. Unused declarations are allowed; never add runtime effects merely to use them.
 
 ### Agents Core Runtime Guidelines
 
-- For public exports, convenience-package re-exports, ESM/CJS/types, optional dependencies, import side effects, or Node/browser/workerd shims, read [Public API, package, and runtime boundaries](.agents/references/public-api-package-and-runtime-boundaries.md).
-- For Agent configuration, cloning, dynamic instructions, enabled tools/handoffs, nested agent tools, run context, usage, or public-versus-prepared identity, read [Agent definition and run context](.agents/references/agent-definition-and-run-context.md).
+Before changing or reviewing a runtime boundary, read the matching entries in [the architecture reference map](.agents/references/README.md), then only the relevant references. The map owns routing for public/package/runtime APIs, Agent/context, runner and item lifecycles, schemas/Zod, conversation/session/RunState ownership, tool identity/execution, MCP, providers, tracing, Realtime, sandbox, and extensions.
+
 - `packages/agents-core/src/run.ts` is the runtime entrypoint; keep it small and focused on orchestration.
 - Add new runtime logic under `packages/agents-core/src/runner/`, organized by responsibility, then import into `run.ts`.
 - When `run.ts` grows, refactor helpers into `runner/` modules and leave only wiring and composition in `run.ts`.
 - Keep `packages/agents-core/src/agent.ts` focused on the Agent class and its type definitions; move helper logic into dedicated modules (for example, `agentToolInput.ts`).
-- For turn accounting, guardrail order, handoffs, interruption, cancellation, hooks, final output, or streaming behavior, read [Runner lifecycle](.agents/references/runner-lifecycle.md). Keep streaming and non-streaming paths behaviorally aligned.
-- For new model output, tool call, approval, or run-item variants, read [Run item and stream lifecycle](.agents/references/run-item-and-stream-lifecycle.md) and update every applicable processing, event, replay, persistence, tracing, serialization, and adapter surface.
-- For function-tool parameters, structured output, strict JSON Schema conversion, Zod v3/v4, or provider schema conversion, read [Schema and Zod boundaries](.agents/references/schema-and-zod-boundaries.md).
-- For `conversationId`, `previousResponseId`, explicit replay, filtering, continuation, compaction strategy, retry, or resume, read [Conversation state ownership](.agents/references/conversation-state-ownership.md).
-- For session callbacks, stored input, history mutation, per-turn writes, rollback, or compaction replacement, read [Session persistence](.agents/references/session-persistence.md).
-- For serialized RunState, approvals, agent/tool reconstruction, traces, conversation IDs, or sandbox state, read [RunState schema and resume](.agents/references/runstate-schema-and-resume.md). Bump a released schema when its durable meaning changes; unreleased post-tag versions may be folded into the same next schema when no supported snapshot consumer exists.
-- For tool names, namespaces, lookup, call IDs, approvals, collisions, deferred tools, MCP names, or trace labels, read [Tool identity and routing](.agents/references/tool-identity-and-routing.md) and use the canonical helpers in `toolIdentity.ts` and `tooling.ts`.
-- For tool planning, approvals, guardrails, concurrency, aborts, timeouts, hooks, failure conversion, nested agent tools, or tool-choice reset, read [Tool execution and approval lifecycle](.agents/references/tool-execution-and-approval-lifecycle.md).
-- For local MCP connections, stdio/SSE/streamable HTTP, requests, cache/filtering, retries, cancellation, or cleanup, read [MCP transport, cache, and shims](.agents/references/mcp-transport-cache-and-shims.md).
-- For model resolution, settings merge, Responses/Chat Completions conversion, provider data, raw events, retries, transport reuse, or Responses WebSocket sessions, read [Model, provider, and conversion boundaries](.agents/references/model-provider-and-conversion-boundaries.md).
-- For trace/span context, processors, export, flush, shutdown, resume, runtime storage, usage, or sensitive data, read [Tracing and runtime context](.agents/references/tracing-and-runtime-context.md).
-- For Realtime agent/session state, response sequencing, tools, guardrails, history, handoffs, listeners, or cleanup, read [Realtime session lifecycle](.agents/references/realtime-session-lifecycle.md).
-- For WebRTC, WebSocket, SIP, Twilio, Cloudflare, connection state, audio formats, transcripts, or Realtime event payloads, read [Realtime transport, audio, and events](.agents/references/realtime-transport-audio-and-events.md).
-- For sandbox preparation, sessions, manifests, mounts, path grants, snapshots, credentials, timeout, resume, process execution, or cleanup, read [Sandbox runtime and provider boundaries](.agents/references/sandbox-runtime-and-provider-boundaries.md).
-- For AI SDK model/UI adapters, provider metadata, usage, reasoning, tool-call translation, aborts, or stream completion, read [Extension adapter boundaries](.agents/references/extension-adapter-boundaries.md).
+- Keep streaming and non-streaming behavior aligned. New model-output, tool-call, approval, or run-item variants must update every applicable processing, event, replay, persistence, tracing, serialization, and adapter surface.
+- Bump released RunState schemas when durable meaning changes; unreleased post-tag versions may be consolidated when no supported snapshot consumer exists.
+- Use canonical tool-identity helpers in `toolIdentity.ts` and `tooling.ts`.
 
 ### Runtime and Platform Review Checklist
 
@@ -198,8 +151,7 @@ Use this checklist when the touched code is in the relevant area. Add focused re
 
 ### Prerequisites
 
-- Node.js 22+ recommended.
-- pnpm 10+ (`corepack enable` is recommended to manage versions).
+Use [CONTRIBUTING.md#prerequisites](CONTRIBUTING.md#prerequisites) for supported Node versions and the pnpm version pinned in `package.json`; `corepack enable` is recommended.
 
 ### Development Workflow
 
@@ -219,41 +171,16 @@ Use focused checks during iteration. Add tests for required behavior and concret
 
 ### GitHub-ready Output
 
-Apply these rules to release readiness reports and text requested for pasting into GitHub, including comments, reviews, PR descriptions, and release notes. Ordinary conversational answers do not need this packaging.
+For release-readiness reports and text requested for pasting into GitHub (not ordinary chat):
 
-- Deliver the complete copy-ready artifact in one fenced `markdown` code block so the code-block copy action preserves literal Markdown instead of copying the app's rendered links. Use an outer fence longer than any fence inside the artifact. Honor an explicit request for raw text without fences. Do not wrap the artifact in a blockquote or repeat it as rendered Markdown outside the fence.
-- Keep the copied content valid GitHub-flavored Markdown. Do not include Codex-specific URIs, UI directives, citation markers, or nested or double-escaped link markup. Keep any host-required citations or annotations outside the copyable artifact.
-- Do not include absolute local filesystem paths or local-file links in the artifact. Use repository-relative paths in inline code when file evidence is useful; when the user requests no file paths, name the affected components or documentation sections instead.
-- In copy-ready GitHub text, use native issue and pull-request references: exactly `#123` for this repository and `owner/repo#123` for another repository. Do not qualify same-repository references as `openai/openai-agents-js#123`. Preserve closing forms such as `Fixes #123` or `Resolves #123`. Never wrap these references in Markdown links such as `[PR #123](https://github.com/owner/repo/pull/123)` or `[#123](...)`; those Codex-friendly links require manual cleanup after pasting into GitHub. Use descriptive Markdown links only for external resources or GitHub targets that cannot be expressed as a native issue or pull-request reference.
-- Before sending, inspect the literal content that will be copied: preserve identifiers, native GitHub references, and URL targets; remove app-generated link wrappers and local paths. Rebuild a corrupted link from its original target instead of escaping the rendered wrapper again. A formatting-only reissue preserves the reviewed commits and conclusions and does not imply a fresh remote review.
+- Return one complete fenced `markdown` block with an outer fence longer than any inner fence; honor requests for unfenced raw text. Do not blockquote or repeat rendered content.
+- Use valid GitHub Markdown without Codex URIs/directives, citation markers, or nested/double-escaped links. Keep host-required annotations outside the artifact.
+- Use repository-relative inline-code paths, never absolute/local-file links; omit paths when requested and name components instead.
+- Use native `#123` references for this repo and `owner/repo#123` for others, preserving `Fixes`/`Resolves`. Do not link or qualify same-repo references. Use descriptive links for external resources or targets without native references.
+- Inspect literal copied text for intact identifiers, references, and URL targets; remove app wrappers/local paths and rebuild corrupted links from their original targets. Formatting-only reissues preserve reviewed commits/conclusions and do not imply fresh review.
 
 ### Pull Request & Commit Guidelines
 
-- Add focused regression tests for accepted new behavior when feasible. Update documentation or examples when the change would otherwise make existing guidance materially false, unsafe, or misleading; correct use depends on a non-obvious constraint, migration step, compatibility boundary, or operational warning; or the accepted feature would otherwise be practically unusable. Do not require optional documentation or examples solely for completeness.
-- Determine `docs/` delivery timing separately from documentation necessity. When required `docs/` content would describe behavior that is not yet in the latest published release, leave it out of the feature or bug-fix pull request and treat it as separately timed docs-only work, not as an incomplete current pull request. This exception does not automatically apply to examples or code-level documentation that ships with the changed API.
-- Use **Conventional Commits**:
-  - `feat`: new feature
-  - `fix`: bug fix
-  - `docs`: documentation only
-  - `test`: adding or fixing tests
-  - `chore`: build, CI, or tooling changes
-  - `perf`: performance improvement
-  - `refactor`: code changes without feature or fix
-  - `build`: changes that affect the build system
-  - `ci`: CI configuration
-  - `style`: code style (formatting, missing semicolons, etc.)
-  - `types`: type-related changes
-  - `revert`: reverts a previous commit
-- Commit message format:
+Apply [Test and documentation evidence](#test-and-documentation-evidence), [Documentation Release Timing](#documentation-release-timing), and the changeset skill trigger above. Add focused regression tests for accepted new behavior when feasible.
 
-  ```
-  <type>(<scope>): <short summary>
-
-  Optional longer description.
-  ```
-
-- Keep summary under 80 characters.
-- If your change affects the public API, add a Changeset via:
-  ```bash
-  pnpm changeset
-  ```
+Use Conventional Commits: `<type>(<scope>): <short summary>`, optional body; summary under 80 characters. Types: `feat` (feature), `fix` (bug), `docs`, `test`, `chore` (tooling/build/CI), `perf`, `refactor` (no feature/fix), `build`, `ci`, `style`, `types`, `revert`. Add changesets with `pnpm changeset`.
