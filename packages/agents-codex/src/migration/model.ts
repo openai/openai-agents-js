@@ -160,7 +160,13 @@ function textContent(content: JsonValue | undefined): string {
     })
     .join('\n');
 }
-function roster(body: JsonObject, tools: readonly SerializedFunctionTool[]) {
+type NativeRestore = 'checkpoint' | 'storage';
+
+function roster(
+  body: JsonObject,
+  tools: readonly SerializedFunctionTool[],
+  restore?: NativeRestore,
+) {
   if (!Array.isArray(body.tools) || body.tools.length !== tools.length)
     throw new TypeError('Migration native tool roster changed');
   const seen = new Set<string>();
@@ -172,7 +178,9 @@ function roster(body: JsonObject, tools: readonly SerializedFunctionTool[]) {
       !declaration ||
       seen.has(declaration.name) ||
       (tool.namespace != null && tool.namespace !== 'functions') ||
-      tool.strict !== declaration.strict ||
+      // Native checkpoint restore installs non-strict wire specs. The Model
+      // still receives the captured SDK declaration, including its strictness.
+      tool.strict !== (restore === 'checkpoint' ? false : declaration.strict) ||
       tool.description !== declaration.description ||
       !isDeepStrictEqual(tool.parameters, declaration.parameters)
     )
@@ -183,12 +191,20 @@ function roster(body: JsonObject, tools: readonly SerializedFunctionTool[]) {
   }
 }
 
+function assistantPhase(value: JsonValue | undefined) {
+  if (value == null) return undefined;
+  if (value !== 'commentary' && value !== 'final_answer')
+    throw new TypeError('Migration requires a supported assistant phase');
+  return value;
+}
+
 export function modelRequest(
   body: JsonObject,
   tools: readonly SerializedFunctionTool[],
   settings: ModelSettings,
   signal: AbortSignal,
   outputType: ModelRequest['outputType'] = 'text',
+  restore?: NativeRestore,
 ): ModelRequest {
   bounded(body);
   if (
@@ -201,7 +217,7 @@ export function modelRequest(
     );
   if (body.tool_choice != null && body.tool_choice !== 'auto')
     throw new TypeError('Migration requires automatic tool choice');
-  roster(body, tools);
+  roster(body, tools, restore);
   if (!Array.isArray(body.input))
     throw new TypeError('Migration requires a full input list');
   const calls = new Map<
@@ -275,11 +291,13 @@ export function modelRequest(
               })();
       if (item.status != null && item.status !== 'completed')
         throw new TypeError('Migration requires completed assistant history');
+      const phase = assistantPhase(item.phase);
       return {
         ...id,
         type: 'message',
         role: 'assistant',
         status: 'completed',
+        ...(phase === undefined ? {} : { phase }),
         content: parts.map((text) => ({ type: 'output_text', text })),
       };
     }
@@ -288,8 +306,9 @@ export function modelRequest(
       const name = string(item.name, 'function name');
       if (
         calls.has(callId) ||
-        !tools.some((tool) => tool.name === name) ||
-        (item.namespace != null && item.namespace !== 'functions')
+        (!restore &&
+          (!tools.some((tool) => tool.name === name) ||
+            (item.namespace != null && item.namespace !== 'functions')))
       )
         throw new TypeError(
           'Migration requires unambiguous captured function calls',
@@ -402,6 +421,7 @@ function usageWire(usage: Usage): JsonObject {
 export function modelResponse(
   response: ModelResponse,
   tools: readonly SerializedFunctionTool[],
+  historicalCalls?: ReadonlySet<string>,
 ) {
   bounded(response);
   if (
@@ -423,13 +443,16 @@ export function modelResponse(
           throw new TypeError('Migration requires completed text output');
         return { type: 'output_text', text: part.text, annotations: [] };
       });
-      return {
+      const phase = assistantPhase(item.phase);
+      const message: JsonObject = {
         type: 'message',
         id: item.id ?? `msg_${randomUUID()}`,
         role: 'assistant',
         status: 'completed',
         content,
       };
+      if (phase !== undefined) message.phase = phase;
+      return message;
     }
     if (
       item.type === 'function_call' &&
@@ -439,6 +462,10 @@ export function modelResponse(
     ) {
       if (callIds.has(item.callId))
         throw new TypeError('Migration requires unique call IDs');
+      if (historicalCalls?.has(item.callId))
+        throw new TypeError(
+          'Migration requires fresh native function call IDs',
+        );
       callIds.add(item.callId);
       decode(jsonObject, item.arguments);
       return {
@@ -552,6 +579,7 @@ export class SelectedModelInvocation<
   rawModelEvent?: (event: StreamEvent) => void;
   validateApprovalResponse?: (response: ModelResponse) => void;
   model?: Model;
+  nativeCallIds?: Set<string>;
   handoff?: NativeHandoffState<Context, Output>;
   constructor(
     readonly tools: readonly SerializedFunctionTool[],
@@ -560,6 +588,7 @@ export class SelectedModelInvocation<
     private readonly runContext: Pick<RunContext<Context>, 'usage'>,
     readonly outputType: ModelRequest['outputType'] = 'text',
     private readonly sessionInput?: ReturnType<typeof sessionModelInput>,
+    private readonly restore?: NativeRestore,
   ) {}
   bindRoot(root: string): void {
     this.root = decode(jsonObject, root);
@@ -782,6 +811,7 @@ export class SelectedModelInvocation<
             this.handoff?.settings ?? this.settings,
             signal,
             this.outputType,
+            this.restore,
           );
           if (this.sessionInput)
             initial.input = this.sessionInput.request(initial.input);
@@ -936,11 +966,16 @@ export class SelectedModelInvocation<
           const result = modelResponse(
             response,
             this.handoff?.allowedTools ?? this.tools,
+            this.nativeCallIds,
           );
           this.validateApprovalResponse?.(result.actual);
           this.sessionInput?.response(result.actual.output);
           await finish();
           this.check();
+          if (this.nativeCallIds)
+            for (const item of result.actual.output)
+              if (item.type === 'function_call')
+                this.nativeCallIds.add(item.callId);
           this.runContext.usage.add(result.actual.usage);
           this.responses.push(result.actual);
           this.handoff?.observe(result.actual);
