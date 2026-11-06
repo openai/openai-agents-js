@@ -872,10 +872,20 @@ type Lifecycle =
   | { kind: 'closed'; completion: Promise<void> };
 type ClosePhase = 'revoke' | 'native' | 'engine' | 'carrier' | 'provider';
 
+/** A view of the active model context issued by an idle Session. */
+export interface ModelContextSnapshot {
+  /** Detached Responses-shaped JSON items in native context order. */
+  readonly items: readonly JsonObject[];
+}
+
 /** Replace idle model context without making a summarizing model request. */
 export interface SuppliedCompactionOptions {
   readonly summary: string;
   readonly signal?: AbortSignal;
+  /** A current snapshot from this Session. Supply it together with retain. */
+  readonly snapshot?: ModelContextSnapshot;
+  /** Zero-based item indices. Supply both indices for any retained tool pair. */
+  readonly retain?: readonly number[];
 }
 
 type ContextChange = Awaited<ReturnType<NativeThread['_begin_context_change']>>;
@@ -1063,6 +1073,10 @@ export class Session<OutputT = string, Context = unknown> {
   readonly #modelApiKey?: string;
   private contextReplacement?: ContextReplacement;
   private replacingNative?: NativeThread;
+  readonly #modelContextSnapshots = new WeakMap<
+    ModelContextSnapshot,
+    { source: NativeThread; payload: string; length: number }
+  >();
 
   constructor(
     engine: Engine,
@@ -7262,6 +7276,27 @@ export class Session<OutputT = string, Context = unknown> {
   _rootHistory() {
     return this.#readHistory();
   }
+
+  /** Read the settled root model context for use with supplied compaction. */
+  async modelContext(): Promise<ModelContextSnapshot> {
+    this.checkCallbackOperation('read model context from');
+    this.idle('modelContext');
+    return this.mutate(async () => {
+      const source = this.#native;
+      const payload = await source._read_model_context();
+      if (this.lifecycle.kind !== 'mutation')
+        throw new NativeError('Session closed during model context capture');
+      const { items }: ModelContextSnapshot = JSON.parse(payload);
+      const snapshot = { items };
+      this.#modelContextSnapshots.set(snapshot, {
+        source,
+        payload,
+        length: items.length,
+      });
+      return snapshot;
+    });
+  }
+
   async compact(options?: SuppliedCompactionOptions): Promise<void> {
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
@@ -7271,7 +7306,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('compact');
     this.idle('compact');
     if (options !== undefined) {
-      const { summary, signal } = options;
+      const { summary, signal, snapshot, retain } = options;
       if (typeof summary !== 'string' || !summary.trim())
         throw new TypeError('Compaction summary must be nonempty text');
       signal?.throwIfAborted();
@@ -7287,7 +7322,31 @@ export class Session<OutputT = string, Context = unknown> {
         throw new NativeError(
           'Supplied compaction requires settled child callbacks',
         );
-      await this.mutate(() => this.replaceContext(summary, signal));
+      if ((snapshot === undefined) !== (retain === undefined))
+        throw new TypeError('Supply snapshot and retain together');
+      const captured =
+        snapshot === undefined
+          ? undefined
+          : this.#modelContextSnapshots.get(snapshot);
+      if (snapshot !== undefined && !captured)
+        throw new TypeError(
+          'Snapshot must come from this Session.modelContext()',
+        );
+      if (captured && captured.source !== this.#native)
+        throw new NativeError('Model context snapshot is stale');
+      const indices: number[] = [];
+      if (captured) {
+        if (!Array.isArray(retain))
+          throw new TypeError('retain must be an array of item indices');
+        for (const index of retain) {
+          if (!Number.isInteger(index) || index < 0 || index >= captured.length)
+            throw new RangeError('Retained index is outside the model context');
+          indices.push(index);
+        }
+      }
+      await this.mutate(() =>
+        this.replaceContext(summary, signal, indices, captured?.payload),
+      );
       return;
     }
     await this.beginCompaction().wait();
@@ -7610,7 +7669,9 @@ export class Session<OutputT = string, Context = unknown> {
 
   private async replaceContext(
     summary: string,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    retainedIndices: number[],
+    capturedContext: string | undefined,
   ): Promise<void> {
     const owner: ContextReplacement = {
       source: this.#native,
@@ -7633,7 +7694,13 @@ export class Session<OutputT = string, Context = unknown> {
       beforeRetirement();
       owner.change = await owner.source._begin_context_change();
       beforeRetirement();
-      const checkpoint = await owner.change.prepare(summary);
+      if (capturedContext !== undefined) {
+        const current = await owner.change.context();
+        beforeRetirement();
+        if (current !== capturedContext)
+          throw new NativeError('Model context snapshot is stale');
+      }
+      const checkpoint = await owner.change.prepare(summary, retainedIndices);
       const current = decode(
         z.object({
           instructions: z.string(),
