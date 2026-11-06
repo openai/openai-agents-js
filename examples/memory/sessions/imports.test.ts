@@ -3,13 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 
-// Prisma 7 does not generate this module during installation. File-backed
-// sessions must remain usable before the Prisma example has been prepared.
-vi.mock('@prisma/client', () => {
-  throw new Error('Prisma client has not been generated');
+vi.mock('node:sqlite', () => {
+  throw new Error('FileSession should not load node:sqlite');
 });
 
-it('uses FileSession through the shared exports without a generated Prisma client', async () => {
+it('uses FileSession through the shared exports without loading SQLite', async () => {
   const { FileSession } = await import('./index');
   const directory = await mkdtemp(join(tmpdir(), 'agents-file-import-'));
   try {

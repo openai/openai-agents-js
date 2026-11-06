@@ -35,7 +35,6 @@ export const SERVER_COMMAND_KEYWORDS = [
 export const SERVER_PATH_KEYWORDS = ['realtime', 'nextjs'];
 export const AUDIO_PATH_KEYWORDS = ['realtime', 'voice', 'audio'];
 export const EXTERNAL_COMMAND_KEYWORDS = [
-  'prisma',
   'redis',
   'twilio',
   'dapr',
@@ -64,7 +63,7 @@ export const DEFAULT_INTERACTIVE_INPUTS = new Map([
   ['memory:start:file', 'n\n'],
   ['memory:start:memory', 'n\n'],
   ['memory:start:oai', 'n\n'],
-  ['memory:start:prisma', 'n\n'],
+  ['memory:start:sqlite', 'n\n'],
   ['mcp:start:hosted-mcp-human-in-the-loop', 'y\n'],
   ['mcp:start:tool-filter', 'n\n'],
 ]);
