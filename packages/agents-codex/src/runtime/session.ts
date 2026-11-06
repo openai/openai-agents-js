@@ -7221,6 +7221,10 @@ export class Session<OutputT = string, Context = unknown> {
       await this.#native.read_thread_history(subagentId ?? null),
     );
   }
+  /** @internal Read the root rollout, including records omitted from Model input. */
+  _rootHistory() {
+    return this.#readHistory();
+  }
   async compact(options?: SuppliedCompactionOptions): Promise<void> {
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)

@@ -59,6 +59,12 @@ import { runWithApproval, type HeldApprovalOwner } from './approvals';
 import type { StreamEvent } from '@openai/agents-core';
 import { nativeCarrier, sdkInputItems } from './input';
 import { captureCompletedHistory } from './history';
+import {
+  captureNativePersistence,
+  recordedCallIds,
+} from './native-persistence';
+import { assertOutputState, type SessionState } from '../runtime/state';
+import { persistentSessionConfig } from '../runtime/config';
 import type {
   MigrationRunOptions,
   MigrationRunResult,
@@ -160,6 +166,11 @@ export function capture<Context, Output extends AgentOutputType = 'text'>(
         'context',
         'session',
         'sessionInputCallback',
+        'state',
+        'storage',
+        'resume',
+        'reconciledCalls',
+        'returnState',
         'signal',
         'model',
         'modelProvider',
@@ -330,6 +341,21 @@ export function capture<Context, Output extends AgentOutputType = 'text'>(
   if (typeof agent.resetToolChoice !== 'boolean')
     reject('requires a boolean resetToolChoice');
   const finishBehavior = captureFinishBehavior(agent.toolUseBehavior);
+  const persistence = captureNativePersistence(options);
+  if (persistence.enabled) {
+    if (
+      options.session !== undefined ||
+      options.sessionInputCallback !== undefined
+    )
+      reject('requires one persistence source');
+    if (typeof sdkInput !== 'string')
+      reject('requires fresh text input with native persistence');
+    if (agent.handoffs.length)
+      reject('does not support handoffs with native persistence');
+    if (persistence.returnState && agent.toolUseBehavior !== 'run_llm_again')
+      reject('requires native turn completion to return portable state');
+    assertOutputState(persistence.sessionOptions.state, output.native.identity);
+  }
   const enabledNames = new Set(tools.map((tool) => tool.declaration.name));
   validateToolChoice(options.modelSettings?.toolChoice, enabledNames);
   validateToolChoice(settings.toolChoice, enabledNames);
@@ -347,6 +373,7 @@ export function capture<Context, Output extends AgentOutputType = 'text'>(
     modelProvider,
     modelInvocation,
     sessionStore: options.session,
+    persistence,
     sessionInputCallback: options.sessionInputCallback,
     hooks,
     inputGuardrails,
@@ -524,6 +551,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
       (Array.isArray(captured.sdkInput)
         ? sessionModelInput(captured.sdkInput, [])
         : undefined),
+    captured.persistence.restore,
   );
   if (handoff && target) {
     invocation.handoff = new NativeHandoffState(
@@ -601,6 +629,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
   // openSession erases the prepared-output generic; this owner supplies its captured parser.
   let session: Session<ResolvedAgentOutput<Output>> | undefined;
   let finalOutput: ResolvedAgentOutput<Output> | undefined;
+  let state: SessionState | undefined;
   let policyOutput: string | undefined;
   let nativeInfo: MigrationRunResult['native'] | undefined;
   let policyFinished = false;
@@ -957,6 +986,9 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
             include_environment_context: false,
             'agents.enabled': false,
             'features.goals': false,
+            ...(captured.persistence.sessionOptions.localStorage
+              ? persistentSessionConfig
+              : {}),
             'tools.update_plan.enabled': false,
             mcp_servers: {},
             'features.non_prefixed_mcp_tool_names': false,
@@ -968,6 +1000,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
           },
           runtime: {
             ...home,
+            ...captured.persistence.runtime,
             _sdk_selected_model: true,
             strict_config: true,
             loader: { ignore_user_config: true, ignore_project_config: true },
@@ -976,6 +1009,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
               'Follow the application instructions and use only the supplied tools.',
           },
           threadOptions: {
+            ...captured.persistence.threadOptions,
             tool_policy: {
               allowed_tools: catalog.tools.map((tool) => ({
                 name: tool.name,
@@ -985,6 +1019,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
           },
         },
         {
+          ...captured.persistence.sessionOptions,
           context: captured.context,
           output: captured.output.native,
           selectedModel: invocation,
@@ -1007,6 +1042,10 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
     invocation.cancelNative = () => {
       void session!.interrupt({ scope: 'root', mode: 'force' }).catch(() => {});
     };
+    if (captured.persistence.enabled)
+      invocation.nativeCallIds = captured.persistence.restore
+        ? recordedCallIds(await session._rootHistory())
+        : new Set();
     invocation.check();
     const turn = await session.submit(captured.input, { ifBusy: 'reject' });
     const nativeResult = turn.wait().then(
@@ -1029,6 +1068,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
         usage: outcome.value.usage,
       };
       await finalize();
+      if (captured.persistence.returnState) state = await session.saveState();
     } else {
       invocation.check();
       await turn.cancel({ mode: 'force' });
@@ -1133,6 +1173,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
       toolInputGuardrailResults: Object.freeze(toolInputGuardrailResults),
       toolOutputGuardrailResults: Object.freeze(toolOutputGuardrailResults),
       native: Object.freeze(nativeInfo!),
+      ...(state === undefined ? {} : { state }),
     },
     invocation.handoff?.agent ?? agent,
     runContext,

@@ -89,5 +89,5 @@ See [the guarded migration example](../migration-guardrails.ts) for a scripted M
 Choose `@openai/agents/classic` when your application needs any of these features.
 
 - MCP, broader approval workflows, or delegation beyond the [supported tools and handoffs](migrate-tools.md).
-- Full classic streaming, `RunState` results, or resume behavior beyond [completed Session history](migrate-sessions.md).
+- Full classic streaming or `RunState` results and resume. See [session migration](migrate-sessions.md) for the adapter's persistence options.
 - Other structured-output schemas, media inputs, stores, model settings, or parser behavior outside this guide's supported subset.

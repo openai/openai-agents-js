@@ -109,7 +109,18 @@ async function main() {
         const turns = [];
         for await (const turn of session.turns({ subagentId: child.id }))
           turns.push(turn.id);
-        children.push({ id: child.id, turns });
+        const items = await Array.fromAsync(
+          session.items({ subagentId: child.id }),
+        );
+        const completedText = JSON.stringify(
+          items.filter(
+            (item) =>
+              item.type === 'message' &&
+              item.role === 'assistant' &&
+              item.status === 'completed',
+          ),
+        );
+        children.push({ id: child.id, turns, completedText });
       }
       process.send?.({ type: 'history', children });
     }

@@ -1,6 +1,6 @@
 # Stream a migrated run and reuse completed history
 
-Use `SDKRunner.stream()` to display Model events during a supported text run. Use an application-owned classic Session when you need completed conversation items for a later run. The application retains ownership of its history store.
+Use `SDKRunner.stream()` to display Model events during a supported text run. To reopen a native conversation, use a portable checkpoint or native storage. Use a classic Session to share completed items with the classic Runner.
 
 Start with the [model and runtime prerequisites](migrate-models.md). Both examples use scripted Models and need no model credentials.
 
@@ -44,6 +44,22 @@ On overflow, the adapter fails explicitly, discards pending raw delivery, reques
 Cancel through the supplied AbortSignal, a raw reader or iterator, or a pending semantic reader. There is no public `live.cancel()` method. Reader cancellation can close delivery before an outstanding Model `next()`, iterator `return()`, tool or guard callback finishes. Always await `live.completed` on cancellation and error paths to join that work.
 
 The native execution owner keeps the actual outcome. A late cancellation request cannot revoke a successful result. Failed cleanup can reject `completed` with `MigrationCleanupError` even when raw delivery already reported an earlier cancellation reason. An uncooperative callback can keep completion pending.
+
+## Reopen native history with a selected Model
+
+Pass fresh text and explicit context when using native persistence. On each open, provide the current Agent, Model or ModelProvider, and tool callbacks. The runtime keeps the native session ID and opens a new turn. The selected Model receives the retained conversation context. Completed calls and results provide context without running the old callbacks again. The migration result contains the current invocation's input and output.
+
+| Persistence | First run | Later run |
+| --- | --- | --- |
+| [Idle portable checkpoint](state.md#save-or-suspend-a-session) | Set `returnState: true` and save the completed result's `state`. | Pass `state` and supply matching managed tool declarations and output type. Parse serialized state with `parseSessionState()`. |
+| [Native local profile](local-state.md) | Set `storage: localStorage(directory)` and keep `result.native.sessionId`. | Pass the same storage and the session ID as `resume`. |
+| [Root canonical store](session-store.md) | Set `storage` to a supported `SessionStore`, such as `fileSessionStore(directory)`, and keep `result.native.sessionId`. | Pass the same store and the session ID as `resume`. |
+
+Portable checkpoints cover one idle root. Portable export requires the native turn to complete normally. A held approval keeps the original Model and native writer until the application decides and continues, or cancels the run. The held handle has no portable state. Pending checkpoints and migration handoffs fall outside this persistence contract. Choose one persistence source per run. The classic `session` and `sessionInputCallback` options belong to the completed history path below.
+
+Local profiles use the existing native writer lock and [effect recovery](local-state.md). If opening raises `LocalRecoveryRequired`, verify the effects in application records before supplying `reconciledCalls` on reopen. Custom stores use their [canonical recovery rules](session-store.md#reconcile-an-unresolved-tool-intent). Wait for completion or joined cancellation before reopening. A storage or cleanup error can follow an external effect. Check the recorded outcome before trying the operation again.
+
+For a supported local root with completed native children, reopen it through the native `Agent.session()` API to read child records. List children with `session.subagents()` and read their records with `session.turns({ subagentId })` and `session.items({ subagentId })`. The selected Model runs the root only. Migration Agent tools use separate native roots.
 
 ## Completed Session history
 

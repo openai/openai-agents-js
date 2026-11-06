@@ -7,6 +7,7 @@ import {
 } from './trace-context';
 import { assertOutputState, sessionStateSchema } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
+import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
 import { binding, type JsonObject } from './binding';
@@ -754,13 +755,7 @@ export class Agent<Context = undefined, Output = string> {
       include_environment_context: !!environment,
       'agents.enabled': false,
       'features.goals': declarations.nativeGoals,
-      ...(!persistent
-        ? {}
-        : {
-            'features.apps': false,
-            'features.plugins': false,
-            'features.tool_registry.error_on_tool_collisions': true,
-          }),
+      ...(persistent ? persistentSessionConfig : {}),
       'tools.update_plan.enabled': declarations.checklist,
       mcp_servers: mcpConfig(
         declarations.mcp,

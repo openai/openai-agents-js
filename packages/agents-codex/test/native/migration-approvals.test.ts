@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -21,12 +24,14 @@ import {
   SDKRunner,
   type MigrationApprovalOptions,
 } from '@openai/agents/migration';
+import { localStorage } from '../../src';
 
 setTracingDisabled(true);
 
 const controllers: AbortController[] = [];
 const releases: Array<() => void> = [];
 const owned: Promise<unknown>[] = [];
+const profiles: string[] = [];
 const allowed = { tripwireTriggered: false, outputInfo: 'checked' };
 const refusal = 'Tool execution was not approved.';
 const emptyParameters = z.object({});
@@ -73,6 +78,11 @@ afterEach(async () => {
   try {
     await Promise.allSettled(owned.splice(0));
   } finally {
+    await Promise.all(
+      profiles
+        .splice(0)
+        .map((path) => rm(path, { recursive: true, force: true })),
+    );
     vi.restoreAllMocks();
   }
 }, 15_000);
@@ -432,31 +442,41 @@ describe('one held SDK function on the real native migration loop', () => {
     secondModel.assertComplete();
   }, 15_000);
 
-  it('joins caller cancellation while held and expires a selected but uncontinued choice', async () => {
-    const execute = vi.fn(() => 'must not execute');
-    const model = new ScriptedModel([
-      modelResponder(() => [
-        functionCall('lookup', '{}', { callId: 'held-abort' }),
-      ]),
-    ]);
-    const controller = callerSignal();
-    const held = await pause(approvalAgent(model, execute), undefined, {
-      signal: controller.signal,
-    });
-    const item = held.interruptions[0]!;
-    const completion = watch(held.completed);
-    held.approve(item);
-    const reason = new Error('Caller stopped the held call');
-    controller.abort(reason);
-    await expect(completion.promise).rejects.toBe(reason);
-    expect(completion.settled).toBe(true);
-    expect(() => held.approve(item)).toThrow();
-    expect(() => held.reject(item)).toThrow();
-    expect(() => held.continue()).toThrow();
-    expect(execute).not.toHaveBeenCalled();
-    expect(model.calls).toHaveLength(1);
-    model.assertComplete();
-  }, 15_000);
+  it.each(['ephemeral', 'local'] as const)(
+    'joins caller cancellation while held and expires the uncontinued choice in %s storage',
+    async (mode) => {
+      const execute = vi.fn(() => 'must not execute');
+      const model = new ScriptedModel([
+        modelResponder(() => [
+          functionCall('lookup', '{}', { callId: 'held-abort' }),
+        ]),
+      ]);
+      const controller = callerSignal();
+      const path =
+        mode === 'local'
+          ? await mkdtemp(join(tmpdir(), 'held-local-cancellation-'))
+          : undefined;
+      if (path) profiles.push(path);
+      const held = await pause(approvalAgent(model, execute), undefined, {
+        signal: controller.signal,
+        ...(path ? { storage: localStorage(path) } : {}),
+      });
+      const item = held.interruptions[0]!;
+      const completion = watch(held.completed);
+      held.approve(item);
+      const reason = new Error('Caller stopped the held call');
+      controller.abort(reason);
+      await expect(completion.promise).rejects.toBe(reason);
+      expect(completion.settled).toBe(true);
+      expect(() => held.approve(item)).toThrow();
+      expect(() => held.reject(item)).toThrow();
+      expect(() => held.continue()).toThrow();
+      expect(execute).not.toHaveBeenCalled();
+      expect(model.calls).toHaveLength(1);
+      model.assertComplete();
+    },
+    15_000,
+  );
 
   it('joins an entered callback on abort and never accepts its late output', async () => {
     const entered = gate('callback entry');

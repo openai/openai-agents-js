@@ -26,6 +26,8 @@ import { run, stream } from './run';
 import type { ReadableStream } from 'node:stream/web';
 import type { MigrationItem, MigrationSemanticEvent } from './result';
 import type { MigrationPausedRun } from './approvals';
+import type { MigrationNativePersistence } from './native-persistence';
+import type { SessionState } from '../runtime/state';
 export type { MigrationPausedRun } from './approvals';
 export { MigrationCleanupError } from './run';
 
@@ -45,7 +47,7 @@ export type MigrationModelSettings = Pick<
 export interface MigrationRunOptions<
   Context,
   Output extends AgentOutputType = 'text',
-> {
+> extends MigrationNativePersistence {
   context: Context;
   session?: Session;
   sessionInputCallback?: SessionInputCallback;
@@ -88,6 +90,8 @@ export interface MigrationRunResult<
   toStream(): ReadableStream<MigrationSemanticEvent>;
   [Symbol.asyncIterator](): AsyncGenerator<MigrationSemanticEvent>;
   readonly completed: Promise<void>;
+  /** Idle native checkpoint returned when `returnState` is enabled. */
+  readonly state?: SessionState;
   toTextStream(): never;
   readonly finalOutput: ResolvedAgentOutput<Output>;
   readonly modelResponses: readonly ModelResponse[];
