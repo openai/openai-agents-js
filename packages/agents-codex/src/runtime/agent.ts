@@ -326,15 +326,18 @@ export async function openSession(
   return session;
 }
 
+interface OwnedRunOptions {
+  returnState?: boolean;
+  signal?: AbortSignal;
+  maxModelSteps?: number;
+  budget?: import('./run-budget').RunBudgetTracker;
+}
+
 /** @internal Complete and close the Session owned by a one-shot run. */
 export async function runOwnedSession<Output>(
   session: Session<Output>,
   input: string | JsonValue[] | null,
-  options: {
-    returnState?: boolean;
-    signal?: AbortSignal;
-    maxModelSteps?: number;
-  } = {},
+  options: OwnedRunOptions = {},
 ): Promise<Completed<Output>> {
   const cancellation: { rejection?: unknown; reason?: unknown } = {};
   const retire = AsyncResource.bind(() => {
@@ -357,11 +360,7 @@ export async function runOwnedSession<Output>(
 async function completeOwnedSession<Output>(
   session: Session<Output>,
   input: string | JsonValue[] | null,
-  options: {
-    returnState?: boolean;
-    signal?: AbortSignal;
-    maxModelSteps?: number;
-  },
+  options: OwnedRunOptions,
   cancellation: { rejection?: unknown; reason?: unknown },
 ): Promise<Completed<Output>> {
   const originalFailure = (error: unknown) =>
@@ -385,7 +384,7 @@ async function completeOwnedSession<Output>(
     input == null
       ? session.wait()
       : session
-          ._run(input, options.signal, options.maxModelSteps)
+          ._run(input, options.signal, options.maxModelSteps, options.budget)
           .then(() => session.wait())
   ).catch(async (error) => {
     const primary = originalFailure(error);
