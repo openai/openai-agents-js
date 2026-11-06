@@ -159,6 +159,7 @@ import {
   addRunUsage,
   runUsageToWire,
   type RunUsage,
+  type TokenCount,
   type TokenUsageInfo,
 } from './run-events';
 import {
@@ -6999,6 +7000,42 @@ export class Session<OutputT = string, Context = unknown> {
         'goal requires local storage and current NativeGoals',
       );
     return nativeGoal(parseNative(await this.#native._read_goal()));
+  }
+  /**
+   * Set the native goal on an idle, open root Session using LocalStorage and
+   * current NativeGoals. This does not start model work.
+   *
+   * Omitting `tokenBudget` keeps an existing budget or uses Core's default for
+   * a new goal. Supply a `bigint` for budgets above the safe integer range.
+   * The result preserves native accounting and can retain `budgetLimited`
+   * status.
+   *
+   * If the goal database write fails after Core records the instruction, the
+   * previous goal remains and the recorded instruction can remain in history.
+   */
+  async setPausedGoal(
+    objective: string,
+    { tokenBudget }: { readonly tokenBudget?: TokenCount } = {},
+  ): Promise<Readonly<NativeGoal>> {
+    this.checkCallbackOperation('set a paused goal on');
+    this.idle('setPausedGoal');
+    if (!this.options.localStorage || !this.options.nativeGoals)
+      throw new NativeError(
+        'setPausedGoal requires LocalStorage and current NativeGoals',
+      );
+    if (
+      tokenBudget !== undefined &&
+      typeof tokenBudget !== 'bigint' &&
+      !Number.isSafeInteger(tokenBudget)
+    )
+      throw new TypeError('tokenBudget must be a safe integer or bigint');
+    return this.mutate(async () => {
+      const value = await this.#native._set_paused_goal(
+        objective,
+        tokenBudget?.toString(),
+      );
+      return nativeGoal(parseNative(value))!;
+    });
   }
   /** Read accepted root or owned-child data, including without a destination grant. */
   async checklist(
