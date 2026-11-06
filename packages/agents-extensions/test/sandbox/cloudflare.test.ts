@@ -1829,6 +1829,57 @@ describe('CloudflareSandboxClient', () => {
     },
   );
 
+  test('uses trusted resume-time options for the Worker endpoint and key', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://old-worker.example.com',
+      apiKey: 'synthetic-old-key',
+    });
+    const session = await client.resume(
+      {
+        manifest: new Manifest(),
+        workerUrl: 'https://worker.example.com/custom',
+        sandboxId: 'cf_test',
+        environment: {},
+      },
+      {
+        clientOptions: {
+          workerUrl: 'https://WORKER.example.com:443/custom/',
+          apiKey: 'synthetic-current-key',
+        },
+      },
+    );
+    await expect(session.running()).resolves.toBe(true);
+    for (const [url, init] of vi.mocked(global.fetch).mock.calls) {
+      expect(String(url)).toBe(
+        'https://worker.example.com/custom/v1/sandbox/cf_test/running',
+      );
+      expect(new Headers(init?.headers).get('Authorization')).toBe(
+        'Bearer synthetic-current-key',
+      );
+    }
+  });
+
+  test('rejects state that differs from the resume-time trusted Worker', async () => {
+    const client = new CloudflareSandboxClient({
+      workerUrl: 'https://old-worker.example.com',
+      apiKey: 'synthetic-resume-key',
+    });
+    await expect(
+      client.resume(
+        {
+          manifest: new Manifest(),
+          workerUrl: 'https://old-worker.example.com',
+          sandboxId: 'cf_test',
+          environment: {},
+        },
+        { clientOptions: { workerUrl: 'https://worker.example.com' } },
+      ),
+    ).rejects.toThrow(
+      'Cloudflare sandbox resume workerUrl must match options.workerUrl.',
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   test.each(['constructor', 'environment'] as const)(
     'requires a trusted worker endpoint for a %s resume key',
     async (source) => {

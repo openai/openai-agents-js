@@ -12,6 +12,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxClientResumeOptions,
   type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
@@ -1318,6 +1319,7 @@ export class CloudflareSandboxClient implements SandboxClient<
 
   async resume(
     state: CloudflareSandboxSessionState,
+    options: SandboxClientResumeOptions<CloudflareSandboxClientOptions> = {},
   ): Promise<CloudflareSandboxSession> {
     if (this.deserializedSessionStates.has(state)) {
       throw new UserError(
@@ -1332,17 +1334,18 @@ export class CloudflareSandboxClient implements SandboxClient<
       state.workerUrl,
       'persisted workerUrl',
     );
+    const resolvedOptions = { ...this.options, ...options.clientOptions };
     // Keep absent credentials absent for this session, even if the environment changes.
     const apiKey =
-      this.options.apiKey ?? loadEnv().CLOUDFLARE_SANDBOX_API_KEY ?? '';
+      resolvedOptions.apiKey ?? loadEnv().CLOUDFLARE_SANDBOX_API_KEY ?? '';
     if (apiKey) {
-      if (!this.options.workerUrl) {
+      if (!resolvedOptions.workerUrl) {
         throw new UserError(
           'CloudflareSandboxClient requires options.workerUrl for authenticated resume.',
         );
       }
       const trustedWorkerUrl = normalizeCloudflareWorkerUrl(
-        this.options.workerUrl,
+        resolvedOptions.workerUrl,
         'options.workerUrl',
       );
       if (workerUrl !== trustedWorkerUrl) {
