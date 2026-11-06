@@ -154,7 +154,6 @@ snapshots:
       '@pnpm/exe.linux-x64-musl': 12.6.0
       '@pnpm/exe.win32-arm64': 12.6.0
       '@pnpm/exe.win32-x64': 12.6.0
-
 ---
 lockfileVersion: '9.0'
 
@@ -305,8 +304,8 @@ importers:
   examples/ai-sdk:
     dependencies:
       '@ai-sdk/anthropic':
-        specifier: ^3.0.116
-        version: 3.0.116(zod@4.6.6)
+        specifier: ^4.0.93
+        version: 4.0.93(zod@4.6.7)
       '@ai-sdk/google':
         specifier: ^4.0.109
         version: 4.0.109(zod@4.6.7)
@@ -320,15 +319,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/agents-extensions
       '@openrouter/ai-sdk-provider':
-        specifier: ^2.9.0
-        version: 2.9.0(ai@6.0.277(zod@4.6.6))(zod@4.6.6)
+        specifier: ^3.1.0
+        version: 3.1.0(ai@7.0.158(zod@4.6.7))(zod@4.6.7)
       zod:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
       ai:
-        specifier: ^6.0.277
-        version: 6.0.277(zod@4.6.6)
+        specifier: ^7.0.158
+        version: 7.0.158(zod@4.6.7)
 
   examples/ai-sdk-ui:
     dependencies:
@@ -357,8 +356,8 @@ importers:
         specifier: ^19.3.1
         version: 19.3.1(react@19.3.1)
       react-markdown:
-        specifier: ^9.0.3
-        version: 9.1.0(@types/react@19.3.0)(react@19.3.0)(supports-color@10.2.2)
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2)
       rehype-sanitize:
         specifier: ^6.0.0
         version: 6.0.0
@@ -9628,6 +9627,22 @@ packages:
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
+  "@ai-sdk/anthropic@4.0.93":
+    resolution: {integrity: sha512-nml29YBjcYNUjeVs9fQ75Cqb9oDder/koOXarib92Y8DbqnaX5LwvL+vUMOtrmBtPx2eiJ+Zwz/RU6BGxZdW2g==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+  "@openrouter/ai-sdk-provider@3.1.0":
+    resolution: {integrity: sha512-BQy1TA9fKrh47s9ivsO6FY5QimN7GUF0i8Qon3pkxQclEgShso0dClpcWn8OIyPLEZZPFaFKgI8TW4S/O0p0Dw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      ai: ^7.0.0
+      zod: ^3.25.76 || ^4.1.8
+  react-markdown@10.1.0:
+    resolution: {integrity: sha512-qKxVopLT/TyA6BX3Ue5NwabOsAzm0Q7kAPwq6L+wWDwisYs7R8vZ0nRXqq6rkueboxpkjvLGU9fWifiX/ZZFxQ==}
+    peerDependencies:
+      '@types/react': '>=18'
+      react: '>=18'
 
 snapshots:
 
@@ -20123,3 +20138,29 @@ snapshots:
   zod@4.6.7: {}
 
   zwitch@2.0.4: {}
+  "@ai-sdk/anthropic@4.0.93(zod@4.6.7)":
+    dependencies:
+      '@ai-sdk/provider': 4.0.35
+      '@ai-sdk/provider-utils': 5.0.72(zod@4.6.7)
+      zod: 4.6.7
+  "@openrouter/ai-sdk-provider@3.1.0(ai@7.0.158(zod@4.6.7))(zod@4.6.7)":
+    dependencies:
+      ai: 7.0.158(zod@4.6.7)
+      zod: 4.6.7
+  react-markdown@10.1.0(@types/react@19.3.0)(react@19.3.1)(supports-color@10.2.2):
+    dependencies:
+      '@types/hast': 3.0.5
+      '@types/mdast': 4.0.4
+      '@types/react': 19.3.0
+      devlop: 1.1.0
+      hast-util-to-jsx-runtime: 2.3.6(supports-color@10.2.2)
+      html-url-attributes: 3.0.1
+      mdast-util-to-hast: 13.2.1
+      react: 19.3.1
+      remark-parse: 11.0.0(supports-color@10.2.2)
+      remark-rehype: 11.1.2
+      unified: 11.0.5
+      unist-util-visit: 5.1.0
+      vfile: 6.0.3
+    transitivePeerDependencies:
+      - supports-color

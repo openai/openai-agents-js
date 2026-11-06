@@ -10,7 +10,7 @@
     "next": "16.4.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-markdown": "^9.0.3",
+    "react-markdown": "^10.1.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.0",
     "zod": "^4.6.7"
