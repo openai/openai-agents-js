@@ -12,6 +12,7 @@ updates:
     # https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#cooldown
     cooldown:
       default-days: 7
+      exclude: ["openai", "@openai/*"]
     groups:
       npm-minor-patch:
         applies-to: "version-updates"
@@ -41,6 +42,7 @@ updates:
       timezone: "UTC"
     cooldown:
       default-days: 7
+      exclude: ["openai", "@openai/*"]
     open-pull-requests-limit: 5
     # Keep compatibility fixtures on their tested dependency majors.
     # update-types ignores affect ordinary version updates, not security updates.
@@ -60,6 +62,7 @@ updates:
       timezone: "UTC"
     cooldown:
       default-days: 7
+      exclude: ["openai", "@openai/*"]
     open-pull-requests-limit: 2
     # Exact compiler/client versions are the compatibility oracle. Security
     # updates remain eligible; maintainers must review any oracle migration.

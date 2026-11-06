@@ -4,8 +4,8 @@
   "dependencies": {
     "@openai/agents": "workspace:*",
     "@prisma/adapter-better-sqlite3": "^7.10.0",
-    "@prisma/client": "^7.10.0",
-    "zod": "^4.6.6"
+    "@prisma/client": "^7.10.1",
+    "zod": "^4.6.7"
   },
   "scripts": {
     "build-check": "prisma generate && tsc --noEmit",
@@ -22,7 +22,7 @@
     "test:prisma": "prisma generate && vitest run --config vitest.prisma.config.ts"
   },
   "devDependencies": {
-    "prisma": "^7.10.0"
+    "prisma": "^7.10.1"
   },
   "engines": {
     "node": "^22.18.0 || ^24.0.0 || >=26.0.0"

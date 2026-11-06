@@ -2493,14 +2493,6 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
     signal: AbortSignal | undefined,
     requestTimeoutDeadline?: WebSocketRequestTimeoutDeadline,
   ): Promise<Record<string, string>> {
-    await this.#awaitWebSocketRequestTimedOperation(
-      this.#refreshClientApiKey(),
-      signal,
-      requestTimeoutDeadline,
-      (configuredTimeoutMs) =>
-        `Responses websocket auth header preparation timed out after ${configuredTimeoutMs}ms.`,
-    );
-
     const headerAccumulator = createHeaderAccumulator();
     const clientWithInternals = this._client as OpenAI & {
       _options?: { defaultHeaders?: unknown };
@@ -2750,16 +2742,6 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
         markTransientNeverSentWebSocketError(error);
       }
       throw error;
-    }
-  }
-
-  async #refreshClientApiKey(): Promise<void> {
-    const clientWithInternals = this._client as OpenAI & {
-      _callApiKey?: () => Promise<boolean>;
-    };
-
-    if (typeof clientWithInternals._callApiKey === 'function') {
-      await clientWithInternals._callApiKey();
     }
   }
 

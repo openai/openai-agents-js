@@ -1458,7 +1458,9 @@ function getInputItems(
           name: providerData.name,
           arguments: providerData.arguments,
           server_label: providerData.server_label,
-          error: providerData.error,
+          // Preserve legacy string errors in saved histories alongside structured errors.
+          error:
+            providerData.error as OpenAI.Responses.ResponseInputItem.McpCall['error'],
           ...(hostedCaller ? { caller: toOpenAIToolCaller(hostedCaller) } : {}),
         };
         return entry;
@@ -1692,6 +1694,11 @@ function convertToOutputItem(
         function_name?: string;
         namespace?: string;
       };
+      if (call_id === undefined) {
+        throw new UserError(
+          'Cannot convert a function call output without a call_id into a paired tool result.',
+        );
+      }
       const output: protocol.FunctionCallResultItem = {
         type: 'function_call_result',
         id: item.id,

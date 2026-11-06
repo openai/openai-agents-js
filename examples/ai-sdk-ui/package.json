@@ -2,18 +2,18 @@
   "private": true,
   "name": "ai-sdk-ui",
   "dependencies": {
-    "@ai-sdk/react": "^4.0.0",
+    "@ai-sdk/react": "^4.0.162",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "ai": "^7.0.0",
-    "next": "16.4.1",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "next": "16.4.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "react-markdown": "^9.0.3",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.0",
-    "zod": "^4.6.6"
+    "zod": "^4.6.7"
   },
   "scripts": {
     "build-check": "tsc --noEmit",
@@ -25,7 +25,7 @@
     "start:script-ai-sdk": "node scripts/ai-sdk.ts"
   },
   "devDependencies": {
-    "@ai-sdk/openai": "^4.0.83",
+    "@ai-sdk/openai": "^4.0.106",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

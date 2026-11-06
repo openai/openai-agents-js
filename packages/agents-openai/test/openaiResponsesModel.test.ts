@@ -2963,11 +2963,17 @@ describe('OpenAIResponsesModel', () => {
   it('preserves null extra_headers entries as SDK header unsets on HTTP requests', async () => {
     await withTrace('test', async () => {
       const fakeResponse = { id: 'res-http-headers', usage: {}, output: [] };
-      const createMock = vi.fn().mockResolvedValue(fakeResponse);
-      const fakeClient = {
-        responses: { create: createMock },
-      } as unknown as OpenAI;
-      const model = new OpenAIResponsesModel(fakeClient, 'gpt-test');
+      const requests: Headers[] = [];
+      const sdkClient = new OpenAI({
+        apiKey: 'sk-test',
+        fetch: async (_url, init) => {
+          requests.push(new Headers(init?.headers));
+          return new Response(JSON.stringify(fakeResponse), {
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      });
+      const model = new OpenAIResponsesModel(sdkClient, 'gpt-test');
 
       const request = {
         systemInstructions: undefined,
@@ -2989,21 +2995,8 @@ describe('OpenAIResponsesModel', () => {
 
       await model.getResponse(request as any);
 
-      expect(createMock).toHaveBeenCalledTimes(1);
-      const [, opts] = createMock.mock.calls[0];
-      const headers = opts.headers as Record<string, string | null>;
-      expect(headers['X-Request-Header']).toBe('present');
-      expect(headers['user-agent']).toBeNull();
-      expect((headers as any).values).toBeUndefined();
-      expect((headers as any).nulls).toBeUndefined();
-
-      const sdkClient = new OpenAI({ apiKey: 'sk-test' });
-      const sdkHeaders = (await (sdkClient as any).buildHeaders({
-        options: { headers },
-        method: 'post',
-        bodyHeaders: undefined,
-        retryCount: 0,
-      })) as Headers;
+      expect(requests).toHaveLength(1);
+      const sdkHeaders = requests[0];
       expect(sdkHeaders.get('X-Request-Header')).toBe('present');
       expect(sdkHeaders.get('User-Agent')).toBeNull();
       expect(sdkHeaders.get('values')).toBeNull();

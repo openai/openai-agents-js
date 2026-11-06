@@ -36,7 +36,9 @@ overrides:
 publishBranch: main
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
-  - openai@7.2.0
+  # OpenAI-owned packages are exempt; third-party packages still wait seven days.
+  - openai
+  - "@openai/*"
 blockExoticSubdeps: true
 strictDepBuilds: true
 patchedDependencies:
