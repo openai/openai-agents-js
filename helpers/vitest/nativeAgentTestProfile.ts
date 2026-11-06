@@ -15,6 +15,7 @@ export const nativeAgentTestIncludes =
         'test/native/selected-mcp.test.ts',
         'test/experimental/**/*.test.ts',
         'test/classic/**/*.test.ts',
+        'test/native/storage-mounts.test.ts',
         'test/native/output-state.test.ts',
         'test/native/repair-observation.test.ts',
         'test/native/request-metadata.test.ts',
