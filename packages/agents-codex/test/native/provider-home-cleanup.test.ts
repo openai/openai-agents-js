@@ -279,7 +279,9 @@ it('uses an installed native cleanup and preserves release idempotence', async (
   await fs.writeFile(join(home, 'replacement'), 'keep');
   await owner.release();
   expect(cleanup).toHaveBeenCalledTimes(1);
-  await expect(fs.readFile(join(home, 'replacement'), 'utf8')).resolves.toBe('keep');
+  await expect(fs.readFile(join(home, 'replacement'), 'utf8')).resolves.toBe(
+    'keep',
+  );
 });
 
 it('preserves Node fallback failure and retry after native runtime rejection', async () => {
@@ -296,7 +298,10 @@ it('preserves Node fallback failure and retry after native runtime rejection', a
   fixture.rm.mockRejectedValueOnce(fallbackFailure);
   await expect(owner.release()).rejects.toBe(fallbackFailure);
   await expect(fs.readdir(home)).resolves.toEqual(['workspace']);
-  expect(fixture.rm).toHaveBeenCalledWith(home, { recursive: true, force: true });
+  expect(fixture.rm).toHaveBeenCalledWith(home, {
+    recursive: true,
+    force: true,
+  });
   await owner.release();
   await absent(home);
   expect(cleanup).toHaveBeenCalledTimes(2);
@@ -317,7 +322,10 @@ it('finishes partial native cleanup through the unchanged Node fallback', async 
   await owner.release();
   await absent(home);
   expect(fixture.rm).toHaveBeenCalledTimes(1);
-  expect(fixture.rm).toHaveBeenCalledWith(home, { recursive: true, force: true });
+  expect(fixture.rm).toHaveBeenCalledWith(home, {
+    recursive: true,
+    force: true,
+  });
   expect(fixture.rmdir).not.toHaveBeenCalled();
   await provider.close();
 });

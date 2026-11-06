@@ -307,13 +307,15 @@ it('runs captured stdio before and application approval before the selected peer
 it('rejects MCP updates that were not declared at Session opening before peer effects', async () => {
   const selected = await peer('ungranted', 'key');
   const model = new ModelServer([]);
-  const session = await (await agent(model, selected.declaration)).session({
+  const session = await (
+    await agent(model, selected.declaration)
+  ).session({
     tools: [],
   });
   sessions.push(session);
-  await expect(session.update({ tools: [selected.declaration] })).rejects.toThrow(
-    'MCP schema discovery mode must match the Session opening',
-  );
+  await expect(
+    session.update({ tools: [selected.declaration] }),
+  ).rejects.toThrow('MCP schema discovery mode must match the Session opening');
   expect(await records(selected.starts)).toHaveLength(0);
   expect(await records(selected.calls)).toHaveLength(0);
   expect(model.requests).toHaveLength(0);
