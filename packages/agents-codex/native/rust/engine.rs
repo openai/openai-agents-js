@@ -880,6 +880,7 @@ impl EngineState {
                 native: Some(next_native_event(new.thread, native_dequeued.clone())),
                 native_dequeued,
                 session_terminal: None,
+                root_step: None,
                 children: VecDeque::new(),
                 pending: VecDeque::new(),
                 deferred_child_steps: VecDeque::new(),
@@ -1791,6 +1792,8 @@ struct ThreadEvents {
     native_dequeued: Arc<AtomicBool>,
     // Retain the dequeued terminal across cancellation of a managed reader.
     session_terminal: Option<(Event, Arc<crate::turn_settlement::Turn>)>,
+    // Publish this root selector after delivering its already queued Core events.
+    root_step: Option<(serde_json::Value, usize)>,
     children: VecDeque<(ThreadId, ChildReader)>,
     pending: VecDeque<((ThreadId, u64), Event)>,
     // Auxiliary selectors can arrive before the ordered child start event.
@@ -2795,9 +2798,33 @@ impl ThreadState {
                 }
                 return Ok(event);
             }
+            if events
+                .root_step
+                .as_ref()
+                .is_some_and(|(_, count)| *count == 0)
+            {
+                ensure!(!*closing.borrow(), "Codex thread is closed");
+                let (request, _) = events.root_step.take().expect("drained root step");
+                let reply =
+                    serde_json::from_value::<crate::python_tools::StepReply>(serde_json::json!({
+                        "thread": request["msg"]["thread"],
+                        "turn_id": request["msg"]["turn_id"],
+                        "generation": request["msg"]["generation"],
+                        "request_id": request["msg"]["request_id"],
+                    }))?;
+                // A drained terminal or an interrupt may have revoked this selector.
+                if python_tools
+                    .as_ref()
+                    .expect("root step owner")
+                    .check_step(&self.id.to_string(), &reply)?
+                {
+                    return Ok(request);
+                }
+            }
             // A busy graph producer must not postpone capturing a requested
             // prefix. The select below wakes this same sole reader when idle.
             if events.publication_prefix.is_none()
+                && events.root_step.is_none()
                 && let Ok(id) = events.boundary_requests.try_recv()
             {
                 self.start_publication_prefix(&mut events, id).await?;
@@ -2831,7 +2858,7 @@ impl ThreadState {
                     }));
                 }
             }
-            if events.publication_prefix.is_none() {
+            if events.publication_prefix.is_none() && events.root_step.is_none() {
                 // Inspect one finite queue snapshot. A waiting child must not
                 // block another ready child, and revoked receipts are discarded.
                 for _ in 0..events.deferred_child_steps.len() {
@@ -2859,9 +2886,11 @@ impl ThreadState {
                 native,
                 boundary_requests,
                 publication_prefix,
+                root_step,
                 ..
             } = &mut *events;
             let bounded = publication_prefix.is_some();
+            let read_requests = !bounded && root_step.is_none();
             let read_native = publication_prefix
                 .as_ref()
                 .is_none_or(|prefix| prefix.native > 0);
@@ -2873,7 +2902,15 @@ impl ThreadState {
                 metadata = self.request_metadata.next() => return Ok(metadata),
                 request = async {
                     python_tools.as_ref().expect("guarded JavaScript channel").next_request().await
-                }, if python_tools.is_some() && !bounded => {
+                }, if python_tools.is_some() && read_requests => {
+                    if request["subagent_id"].is_null() && request["msg"]["type"] == "_sdk_select_step" {
+                        // Core awaits sending the raw completion before advancing
+                        // to the next selector on this independent callback channel.
+                        let dequeued = events.native_dequeued.clone();
+                        let count = snapshot_event_prefix(&self.thread, &mut events.native, Some(&dequeued)).await?;
+                        events.root_step = Some((request, count));
+                        continue;
+                    }
                     match self.child_step_publication(
                         &request,
                         python_tools.as_ref().expect("guarded JavaScript channel"),
@@ -2883,10 +2920,13 @@ impl ThreadState {
                         ChildStepPublication::Retired => {}
                     }
                 },
-                Some(id) = boundary_requests.recv(), if !bounded => {
+                Some(id) = boundary_requests.recv(), if read_requests => {
                     self.start_publication_prefix(&mut events, id).await?;
                 },
                 event = async { native.as_mut().expect("guarded native reader").await }, if native.is_some() && read_native => {
+                    if let Some((_, count)) = &mut events.root_step {
+                        *count = count.checked_sub(1).context("Native root step prefix was exhausted")?;
+                    }
                     if let Some(prefix) = &mut events.publication_prefix {
                         prefix.native = prefix.native.checked_sub(1)
                             .context("Native publication root prefix was exhausted")?;
@@ -3013,6 +3053,7 @@ impl ThreadState {
             let mut events = self.events.lock().await;
             events.native = None;
             events.session_terminal = None;
+            events.root_step = None;
             events.publication_prefix = None;
             events.boundary_requests.close();
             events.children.clear();

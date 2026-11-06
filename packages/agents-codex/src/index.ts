@@ -114,6 +114,7 @@ export type {
 export type { ChecklistState, SessionState } from './runtime/state';
 export { parseSessionState, readSessionInstructions } from './runtime/state';
 export type { TokenUsage, TokenUsageInfo } from './runtime/run-events';
+export type { RunBudget } from './runtime/run-budget';
 export type {
   Observation,
   ObservationOptions,
