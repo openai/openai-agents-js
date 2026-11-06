@@ -1332,6 +1332,25 @@ export class CloudflareSandboxClient implements SandboxClient<
       state.workerUrl,
       'persisted workerUrl',
     );
+    // Keep absent credentials absent for this session, even if the environment changes.
+    const apiKey =
+      this.options.apiKey ?? loadEnv().CLOUDFLARE_SANDBOX_API_KEY ?? '';
+    if (apiKey) {
+      if (!this.options.workerUrl) {
+        throw new UserError(
+          'CloudflareSandboxClient requires options.workerUrl for authenticated resume.',
+        );
+      }
+      const trustedWorkerUrl = normalizeCloudflareWorkerUrl(
+        this.options.workerUrl,
+        'options.workerUrl',
+      );
+      if (workerUrl !== trustedWorkerUrl) {
+        throw new UserError(
+          'Cloudflare sandbox resume workerUrl must match options.workerUrl.',
+        );
+      }
+    }
     assertCloudflareManifestRoot(state.manifest);
     assertSandboxManifestMetadataSupported(
       'CloudflareSandboxClient',
@@ -1347,7 +1366,7 @@ export class CloudflareSandboxClient implements SandboxClient<
         sandboxId,
         workerUrl,
       },
-      apiKey: this.options.apiKey ?? loadEnv().CLOUDFLARE_SANDBOX_API_KEY,
+      apiKey,
     });
     if (!(await session.running())) {
       throw new UserError(

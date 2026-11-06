@@ -1802,6 +1802,156 @@ describe('CloudflareSandboxClient', () => {
     );
   });
 
+  test.each([
+    'https://untrusted.example.com/trusted',
+    'http://worker.example.com/trusted',
+    'https://worker.example.com:8443/trusted',
+    'https://worker.example.com/other',
+  ])(
+    'rejects authenticated resume to an untrusted worker endpoint: %s',
+    async (workerUrl) => {
+      const client = new CloudflareSandboxClient({
+        workerUrl: 'https://worker.example.com/trusted',
+        apiKey: 'synthetic-resume-key',
+      });
+
+      await expect(
+        client.resume({
+          manifest: new Manifest(),
+          workerUrl,
+          sandboxId: 'cf_test',
+          environment: {},
+        }),
+      ).rejects.toThrow(
+        'Cloudflare sandbox resume workerUrl must match options.workerUrl.',
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['constructor', 'environment'] as const)(
+    'requires a trusted worker endpoint for a %s resume key',
+    async (source) => {
+      vi.stubEnv(
+        'CLOUDFLARE_SANDBOX_API_KEY',
+        source === 'environment' ? 'synthetic-resume-key' : '',
+      );
+      try {
+        const client = new CloudflareSandboxClient(
+          source === 'constructor' ? { apiKey: 'synthetic-resume-key' } : {},
+        );
+        await expect(
+          client.resume({
+            manifest: new Manifest(),
+            workerUrl: 'https://untrusted.example.com',
+            sandboxId: 'cf_test',
+            environment: {},
+          }),
+        ).rejects.toThrow(
+          'CloudflareSandboxClient requires options.workerUrl for authenticated resume.',
+        );
+        expect(global.fetch).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  test('binds an environment resume key to the configured worker endpoint', async () => {
+    vi.stubEnv('CLOUDFLARE_SANDBOX_API_KEY', 'synthetic-resume-key');
+    try {
+      const client = new CloudflareSandboxClient({
+        workerUrl: 'https://worker.example.com',
+      });
+      await expect(
+        client.resume({
+          manifest: new Manifest(),
+          workerUrl: 'https://untrusted.example.com',
+          sandboxId: 'cf_test',
+          environment: {},
+        }),
+      ).rejects.toThrow(
+        'Cloudflare sandbox resume workerUrl must match options.workerUrl.',
+      );
+      expect(global.fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  test.each(['constructor', 'environment'] as const)(
+    'resumes at a normalized custom worker endpoint using a %s key',
+    async (source) => {
+      vi.stubEnv(
+        'CLOUDFLARE_SANDBOX_API_KEY',
+        source === 'environment' ? 'synthetic-resume-key' : '',
+      );
+      try {
+        const client = new CloudflareSandboxClient({
+          workerUrl: 'https://WORKER.example.com:443/custom/',
+          ...(source === 'constructor'
+            ? { apiKey: 'synthetic-resume-key' }
+            : {}),
+        });
+        const session = await client.resume({
+          manifest: new Manifest(),
+          workerUrl: 'https://worker.example.com/custom',
+          sandboxId: 'cf_test',
+          environment: {},
+        });
+        await expect(session.running()).resolves.toBe(true);
+        expect(global.fetch).toHaveBeenCalledWith(
+          'https://worker.example.com/custom/v1/sandbox/cf_test/running',
+          expect.objectContaining({ headers: expect.any(Headers) }),
+        );
+        for (const [, init] of vi.mocked(global.fetch).mock.calls) {
+          expect(new Headers(init?.headers).get('Authorization')).toBe(
+            'Bearer synthetic-resume-key',
+          );
+        }
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  test('preserves explicit keyless resume without a configured worker endpoint', async () => {
+    vi.stubEnv('CLOUDFLARE_SANDBOX_API_KEY', 'synthetic-resume-key');
+    try {
+      const session = await new CloudflareSandboxClient({ apiKey: '' }).resume({
+        manifest: new Manifest(),
+        workerUrl: 'http://custom.example.com/worker',
+        sandboxId: 'cf_test',
+        environment: {},
+      });
+      await expect(session.running()).resolves.toBe(true);
+      for (const [, init] of vi.mocked(global.fetch).mock.calls) {
+        expect(new Headers(init?.headers).has('Authorization')).toBe(false);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  test('keeps a keyless resumed worker keyless when the environment changes', async () => {
+    vi.stubEnv('CLOUDFLARE_SANDBOX_API_KEY', undefined);
+    try {
+      const session = await new CloudflareSandboxClient().resume({
+        manifest: new Manifest(),
+        workerUrl: 'http://custom.example.com/worker',
+        sandboxId: 'cf_test',
+        environment: {},
+      });
+      vi.stubEnv('CLOUDFLARE_SANDBOX_API_KEY', 'synthetic-later-key');
+      await expect(session.running()).resolves.toBe(true);
+      for (const [, init] of vi.mocked(global.fetch).mock.calls) {
+        expect(new Headers(init?.headers).has('Authorization')).toBe(false);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   test('resumes from serialized state and deletes on close', async () => {
     const client = new CloudflareSandboxClient({
       workerUrl: 'https://worker.example.com',
