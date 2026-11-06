@@ -1,4 +1,16 @@
 import { makeTarArchive } from './tarFixture';
+import { execFile } from 'node:child_process';
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import {
   boxMount,
   Manifest,
@@ -32,6 +44,7 @@ const startMock = vi.fn();
 const stopMock = vi.fn();
 const deleteMock = vi.fn();
 const daytonaConstructorMock = vi.fn();
+const execFileAsync = promisify(execFile);
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -404,6 +417,88 @@ describe('DaytonaSandboxClient', () => {
     expect(downloadFileMock).not.toHaveBeenCalled();
     expect(uploadFileMock).not.toHaveBeenCalled();
   });
+
+  test.skipIf(process.platform !== 'linux').each([0o600, 0o640, 0o751, 0o2750])(
+    'preserves file mode %i through default editor updates',
+    async (mode) => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-daytona-editor-'));
+      try {
+        const privatePath = join(root, 'private.txt');
+        const publicPath = join(root, 'public.txt');
+        const newPath = join(root, 'new.txt');
+        const movedPath = join(root, 'moved.txt');
+        await writeFile(privatePath, 'private\n', { mode });
+        await chmod(privatePath, mode);
+        await writeFile(publicPath, 'public\n', { mode: 0o644 });
+        await chmod(publicPath, 0o644);
+        const originalPrivate = await stat(privatePath);
+        const originalPublic = await stat(publicPath);
+
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root }),
+        );
+        executeCommandMock.mockImplementation(async (command: string) => {
+          try {
+            const { stdout } = await execFileAsync('/bin/sh', ['-c', command]);
+            return { exitCode: 0, result: stdout, artifacts: { stdout } };
+          } catch (error) {
+            const failure = error as Error & {
+              code?: number;
+              stderr?: string;
+            };
+            const output = failure.stderr ?? failure.message;
+            return {
+              exitCode: failure.code ?? 1,
+              result: output,
+              artifacts: { stdout: output },
+            };
+          }
+        });
+
+        const editor = session.createEditor();
+        await editor.updateFile({
+          type: 'update_file',
+          path: 'private.txt',
+          diff: '-private\n+updated private\n',
+        });
+        await editor.updateFile({
+          type: 'update_file',
+          path: 'public.txt',
+          diff: '-public\n+updated public\n',
+        });
+        await editor.createFile({
+          type: 'create_file',
+          path: 'new.txt',
+          diff: '+new\n',
+        });
+
+        expect(await readFile(privatePath, 'utf8')).toBe('updated private\n');
+        expect((await stat(privatePath)).mode & 0o7777).toBe(mode);
+        expect((await stat(privatePath)).uid).toBe(originalPrivate.uid);
+        expect((await stat(privatePath)).gid).toBe(originalPrivate.gid);
+        expect(await readFile(publicPath, 'utf8')).toBe('updated public\n');
+        expect((await stat(publicPath)).mode & 0o777).toBe(0o644);
+        expect((await stat(publicPath)).uid).toBe(originalPublic.uid);
+        expect((await stat(publicPath)).gid).toBe(originalPublic.gid);
+        expect(await readFile(newPath, 'utf8')).toBe('new');
+        expect((await stat(newPath)).mode & 0o777).toBe(0o644);
+
+        await editor.updateFile({
+          type: 'update_file',
+          path: 'private.txt',
+          moveTo: 'moved.txt',
+          diff: '-updated private\n+moved private\n',
+        });
+        expect(await readFile(movedPath, 'utf8')).toBe('moved private\n');
+        expect((await stat(movedPath)).mode & 0o777).toBe(0o644);
+        await expect(stat(privatePath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test('uses remote shell directory creation for nested editor writes', async () => {
     const client = new DaytonaSandboxClient();
