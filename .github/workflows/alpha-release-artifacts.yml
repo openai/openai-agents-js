@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: alpha-release-artifacts-${{ github.ref }}
+  group: alpha-release-artifacts-${{ github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
