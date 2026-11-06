@@ -8,6 +8,7 @@ import {
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
+  type SandboxClientResumeOptions,
   type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
@@ -204,7 +205,9 @@ export interface DaytonaSandboxClientOptions extends SandboxClientOptions {
   exposedPortUrlTtlS?: number;
   name?: string;
   autoStopInterval?: number;
+  /** Current trusted credentials used for creation and resume; never restored from saved state. */
   apiKey?: string;
+  /** Configure custom endpoints again when resuming a saved session. */
   apiUrl?: string;
   target?: string;
   archiveLimits?: SandboxArchiveLimits | null;
@@ -1408,9 +1411,6 @@ export class DaytonaSandboxClient implements SandboxClient<
             name: resolvedOptions.name,
             autoStopInterval: resolvedOptions.autoStopInterval,
             environment,
-            apiKey: resolvedOptions.apiKey,
-            apiUrl: resolvedOptions.apiUrl,
-            target: resolvedOptions.target,
           },
         });
 
@@ -1429,7 +1429,12 @@ export class DaytonaSandboxClient implements SandboxClient<
   async serializeSessionState(
     state: DaytonaSandboxSessionState,
   ): Promise<Record<string, unknown>> {
-    return serializeRemoteSandboxSessionState(state);
+    const serialized = await serializeRemoteSandboxSessionState(state);
+    // Older snapshots may contain connection settings; do not persist their authority.
+    delete serialized.apiKey;
+    delete serialized.apiUrl;
+    delete serialized.target;
+    return serialized;
   }
 
   canPersistOwnedSessionState(state: DaytonaSandboxSessionState): boolean {
@@ -1466,7 +1471,7 @@ export class DaytonaSandboxClient implements SandboxClient<
       state,
       this.options.env,
     );
-    return {
+    const restored: DaytonaSandboxSessionState = {
       ...state,
       ...baseState,
       sandboxId: readString(state, 'sandboxId'),
@@ -1483,21 +1488,22 @@ export class DaytonaSandboxClient implements SandboxClient<
       exposedPortUrlTtlS: readOptionalNumber(state, 'exposedPortUrlTtlS'),
       name: readOptionalString(state, 'name'),
       autoStopInterval: readOptionalNumber(state, 'autoStopInterval'),
-      apiKey: readOptionalString(state, 'apiKey'),
-      apiUrl: readOptionalString(state, 'apiUrl'),
-      target: readOptionalString(state, 'target'),
     };
+    delete restored.apiKey;
+    delete restored.apiUrl;
+    delete restored.target;
+    return restored;
   }
 
   async resume(
     state: DaytonaSandboxSessionState,
+    options: SandboxClientResumeOptions<DaytonaSandboxClientOptions> = {},
   ): Promise<DaytonaSandboxSession> {
     assertRemoteSandboxSessionStateCanResume(state);
+    // Persisted connection settings cannot select where current credentials are sent.
     const client = await createDaytonaClient({
       ...this.options,
-      apiKey: state.apiKey ?? this.options.apiKey,
-      apiUrl: state.apiUrl ?? this.options.apiUrl,
-      target: state.target ?? this.options.target,
+      ...options.clientOptions,
     });
     let sandbox: DaytonaSandboxLike;
     try {
