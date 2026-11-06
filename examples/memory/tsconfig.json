@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.examples.json",
   "compilerOptions": {
+    "lib": ["ES2021", "DOM"],
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "verbatimModuleSyntax": true,
