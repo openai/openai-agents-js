@@ -90,11 +90,9 @@ it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
       await provider.close();
     } finally {
       // Restore access if the candidate fails, so afterEach can clean its parent.
-      try {
-        await fs.chmod(home, 0o700);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
+      await fs.chmod(home, 0o700).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
     }
   },
 );

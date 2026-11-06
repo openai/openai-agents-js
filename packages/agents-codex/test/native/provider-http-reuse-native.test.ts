@@ -215,7 +215,6 @@ it.runIf(supportedEnvironment())(
 it.runIf(supportedEnvironment())(
   'unloads a worker provider while the main native environment remains usable',
   async () => {
-    let connections: ReturnType<typeof observeConnections>;
     const server = new ModelServer([
       [message('main one')],
       [message('worker')],
@@ -226,7 +225,7 @@ it.runIf(supportedEnvironment())(
         return [message('main two')];
       },
     ]);
-    connections = observeConnections(server);
+    const connections = observeConnections(server);
     const config = await server.config();
     const base = (config['model_providers.fixture'] as { base_url: string })
       .base_url;

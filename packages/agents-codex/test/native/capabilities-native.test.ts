@@ -1040,6 +1040,8 @@ describe('public live capabilities and checkpoint advice', () => {
         for (const wire of result.events) {
           const event = parseEvent(wire);
           if (event.msg._sdk_python_tool) {
+            // Keep the exact receiver for the later capability assertion.
+            // eslint-disable-next-line @typescript-eslint/no-this-alias
             owner = this;
             keys = '[' + encodeReceipt(event.msg) + ']';
             if (typeof event.msg.turnId !== 'string')

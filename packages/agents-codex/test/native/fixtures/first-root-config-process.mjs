@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import console from 'node:console';
+import process from 'node:process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -44,6 +46,7 @@ async function close(thread) {
   assert.equal(await thread._close_report(), null);
   threads.delete(thread);
 }
+const failures = [];
 try {
   await valid();
   const prepared = await create(true),
@@ -112,17 +115,18 @@ try {
       freshOpeningReload: true,
     }),
   );
+} catch (error) {
+  failures.push(error);
 } finally {
   const results = await Promise.allSettled(
     [...threads].map((t) => t._close_report()),
   );
   const owners = await Promise.allSettled([...engines].map((e) => e.close()));
-  const failures = [...results, ...owners].filter(
-    (r) => r.status === 'rejected',
+  failures.push(
+    ...[...results, ...owners]
+      .filter((r) => r.status === 'rejected')
+      .map((r) => r.reason),
   );
-  if (failures.length)
-    throw new AggregateError(
-      failures.map((r) => r.reason),
-      'Fixture cleanup failed',
-    );
 }
+if (failures.length)
+  throw new AggregateError(failures, 'Fixture execution or cleanup failed');

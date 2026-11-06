@@ -1590,15 +1590,31 @@ describe('exact request waits with the native pending owner', () => {
       if ('requests' in completed)
         throw new Error('Root exposed child-only requests');
       expect(completed.finalOutput).toBe('root done');
-      // Observe both real child arrivals before discovering their issued handles.
-      const observed = new Set<string>();
+      // Requests and ordered child starts have independent publication paths.
+      const observed = new Map<string, string>();
       for await (const event of session.events()) {
         if (event.type === 'action_requested' && event.subagentId)
-          observed.add(event.subagentId);
+          observed.set(event.subagentId, event.turnId);
         if (observed.size === 2) break;
       }
-      const children = await Array.fromAsync(session.subagents());
-      expect(children).toHaveLength(2);
+      const children = await vi.waitFor(
+        async () => {
+          // Subagent is a frozen snapshot; refresh it until these exact Turns
+          // have been issued, rather than waiting on a stale null turn field.
+          const children = await Array.fromAsync(session.subagents());
+          expect(children).toHaveLength(2);
+          expect(children.map((child) => child.id).sort()).toEqual(
+            [...observed.keys()].sort(),
+          );
+          for (const child of children) {
+            expect(child.isLive).toBe(true);
+            expect(child.turn).not.toBeNull();
+            expect(child.turn?.turnId).toBe(observed.get(child.id));
+          }
+          return children;
+        },
+        { timeout: 5_000 },
+      );
       for (const child of children) {
         if (!child.turn) throw new Error('Expected a live issued child Turn');
         const batch = await child.turn.wait({ until: 'request' });

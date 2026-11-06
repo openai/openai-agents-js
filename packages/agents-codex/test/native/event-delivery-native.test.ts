@@ -208,6 +208,8 @@ it('keeps native read failures asynchronous after the owner closes', async () =>
     native.NativeThread.prototype,
     '_next_session_events',
   ).mockImplementation(function (this: NativeThread) {
+    // Keep the receiver to exercise its native method after close.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     receiver = this;
     const result = next.call(this);
     expect(result).toBeInstanceOf(Promise);
@@ -400,6 +402,8 @@ it.each(['certified-text', 'mixed-passive'] as const)(
       native.NativeThread.prototype,
       '_finish_child_event_reader',
     );
+    // The reader can run before opening assigns this session.
+    // eslint-disable-next-line prefer-const
     let session: Awaited<ReturnType<Agent['session']>> | undefined;
     let retired: NativeThread | undefined;
     let closing: Promise<void> | undefined;
@@ -451,6 +455,8 @@ it.each(['certified-text', 'mixed-passive'] as const)(
           ).toBe(true);
         }
         multiEventBatch = batch.events.length;
+        // The assertion must identify the exact retired receiver.
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
         retired = this;
         const withheld = batch.events[1]!;
         // Schedule the real public close at the exact access to the first
@@ -570,6 +576,8 @@ it.each(['certified-text', 'mixed-passive'] as const)(
               (event) => event.msg.type === 'agent_message_content_delta',
             );
       if (!backlogPrepared && backlogGate) {
+        // Preserve the source identity across native context replacement.
+        // eslint-disable-next-line @typescript-eslint/no-this-alias
         source = this;
         backlogPrepared = true;
         await vi.waitFor(
