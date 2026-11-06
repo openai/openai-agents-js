@@ -13,9 +13,11 @@ export const nativeInputPaths = [
   ':(glob)**/.cargo/**',
   ':(glob)**/.gitattributes',
   '.github/workflows/alpha-release-artifacts.yml',
+  '.github/workflows/native-bundle.yml',
   'scripts/native-bundle-inputs.mjs',
   'scripts/restore-native-bundle.mjs',
   'scripts/verified-native-bundle.mjs',
+  'scripts/select-native-bundles.mjs',
 ];
 
 export function nativeComparisonPaths() {

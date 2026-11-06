@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import process from 'node:process';
 import { nativeComparisonPaths } from './native-bundle-inputs.mjs';
 
 const repo = 'openai/openai-agents-js';
 const workflow = 'alpha-release-artifacts.yml';
-const uploadStep = 'Upload the native bundle';
+export const nativePlatforms = {
+  linux: 'linux-x64',
+  macos: 'darwin-arm64',
+  windows: 'win32-x64',
+};
 const api = (...args) =>
   JSON.parse(execFileSync('gh', ['api', ...args], { encoding: 'utf8' }));
 const approvedBranch = (branch) =>
@@ -25,30 +32,77 @@ export function isProducer(run, workflowId) {
   );
 }
 
-export function verifyUpload(jobName, asset, log) {
-  assert.match(asset.digest, /^sha256:[a-f0-9]{64}$/);
-  const sha256 = asset.digest.slice('sha256:'.length);
-  // Only the provider-recorded upload step can authorize these bytes.
-  const prefix = jobName + '\t' + uploadStep + '\t';
-  const lines = log.split(/\r?\n/).filter((line) => line.startsWith(prefix));
-  assert.ok(
-    lines.some((line) =>
-      line.endsWith(
-        'Artifact ' +
-          asset.name +
-          ' successfully finalized. Artifact ID ' +
-          asset.id,
-      ),
-    ),
-    'Artifact ID must come from the platform upload step',
+export function isNativePublication(asset, run, jobs, platform) {
+  const latest = (name) =>
+    jobs
+      .filter((job) => job.name === name)
+      .sort((a, b) => b.run_attempt - a.run_attempt)[0];
+  if (
+    jobs.some((job) => job.run_attempt > run.run_attempt) ||
+    latest('Package and test (' + platform + ')')?.conclusion !== 'success'
+  )
+    return false;
+  // Include prior attempts: SDK code must never precede a trusted publication.
+  const starts = jobs
+    .filter(
+      (job) =>
+        job.name.startsWith('Package and test (') &&
+        job.conclusion !== 'skipped',
+    )
+    .map((job) => Date.parse(job.started_at));
+  if (!starts.length || starts.some((time) => !Number.isFinite(time)))
+    return false;
+  const earliestSdk = Math.min(...starts);
+  const key = Object.keys(nativePlatforms).find(
+    (key) => nativePlatforms[key] === platform,
   );
+  const owners = [
+    ['Select native bundles', 'Publish native bundle (' + platform + ')'],
+    [
+      'produce-' + key + ' / Native bundle (' + platform + ')',
+      'Publish native bundle',
+    ],
+  ];
+  for (const [name, stepName] of owners) {
+    const job = latest(name);
+    const step = job?.steps?.find((entry) => entry.name === stepName);
+    if (job?.conclusion !== 'success' || step?.conclusion !== 'success')
+      continue;
+    assert.equal(job.run_id, run.id);
+    const created = Date.parse(asset.created_at);
+    const start = Date.parse(step.started_at);
+    const end = Date.parse(step.completed_at);
+    if (start <= created && created <= end && end < earliestSdk) return true;
+  }
+  return false;
+}
+
+export async function downloadNativeBundle(asset) {
   assert.ok(
-    lines.some((line) =>
-      line.endsWith('SHA256 digest of uploaded artifact is ' + sha256),
-    ),
-    'Artifact digest must come from the platform upload step',
+    Number.isSafeInteger(asset.id) && asset.id > 0,
+    'Invalid native artifact ID',
   );
-  return { id: asset.id, sha256 };
+  assert.match(asset.sha256, /^[a-f0-9]{64}$/);
+  const response = await globalThis.fetch(
+    'https://api.github.com/repos/' +
+      repo +
+      '/actions/artifacts/' +
+      asset.id +
+      '/zip',
+    {
+      headers: { Authorization: 'Bearer ' + process.env.GH_TOKEN },
+      signal: globalThis.AbortSignal.timeout(180_000),
+    },
+  );
+  if ([404, 410].includes(response.status)) return undefined;
+  assert.ok(response.ok, 'Native download returned HTTP ' + response.status);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    asset.sha256,
+    'Native bundle checksum mismatch',
+  );
+  return bytes;
 }
 
 export function findNativeBundle(inputs, platform) {
@@ -112,47 +166,9 @@ export function findNativeBundle(inputs, platform) {
       '--slurp',
       path + '/jobs?filter=all&per_page=100',
     ).flatMap((page) => page.jobs);
-    const jobName = 'Package and test (' + platform + ')';
-    const job = jobs
-      .filter((entry) => entry.name === jobName)
-      .sort((a, b) => b.run_attempt - a.run_attempt)[0];
-    const upload = job?.steps.find((step) => step.name === uploadStep);
-    // Reruns can start after the run read or succeed without a fresh upload.
-    if (job?.conclusion !== 'success' || upload?.conclusion !== 'success')
-      continue;
-    assert.equal(job.run_id, run.id);
-    if (job.run_attempt > run.run_attempt) continue;
-    const log = execFileSync(
-      'gh',
-      [
-        'run',
-        'view',
-        '--repo',
-        repo,
-        '--job',
-        String(job.id),
-        '--attempt',
-        String(job.run_attempt),
-        '--log',
-      ],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-    );
-    try {
-      return { ...verifyUpload(jobName, asset, log), run: run.id };
-    } catch (error) {
-      // A successful rerun can replace the listed artifact before the log read.
-      try {
-        if (api('repos/' + repo + '/actions/artifacts/' + asset.id).expired)
-          continue;
-      } catch (recheckError) {
-        if (
-          recheckError.status === 1 &&
-          /\(HTTP (404|410)\)/.test(String(recheckError.stderr))
-        )
-          continue;
-      }
-      throw error;
-    }
+    if (!isNativePublication(asset, run, jobs, platform)) continue;
+    assert.match(asset.digest, /^sha256:[a-f0-9]{64}$/);
+    return { id: asset.id, sha256: asset.digest.slice(7), run: run.id };
   }
   return undefined;
 }
