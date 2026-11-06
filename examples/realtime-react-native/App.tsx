@@ -7,6 +7,7 @@ import {
   Platform,
   SafeAreaView,
   ScrollView,
+  type ScrollViewInstance,
   StyleSheet,
   Text,
   TextInput,
@@ -37,7 +38,7 @@ const agent = new RealtimeAgent({
 
 export default function App() {
   const sessionRef = useRef<RealtimeSession | null>(null);
-  const eventLogRef = useRef<ScrollView | null>(null);
+  const eventLogRef = useRef<ScrollViewInstance | null>(null);
   const connectingRef = useRef(false);
   const connectionGenerationRef = useRef(0);
   const [status, setStatus] = useState('disconnected');
