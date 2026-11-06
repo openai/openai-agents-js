@@ -1532,6 +1532,28 @@ impl NativeThread {
         serde_json::to_string(&value).map_err(native_error)
     }
 
+    #[napi(js_name = "_set_paused_goal")]
+    pub async fn _set_paused_goal(
+        &self,
+        objective: String,
+        token_budget: Option<String>,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        inner.engine.operation(false).map_err(native_error)?;
+        inner.instructions.check_usable().map_err(native_error)?;
+        graph_stop::check_mutation(&inner).map_err(native_error)?;
+        let token_budget = token_budget
+            .map(|budget| budget.parse::<i64>())
+            .transpose()
+            .map_err(input_error)?;
+        let value = goals::set_paused(&inner, &objective, token_budget)
+            .await
+            .map_err(native_error)?;
+        Ok(value.to_string())
+    }
+
     // The Session owns callback settlement and holds its state gate during capture.
 
     #[napi(js_name = "_export_checkpoint")]

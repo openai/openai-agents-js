@@ -1,18 +1,20 @@
-//! Retained checkpoint goals backed by the native goal store.
+//! Local and retained checkpoint goals backed by the native goal store.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
 use chrono::DateTime;
+use codex_core::context::UserGoalUpdate;
 use codex_core_api::{Config, StateDbHandle};
 use codex_goal_extension::{
-    GoalObjectiveUpdate, GoalService, GoalSetRequest, GoalTokenBudgetUpdate,
+    GoalObjectiveUpdate, GoalService, GoalServiceError, GoalSetRequest, GoalTokenBudgetUpdate,
 };
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::{ThreadGoalStatus, validate_thread_goal_objective};
+use codex_protocol::protocol::{ThreadGoal, ThreadGoalStatus, validate_thread_goal_objective};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{EngineState, ThreadState};
+use crate::local_storage::LocalChecklistStore;
 
 pub(crate) fn tool_names() -> std::collections::HashSet<codex_tools::ToolName> {
     [
@@ -25,7 +27,9 @@ pub(crate) fn tool_names() -> std::collections::HashSet<codex_tools::ToolName> {
     .collect()
 }
 
-pub(crate) async fn read(state: &ThreadState) -> Result<Option<serde_json::Value>> {
+async fn local_authority(
+    state: &ThreadState,
+) -> Result<(&LocalChecklistStore, &GoalBackend, Arc<Config>)> {
     ensure!(!state.is_closed(), "goal owner is closed");
     let store = state
         .engine
@@ -42,21 +46,89 @@ pub(crate) async fn read(state: &ThreadState) -> Result<Option<serde_json::Value
         !config.ephemeral && config.features.enabled(codex_core_api::Feature::Goals),
         "goal requires current NativeGoals"
     );
+    Ok((store, backend, config))
+}
+
+pub(crate) async fn read(state: &ThreadState) -> Result<Option<serde_json::Value>> {
+    let (store, backend, _) = local_authority(state).await?;
     store.check_failure(Some(state.id)).await?;
     let goal = backend
         .service
         .get_thread_goal(&backend.state_db, state.id)
         .await?;
     store.check_failure(Some(state.id)).await?;
-    Ok(goal.map(|goal| {
-        let mut value = serde_json::json!({
-            "threadId": goal.thread_id.to_string(), "objective": goal.objective, "status": goal.status,
-            "tokensUsed": goal.tokens_used.to_string(), "timeUsedSeconds": goal.time_used_seconds.to_string(),
-            "createdAt": goal.created_at.to_string(), "updatedAt": goal.updated_at.to_string()
-        });
-        if let Some(budget) = goal.token_budget { value["tokenBudget"] = budget.to_string().into(); }
-        value
-    }))
+    Ok(goal.map(goal_value))
+}
+
+/// The caller holds the native mutation lock through validation and publication.
+pub(crate) async fn set_paused(
+    state: &ThreadState,
+    objective: &str,
+    token_budget: Option<i64>,
+) -> Result<serde_json::Value> {
+    let (store, backend, config) = local_authority(state).await?;
+    let snapshot = state.thread.config_snapshot().await;
+    ensure!(
+        !snapshot.session_source.is_non_root_agent() && snapshot.parent_thread_id.is_none(),
+        "setPausedGoal requires a root thread"
+    );
+    let tools = state
+        .thread
+        .thread_extension_data()
+        .get::<crate::python_tools::PythonTools>()
+        .context("setPausedGoal requires a managed Session")?;
+    tools.check_idle(&state.thread).await?;
+    store.check_failure(Some(state.id)).await?;
+
+    let objective = objective.trim();
+    let status = Some(ThreadGoalStatus::Paused);
+    let outcome = backend
+        .service
+        .set_thread_goal(
+            &backend.state_db,
+            GoalSetRequest {
+                thread_id: state.id,
+                objective: GoalObjectiveUpdate::Set(objective),
+                status,
+                token_budget: token_budget.map_or(GoalTokenBudgetUpdate::Keep, |budget| {
+                    GoalTokenBudgetUpdate::Set(Some(budget))
+                }),
+                max_goal_token_budget: config.max_goal_token_budget,
+            },
+            async {
+                state
+                    .thread
+                    .record_user_goal_update(UserGoalUpdate::Set {
+                        objective: Some(objective.to_owned()),
+                        status,
+                    })
+                    .await
+                    .map_err(|err| {
+                        GoalServiceError::Internal(format!(
+                            "failed to record goal instruction: {err}"
+                        ))
+                    })
+            },
+        )
+        .await?;
+    outcome.apply_runtime_effects(&backend.service).await;
+    Ok(goal_value(outcome.goal))
+}
+
+fn goal_value(goal: ThreadGoal) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "threadId": goal.thread_id.to_string(),
+        "objective": goal.objective,
+        "status": goal.status,
+        "tokensUsed": goal.tokens_used.to_string(),
+        "timeUsedSeconds": goal.time_used_seconds.to_string(),
+        "createdAt": goal.created_at.to_string(),
+        "updatedAt": goal.updated_at.to_string(),
+    });
+    if let Some(budget) = goal.token_budget {
+        value["tokenBudget"] = budget.to_string().into();
+    }
+    value
 }
 
 /// Constructed only from current application runtime configuration.

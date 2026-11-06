@@ -1,7 +1,9 @@
 import { fork, type ChildProcess } from 'node:child_process';
-import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { setImmediate, setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -12,7 +14,7 @@ import {
   tool,
 } from '../../src';
 import { z } from 'zod';
-import { binding } from '../../src/runtime/binding';
+import { binding, type NativeThread } from '../../src/runtime/binding';
 import { captureTools } from '../../src/runtime/tools';
 import { ModelServer, call, message } from './fixtures/model-server';
 
@@ -118,6 +120,74 @@ async function worker(server: ModelServer, config: Record<string, unknown>) {
 }
 
 describe('current local native goals through Core', () => {
+  it('sets and updates a goal without model work and reopens it in a fresh process', async () => {
+    const server = new ModelServer([]);
+    const path = await profile();
+    await using provider = await providerFor(server);
+    const agent = agentFor(provider);
+    const session = await agent.session({ storage: localStorage(path) });
+    let updated;
+    try {
+      expect(await session.goal()).toBeNull();
+      expect(await session.checklist()).toBeNull();
+      const created = await session.setPausedGoal('  Prepare a draft  ');
+      expect(created).toMatchObject({
+        threadId: session.id,
+        objective: 'Prepare a draft',
+        status: 'paused',
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+      });
+      expect(created).not.toHaveProperty('tokenBudget');
+      expect(Object.isFrozen(created)).toBe(true);
+      updated = await session.setPausedGoal('Prepare the final draft', {
+        tokenBudget: 9223372036854775807n,
+      });
+      expect(updated).toMatchObject({
+        threadId: created.threadId,
+        createdAt: created.createdAt,
+        objective: 'Prepare the final draft',
+        status: 'paused',
+        tokenBudget: 9223372036854775807n,
+      });
+      expect(await session.goal()).toEqual(updated);
+      expect(await session.checklist()).toBeNull();
+      await expect(session.setPausedGoal('   ')).rejects.toThrow(/objective/i);
+      for (const tokenBudget of [0n, 9223372036854775808n])
+        await expect(
+          session.setPausedGoal('Invalid budget', { tokenBudget }),
+        ).rejects.toThrow();
+      for (const tokenBudget of [Number.MAX_SAFE_INTEGER + 1, 1.5])
+        await expect(
+          session.setPausedGoal('Inexact budget', { tokenBudget }),
+        ).rejects.toThrow('safe integer or bigint');
+      expect(await session.goal()).toEqual(updated);
+    } finally {
+      await session.close();
+    }
+    {
+      await using denied = await agent.session({
+        storage: localStorage(path),
+        resume: session.id,
+        tools: [],
+      });
+      await expect(denied.setPausedGoal('Unauthorized update')).rejects.toThrow(
+        'current NativeGoals',
+      );
+    }
+    const reopened = await worker(server, {
+      profile: path,
+      resume: session.id,
+      mode: 'inspect',
+    });
+    expect(reopened.code, reopened.stderr).toBe(0);
+    expect(reopened.value.pid).not.toBe(process.pid);
+    expect(reopened.value.goal).toEqual(updated);
+    expect(reopened.value.turnsBefore).toEqual([]);
+    expect(reopened.value.turnsAfter).toEqual([]);
+    expect(server.requests).toHaveLength(0);
+  }, 60_000);
+
   it.each([false, true])(
     'admits goal-only or mixed managed opening: %s',
     async (managed) => {
@@ -177,7 +247,7 @@ describe('current local native goals through Core', () => {
     },
   );
 
-  it('reports native optional budgets and budget-limited accounting', async () => {
+  it('preserves native identity, budget and budget-limited accounting across goal updates', async () => {
     const server = new ModelServer(
       [
         [
@@ -187,19 +257,57 @@ describe('current local native goals through Core', () => {
             { callId: 'budget' },
           ),
         ],
-        [message('budget used')],
+        async () => {
+          await delay(1100);
+          return [message('budget used')];
+        },
       ],
       usage,
     );
     await using provider = await providerFor(server);
+    const path = await profile();
     await using session = await agentFor(provider).session({
-      storage: localStorage(await profile()),
+      storage: localStorage(path),
     });
     await (await session.submit('Create a small budget goal.')).wait();
     const goal = (await session.goal())!;
     expect(goal.status).toBe('budgetLimited');
     expect(goal.tokenBudget).toBe(1);
     expect(goal.tokensUsed >= 1).toBe(true);
+    expect(goal.timeUsedSeconds >= 1).toBe(true);
+    const filename = (await readdir(path)).find((name) =>
+      /^goals_\d+\.sqlite$/.test(name),
+    );
+    if (!filename) throw new Error('The local profile has no goal database');
+    const db = new DatabaseSync(join(path, filename));
+    try {
+      const identity = db.prepare(
+        'SELECT goal_id FROM thread_goals WHERE thread_id = ?',
+      );
+      const original = identity.get(session.id);
+      expect(original?.goal_id).toEqual(expect.any(String));
+      const updated = await session.setPausedGoal('Keep the limited goal');
+      expect(updated).toMatchObject({
+        threadId: goal.threadId,
+        objective: 'Keep the limited goal',
+        status: 'budgetLimited',
+        tokenBudget: goal.tokenBudget,
+        tokensUsed: goal.tokensUsed,
+        timeUsedSeconds: goal.timeUsedSeconds,
+        createdAt: goal.createdAt,
+      });
+      expect(identity.get(session.id)).toEqual(original);
+
+      db.exec(`CREATE TRIGGER reject_goal_update BEFORE UPDATE ON thread_goals
+        BEGIN SELECT RAISE(ABORT, 'fixture goal storage failure'); END;`);
+      await expect(session.setPausedGoal('Failed goal update')).rejects.toThrow(
+        'fixture goal storage failure',
+      );
+      expect(await session.goal()).toEqual(updated);
+      expect(identity.get(session.id)).toEqual(original);
+    } finally {
+      db.close();
+    }
     expect(server.requests).toHaveLength(2);
   });
 
@@ -266,7 +374,7 @@ describe('current local native goals through Core', () => {
     120_000,
   );
 
-  it('keeps one native writer and refuses stale goal reads after actual close', async () => {
+  it('keeps one native writer and refuses stale goal access after actual close', async () => {
     const server = new ModelServer([]);
     await using provider = await providerFor(server);
     const agent = agentFor(provider);
@@ -276,14 +384,106 @@ describe('current local native goals through Core', () => {
       await expect(
         agent.session({ storage, resume: source.id }),
       ).rejects.toThrow();
-      expect(await source.goal()).toBeNull();
+      await source.setPausedGoal('Keep the current owner');
     } finally {
       await source.close();
     }
     await expect(source.goal()).rejects.toThrow('closed');
     await using next = await agent.session({ storage, resume: source.id });
     expect(next.id).toBe(source.id);
-    expect(await next.goal()).toBeNull();
+    await expect(source.setPausedGoal('Stale update')).rejects.toThrow(
+      'settled open session',
+    );
+    expect(await next.goal()).toMatchObject({
+      objective: 'Keep the current owner',
+    });
+    await using portable = await agent.session({ tools: [] });
+    await expect(portable.setPausedGoal('Portable update')).rejects.toThrow(
+      'requires LocalStorage',
+    );
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('joins an admitted goal mutation before closing its native writer', async () => {
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    const agent = agentFor(provider);
+    const storage = localStorage(await profile());
+    const session = await agent.session({ storage });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const thread = (await binding()).NativeThread.prototype;
+    const setPaused = thread._set_paused_goal;
+    const setter = vi
+      .spyOn(thread, '_set_paused_goal')
+      .mockImplementationOnce(async function (this: NativeThread, ...args) {
+        entered.resolve();
+        await release.promise;
+        return setPaused.apply(this, args);
+      });
+    const closingNative = vi.spyOn(thread, '_close_report');
+    const update = session.setPausedGoal('Write before closing', {
+      tokenBudget: 4000,
+    });
+    try {
+      await Promise.race([entered.promise, update]);
+      const closing = session.close();
+      await expect(session.setPausedGoal('Write during close')).rejects.toThrow(
+        'settled open session',
+      );
+      await setImmediate();
+      expect(closingNative).not.toHaveBeenCalled();
+      release.resolve();
+      const goal = await update;
+      expect(goal.tokenBudget).toBe(4000);
+      await closing;
+      await using reopened = await agent.session({
+        storage,
+        resume: session.id,
+      });
+      expect(await reopened.goal()).toEqual(goal);
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await update.catch(() => {});
+      setter.mockRestore();
+      closingNative.mockRestore();
+      await session.close();
+    }
+  });
+
+  it('rejects writes from a retired Session and preserves the retained goal', async () => {
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    const agent = agentFor(provider);
+    const storage = localStorage(await profile());
+    const session = await agent.session({ storage });
+    const thread = (await binding()).NativeThread.prototype;
+    const failure = new Error(
+      'Application instruction acceptance is uncertain',
+    );
+    const call = vi.spyOn(thread, 'call').mockRejectedValueOnce(failure);
+    const receipt = vi
+      .spyOn(thread, '_application_instructions')
+      .mockImplementationOnce(() => {
+        throw failure;
+      });
+    let goal;
+    try {
+      goal = await session.setPausedGoal('Keep the accepted goal');
+      await expect(session.update({ instructions: 'Uncertain' })).rejects.toBe(
+        failure,
+      );
+      await expect(session.setPausedGoal('Retired update')).rejects.toThrow(
+        'unavailable after failed persistence or cleanup',
+      );
+    } finally {
+      call.mockRestore();
+      receipt.mockRestore();
+      await session.close();
+    }
+    await using reopened = await agent.session({ storage, resume: session.id });
+    expect(await reopened.goal()).toEqual(goal);
     expect(server.requests).toHaveLength(0);
   });
 
@@ -700,6 +900,25 @@ describe('current local native goals through Core', () => {
       await (await session.submit('Create an active goal.')).wait();
       const old = await session.submit('This old update will be cancelled.');
       await entered;
+      const reader = vi.spyOn(
+        (await binding()).NativeThread.prototype,
+        '_read_goal',
+      );
+      let before;
+      let active: NativeThread;
+      try {
+        before = await session.goal();
+        active = reader.mock.contexts[0] as NativeThread;
+      } finally {
+        reader.mockRestore();
+      }
+      await expect(session.setPausedGoal('Busy update')).rejects.toThrow(
+        'settled open session',
+      );
+      await expect(
+        active._set_paused_goal('Busy native update'),
+      ).rejects.toThrow('idle, open native thread');
+      expect(await session.goal()).toEqual(before);
       const cancelled = session.interrupt();
       release();
       await cancelled;
