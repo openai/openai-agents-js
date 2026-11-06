@@ -176,9 +176,9 @@ jobs:
       - name: Compile examples
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm -r build-check
-      - name: Run Prisma memory regression tests
+      - name: Run SQLite memory regression tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
-        run: pnpm --filter memory test:prisma
+        run: pnpm --filter memory test:sqlite
       - name: Run tests
         if: ${{ needs.changes.outputs.run_ci == 'true' }}
         run: pnpm test

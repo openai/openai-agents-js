@@ -24,7 +24,7 @@ You do not need to call `toInputList()` or combine history between turns yoursel
 
 - `OpenAIConversationsSession` uses the Conversations API.
 - `MemorySession` stores history in process memory for local development.
-- A custom `Session` uses your own storage backend. Try the [file and Prisma session examples](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/memory).
+- A custom `Session` uses your own storage backend. Try the [file and SQLite session examples](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/memory).
 
 With an OpenAI Responses model, `OpenAIResponsesCompactionSession` can automatically shrink stored history via [`responses.compact`](https://platform.openai.com/docs/api-reference/responses/compact). See the compaction section below for backing-session restrictions.
 

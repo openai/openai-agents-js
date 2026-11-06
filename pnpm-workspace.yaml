@@ -11,11 +11,6 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   sharp: true
-  # used only in examples/memory
-  better-sqlite3: true
-  '@prisma/client': true
-  '@prisma/engines': true
-  prisma: true
 
 overrides:
   '@types/node': 22.19.13
@@ -28,10 +23,6 @@ overrides:
   '@hey-api/json-schema-ref-parser@1.4.2>js-yaml': 4.3.2
   # Workspace-only security fix; remove when Blaxel ships a patched TOML dependency.
   '@blaxel/core@0.2.82>toml': 4.2.0
-  # Remove when Prisma resolves mysql2 with the auth and decompression fixes.
-  'prisma@7.10.0>mysql2': 3.23.1
-  # Remove when Prisma config resolves deepmerge-ts with the recursive-merge fix.
-  '@prisma/config@7.10.0>deepmerge-ts': 8.0.2
 
 publishBranch: main
 minimumReleaseAge: 10080
@@ -40,8 +31,5 @@ minimumReleaseAgeExclude:
 blockExoticSubdeps: true
 strictDepBuilds: true
 patchedDependencies:
-  # Preserve Prisma 6's BEGIN IMMEDIATE behavior and release on begin failure.
-  # Recheck the contention tests before removing this patch on an adapter update.
-  '@prisma/adapter-better-sqlite3@7.10.0': patches/@prisma__adapter-better-sqlite3@7.10.0.patch
   # Restore the stream type mapping for TypeScript node resolution until upstream restores it.
   eventsource-parser@3.1.1: patches/eventsource-parser@3.1.1.patch
