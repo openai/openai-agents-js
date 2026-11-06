@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -12,6 +12,7 @@ import {
   nativeGoals,
   selectMcpTools,
   tool,
+  type MCPToolStartObservation,
   type Session,
 } from '../../src';
 import { jsonObject, type JsonObject } from '../../src/runtime/binding';
@@ -224,38 +225,37 @@ it('preserves the exact opening namespace ceiling across normal updates', async 
   model.assertExhausted();
 });
 
-it('reopens a local profile with a current MCP selection and rejects denied calls before dispatch', async () => {
+it('preserves the exact hyphenated MCP identity across local profile restore and approval', async () => {
   const home = await mkdtemp(join(tmpdir(), 'selected-mcp-local-'));
   profiles.push(home);
   const storage = localStorage(join(home, 'profile'));
+  const namespace = 'crm-v2';
+  const name = 'lookup-record';
   const model = new ModelServer([
-    [
-      call(
-        'lookup',
-        { value: 'original' },
-        { namespace: 'crm', callId: 'first' },
-      ),
-    ],
+    [call(name, { value: 'original' }, { namespace, callId: 'first' })],
     [message('saved')],
-    [
-      call(
-        'lookup',
-        { value: 'current' },
-        { namespace: 'crm', callId: 'second' },
-      ),
-    ],
+    [call(name, { value: 'current' }, { namespace, callId: 'second' })],
     [message('reopened')],
-    [call('lookup', { value: 'denied' }, { namespace: 'crm', callId: 'deny' })],
+    [call(name, { value: 'denied' }, { namespace, callId: 'deny' })],
   ]);
   const provider = await providerFor(model);
+  const onToolStart = vi.fn<(event: MCPToolStartObservation) => void>();
+  const approvals: Pick<MCPToolStartObservation, 'callId' | 'toolName'>[] = [];
   async function agentFor(peer: BorrowedPeer, approvedId: string) {
-    peer.declarations.push(borrowedDeclaration('write'));
+    peer.declarations = [
+      borrowedDeclaration(name),
+      borrowedDeclaration('lookup_record'),
+    ];
+    Object.assign(peer, { onToolStart });
     const tools = await selectMcpTools(
-      { name: 'crm', server: peer },
+      { name: namespace, server: peer },
       {
         context: undefined,
-        toolNames: ['lookup'],
-        approval: ({ callId }) => callId === approvedId,
+        toolNames: [name],
+        approval: ({ callId, toolName }) => {
+          approvals.push({ callId, toolName });
+          return callId === approvedId;
+        },
       },
     );
     return new Agent({
@@ -292,15 +292,24 @@ it('reopens a local profile with a current MCP selection and rejects denied call
 
   for (const request of [model.requests[0], model.requests[2]]) {
     expect(
-      wireTools(request).filter((entry) => entry.namespace === 'crm'),
+      wireTools(request).filter((entry) => entry.namespace === namespace),
     ).toEqual([
       {
-        namespace: 'crm',
-        name: 'lookup',
+        namespace,
+        name,
         parameters: original.declarations[0].inputSchema,
       },
     ]);
   }
+  expect(approvals).toEqual([
+    { callId: 'first', toolName: name },
+    { callId: 'second', toolName: name },
+    { callId: 'deny', toolName: name },
+  ]);
+  expect(onToolStart.mock.calls.map(([{ toolName }]) => toolName)).toEqual([
+    name,
+    name,
+  ]);
   const history = z.array(jsonObject).parse(model.requests[2].input);
   const priorResult = history.find(
     (item) => item.type === 'function_call_output' && item.call_id === 'first',
@@ -308,10 +317,10 @@ it('reopens a local profile with a current MCP selection and rejects denied call
   expect(JSON.stringify(priorResult?.output)).toContain('original');
   expect(
     original.callTool.mock.calls.map(([name, args]) => [name, args]),
-  ).toEqual([['lookup', { value: 'original' }]]);
+  ).toEqual([[name, { value: 'original' }]]);
   expect(
     current.callTool.mock.calls.map(([name, args]) => [name, args]),
-  ).toEqual([['lookup', { value: 'current' }]]);
+  ).toEqual([[name, { value: 'current' }]]);
   expect(original.close).not.toHaveBeenCalled();
   expect(current.close).not.toHaveBeenCalled();
   model.assertExhausted();

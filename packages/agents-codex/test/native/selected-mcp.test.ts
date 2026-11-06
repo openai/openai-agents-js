@@ -52,7 +52,7 @@ it('authenticates only the selected namespace and filters with captured real cla
   const runContext = new RunContext(context);
   const agent = new ClassicAgent<typeof context>({ name: 'selector' });
   const server = new BorrowedPeer();
-  server.declarations.push(borrowedDeclaration('hidden'));
+  server.declarations.push(borrowedDeclaration('hidden.tool'));
   const other = new BorrowedPeer();
   const authenticate = vi.fn(async () => {});
   const filter = vi.fn(
@@ -106,17 +106,17 @@ it('rejects missing filter context and unsupported hooks before authentication',
 
 it('uses blocked-wins filters and rejects a partial explicit selection', async () => {
   const server = new BorrowedPeer();
-  server.declarations.push(borrowedDeclaration('blocked'));
+  server.declarations.push(borrowedDeclaration('blocked.tool'));
   server.toolFilter = {
-    allowedToolNames: ['lookup', 'blocked'],
-    blockedToolNames: ['blocked'],
+    allowedToolNames: ['lookup', 'blocked.tool'],
+    blockedToolNames: ['blocked.tool'],
   };
   await expect(
     selectMcpTools(
       { name: 'crm', server },
       {
         context: undefined,
-        toolNames: ['lookup', 'blocked'],
+        toolNames: ['lookup', 'blocked.tool'],
       },
     ),
   ).rejects.toThrow('filtered out');
@@ -127,6 +127,60 @@ it('uses blocked-wins filters and rejects a partial explicit selection', async (
   expect(selected.map((tool) => tool.name)).toEqual(['lookup']);
 });
 
+it.each(['crm.tenant', 'café', 'crm\n', 'tool_search'])(
+  'rejects an unsupported namespace %j before authentication',
+  async (name) => {
+    const server = new BorrowedPeer();
+    const authenticate = vi.fn();
+    await expect(
+      selectMcpTools({ name, server, authenticate }, { context: undefined }),
+    ).rejects.toThrow(TypeError);
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(server.invalidateToolsCache).not.toHaveBeenCalled();
+    expect(server.listTools).not.toHaveBeenCalled();
+    expect(server.callTool).not.toHaveBeenCalled();
+    expect(server.close).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['lookup.record', 'récord', 'lookup\n'])(
+  'rejects an unsupported selected tool name %j without dispatch or close',
+  async (name) => {
+    const server = new BorrowedPeer();
+    server.declarations.push(borrowedDeclaration(name));
+    await expect(
+      selectMcpTools(
+        { name: 'crm', server },
+        { context: undefined, toolNames: [name] },
+      ),
+    ).rejects.toThrow(TypeError);
+    expect(server.callTool).not.toHaveBeenCalled();
+    expect(server.close).not.toHaveBeenCalled();
+  },
+);
+
+it('admits a 128-byte identity beside invalid siblings and rejects a selected 129-byte identity', async () => {
+  const server = new BorrowedPeer();
+  const namespace = { name: 'crm-v2', server };
+  const atLimit = 'a'.repeat(120);
+  const overLimit = `${atLimit}b`;
+  server.declarations.push(
+    borrowedDeclaration(atLimit),
+    borrowedDeclaration(overLimit),
+    borrowedDeclaration('lookup.record'),
+  );
+  const selected = await selectMcpTools(namespace, {
+    context: undefined,
+    toolNames: [atLimit],
+  });
+  expect(selected.map((tool) => tool.name)).toEqual([atLimit]);
+  await expect(
+    selectMcpTools(namespace, { context: undefined, toolNames: [overLimit] }),
+  ).rejects.toThrow('128 bytes');
+  expect(server.callTool).not.toHaveBeenCalled();
+  expect(server.close).not.toHaveBeenCalled();
+});
+
 it('preserves raw schemas and emits one slot envelope for each tool in a namespace', async () => {
   const server = new BorrowedPeer();
   Object.assign(server.declarations[0].inputSchema, {
@@ -135,7 +189,7 @@ it('preserves raw schemas and emits one slot envelope for each tool in a namespa
   });
   server.declarations.push(borrowedDeclaration('save'));
   const selected = await selectMcpTools(
-    { name: 'crm', description: 'CRM records', server },
+    { name: '_agents_sdk', description: 'CRM records', server },
     { context: undefined },
   );
   const specs: Array<{
@@ -145,8 +199,8 @@ it('preserves raw schemas and emits one slot envelope for each tool in a namespa
   expect(
     specs.map((spec) => [spec.name, spec.tools.map((tool) => tool.name)]),
   ).toEqual([
-    ['crm', ['lookup']],
-    ['crm', ['save']],
+    ['_agents_sdk', ['lookup']],
+    ['_agents_sdk', ['save']],
   ]);
   expect(specs[0].tools[0].inputSchema).toEqual(
     server.declarations[0].inputSchema,

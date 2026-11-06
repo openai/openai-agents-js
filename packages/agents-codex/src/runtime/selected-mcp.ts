@@ -41,6 +41,8 @@ export interface SelectMcpToolsOptions<Context = unknown> {
   readonly signal?: AbortSignal;
 }
 
+const invalidProviderNameCharacter = /[^A-Za-z0-9_-]/;
+
 function freezeJson<T extends JsonValue>(value: T): T {
   if (value !== null && typeof value === 'object') {
     for (const child of Object.values(value)) freezeJson(child);
@@ -131,6 +133,10 @@ function outputOfMcp(
 
 /**
  * Authenticate and materialize one selected namespace for a future Session.
+ * The namespace and selected tool names must use only ASCII letters, digits,
+ * underscores, and hyphens. The namespace `tool_search` is reserved. Each
+ * namespace and tool name pair must fit in 128 bytes including two separator
+ * bytes. Admitted names are used exactly as supplied.
  * Call again for refresh; existing snapshots and Sessions remain unchanged.
  * The caller owns connect/close and must serialize unsafe reauthentication of
  * a shared mutable client, or use separate clients for different auth scopes.
@@ -160,6 +166,12 @@ export async function selectMcpTools<Context = unknown>(
     throw new TypeError(
       'MCP namespace requires a name and optional string description',
     );
+  if (invalidProviderNameCharacter.test(name))
+    throw new TypeError(
+      'MCP namespace name must use only ASCII letters, digits, underscores, and hyphens',
+    );
+  if (name === 'tool_search')
+    throw new TypeError('MCP namespace tool_search is reserved');
   if (authenticate !== undefined && typeof authenticate !== 'function')
     throw new TypeError('MCP authenticate must be a function');
   if (
@@ -244,6 +256,14 @@ export async function selectMcpTools<Context = unknown>(
       if (!accepted) continue;
     }
     if (requested && !requested.includes(declaration.name)) continue;
+    const rawName = declaration.name;
+    if (invalidProviderNameCharacter.test(rawName))
+      throw new TypeError(
+        'Selected MCP tool name must use only ASCII letters, digits, underscores, and hyphens',
+      );
+    // Both names are ASCII, so their string lengths are byte lengths.
+    if (name.length + rawName.length + 2 > 128)
+      throw new TypeError('Selected MCP tool identity exceeds 128 bytes');
     const schema = jsonObject.parse(declaration.inputSchema);
     if (
       schema.type !== 'object' ||
@@ -254,7 +274,6 @@ export async function selectMcpTools<Context = unknown>(
         'MCP declarations require an object input schema and optional string description',
       );
     const parameters = freezeJson(jsonValue.parse(schema));
-    const rawName = declaration.name;
     tools.push(
       createNamespacedFunctionTool<Context>({
         namespace: capturedNamespace,
