@@ -34,6 +34,7 @@ export type {
   TurnNeedsAttention,
   RequestWaitOptions,
   InteractionWaitOptions,
+  ModelContextSnapshot,
   SubmitOptions,
   SuppliedCompactionOptions,
 } from './runtime/session';

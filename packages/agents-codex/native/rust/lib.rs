@@ -887,6 +887,20 @@ pub struct ContextChange {
 #[napi]
 impl ContextChange {
     #[napi]
+    pub async fn context(&self) -> napi::Result<String> {
+        serde_json::to_string(
+            &self
+                .change
+                .lock()
+                .await
+                .as_ref()
+                .ok_or_else(|| native_error("context change is released"))?
+                .context(),
+        )
+        .map_err(native_error)
+    }
+
+    #[napi]
     pub async fn options(&self) -> napi::Result<String> {
         serde_json::to_string(
             &self
@@ -901,14 +915,18 @@ impl ContextChange {
     }
 
     #[napi]
-    pub async fn prepare(&self, summary: String) -> napi::Result<String> {
+    pub async fn prepare(
+        &self,
+        summary: String,
+        retained_indices: Vec<u32>,
+    ) -> napi::Result<String> {
         let mut checkpoint = self
             .change
             .lock()
             .await
             .as_ref()
             .ok_or_else(|| native_error("context change is released"))?
-            .prepare(&summary)
+            .prepare(&summary, retained_indices)
             .map_err(native_error)?;
         usage::checkpoint_to_wire(&mut checkpoint).map_err(native_error)?;
         serde_json::to_string(&checkpoint).map_err(native_error)
@@ -1208,6 +1226,14 @@ impl NativeThread {
                 .map_err(native_error)
         })
         .await
+    }
+
+    #[napi(js_name = "_read_model_context")]
+    pub async fn _read_model_context(&self) -> napi::Result<String> {
+        let state = self.current()?;
+        let _operation = state.engine.operation(false).map_err(native_error)?;
+        let snapshot = context::read(&state).await.map_err(native_error)?;
+        serde_json::to_string(&snapshot).map_err(native_error)
     }
 
     #[napi(js_name = "_begin_context_change")]

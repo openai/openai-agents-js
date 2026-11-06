@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import type { _ContextChange } from '../../native/index.js';
+import type { _ContextChange, NativeThread } from '../../native/index.js';
 import {
   Agent,
   NativeProvider,
   localStorage,
+  manualTool,
   parseSessionState,
   readSessionInstructions,
   tool,
@@ -113,32 +114,51 @@ ${openingFile}`;
     },
   );
 
-  it('preserves canonical audit, identity, receipts and current bindings through JSON restore', async () => {
+  it('keeps selected originals in order with canonical audit and receipts through JSON restore', async () => {
+    const originalInput = 'Remember original audit text';
     const summary = '  Supplied context: the project code is amber.\n';
-    const checkRequest = (request: unknown) => {
-      const text = JSON.stringify(request);
-      expect(text).toContain(summary.trim());
-      expect(text).toContain('Current instructions');
+    const checkRequest = (input: unknown) => {
+      const text = JSON.stringify(input);
       // Canonical developer envelopes retain superseded instruction revisions.
       // The latest application instructions must follow the original revision.
+      const expected = [
+        'Stale agent instructions',
+        originalInput,
+        '"type":"function_call"',
+        'lookup receipt 1',
+        summary.trim(),
+      ];
+      let position = -1;
+      for (const original of expected) {
+        const next = text.indexOf(original, position + 1);
+        expect(next, original).toBeGreaterThan(position);
+        position = next;
+      }
       expect(text.lastIndexOf('Current instructions')).toBeGreaterThan(
-        text.lastIndexOf('Stale agent instructions'),
+        text.indexOf('Stale agent instructions'),
       );
+      expect(text.split(originalInput)).toHaveLength(2);
+      expect(text.split('"call_id":"lookup-before"')).toHaveLength(3);
+      expect(text).not.toContain('Original answer');
+      expect(text).not.toContain('changed the exposed copy');
     };
-    const server = new ModelServer([
-      [call('lookup', {}, { callId: 'lookup-before' })],
-      [message('Original answer')],
-      (request) => {
-        checkRequest(request);
-        return [call('lookup', {}, { callId: 'lookup-after' })];
-      },
-      [message('Continued answer')],
-      (request) => {
-        checkRequest(request);
-        return [call('lookup', {}, { callId: 'lookup-restored' })];
-      },
-      [message('Restored answer')],
-    ]);
+    const server = new ModelServer(
+      [
+        [call('lookup', {}, { callId: 'lookup-before' })],
+        [message('Original answer')],
+        (request) => {
+          checkRequest(request.input);
+          return [call('lookup', {}, { callId: 'lookup-after' })];
+        },
+        [message('Continued answer')],
+        (request) => {
+          checkRequest(request.input);
+          return [call('lookup', {}, { callId: 'lookup-restored' })];
+        },
+        [message('Restored answer')],
+      ],
+      { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+    );
     const provider = await providerFor(server);
     let calls = 0;
     const lookup = tool({
@@ -154,16 +174,51 @@ ${openingFile}`;
     });
     const session = await agent.session();
     try {
-      const turn = await session.submit('Remember original audit text');
+      const turn = await session.submit(originalInput, {
+        budget: { maxRequests: 2, maxTokens: 10 },
+      });
       const result = await turn.wait();
+      expect(result.usage?.totalTokenUsage.totalTokens).toBe(10);
       await session.update({ instructions: 'Current instructions' });
       await session.update({ modelSettings: { reasoningEffort: 'low' } });
       const id = session.id;
       const items = await collect(session.items());
       const turns = await collect(session.turns());
       const before = await session.saveState();
-      await session.compact({ summary });
+      const snapshot = await session.modelContext();
+      const user = snapshot.items.findIndex((item) =>
+        JSON.stringify(item).includes(originalInput),
+      );
+      const toolCall = snapshot.items.findIndex(
+        (item) =>
+          item.type === 'function_call' && item.call_id === 'lookup-before',
+      );
+      const toolOutput = snapshot.items.findIndex(
+        (item) =>
+          item.type === 'function_call_output' &&
+          item.call_id === 'lookup-before',
+      );
+      expect(user).toBeGreaterThanOrEqual(0);
+      expect(toolCall).toBeGreaterThan(user);
+      expect(toolOutput).toBeGreaterThan(toolCall);
+      const candidate = vi.spyOn(
+        (await binding())._ContextChange.prototype,
+        'createCandidateEngine',
+      );
+      await expect(
+        session.compact({ summary, snapshot, retain: [toolCall] }),
+      ).rejects.toThrow(/retain both original tool call and result/i);
+      expect(candidate).not.toHaveBeenCalled();
+      snapshot.items[user].content = [
+        { type: 'input_text', text: 'changed the exposed copy' },
+      ];
+      await session.compact({
+        summary,
+        snapshot,
+        retain: [toolOutput, user, toolCall, user],
+      });
       expect(server.requests).toHaveLength(2);
+      expect(calls).toBe(1);
       expect(session.id).toBe(id);
       expect(await turn.wait()).toBe(result);
       expect(await session.wait()).toBe(result);
@@ -184,6 +239,7 @@ ${openingFile}`;
         }),
       );
       expect(await readSessionInstructions(saved)).toBe('Current instructions');
+      const replacementSnapshot = await session.modelContext();
       expect(
         (await (await session.submit('Continue')).wait()).finalOutput,
       ).toBe('Continued answer');
@@ -199,6 +255,13 @@ ${openingFile}`;
       const restored = await destination.session({ state: saved });
       try {
         expect(restored.id).toBe(id);
+        await expect(
+          restored.compact({
+            summary,
+            snapshot: replacementSnapshot,
+            retain: [],
+          }),
+        ).rejects.toThrow(/snapshot must come from this session/i);
         expect(
           (await (await restored.submit('Resume saved summary')).wait())
             .finalOutput,
@@ -212,6 +275,126 @@ ${openingFile}`;
     } finally {
       await session.close();
       await provider.close();
+    }
+  });
+
+  it('rejects invalid, foreign and stale selections and accepts an empty selection', async () => {
+    const approval = manualTool({
+      name: 'decision',
+      description: 'Request a decision.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const server = new ModelServer([
+      [call('decision', {}, { callId: 'pending-decision' })],
+      [message('Decision recorded')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider,
+      tools: [approval],
+    });
+    await using session = await agent.session();
+    await using other = await agent.session();
+    const snapshot = await session.modelContext();
+    const summary = 'Application summary';
+    const candidate = vi.spyOn(
+      (await binding())._ContextChange.prototype,
+      'createCandidateEngine',
+    );
+    await expect(session.compact({ summary, snapshot })).rejects.toThrow(
+      /snapshot and retain together/i,
+    );
+    await expect(session.compact({ summary, retain: [] })).rejects.toThrow(
+      /snapshot and retain together/i,
+    );
+    for (const foreign of [{ ...snapshot }, await other.modelContext()]) {
+      await expect(
+        session.compact({ summary, snapshot: foreign, retain: [] }),
+      ).rejects.toThrow(/snapshot must come from this session/i);
+    }
+    for (const index of [-1, 0.5, snapshot.items.length]) {
+      await expect(
+        session.compact({ summary, snapshot, retain: [index] }),
+      ).rejects.toBeInstanceOf(RangeError);
+    }
+
+    const turn = await session.submit('Original decision request');
+    const pending = await turn.wait({ until: 'request' });
+    if (!('requests' in pending)) throw new Error('Expected a manual request');
+    const request = approval.match(pending.requests[0]);
+    if (!request) throw new Error('Expected the decision request');
+    await expect(session.modelContext()).rejects.toThrow(/settled/i);
+    await expect(
+      session.compact({ summary, snapshot, retain: [] }),
+    ).rejects.toThrow(/settled/i);
+    expect(server.requests).toHaveLength(1);
+    await session.respond(request.reply('approved'));
+    expect((await turn.wait()).finalOutput).toBe('Decision recorded');
+
+    const before = await session.saveState();
+    await expect(
+      session.compact({ summary, snapshot, retain: [] }),
+    ).rejects.toThrow(/snapshot is stale/i);
+    expect(candidate).not.toHaveBeenCalled();
+    expectPreservedAudit(before, await session.saveState());
+    const current = await session.modelContext();
+    await session.compact({ summary, snapshot: current, retain: [] });
+    await expect(
+      session.compact({ summary, snapshot: current, retain: [] }),
+    ).rejects.toThrow(/snapshot is stale/i);
+    expect(candidate).toHaveBeenCalledTimes(1);
+    const context = JSON.stringify((await session.modelContext()).items);
+    expect(context).toContain(summary);
+    expect(context).not.toContain('Original decision request');
+    server.assertExhausted();
+  });
+
+  it('excludes submits and updates during capture and joins capture before close', async () => {
+    const addon = await binding();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const read = addon.NativeThread.prototype._read_model_context;
+    vi.spyOn(
+      addon.NativeThread.prototype,
+      '_read_model_context',
+    ).mockImplementationOnce(async function (this: NativeThread) {
+      const payload = await read.call(this);
+      entered.resolve();
+      await release.promise;
+      return payload;
+    });
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      provider,
+    }).session();
+    const capture = session.modelContext().catch((error: unknown) => error);
+    let closing: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      await expect(session.submit('Must not sample')).rejects.toThrow();
+      await expect(
+        session.update({ instructions: 'Must not update' }),
+      ).rejects.toThrow();
+      let closed = false;
+      closing = session.close().then(() => {
+        closed = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closed).toBe(false);
+      release.resolve();
+      expect(await capture).toMatchObject({
+        message: 'Session closed during model context capture',
+      });
+      await closing;
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      release.resolve();
+      await capture;
+      await closing;
     }
   });
 
@@ -426,8 +609,8 @@ ${openingFile}`;
     const release = Promise.withResolvers<void>();
     const prepare = addon._ContextChange.prototype.prepare;
     vi.spyOn(addon._ContextChange.prototype, 'prepare').mockImplementationOnce(
-      async function (this: _ContextChange, summary) {
-        const checkpoint = await prepare.call(this, summary);
+      async function (this: _ContextChange, summary, indices) {
+        const checkpoint = await prepare.call(this, summary, indices);
         entered.resolve();
         await release.promise;
         return checkpoint;
@@ -441,9 +624,12 @@ ${openingFile}`;
     }).session();
     const controller = new AbortController();
     const before = await session.saveState();
+    const snapshot = await session.modelContext();
     const compacting = session.compact({
       summary: 'aborted summary',
       signal: controller.signal,
+      snapshot,
+      retain: [],
     });
     const outcome = compacting.catch((error: unknown) => error);
     try {
@@ -467,6 +653,7 @@ ${openingFile}`;
       expect(await outcome).toBeInstanceOf(Error);
       const after = await session.saveState();
       expectPreservedAudit(before, after);
+      expect(await session.modelContext()).toEqual(snapshot);
       expect(await readSessionInstructions(after)).toBe('Answer.');
       expect(await collect(session.items())).toEqual([]);
       expect(await collect(session.turns())).toEqual([]);

@@ -111,10 +111,20 @@ For admitted WebSocket requests, the carrier checks the final JSON after schema 
 
 ## Context compaction
 
-`await session.compact()` asks the model to summarize its context. For an idle, memory-backed root, `await session.compact({ summary: 'The user prefers vegetarian meals.' })` instead installs application-supplied model context without a model request or a new Turn. The SDK preserves canonical history, Session identity and current bindings. The summary remains context after saving and restoring state. Retained system/developer context is selected internally.
+`await session.compact()` asks the model to summarize its context. For an idle, memory-backed root, `await session.compact({ summary: 'The user prefers vegetarian meals.' })` installs a supplied summary without a model request or a new Turn. The SDK keeps system and developer messages, canonical history, Session identity, and current bindings.
 
-A supplied summary must contain text. If you abort via `signal`, the operation waits for cleanup. An abort leaves an already published summary in place. Close also waits for publication. Incomplete cleanup retires the Session. Retry close.
+To retain other originals, call `await session.modelContext()` while the Session is idle. The snapshot exposes detached Responses-shaped JSON items in native context order. Pass both `snapshot` and `retain` to `await session.compact({ summary, snapshot, retain })`. Each index must be a zero-based integer within the snapshot. An empty list keeps only the protected originals alongside the summary. The SDK ignores duplicate indices and keeps the originals in context order. For a tool call and its result, retain both items or omit both.
+
+Use a fresh snapshot from the same open Session. A turn that changes context or a successful compaction makes older snapshots stale. Edits to the exposed JSON have no effect on retained originals. Use `saveState()` after compaction. Supported restores preserve the summary, retained context, and canonical history. Capture a new snapshot after restore.
+
+A supplied summary must contain text. An abort before source retirement discards the candidate when cleanup succeeds. Once source retirement begins, the SDK finishes publication before reporting cancellation. Close joins the compaction operation. If cleanup is incomplete, the SDK retires the Session. Retry close in that case.
 
 Use a memory-backed root for an application-supplied summary. Persistent storage, goals, active or background work, children, and pending effects prevent this operation.
 
 A declared code environment can accept its first supplied summary if the SDK can prove it is unused. For used or previously compacted programmatic code, use ordinary `compact()` for model-driven compaction of supported state.
+
+The [retained compaction example](../retained-compaction.ts) saves a compacted Session, restores it, and checks the next model request. Run it with the current [source build](building.md) and a scripted provider that needs no credentials.
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/retained-compaction.ts
+```
