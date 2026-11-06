@@ -1,3 +1,6 @@
+import process from 'node:process';
+import console from 'node:console';
+import { Buffer } from 'node:buffer';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';

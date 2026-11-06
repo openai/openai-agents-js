@@ -1,3 +1,7 @@
+import process from 'node:process';
+import { Buffer } from 'node:buffer';
+import { URL } from 'node:url';
+import { setTimeout } from 'node:timers';
 import { createServer } from 'node:http';
 import assert from 'node:assert/strict';
 

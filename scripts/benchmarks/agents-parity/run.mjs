@@ -1,11 +1,16 @@
+import process from 'node:process';
+import console from 'node:console';
+import { setTimeout, clearTimeout } from 'node:timers';
 import { fork, spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { readFile, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
+
+const { fetch, AbortSignal } = globalThis;
 
 const knownCases = [
   'cold-import',
@@ -323,8 +328,7 @@ try {
       'Harness changed during the run',
     );
 } catch (error) {
-  failure = error;
-  throw error;
+  failure = { error };
 } finally {
   try {
     try {
@@ -340,9 +344,10 @@ try {
     }
   } catch (cleanupError) {
     if (failure) console.error('Cleanup failure:', cleanupError);
-    else throw cleanupError;
+    else failure = { error: cleanupError };
   } finally {
     process.removeListener('SIGINT', onInt);
     process.removeListener('SIGTERM', onTerm);
   }
 }
+if (failure) throw failure.error;
