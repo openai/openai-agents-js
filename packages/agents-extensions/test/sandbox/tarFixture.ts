@@ -3,6 +3,7 @@ export type TarFixtureEntry = {
   type?: '0' | '1' | '2' | '3' | '5' | 'g' | 'L' | 'x';
   content?: string | Uint8Array;
   linkName?: string;
+  prefix?: string;
   mode?: number;
 };
 
@@ -53,6 +54,9 @@ function makeTarHeader(entry: TarFixtureEntry, size: number): Uint8Array {
   }
   writeField(header, 257, 6, 'ustar');
   writeField(header, 263, 2, '00');
+  if (entry.prefix) {
+    writeField(header, 345, 155, entry.prefix);
+  }
 
   const checksum = header.reduce((sum, value) => sum + value, 0);
   writeField(header, 148, 8, `${toOctal(checksum, 6)}\0 `);

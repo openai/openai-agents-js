@@ -1425,7 +1425,7 @@ describe('DaytonaSandboxClient', () => {
     expect(executeCommandMock).not.toHaveBeenCalled();
   });
 
-  test('persists create-time client auth options for serialized resume', async () => {
+  test('omits connection authority from new and legacy serialized state', async () => {
     const client = new DaytonaSandboxClient();
     const session = await client.create(new Manifest(), {
       apiKey: 'daytona-create-key',
@@ -1434,27 +1434,108 @@ describe('DaytonaSandboxClient', () => {
       pauseOnExit: true,
     });
     const serialized = await client.serializeSessionState(session.state);
-    const restoredClient = new DaytonaSandboxClient();
-    const restored = await restoredClient.deserializeSessionState(serialized);
-    daytonaConstructorMock.mockClear();
-
-    await restoredClient.resume(restored);
-
-    expect(serialized).toMatchObject({
+    const legacyState = {
+      ...session.state,
       apiKey: 'daytona-create-key',
       apiUrl: 'https://daytona.example.test',
+      target: 'us',
+    };
+    const serializedLegacy = await client.serializeSessionState(legacyState);
+    const restored = await client.deserializeSessionState({
+      ...serialized,
+      apiKey: legacyState.apiKey,
+      apiUrl: legacyState.apiUrl,
+      target: legacyState.target,
+    });
+    for (const state of [
+      session.state,
+      serialized,
+      serializedLegacy,
+      restored,
+    ]) {
+      expect(state).not.toHaveProperty('apiKey');
+      expect(state).not.toHaveProperty('apiUrl');
+      expect(state).not.toHaveProperty('target');
+    }
+    expect(legacyState.apiKey).toBe('daytona-create-key');
+  });
+
+  test.each([
+    { apiUrl: 'https://attacker.example.test' },
+    {
+      apiUrl: 'https://attacker.example.test',
+      apiKey: 'state-key',
+      target: 'eu',
+    },
+    { apiKey: 'state-key' },
+    {},
+  ])(
+    'resumes using only current trusted connection options: %j',
+    async (saved) => {
+      const client = new DaytonaSandboxClient({
+        apiKey: 'current-key',
+        apiUrl: 'https://trusted.example.test',
+        target: 'us',
+      });
+      const state = {
+        manifest: new Manifest(),
+        sandboxId: 'daytona-test',
+        environment: {},
+        pauseOnExit: true,
+        ...saved,
+      };
+
+      await client.resume(state);
+
+      expect(daytonaConstructorMock).toHaveBeenCalledWith({
+        useDeprecatedPolling: true,
+        apiKey: 'current-key',
+        apiUrl: 'https://trusted.example.test',
+        target: 'us',
+      });
+      expect(startMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  test('uses trusted resume options passed by the Runner', async () => {
+    const client = new DaytonaSandboxClient({ apiKey: 'constructor-key' });
+    await client.resume(
+      {
+        manifest: new Manifest(),
+        sandboxId: 'daytona-test',
+        environment: {},
+        pauseOnExit: true,
+        apiUrl: 'https://attacker.example.test',
+      },
+      {
+        clientOptions: {
+          apiKey: 'current-key',
+          apiUrl: 'https://trusted.example.test',
+          target: 'us',
+        },
+      },
+    );
+    expect(daytonaConstructorMock).toHaveBeenCalledWith({
+      useDeprecatedPolling: true,
+      apiKey: 'current-key',
+      apiUrl: 'https://trusted.example.test',
       target: 'us',
     });
-    expect(restored).toMatchObject({
-      apiKey: 'daytona-create-key',
-      apiUrl: 'https://daytona.example.test',
-      target: 'us',
+  });
+
+  test('leaves default connection resolution to the SDK instead of saved options', async () => {
+    const client = new DaytonaSandboxClient();
+    await client.resume({
+      manifest: new Manifest(),
+      sandboxId: 'daytona-test',
+      environment: {},
+      pauseOnExit: true,
+      apiKey: 'state-key',
+      apiUrl: 'https://attacker.example.test',
+      target: 'eu',
     });
     expect(daytonaConstructorMock).toHaveBeenCalledWith({
       useDeprecatedPolling: true,
-      apiKey: 'daytona-create-key',
-      apiUrl: 'https://daytona.example.test',
-      target: 'us',
     });
   });
 
