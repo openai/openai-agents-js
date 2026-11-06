@@ -502,7 +502,12 @@ export class Agent<Context = undefined, Output = string> {
       settings ??= {};
       for (const key of Object.getOwnPropertyNames(openingSettings)) {
         if (
-          !['reasoningEffort', 'reasoningSummary', 'serviceTier'].includes(key)
+          ![
+            'reasoningEffort',
+            'reasoningSummary',
+            'serviceTier',
+            'toolChoice',
+          ].includes(key)
         )
           throw new TypeError(`Unsupported opening model setting: ${key}`);
         const value = openingSettings[key as keyof ModelSettings];
@@ -795,6 +800,12 @@ export class Agent<Context = undefined, Output = string> {
       web_search: search?.mode ?? 'disabled',
       'features.standalone_web_search': search?.route === 'standalone',
     };
+    if (search?.allowedDomains !== undefined)
+      config['tools.web_search.allowed_domains'] = [...search.allowedDomains];
+    if (search?.blockedDomains !== undefined)
+      config['tools.web_search.blocked_domains'] = [...search.blockedDomains];
+    if (search?.location !== undefined)
+      config['tools.web_search.location'] = { ...search.location };
     if (settings) {
       if (settings.reasoningEffort !== undefined)
         config.model_reasoning_effort = settings.reasoningEffort;

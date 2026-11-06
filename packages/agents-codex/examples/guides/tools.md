@@ -142,8 +142,20 @@ const researcher = new Agent({
 });
 ```
 
-A Session captures its search mode and route at opening. An explicit `update({ tools })` must retain the same search declaration; it cannot add, remove or change that grant. This declaration enables no other native tool.
+A Session captures the search declaration at opening. An explicit `update({ tools })` must retain that declaration, including filters and location. Use tool selection to omit the granted search tool for a step.
 
 Hosted search rejects models whose native Responses Lite protocol would select standalone search. Admission checks the effective restored model and declared child models before connecting an executor. A refused model update leaves the original Session usable. Saved search history grants no search access and never replays a completed search. A destination must declare search again and supplies its own provider credentials, including on LocalStorage reopen.
 
-This native declaration exposes only the mode and route. It does not expose domain or location controls. The provider determines source freshness and search results.
+With `route: 'hosted'`, pass `allowedDomains` or `blockedDomains` to filter by domain and its subdomains. Use domain names such as `nodejs.org` without a URL scheme. Pass `location` to give the provider an approximate user location. The optional fields are `country`, `region`, `city`, and `timezone`. Use a two-letter ISO country code and an IANA time zone such as `America/Chicago`. These controls require a provider and model that support the Responses `web_search` tool. The SDK rejects the controls on the standalone route. The provider determines the results and their freshness.
+
+Set `modelSettings.toolChoice` on the Agent, when opening a Session, or in an idle `session.update()`. The default, `'auto'`, lets the model answer directly. Use `'none'` to ask the model to skip tools or `'required'` to require a tool call. With several admitted tools, the model can choose any of them.
+
+Run the [hosted search example](../native-web-search.ts) with credentials for a compatible Responses model.
+
+```sh
+pnpm exec tsx packages/agents-codex/examples/native-web-search.ts
+```
+
+Read hosted search calls and annotated messages from `session.items()`, including after restoring a Session. For live updates, consume `search_item_completed` events from `turn.events()`.
+
+A search action includes `sources` when the provider returns URLs. An output-text part includes `annotations` when the provider returns them. URL citations carry a title, a URL, and offsets into that part's original text. Render inline citations as prominent links. Use `finalOutput` for the visible answer, or use a message's `displayText` when present. The SDK preserves original text parts and their annotation offsets when it removes markup from the visible text. The SDK keeps annotations it does not recognize as JSON. Treat missing evidence as unknown.

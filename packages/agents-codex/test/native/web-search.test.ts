@@ -60,6 +60,34 @@ describe('captured native WebSearch', () => {
     expect(declarations.tools).toEqual([]);
   });
 
+  it('captures separate frozen lists and a location from a structural declaration', () => {
+    const original = {
+      ...webSearch({ route: 'hosted' }),
+      allowedDomains: ['allowed.example.test'],
+      blockedDomains: ['blocked.example.test'],
+      location: { city: 'Chicago', timezone: 'America/Chicago' },
+    };
+    const { webSearch: captured } = splitToolDeclarations([original]);
+    original.allowedDomains[0] = 'other.test';
+    original.blockedDomains.push('other.test');
+    original.location.timezone = 'Etc/UTC';
+    expect(captured).toEqual({
+      kind: 'web_search',
+      mode: 'cached',
+      route: 'hosted',
+      allowedDomains: ['allowed.example.test'],
+      blockedDomains: ['blocked.example.test'],
+      location: { city: 'Chicago', timezone: 'America/Chicago' },
+    });
+    for (const value of [
+      captured,
+      captured!.allowedDomains,
+      captured!.blockedDomains,
+      captured!.location,
+    ])
+      expect(Object.isFrozen(value)).toBe(true);
+  });
+
   it.each([
     { mode: 'disabled' },
     { mode: null },
@@ -263,7 +291,7 @@ describe('captured native WebSearch', () => {
       _replace_tools: replace,
       _configure_manual_tools: vi.fn(),
     } as unknown as NativeThread;
-    const grant = webSearch({ route: 'hosted' });
+    const grant = webSearch({ route: 'hosted', location: { city: 'Chicago' } });
     const session = new OwnedSession(
       {} as Engine,
       thread,
@@ -275,6 +303,11 @@ describe('captured native WebSearch', () => {
     await expect(session.update({ tools: [webSearch()] })).rejects.toThrow(
       'retain',
     );
+    await expect(
+      session.update({
+        tools: [webSearch({ route: 'hosted', location: { city: 'Seattle' } })],
+      }),
+    ).rejects.toThrow('retain');
     expect(replace).not.toHaveBeenCalled();
     await session.update({ tools: [grant] });
     expect(replace).toHaveBeenCalledTimes(1);

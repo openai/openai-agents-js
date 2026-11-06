@@ -1125,6 +1125,7 @@ impl PythonTools {
             effort: Some(context.effort),
             summary: Some(saved.reasoning_summary.unwrap_or_default()),
             service_tier: Some(saved.service_tier),
+            tool_choice: saved.tool_choice,
             ..Default::default()
         };
         Ok((frame.clone(), items, settings))

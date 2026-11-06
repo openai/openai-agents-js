@@ -279,7 +279,11 @@
     {
       "path": "req133-mcp-reconnect.patch",
       "sha256": "a16219851572e8e3adb6003f10d05bcb803d319573bcd135f6c3a3cfa8ae63f1"
+    },
+    {
+      "path": "req682-hosted-search-evidence.patch",
+      "sha256": "9999a2376c507d69d7a0e37e813c3c63730546ee045aa787a6257429aaa8778e"
     }
   ],
-  "result_tree": "173aaf3bbc12e913c433a331b286c222ab691812"
+  "result_tree": "48f9b7e1f8bf2ce4fbd52ac26b62db55e2c636a1"
 }

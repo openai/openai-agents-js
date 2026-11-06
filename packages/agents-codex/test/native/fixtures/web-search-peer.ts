@@ -7,8 +7,9 @@ import type { JsonObject } from '../../../src/runtime/binding';
 /** Synthetic local search endpoint in front of the existing real Responses fixture. */
 export async function searchPeer(
   responses: ConstructorParameters<typeof ModelServer>[0],
+  usage?: ConstructorParameters<typeof ModelServer>[1],
 ) {
-  const model = new ModelServer(responses);
+  const model = new ModelServer(responses, usage);
   const config = await model.config();
   const upstream = (config['model_providers.fixture'] as JsonObject)
     .base_url as string;
