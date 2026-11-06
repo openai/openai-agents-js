@@ -14,6 +14,7 @@ import { binding, type JsonObject } from './binding';
 import { prepareOutput, type OutputSpec, type PreparedOutput } from './output';
 import { webSearchName } from './web-search';
 import { NativeError } from './native-error';
+import { RunBudgetTracker, type RunBudget } from './run-budget';
 
 import { Environment } from './environment';
 import {
@@ -110,6 +111,8 @@ export interface RunOptions<Context = undefined> extends Omit<
 > {
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
+  /** Observed budget for a new direct native run with input. See {@link RunBudget}. */
+  budget?: RunBudget;
   /**
    * Edit requests for a new run with input. A resumed turn cannot add an editor.
    * Manual tools require onInteraction because an edited run cannot save an active checkpoint.
@@ -380,10 +383,13 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
+    const budget = RunBudgetTracker.capture(options.budget);
     if (input === null && maxModelSteps !== undefined)
       throw new TypeError(
         'Cannot replace the model step budget when resuming a run',
       );
+    if (input === null && budget !== undefined)
+      throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
     const preparedInput = input === null ? null : nativeInput(input);
@@ -418,6 +424,7 @@ export class Agent<Context = undefined, Output = string> {
     ] as SessionArguments<Context>);
     return runOwnedSession(session as CoreSession<Output>, preparedInput, {
       maxModelSteps,
+      budget,
       returnState: options.returnState,
       signal: options.signal,
     });
