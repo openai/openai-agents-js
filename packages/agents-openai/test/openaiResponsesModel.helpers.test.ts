@@ -2509,6 +2509,39 @@ describe('convertToOutputItem', () => {
     expect(output.providerData).not.toHaveProperty('caller');
   });
 
+  it.each([
+    'legacy error',
+    { type: 'http_error', code: 502, message: 'upstream unavailable' },
+    { type: 'mcp_protocol_error', code: -32603, message: 'internal error' },
+    {
+      type: 'mcp_tool_execution_error',
+      content: [{ type: 'text', text: 'failed' }],
+    },
+  ])('preserves hosted MCP error payloads through replay: %j', (error) => {
+    const [output] = convertToOutputItem([
+      {
+        type: 'mcp_call',
+        id: 'mcp_error',
+        name: 'lookup',
+        arguments: '{}',
+        server_label: 'server',
+        status: 'failed',
+        error,
+      },
+    ] as any);
+
+    expect(output.providerData?.error).toEqual(error);
+    const [replayed] = getInputItems([output]);
+    expect(replayed).toMatchObject({
+      type: 'mcp_call',
+      id: 'mcp_error',
+      name: 'lookup',
+      arguments: '{}',
+      server_label: 'server',
+      error,
+    });
+  });
+
   it('preserves empty hosted MCP outputs', () => {
     const [output] = convertToOutputItem([
       {
@@ -2926,6 +2959,24 @@ describe('convertToOutputItem', () => {
       output: 'done',
       status: 'completed',
     });
+  });
+
+  it('rejects function call outputs without the linkage required by the protocol', () => {
+    expect(() =>
+      convertToOutputItem([
+        {
+          type: 'function_call_output',
+          id: 'out-unpaired',
+          name: 'lookup',
+          output: 'private result',
+          status: 'completed',
+        },
+      ]),
+    ).toThrow(
+      new UserError(
+        'Cannot convert a function call output without a call_id into a paired tool result.',
+      ),
+    );
   });
 
   it('converts structured function_call_output payloads into structured outputs', () => {

@@ -3,9 +3,9 @@
   "name": "live",
   "dependencies": {
     "@openai/agents": "workspace:*",
-    "openai": "^7.2.0",
+    "openai": "^7.45.1",
     "ws": "^8.22.0",
-    "zod": "^4.6.6"
+    "zod": "^4.6.7"
   },
   "scripts": {
     "build-check": "tsc --noEmit",

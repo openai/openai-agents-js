@@ -51,7 +51,7 @@ export type HostedMCPCall = {
   name: string;
   server_label: string;
   connector_id?: string;
-  error?: string | null;
+  error?: string | OpenAI.Responses.McpToolCallError | null;
   // excluding this large data field
   // output?: string | null;
 };

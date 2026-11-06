@@ -114,7 +114,6 @@ type OpenAIClientInternals = OpenAI & {
     timeout?: unknown;
   };
   authHeaders?: (options: Record<string, unknown>) => Promise<unknown>;
-  _callApiKey?: () => Promise<boolean>;
 };
 
 function createWebSocketClient(
@@ -122,9 +121,11 @@ function createWebSocketClient(
   extraQuery: Record<string, unknown> | undefined,
 ): OpenAI {
   const websocketClient = Object.create(client) as OpenAI;
-  // ResponsesWS adds client.apiKey after applying the finalized header merge.
-  // Keep authentication entirely in the explicit headers so null unsets survive.
+  // This model owns authentication, header merging, and reconnect key refresh.
+  // The SDK transport must not restore defaults or resolve credentials again.
   websocketClient.apiKey = null;
+  websocketClient._hasApiKeyProvider = () => false;
+  websocketClient._buildWebSocketHeaders = () => ({});
   websocketClient.buildURL = (path, query, defaultBaseURL) => {
     const url = new URL(client.buildURL(path, query, defaultBaseURL));
     mergeQueryParamsIntoURL(url, extraQuery);
@@ -944,15 +945,6 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
     requestTimeoutDeadline: WebSocketRequestTimeoutDeadline | undefined,
   ): Promise<HostedWebSocketCreationOptions> {
     const client = this._client as OpenAIClientInternals;
-    if (typeof client._callApiKey === 'function') {
-      await this.#awaitWebSocketRequestTimedOperation(
-        client._callApiKey(),
-        signal,
-        requestTimeoutDeadline,
-        (configuredTimeoutMs) =>
-          `Hosted Multi-agent WebSocket auth header preparation timed out after ${configuredTimeoutMs}ms.`,
-      );
-    }
     const websocketClient = createWebSocketClient(
       client,
       transportOptions.extraQuery,

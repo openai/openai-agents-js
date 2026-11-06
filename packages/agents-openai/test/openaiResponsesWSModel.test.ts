@@ -7,7 +7,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import type OpenAI from 'openai';
+import OpenAI from 'openai';
 import type { ResponseStreamEvent as OpenAIResponseStreamEvent } from 'openai/resources/responses/responses';
 import {
   ModelBehaviorError,
@@ -125,7 +125,7 @@ function createFakeClient(): OpenAI & {
   _callApiKey: ReturnType<typeof vi.fn>;
 } {
   const callApiKey = vi.fn().mockResolvedValue(false);
-  return {
+  const client = {
     apiKey: 'sk-test',
     baseURL: 'https://api.openai.example/v1',
     organization: 'org_test',
@@ -134,12 +134,17 @@ function createFakeClient(): OpenAI & {
       create: vi.fn(),
     },
     _callApiKey: callApiKey,
+    async authHeaders() {
+      await callApiKey();
+      return { Authorization: `Bearer ${client.apiKey}` };
+    },
     _options: {
       defaultHeaders: {
         'X-Client-Header': 'client',
       },
     },
   } as unknown as OpenAI & { _callApiKey: ReturnType<typeof vi.fn> };
+  return client;
 }
 
 function captureResponseSpans(): Span<any>[] {
@@ -459,6 +464,41 @@ describe('OpenAIResponsesWSModel', () => {
     );
     expect(responseDone).toBeDefined();
     expect((responseDone as any).response.id).toBe('resp_done');
+  });
+
+  it('resolves a real SDK async API key once per websocket handshake', async () => {
+    const apiKey = vi.fn().mockResolvedValue('dynamic-key');
+    const client = new OpenAI({ apiKey });
+    TestWebSocket.onCreate = (socket) => {
+      socket.onSend(() => {
+        socket.queueJSON({
+          type: 'response.completed',
+          response: { id: 'resp_auth', output: [], usage: {} },
+          sequence_number: 0,
+        });
+      });
+    };
+    const model = new OpenAIResponsesWSModel(client, 'gpt-ws');
+    try {
+      await withTrace('test', () =>
+        model.getResponse({
+          input: 'hello',
+          modelSettings: {},
+          tools: [],
+          outputType: 'text',
+          handoffs: [],
+          tracing: false,
+        } as any),
+      );
+      expect(apiKey).toHaveBeenCalledTimes(1);
+      expect(
+        new Headers(TestWebSocket.instances[0]?.init.headers).get(
+          'authorization',
+        ),
+      ).toBe('Bearer dynamic-key');
+    } finally {
+      await model.close();
+    }
   });
 
   it('serializes websocket query array params with bracket-style encoding', async () => {

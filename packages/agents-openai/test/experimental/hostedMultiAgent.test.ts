@@ -1,5 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
+import { ResponsesWS } from 'openai/resources/responses/ws';
+import { Agent as HTTPSAgent } from 'node:https';
+import type { ClientRequest, OutgoingHttpHeaders } from 'node:http';
 import {
   setTraceProcessors,
   setTracingDisabled,
@@ -575,6 +578,73 @@ describe('OpenAIHostedMultiAgentModel', () => {
         'authorization',
       ),
     ).toBe('Bearer dynamic-key');
+  });
+
+  it('preserves finalized header removals through the SDK websocket transport', async () => {
+    const apiKey = vi.fn().mockResolvedValue('dynamic-key');
+    const model = new TestHostedMultiAgentModel(
+      new FakeResponsesWebSocket([
+        { type: 'response.created', response: emptyResponse() },
+        { type: 'response.completed', response: emptyResponse() },
+      ]),
+      undefined,
+      new OpenAI({
+        apiKey,
+        organization: 'org_test',
+        project: 'proj_test',
+        defaultHeaders: {
+          Authorization: 'Bearer default',
+          'X-Removed': 'default',
+        },
+      }),
+    );
+    await withTestTrace(() =>
+      model.getResponse(
+        request({
+          modelSettings: {
+            providerData: {
+              extraHeaders: {
+                Authorization: null,
+                'OpenAI-Organization': null,
+                'OpenAI-Project': null,
+                'User-Agent': null,
+                'X-Removed': null,
+                'X-Kept': 'kept',
+              },
+            },
+          },
+        }),
+      ),
+    );
+    const options = model.webSocketCreationOptions[0]!;
+    let handshakeHeaders: OutgoingHttpHeaders | undefined;
+    const capturedHandshake = new Error('Offline handshake captured.');
+    const agent = Object.assign(new HTTPSAgent(), {
+      addRequest(request: ClientRequest) {
+        handshakeHeaders = request.getHeaders();
+        throw capturedHandshake;
+      },
+    });
+    try {
+      expect(
+        () =>
+          new ResponsesWS(options.client, { headers: options.headers, agent }),
+      ).toThrow(capturedHandshake);
+      expect(apiKey).toHaveBeenCalledTimes(1);
+      expect(handshakeHeaders?.['x-kept']).toBe('kept');
+      for (const name of [
+        'authorization',
+        'openai-organization',
+        'openai-project',
+        'user-agent',
+        'x-removed',
+      ]) {
+        expect(handshakeHeaders?.[name]).toBeUndefined();
+      }
+    } finally {
+      agent.destroy();
+      await model.close();
+    }
   });
 
   it('aborts while an async API key is being resolved', async () => {
