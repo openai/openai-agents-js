@@ -7,7 +7,7 @@
     "@ai-sdk/openai": "^4.0.106",
     "@openai/agents": "workspace:*",
     "@openai/agents-extensions": "workspace:*",
-    "@openrouter/ai-sdk-provider": "^2.9.0",
+    "@openrouter/ai-sdk-provider": "^3.1.0",
     "zod": "4.6.7"
   },
   "scripts": {
