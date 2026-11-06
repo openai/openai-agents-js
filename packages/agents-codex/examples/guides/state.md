@@ -112,14 +112,7 @@ Output-aware envelopes retain passive repair receipts separately from native his
 
 Use `saveState()` to capture the current conversation identity for later restore. Use `fork()` to create portable state for a fresh, independently owned root with the full retained history up to the capture boundary. Forking makes no model request and does not replay recorded tool effects. Later source turns do not enter the branch. You can continue using the source and close either Session independently.
 
-This excerpt assumes an existing `agent` and a settled portable `source` Session:
-
-```ts
-const state = await source.fork();
-await using branch = await agent.session({ state });
-const alternative = await branch.submit('Explore another approach.');
-console.log((await alternative.wait()).finalOutput);
-```
+On a settled portable source Session, await `source.fork()`. Pass the returned state to `await agent.session({ state })` to open the branch. Submit its new input, await the returned Turn's `wait()`, and read `finalOutput` after that wait succeeds. Close the branch in an async disposal scope or `finally`. The [native fork tests](../../test/native/settled-fork-native.test.ts) verify the copied history boundary and independent Session ownership.
 
 Restore with the current trusted declarations described in [restore instructions and tools](#restore-instructions-and-tools). The destination uses the saved accepted model settings and current application credentials, callbacks, context, and Environment. A branch's new Session ID does not create a new external business operation: retain the original application effect key when checking or deduplicating effects. Close the source as well as the branch when their owners finish.
 

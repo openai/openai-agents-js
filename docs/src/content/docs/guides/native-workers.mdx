@@ -40,7 +40,7 @@ For a WSS executor, select the endpoint and credentials in trusted code. Set `wr
 
 ### Select instructions and MCP tools
 
-The native SDK uses a managed Codex home. Leave `projectGuidance` off to skip supplemental guidance from `.claude/rules` in the selected workspace. Pass trusted UTF-8 files as `instructionFiles` to add their contents to the session instructions in order.
+The native SDK uses a managed Codex home. Pass trusted UTF-8 files as `instructionFiles` to add their contents to the session instructions in order.
 
 For a local profile, give `selectMcpTools` a client your application owns. List the tools the worker needs and set an approval rule for sensitive calls. Deny unexpected native approvals with `await session.respond(request.reply('deny'))` while the request is live. Select tools carefully because some can run without an approval request. [Select MCP tools](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/mcp.md#materialize-a-borrowed-sdk-mcp-namespace).
 

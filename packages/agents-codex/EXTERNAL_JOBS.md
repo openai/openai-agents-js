@@ -131,12 +131,7 @@ Automatic delivery refuses JSON containing the current model API key, journal ke
 
 `advance()` defaults to observing or advancing the existing job under journal ownership. To answer an `inputRequired` job, use the same fresh restored request and supply a host-authorized response:
 
-```ts
-const outcome = await jobs.advance(restored, request, {
-  operation: 'respond',
-  response: { confirmation: 'accepted' },
-});
-```
+Call `jobs.advance` with the restored Session, its fresh matched request, and an options object. Set `operation` to `'respond'` and set `response` to the host-authorized payload. The [A2A deferred thumbnail recipe](A2A.md#run-deferred-work-across-coordinator-restarts) demonstrates this operation across process restarts. The [deferred advancement tests](test/native/deferred-advance-native.test.ts) check that only the explicitly claimed response operation reaches the provider and retains its receipt.
 
 The registered provider must implement `respond`, and the journal must authorize that exact operation against the current receipt and binding. The helper passes `response` to the provider; the provider owns its validation. Ordinary advancement does not infer a response from model text.
 

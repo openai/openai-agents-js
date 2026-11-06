@@ -8,18 +8,9 @@ Use Node.js 24 on Linux or macOS with the matching native addon and packaged hel
 
 Choose an existing absolute workspace directory. Install the SDK and helpers outside that directory and every extra writable root. Keep native runtime state and any local conversation profile outside those roots too. A temporary workspace beside the installed application is suitable for the example below.
 
-The local declaration takes no URL, headers, or connection timeout:
+Import `Environment` from `@openai/agents` and create the local declaration with `Environment.local`. Set `cwd` to the chosen directory and include `exec_command` in `tools`. The local declaration takes no URL, headers, or connection timeout. The [complete local example](../local-execution.ts) shows this setup and its cleanup.
 
-```ts
-import { Environment } from '@openai/agents';
-
-const environment = Environment.local({
-  cwd: '/absolute/assigned/workspace',
-  tools: ['exec_command'],
-});
-```
-
-Pass this declaration to `agent.session({ environment })`. Omitting `tools` grants no command tools. Select `write_stdin` together with `exec_command` when you need to continue a process. The workspace remains writable; use [extra write grants](workspace-grants.md) for other directories.
+Pass the declaration as the `environment` option when opening `agent.session`. Omitting `tools` grants no command tools. Select `write_stdin` together with `exec_command` when you need to continue a process. The workspace remains writable; use [extra write grants](workspace-grants.md) for other directories.
 
 Commands start with a system `PATH` and a fresh environment rather than inheriting the application's variables. A provider API key in the application does not become a command environment variable. The command sandbox permits reads of the workspace, declared writable roots, and platform runtime files. A separately declared host stdio MCP process has its own [process permissions](mcp.md#run-a-stdio-server-on-the-host-or-executor).
 

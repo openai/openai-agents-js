@@ -81,27 +81,7 @@ The reader ends when its Turn finishes publishing observations, even when an old
 
 With the current [source build](building.md), event readers can opt into execution payloads with `includeExecutionDetails: true`. The `0.22.0-alpha.1` bundles do not provide this option. By default, an `execution_item_completed` observation contains only the item's type, IDs, and status. A detailed reader can also receive command output, file changes, or MCP arguments and results, depending on the item type.
 
-This helper reads command output from an already issued Turn. The caller owns the Session and must close it in `finally`, including when reading or final validation fails:
-
-```ts
-import type { Turn } from '@openai/agents';
-
-export async function readCommandOutput(turn: Turn): Promise<string[]> {
-  const output: string[] = [];
-  for await (const event of turn.events({ includeExecutionDetails: true })) {
-    if (
-      event.type === 'execution_item_completed' &&
-      event.item.type === 'command_execution' &&
-      'output' in event.item &&
-      event.item.output !== null
-    ) {
-      output.push(event.item.output);
-    }
-  }
-  await turn.wait();
-  return output;
-}
-```
+Read `turn.events({ includeExecutionDetails: true })` and select observations whose `type` is `execution_item_completed`. For command output, narrow `event.item.type` to `command_execution`, check that `output` exists on the item, and collect only non-null `event.item.output` strings. After the reader ends, await `turn.wait()` for the validated result or failure. Close the owning Session in `finally`, including when reading or validation fails. The [native receipt test](../../test/native/worker-receipts-native.test.ts) compares detailed command observations with retained command history.
 
 Each reader chooses its own projection. Detailed items are detached copies, so changing one reader's data does not change another reader's result or the retained record. This option grants no execution or reply authority. Payloads can contain private arguments, output, or file contents; expose them only to trusted consumers.
 
@@ -113,24 +93,7 @@ Use `turn.steer(input)` when new input should follow that captured root through 
 
 With the current [source build](building.md), `turn.steerExact(input, expectedTurnId)` instead targets one native step. The `0.22.0-alpha.1` bundles do not provide this method. Capture the expected ID from the `turn_started` observation for the step that the application displayed. A root's `turn.turnId` remains its initial native ID even after a continuation starts, so that property cannot identify a later step.
 
-The following helper takes an existing root Turn and the captured observation. It returns `null` when the observed step has already ended or been replaced:
-
-```ts
-import { StaleTurnError, type Observation, type Turn } from '@openai/agents';
-
-export async function steerObservedStep(
-  turn: Turn,
-  started: Extract<Observation, { type: 'turn_started' }>,
-  input: string,
-) {
-  try {
-    return await turn.steerExact(input, started.turnId);
-  } catch (error) {
-    if (error instanceof StaleTurnError) return null;
-    throw error;
-  }
-}
-```
+Pass the captured observation's `turnId` as `expectedTurnId`. Handle `StaleTurnError` when that step has ended or been replaced; the SDK rejects the attempt instead of targeting the successor. The [root control tests](../../test/native/turn-controls.test.ts) exercise exact steering across native continuations.
 
 A successful call returns a `SteeringReceipt` with `sessionId`, the exact step's `submissionId` and `turnId`, and a distinct `inputId`. It confirms input acceptance, not completion or an external effect. A `StaleTurnError` reports `effects: 'notStarted'` for that rejected steering attempt. Ask for a fresh application decision before targeting a later step. Other errors can report uncertain effects; [inspect the error](session-configuration.md#connection-retries-and-errors) before retrying.
 

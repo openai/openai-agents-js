@@ -47,7 +47,7 @@ The guides describe this source checkout. For the `0.22.0-alpha.1` starter, use 
 
 ## Connect tools and executors
 
-- [Run local commands](examples/guides/local-execution.md) · [Grant workspace access](examples/guides/workspace-grants.md) · [Prepare project rules and skills](examples/guides/project-guidance.md)
+- [Run local commands](examples/guides/local-execution.md) · [Grant workspace access](examples/guides/workspace-grants.md) · [Load instruction files and discover skills](examples/guides/project-guidance.md)
 
 - <a name="input-tools-and-output"></a>[Send input and declare tools](examples/guides/tools.md#input-tools-and-output) · <a name="function-tools"></a>[Function tools](examples/guides/tools.md#function-tools) · <a name="tool-discovery"></a>[Tool discovery](examples/guides/tools.md#tool-discovery)
 - <a name="tool-results"></a>[Tool results](examples/guides/tools.md#tool-results) · <a name="tool-call-identity"></a>[Tool call identity](examples/guides/tools.md#tool-call-identity) · <a name="manual-tool-requests"></a>[Manual tool requests](examples/guides/tools.md#manual-tool-requests)

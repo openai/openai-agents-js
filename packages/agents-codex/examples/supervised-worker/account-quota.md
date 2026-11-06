@@ -6,53 +6,31 @@ Use [`WorkerSignals`](signals.ts) when your supervisor already has a trusted acc
 
 In your supervisor, supply the current `accountId`, attachment `generation`, and full rate-limit `response` from your account service. Set `observedAt` and `expiresAt` in Unix seconds. Pass the resulting `signals` to `superviseArtifact` or `waitForWorkerAttention`.
 
-```ts
-import { WorkerSignals, type AccountQuotaObservation } from './signals.js';
+Create `WorkerSignals` with the attached `accountId` and `generation`, then pass an [`AccountQuotaObservation`](signals.ts) to `signals.updateQuota`. Supply these envelope fields:
 
-const accountId = 'example-account';
-const generation = 1;
-const observedAt = Date.now() / 1000;
-const expiresAt = observedAt + 30;
-const response: AccountQuotaObservation['response'] = {
-  accountId,
-  ordinaryUsageAllowed: false,
-  rateLimitsByLimitId: {
-    codex: {
-      primary: { usedPercent: 100, windowDurationMins: 300 },
-      credits: { hasCredits: true, unlimited: false, balance: '7.50' },
-    },
-    reports: { spendControlReached: true },
-  },
-};
+| Field | Value from the trusted supervisor or account service |
+| --- | --- |
+| `generation` | The attachment generation captured when the read began. |
+| `observedAt` | The read's observation time in Unix seconds. |
+| `expiresAt` | The observation's expiration time in Unix seconds. |
+| `response.accountId` | The account ID matching the attached account. |
+| `response.ordinaryUsageAllowed` | The service's ordinary-usage permission, or an unknown value. |
+| `response.rateLimitsByLimitId` | A map from bucket IDs, such as `codex` or `reports`, to their full rate-limit snapshots. |
+| `response.rateLimits` | The service's single-bucket snapshot when a matching map entry is unavailable. |
 
-const signals = new WorkerSignals({ accountId, generation });
-signals.updateQuota({ generation, observedAt, expiresAt, response });
-console.log(signals.quota?.limitId, signals.quota?.blocked); // codex false
+Each bucket snapshot can include `limitId`, `primary` and `secondary` windows, `credits`, `spendControlReached`, and `rateLimitReachedType`. A window contains `usedPercent`, `windowDurationMins`, and `resetsAt` in Unix seconds. Credits contain the `hasCredits` and `unlimited` flags and the displayed `balance` string. Missing values remain unknown. `response.rateLimitUpsell` and unknown service fields remain available through `signals.quotaResponse`; they do not establish exhaustion.
 
-const reports = new WorkerSignals({
-  accountId,
-  generation,
-  limitId: 'reports',
-});
-reports.updateQuota({ generation, observedAt, expiresAt, response });
-console.log(reports.quota?.limitId, reports.quota?.blocked); // reports true
-```
+For a runnable worker workflow, follow the [supervised-worker recovery example](README.md#run-the-example). Its [attention tests](../../test/native/supervised-worker-attention.test.ts) supply full account-service responses and exercise selected buckets, freshness, credit flags, and exhaustion.
 
-This synthetic response illustrates the [accepted observation type](signals.ts). Supply real observations from your trusted account service. The default bucket is `codex`. Pass `limitId` to select another bucket; exhaustion in an unselected bucket does not block this waiter. An entry in `rateLimitsByLimitId` takes precedence over `rateLimits`. The helper uses the single `rateLimits` value only when its `limitId` matches; an omitted ID there means `codex`.
+The default bucket is `codex`. Pass `limitId` to select another bucket; exhaustion in an unselected bucket does not block this waiter. An entry in `rateLimitsByLimitId` takes precedence over `rateLimits`. The helper uses the single `rateLimits` value only when its `limitId` matches; an omitted ID there means `codex`.
+
+For example, suppose a fresh response sets `ordinaryUsageAllowed: false`. Its `codex` bucket has `primary.usedPercent: 100` and `credits.hasCredits: true`. That bucket stays unblocked unless the service reports a reached limit or spend control. If the same response has `spendControlReached: true` for `reports`, selecting `reports` through `limitId` reports a quota block.
 
 The response must identify the attached account. Keep the generation from when the read began. When the account changes or the supervisor reconnects, call `signals.attach({ accountId, generation })` with a higher generation. Attaching clears the previous observation.
 
 ## Refresh after a notification
 
-A sparse `account/rateLimits/updated` notification prompts a full read. In the notification handler, pass the subscription's generation and your existing full-read function, `readAccountQuota`.
-
-```ts
-await signals.refreshQuota({
-  generation,
-  maxAgeSeconds: 30,
-  read: readAccountQuota,
-});
-```
+A sparse `account/rateLimits/updated` notification prompts a full read. In the notification handler, await `signals.refreshQuota` with the subscription's `generation`, `maxAgeSeconds` set to `30`, and `read` set to your existing full-read callback, such as `readAccountQuota`.
 
 `refreshQuota` checks the generation before and after the read. The freshness interval starts when the read begins. The watcher orders observations by `observedAt`. For equal timestamps, it uses the arrival of a direct update or the start of a refresh. A slow older refresh therefore leaves a newer accepted observation in place.
 

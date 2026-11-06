@@ -80,27 +80,7 @@ The SDK serializes operations within an acquired lease. Adapter methods must not
 
 Before a managed callback dispatches an external operation, durably save its native identities beside the application's business key. The callback context supplies `threadId`, `turnId`, and `callId`; reconciliation names that same `threadId` value `sessionId`. Retaining only the profile directory and Session ID is insufficient. Custom-store opening errors do not supply a `LocalRecoveryRequired.calls` list, and the native snapshot is opaque SDK data.
 
-The [recovery-intent helper](../custom-storage-recovery.ts) creates one private file, syncs it, and syncs its parent directory before returning. Place this excerpt beside the helper in an application that supplies a trusted private `intentPath`, an authenticated business `orderKey`, and an external `orders` service:
-
-```ts
-import { tool } from '@openai/agents';
-import { z } from 'zod';
-import { recordRecoveryIntent } from './custom-storage-recovery.js';
-
-const fulfill = tool({
-  name: 'fulfill_order',
-  parameters: z.strictObject({}),
-  execute: async (_args, { threadId, turnId, callId }) => {
-    await recordRecoveryIntent(intentPath, {
-      sessionId: threadId,
-      turnId,
-      callId,
-      businessKey: orderKey,
-    });
-    return orders.fulfillOnce(orderKey);
-  },
-});
-```
+The [recovery-intent helper](../custom-storage-recovery.ts) creates one private file, syncs it, and syncs its parent directory before returning. In the managed tool's callback, build an intent record with the callback's `threadId` as `sessionId`, its unchanged `turnId` and `callId`, and the application's authenticated operation key as `businessKey`. Await `recordRecoveryIntent(intentPath, intent)` before dispatching the external operation. The [crash worker](../../test/native/fixtures/custom-storage-worker.ts) follows this sequence before recording its synthetic effect.
 
 Choose a new intent path for each operation and keep operations sequential under one application owner. A journal failure prevents this callback from dispatching the effect. The external service must enforce the business key's idempotency contract; the file does not deduplicate effects by itself. For argument-bearing tools, also retain the immutable payload or its digest so an operator can verify which operation the call requested.
 
@@ -116,16 +96,7 @@ An unresolved tool intent blocks automatic resume, including repeated resume att
 2. Call `reconcileSessionStore(store, { sessionId, turnId, callId, result })` with the original native identities and the verified result.
 3. Reopen that same conversation with the current application's tools and credentials.
 
-For the journal above, a replacement process reads the application intent, asks its authoritative service about that business key, and records only the confirmed result. Place this fragment beside the helper, supplying `store`, `intentPath`, and the application's `orders` service. `confirmOutcome` must return model-safe result text only after verifying the external outcome:
-
-```ts
-import { reconcileSessionStore } from '@openai/agents';
-import { readRecoveryIntent } from './custom-storage-recovery.js';
-
-const { businessKey, ...identities } = await readRecoveryIntent(intentPath);
-const verifiedResult = await orders.confirmOutcome(businessKey);
-await reconcileSessionStore(store, { ...identities, result: verifiedResult });
-```
+In the replacement process, await `readRecoveryIntent(intentPath)` to read the saved application identities and `businessKey`. Ask the authoritative external service about that same business key. Only after verifying the outcome, pass the original `sessionId`, `turnId`, and `callId` with the confirmed model-safe `result` to `reconcileSessionStore()`. Then reopen the conversation with current application bindings.
 
 Leave unknown outcomes unresolved. This procedure neither calls the tool again nor derives identities from the SDK snapshot. The [native crash test](../../test/native/custom-storage-durability-native.test.ts) kills a worker after a synthetic effect, then reads the documented intent file to recover and checks that the effect ran once.
 

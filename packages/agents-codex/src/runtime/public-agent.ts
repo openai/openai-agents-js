@@ -95,7 +95,7 @@ export interface SessionOptions<Context = undefined> {
   /** Cancel opening and join cleanup. Agent.run retains this signal until completion. */
   signal?: AbortSignal;
   /**
-   * Read shared guidance from .claude/rules under the explicit Environment.cwd.
+   * Read shared project guidance under the explicit Environment.cwd.
    * Requires a fresh opt-in when restoring; never selects an ambient project.
    */
   projectGuidance?: boolean;
