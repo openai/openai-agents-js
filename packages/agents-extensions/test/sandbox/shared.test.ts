@@ -2842,7 +2842,7 @@ describe('remote sandbox path helpers', () => {
   test.each([
     ['safe/file.txt', 'safe/file.txt'],
     ['safe/file.txt\0\0', 'safe/file.txt'],
-    ['safe/file.txt\n', 'safe/file.txt'],
+    ['safe/file.txt\n', 'safe/file.txt\n'],
     ['safe/line\nname.txt\0', 'safe/line\nname.txt'],
     ['safe/line\rname.txt\0', 'safe/line\rname.txt'],
     ['safe/line\u2028name.txt\0', 'safe/line\u2028name.txt'],
@@ -2858,6 +2858,105 @@ describe('remote sandbox path helpers', () => {
       validateWorkspaceTarArchive(archive, { rejectRelPaths: [path] }),
     ).toThrow(`archive member overlaps protected path: ${path}`);
   });
+
+  test.each([
+    ['size', 124, '0000000001\0 '],
+    ['mode', 100, '000700\0 '],
+    ['size with ignored digits after NUL', 124, '0000000001\0' + '7'],
+  ] as const)('accepts NUL-terminated octal %s fields', (_, offset, value) => {
+    const archive = makeTarArchive([
+      {
+        name: offset === 100 ? 'safe' : 'safe.txt',
+        type: offset === 100 ? '5' : '0',
+        content: offset === 100 ? undefined : 'A',
+      },
+    ]);
+    archive.set(new TextEncoder().encode(value), offset);
+    archive.fill(0x20, 148, 156);
+    const checksum = archive
+      .subarray(0, 512)
+      .reduce((sum, byte) => sum + byte, 0);
+    archive.set(
+      new TextEncoder().encode(`${checksum.toString(8).padStart(6, '0')}\0 `),
+      148,
+    );
+
+    expect(() =>
+      validateWorkspaceTarArchive(archive, {
+        rejectRelPaths: ['safe/protected'],
+      }),
+    ).not.toThrow();
+  });
+
+  test.each(['header', 'GNU long name'])(
+    'preserves a terminal LF before NUL padding in a %s',
+    (kind) => {
+      const path = 'safe/file.txt\n';
+      const archive = makeTarArchive(
+        kind === 'header'
+          ? [{ name: `${path}\0`, content: 'ok' }]
+          : [
+              { name: 'long-name', type: 'L', content: `${path}\0\0` },
+              { name: 'fallback.txt', content: 'ok' },
+            ],
+      );
+
+      expect(() => validateWorkspaceTarArchive(archive)).not.toThrow();
+      expect(() =>
+        validateWorkspaceTarArchive(archive, { rejectRelPaths: [path] }),
+      ).toThrow(`archive member overlaps protected path: ${path}`);
+    },
+  );
+
+  test.each([
+    ['header name', [{ name: 'logs\0\n', content: 'untrusted' }]],
+    [
+      'GNU long name',
+      [
+        { name: 'long-name', type: 'L' as const, content: 'logs\0\n' },
+        { name: 'fallback.txt', content: 'untrusted' },
+      ],
+    ],
+    [
+      'header prefix',
+      [{ name: 'events.txt', prefix: 'logs\0\n', content: 'untrusted' }],
+    ],
+    [
+      'link name',
+      [{ name: 'safe-link', type: '2' as const, linkName: 'logs\0\n' }],
+    ],
+    ['hidden suffix', [{ name: 'logs\0hidden', content: 'untrusted' }]],
+  ])(
+    'rejects data after a NUL in %s before hydration side effects',
+    async (_, entries) => {
+      const archive = makeTarArchive(entries);
+      expect(() =>
+        validateWorkspaceTarArchive(archive, { rejectRelPaths: ['logs'] }),
+      ).toThrow('non-padding data after NUL terminator');
+      const writeFile = vi.fn();
+      const runCommand = vi.fn(async () => ({
+        status: 0,
+        stdout: '/custom/workspace\n',
+        stderr: '',
+      }));
+
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'FakeProvider',
+          manifest: new Manifest({
+            root: '/custom/workspace',
+            entries: { logs: { type: 'dir', ephemeral: true } },
+          }),
+          data: archive,
+          io: { mkdir: vi.fn(), readFile: vi.fn(), writeFile, runCommand },
+        }),
+      ).rejects.toMatchObject({
+        details: { reason: 'non-padding data after NUL terminator' },
+      });
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(runCommand).not.toHaveBeenCalled();
+    },
+  );
 
   test.each(['path', 'linkpath'])('rejects global PAX %s overrides', (key) => {
     const archive = makeTarArchive([
