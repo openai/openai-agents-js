@@ -19,9 +19,97 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select:
+    name: Select native bundles
+    if: github.repository == 'openai/openai-agents-js'
+    runs-on: ubuntu-24.04
+    outputs:
+      inputs_hash: ${{ steps.select.outputs.inputs_hash }}
+      linux_hit: ${{ steps.select.outputs.linux_hit }}
+      linux_artifact: ${{ toJSON(steps.upload_linux.outputs) }}
+      macos_hit: ${{ steps.select.outputs.macos_hit }}
+      macos_artifact: ${{ toJSON(steps.upload_macos.outputs) }}
+      windows_hit: ${{ steps.select.outputs.windows_hit }}
+      windows_artifact: ${{ toJSON(steps.upload_windows.outputs) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Select retained native bundles
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/select-native-bundles.mjs
+      - name: Publish native bundle (linux-x64)
+        id: upload_linux
+        if: steps.select.outputs.linux_hit == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          path: ${{ runner.temp }}/native-${{ steps.select.outputs.inputs_hash }}-linux-x64.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish native bundle (darwin-arm64)
+        id: upload_macos
+        if: steps.select.outputs.macos_hit == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          path: ${{ runner.temp }}/native-${{ steps.select.outputs.inputs_hash }}-darwin-arm64.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish native bundle (win32-x64)
+        id: upload_windows
+        if: steps.select.outputs.windows_hit == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          path: ${{ runner.temp }}/native-${{ steps.select.outputs.inputs_hash }}-win32-x64.tar.gz
+          archive: false
+          if-no-files-found: error
+          retention-days: 90
+
+  produce-linux:
+    needs: select
+    if: needs.select.outputs.linux_hit != 'true'
+    uses: ./.github/workflows/native-bundle.yml
+    with:
+      platform: linux-x64
+      inputs_hash: ${{ needs.select.outputs.inputs_hash }}
+
+  produce-macos:
+    needs: select
+    if: needs.select.outputs.macos_hit != 'true'
+    uses: ./.github/workflows/native-bundle.yml
+    with:
+      platform: darwin-arm64
+      inputs_hash: ${{ needs.select.outputs.inputs_hash }}
+
+  produce-windows:
+    needs: select
+    if: needs.select.outputs.windows_hit != 'true'
+    uses: ./.github/workflows/native-bundle.yml
+    with:
+      platform: win32-x64
+      inputs_hash: ${{ needs.select.outputs.inputs_hash }}
+
   package:
     name: Package and test (${{ matrix.platform }})
-    if: github.repository == 'openai/openai-agents-js'
+    # No SDK code starts until every platform has published its native transfer.
+    needs: [select, produce-linux, produce-macos, produce-windows]
+    if: >-
+      !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
+       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success')) &&
+      ((needs.select.outputs.macos_hit == 'true' && needs.produce-macos.result == 'skipped') ||
+       (needs.select.outputs.macos_hit != 'true' && needs.produce-macos.result == 'success')) &&
+      ((needs.select.outputs.windows_hit == 'true' && needs.produce-windows.result == 'skipped') ||
+       (needs.select.outputs.windows_hit != 'true' && needs.produce-windows.result == 'success'))
     strategy:
       fail-fast: false
       matrix:
@@ -29,13 +117,15 @@ jobs:
           - platform: linux-x64
             runner: ubuntu-24.04
             cargo_jobs: 64
+            artifact: ${{ needs.select.outputs.linux_hit == 'true' && needs.select.outputs.linux_artifact || needs.produce-linux.outputs.artifact }}
           - platform: darwin-arm64
-            runner: macos-15-xlarge
+            runner: macos-15
             cargo_jobs: 5
+            artifact: ${{ needs.select.outputs.macos_hit == 'true' && needs.select.outputs.macos_artifact || needs.produce-macos.outputs.artifact }}
           - platform: win32-x64
             runner: windows-2025
             cargo_jobs: 16
-    # Keep macOS on its ARM runner and preserve standard runners for fork-owned repositories.
+            artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
     runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
     timeout-minutes: 180
     defaults:
@@ -47,7 +137,6 @@ jobs:
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: ${{ matrix.cargo_jobs }}
       CARGO_INCREMENTAL: '0'
-
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -58,36 +147,19 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-
       - name: Check runner platform
-        run: |
-          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
-
-      - name: Restore a verified native bundle
-        id: native
+        run: node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+      - name: Restore the current-run native transfer
         env:
           GH_TOKEN: ${{ github.token }}
+          NATIVE_ARTIFACT: ${{ matrix.artifact }}
+          NATIVE_INPUTS: ${{ needs.select.outputs.inputs_hash }}
         run: node scripts/restore-native-bundle.mjs
-
-      - name: Install Rust
-        if: steps.native.outputs.restored != 'true'
-        run: |
-          echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
-          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: Install Linux worker prerequisites and any build tools
+      - name: Install Linux worker prerequisites
         if: runner.os == 'Linux'
-        env:
-          RESTORED: ${{ steps.native.outputs.restored }}
         run: |
-          packages=(apparmor-profiles bubblewrap)
-          if [[ "$RESTORED" != true ]]; then
-            sudo rm -rf /usr/local/lib/android /usr/share/dotnet
-            packages+=(clang cmake pkg-config protobuf-compiler libssl-dev)
-          fi
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends "${packages[@]}"
-          # Ubuntu supplies a profile for bwrap that keeps its children restricted.
+          sudo apt-get install --yes --no-install-recommends apparmor-profiles bubblewrap
           if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
             sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
               /etc/apparmor.d/bwrap-userns-restrict
@@ -96,48 +168,6 @@ jobs:
           uname -sr
           bwrap --version
           bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
-      - name: Install macOS build tools
-        if: runner.os == 'macOS' && steps.native.outputs.restored != 'true'
-        run: brew install cmake pkgconf protobuf openssl@3
-      - name: Install Windows build tools
-        if: runner.os == 'Windows' && steps.native.outputs.restored != 'true'
-        shell: pwsh
-        run: choco install protoc --yes --no-progress
-
-      - name: Build the native runtime
-        if: steps.native.outputs.restored != 'true'
-        run: node packages/agents-codex/scripts/native.mjs package
-      - name: Build the macOS WSS test fixture
-        if: runner.os == 'macOS' && steps.native.outputs.restored != 'true'
-        working-directory: packages/agents-codex/native
-        run: |
-          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
-          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
-          cargo build --locked --release --example exec-server-fixture
-          mkdir -p test-bin
-          install -m 0755 "$CARGO_TARGET_DIR/release/examples/exec-server-fixture" test-bin/exec-server-fixture
-      - name: Archive the native bundle
-        if: steps.native.outputs.restored != 'true'
-        working-directory: packages/agents-codex
-        env:
-          INPUTS: ${{ steps.native.outputs.inputs }}
-        run: |
-          products=(native/codex.node native/build-receipt.json bin)
-          if [[ "$EXPECTED_PLATFORM" == darwin-arm64 ]]; then
-            products+=(native/test-bin/exec-server-fixture)
-          fi
-          tar -czf - "${products[@]}" > "$RUNNER_TEMP/native-$INPUTS-$EXPECTED_PLATFORM.tar.gz"
-      - name: Upload the native bundle
-        if: steps.native.outputs.restored != 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          path: ${{ runner.temp }}/native-${{ steps.native.outputs.inputs }}-${{ matrix.platform }}.tar.gz
-          overwrite: true
-          archive: false
-          if-no-files-found: error
-          # Automatic reuse is opportunistic; an expired bundle is rebuilt immediately.
-          retention-days: 90
-
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
         with:
           run_install: false
