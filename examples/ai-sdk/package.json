@@ -2,7 +2,7 @@
   "private": true,
   "name": "ai-sdk",
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.116",
+    "@ai-sdk/anthropic": "^4.0.93",
     "@ai-sdk/google": "^4.0.109",
     "@ai-sdk/openai": "^4.0.106",
     "@openai/agents": "workspace:*",
@@ -19,7 +19,7 @@
     "start:image-tool-output": "node image-tool-output.ts"
   },
   "devDependencies": {
-    "ai": "^6.0.277"
+    "ai": "^7.0.158"
   },
   "engines": {
     "node": "^22.18.0 || ^24.0.0 || >=26.0.0"

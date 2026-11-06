@@ -6,7 +6,9 @@ const agent = new Agent({
   instructions: 'Reply with a short answer.',
 });
 
-export async function createStream() {
+export async function createStream(): Promise<
+  ReturnType<typeof createAiSdkUiMessageStream>
+> {
   const stream = await run(agent, 'Hello there.', { stream: true });
   return createAiSdkUiMessageStream(stream);
 }
