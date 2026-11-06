@@ -796,13 +796,24 @@ export abstract class RemoteSandboxSessionBase<
     content: string,
     runAs: string,
   ): Promise<void> {
-    const tempPath = `/tmp/openai-agents-${randomUUID()}`;
+    const tempDir = `/tmp/openai-agents-${randomUUID()}`;
+    const uploadDir = `${tempDir}/upload`;
+    const tempPath = `${uploadDir}/content`;
+    // Provider uploads may prepare their parent or create sibling temporary files.
+    // Contain all of them before any content is sent to the sandbox.
+    await this.runCheckedRemoteCommand(
+      `umask 077 && mkdir -- ${shellQuote(tempDir)}`,
+      { kind: 'manifest', workdir: '/' },
+      `create temporary directory ${tempDir}`,
+    );
     try {
+      await this.mkdirRemote(uploadDir);
       await this.writeRemoteFile(tempPath, content);
       await this.runCheckedRemoteCommand(
         [
-          `chmod 0644 -- ${shellQuote(tempPath)}`,
-          `chown ${shellQuote(runAs)}:${shellQuote(runAs)} -- ${shellQuote(tempPath)}`,
+          `chmod 0600 -- ${shellQuote(tempPath)}`,
+          `chmod 0711 -- ${shellQuote(uploadDir)}`,
+          `chown ${shellQuote(runAs)}:${shellQuote(runAs)} -- ${shellQuote(tempPath)} ${shellQuote(tempDir)}`,
         ].join(' && '),
         {
           kind: 'manifest',
@@ -820,7 +831,7 @@ export abstract class RemoteSandboxSessionBase<
         `write file ${path}`,
       );
     } finally {
-      await this.runRemoteCommand(`rm -f -- ${shellQuote(tempPath)}`, {
+      await this.runRemoteCommand(`rm -rf -- ${shellQuote(tempDir)}`, {
         kind: 'manifest',
         workdir: '/',
       }).catch(() => {});

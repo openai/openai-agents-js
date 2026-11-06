@@ -173,16 +173,29 @@ export async function writeRunAsRemoteText(args: {
   runCommand: RemoteRunAsCommandRunner;
   writer: RemoteManifestWriter;
 }): Promise<void> {
-  const tempPath = `/tmp/openai-agents-${randomId()}`;
+  const tempDir = `/tmp/openai-agents-${randomId()}`;
+  const uploadDir = `${tempDir}/upload`;
+  const tempPath = `${uploadDir}/content`;
+  // Keep the outer directory private even if the provider prepares the upload
+  // parent or writes additional temporary files with broader permissions.
+  await runCheckedRunAsRemoteCommand(
+    args.providerName,
+    args.providerId,
+    args.runCommand,
+    `umask 077 && mkdir -- ${shellQuote(tempDir)}`,
+    `create temporary directory ${tempDir}`,
+  );
   try {
+    await args.writer.mkdir(uploadDir);
     await args.writer.writeFile(tempPath, args.content);
     await runCheckedRunAsRemoteCommand(
       args.providerName,
       args.providerId,
       args.runCommand,
       [
-        `chmod 0644 -- ${shellQuote(tempPath)}`,
-        `chown ${shellQuote(args.runAs)}:${shellQuote(args.runAs)} -- ${shellQuote(tempPath)}`,
+        `chmod 0600 -- ${shellQuote(tempPath)}`,
+        `chmod 0711 -- ${shellQuote(uploadDir)}`,
+        `chown ${shellQuote(args.runAs)}:${shellQuote(args.runAs)} -- ${shellQuote(tempPath)} ${shellQuote(tempDir)}`,
       ].join(' && '),
       `prepare temporary file ${tempPath}`,
       'root',
@@ -197,7 +210,7 @@ export async function writeRunAsRemoteText(args: {
     );
   } finally {
     await args
-      .runCommand(`rm -f -- ${shellQuote(tempPath)}`, { runAs: 'root' })
+      .runCommand(`rm -rf -- ${shellQuote(tempDir)}`, { runAs: 'root' })
       .catch(() => {});
   }
 }
