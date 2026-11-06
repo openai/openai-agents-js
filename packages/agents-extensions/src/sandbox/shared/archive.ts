@@ -7,7 +7,15 @@ import {
   type SandboxArchiveLimits,
   type WorkspaceArchiveData,
 } from '@openai/agents-core/sandbox';
-import { shellQuote, validateRemoteSandboxPathForManifest } from './paths';
+import {
+  posixDirname,
+  relativePosixPathWithinRoot,
+} from '@openai/agents-core/sandbox/internal';
+import {
+  resolveRemoteSandboxEffectivePath,
+  shellQuote,
+  validateRemoteSandboxPathForManifest,
+} from './paths';
 import type { RemoteManifestWriter } from './types';
 
 const TAR_BLOCK_SIZE = 512;
@@ -73,14 +81,28 @@ export async function persistRemoteWorkspaceTar(args: {
     return createEmptyWorkspaceTarArchive();
   }
 
-  await validateRemoteSandboxPathForManifest({
+  const effectiveRoot = await validateRemoteSandboxPathForManifest({
     manifest: args.manifest,
     path: root,
     options: { forWrite: true },
     runCommand: args.io.runCommand,
   });
 
+  const effectiveArchiveParent = await resolveRemoteSandboxEffectivePath({
+    path: posixDirname(archiveDirectory),
+    runCommand: args.io.runCommand,
+  });
+  const effectiveArchiveDirectory = `${effectiveArchiveParent}/${archiveDirectory.slice(archiveDirectory.lastIndexOf('/') + 1)}`;
   const excludeArgs = workspaceTarExcludeArgs(args.manifest);
+  const archiveRelPath = relativePosixPathWithinRoot(
+    effectiveRoot,
+    effectiveArchiveDirectory,
+  );
+  if (archiveRelPath !== null) {
+    excludeArgs.push(
+      `--exclude=${shellQuote(`./${archiveRelPath.replace(/([*?[\]\\])/gu, '\\$1')}`)}`,
+    );
+  }
   const tarCommand = [
     `mkdir -p -- ${shellQuote(root)}`,
     [

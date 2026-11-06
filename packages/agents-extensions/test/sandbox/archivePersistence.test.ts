@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { afterEach, describe, expect, test } from 'vitest';
 import { Manifest, SandboxArchiveError } from '@openai/agents-core/sandbox';
 import {
+  hydrateRemoteWorkspaceTar,
   persistRemoteWorkspaceTar,
   validateWorkspaceTarArchive,
 } from '../../src/sandbox/shared/archive';
@@ -63,6 +64,68 @@ async function runCommand(command: string, umask = '022') {
 describe.skipIf(process.platform === 'win32')(
   'remote workspace export permissions',
   () => {
+    test.each(['direct', 'nested', 'root alias', 'staging alias'])(
+      'excludes only its own staging directory inside a %s workspace path',
+      async (location) => {
+        const { root: physicalRoot, archivePath: savedArchive } =
+          await fixture();
+        let root = physicalRoot;
+        const stageName = 'stage[1]*?.tar.d';
+        let parent = location === 'nested' ? join(root, 'cache') : root;
+        if (location === 'root alias' || location === 'staging alias') {
+          const alias = join(physicalRoot, '..', 'workspace-alias');
+          await symlink(physicalRoot, alias);
+          if (location === 'root alias') {
+            root = alias;
+          } else {
+            parent = alias;
+          }
+        }
+        await mkdir(parent, { recursive: true });
+        const archivePath = join(parent, 'stage[1]*?.tar');
+        await writeFile(
+          join(parent, `${stageName}-keep.txt`),
+          'prefix sibling',
+        );
+        await mkdir(join(root, 'other', stageName), { recursive: true });
+        await writeFile(
+          join(root, 'other', stageName, 'keep.txt'),
+          'nested sibling',
+        );
+        const manifest = new Manifest({ root });
+        const io = { mkdir, writeFile, readFile, runCommand };
+
+        for (let cycle = 0; cycle < 2; cycle += 1) {
+          const archive = await persistRemoteWorkspaceTar({
+            providerName: 'LocalTest',
+            manifest,
+            archivePath,
+            io,
+          });
+          await writeFile(savedArchive, archive);
+          const { stdout } = await execFileAsync('tar', ['-tf', savedArchive]);
+          const names = stdout.trim().split('\n');
+          const stageRelPath =
+            location === 'nested' ? `cache/${stageName}` : stageName;
+          expect(names).not.toContain(`./${stageRelPath}/`);
+          expect(names).toContain(`./${stageRelPath}-keep.txt`);
+          expect(names).toContain(`./other/${stageName}/keep.txt`);
+          await hydrateRemoteWorkspaceTar({
+            providerName: 'LocalTest',
+            manifest,
+            data: archive,
+            io,
+          });
+          await expect(stat(`${archivePath}.d`)).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+          expect(
+            await readFile(join(parent, `${stageName}-keep.txt`), 'utf8'),
+          ).toBe('prefix sibling');
+        }
+      },
+    );
+
     test.each(['022', '000'])(
       'keeps archive bytes private from creation with ambient umask %s',
       async (umask) => {
