@@ -275,7 +275,11 @@
     {
       "path": "0058-w3c-defined-trace-flags.patch",
       "sha256": "1c689d4839940e41ceb5f47c3c65d02a51608a02c63230ed435997a1c751b6ed"
+    },
+    {
+      "path": "req133-mcp-reconnect.patch",
+      "sha256": "b33f5d9c6d343765599b057614a31445a242691f0ea1a23d83c6d4681c6ab48e"
     }
   ],
-  "result_tree": "a58aca9912ec58771e46f1fd577395486798cfbf"
+  "result_tree": "a4aeaf2d6e683bbf3653e990ab2de240058845da"
 }

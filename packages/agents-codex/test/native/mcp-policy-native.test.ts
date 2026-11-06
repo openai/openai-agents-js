@@ -1,5 +1,8 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { WebSocketServer } from 'ws';
 import {
   afterAll,
@@ -17,6 +20,7 @@ import {
   HttpMCP,
   NativeAgents,
   NativeProvider,
+  StdioMCP,
   manualTool,
   type Observation,
   type MCPCallContext,
@@ -64,13 +68,26 @@ afterEach(async () => {
     throw new AggregateError(failures, 'MCP fixture cleanup failed');
 });
 
+const recordTool = {
+  name: 'lookup',
+  description: 'Read a record',
+  inputSchema: {
+    type: 'object',
+    properties: { key: { type: 'string' } },
+    required: ['key'],
+    additionalProperties: false,
+  },
+};
+
 async function peer(
   raw = 'lookup',
   heldCall?: Promise<void>,
   toolResult?: JsonObject,
+  closeResponseForKey?: string,
 ) {
   const effects: JsonObject[] = [];
   const failures: unknown[] = [];
+  let initializations = 0;
   const server = createServer(async (request, response) => {
     try {
       if (request.method !== 'POST') {
@@ -85,29 +102,34 @@ async function peer(
         return;
       }
       let result: JsonObject = {};
-      if (rpc.method === 'initialize')
+      if (rpc.method === 'initialize') {
+        initializations++;
         result = {
           protocolVersion: (rpc.params as JsonObject).protocolVersion,
           capabilities: { tools: {} },
           serverInfo: { name: 'policy-peer', version: '1' },
         };
+      }
       if (rpc.method === 'tools/list')
-        result = {
-          tools: [
-            {
-              name: raw,
-              description: 'Read a record',
-              inputSchema: {
-                type: 'object',
-                properties: { key: { type: 'string' } },
-                required: ['key'],
-                additionalProperties: false,
-              },
-            },
-          ],
-        };
+        result = { tools: [{ ...recordTool, name: raw }] };
       if (rpc.method === 'tools/call') {
-        effects.push(rpc.params as JsonObject);
+        const params = rpc.params as JsonObject;
+        effects.push(
+          closeResponseForKey === undefined
+            ? params
+            : { ...params, initialization: initializations },
+        );
+        if (
+          closeResponseForKey !== undefined &&
+          (params.arguments as JsonObject | undefined)?.key ===
+            closeResponseForKey
+        ) {
+          // End the POST's SSE stream without a reply or a resume event ID.
+          response
+            .writeHead(200, { 'content-type': 'text/event-stream' })
+            .end(': closing before reply\n\n');
+          return;
+        }
         if (heldCall) await heldCall;
         result = toolResult ?? {
           content: [{ type: 'text', text: 'record-result' }],
@@ -132,10 +154,17 @@ async function peer(
     );
     expect(failures).toEqual([]);
   });
-  return { effects, url: `http://127.0.0.1:${address.port}/mcp`, raw };
+  return {
+    effects,
+    get initializations() {
+      return initializations;
+    },
+    url: `http://127.0.0.1:${address.port}/mcp`,
+    raw,
+  };
 }
 async function open(
-  descriptor: HttpMCP,
+  descriptor: HttpMCP | StdioMCP,
   responses: ConstructorParameters<typeof ModelServer>[0],
   children = false,
   programmaticToolCalling = false,
@@ -182,6 +211,131 @@ const lookup = () => ({
   ),
   id: 'provider-item',
 });
+
+const firstEffect = 'record-before-close';
+const laterEffect = 'record-after-close';
+const laterResult = 'follow-up recorded';
+const reconnectOptions = {
+  name: 'fixture',
+  tools: ['lookup'],
+  approvalMode: 'approve',
+  executionTimeout: 10,
+} as const;
+const reconnectResult = { content: [{ type: 'text', text: laterResult }] };
+
+function reconnectResponses() {
+  const record = (key: string) =>
+    call('lookup', { key }, { callId: key, namespace: 'mcp__fixture' });
+  // One submitted turn drives both calls. The second model step receives the
+  // first result before issuing a distinct call on the same live client.
+  return [[record(firstEffect)], [record(laterEffect)], [message('done')]];
+}
+
+function expectToolOutput(
+  request: JsonObject,
+  callId: string,
+  text: string | RegExp,
+) {
+  const output = (request.input as JsonObject[]).find(
+    (item) => item.type === 'function_call_output' && item.call_id === callId,
+  )?.output;
+  expect(output, `model output for ${callId}`).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'input_text',
+        text: typeof text === 'string' ? text : expect.stringMatching(text),
+      }),
+    ]),
+  );
+}
+
+async function readRecords(path: string): Promise<JsonObject[]> {
+  return (await readFile(path, 'utf8'))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as JsonObject);
+}
+
+it('REQ133 reconnects native stdio after a lost reply without replaying the effect', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'agents-mcp-reconnect-'));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const roster = join(directory, 'roster.json');
+  const effects = join(directory, 'effects.jsonl');
+  const starts = join(directory, 'starts.jsonl');
+  await writeFile(
+    roster,
+    JSON.stringify({
+      tools: [recordTool],
+      result: reconnectResult,
+      exitAfterKey: firstEffect,
+    }),
+  );
+  const { model, session } = await open(
+    new StdioMCP({
+      ...reconnectOptions,
+      command: process.execPath,
+      args: [
+        resolve(import.meta.dirname, 'mcp-peer.mjs'),
+        roster,
+        effects,
+        starts,
+      ],
+      cwd: directory,
+      lifetime: 'session',
+    }),
+    reconnectResponses(),
+  );
+  const startup = await readRecords(starts);
+  expect(startup).toEqual([{ pid: expect.any(Number) }]);
+  const originalPid = startup[0]!.pid;
+
+  const turn = await session.submit('Record both entries.');
+  expect((await turn.wait()).finalOutput).toBe('done');
+  model.assertExhausted();
+  expectToolOutput(model.requests[1]!, firstEffect, /\btransport ?closed\b/i);
+
+  const recorded = await readRecords(effects);
+  expect(recorded, 'stdio effects by process').toMatchObject([
+    { name: 'lookup', arguments: { key: firstEffect }, pid: originalPid },
+    {
+      name: 'lookup',
+      arguments: { key: laterEffect },
+      pid: expect.any(Number),
+    },
+  ]);
+  const replacementPid = recorded[1]!.pid;
+  expect(replacementPid).not.toBe(originalPid);
+  expect(await readRecords(starts)).toEqual([
+    { pid: originalPid },
+    { pid: replacementPid },
+  ]);
+  expectToolOutput(model.requests[2]!, laterEffect, laterResult);
+}, 30_000);
+
+it('REQ133 reconnects native streamable HTTP after an SSE response closes before its reply', async () => {
+  const remote = await peer('lookup', undefined, reconnectResult, firstEffect);
+  const { model, session } = await open(
+    new HttpMCP({
+      ...reconnectOptions,
+      url: remote.url,
+      activation: 'session',
+    }),
+    reconnectResponses(),
+  );
+  expect(remote.initializations).toBe(1);
+
+  const turn = await session.submit('Record both entries.');
+  expect((await turn.wait()).finalOutput).toBe('done');
+  model.assertExhausted();
+  expectToolOutput(model.requests[1]!, firstEffect, /\btransport ?closed\b/i);
+  expectToolOutput(model.requests[2]!, laterEffect, laterResult);
+  expect(remote.initializations, 'HTTP initialize requests').toBe(2);
+  expect(remote.effects).toMatchObject([
+    { name: 'lookup', arguments: { key: firstEffect }, initialization: 1 },
+    { name: 'lookup', arguments: { key: laterEffect }, initialization: 2 },
+  ]);
+}, 30_000);
 
 it('joins registered MCP and interception readers across replacement and manual suspension', async () => {
   const addon = await binding();
