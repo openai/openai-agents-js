@@ -1,5 +1,19 @@
 # @openai/agents-extensions
 
+## 0.22.0
+
+### Patch Changes
+
+- 50f6b68: fix: refresh compatible SDK, toolchain, and example dependencies
+- e063b38: chore: update development WebSocket types to undici-types 8.12.3.
+- 35b24d7: Update Zod to 4.6.6 while preserving saved guardrail checkpoints with omitted metadata.
+- Updated dependencies [50f6b68]
+- Updated dependencies [9b33d73]
+- Updated dependencies [52fcb57]
+- Updated dependencies [be4f1f9]
+- Updated dependencies [35b24d7]
+  - @openai/agents-core@0.22.0
+
 ## 0.21.0
 
 ### Minor Changes
