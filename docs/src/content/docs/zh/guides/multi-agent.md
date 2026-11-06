@@ -73,7 +73,7 @@ canonicalHeadingIds:
 - 在 `while` 循环中运行执行任务的智能体，并搭配一个负责评估和提供反馈的智能体，直到评估智能体判定输出满足特定标准。
 - 并行运行多个智能体，例如使用 `Promise.all` 等 JavaScript 基础组件。当您有多个互不依赖的任务时，这种方式有助于提升速度。
 
-我们在 [`examples/classic/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns) 中提供了多个代码示例。
+我们在 [`examples/classic/agent-patterns`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns) 中提供了多个代码示例。
 
 ## 相关指南
 

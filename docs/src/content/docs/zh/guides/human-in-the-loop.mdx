@@ -128,7 +128,7 @@ import toolApprovalDefinition from '../../../../../../examples/classic/docs/huma
 
 <Code lang="typescript" code={humanInTheLoopExample} title="人工干预" />
 
-可运行的端到端版本请参阅[完整示例脚本](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/human-in-the-loop.ts)。
+可运行的端到端版本请参阅[完整示例脚本](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/human-in-the-loop.ts)。
 
 ## 较长审批等待时间的处理
 
@@ -177,7 +177,7 @@ import toolApprovalDefinition from '../../../../../../examples/classic/docs/huma
   title="服务器持有的审批状态"
 />
 
-完整代码示例请参阅 [CLI 客户端/服务器模拟](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/human-in-the-loop-server.ts)。这不是可部署的 HTTP 服务。生产应用必须提供可信的身份验证、对展示详情和选定调用的授权、适用的请求及 CSRF 防护、有时限的存储保留策略、共享存储中的原子消耗机制，以及恢复策略。该 CLI 使用合成的工具数据并禁用了追踪；实际应用的快照和诊断信息可能包含敏感数据。
+完整代码示例请参阅 [CLI 客户端/服务器模拟](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/human-in-the-loop-server.ts)。这不是可部署的 HTTP 服务。生产应用必须提供可信的身份验证、对展示详情和选定调用的授权、适用的请求及 CSRF 防护、有时限的存储保留策略、共享存储中的原子消耗机制，以及恢复策略。该 CLI 使用合成的工具数据并禁用了追踪；实际应用的快照和诊断信息可能包含敏感数据。
 
 使用带有 `contextStrategy: 'replace'` 的 `RunState.fromStringWithContext()`，或仅移除序列化的审批记录，都不能使不可信快照变得安全。其他字段仍然控制着执行。如果客户端传输完整快照，请在反序列化之前验证整个快照的完整性，将其绑定到获授权的用户和运行，并防止重放。完整性验证不会加密快照，也不会向客户端隐藏其内容。
 

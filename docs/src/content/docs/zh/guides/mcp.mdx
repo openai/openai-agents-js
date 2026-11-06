@@ -132,7 +132,7 @@ Agents SDK 在内部使用 MCP TypeScript SDK v2 客户端。这并不要求您�
 
 对于敏感操作，您可以要求对每次工具调用进行人工审批。传入 `requireApproval: 'always'`，或传入一个将工具名称映射到 `'never'`/`'always'` 的对象，以进行精细控制。
 
-如果您能够以编程方式判断工具调用是否安全，可以使用 [`onApproval` 回调](https://github.com/openai/openai-agents-js/blob/main/examples/classic/mcp/hosted-mcp-on-approval.ts)批准或拒绝该工具调用。如果需要人工审批，您可以采用与本地函数工具相同的[人机协作](/openai-agents-js/zh/guides/human-in-the-loop/)（HITL）方式，使用 `interruptions` 处理。
+如果您能够以编程方式判断工具调用是否安全，可以使用 [`onApproval` 回调](https://github.com/openai/openai-agents-js/blob/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/mcp/hosted-mcp-on-approval.ts)批准或拒绝该工具调用。如果需要人工审批，您可以采用与本地函数工具相同的[人机协作](/openai-agents-js/zh/guides/human-in-the-loop/)（HITL）方式，使用 `interruptions` 处理。
 
 <Code
   lang="typescript"
@@ -173,9 +173,9 @@ Agents SDK 在内部使用 MCP TypeScript SDK v2 客户端。这并不要求您�
   title="基于连接器的托管 MCP 工具"
 />
 
-在此示例中，`GOOGLE_CALENDAR_AUTHORIZATION` 环境变量保存了从 Google OAuth Playground 获取的 OAuth 令牌，用于授权基于连接器的服务器调用 Calendar API。如需同时演示流式传输的可运行代码示例，请参阅 [`examples/classic/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/connectors)。
+在此示例中，`GOOGLE_CALENDAR_AUTHORIZATION` 环境变量保存了从 Google OAuth Playground 获取的 OAuth 令牌，用于授权基于连接器的服务器调用 Calendar API。如需同时演示流式传输的可运行代码示例，请参阅 [`examples/classic/connectors`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/connectors)。
 
-完整可运行的代码示例（托管工具/Streamable HTTP/stdio + 流式传输、HITL、onApproval）位于我们 GitHub 仓库的 [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/classic/mcp) 中。
+完整可运行的代码示例（托管工具/Streamable HTTP/stdio + 流式传输、HITL、onApproval）位于我们 GitHub 仓库的 [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/mcp) 中。
 
 ## 智能体级别的 MCP 配置
 
@@ -349,4 +349,4 @@ Agents SDK 在内部使用 MCP TypeScript SDK v2 客户端。这并不要求您�
 ## 延伸阅读
 
 - [Model Context Protocol](https://modelcontextprotocol.io/)——官方规范。
-- [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/classic/mcp)——上文提及的可运行代码示例。
+- [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/mcp)——上文提及的可运行代码示例。

@@ -81,6 +81,6 @@ Twilio 提供了 [Media Streams API](https://www.twilio.com/docs/voice/media-str
 
 ## 完整示例服务器
 
-[可运行的 Twilio 代码示例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-twilio)包含带身份验证的 Fastify 路由和 Realtime 会话设置。其 README 说明了服务器端必需的 `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN` 和 `TWILIO_PUBLIC_BASE_URL` 设置。公共基础 URL 必须是 HTTPS 源，不含路径前缀、查询字符串或片段。当隧道的公共源发生变化时，请更新此设置。
+[可运行的 Twilio 代码示例](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-twilio)包含带身份验证的 Fastify 路由和 Realtime 会话设置。其 README 说明了服务器端必需的 `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN` 和 `TWILIO_PUBLIC_BASE_URL` 设置。公共基础 URL 必须是 HTTPS 源，不含路径前缀、查询字符串或片段。当隧道的公共源发生变化时，请更新此设置。
 
 服务器会在建立 Realtime 连接之前，拒绝签名无效的呼叫请求和升级请求。Twilio Media Stream URL 使用 `wss://`，不支持查询参数。有关自定义参数的信息，请参阅 [Twilio Stream 文档](https://www.twilio.com/docs/voice/twiml/stream)。

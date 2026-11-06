@@ -283,7 +283,7 @@ Responses 전용 도구 옵션은 음성 에이전트에 적용되지 않습니�
 
 함수 도구는 `RealtimeSession`과 동일한 환경에서 실행됩니다. 즉, 브라우저에서 세션을 실행하면 도구도 브라우저에서 실행됩니다. 민감한 작업을 수행해야 한다면 도구 내부에서 백엔드를 호출하고 권한이 필요한 작업은 서버가 수행하도록 하세요.
 
-이를 통해 브라우저 측 도구가 서버 측 로직에 연결되는 간단한 백채널 역할을 할 수 있습니다. 예를 들어 [`examples/classic/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-next)는 요청과 현재 대화 기록을 서버의 `handleRefundRequest(...)`에 전달하는 `refundBackchannel` 도구를 브라우저에 정의합니다. 서버에서는 별도의 `Runner`가 다른 에이전트나 모델을 사용하여 환불을 평가한 다음 결과를 음성 세션에 반환할 수 있습니다.
+이를 통해 브라우저 측 도구가 서버 측 로직에 연결되는 간단한 백채널 역할을 할 수 있습니다. 예를 들어 [`examples/classic/realtime-next`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-next)는 요청과 현재 대화 기록을 서버의 `handleRefundRequest(...)`에 전달하는 `refundBackchannel` 도구를 브라우저에 정의합니다. 서버에서는 별도의 `Runner`가 다른 에이전트나 모델을 사용하여 환불을 평가한 다음 결과를 음성 세션에 반환할 수 있습니다.
 
 #### 호스티드 MCP 도구
 

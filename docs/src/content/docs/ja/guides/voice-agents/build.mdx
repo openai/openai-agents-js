@@ -294,7 +294,7 @@ Responses 専用のツールオプションは、音声エージェントには�
 
 関数ツールは、`RealtimeSession` と同じ環境で実行されます。つまり、セッションをブラウザーで実行している場合、ツールもブラウザーで実行されます。機密性の高い操作を行う必要がある場合は、ツール内からバックエンドを呼び出し、権限が必要な処理はサーバーに任せてください。
 
-これにより、ブラウザー側のツールを、サーバー側のロジックにつながる薄いバックチャネルとして機能させることができます。たとえば、[`examples/classic/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-next) では、ブラウザー内に `refundBackchannel` ツールを定義しています。このツールは、リクエストと現在の会話履歴をサーバー上の `handleRefundRequest(...)` に転送します。サーバーでは、別の `Runner` が異なるエージェントやモデルを使用して返金を評価してから、結果を音声セッションに返すことができます。
+これにより、ブラウザー側のツールを、サーバー側のロジックにつながる薄いバックチャネルとして機能させることができます。たとえば、[`examples/classic/realtime-next`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-next) では、ブラウザー内に `refundBackchannel` ツールを定義しています。このツールは、リクエストと現在の会話履歴をサーバー上の `handleRefundRequest(...)` に転送します。サーバーでは、別の `Runner` が異なるエージェントやモデルを使用して返金を評価してから、結果を音声セッションに返すことができます。
 
 #### ホスト型MCPツール
 

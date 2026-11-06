@@ -289,7 +289,7 @@ WebSocket プロキシまたはゲートウェイを使用する場合は、`Ope
 
 `OpenAIProvider` を自分でインスタンス化する場合、接続を再利用するために、WebSocket を使用する Responses モデルラッパーがデフォルトでキャッシュされることに注意してください。シャットダウン時に `await provider.close()` を呼び出して、キャッシュされた接続を解放してください。`withResponsesWebSocketSession(...)` は、主にこのライフサイクルを代わりに管理するためのものです。WebSocket が有効なプロバイダーとランナーを作成してコールバックに渡し、終了後は必ずプロバイダーを閉じます。一時的なプロバイダーには `providerOptions` を、コールバックのスコープ内で使うランナーのデフォルト設定には `runnerConfig` を使用してください。
 
-Responses WebSocket トランスポートを使ったストリーミングと HITL の完全なコード例については、[`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts) を参照してください。
+Responses WebSocket トランスポートを使ったストリーミングと HITL の完全なコード例については、[`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/basic/stream-ws.ts) を参照してください。
 
 #### Responses 専用のツール遅延読み込み
 
@@ -329,7 +329,7 @@ npm install @openai/agents-openai openai
   title="ホスト型マルチエージェントワークフローの実行"
 />
 
-ホスト側の連携レコードやサブエージェントのメッセージを含む、ストリーミングのオブザーバビリティについては、[完全なコード例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/hosted-multi-agent-beta.ts)を参照してください。
+ホスト側の連携レコードやサブエージェントのメッセージを含む、ストリーミングのオブザーバビリティについては、[完全なコード例](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/hosted-multi-agent-beta.ts)を参照してください。
 
 サービスのデフォルト値（現在は 3）を維持するには、`maxConcurrentSubagents` を省略してください。値を指定する場合は、正の整数でなければなりません。
 
@@ -477,7 +477,7 @@ SDK は、すぐに使えるヘルパーを `retryPolicies` でエクスポー�
 - エージェントは `retry.backoff` の一部だけを上書きし、同じ階層の他のバックオフフィールドをランナーから維持できます。
 - 継承された `policy` または `backoff` を削除する必要がある場合は、そのフィールドを明示的に `undefined` に設定してください。
 
-ログ出力を含む、より詳しいコード例については、[`examples/classic/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/retry.ts) と [`examples/classic/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/ai-sdk/retry.ts) を参照してください。
+ログ出力を含む、より詳しいコード例については、[`examples/classic/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/basic/retry.ts) と [`examples/classic/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/ai-sdk/retry.ts) を参照してください。
 
 ---
 
