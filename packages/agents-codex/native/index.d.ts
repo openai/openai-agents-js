@@ -1,9 +1,3 @@
-/** Private provider-owned physical HTTP clients. */
-export class SharedHttpClients {
-  close(): Promise<void>;
-}
-export function _create_shared_http_clients(): Promise<SharedHttpClients>;
-
 /** Private binding. JSON authority fields must retain their original integer text. */
 export type NativeId = string;
 export class Engine {
@@ -13,7 +7,6 @@ export class Engine {
     base: string,
     grant: string,
     excluded_base: string | null,
-    shared_clients?: SharedHttpClients,
   ): void;
   _sentinel_admit(provider_id: string, metadata: string): Promise<string>;
   _sentinel_claim(
@@ -62,11 +55,6 @@ export class Engine {
     options_json: string,
     specs_json: string,
   ): Promise<NativeThread>;
-  /** SDK-private: consumes the opening snapshot once; otherwise reloads. */
-  _start_first_root(
-    options_json: string,
-    specs_json: string,
-  ): Promise<NativeThread>;
   _start_local_resume(
     options_json: string,
     specs_json: string,
@@ -98,12 +86,6 @@ export class _ContextChange {
   stopCandidateEvents(): Promise<void>;
   cleanupCandidate(): Promise<string | null>;
 }
-/** Private event batch; only native-certified root text omits the JSON reviver. */
-export interface _NativeSessionEventBatch {
-  events: string[];
-  rootTextOnly: boolean;
-}
-
 export class NativeThread {
   _native_question_pending(question_id: string): Promise<boolean>;
   /** Whether this captured URL still has its original unanswered consent RPC. */
@@ -231,7 +213,7 @@ export class NativeThread {
   read_checklist(subagent_id?: string | null): Promise<string>;
   _interrupt_session(): Promise<void>;
   _next_session_event(): Promise<string>;
-  _next_session_events(): Promise<_NativeSessionEventBatch>;
+  _next_session_events(): Promise<string[]>;
   _child_turn(child_id: string): Promise<_NativeChildTurn | null>;
   _child_instance(
     child_id: string,
@@ -326,12 +308,6 @@ export function create_store_engine(
   callback: (request: string) => Promise<string>,
   application_apps_json?: string | null,
 ): Promise<Engine>;
-/** SDK-private eager Engine; preserves one eligible first-root Config. */
-export function _create_first_root_engine(
-  config_json: string,
-  runtime_json: string,
-  api_key: string | null,
-): Promise<Engine>;
 export function create_engine(
   config_json: string,
   runtime_json: string,
@@ -384,9 +360,6 @@ declare const binding: {
   _validate_python_tool_declarations: typeof _validate_python_tool_declarations;
   _read_session_instructions: typeof _read_session_instructions;
   _validate_application_instructions: typeof _validate_application_instructions;
-  _create_first_root_engine: typeof _create_first_root_engine;
-  _create_shared_http_clients: typeof _create_shared_http_clients;
-  _try_remove_empty_provider_home?: typeof _try_remove_empty_provider_home;
   create_engine: typeof create_engine;
   create_store_engine: typeof create_store_engine;
   reconcile_thread_store: typeof reconcile_thread_store;
@@ -415,6 +388,3 @@ export class _NativePolicyStop {
   private constructor();
   finish(): Promise<void>;
 }
-
-/** Private empty-home fast path; false requests the original Node.rm fallback. */
-export function _try_remove_empty_provider_home(home: string): Promise<boolean>;

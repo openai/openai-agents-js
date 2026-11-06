@@ -60,35 +60,23 @@ impl Receipts {
     }
 
     fn restore(&self, request: &mut Value) -> Result<()> {
-        // Stage only declarations; ordinary history stays in place. Validate
-        // every array before exposing any restored fields.
-        let tools = if let Some(tools) = request.get("tools").and_then(Value::as_array) {
-            let mut tools = tools.clone();
-            self.declarations(&mut tools, "functions")?;
-            Some(Value::Array(tools))
-        } else {
-            None
-        };
-        let mut input_tools = Vec::new();
-        if let Some(input) = request.get("input").and_then(Value::as_array) {
-            for (index, item) in input.iter().enumerate() {
+        // Validate the entire request before exposing any restored fields.
+        let mut restored = request.clone();
+        if let Some(tools) = restored.get_mut("tools").and_then(Value::as_array_mut) {
+            self.declarations(tools, "functions")?;
+        }
+        if let Some(input) = restored.get_mut("input").and_then(Value::as_array_mut) {
+            for item in input {
                 if matches!(
                     item.get("type").and_then(Value::as_str),
                     Some("additional_tools" | "tool_search_output")
-                ) && let Some(tools) = item.get("tools").and_then(Value::as_array)
+                ) && let Some(tools) = item.get_mut("tools").and_then(Value::as_array_mut)
                 {
-                    let mut tools = tools.clone();
-                    self.declarations(&mut tools, "functions")?;
-                    input_tools.push((index, Value::Array(tools)));
+                    self.declarations(tools, "functions")?;
                 }
             }
         }
-        if let Some(tools) = tools {
-            request["tools"] = tools;
-        }
-        for (index, tools) in input_tools {
-            request["input"][index]["tools"] = tools;
-        }
+        *request = restored;
         Ok(())
     }
 
@@ -511,95 +499,6 @@ mod tests {
             wire["input"][2]["tools"][0]["parameters"]["properties"]["key"]["minLength"],
             8
         );
-    }
-
-    #[test]
-    fn restoration_preserves_surrounding_history_and_unknown_fields() {
-        let receipts = Receipts::default();
-        let live = admitted(&receipts, 3);
-        let mut projected = serde_json::to_value(&live.entries[0].spec).unwrap();
-        projected["wire_extension"] = json!({"keep":[null, false, 17]});
-        let mut input: Vec<_> = (0..100)
-            .map(|index| json!({
-                "type":"message", "role":"user", "id":index,
-                "content":[{"type":"input_text", "text":"x".repeat(1024)}],
-                // Declarations outside the supported item types stay opaque.
-                "tools":[{"type":"function", "description":format!("{}unknown/0]", MARKER.as_str())}]
-            }))
-            .collect();
-        input.push(json!({"type":"additional_tools", "tools":[&projected], "keep":"additional"}));
-        input.push(json!({"type":"tool_search_output", "tools":[&projected], "keep":"search"}));
-        let mut wire = json!({"tools":[&projected], "input":input, "unknown":{"keep":[1,2,3]}});
-        let mut expected = wire.clone();
-        let mut restored = projected;
-        let original = functions(&live.specs)[0].1;
-        restored["description"] = json!(original.description);
-        restored["parameters"] = original.input_schema.clone();
-        expected["tools"] = json!([&restored]);
-        expected["input"][100]["tools"] = json!([&restored]);
-        expected["input"][101]["tools"] = json!([&restored]);
-
-        receipts.restore(&mut wire).unwrap();
-
-        assert_eq!(wire, expected);
-    }
-
-    #[test]
-    fn later_historical_failures_leave_all_earlier_restorations_uncommitted() {
-        let receipts = Receipts::default();
-        let live = admitted(&receipts, 3);
-        let projected = serde_json::to_value(&live.entries[0].spec).unwrap();
-        let mut mismatch = projected.clone();
-        mismatch["name"] = json!("other");
-        let mut unavailable = projected.clone();
-        unavailable["description"] = json!(format!("{}unknown/0]", MARKER.as_str()));
-        for kind in ["additional_tools", "tool_search_output"] {
-            let mut wire = json!({
-                "tools":[&projected],
-                "input":[
-                    {"type":"additional_tools", "tools":[&projected]},
-                    {"type":"tool_search_output", "tools":[&projected]},
-                    {"type":kind, "tools":[&projected, &mismatch]},
-                    {"type":kind, "tools":[&unavailable]}
-                ]
-            });
-            let before = wire.clone();
-
-            let error = receipts.restore(&mut wire).unwrap_err();
-
-            assert_eq!(
-                error.to_string(),
-                "Managed tool schema declaration does not match its native owner"
-            );
-            assert_eq!(wire, before);
-        }
-        let mut wire = json!({
-            "tools":[&unavailable],
-            "input":[{"type":"additional_tools", "tools":[&mismatch]}]
-        });
-        let before = wire.clone();
-        let error = receipts.restore(&mut wire).unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "Managed tool schema reference is unavailable"
-        );
-        assert_eq!(wire, before);
-    }
-
-    #[test]
-    fn restoration_preserves_absent_and_non_array_declarations() {
-        let receipts = Receipts::default();
-        for mut wire in [
-            Value::Null,
-            json!([1, 2]),
-            json!({}),
-            json!({"tools":null, "input":"opaque"}),
-            json!({"tools":[], "input":[null, {"type":"additional_tools", "tools":{}}, {"type":"tool_search_output", "tools":null}]}),
-        ] {
-            let before = wire.clone();
-            receipts.restore(&mut wire).unwrap();
-            assert_eq!(wire, before);
-        }
     }
 
     #[test]

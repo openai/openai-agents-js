@@ -303,30 +303,6 @@ impl ThreadOptions {
         base_runtime: &str,
         cloud: codex_config::CloudConfigBundleLoader,
     ) -> anyhow::Result<(StartThreadOptions, Arc<ThreadInstructions>)> {
-        self.build_with_first_root(base_config, base_runtime, cloud, None)
-            .await
-    }
-
-    pub(crate) async fn build_with_first_root(
-        self,
-        base_config: &str,
-        base_runtime: &str,
-        cloud: codex_config::CloudConfigBundleLoader,
-        prepared: Option<Box<codex_core_api::Config>>,
-    ) -> anyhow::Result<(StartThreadOptions, Arc<ThreadInstructions>)> {
-        let plain_root = self.sdk_resume_thread_id.is_none()
-            && self.sdk_reconciled_calls.is_empty()
-            && self.native_agent_roles.is_none()
-            && !self.native_agent_before_step
-            && self.reserved_thread_id.is_none()
-            && self.environments.is_none()
-            && !self.canonical_rules
-            && self.session_source.is_none()
-            && self.thread_source.is_none()
-            && self
-                .initial_history
-                .as_ref()
-                .is_none_or(|history| matches!(history, InitialHistory::New));
         let base: Map<String, Value> = serde_json::from_str(base_runtime)?;
         for key in [
             "_native_interception_http",
@@ -351,18 +327,7 @@ impl ThreadOptions {
         }
         let runtime = merged(base_runtime, self.runtime)?;
         let source = merged(base_config, self.config)?;
-        let configuration = match prepared {
-            Some(config)
-                if plain_root
-                    && serde_json::from_str::<Value>(&source)?
-                        == serde_json::from_str::<Value>(base_config)?
-                    && serde_json::from_str::<Value>(&runtime)?
-                        == serde_json::from_str::<Value>(base_runtime)? =>
-            {
-                *config
-            }
-            _ => config::load(&source, &runtime, Some(cloud)).await?.0,
-        };
+        let configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
         let mut options = StartThreadOptions::new(configuration);
         anyhow::ensure!(
             !self.native_agent_before_step || self.native_agent_roles.is_some(),
@@ -492,95 +457,5 @@ fn merge_objects(base: &mut Value, overrides: Value) {
             }
         }
         (base, value) => *base = value,
-    }
-}
-
-#[cfg(test)]
-mod first_root_tests {
-    use super::*;
-
-    async fn inputs() -> (
-        tempfile::TempDir,
-        String,
-        String,
-        std::path::PathBuf,
-        codex_core_api::Config,
-    ) {
-        let home = tempfile::tempdir().unwrap();
-        let user = home.path().join("config.toml");
-        std::fs::write(&user, "model_reasoning_effort = 'low'\n").unwrap();
-        let source = serde_json::json!({"model":"gpt-5", "mcp_servers":{}}).to_string();
-        let runtime = config::prepare_runtime(
-            &serde_json::json!({
-                "codex_home":home.path(), "cwd":home.path(),
-                "loader":{"user_config_path":user,"ignore_user_config":false}
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let loaded = config::load(&source, &runtime, None).await.unwrap().0;
-        (home, source, runtime, user, loaded)
-    }
-
-    #[tokio::test]
-    async fn matching_first_inputs_use_one_coherent_view_but_raw_build_reloads() {
-        let (_home, source, runtime, user, prepared) = inputs().await;
-        std::fs::write(user, "[broken").unwrap();
-        // JSON formatting and a repeated identical override are not input changes.
-        let options: ThreadOptions =
-            config::decode(serde_json::json!({"config":{"model":"gpt-5"}})).unwrap();
-        let (_startup, _) = options
-            .build_with_first_root(
-                &source,
-                &runtime,
-                Default::default(),
-                Some(Box::new(prepared)),
-            )
-            .await
-            .unwrap();
-        assert!(
-            ThreadOptions::default()
-                .build(&source, &runtime, Default::default())
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn changed_overrides_discard_prepared_view_and_reload() {
-        let (_home, source, runtime, user, prepared) = inputs().await;
-        std::fs::write(user, "[broken").unwrap();
-        let options: ThreadOptions =
-            config::decode(serde_json::json!({"config":{"model":"another-model"}})).unwrap();
-        assert!(
-            options
-                .build_with_first_root(
-                    &source,
-                    &runtime,
-                    Default::default(),
-                    Some(Box::new(prepared))
-                )
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn non_root_options_cannot_use_prepared_view() {
-        let (_home, source, runtime, user, prepared) = inputs().await;
-        std::fs::write(user, "[broken").unwrap();
-        let options: ThreadOptions =
-            config::decode(serde_json::json!({"_canonical_rules":true})).unwrap();
-        assert!(
-            options
-                .build_with_first_root(
-                    &source,
-                    &runtime,
-                    Default::default(),
-                    Some(Box::new(prepared))
-                )
-                .await
-                .is_err()
-        );
     }
 }

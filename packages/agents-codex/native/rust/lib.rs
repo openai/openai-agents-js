@@ -31,7 +31,6 @@ mod node_runtime;
 mod ops;
 mod options;
 mod provider_error;
-mod provider_home;
 mod python_tools;
 mod recovery_guard;
 mod response_control;
@@ -176,13 +175,6 @@ impl napi::bindgen_prelude::FromNapiValue for NativeBuffer {
     }
 }
 
-/// Private batch certificate; scalar event readers keep their original API.
-#[napi(object)]
-pub struct NativeSessionEventBatch {
-    pub events: Vec<String>,
-    pub root_text_only: bool,
-}
-
 // Native finalizers may run after napi has retired its current runtime.
 // Retain the originating handle instead of looking up a newer or empty runtime.
 struct RuntimeOwned<T> {
@@ -222,35 +214,6 @@ impl<T> Drop for RuntimeOwned<T> {
         let _entered = self.runtime.enter();
         drop(self.value.take());
     }
-}
-
-/// Private provider resource: physical clients only, without an Engine back-reference.
-#[napi]
-pub struct SharedHttpClients {
-    inner: RuntimeOwned<codex_http_client::SharedApiClients>,
-}
-
-impl Drop for SharedHttpClients {
-    fn drop(&mut self) {
-        let _entered = self.inner.runtime.enter();
-        self.inner.close();
-    }
-}
-
-#[napi]
-impl SharedHttpClients {
-    #[napi]
-    pub async fn close(&self) -> napi::Result<()> {
-        self.inner.close();
-        Ok(())
-    }
-}
-
-#[napi(js_name = "_create_shared_http_clients")]
-pub async fn _create_shared_http_clients() -> napi::Result<SharedHttpClients> {
-    Ok(SharedHttpClients {
-        inner: RuntimeOwned::new(Arc::new(codex_http_client::SharedApiClients::default())),
-    })
 }
 
 #[napi(js_name = "Engine")]
@@ -300,28 +263,13 @@ impl Engine {
         options_json: &str,
         specs_json: &str,
     ) -> anyhow::Result<NativeThread> {
-        self.start_native_thread_inner(options_json, specs_json, false)
-            .await
-    }
-
-    async fn start_native_thread_inner(
-        &self,
-        options_json: &str,
-        specs_json: &str,
-        first_root: bool,
-    ) -> anyhow::Result<NativeThread> {
         let inner = self
             .current()
             .map_err(|error| anyhow::anyhow!(error.reason))?;
-        let _attempt = inner.first_root_attempt();
         let options = config::decode(serde_json::from_str(options_json)?)?;
         let specs = serde_json::from_str(specs_json)?;
         let _context_operation = inner.operation(false)?;
-        if first_root {
-            inner.start_first_root(options, specs).await
-        } else {
-            inner.start_with_tools(options, specs).await
-        }
+        inner.start_with_tools(options, specs).await
     }
 
     fn current_owner(
@@ -345,20 +293,12 @@ impl Engine {
         base: String,
         grant: String,
         excluded_base: Option<String>,
-        shared_clients: Option<napi::bindgen_prelude::ClassInstance<'_, SharedHttpClients>>,
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let _permit = inner.operation(false).map_err(native_error)?;
         let mut binding = inner.sentinel.write().expect("sentinel poisoned");
         if binding.is_some() || grant.is_empty() {
             return Err(native_error("Sentinel already bound or empty"));
-        }
-        if let Some(clients) = shared_clients {
-            let clients: &SharedHttpClients = &clients;
-            inner
-                .shared_api_clients
-                .set(Arc::clone(&clients.inner))
-                .map_err(|_| native_error("HTTP clients already attached"))?;
         }
         *binding = Some((base, grant, excluded_base));
         Ok(())
@@ -535,7 +475,6 @@ impl Engine {
         let specs_json = specs_json.as_deref();
 
         let inner = self.current()?;
-        inner.discard_first_root();
         let raw = checkpoint_wire_value(payload_json).map_err(native_error)?;
         let options: options::ThreadOptions =
             config::decode(serde_json::from_str(options_json).map_err(native_error)?)
@@ -574,17 +513,6 @@ impl Engine {
         specs_json: String,
     ) -> napi::Result<NativeThread> {
         self.start_native_thread(&options_json, &specs_json)
-            .await
-            .map_err(native_error)
-    }
-
-    #[napi(js_name = "_start_first_root")]
-    pub async fn start_first_root(
-        &self,
-        options_json: String,
-        specs_json: String,
-    ) -> napi::Result<NativeThread> {
-        self.start_native_thread_inner(&options_json, &specs_json, true)
             .await
             .map_err(native_error)
     }
@@ -3191,16 +3119,11 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_next_session_events")]
-    pub async fn next_session_events(&self) -> napi::Result<NativeSessionEventBatch> {
-        let (events, root_text_only) = self
-            .current()?
+    pub async fn next_session_events(&self) -> napi::Result<Vec<String>> {
+        self.current()?
             .next_session_events()
             .await
-            .map_err(native_error)?;
-        Ok(NativeSessionEventBatch {
-            events,
-            root_text_only,
-        })
+            .map_err(native_error)
     }
 
     #[napi(js_name = "_next_session_event")]
@@ -3455,18 +3378,6 @@ pub async fn create_store_engine(
         None => None,
     };
     Ok(Engine::new(inner))
-}
-
-#[napi(js_name = "_create_first_root_engine")]
-pub async fn create_first_root_engine(
-    config_json: String,
-    runtime_json: String,
-    api_key: Option<String>,
-) -> napi::Result<Engine> {
-    let state = engine::EngineState::new_owned_for_first_root(config_json, runtime_json, api_key)
-        .await
-        .map_err(native_error)?;
-    Ok(Engine::new(state))
 }
 
 #[napi(js_name = "create_engine")]

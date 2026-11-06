@@ -285,97 +285,25 @@
       "sha256": "9999a2376c507d69d7a0e37e813c3c63730546ee045aa787a6257429aaa8778e"
     },
     {
-      "path": "0060-reuse-model-api-transports.patch",
-      "sha256": "1156788a05b63bd98e5c83bb0c82aa9ef879e7fdab7b7ff419d51762f87ff961"
-    },
-    {
       "path": "0061-cache-converted-ca-bundles.patch",
-      "sha256": "247933673fd40afd53f3348460cb009639af70a18d4669ebe1ebe41fdcda7c98"
-    },
-    {
-      "path": "0062-cache-bundled-model-catalog.patch",
-      "sha256": "1ce97cab5cb06cbb8a32caa9abe39f789510cc7b4900e88fd93906da50d481fe"
+      "sha256": "2d16bc0c9b57d90e95df52e2b4e2ebb1e375946faa6c2dd50578cb8d99d92115"
     },
     {
       "path": "0063-native-model-http-dispatch.patch",
-      "sha256": "aef7f6b3100492d1cd780fb37adca7253b34883dfb6246517af331b28a65dc7f"
+      "sha256": "e7469d55c4756e3ff8af235e9f5ae15cd86158223bb115e1463e546e890118a9"
     },
     {
-      "path": "0064-borrow-model-catalog-for-lookup.patch",
-      "sha256": "b6a93a2ee21d8dbd0aec509e2ecea67264791d2f42d0a7e89925ac8fdf0fc8c6"
-    },
-    {
-      "path": "0065-share-immutable-config-layers.patch",
-      "sha256": "461ef55c7d613cba06522fc7783c5c4c2d7187aae0556971daf4a99d13717621"
-    },
-    {
-      "path": "0066-skip-unused-trust-root-discovery.patch",
-      "sha256": "54c7ac77653dd17af40f1929b0df2bde352a1e5a8de234d9c9f4551e94d6745a"
-    },
-    {
-      "path": "0067-validate-parsed-config-values.patch",
-      "sha256": "6ba4953c458ede343990e7ea36bf820aa5d31a768c368e252a7a7aa5c8475b19"
-    },
-    {
-      "path": "0068-prepare-isolated-environment-snapshot.patch",
-      "sha256": "74171ed366a7ef0e17fe78d4ea7531a8eb44a0394da88f39bb642525e04667ff"
+      "path": "0083-native-performance-regression-tests.patch",
+      "sha256": "892b91e4143900de39692110261e02c4f6327f385dee7bb474b8fcb6b9a3b1ed"
     },
     {
       "path": "0069-test-root-termination-under-backpressure.patch",
-      "sha256": "12a9a2f46aae2fe5be5b302190aff95002a9b1f469778d1308cd9ccefc1a82c0"
+      "sha256": "937a81392a18b15207c1177aeab9012629178d0600f6348c892455b8f0af8898"
     },
     {
-      "path": "0070-provider-owned-http-clients.patch",
-      "sha256": "8890ef4f55e132c96afbd3172f9c9cd0c8f7ab2c0103d2a689c5c9c7728c65e3"
-    },
-    {
-      "path": "0071-import-root-span-context-in-tests.patch",
-      "sha256": "d9cb663bf6ad3507e638ac0df08c0b0ce49e193c48f8c0ab075b57dd7f954ff5"
-    },
-    {
-      "path": "0072-test-shared-http-policy-revocation.patch",
-      "sha256": "a1057386bc7b6722716d2af9f34bd7c24c91ecdcea5c818dbde2213f287bca21"
-    },
-    {
-      "path": "0073-return-built-shared-ca-client.patch",
-      "sha256": "c90241e79d27d3e75758581afe4cf960e68f1e6576a4f43bd4d2f261a92a9751"
-    },
-    {
-      "path": "0074-distinguish-rotated-test-root-subjects.patch",
-      "sha256": "41d0e4ba73f0acefe2cb6e83a23dc74e501a91abd161c4ae517bbb39b2b2f5a5"
-    },
-    {
-      "path": "0075-project-model-presets-by-reference.patch",
-      "sha256": "ea59a6569a3762a287119fe7abb3fc07ae5cd33b5d28d48ce5c6e2555c791a3a"
-    },
-    {
-      "path": "0076-defer-shared-hit-ca-certificate-copies.patch",
-      "sha256": "a7b126652c6a284eb796011061bd69b4c802318a9acb25b6a7c9479853b3cc6e"
-    },
-    {
-      "path": "0077-avoid-unrequested-history-snapshots.patch",
-      "sha256": "b2e54de97b16ffbb23d9936eeb900882fec19373a24c34bec4fc55ea73fa1903"
-    },
-    {
-      "path": "0078-update-turn-context-test-fixture.patch",
-      "sha256": "c41d78c2be8c5c16c048d5a060cb966054a3b14693f5cd7a1ebada08b13182b7"
-    },
-    {
-      "path": "0079-fix-context-window-test-fixture.patch",
-      "sha256": "a3ca734128a6cbd29a4b158a4922959687541ebbf6817bcf6b109d2f736f1ae2"
-    },
-    {
-      "path": "0080-borrow-bundled-model-catalog.patch",
-      "sha256": "ef91d3a183cb4bd5c93ccb1fc82cf0c795cfde65386d195e00cf275d3bcd31ac"
-    },
-    {
-      "path": "0081-skip-unneeded-key-alias-normalization.patch",
-      "sha256": "ef6c4079f83ce982012092d3eaba176915c8f4f38db3dce5751737f3755de126"
-    },
-    {
-      "path": "0082-skip-disabled-session-metric-tags.patch",
-      "sha256": "aa23178e2fc91fbd201ef91aa108e1d014dbdc550c91ca60b3e8e92f8d3293e2"
+      "path": "0084-update-native-test-fixtures.patch",
+      "sha256": "ec86c33a20e83f3fb6f60e60400ce63475cd126704530de293798f9ca476bd65"
     }
   ],
-  "result_tree": "aa93deb27a75cee4093fa7555c5cfda91f7bf10a"
+  "result_tree": "046a30f8d57870f2916fc7c70691a5f2423ba89c"
 }

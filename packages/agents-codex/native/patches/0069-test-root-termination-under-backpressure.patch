@@ -1,8 +1,7 @@
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index 3744bc33153d88bc520b5315e13d7621e6dbf8dd..da50a2df14e110c885c5fb59c1b98a06bb1cf056 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -13848,3 +13848,297 @@ async fn response_integrity_reason_tracks_the_originating_terminal_error_event()
+@@ -13857,3 +13857,297 @@
          Some(ResponseIntegrityReason::UndecodableOutputItem)
      );
  }

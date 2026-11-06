@@ -13,7 +13,6 @@ import * as wsModule from 'ws';
 import type { WebSocket, WebSocketServer } from 'ws';
 import { once } from 'node:events';
 import type {
-  SharedHttpClients,
   NativeModelResponse,
   NativeModelWebSocket,
 } from '../../native/index.js';
@@ -191,22 +190,12 @@ export class NativeProviderRoutes {
     this.enableWebsockets();
     return { config, runtime, apiKey };
   }
-  bindEngine(
-    engine: Engine,
-    sharedClients?: () => Promise<SharedHttpClients>,
-  ): void | Promise<void> {
+  bindEngine(engine: Engine): void {
     if (!this.localOrigin)
       throw new NativeError('Model request carrier has not started');
-    const origin = this.localOrigin;
-    const bind = (clients?: SharedHttpClients) => {
-      if (this.localOrigin !== origin)
-        throw new NativeError('Model request carrier has closed');
-      const grant = randomBytes(32).toString('base64url');
-      if (clients) engine._sentinel_bind(origin, grant, null, clients);
-      else engine._sentinel_bind(origin, grant, null);
-      this.sentinelEngines.set(grant, engine);
-    };
-    return sharedClients ? sharedClients().then(bind) : bind();
+    const grant = randomBytes(32).toString('base64url');
+    engine._sentinel_bind(this.localOrigin, grant, null);
+    this.sentinelEngines.set(grant, engine);
   }
   /** Release only the retired engine's routing grants; the Session owns the carrier. */
   unbindEngine(engine: Engine): void {

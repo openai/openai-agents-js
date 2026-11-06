@@ -150,7 +150,6 @@ import {
 } from './binding';
 import {
   parseEvent,
-  parseCertifiedRootTextEvent,
   parseEvents,
   requestTypes,
   type NativeEvent,
@@ -1072,7 +1071,6 @@ export class Session<OutputT = string, Context = unknown> {
   // Only one-shot manual handlers report child cleanup to the owning run.
   private readonly oneShotChildCleanupErrors: unknown[] = [];
   #native: NativeThread;
-  #nativeId: string;
   #engine: Engine;
   private environmentDisposalFinished = false;
   private environmentCloseFailure?: Promise<void>;
@@ -1142,7 +1140,6 @@ export class Session<OutputT = string, Context = unknown> {
         }),
     });
     this.#native = native;
-    this.#nativeId = native.id;
     this.#engine = engine;
     this.#modelApiKey = modelApiKey;
     this.capabilityView = createCapabilities(
@@ -1152,7 +1149,7 @@ export class Session<OutputT = string, Context = unknown> {
     );
   }
   get id(): string {
-    return this.#nativeId;
+    return this.#native.id;
   }
   private get isOpen(): boolean {
     return (
@@ -4006,25 +4003,18 @@ export class Session<OutputT = string, Context = unknown> {
     const producer = this.childObservationProducer;
     let batch: string[] = [];
     let batchIndex = 0;
-    let rootTextOnly = false;
     try {
       while (this.isOpen && this.#native === native) {
         let event: NativeEvent;
         try {
           if (batchIndex === batch.length) {
-            const received = await native._next_session_events();
-            batch = received.events;
-            rootTextOnly =
-              Object.hasOwn(received, 'rootTextOnly') &&
-              received.rootTextOnly === true;
+            batch = await native._next_session_events();
             batchIndex = 0;
             if (batch.length === 0)
               throw new NativeError('Native event batch was empty');
           }
           const raw = batch[batchIndex++]!;
-          event = rootTextOnly
-            ? parseCertifiedRootTextEvent(raw)
-            : parseEvent(raw);
+          event = parseEvent(raw);
           if (event.msg.type === 'elicitation_request') {
             // The generic event schema drops prototype-named record keys.
             // Preserve raw form data; prepareNativeForm validates it separately.
@@ -7880,7 +7870,6 @@ export class Session<OutputT = string, Context = unknown> {
       if (owner.completedFailure) throw owner.completedFailure;
       // Retirement is irreversible: finish publication even if close or abort arrived.
       this.#native = owner.thread;
-      this.#nativeId = owner.thread.id;
       this.#engine = owner.candidate;
       this.nativeManualCheckpoint = manualCheckpoint;
       owner.published = true;

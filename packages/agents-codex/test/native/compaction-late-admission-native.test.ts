@@ -41,45 +41,34 @@ const timer = setInterval(() => {
     );
     const native = await binding();
     const create = native.create_engine;
-    const createFirstRoot = native._create_first_root_engine;
-    let hookInstalled = false;
-    async function withCompactionHook(runtime: string) {
-      const options = JSON.parse(runtime);
-      // Install the barrier before either real native constructor loads hooks.
-      options.bypass_hook_trust = true;
-      await writeFile(
-        join(options.codex_home, 'hooks.json'),
-        JSON.stringify({
-          hooks: {
-            PreCompact: [
-              {
-                matcher: 'auto',
-                hooks: [
-                  {
-                    type: 'command',
-                    command: [process.execPath, hook]
-                      .map((arg) => `'${arg.replaceAll("'", "'\\''")}'`)
-                      .join(' '),
-                  },
-                ],
-              },
-            ],
-          },
-        }),
-      );
-      hookInstalled = true;
-      return JSON.stringify(options);
-    }
     const createSpy = vi
       .spyOn(native, 'create_engine')
-      .mockImplementation(async (config, runtime, key, apps) =>
-        create(config, await withCompactionHook(runtime), key, apps),
-      );
-    const firstRootSpy = vi
-      .spyOn(native, '_create_first_root_engine')
-      .mockImplementation(async (config, runtime, key) =>
-        createFirstRoot(config, await withCompactionHook(runtime), key),
-      );
+      .mockImplementation(async (config, runtime, key, apps) => {
+        const options = JSON.parse(runtime);
+        // Install a test-only barrier on the real native setup path.
+        options.bypass_hook_trust = true;
+        await writeFile(
+          join(options.codex_home, 'hooks.json'),
+          JSON.stringify({
+            hooks: {
+              PreCompact: [
+                {
+                  matcher: 'auto',
+                  hooks: [
+                    {
+                      type: 'command',
+                      command: [process.execPath, hook]
+                        .map((arg) => `'${arg.replaceAll("'", "'\\''")}'`)
+                        .join(' '),
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
+        );
+        return create(config, JSON.stringify(options), key, apps);
+      });
     const reserved = Promise.withResolvers<void>();
     const releaseStop = Promise.withResolvers<void>();
     const Thread = native.NativeThread;
@@ -149,8 +138,6 @@ const timer = setInterval(() => {
           }),
         ],
       }).session();
-      // Detect an unobserved creator before waiting for the genuine hook process.
-      expect(hookInstalled).toBe(true);
       const turn = await session.submit('Lookup now.');
       const result = turn.wait().then(
         (value) => ({ ok: true as const, value }),
@@ -191,7 +178,6 @@ const timer = setInterval(() => {
       await session?.close();
       await provider?.close();
       stopSpy.mockRestore();
-      firstRootSpy.mockRestore();
       createSpy.mockRestore();
       await rm(directory, { recursive: true, force: true });
     }

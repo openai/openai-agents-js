@@ -92,7 +92,7 @@ async function holdMainBeforeChild(route: Route) {
       const raw = await nextMain.call(this);
       // Track every physically returned entry, including earlier unarmed reads.
       // Inspecting only the first string could hide a start later in a batch.
-      for (const wire of raw.events) {
+      for (const wire of raw) {
         const event = JSON.parse(wire);
         if (
           event.subagent_id &&

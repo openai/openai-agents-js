@@ -4,7 +4,6 @@ export const nativeAgentTestIncludes =
     : [
         'test/*.test.ts',
         'test/native/{binding,history,tools,manual,state,local-storage-unit,native-goals-unit,testing,web-search,checklist,capabilities-unit,local-checklist,mcp-policy,history-counters,opening-cleanup,carrier-cleanup,onboarding,examples-native,parity-data,parity-agent,conversation-example,manual-replies,application-memory,validated-artifact}.test.ts',
-        'test/native/provider-home-cleanup.test.ts',
         'test/native/timeout-cleanup-example.test.ts',
         'test/native/external-job.test.ts',
         'test/native/specialist-agent.test.ts',

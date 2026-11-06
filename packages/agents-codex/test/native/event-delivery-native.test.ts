@@ -5,13 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
-import { z } from 'zod';
-import {
-  Agent,
-  NativeProvider,
-  manualTool,
-  type ObservedEvent,
-} from '../../src';
+import { Agent, NativeProvider, type ObservedEvent } from '../../src';
 import {
   binding,
   type Engine,
@@ -61,17 +55,6 @@ async function* textFrom(events: AsyncIterable<ObservedEvent>) {
     expect(event.type).not.toBe('gap');
     if (event.type === 'output_text_delta') yield event.delta;
   }
-}
-
-function dormantManualTools() {
-  return [
-    manualTool({
-      name: 'unused_decision',
-      description: 'This declaration is not called by the fixture.',
-      parameters: z.object({}),
-      result: z.string(),
-    }),
-  ];
 }
 
 it.each([
@@ -169,32 +152,7 @@ it.each([
     expect(result.finalOutput).toBe(expected);
     expect(heartbeatBeforeLastDelta).toBe(true);
     expect(batches.length).toBeGreaterThan(0);
-    for (const batch of batches) {
-      expect(typeof batch.rootTextOnly).toBe('boolean');
-      firstNativeBatchWire(batch);
-      const first = JSON.parse(batch.events[0]!);
-      if (
-        first.msg.type !== 'agent_message_content_delta' ||
-        first.subagent_id !== undefined ||
-        Buffer.byteLength(batch.events[0]!) >= 16 * 1024
-      )
-        expect(batch.rootTextOnly).toBe(false);
-      expect(batch.events.length).toBeGreaterThan(0);
-      expect(batch.events.length).toBeLessThanOrEqual(8);
-      if (batch.events.length === 1) continue; // Preserve a single oversized event.
-      expect(
-        batch.events.reduce((bytes, raw) => bytes + Buffer.byteLength(raw), 0),
-      ).toBeLessThanOrEqual(16 * 1024);
-      // Mixed passive batches use the unchanged generic parser. The helper
-      // checks ownership, passive kinds and the certificate over every entry.
-      if (batch.rootTextOnly)
-        expect(
-          batch.events.every(
-            (wire) =>
-              JSON.parse(wire).msg.type === 'agent_message_content_delta',
-          ),
-        ).toBe(true);
-    }
+    for (const batch of batches) firstNativeBatchWire(batch);
     server.assertExhausted();
   },
   20_000,
@@ -297,10 +255,9 @@ it('delivers each queued publication boundary through the native Promise bridge'
           for (;;) {
             const batch = await thread._next_session_events();
             firstNativeBatchWire(batch);
-            const event = JSON.parse(batch.events[0]!);
+            const event = JSON.parse(batch[0]!);
             if (event.msg.type !== 'sdk_mcp_publication_boundary') continue;
-            expect(batch.events).toHaveLength(1);
-            expect(batch.rootTextOnly).toBe(false);
+            expect(batch).toHaveLength(1);
             expect(event.id).toBe(id);
             break;
           }
@@ -373,273 +330,218 @@ it('settles a pending batched reader when session close cancels a provider reque
   server.assertExhausted();
 }, 20_000);
 
-it.each(['certified-text', 'mixed-passive'] as const)(
-  'forms a real %s batch and drops its unread tail when its owner closes',
-  async (mode) => {
-    // Core's root event channel is unbounded. Sixteen short deltas also keep
-    // fixture transport buffers small. Stored output proves production finished
-    // while this test holds the JS reader; the wait has a five-second deadline.
-    const chunks = Array.from({ length: 16 }, (_, index) => `batch-${index};`);
-    const expected = chunks.join('');
-    const server = new ModelServer([
-      {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-        body: streamingBody(chunks),
-      },
-      [message('replacement owner')],
-    ]);
-    const config = await server.config();
-    await using provider = new NativeProvider({
-      baseUrl: (config['model_providers.fixture'] as { base_url: string })
-        .base_url,
-      apiKey: 'synthetic-buffered-tail',
-      supportsWebsockets: false,
-    });
-    const native = await binding();
-    const original = native.NativeThread.prototype._next_session_events;
-    const finish = vi.spyOn(
-      native.NativeThread.prototype,
-      '_finish_child_event_reader',
+it('drops the unread tail of a real text batch when its owner closes', async () => {
+  // Core's root event channel is unbounded. Sixteen short deltas also keep
+  // fixture transport buffers small. Stored output proves production finished
+  // while this test holds the JS reader; the wait has a five-second deadline.
+  const chunks = Array.from({ length: 16 }, (_, index) => `batch-${index};`);
+  const expected = chunks.join('');
+  const server = new ModelServer([
+    {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: streamingBody(chunks),
+    },
+    [message('replacement owner')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-buffered-tail',
+    supportsWebsockets: false,
+  });
+  const native = await binding();
+  const original = native.NativeThread.prototype._next_session_events;
+  const finish = vi.spyOn(
+    native.NativeThread.prototype,
+    '_finish_child_event_reader',
+  );
+  // The reader can run before opening assigns this session.
+  // eslint-disable-next-line prefer-const
+  let session: Awaited<ReturnType<Agent['session']>> | undefined;
+  let retired: NativeThread | undefined;
+  let closing: Promise<void> | undefined;
+  let preparedBacklog = false;
+  let multiEventBatch = 0;
+  let tailRead = 0;
+  vi.spyOn(
+    native.NativeThread.prototype,
+    '_next_session_events',
+  ).mockImplementation(async function (this: NativeThread) {
+    const batch = await original.call(this);
+    firstNativeBatchWire(batch);
+    const events = batch.map((wire) => JSON.parse(wire));
+    const backlogGate = events.some(
+      (event) => event.msg.type === 'agent_message_content_delta',
     );
-    // The reader can run before opening assigns this session.
-    // eslint-disable-next-line prefer-const
-    let session: Awaited<ReturnType<Agent['session']>> | undefined;
-    let retired: NativeThread | undefined;
-    let closing: Promise<void> | undefined;
-    let preparedBacklog = false;
-    let multiEventBatch = 0;
-    let tailRead = 0;
-    vi.spyOn(
-      native.NativeThread.prototype,
-      '_next_session_events',
-    ).mockImplementation(async function (this: NativeThread) {
-      const batch = await original.call(this);
-      firstNativeBatchWire(batch);
-      const events = batch.events.map((wire) => JSON.parse(wire));
-      const backlogGate =
-        mode === 'mixed-passive'
-          ? events.some((event) => event.msg.type === '_sdk_request_metadata')
-          : events.some(
-              (event) => event.msg.type === 'agent_message_content_delta',
-            );
-      if (!preparedBacklog && backlogGate) {
-        preparedBacklog = true;
-        await vi.waitFor(
-          async () => {
-            expect(await this.read_thread_history(null)).toContain(expected);
-          },
-          { timeout: 5000, interval: 10 },
-        );
-      }
-      const mixedText =
-        !batch.rootTextOnly &&
-        new Set(events.map((event) => event.msg.type)).size > 1 &&
-        events.some(
-          (event) => event.msg.type === 'agent_message_content_delta',
-        );
-      const selectedBatch =
-        batch.events.length > 1 &&
-        (mode === 'certified-text' ? batch.rootTextOnly : mixedText);
-      if (session && preparedBacklog && !retired && selectedBatch) {
-        expect(preparedBacklog).toBe(true);
-        expect(batch.rootTextOnly).toBe(mode === 'certified-text');
-        if (mode === 'mixed-passive') {
-          expect(
-            new Set(events.map((event) => event.msg.type)).size,
-          ).toBeGreaterThan(1);
-          expect(
-            events.some(
-              (event) => event.msg.type === 'agent_message_content_delta',
-            ),
-          ).toBe(true);
-        }
-        multiEventBatch = batch.events.length;
-        // The assertion must identify the exact retired receiver.
-        // eslint-disable-next-line @typescript-eslint/no-this-alias
-        retired = this;
-        const withheld = batch.events[1]!;
-        // Schedule the real public close at the exact access to the first
-        // unread tail entry. readEvents must recheck ownership after parsing.
-        Object.defineProperty(batch.events, 1, {
-          configurable: true,
-          get: () => {
-            tailRead++;
-            closing = session!.close();
-            return withheld;
-          },
-        });
-      }
-      return batch;
-    });
-    session = await new Agent({
-      instructions: 'Answer.',
-      model: 'gpt-5',
-      provider,
-      tools: mode === 'mixed-passive' ? dormantManualTools() : [],
-    }).session();
-    try {
-      const turn = await session.submit('Stream a bounded backlog.');
-      const outcome = turn.wait().then(
-        () => {},
-        () => {},
+    if (!preparedBacklog && backlogGate) {
+      preparedBacklog = true;
+      await vi.waitFor(
+        async () => {
+          expect(await this.read_thread_history(null)).toContain(expected);
+        },
+        { timeout: 5000, interval: 10 },
       );
-      const observed = (async () => {
-        const events: ObservedEvent[] = [];
-        for await (const event of turn.events()) events.push(event);
-        return events;
-      })();
-      await vi.waitFor(() => expect(tailRead).toBe(1), {
-        timeout: 5000,
-        interval: 10,
-      });
-      expect(closing).toBeDefined();
-      await closing;
-      await outcome;
-      const events = await observed;
-      expect(multiEventBatch).toBeGreaterThan(1);
-      expect(multiEventBatch).toBeLessThanOrEqual(8);
-      expect(tailRead).toBe(1);
-      expect(finish.mock.contexts).toContain(retired);
-      const text = events
-        .flatMap((event) =>
-          'type' in event && event.type === 'output_text_delta'
-            ? [event.delta]
-            : [],
-        )
-        .join('');
-      expect(expected.startsWith(text)).toBe(true);
-      expect(text.length).toBeLessThan(expected.length);
-      // A fresh owner on the same provider receives no retired text.
-      await using replacement = await new Agent({
-        instructions: 'Answer.',
-        model: 'gpt-5',
-        provider,
-      }).session();
-      expect(
-        (await (await replacement.submit('Fresh owner.')).wait()).finalOutput,
-      ).toBe('replacement owner');
-    } finally {
-      await session.close();
     }
-    server.assertExhausted();
-  },
-  20_000,
-);
-
-it.each(['certified-text', 'mixed-passive'] as const)(
-  'retires the exact %s reader before a supplied context replacement starts reading',
-  async (mode) => {
-    const chunks = Array.from({ length: 16 }, (_, index) => `source-${index};`);
-    const expected = chunks.join('');
-    const server = new ModelServer([
-      {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-        body: streamingBody(chunks),
-      },
-      {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-        body: streamingBody(['new context ', 'answer']),
-      },
-    ]);
-    const config = await server.config();
-    await using provider = new NativeProvider({
-      baseUrl: (config['model_providers.fixture'] as { base_url: string })
-        .base_url,
-      apiKey: 'synthetic-batch-context',
-      supportsWebsockets: false,
-    });
-    const native = await binding();
-    const original = native.NativeThread.prototype._next_session_events;
-    const finish = vi.spyOn(
-      native.NativeThread.prototype,
-      '_finish_child_event_reader',
+    const selectedBatch = batch.length > 1;
+    if (session && preparedBacklog && !retired && selectedBatch) {
+      expect(preparedBacklog).toBe(true);
+      multiEventBatch = batch.length;
+      // The assertion must identify the exact retired receiver.
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      retired = this;
+      const withheld = batch[1]!;
+      // Schedule the real public close at the exact access to the first
+      // unread tail entry. readEvents must recheck ownership after parsing.
+      Object.defineProperty(batch, 1, {
+        configurable: true,
+        get: () => {
+          tailRead++;
+          closing = session!.close();
+          return withheld;
+        },
+      });
+    }
+    return batch;
+  });
+  session = await new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  }).session();
+  try {
+    const turn = await session.submit('Stream a bounded backlog.');
+    const outcome = turn.wait().then(
+      () => {},
+      () => {},
     );
-    const contexts = new Set<NativeThread>();
-    let source: NativeThread | undefined;
-    let backlogPrepared = false;
-    let batches = 0;
-    vi.spyOn(
-      native.NativeThread.prototype,
-      '_next_session_events',
-    ).mockImplementation(async function (this: NativeThread) {
-      contexts.add(this);
-      const batch = await original.call(this);
-      firstNativeBatchWire(batch);
-      const events = batch.events.map((wire) => JSON.parse(wire));
-      const backlogGate =
-        mode === 'mixed-passive'
-          ? events.some((event) => event.msg.type === '_sdk_request_metadata')
-          : events.some(
-              (event) => event.msg.type === 'agent_message_content_delta',
-            );
-      if (!backlogPrepared && backlogGate) {
-        // Preserve the source identity across native context replacement.
-        // eslint-disable-next-line @typescript-eslint/no-this-alias
-        source = this;
-        backlogPrepared = true;
-        await vi.waitFor(
-          async () => {
-            expect(await this.read_thread_history(null)).toContain(expected);
-          },
-          { timeout: 5000, interval: 10 },
-        );
-      }
-      const mixedText =
-        !batch.rootTextOnly &&
-        new Set(events.map((event) => event.msg.type)).size > 1 &&
-        events.some(
-          (event) => event.msg.type === 'agent_message_content_delta',
-        );
-      if (
-        this === source &&
-        batch.events.length > 1 &&
-        (mode === 'certified-text' ? batch.rootTextOnly : mixedText)
-      ) {
-        if (mode === 'mixed-passive') {
-          expect(
-            new Set(events.map((event) => event.msg.type)).size,
-          ).toBeGreaterThan(1);
-          expect(
-            events.some(
-              (event) => event.msg.type === 'agent_message_content_delta',
-            ),
-          ).toBe(true);
-        }
-        batches++;
-      }
-      return batch;
+    const observed = (async () => {
+      const events: ObservedEvent[] = [];
+      for await (const event of turn.events()) events.push(event);
+      return events;
+    })();
+    await vi.waitFor(() => expect(tailRead).toBe(1), {
+      timeout: 5000,
+      interval: 10,
     });
-    await using session = await new Agent({
+    expect(closing).toBeDefined();
+    await closing;
+    await outcome;
+    const events = await observed;
+    expect(multiEventBatch).toBeGreaterThan(1);
+    expect(multiEventBatch).toBeLessThanOrEqual(8);
+    expect(tailRead).toBe(1);
+    expect(finish.mock.contexts).toContain(retired);
+    const text = events
+      .flatMap((event) =>
+        'type' in event && event.type === 'output_text_delta'
+          ? [event.delta]
+          : [],
+      )
+      .join('');
+    expect(expected.startsWith(text)).toBe(true);
+    expect(text.length).toBeLessThan(expected.length);
+    // A fresh owner on the same provider receives no retired text.
+    await using replacement = await new Agent({
       instructions: 'Answer.',
       model: 'gpt-5',
       provider,
-      tools: mode === 'mixed-passive' ? dormantManualTools() : [],
     }).session();
     expect(
-      (await (await session.submit('Original context.')).wait()).finalOutput,
-    ).toBe(expected);
-    expect(batches).toBeGreaterThan(0);
-    await session.compact({ summary: 'Only the new context remains active.' });
-    expect(source).toBeDefined();
-    expect(finish.mock.contexts).toContain(source);
-    expect([...contexts].some((owner) => owner !== source)).toBe(true);
-    const next = await session.submit('New context.');
-    const events = (async () => {
-      const text: string[] = [];
-      for await (const event of next.events()) {
-        if (!('type' in event)) continue;
-        expect(event.type).not.toBe('gap');
-        if (event.type === 'output_text_delta') text.push(event.delta);
-      }
-      return text.join('');
-    })();
-    expect((await next.wait()).finalOutput).toBe('new context answer');
-    const projected = await events;
-    expect(projected).toBe('new context answer');
-    server.assertExhausted();
-  },
-  20_000,
-);
+      (await (await replacement.submit('Fresh owner.')).wait()).finalOutput,
+    ).toBe('replacement owner');
+  } finally {
+    await session.close();
+  }
+  server.assertExhausted();
+}, 20_000);
+
+it('retires the exact text reader before a supplied context replacement starts reading', async () => {
+  const chunks = Array.from({ length: 16 }, (_, index) => `source-${index};`);
+  const expected = chunks.join('');
+  const server = new ModelServer([
+    {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: streamingBody(chunks),
+    },
+    {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: streamingBody(['new context ', 'answer']),
+    },
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-batch-context',
+    supportsWebsockets: false,
+  });
+  const native = await binding();
+  const original = native.NativeThread.prototype._next_session_events;
+  const finish = vi.spyOn(
+    native.NativeThread.prototype,
+    '_finish_child_event_reader',
+  );
+  const contexts = new Set<NativeThread>();
+  let source: NativeThread | undefined;
+  let backlogPrepared = false;
+  let batches = 0;
+  vi.spyOn(
+    native.NativeThread.prototype,
+    '_next_session_events',
+  ).mockImplementation(async function (this: NativeThread) {
+    contexts.add(this);
+    const batch = await original.call(this);
+    firstNativeBatchWire(batch);
+    const events = batch.map((wire) => JSON.parse(wire));
+    const backlogGate = events.some(
+      (event) => event.msg.type === 'agent_message_content_delta',
+    );
+    if (!backlogPrepared && backlogGate) {
+      // Preserve the source identity across native context replacement.
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      source = this;
+      backlogPrepared = true;
+      await vi.waitFor(
+        async () => {
+          expect(await this.read_thread_history(null)).toContain(expected);
+        },
+        { timeout: 5000, interval: 10 },
+      );
+    }
+    if (this === source && batch.length > 1) {
+      batches++;
+    }
+    return batch;
+  });
+  await using session = await new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+  }).session();
+  expect(
+    (await (await session.submit('Original context.')).wait()).finalOutput,
+  ).toBe(expected);
+  expect(batches).toBeGreaterThan(0);
+  await session.compact({ summary: 'Only the new context remains active.' });
+  expect(source).toBeDefined();
+  expect(finish.mock.contexts).toContain(source);
+  expect([...contexts].some((owner) => owner !== source)).toBe(true);
+  const next = await session.submit('New context.');
+  const events = (async () => {
+    const text: string[] = [];
+    for await (const event of next.events()) {
+      if (!('type' in event)) continue;
+      expect(event.type).not.toBe('gap');
+      if (event.type === 'output_text_delta') text.push(event.delta);
+    }
+    return text.join('');
+  })();
+  expect((await next.wait()).finalOutput).toBe('new context answer');
+  const projected = await events;
+  expect(projected).toBe('new context answer');
+  server.assertExhausted();
+}, 20_000);

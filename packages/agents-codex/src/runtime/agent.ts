@@ -249,18 +249,6 @@ export async function openSession(
   });
   await carrier.start(config, runtime, apiKey);
   options.environmentOwner?.signal.throwIfAborted();
-  // One public opening owns this coherent first-root configuration snapshot.
-  // Existing addon APIs and restored/custom/executor/model-policy paths reload.
-  const firstRoot =
-    !saved &&
-    !options.customStore &&
-    !options.localStorage &&
-    !environment &&
-    !options.nativeAgents &&
-    !setup.selectedModel &&
-    setup.applicationAppsJson === undefined &&
-    threadOptions._sdk_resume_thread_id === undefined &&
-    typeof native._create_first_root_engine === 'function';
   engine = saved
     ? await native.create_checkpoint_engine(
         encode(initialConfig),
@@ -279,22 +267,14 @@ export async function openSession(
           options.customStore,
           setup.applicationAppsJson ?? null,
         )
-      : firstRoot
-        ? await native._create_first_root_engine(
-            encode(initialConfig),
-            encode(runtime),
-            apiKey ?? null,
-          )
-        : await native.create_engine(
-            encode(initialConfig),
-            encode(runtime),
-            apiKey ?? null,
-            setup.applicationAppsJson ?? null,
-          );
+      : await native.create_engine(
+          encode(initialConfig),
+          encode(runtime),
+          apiKey ?? null,
+          setup.applicationAppsJson ?? null,
+        );
   options.environmentOwner?.signal.throwIfAborted();
-  await carrier.bindEngine(engine, () =>
-    lease.httpClients(native._create_shared_http_clients),
-  );
+  await carrier.bindEngine(engine);
   options.environmentOwner?.signal.throwIfAborted();
   if (saved) {
     thread = await engine.restore_checkpoint(
@@ -318,10 +298,7 @@ export async function openSession(
       throw localRecoveryRequired(opened, threadOptions._sdk_resume_thread_id);
     thread = opened;
   } else {
-    const start = firstRoot
-      ? engine._start_first_root.bind(engine)
-      : engine.start_replaceable_thread.bind(engine);
-    thread = await start(
+    thread = await engine.start_replaceable_thread(
       encode({ ...threadOptions, config: initialConfig }),
       catalog.specsJson,
     );

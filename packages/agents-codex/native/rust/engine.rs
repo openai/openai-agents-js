@@ -40,7 +40,6 @@ struct ProcessCleanupHold {
 
 pub struct EngineState {
     pub manager: Arc<ThreadManager>,
-    first_root_config: std::sync::Mutex<Option<Box<Config>>>,
     pub(crate) sdk_selected_model: bool,
     pub store: Arc<dyn ThreadStore>,
     pub(crate) custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
@@ -73,7 +72,6 @@ pub struct EngineState {
     extension_events: Arc<extensions::Events>,
     cloud_config: codex_config::CloudConfigBundleLoader,
     pub(crate) service_config: Config,
-    pub(crate) shared_api_clients: OnceLock<Arc<codex_http_client::SharedApiClients>>,
     pub(crate) application_apps: Option<codex_mcp::ApplicationApps>,
     pub(crate) sentinel: Arc<RwLock<Option<(String, String, Option<String>)>>>,
     pub(crate) interception: Arc<crate::native_interception::Boundary>,
@@ -221,47 +219,6 @@ impl EngineState {
         initial_models: crate::checkpoint::InitialModels,
         custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
     ) -> anyhow::Result<Self> {
-        Self::new_owned_with_store_inner(
-            config_json,
-            runtime_json,
-            checkpoint,
-            api_key,
-            prospective,
-            initial_models,
-            custom_store,
-            false,
-        )
-        .await
-    }
-
-    pub(crate) async fn new_owned_for_first_root(
-        config_json: String,
-        runtime_json: String,
-        api_key: Option<String>,
-    ) -> anyhow::Result<Self> {
-        Self::new_owned_with_store_inner(
-            config_json,
-            runtime_json,
-            false,
-            api_key,
-            None,
-            Default::default(),
-            None,
-            true,
-        )
-        .await
-    }
-
-    async fn new_owned_with_store_inner(
-        config_json: String,
-        runtime_json: String,
-        checkpoint: bool,
-        api_key: Option<String>,
-        prospective: Option<&std::sync::Mutex<Option<crate::RuntimeOwned<EnvironmentManager>>>>,
-        initial_models: crate::checkpoint::InitialModels,
-        custom_store: Option<Arc<crate::custom_storage::CustomThreadStore>>,
-        prepare_first_root: bool,
-    ) -> anyhow::Result<Self> {
         ensure!(
             custom_store.is_none()
                 || (!checkpoint
@@ -271,26 +228,18 @@ impl EngineState {
             "custom canonical storage cannot combine local, checkpoint, or goal stores"
         );
         let telemetry = crate::telemetry::engine_starting().await?;
-        let (runtime_json, isolated_loader) =
-            config::prepare_runtime_for_first_root(&runtime_json)?;
-        let (mut config, cloud_config, first_root_eligible) =
-            config::load_with_first_root(&config_json, &runtime_json, None).await?;
-        // Capture before telemetry, environment ceilings or resume modify Config.
-        let first_root_config = (prepare_first_root && isolated_loader && first_root_eligible)
-            .then(|| Box::new(config.clone()));
+        let runtime_json = config::prepare_runtime(&runtime_json)?;
+        let (mut config, cloud_config) = config::load(&config_json, &runtime_json, None).await?;
         ensure!(
             custom_store.is_none() || !config.update_plan_enabled,
             "custom canonical storage does not support Checklist"
         );
-        // Keep this decode at the existing post-load environment boundary. Earlier
-        // custom-store admission and configuration diagnostics retain their order.
-        let runtime_options = config::RuntimeOptions::from_json(&runtime_json)?;
-        let environment_options = runtime_options.environment();
+        let environment_options = config::environment(&runtime_json)?;
         if let Some(environment) = &environment_options {
             environment.restrict_network_approval(&mut config)?;
             environment.check_config(&config)?;
         }
-        let sdk_selected_model = runtime_options.sdk_selected_model();
+        let sdk_selected_model = config::sdk_selected_model(&runtime_json)?;
         if let Some(settings) = &telemetry {
             settings.apply(&mut config);
         } else if crate::telemetry::export_requested(&config) {
@@ -299,13 +248,12 @@ impl EngineState {
             );
         }
         // Managed portable state owns the effective model, never its credentials or tools.
-        if checkpoint && runtime_options.native_agents() {
+        if checkpoint && config::native_agents(&runtime_json)? {
             if let Some(model) = &initial_models.root_model {
                 config.model = Some(model.clone());
             }
         }
-        let sdk_user_input_enabled = runtime_options
-            .sdk_native_config()
+        let sdk_user_input_enabled = config::sdk_native_config(&runtime_json)?
             .then_some(config.experimental_request_user_input_enabled);
         ensure!(
             !checkpoint || !config.ephemeral,
@@ -314,17 +262,17 @@ impl EngineState {
         let local_home = if checkpoint {
             None
         } else {
-            runtime_options.native_thread_store()
+            config::native_thread_store(&runtime_json)?
         };
         if local_home.is_some() {
             config::validate_local_tool_config(&config)?;
             ensure!(
-                (!config.agents_enabled || runtime_options.native_agents())
+                (!config.agents_enabled || config::native_agents(&runtime_json)?)
                     && !config.features.enabled(Feature::CodeMode),
                 "local storage requires current NativeAgents and no Code Mode"
             );
         }
-        let goals_enabled = runtime_options.native_goal_store_enabled();
+        let goals_enabled = config::native_goal_store_enabled(&runtime_json)?;
         // Check before opening SQLite or launching the executor.
         if let Some(environment) = &environment_options {
             let storage =
@@ -350,7 +298,7 @@ impl EngineState {
         } else {
             models
         };
-        let models: SharedModelsManager = if runtime_options.native_agents() {
+        let models: SharedModelsManager = if config::native_agents(&runtime_json)? {
             let catalog = crate::native_agents::validated_catalog(
                 services,
                 &models,
@@ -391,7 +339,7 @@ impl EngineState {
         let installation_id = ThreadId::new().to_string();
         let user_instructions = Arc::new(options::EmptyUserInstructions);
         let extension_events = Arc::new(extensions::Events::new());
-        let code_mode = runtime_options.code_mode_provider(&config).or_else(|| {
+        let code_mode = config::code_mode_provider(&runtime_json, &config)?.or_else(|| {
             // Mirror ThreadManager's pinned default if no package helper was
             // selected, so every enabled native Code Mode session uses the same
             // owning delegate. Disabled Code Mode still uses Core's default.
@@ -450,7 +398,7 @@ impl EngineState {
             },
         };
         if custom_store.is_none() {
-            if let Some(id) = runtime_options.sdk_resume_thread_id() {
+            if let Some(id) = config::sdk_resume_thread_id(&runtime_json)? {
                 ensure!(
                     local_checklist_store.is_some() || custom_store.is_some(),
                     "SDK resume requires current canonical storage"
@@ -556,7 +504,6 @@ impl EngineState {
             }
         });
         Ok(Self {
-            first_root_config: std::sync::Mutex::new(first_root_config),
             sdk_selected_model,
             manager,
             store,
@@ -586,7 +533,6 @@ impl EngineState {
             application_apps: None,
             sentinel,
             sentinel_transports: std::sync::Mutex::new(HashMap::new()),
-            shared_api_clients: OnceLock::new(),
             interception,
             restored_creation_times: Mutex::new(HashMap::new()),
         })
@@ -594,46 +540,10 @@ impl EngineState {
 
     pub async fn start_with_tools(
         self: &Arc<Self>,
-        options: options::ThreadOptions,
-        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
-    ) -> anyhow::Result<NativeThread> {
-        self.start_with_tools_inner(options, specs, false).await
-    }
-
-    pub(crate) async fn start_first_root(
-        self: &Arc<Self>,
-        options: options::ThreadOptions,
-        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
-    ) -> anyhow::Result<NativeThread> {
-        self.start_with_tools_inner(options, specs, true).await
-    }
-
-    pub(crate) fn discard_first_root(&self) {
-        let _ = self
-            .first_root_config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-    }
-
-    pub(crate) fn first_root_attempt(&self) -> FirstRootAttempt<'_> {
-        FirstRootAttempt(self)
-    }
-
-    async fn start_with_tools_inner(
-        self: &Arc<Self>,
         mut options: options::ThreadOptions,
         specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
-        use_first_root: bool,
     ) -> anyhow::Result<NativeThread> {
-        let _attempt = self.first_root_attempt();
         let _guard = self.lifecycle.lock().await;
-        let prepared = self
-            .first_root_config
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let prepared = if use_first_root { prepared } else { None };
         if self.local_checklist_store.is_some() || self.custom_store.is_some() {
             options.validate_local_authority()?;
         }
@@ -651,9 +561,7 @@ impl EngineState {
             config::sdk_resume_thread_id(&self.runtime_json)?.is_none_or(|id| Some(id) == resume),
             "SDK resume must match the current runtime admission"
         );
-        let (mut startup, instructions) = self
-            .build_startup_with_first_root(options, prepared)
-            .await?;
+        let (mut startup, instructions) = self.build_startup(options).await?;
         let mut local_resume_admission = None;
         if let Some(id) = resume {
             ensure!(
@@ -1296,7 +1204,6 @@ impl EngineState {
     }
 
     async fn close_locked(&self) -> anyhow::Result<Option<String>> {
-        self.discard_first_root();
         if self.closed.load(Ordering::Acquire) {
             let mut diagnostics = Vec::new();
             let retained = self
@@ -1482,41 +1389,18 @@ impl EngineState {
         &self,
         options: options::ThreadOptions,
     ) -> anyhow::Result<(StartThreadOptions, Arc<options::ThreadInstructions>)> {
-        self.discard_first_root();
-        self.build_startup_with_first_root(options, None).await
-    }
-
-    async fn build_startup_with_first_root(
-        &self,
-        options: options::ThreadOptions,
-        prepared: Option<Box<Config>>,
-    ) -> anyhow::Result<(StartThreadOptions, Arc<options::ThreadInstructions>)> {
         self.interception.check_code_import_admission()?;
         ensure!(
             !self.closed.load(Ordering::Acquire),
             "Codex engine is closed"
         );
-        let (mut startup, instructions) = match prepared {
-            Some(config) => {
-                options
-                    .build_with_first_root(
-                        &self.config_json,
-                        &self.runtime_json,
-                        self.cloud_config.clone(),
-                        Some(config),
-                    )
-                    .await?
-            }
-            None => {
-                options
-                    .build(
-                        &self.config_json,
-                        &self.runtime_json,
-                        self.cloud_config.clone(),
-                    )
-                    .await?
-            }
-        };
+        let (mut startup, instructions) = options
+            .build(
+                &self.config_json,
+                &self.runtime_json,
+                self.cloud_config.clone(),
+            )
+            .await?;
         if let Some(settings) = &self.telemetry {
             settings.apply(&mut startup.config);
         }
@@ -1716,14 +1600,11 @@ impl EngineState {
             .expect("sentinel transports poisoned")
             .entry(no_redirects)
             .or_insert_with(|| {
-                let mut pool = codex_http_client::RouteAwareClientPool::with_builder(
+                let pool = codex_http_client::RouteAwareClientPool::with_builder(
                     factory.clone(),
                     codex_http_client::ClientRouteClass::Api,
                     builder,
                 );
-                if let Some(clients) = self.shared_api_clients.get() {
-                    pool = pool.with_shared_api_clients(Arc::clone(clients));
-                }
                 (
                     codex_http_client::ReqwestTransport::from_route_aware_client_pool(pool),
                     crate::model_websocket::ConnectorCache::default(),
@@ -2201,410 +2082,16 @@ fn graph_event(event: crate::storage::GraphEvent) -> anyhow::Result<serde_json::
 const SESSION_EVENT_BATCH_LIMIT: usize = 8;
 const SESSION_EVENT_BATCH_BYTES: usize = 16 * 1024;
 
-// Exhaustive patterns deliberately fail compilation if either wire struct gains
-// a field. Borrowed str outputs also reject non-string field-type changes.
-fn root_text_fields(event: &Event) -> Option<(&str, &str, &str, &str, &str)> {
-    let Event { id, msg } = event;
-    let EventMsg::AgentMessageContentDelta(
-        codex_protocol::protocol::AgentMessageContentDeltaEvent {
-            thread_id,
-            turn_id,
-            item_id,
-            delta,
-        },
-    ) = msg
-    else {
-        return None;
-    };
-    Some((id, thread_id, turn_id, item_id, delta))
-}
-
-// Inspect the already-projected first value once per batch. Extra fields or
-// changed projections must keep the ordinary authority-aware JSON parser.
-fn certified_root_text(first: &serde_json::Value, thread: &str) -> bool {
-    let Some(root) = first.as_object() else {
-        return false;
-    };
-    let Some(message) = first.get("msg").and_then(serde_json::Value::as_object) else {
-        return false;
-    };
-    root.len() == 2
-        && message.len() == 5
-        && first["id"].is_string()
-        && message.get("type").and_then(serde_json::Value::as_str)
-            == Some("agent_message_content_delta")
-        && message.get("thread_id").and_then(serde_json::Value::as_str) == Some(thread)
-        && message.get("turn_id") == root.get("id")
-        && message
-            .get("item_id")
-            .is_some_and(serde_json::Value::is_string)
-        && message
-            .get("delta")
-            .is_some_and(serde_json::Value::is_string)
-}
-
-// This is an optimization certificate, never an admission or a parser certificate.
-// These publications have no application callback or native delivery effect. Metadata,
-// item completions, questions, errors, terminal and unknown kinds stay barriers.
-fn ready_passive_root_value(value: &serde_json::Value, thread: &str, turn: &str) -> bool {
-    if value["id"].as_str() != Some(turn)
-        || value.get("subagent_id").is_some()
-        || value.get("subagent_incarnation").is_some()
-        || value.get("subagent_instance_id").is_some()
-    {
-        return false;
-    }
-    match value["msg"]["type"].as_str() {
-        Some("agent_message_content_delta") => certified_root_text(value, thread),
-        Some(
-            "agent_message"
-            | "user_message"
-            | "agent_reasoning"
-            | "agent_reasoning_raw_content"
-            | "agent_reasoning_section_break"
-            | "warning"
-            | "mcp_startup_complete"
-            | "thread_settings_applied"
-            | "token_count",
-        ) => true,
-        Some("raw_response_item") => {
-            let item = &value["msg"]["item"];
-            item["type"] == "reasoning"
-                || (item["type"] == "message" && item["role"] == "assistant")
-        }
-        Some("item_started") => {
-            value["msg"]["thread_id"].as_str() == Some(thread)
-                && value["msg"]["turn_id"].as_str() == Some(turn)
-                && matches!(
-                    value["msg"]["item"]["type"].as_str(),
-                    Some("AgentMessage" | "Reasoning")
-                )
-        }
-        _ => false,
-    }
-}
-
-// Opaque annotations can contain arbitrary JSON. Inspect only their outer shape
-// before lookahead projection; ordinary delivery retains the complete value.
-fn ready_passive_annotations_are_empty(annotations: &Option<serde_json::Value>) -> bool {
-    match annotations {
-        None | Some(serde_json::Value::Null) => true,
-        Some(serde_json::Value::Array(items)) => items.is_empty(),
-        _ => false,
-    }
-}
-
-// Reject controls before allocating their wire projection. String byte lengths
-// are lower bounds only: JSON escaping and envelopes can add bytes.
-// The projected whitelist and final encoded length below remain authoritative.
-fn ready_passive_min_bytes(event: &Event, thread: &str, turn: &str) -> Option<usize> {
-    use codex_protocol::items::{AgentMessageContent, AgentMessageItem, ReasoningItem, TurnItem};
-    use codex_protocol::models::{
-        ContentItem, ImageReference, ReasoningItemContent, ReasoningItemReasoningSummary,
-        ResponseItem,
-    };
-    use codex_protocol::protocol::{
-        AgentMessageEvent, AgentReasoningEvent, AgentReasoningRawContentEvent,
-        AgentReasoningSectionBreakEvent, ApiRateLimitWindow, ApiRateLimits, ItemStartedEvent,
-        McpStartupCompleteEvent, McpStartupFailure, RawResponseItemEvent, TokenCountEvent,
-        TokenUsage, TokenUsageInfo, UserMessageEvent, WarningEvent,
-    };
-    let Event { id, msg } = event;
-    if id != turn {
-        return None;
-    }
-    let bytes = match msg {
-        EventMsg::AgentMessage(AgentMessageEvent {
-            message,
-            phase: _,
-            memory_citation,
-            delivery: _,
-            questions,
-        }) => {
-            if memory_citation.is_some() || questions.is_some() {
-                return None;
-            }
-            message.len()
-        }
-        EventMsg::UserMessage(UserMessageEvent {
-            client_id,
-            message,
-            images,
-            image_details,
-            file_ids,
-            file_id_details,
-            image_order,
-            local_images,
-            local_image_details,
-            audio,
-            local_audio,
-            text_elements,
-        }) => {
-            // Only the text-only shape is cheap to prove. Empty optional vectors
-            // have constant wire size; no media, span or path payload is visited.
-            if images.as_ref().is_some_and(|items| !items.is_empty())
-                || file_ids.as_ref().is_some_and(|items| !items.is_empty())
-                || audio.as_ref().is_some_and(|items| !items.is_empty())
-                || !image_details.is_empty()
-                || !file_id_details.is_empty()
-                || !image_order.is_empty()
-                || !local_images.is_empty()
-                || !local_image_details.is_empty()
-                || !local_audio.is_empty()
-                || !text_elements.is_empty()
-            {
-                return None;
-            }
-            message
-                .len()
-                .saturating_add(client_id.as_ref().map_or(0, String::len))
-        }
-        EventMsg::AgentReasoning(AgentReasoningEvent { text })
-        | EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => text.len(),
-        EventMsg::AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent {
-            item_id,
-            summary_index: _,
-        }) => item_id.len(),
-        EventMsg::Warning(WarningEvent { message }) => message.len(),
-        EventMsg::McpStartupComplete(McpStartupCompleteEvent {
-            ready,
-            failed,
-            cancelled,
-        }) => {
-            let items = ready
-                .len()
-                .saturating_add(failed.len())
-                .saturating_add(cancelled.len());
-            if items > SESSION_EVENT_BATCH_BYTES {
-                return None;
-            }
-            // Every serialized element costs at least one byte, even when its
-            // strings are empty. Cap cardinality before walking any collection.
-            let bytes = ready
-                .iter()
-                .chain(cancelled)
-                .map(String::len)
-                .fold(items, usize::saturating_add);
-            failed
-                .iter()
-                .fold(bytes, |bytes, McpStartupFailure { server, error }| {
-                    bytes
-                        .saturating_add(server.len())
-                        .saturating_add(error.len())
-                })
-        }
-        EventMsg::ThreadSettingsApplied(_) => return None,
-        EventMsg::TokenCount(TokenCountEvent {
-            info,
-            rate_limits,
-            api_rate_limits,
-        }) => {
-            if rate_limits.is_some() {
-                return None;
-            }
-            if let Some(TokenUsageInfo {
-                total_token_usage,
-                last_token_usage,
-                model_context_window: _,
-            }) = info
-            {
-                for usage in [total_token_usage, last_token_usage] {
-                    // All serialized fields are fixed-width integers. The
-                    // arbitrary-precision rollout number is skip_serializing.
-                    let TokenUsage {
-                        input_tokens: _,
-                        cached_input_tokens: _,
-                        cache_write_input_tokens: _,
-                        output_tokens: _,
-                        reasoning_output_tokens: _,
-                        total_tokens: _,
-                        codex_rollout_budget_units: _,
-                    } = usage;
-                }
-            }
-            api_rate_limits.as_ref().map_or(
-                0,
-                |ApiRateLimits {
-                     requests,
-                     tokens,
-                     project_tokens,
-                     retry_after,
-                 }| {
-                    requests
-                        .iter()
-                        .chain(tokens)
-                        .chain(project_tokens)
-                        .filter_map(
-                            |ApiRateLimitWindow {
-                                 limit: _,
-                                 remaining: _,
-                                 reset_after,
-                             }| reset_after.as_ref(),
-                        )
-                        .map(String::len)
-                        .fold(
-                            retry_after.as_ref().map_or(0, String::len),
-                            usize::saturating_add,
-                        )
-                },
-            )
-        }
-        EventMsg::RawResponseItem(RawResponseItemEvent { item }) => match item {
-            ResponseItem::Message {
-                id,
-                role,
-                content,
-                phase: _,
-                internal_chat_message_metadata_passthrough,
-            } if role == "assistant" => {
-                if internal_chat_message_metadata_passthrough.is_some()
-                    || content.len() > SESSION_EVENT_BATCH_BYTES
-                {
-                    return None;
-                }
-                let bytes = content
-                    .len()
-                    .saturating_add(id.as_ref().map_or(0, |id| id.as_str().len()));
-                content.iter().try_fold(bytes, |bytes, part| {
-                    let size = match part {
-                        ContentItem::InputText { text } => text.len(),
-                        ContentItem::OutputText { text, annotations } => {
-                            if !ready_passive_annotations_are_empty(annotations) {
-                                return None;
-                            }
-                            text.len()
-                        }
-                        ContentItem::InputImage { image, detail: _ } => match image {
-                            ImageReference::Inline { image_url } => image_url.len(),
-                            ImageReference::File { file_id } => file_id.len(),
-                        },
-                        ContentItem::InputAudio { audio_url } => audio_url.len(),
-                    };
-                    Some(bytes.saturating_add(size))
-                })?
-            }
-            ResponseItem::Reasoning {
-                id,
-                summary,
-                content,
-                encrypted_content,
-                internal_chat_message_metadata_passthrough,
-            } => {
-                let count = summary
-                    .len()
-                    .saturating_add(content.as_ref().map_or(0, Vec::len));
-                if internal_chat_message_metadata_passthrough.is_some()
-                    || count > SESSION_EVENT_BATCH_BYTES
-                {
-                    return None;
-                }
-                let bytes = summary
-                    .iter()
-                    .map(|ReasoningItemReasoningSummary::SummaryText { text }| text.len())
-                    .fold(
-                        summary
-                            .len()
-                            .saturating_add(id.as_ref().map_or(0, |id| id.as_str().len())),
-                        usize::saturating_add,
-                    )
-                    .saturating_add(encrypted_content.as_ref().map_or(0, String::len));
-                // The pinned serializer omits Text-only content. Its predicate
-                // still scans the vector, so cardinality is capped above.
-                if content.as_ref().is_some_and(|parts| {
-                    parts
-                        .iter()
-                        .any(|part| matches!(part, ReasoningItemContent::ReasoningText { .. }))
-                }) {
-                    content
-                        .iter()
-                        .flatten()
-                        .map(|part| match part {
-                            ReasoningItemContent::ReasoningText { text }
-                            | ReasoningItemContent::Text { text } => text.len(),
-                        })
-                        .fold(
-                            bytes.saturating_add(content.as_ref().map_or(0, Vec::len)),
-                            usize::saturating_add,
-                        )
-                } else {
-                    bytes
-                }
-            }
-            _ => return None,
-        },
-        EventMsg::ItemStarted(ItemStartedEvent {
-            thread_id,
-            turn_id,
-            item,
-            started_at_ms: _,
-        }) if turn_id == turn
-            && ThreadId::from_string(thread).is_ok_and(|thread| thread == *thread_id) =>
-        {
-            let bytes = match item {
-                TurnItem::AgentMessage(AgentMessageItem {
-                    id,
-                    content,
-                    display_text,
-                    phase: _,
-                    memory_citation,
-                    delivery: _,
-                    questions,
-                }) => {
-                    if memory_citation.is_some()
-                        || questions.is_some()
-                        || content.len() > SESSION_EVENT_BATCH_BYTES
-                    {
-                        return None;
-                    }
-                    let bytes = id
-                        .len()
-                        .saturating_add(display_text.as_ref().map_or(0, String::len))
-                        .saturating_add(content.len());
-                    content.iter().try_fold(
-                        bytes,
-                        |bytes, AgentMessageContent::Text { text, annotations }| {
-                            if !ready_passive_annotations_are_empty(annotations) {
-                                return None;
-                            }
-                            Some(bytes.saturating_add(text.len()))
-                        },
-                    )?
-                }
-                TurnItem::Reasoning(ReasoningItem {
-                    id,
-                    summary_text,
-                    raw_content,
-                }) => {
-                    let count = summary_text.len().saturating_add(raw_content.len());
-                    if count > SESSION_EVENT_BATCH_BYTES {
-                        return None;
-                    }
-                    summary_text
-                        .iter()
-                        .chain(raw_content)
-                        .map(String::len)
-                        .fold(id.len().saturating_add(count), usize::saturating_add)
-                }
-                _ => return None,
-            };
-            bytes.saturating_add(turn_id.len())
-        }
-        _ => return None,
-    };
-    Some(bytes.saturating_add(id.len()))
-}
-
 // Poll only this retained root source, never a merged session read. A Pending
 // future may already own question/error metadata and must stay in its slot.
-fn take_ready_root_event(
+fn take_ready_root_text_delta(
     next: &mut Option<NextNativeEvent>,
     dequeued: &AtomicBool,
     thread: &str,
     turn: &str,
     remaining_bytes: usize,
-    ready_passive: bool,
     make_next: impl FnOnce() -> NextNativeEvent,
-) -> Option<(String, bool)> {
+) -> Option<String> {
     let reader = next.as_mut()?;
     let waker = futures_util::task::noop_waker();
     let mut context = std::task::Context::from_waker(&waker);
@@ -2612,47 +2099,26 @@ fn take_ready_root_event(
         return None;
     };
     let raw = match &result {
-        Ok((event, None))
-            if ready_passive
-                && root_text_fields(event).is_none()
-                && ready_passive_min_bytes(event, thread, turn)
-                    .is_some_and(|minimum| minimum <= remaining_bytes) =>
-        {
-            native_event(None, event)
-                .ok()
-                .filter(|value| ready_passive_root_value(value, thread, turn))
-                .and_then(|value| {
-                    let certified = certified_root_text(&value, thread);
-                    serde_json::to_string(&value)
-                        .ok()
-                        .map(|raw| (raw, certified))
-                })
-        }
-        Ok((event, None)) => match root_text_fields(event) {
-            Some((id, event_thread, event_turn, item_id, delta))
-                if id == turn
-                    && event_thread == thread
-                    && event_turn == turn
-                    && id
-                        .len()
-                        .saturating_add(event_thread.len())
-                        .saturating_add(event_turn.len())
-                        .saturating_add(item_id.len())
-                        .saturating_add(delta.len())
-                        <= remaining_bytes =>
+        Ok((event, None)) if event.id == turn => match &event.msg {
+            EventMsg::AgentMessageContentDelta(delta)
+                if delta.thread_id == thread
+                    && delta.turn_id == turn
+                    && delta.delta.len() <= remaining_bytes =>
             {
-                serde_json::to_string(event).ok().map(|raw| (raw, true))
+                // Only string fields occur in this event. Its wire form needs
+                // no usage/error/question projection or delivery side effects.
+                serde_json::to_string(event).ok()
             }
             _ => None,
         },
         _ => None,
     };
-    if let Some(raw) = raw.filter(|(raw, _)| raw.len() <= remaining_bytes) {
+    if let Some(raw) = raw.filter(|raw| raw.len() <= remaining_bytes) {
         dequeued.store(false, Ordering::Release);
         *next = Some(make_next());
         return Some(raw);
     }
-    // Preserve control events, errors and over-budget events without applying
+    // Preserve control events, errors and over-budget text without applying
     // root/child/manual/terminal delivery effects. Keep the dequeue witness.
     *next = Some(Box::pin(std::future::ready(result)));
     None
@@ -3320,36 +2786,29 @@ impl ThreadState {
         )
     }
 
-    pub async fn next_session_events(self: &Arc<Self>) -> anyhow::Result<(Vec<String>, bool)> {
+    pub async fn next_session_events(self: &Arc<Self>) -> anyhow::Result<Vec<String>> {
         // This first read always stays on the original asynchronous bridge.
         let first = self.next_session_event().await?;
         let raw = serde_json::to_string(&first)?;
         let mut bytes = raw.len();
         let mut batch = vec![raw];
         let thread = self.id.to_string();
-        if bytes >= SESSION_EVENT_BATCH_BYTES {
-            return Ok((batch, false));
-        }
-        let ready_passive = first["id"]
-            .as_str()
-            .is_some_and(|turn| ready_passive_root_value(&first, &thread, turn));
-        if !ready_passive
-            && (first["msg"]["type"] != "agent_message_content_delta"
-                || first.get("subagent_id").is_some()
-                || first.get("subagent_incarnation").is_some()
-                || first.get("subagent_instance_id").is_some()
-                || first["msg"]["thread_id"].as_str() != Some(thread.as_str())
-                || first["msg"]["turn_id"] != first["id"])
+        if first["msg"]["type"] != "agent_message_content_delta"
+            || first.get("subagent_id").is_some()
+            || first.get("subagent_incarnation").is_some()
+            || first.get("subagent_instance_id").is_some()
+            || first["msg"]["thread_id"].as_str() != Some(thread.as_str())
+            || first["msg"]["turn_id"] != first["id"]
+            || bytes >= SESSION_EVENT_BATCH_BYTES
         {
-            return Ok((batch, false));
+            return Ok(batch);
         }
         let Some(turn) = first["id"].as_str() else {
-            return Ok((batch, false));
+            return Ok(batch);
         };
-        let mut root_text_only = certified_root_text(&first, &thread);
         // Never wait for another owner, new event, or a full batch.
         let Ok(mut events) = self.events.try_lock() else {
-            return Ok((batch, root_text_only));
+            return Ok(batch);
         };
         let python_tools = self
             .thread
@@ -3375,25 +2834,20 @@ impl ThreadState {
                 break;
             }
             let witness = events.native_dequeued.clone();
-            let Some((raw, certified)) = take_ready_root_event(
+            let Some(raw) = take_ready_root_text_delta(
                 &mut events.native,
                 &witness,
                 &thread,
                 turn,
                 SESSION_EVENT_BATCH_BYTES - bytes,
-                ready_passive,
                 || next_native_event(self.thread.clone(), witness.clone()),
             ) else {
                 break;
             };
-            // No allowed passive can deliver a terminal or retire a question;
-            // manual observation ignores these exact variants, even with manual slots.
-            // The borrowed native_event projection above preserves usage strings.
-            root_text_only &= certified;
             bytes += raw.len();
             batch.push(raw);
         }
-        Ok((batch, root_text_only))
+        Ok(batch)
     }
 
     pub async fn next_session_event(self: &Arc<Self>) -> anyhow::Result<serde_json::Value> {
@@ -4181,15 +3635,3 @@ mod candidate_startup_tests;
 #[cfg(test)]
 #[path = "user_input_policy_tests.rs"]
 mod user_input_policy_tests;
-
-// Configuration data only: the existing Engine owns all runtime cleanup.
-pub(crate) struct FirstRootAttempt<'a>(&'a EngineState);
-impl Drop for FirstRootAttempt<'_> {
-    fn drop(&mut self) {
-        self.0.discard_first_root();
-    }
-}
-
-#[cfg(test)]
-#[path = "first_root_config_tests.rs"]
-mod first_root_config_tests;
