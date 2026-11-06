@@ -49,6 +49,21 @@ const deleteMock = vi.fn();
 const daytonaConstructorMock = vi.fn();
 const execFileAsync = promisify(execFile);
 
+async function executeLocalEditorCommand(command: string) {
+  try {
+    const { stdout } = await execFileAsync('/bin/sh', ['-c', command]);
+    return { exitCode: 0, result: stdout, artifacts: { stdout } };
+  } catch (error) {
+    const failure = error as Error & { code?: number; stderr?: string };
+    const output = failure.stderr ?? failure.message;
+    return {
+      exitCode: failure.code ?? 1,
+      result: output,
+      artifacts: { stdout: output },
+    };
+  }
+}
+
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
@@ -404,7 +419,7 @@ describe('DaytonaSandboxClient', () => {
     ).toBe(true);
     expect(
       executeCommandMock.mock.calls.some(([command]) =>
-        String(command).includes('mktemp "$resolved_parent'),
+        String(command).includes('mktemp -d "$resolved_parent'),
       ),
     ).toBe(true);
     expect(
@@ -451,26 +466,12 @@ describe('DaytonaSandboxClient', () => {
         );
         let denyOwnershipCopy = false;
         executeCommandMock.mockImplementation(async (command: string) => {
-          try {
-            if (denyOwnershipCopy) {
-              command =
-                'chown() { printf "Operation not permitted\\n" >&2; return 1; }\n' +
-                command;
-            }
-            const { stdout } = await execFileAsync('/bin/sh', ['-c', command]);
-            return { exitCode: 0, result: stdout, artifacts: { stdout } };
-          } catch (error) {
-            const failure = error as Error & {
-              code?: number;
-              stderr?: string;
-            };
-            const output = failure.stderr ?? failure.message;
-            return {
-              exitCode: failure.code ?? 1,
-              result: output,
-              artifacts: { stdout: output },
-            };
+          if (denyOwnershipCopy) {
+            command =
+              'chown() { printf "Operation not permitted\\n" >&2; return 1; }\n' +
+              command;
           }
+          return await executeLocalEditorCommand(command);
         });
 
         const editor = session.createEditor();
@@ -566,7 +567,7 @@ describe('DaytonaSandboxClient', () => {
           new Manifest({ root }),
         );
         executeCommandMock.mockImplementation(async (command: string) => {
-          if (command.includes('tmp=$(mktemp')) {
+          if (command.includes('stage=$(mktemp -d')) {
             const mutation = {
               'mode-change': 'chmod 644 "$target"',
               replacement:
@@ -585,18 +586,7 @@ describe('DaytonaSandboxClient', () => {
                 : 'chown';
             command = `${trigger}() { command ${trigger} "$@"; ${mutation}; }\n${command}`;
           }
-          try {
-            const { stdout } = await execFileAsync('/bin/sh', ['-c', command]);
-            return { exitCode: 0, result: stdout, artifacts: { stdout } };
-          } catch (error) {
-            const failure = error as Error & { code?: number; stderr?: string };
-            const output = failure.stderr ?? failure.message;
-            return {
-              exitCode: failure.code ?? 1,
-              result: output,
-              artifacts: { stdout: output },
-            };
-          }
+          return await executeLocalEditorCommand(command);
         });
         const editor = session.createEditor();
         const operation = initiallyAbsent
@@ -625,6 +615,172 @@ describe('DaytonaSandboxClient', () => {
         expect(await readdir(root)).not.toContainEqual(
           expect.stringMatching(/^\.openai-agents-write\./u),
         );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux').each([
+    [0o777, false],
+    [0o2777, false],
+    [0o777, true],
+    [0o2777, true],
+  ])(
+    'anchors staging in parent mode %i with publication failure %s',
+    async (parentMode, failPublication) => {
+      const outer = await mkdtemp(join(tmpdir(), 'agents-daytona-stage-'));
+      const root = join(outer, 'workspace');
+      const outside = join(outer, 'outside');
+      try {
+        await execFileAsync('/bin/mkdir', [root]);
+        await chmod(root, parentMode);
+        await writeFile(outside, 'outside private', { mode: 0o600 });
+        const target = join(root, 'target.txt');
+        await writeFile(target, 'original\n', { mode: 0o644 });
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root }),
+        );
+        executeCommandMock.mockImplementation(async (command: string) => {
+          if (command.includes('stage=$(mktemp -d')) {
+            command = [
+              'chown() {',
+              '  command chown "$@"',
+              '  stat -c "%u %a" -- . > "$root/stage-audit"',
+              '  printf "%s" "$stage" > "$root/stage-name"',
+              '  printf "%s" "$tmp" > "$root/stage-child"',
+              '  mv -- "$stage" "$stage.moved"',
+              '  mkdir -- "$stage"',
+              '  printf attacker > "$stage/marker"',
+              `  ln -s -- '${outside}' "$stage/$tmp"`,
+              ...(failPublication ? ['  chmod 640 "$target"'] : []),
+              '}',
+              command,
+            ].join('\n');
+          }
+          return await executeLocalEditorCommand(command);
+        });
+        const operation = session.createEditor().updateFile({
+          type: 'update_file',
+          path: 'target.txt',
+          diff: '-original\n+intended edit\n',
+        });
+        if (failPublication)
+          await expect(operation).rejects.toThrow('file changed during update');
+        else await operation;
+        expect(await readFile(target, 'utf8')).toBe(
+          failPublication ? 'original\n' : 'intended edit\n',
+        );
+        expect(await readFile(outside, 'utf8')).toBe('outside private');
+        expect((await stat(outside)).mode & 0o777).toBe(0o600);
+        const [stageOwner, stageMode] = (
+          await readFile(join(root, 'stage-audit'), 'utf8')
+        )
+          .trim()
+          .split(' ');
+        expect(Number(stageOwner)).toBe(process.getuid!());
+        expect(parseInt(stageMode, 8) & 0o777).toBe(0o700);
+        const stage = await readFile(join(root, 'stage-name'), 'utf8');
+        expect(await readFile(join(stage, 'marker'), 'utf8')).toBe('attacker');
+        const child = await readFile(join(root, 'stage-child'), 'utf8');
+        expect(await readlink(join(stage, child))).toBe(outside);
+        expect(await readdir(`${stage}.moved`)).toEqual([]);
+      } finally {
+        await rm(outer, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test
+    .skipIf(process.platform !== 'linux')
+    .each(['occupied-child', 'redirected-stage'])(
+    'protects editor content during staging %s interference',
+    async (attack) => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-daytona-acquire-'));
+      try {
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root }),
+        );
+        const outside = join(root, 'outside');
+        await execFileAsync('/bin/mkdir', [outside]);
+        executeCommandMock.mockImplementation(async (command: string) => {
+          if (command.includes('stage=$(mktemp -d')) {
+            command =
+              attack === 'occupied-child'
+                ? 'cd() { command cd "$@"; printf existing > other-content; ln -s /dev/null content; }\n' +
+                  command
+                : `mktemp() { allocated=$(command mktemp "$@"); mv -- "$allocated" "$allocated.moved"; ln -s -- '${outside}' "$allocated"; printf '%s\\n' "$allocated"; }\n` +
+                  command;
+          }
+          return await executeLocalEditorCommand(command);
+        });
+        await expect(
+          session.createEditor().createFile({
+            type: 'create_file',
+            path: 'new.txt',
+            diff: '+private replacement',
+          }),
+        ).rejects.toThrow(
+          attack === 'occupied-child'
+            ? /Directory not empty/u
+            : /staging path changed/u,
+        );
+        if (attack === 'occupied-child') {
+          expect(await readFile(join(root, 'new.txt'), 'utf8')).toBe(
+            'private replacement',
+          );
+        } else {
+          await expect(stat(join(root, 'new.txt'))).rejects.toMatchObject({
+            code: 'ENOENT',
+          });
+        }
+        expect(await readdir(outside)).toEqual([]);
+        if (attack === 'occupied-child') {
+          const stage = (await readdir(root)).find((name) =>
+            name.startsWith('.openai-agents-write.'),
+          )!;
+          expect(
+            await readFile(join(root, stage, 'other-content'), 'utf8'),
+          ).toBe('existing');
+          expect(await readlink(join(root, stage, 'content'))).toBe(
+            '/dev/null',
+          );
+          expect((await readdir(join(root, stage))).sort()).toEqual([
+            'content',
+            'other-content',
+          ]);
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== 'linux')(
+    'cleans sealed staging after termination',
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-daytona-signal-'));
+      try {
+        const target = join(root, 'target.txt');
+        await writeFile(target, 'original\n', { mode: 0o600 });
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root }),
+        );
+        executeCommandMock.mockImplementation(async (command: string) => {
+          if (command.includes('stage=$(mktemp -d')) {
+            command = `chown() { command chown "$@"; kill -TERM "$(sh -c 'printf %s "$PPID"')"; }\n${command}`;
+          }
+          return await executeLocalEditorCommand(command);
+        });
+        await expect(
+          session.createEditor().updateFile({
+            type: 'update_file',
+            path: 'target.txt',
+            diff: '-original\n+replacement\n',
+          }),
+        ).rejects.toThrow();
+        expect(await readFile(target, 'utf8')).toBe('original\n');
+        expect(await readdir(root)).toEqual(['target.txt']);
       } finally {
         await rm(root, { recursive: true, force: true });
       }
