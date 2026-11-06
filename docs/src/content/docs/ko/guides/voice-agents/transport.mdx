@@ -147,13 +147,13 @@ GA를 사용할 때는 `session.type`을 제거하지 마세요. GA에는 이 �
   확인해야 하며, 모델이 제공한 도구 인수를 기준으로 확인해서는 안 됩니다.
 </Aside>
 
-오디오 전용 브라우저 피어 연결, 서버에서 강제 적용하는 SDP 정책, 사이드밴드 `RealtimeSession`, 브라우저용으로 변환된 이벤트, 정리 동작을 포함한 전체 애플리케이션은 [`realtime-server-controlled` 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-server-controlled)를 참고하세요.
+오디오 전용 브라우저 피어 연결, 서버에서 강제 적용하는 SDP 정책, 사이드밴드 `RealtimeSession`, 브라우저용으로 변환된 이벤트, 정리 동작을 포함한 전체 애플리케이션은 [`realtime-server-controlled` 코드 예제](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-server-controlled)를 참고하세요.
 
 ### React Native의 앱 소유 전송 계층 사용
 
 `@openai/agents-core`와 `@openai/agents-realtime`은 Metro가 Node.js 내장 모듈 없이도 이식 가능한 SDK shim을 해석할 수 있도록 React Native 패키지 조건을 제공합니다. 내장 `OpenAIRealtimeWebRTC`는 브라우저 WebRTC 전역 객체와 DOM 오디오 요소에 의존하므로 여전히 브라우저용 전송 계층입니다. React Native에서는 앱이 네이티브 WebRTC 구현을 설치하고 관리한 다음, 사용자 정의 `RealtimeTransportLayer`를 통해 `RealtimeSession`에 연결하세요.
 
-[`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-react-native)의 Expo 개발 빌드 코드 예제는 앱이 소유하는 `react-native-webrtc` 전송 계층, 마이크 권한, 오디오 라우팅, 서버 측 임시 토큰 엔드포인트를 보여 줍니다. `react-native-webrtc`에 네이티브 코드가 포함되어 있으므로 Expo Go는 지원되지 않습니다. 표준 OpenAI API 키는 서버에 보관하고, 모바일 앱에는 유효 기간이 짧은 임시 클라이언트 토큰만 전달하세요.
+[`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-react-native)의 Expo 개발 빌드 코드 예제는 앱이 소유하는 `react-native-webrtc` 전송 계층, 마이크 권한, 오디오 라우팅, 서버 측 임시 토큰 엔드포인트를 보여 줍니다. `react-native-webrtc`에 네이티브 코드가 포함되어 있으므로 Expo Go는 지원되지 않습니다. 표준 OpenAI API 키는 서버에 보관하고, 모바일 앱에는 유효 기간이 짧은 임시 클라이언트 토큰만 전달하세요.
 
 ### 서버의 기본 선택인 WebSocket
 

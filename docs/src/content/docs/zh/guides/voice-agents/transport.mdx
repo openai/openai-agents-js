@@ -151,13 +151,13 @@ import cloudflareTransportExample from '../../../../../../../examples/classic/do
   模型提供的工具参数进行授权。
 </Aside>
 
-请参阅 [`realtime-server-controlled` 代码示例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-server-controlled)，了解一个完整的应用，其中包含仅音频的浏览器对等连接、服务器强制执行的 SDP 策略、旁路 `RealtimeSession`、映射后的浏览器事件以及清理行为。
+请参阅 [`realtime-server-controlled` 代码示例](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-server-controlled)，了解一个完整的应用，其中包含仅音频的浏览器对等连接、服务器强制执行的 SDP 策略、旁路 `RealtimeSession`、映射后的浏览器事件以及清理行为。
 
 ### React Native 使用应用自行管理的传输层
 
 `@openai/agents-core` 和 `@openai/agents-realtime` 提供 React Native 包解析条件，使 Metro 无需 Node.js 内置模块即可解析可移植的 SDK 兼容层。内置的 `OpenAIRealtimeWebRTC` 仍然是浏览器传输层，因为它依赖浏览器的 WebRTC 全局对象和 DOM 音频元素。在 React Native 中，请安装并自行管理原生 WebRTC 实现，然后通过自定义 `RealtimeTransportLayer` 将其连接到 `RealtimeSession`。
 
-[`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-react-native) Expo 开发构建代码示例展示了应用自行管理的 `react-native-webrtc` 传输层、麦克风权限、音频路由，以及服务器端临时令牌端点。由于 `react-native-webrtc` 包含原生代码，因此不支持 Expo Go。请将标准 OpenAI API 密钥保留在服务器上，并且只向移动应用传递短期有效的临时客户端令牌。
+[`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-react-native) Expo 开发构建代码示例展示了应用自行管理的 `react-native-webrtc` 传输层、麦克风权限、音频路由，以及服务器端临时令牌端点。由于 `react-native-webrtc` 包含原生代码，因此不支持 Expo Go。请将标准 OpenAI API 密钥保留在服务器上，并且只向移动应用传递短期有效的临时客户端令牌。
 
 ### WebSocket 是服务器的默认选择
 

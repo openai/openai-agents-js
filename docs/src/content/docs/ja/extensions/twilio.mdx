@@ -83,6 +83,6 @@ Twilio は、通話の元の音声を WebSocket サーバーに送信する [Med
 
 ## サーバーの完全なコード例
 
-[実行可能な Twilio のコード例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-twilio) には、認証を行う Fastify ルートと Realtime セッションのセットアップが含まれています。README では、サーバー側で必要な `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN`、`TWILIO_PUBLIC_BASE_URL` の設定について説明しています。公開ベース URL は、パスプレフィックス、クエリ文字列、フラグメントを含まない HTTPS オリジンです。トンネルの公開オリジンが変わった場合は、この設定を更新してください。
+[実行可能な Twilio のコード例](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-twilio) には、認証を行う Fastify ルートと Realtime セッションのセットアップが含まれています。README では、サーバー側で必要な `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN`、`TWILIO_PUBLIC_BASE_URL` の設定について説明しています。公開ベース URL は、パスプレフィックス、クエリ文字列、フラグメントを含まない HTTPS オリジンです。トンネルの公開オリジンが変わった場合は、この設定を更新してください。
 
 サーバーは、Realtime 接続を開く前に、着信とアップグレードの無効な署名を拒否します。Twilio Media Stream の URL は `wss://` を使用し、クエリパラメーターはサポートしていません。カスタムパラメーターについては、[Twilio Stream のドキュメント](https://www.twilio.com/docs/voice/twiml/stream) を参照してください。

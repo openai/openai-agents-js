@@ -283,7 +283,7 @@ Realtime 语音到语音会话也可以包含图像。在 SDK 中，使用 `addI
 
 函数工具在与 `RealtimeSession` 相同的环境中运行。这意味着，如果会话在浏览器中运行，工具也会在浏览器中执行。如果需要执行敏感操作，请在工具内部调用后端，让服务器执行需要特权的工作。
 
-这样，浏览器端工具就可以作为通往服务器端逻辑的轻量级后向通道。例如，[`examples/classic/realtime-next`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-next) 代码示例在浏览器中定义了一个 `refundBackchannel` 工具，将请求和当前对话历史记录转发给服务器上的 `handleRefundRequest(...)`。在服务器上，单独的 `Runner` 可以使用不同的智能体或模型评估退款请求，再将结果返回给语音会话。
+这样，浏览器端工具就可以作为通往服务器端逻辑的轻量级后向通道。例如，[`examples/classic/realtime-next`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-next) 代码示例在浏览器中定义了一个 `refundBackchannel` 工具，将请求和当前对话历史记录转发给服务器上的 `handleRefundRequest(...)`。在服务器上，单独的 `Runner` 可以使用不同的智能体或模型评估退款请求，再将结果返回给语音会话。
 
 #### 托管 MCP 工具
 

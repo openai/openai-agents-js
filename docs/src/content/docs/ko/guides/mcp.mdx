@@ -136,7 +136,7 @@ MCP 결과를 점진적으로 스트리밍하려면 `Agent`를 실행할 때 `st
 
 민감한 작업의 경우 개별 도구 호출에 사람의 승인을 요구할 수 있습니다. `requireApproval: 'always'`를 전달하거나, 도구 이름을 `'never'`/`'always'`에 매핑하는 세분화된 설정 객체를 전달하세요.
 
-도구 호출의 안전성을 프로그래밍 방식으로 판단할 수 있다면 [`onApproval` 콜백](https://github.com/openai/openai-agents-js/blob/main/examples/classic/mcp/hosted-mcp-on-approval.ts)을 사용하여 도구 호출을 승인하거나 거부할 수 있습니다. 사람의 승인이 필요한 경우에는 로컬 함수 도구와 마찬가지로 `interruptions`를 사용하는 [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop/) 방식을 사용할 수 있습니다.
+도구 호출의 안전성을 프로그래밍 방식으로 판단할 수 있다면 [`onApproval` 콜백](https://github.com/openai/openai-agents-js/blob/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/mcp/hosted-mcp-on-approval.ts)을 사용하여 도구 호출을 승인하거나 거부할 수 있습니다. 사람의 승인이 필요한 경우에는 로컬 함수 도구와 마찬가지로 `interruptions`를 사용하는 [휴먼 인 더 루프 (HITL)](/openai-agents-js/ko/guides/human-in-the-loop/) 방식을 사용할 수 있습니다.
 
 <Code
   lang="typescript"
@@ -177,9 +177,9 @@ MCP 결과를 점진적으로 스트리밍하려면 `Agent`를 실행할 때 `st
   title="커넥터 기반 호스티드 MCP 도구"
 />
 
-이 예제에서 `GOOGLE_CALENDAR_AUTHORIZATION` 환경 변수는 Google OAuth Playground에서 얻은 OAuth 토큰을 저장하며, 이 토큰은 커넥터 기반 서버에 Calendar API를 호출할 권한을 부여합니다. 스트리밍도 보여 주는 실행 가능한 코드 예제는 [`examples/classic/connectors`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/connectors)를 참고하세요.
+이 예제에서 `GOOGLE_CALENDAR_AUTHORIZATION` 환경 변수는 Google OAuth Playground에서 얻은 OAuth 토큰을 저장하며, 이 토큰은 커넥터 기반 서버에 Calendar API를 호출할 권한을 부여합니다. 스트리밍도 보여 주는 실행 가능한 코드 예제는 [`examples/classic/connectors`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/connectors)를 참고하세요.
 
-완전히 작동하는 코드 예제(호스티드 툴/Streamable HTTP/stdio + 스트리밍, HITL, onApproval)는 GitHub 저장소의 [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/classic/mcp)에 있습니다.
+완전히 작동하는 코드 예제(호스티드 툴/Streamable HTTP/stdio + 스트리밍, HITL, onApproval)는 GitHub 저장소의 [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/mcp)에 있습니다.
 
 ## 에이전트 수준의 MCP 설정
 
@@ -353,4 +353,4 @@ MCP 결과를 점진적으로 스트리밍하려면 `Agent`를 실행할 때 `st
 ## 추가 참고 자료
 
 - [Model Context Protocol](https://modelcontextprotocol.io/) – 공식 사양
-- [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/main/examples/classic/mcp) – 위에서 언급한 실행 가능한 코드 예제
+- [examples/classic/mcp](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/mcp) – 위에서 언급한 실행 가능한 코드 예제

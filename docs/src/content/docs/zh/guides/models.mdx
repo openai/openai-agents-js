@@ -293,7 +293,7 @@ SDK 将这种空截断视为响应可能已经开始，因此重放并不安全�
 
 如果自行实例化 `OpenAIProvider`，请注意，基于 WebSocket 的 Responses 模型包装器默认会被缓存，以便复用连接。请在关闭时调用 `await provider.close()`，释放这些缓存的连接。`withResponsesWebSocketSession(...)` 的主要作用就是为你管理该生命周期：它会创建启用 WebSocket 的提供方和运行器，将它们传入回调，并始终在回调结束后关闭提供方。使用 `providerOptions` 配置临时提供方，使用 `runnerConfig` 配置回调作用域内的运行器默认设置。
 
-有关使用 Responses WebSocket 传输的完整流式传输 + HITL 代码示例，请参阅 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts)。
+有关使用 Responses WebSocket 传输的完整流式传输 + HITL 代码示例，请参阅 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/basic/stream-ws.ts)。
 
 #### 仅限 Responses 的延迟工具加载
 
@@ -331,7 +331,7 @@ npm install @openai/agents-openai openai
   title="运行托管多智能体工作流"
 />
 
-有关流式可观测性，包括托管协作记录和子智能体消息，请参阅[完整代码示例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/hosted-multi-agent-beta.ts)。
+有关流式可观测性，包括托管协作记录和子智能体消息，请参阅[完整代码示例](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/hosted-multi-agent-beta.ts)。
 
 省略 `maxConcurrentSubagents` 可保留服务默认值，目前为 3。如果提供该值，则必须为正整数。
 
@@ -479,7 +479,7 @@ SDK 通过 `retryPolicies` 导出现成的辅助函数：
 - 智能体可以仅覆盖 `retry.backoff` 的一部分，同时保留来自运行器的其他同级退避字段。
 - 如果需要移除继承的 `policy` 或 `backoff`，请将该字段显式设为 `undefined`。
 
-有关包含日志记录的更完整代码示例，请参阅 [`examples/classic/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/retry.ts) 和 [`examples/classic/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/ai-sdk/retry.ts)。
+有关包含日志记录的更完整代码示例，请参阅 [`examples/classic/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/basic/retry.ts) 和 [`examples/classic/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/ai-sdk/retry.ts)。
 
 ---
 

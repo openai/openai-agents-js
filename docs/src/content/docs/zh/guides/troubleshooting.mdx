@@ -41,7 +41,7 @@ OpenAI Agents SDK 支持以下服务器环境：
 - **React Native**：
   - `@openai/agents-core` 和 `@openai/agents-realtime` 提供了 React Native 包条件，用于加载可移植的兼容层，但内置的 `OpenAIRealtimeWebRTC` 仍仅限浏览器使用。
   - Realtime 应用必须自行提供基于原生 WebRTC 实现（如 `react-native-webrtc`）的传输层，且仍需自行负责权限、音频路由和传输生命周期的管理。
-  - Expo Go 无法加载原生 WebRTC 模块。请使用 Expo 开发构建或原生 React Native 项目。请参阅 [`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-react-native) 代码示例。
+  - Expo Go 无法加载原生 WebRTC 模块。请使用 Expo 开发构建或原生 React Native 项目。请参阅 [`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/realtime-react-native) 代码示例。
 - **v8 隔离实例**：
   - 使用带有适当浏览器 polyfill 的打包工具时，应该可以为 v8 隔离实例打包 SDK，但追踪功能将无法使用
   - v8 隔离实例尚未经过广泛测试

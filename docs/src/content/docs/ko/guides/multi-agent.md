@@ -75,7 +75,7 @@ LLM을 통한 오케스트레이션은 강력하지만, 코드로 오케스트�
 - 작업을 수행하는 에이전트와 평가 및 피드백을 제공하는 에이전트를 `while` 루프에서 함께 실행합니다. 평가 에이전트가 출력이 특정 기준을 충족한다고 판단할 때까지 반복합니다.
 - `Promise.all`과 같은 JavaScript 기본 구성 요소를 통해 여러 에이전트를 병렬로 실행합니다. 서로 의존하지 않는 여러 작업이 있을 때 속도를 높이는 데 유용합니다.
 
-[`examples/classic/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns)에 여러 코드 예제가 있습니다.
+[`examples/classic/agent-patterns`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns)에 여러 코드 예제가 있습니다.
 
 ## 관련 가이드
 

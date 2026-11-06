@@ -133,7 +133,7 @@ GA モデルでは、コンピュータツールの中断は、1 つの `compute
   title="Human in the loop (人間の介入)"
 />
 
-エンドツーエンドで動作する版については、[コード例の完全なスクリプト](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/human-in-the-loop.ts)を参照してください。
+エンドツーエンドで動作する版については、[コード例の完全なスクリプト](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/human-in-the-loop.ts)を参照してください。
 
 ## 承認に時間がかかる場合の対応
 
@@ -182,7 +182,7 @@ GA モデルでは、コンピュータツールの中断は、1 つの `compute
   title="サーバーが保持する承認状態"
 />
 
-完全なコード例については、[CLI クライアント／サーバーのシミュレーション](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/human-in-the-loop-server.ts)を参照してください。これは、そのままデプロイできる HTTP サービスではありません。本番アプリケーションでは、信頼できる認証、表示する詳細情報と選択された呼び出しに対する認可、該当する場合のリクエスト保護と CSRF 対策、ストレージでのデータ保持の上限、共有ストレージでのアトミックな消費処理、復旧ポリシーを用意する必要があります。この CLI は合成されたツールデータを使用し、トレーシングを無効にしています。実際のアプリケーションのスナップショットや診断情報には、機密データが含まれる可能性があります。
+完全なコード例については、[CLI クライアント／サーバーのシミュレーション](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/human-in-the-loop-server.ts)を参照してください。これは、そのままデプロイできる HTTP サービスではありません。本番アプリケーションでは、信頼できる認証、表示する詳細情報と選択された呼び出しに対する認可、該当する場合のリクエスト保護と CSRF 対策、ストレージでのデータ保持の上限、共有ストレージでのアトミックな消費処理、復旧ポリシーを用意する必要があります。この CLI は合成されたツールデータを使用し、トレーシングを無効にしています。実際のアプリケーションのスナップショットや診断情報には、機密データが含まれる可能性があります。
 
 `contextStrategy: 'replace'` を指定して `RunState.fromStringWithContext()` を使用しても、シリアライズされた承認レコードだけを削除しても、信頼できないスナップショットが安全になるわけではありません。ほかのフィールドが引き続き実行を制御します。クライアントがスナップショット全体を転送する場合は、デシリアライズの前に、スナップショット全体の完全性を検証し、認可されたユーザーおよび実行に紐付け、リプレイを防止してください。完全性の検証は、スナップショットを暗号化したり、その内容をクライアントから隠したりするものではありません。
 

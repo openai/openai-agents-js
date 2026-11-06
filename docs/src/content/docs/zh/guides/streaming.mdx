@@ -91,7 +91,7 @@ Agents SDK 可以逐步交付模型及其他执行步骤的输出。流式传输
 
 <Code lang="typescript" code={handleAllEventsExample} title="监听所有事件" />
 
-请参阅[流式传输代码示例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/streamed.ts)，其中提供了一个完整脚本，可同时打印纯文本流和原始事件流。
+请参阅[流式传输代码示例](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/streamed.ts)，其中提供了一个完整脚本，可同时打印纯文本流和原始事件流。
 
 ### Responses WebSocket 传输机制（可选）
 
@@ -107,7 +107,7 @@ Agents SDK 可以逐步交付模型及其他执行步骤的输出。流式传输
 
 如果自行构建提供方，请记得在关闭时调用 `await provider.close()`。基于 WebSocket 的模型封装默认会被缓存以供复用，关闭提供方会释放这些连接。`withResponsesWebSocketSession(...)` 提供相同的复用能力，但会自动将清理操作限定在单个回调的作用域内。
 
-请参阅 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts)，其中提供了包含流式传输、工具调用、审批和 `previousResponseId` 的完整代码示例。
+请参阅 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/basic/stream-ws.ts)，其中提供了包含流式传输、工具调用、审批和 `previousResponseId` 的完整代码示例。
 
 ## 事件类型
 
@@ -152,7 +152,7 @@ Agents SDK 可以逐步交付模型及其他执行步骤的输出。流式传输
 
 当您想要检查 Responses 特有的事件，例如 `response.reasoning_summary_text.delta`、`response.output_item.done` 或 MCP 参数增量，同时让 TypeScript 保持对底层事件结构的感知时，这尤其有用。
 
-请参阅 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts)、[`examples/classic/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/tools/code-interpreter.ts) 和 [`examples/classic/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/connectors)，了解更完整的 OpenAI 专用流式传输模式。
+请参阅 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/basic/stream-ws.ts)、[`examples/classic/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/tools/code-interpreter.ts) 和 [`examples/classic/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/connectors)，了解更完整的 OpenAI 专用流式传输模式。
 
 ### run_item_stream_event
 
@@ -222,7 +222,7 @@ Agents SDK 可以逐步交付模型及其他执行步骤的输出。流式传输
   title="处理流式传输中的人工审批"
 />
 
-[`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/human-in-the-loop-stream.ts) 提供了一个与用户交互的更完整代码示例。
+[`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/1d3a8397910d6b9dcb7b5c481f6a584399ab550a/examples/classic/agent-patterns/human-in-the-loop-stream.ts) 提供了一个与用户交互的更完整代码示例。
 
 ## 流式传输的停止与同一轮次的继续
 
