@@ -41,6 +41,26 @@ try {
 
 Use `turn.wait()` to follow the captured turn. `session.wait()` follows the Session's current continuation.
 
+### Choose a cancellation lifetime
+
+Use the signal or control that owns the work you want to stop:
+
+| API | What cancellation does | When the call finishes |
+| --- | --- | --- |
+| `agent.session({ signal })` | Cancels opening, including startup publication. After opening returns, this signal no longer controls the Session. | After opening succeeds, or cancellation and opening cleanup settle. |
+| `agent.run(input, { signal })` | Cancels the owned run, including work after opening. | After the run and owned cleanup settle. |
+| `turn.wait({ until: 'interaction', signal })` | Cancels this observer alone. It leaves the Turn and its requests active. | When this wait returns an outcome or rejects. |
+| `reader.return()` | Detaches one event or interaction reader. It leaves other readers and native work active. | When that reader closes. |
+| `turn.cancel()` | Stops the captured root, or withdraws its queued entry. | After that root's owned cleanup settles. |
+| `session.interrupt()` | Requests a stop with the selected scope and mode, and discards queued roots. | When the stop is accepted. |
+| `session.close()` | Stops all work owned by the Session and releases its resources. | After owned work and cleanup settle. |
+
+The current source build also provides `turn.waitForAttention({ signal })`; its signal cancels only that observer. See [supervisory outcomes](interactions.md#wait-for-a-supervisory-outcome).
+
+For an owned task with a deadline, pass an `AbortSignal` to `agent.run()`. In an explicit Session, aborting a request waiter does not stop the task. If the application abandons that root, await `turn.cancel()` and close the Session in `finally`. If submission has not returned a Turn yet, close the Session and join the pending submission. The [supervised worker](../supervised-worker/README.md#set-deadlines) shows both deadline paths with the current source build.
+
+Cancellation cannot undo completed effects or preempt synchronous JavaScript. Entered callbacks must settle their cleanup; a callback that ignores its signal can delay cancellation and close. See [tool callback cancellation](tools.md#function-tools) and [executor resource ownership](executors.md#lease-an-executor).
+
 ### Update a session
 
 An idle Session can update one category at a time: instructions, model and settings, or tools. Tool updates can remove, restore, or replace opening declarations within their original names. A Session opened with `NativeAgents` keeps its instructions and model settings fixed from the start.
@@ -56,6 +76,28 @@ Root native warnings appear only in Session observations. A `warning` contains `
 Use `turn.events({ after })` to observe one issued Turn. A root reader follows its accepted steering continuations and output-repair attempts; a child reader follows only its captured child turn. Repair observations retain their own Session and submission IDs and identify the original submission through `parentSubmissionId`. These readers yield observations only. Use the interaction APIs to receive and answer requests.
 
 The reader ends when its Turn finishes publishing observations, even when an older `turn_finished` record has left the buffer. Events retain each native step's identity, and a `turn_finished` event can precede a root's next owned step. Sequence numbers and gaps remain Session-wide. Read `await turn.wait()` for the final result or failure; text deltas arrive before final output validation. The [conversation example](../conversation.ts) shows this flow.
+
+### Inspect execution details
+
+With the current [source build](building.md), event readers can opt into execution payloads with `includeExecutionDetails: true`. The `0.22.0-alpha.1` bundles do not provide this option. By default, an `execution_item_completed` observation contains only the item's type, IDs, and status. A detailed reader can also receive command output, file changes, or MCP arguments and results, depending on the item type.
+
+Read `turn.events({ includeExecutionDetails: true })` and select observations whose `type` is `execution_item_completed`. For command output, narrow `event.item.type` to `command_execution`, check that `output` exists on the item, and collect only non-null `event.item.output` strings. After the reader ends, await `turn.wait()` for the validated result or failure. Close the owning Session in `finally`, including when reading or validation fails. The [native receipt test](../../test/native/worker-receipts-native.test.ts) compares detailed command observations with retained command history.
+
+Each reader chooses its own projection. Detailed items are detached copies, so changing one reader's data does not change another reader's result or the retained record. This option grants no execution or reply authority. Payloads can contain private arguments, output, or file contents; expose them only to trusted consumers.
+
+Both projections use the same bounded event buffer. A slow or reconnecting reader can receive a `gap`, so concatenated deltas or collected execution items may be incomplete. Read the final result through `turn.wait()` and use [history snapshots](state.md#history-and-state) for retained records. The [HTTP report service](../http-report-service.md) shows how to discard a provisional draft and reset from a snapshot after a gap. Event payloads and a completed command status do not establish the whole Turn's success or an external effect.
+
+### Steer a logical root or one native step
+
+Use `turn.steer(input)` when new input should follow that captured root through its owned continuations. Ordinary busy `session.submit(input)` follows the active default-output root too. Neither method starts an independent root; use `enqueue()` for separate work.
+
+With the current [source build](building.md), `turn.steerExact(input, expectedTurnId)` instead targets one native step. The `0.22.0-alpha.1` bundles do not provide this method. Capture the expected ID from the `turn_started` observation for the step that the application displayed. A root's `turn.turnId` remains its initial native ID even after a continuation starts, so that property cannot identify a later step.
+
+Pass the captured observation's `turnId` as `expectedTurnId`. Handle `StaleTurnError` when that step has ended or been replaced; the SDK rejects the attempt instead of targeting the successor. The [root control tests](../../test/native/turn-controls.test.ts) exercise exact steering across native continuations.
+
+A successful call returns a `SteeringReceipt` with `sessionId`, the exact step's `submissionId` and `turnId`, and a distinct `inputId`. It confirms input acceptance, not completion or an external effect. A `StaleTurnError` reports `effects: 'notStarted'` for that rejected steering attempt. Ask for a fresh application decision before targeting a later step. Other errors can report uncertain effects; [inspect the error](session-configuration.md#connection-retries-and-errors) before retrying.
+
+Both steering methods control roots only, and output repair accepts no steering input. A settled root cannot steer a later independent root. See the [supervised worker's steering flow](../supervised-worker/README.md) for saving exact acceptance receipts alongside worker status.
 
 ### Interrupt a session
 

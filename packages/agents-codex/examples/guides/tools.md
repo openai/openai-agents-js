@@ -70,7 +70,7 @@ Omit `tools` to use the current defaults. Pass `tools: []` to select none. To se
 
 ### Limit model steps
 
-Pass `{ maxModelSteps: 4 }` to `agent.run` or to a new Session submission to allow up to four root model preparations. A value of zero blocks the first preparation. When the budget runs out, the run rejects with `NativeError.code === 'max_model_steps_exceeded'` before the next provider request. A preparation can include transport retries. Child agents and structured-output repairs run separately.
+With the current [source build](building.md), pass `{ maxModelSteps: 4 }` to `agent.run` or to a new Session submission to allow up to four root model preparations. A value of zero blocks the first preparation in this source build. The published JavaScript `0.22.0-alpha.1` release does not enforce this option: zero still sends a model request. Upgrade to a build that supports the limit before relying on it. When the budget runs out, the run rejects with `NativeError.code === 'max_model_steps_exceeded'` before the next provider request. A preparation can include transport retries. Child agents and structured-output repairs run separately.
 
 A pending manual checkpoint stores the remaining steps. Resume with `agent.run(null, { state, onInteraction })` on an SDK version that supports `maxModelSteps` to enforce that allowance. Earlier alpha versions ignore the saved limit. Each independent submission starts with its own budget. If you also supply a `beforeStep` callback, the usual callback checkpoint restrictions apply.
 
@@ -109,6 +109,18 @@ Preparation callbacks remain application-owned and cannot be captured. Keep curr
 An after-result transform cannot undo an earlier effect. These callbacks apply to their declared tool routes. They do not intercept every native or hosted tool. Manual tools use the application reply flow described above.
 
 Keep checks specific to one application function in its callback. Use `before` and `after` for shared checks, as in the [callback quota example](../callback-quota.ts). A local `before` denial skips the callback and `after` and returns a failed tool result so the model can continue. `callbackTimeout` covers only the callback body; argument validation, `before`, result validation, and `after` are outside that deadline.
+
+## Decide an executor call
+
+Executor callbacks use the issued decisions imported from `@openai/agents`. They have a different contract from the object decisions used by function and MCP tools:
+
+- `approval` returns `true`, `false`, or `stopExecutorTurn(reason?)`. Only `true` allows the argument transform to run. Approval sees the original arguments, so the transform must preserve the policy your application approved.
+- `transformArguments` returns `allowExecutorCall()` to keep the arguments, `replaceExecutorArguments(value)` to replace them, or `stopExecutorTurn()` to stop the issuing Turn before dispatch. Raw JSON also replaces arguments. Commands and stdin take objects; `apply_patch` takes a patch string.
+- `transformResult` returns JSON data. It cannot issue a stop decision or undo an effect.
+
+Use the factories themselves. A copied or serialized decision loses its authority. An object such as `{ action: 'stop' }` is replacement data in an argument transform, and ordinary result data in a result transform. See the [executor policy example](../executor-decisions.ts).
+
+A direct `false` approval denies that call through the native tool path. In Code Mode, `false` stops the owning Turn so generated code cannot catch the denial and continue dispatching. An issued stop also targets that exact owner: stopping a child leaves its parent and siblings running. Settlement joins entered callbacks and native cleanup. Earlier effects remain, and the optional reason stays private. Open or submit later work only after observing the stopped Turn's outcome.
 
 ## Programmatic tool calling
 

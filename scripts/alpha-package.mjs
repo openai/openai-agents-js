@@ -351,7 +351,14 @@ export async function produceAlpha({ repository = root, version, output }) {
     );
     await writeFile(
       join(starter, 'README.md'),
-      `# Agents SDK alpha ${version}\n\nUse Node.js 24 and its bundled npm on ${platform}. Linux requires glibc 2.39 or newer and OpenSSL 3.\n\nRun \`npm ci --ignore-scripts\`, set OPENAI_API_KEY, then run \`node hello.mjs\`. The example sends a live API request. npm downloads third-party dependencies. Keep package.json, package-lock.json and all five vendor archives together.\n`,
+      `# Agents SDK alpha ${version}
+
+Use Node.js 24 and its bundled npm on ${platform}. Linux requires glibc 2.39 or newer and OpenSSL 3. Windows x64 requires the [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/); install it if startup reports a missing VCRUNTIME140.dll.
+
+Run \`npm ci --ignore-scripts\`, set OPENAI_API_KEY, then run \`node hello.mjs\`. The example sends a live API request. npm downloads third-party dependencies. Keep package.json, package-lock.json and all five vendor archives together.
+
+After installing, use the [installation guide](node_modules/@openai/agents-codex/examples/guides/installation.md) and [offline native startup check](node_modules/@openai/agents-codex/TESTING.md) included with these matching packages. Applications import from \`@openai/agents\` and its supported subpaths.
+`,
     );
     run(
       'npm',

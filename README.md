@@ -47,11 +47,15 @@ Run `npx tsx greeting.ts` from your application directory. The model requests th
 
 ## SDK guides
 
+These guides follow the current source checkout. Features marked as requiring a source build are newer than the `0.22.0-alpha.1` starter. For that starter, use the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md).
+
 | Task | Guide |
 | --- | --- |
 | Start a conversation, stream events, or cancel a Turn | [Agents and sessions](packages/agents-codex/examples/guides/sessions.md) |
 | Choose a model, configure its provider, or compact model context | [Session configuration](packages/agents-codex/examples/guides/session-configuration.md) |
 | Declare functions, select tools, or validate output | [Tools and input](packages/agents-codex/examples/guides/tools.md) and [output contracts](packages/agents-codex/examples/guides/output.md) |
+| Run local commands or control workspace access | [Local execution](packages/agents-codex/examples/guides/local-execution.md) and [workspace grants](packages/agents-codex/examples/guides/workspace-grants.md) |
+| Prepare model requests or inspect traces | [Request preparation](packages/agents-codex/examples/guides/request-preparation.md), [request metadata](packages/agents-codex/examples/guides/request-metadata.md), and [telemetry](packages/agents-codex/examples/guides/telemetry.md) |
 | Connect an MCP server or a remote workspace | [MCP tools](packages/agents-codex/examples/guides/mcp.md) and [remote executors](packages/agents-codex/examples/guides/executors.md) |
 | Restore a conversation or handle a pending request | [Session history and state](packages/agents-codex/examples/guides/state.md) and [native interactions](packages/agents-codex/examples/guides/interactions.md) |
 | Supervise a worker or connect a remote Agent | [Supervised workers](packages/agents-codex/examples/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md) use the current [source build](packages/agents-codex/examples/guides/building.md). |

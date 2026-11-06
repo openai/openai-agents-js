@@ -91,6 +91,12 @@ Scope file, environment, and network permissions to your application. Native add
 
 Bun loads the addon without an additional permission flag.
 
+## Check the installed runtime
+
+Run the [scripted native check](../../TESTING.md) from your application directory to exercise the addon, native runtime, and one local tool without a model key. The script exits silently when its assertions pass. It needs loopback HTTP access and the same platform prerequisites as a live run.
+
+If startup fails before the scripted request runs, check the downloaded platform and architecture, the operating-system libraries listed under [Requirements](#requirements), and that the lockfile still selects the matching local SDK tarballs. For a source build, follow the [five-package bundle procedure](building.md#build-a-local-bundle-for-an-application). A successful scripted run establishes local runtime setup; diagnose live credentials, endpoint access, and model availability separately in [session configuration](session-configuration.md#provider-connection-and-credentials).
+
 ## Next steps
 
 [Run an agent](../../README.md#run-an-agent) in your application or browse the [examples](../README.md). Use guides and examples from the same release as your SDK. To work on the SDK itself, see [Build the native SDK from source](building.md).

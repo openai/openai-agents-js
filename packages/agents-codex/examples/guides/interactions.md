@@ -64,6 +64,24 @@ An observer's `signal` cancels only that observer. It does not answer questions,
 
 `await session.pendingInteractions()` returns a frozen snapshot of issued requests. `session.interactions()` yields each live wrapper once per iterator. Close an iterator when you stop reading. These operations read live owners rather than replaying observations; old events, saved state, and copied JSON cannot issue replies. See [the question example](../native-questions.ts) for application-owned form collection, Session reading, and a safe deny/decline handler.
 
+### Wait for a supervisory outcome
+
+With the current [source build](building.md), `await turn.waitForAttention({ signal })` waits for the captured Turn's completed result, current owned interactions, or a known terminal stop that needs application action. The `0.22.0-alpha.1` bundles do not provide this method.
+
+Narrow the returned value in this order:
+
+| Check | Outcome and next action |
+| --- | --- |
+| `'requests' in outcome` | A `PendingRequests` batch. Handle the live requests as above, then wait again. The batch reserves no replies. |
+| `'type' in outcome` | A terminal `TurnNeedsAttention` result with `type: 'needs_attention'`. Inspect `reason`, `error`, and `rateLimits` before deciding what to do next. |
+| Otherwise | `Completed`. Read its validated `finalOutput`. |
+
+The terminal reasons are `interrupted`, `connection_lost`, `rate_limited`, and `quota_blocked`. These describe a stopped Turn; waiting again does not restart it. The original `turn.wait()` still rejects for that failure. `waitForAttention()` converts only these recognized native failures into values. Unrelated provider errors, application callback errors, output-validation failures, and cleanup failures still reject. Treat `rateLimits` as a diagnostic snapshot, not permission or a schedule to retry uncertain work.
+
+The optional signal aborts this waiter with its reason. It does not cancel the Turn, answer requests, or turn a deadline into an `interrupted` result. A settled public result takes precedence at the final scan. If the application stops supervising, [cancel the captured root or close its Session](sessions.md#choose-a-cancellation-lifetime) and join cleanup. Session-scoped requests remain outside this exact-Turn wait, as with `until: 'interaction'`.
+
+The [supervised worker](../supervised-worker/README.md) combines this method with deadlines, explicit stop and cleanup, and application-owned status. Its account-level signals are additional application policy; `waitForAttention()` alone does not monitor an account or recover stopped work.
+
 ### When requests are available
 
 A Session-scoped URL request has null turn and submission IDs and stays outside exact-turn waits. Closing or retiring its issuing Session expires the wrapper and declines the unanswered request.

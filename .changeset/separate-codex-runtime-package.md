@@ -3,4 +3,4 @@
 '@openai/agents-codex': patch
 ---
 
-Move the embedded Codex runtime and its native helpers into `@openai/agents-codex` while preserving existing `@openai/agents` imports. When installing an alpha bundle manually, include the matching `@openai/agents-codex` tarball alongside the other four SDK packages.
+fix: Move the native runtime into `@openai/agents-codex` while preserving `@openai/agents` imports, and document matching source packages and native workflows.

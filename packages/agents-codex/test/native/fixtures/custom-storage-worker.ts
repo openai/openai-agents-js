@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFile } from 'node:fs/promises';
 import { z } from 'zod';
+import { recordRecoveryIntent } from '../../../examples/custom-storage-recovery';
 import {
   Agent,
   NativeProvider,
@@ -12,6 +13,7 @@ import {
 const config = JSON.parse(process.argv[2]) as {
   directory: string;
   effects: string;
+  intentPath?: string;
   url: string;
   resume?: string;
   mode:
@@ -40,7 +42,14 @@ const agent = new Agent({
       name: 'record',
       description: 'Record one application effect.',
       parameters: z.object({}),
-      execute: async (_args, { signal }) => {
+      execute: async (_args, { signal, threadId, turnId, callId }) => {
+        if (config.intentPath)
+          await recordRecoveryIntent(config.intentPath, {
+            sessionId: threadId,
+            turnId,
+            callId,
+            businessKey: 'synthetic-order',
+          });
         await appendFile(config.effects, (config.label ?? 'effect') + '\n');
         process.send?.({ type: 'effect' });
         if (config.mode === 'hold-effect') await new Promise(() => {});

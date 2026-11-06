@@ -168,6 +168,13 @@ describe('passive real-native root Turn events', () => {
       expect((await reader.next()).value).toMatchObject({
         type: 'turn_started',
       });
+      // Dispatch is already observable while the fixture holds its response.
+      // Drain it before testing a read that must wait for new observations.
+      for (;;) {
+        const event = await reader.next();
+        if (event.done) throw new Error('Turn ended before request dispatch');
+        if (event.value.type === 'model_request_dispatching') break;
+      }
       const pending = reader.next();
       await expect(reader.next()).rejects.toThrow('pending read');
       const sibling = collect(turn.events());

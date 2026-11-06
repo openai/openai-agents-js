@@ -76,6 +76,18 @@ The initial revision is zero; each successful write advances it by one. The back
 
 The SDK serializes operations within an acquired lease. Adapter methods must not reenter the Session they serve.
 
+## Record recovery identities before dispatch
+
+Before a managed callback dispatches an external operation, durably save its native identities beside the application's business key. The callback context supplies `threadId`, `turnId`, and `callId`; reconciliation names that same `threadId` value `sessionId`. Retaining only the profile directory and Session ID is insufficient. Custom-store opening errors do not supply a `LocalRecoveryRequired.calls` list, and the native snapshot is opaque SDK data.
+
+The [recovery-intent helper](../custom-storage-recovery.ts) creates one private file, syncs it, and syncs its parent directory before returning. In the managed tool's callback, build an intent record with the callback's `threadId` as `sessionId`, its unchanged `turnId` and `callId`, and the application's authenticated operation key as `businessKey`. Await `recordRecoveryIntent(intentPath, intent)` before dispatching the external operation. The [crash worker](../../test/native/fixtures/custom-storage-worker.ts) follows this sequence before recording its synthetic effect.
+
+Choose a new intent path for each operation and keep operations sequential under one application owner. A journal failure prevents this callback from dispatching the effect. The external service must enforce the business key's idempotency contract; the file does not deduplicate effects by itself. For argument-bearing tools, also retain the immutable payload or its digest so an operator can verify which operation the call requested.
+
+This helper targets trusted local POSIX filesystems with file and directory `fsync`. It does not provide distributed ownership, network-filesystem support, or a power-loss guarantee for the external service. A partially written intent file is an error, not permission to repeat an operation.
+
+A residual window remains: the native runtime can save a tool intent and the process can die before the callback writes its application intent. In that case no external operation from this callback has begun, but custom-store resume still refuses the unresolved native intent. This recipe cannot recover its missing call identities through a public inspector. Preserve the snapshot and application evidence for operator diagnosis; do not parse or rewrite the opaque snapshot or dispatch the operation to bypass the refusal.
+
 ## Reconcile an unresolved tool intent
 
 An unresolved tool intent blocks automatic resume, including repeated resume attempts. First reconcile the original action against authoritative external records. Then:
@@ -83,6 +95,10 @@ An unresolved tool intent blocks automatic resume, including repeated resume att
 1. Close the Session and confirm that the former process is dead.
 2. Call `reconcileSessionStore(store, { sessionId, turnId, callId, result })` with the original native identities and the verified result.
 3. Reopen that same conversation with the current application's tools and credentials.
+
+In the replacement process, await `readRecoveryIntent(intentPath)` to read the saved application identities and `businessKey`. Ask the authoritative external service about that same business key. Only after verifying the outcome, pass the original `sessionId`, `turnId`, and `callId` with the confirmed model-safe `result` to `reconcileSessionStore()`. Then reopen the conversation with current application bindings.
+
+Leave unknown outcomes unresolved. This procedure neither calls the tool again nor derives identities from the SDK snapshot. The [native crash test](../../test/native/custom-storage-durability-native.test.ts) kills a worker after a synthetic effect, then reads the documented intent file to recover and checks that the effect ran once.
 
 `result` accepts a string or `ToolOutput`, including failed or structured results, and uses the same validation and conversion as ordinary tool callbacks. As with ordinary receipts, canonical history preserves the output content; Core omits runtime-only success metadata when serializing either path.
 
