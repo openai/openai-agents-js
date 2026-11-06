@@ -45,8 +45,17 @@ for await (const line of lines) {
     case 'tools/list':
       result = { tools: roster.tools };
       break;
-    case 'tools/call':
-      await appendFile(callsPath, JSON.stringify(request.params) + '\n');
+    case 'tools/call': {
+      const recorded =
+        roster.exitAfterKey === undefined
+          ? request.params
+          : { ...request.params, pid: process.pid };
+      await appendFile(callsPath, JSON.stringify(recorded) + '\n');
+      if (
+        roster.exitAfterKey !== undefined &&
+        request.params.arguments?.key === roster.exitAfterKey
+      )
+        process.exit(0);
       if (roster.urlReplies) {
         urlTool = request;
         process.stdout.write(
@@ -68,6 +77,7 @@ for await (const line of lines) {
       if (roster.holdCall) continue;
       result = roster.result;
       break;
+    }
     default:
       process.stdout.write(
         JSON.stringify({
