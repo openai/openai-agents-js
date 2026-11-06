@@ -18,6 +18,7 @@ import { isProducer, verifyUpload } from './verified-native-bundle.mjs';
 const repository = { full_name: 'openai/openai-agents-js' };
 const producer = {
   id: 1,
+  run_attempt: 1,
   status: 'completed',
   conclusion: 'success',
   repository,
@@ -94,6 +95,7 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
   const repo = join(temp, 'repo');
   const output = join(temp, 'output');
   const summary = join(temp, 'summary');
+  const requests = join(temp, 'requests');
   const native = join(repo, 'packages/agents-codex/native');
   mkdirSync(native, { recursive: true });
   const git = (...args) =>
@@ -116,12 +118,15 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
   function restore(options = {}) {
     writeFileSync(output, '');
     writeFileSync(summary, '');
+    writeFileSync(requests, '');
     const fixture = {
       assets: options.assets ?? [],
       run: options.run ?? producer,
       runs: options.runs ?? {},
       jobs: options.jobs ?? [],
       jobsByRun: options.jobsByRun ?? {},
+      logsByJob: options.logsByJob ?? {},
+      artifactsById: options.artifactsById ?? {},
       log: options.log ?? '',
       bytes:
         options.bytes?.toString('base64') ??
@@ -130,17 +135,25 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
     };
     const mock = `
       import cp from 'node:child_process';
+      import { appendFileSync } from 'node:fs';
       import { syncBuiltinESMExports } from 'node:module';
       const fixture = ${JSON.stringify(fixture)};
       const original = cp.execFileSync;
       cp.execFileSync = (command, args, options) => {
         if (command !== 'gh') return original(command, args, options);
-        if (args[0] === 'run') return fixture.log;
+        appendFileSync(${JSON.stringify(requests)}, JSON.stringify(args) + '\\n');
+        if (args[0] === 'run') return fixture.logsByJob[args[args.indexOf('--job') + 1]] ?? fixture.log;
         const endpoint = args.at(-1);
         if (endpoint.includes('/actions/workflows/')) return JSON.stringify({id: 1});
         if (endpoint.includes('/actions/artifacts?')) {
-          const name = new URL('https://github.invalid/' + endpoint).searchParams.get('name');
-          return JSON.stringify([{artifacts: fixture.assets.filter(asset => asset.name === name)}]);
+          const params = new URL('https://github.invalid/' + endpoint).searchParams;
+          return JSON.stringify({artifacts: fixture.assets.filter(asset => asset.name === params.get('name')).slice(0, Number(params.get('per_page')))});
+        }
+        if (endpoint.includes('/actions/artifacts/')) {
+          const id = endpoint.split('/').at(-1);
+          const metadata = fixture.artifactsById[id] ?? fixture.assets.find(asset => String(asset.id) === id);
+          if (typeof metadata === 'number') throw Object.assign(new Error('GitHub API failure'), {status: 1, stderr: 'gh: Artifact request failed (HTTP ' + metadata + ')'});
+          return JSON.stringify(metadata);
         }
         if (endpoint.includes('/jobs?')) return JSON.stringify([{jobs: fixture.jobsByRun[endpoint.split('/').at(-2)] ?? fixture.jobs}]);
         if (endpoint.includes('/actions/runs/')) return JSON.stringify(fixture.runs[endpoint.split('/').at(-1)] ?? fixture.run);
@@ -172,6 +185,11 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
       log: result.stdout,
       output: readFileSync(output, 'utf8'),
       summary: readFileSync(summary, 'utf8'),
+      requests: readFileSync(requests, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
     };
   }
   git('init', '-q');
@@ -203,7 +221,12 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
     name: 'native-' + inputs + '-' + platform + '.tar.gz',
     id: 12,
     expired: false,
-    workflow_run: { id: 1 },
+    workflow_run: {
+      id: 1,
+      repository_id: 1,
+      head_repository_id: 1,
+      head_branch: 'feat/codex-harness',
+    },
     digest: 'sha256:' + createHash('sha256').update(archive).digest('hex'),
   };
   const qualified = {
@@ -235,12 +258,65 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
   expect(
     restore({
       ...qualified,
-      assets: [{ ...asset, id: 99, workflow_run: { id: 3 } }, asset],
+      assets: [
+        { ...asset, id: 99, workflow_run: { ...asset.workflow_run, id: 3 } },
+        asset,
+      ],
       runs: { 3: { ...qualified.run, event: 'pull_request' } },
     }).output,
   ).toContain('restored=true');
+  const runReads = (result) =>
+    result.requests.filter((args) => /\/actions\/runs\/\d+$/.test(args.at(-1)));
+  const ignored = Array.from({ length: 99 }, (_, index) => ({
+    ...asset,
+    id: 1000 + index,
+    workflow_run: {
+      ...asset.workflow_run,
+      id: 1000 + index,
+      head_branch: index % 2 ? 'feature/untrusted' : 'feat/codex-harness',
+      head_repository_id: index % 2 ? 1 : 2,
+    },
+  }));
+  const filtered = restore({ ...qualified, assets: [...ignored, asset] });
+  expect(filtered.status, filtered.error).toBe(0);
+  expect(filtered.output).toContain('restored=true');
+  expect(runReads(filtered)).toHaveLength(1);
+  const listings = filtered.requests.filter((args) =>
+    args.at(-1).includes('/actions/artifacts?'),
+  );
+  expect(listings).toHaveLength(1);
+  expect(listings[0]).not.toContain('--paginate');
+  const outsideWindow = restore({
+    ...qualified,
+    assets: [...ignored, ignored[0], asset],
+  });
+  expect(outsideWindow.status).toBe(0);
+  expect(outsideWindow.output).toContain('restored=false');
+  expect(runReads(outsideWindow)).toHaveLength(0);
+  const blocked = Array.from({ length: 21 }, (_, index) => ({
+    ...asset,
+    id: 2000 + index,
+    workflow_run: { ...asset.workflow_run, id: 2000 + index },
+  }));
+  const exhausted = restore({
+    ...qualified,
+    assets: [...blocked, asset],
+    runs: Object.fromEntries(
+      blocked.map((entry) => [
+        entry.workflow_run.id,
+        { ...qualified.run, id: entry.workflow_run.id, event: 'pull_request' },
+      ]),
+    ),
+  });
+  expect(exhausted.status, exhausted.error).toBe(0);
+  expect(exhausted.output).toContain('restored=false');
+  expect(runReads(exhausted)).toHaveLength(20);
   // A retained cold artifact becomes ineligible after its producer has a warm rerun.
-  const retained = { ...asset, id: 99, workflow_run: { id: 3 } };
+  const retained = {
+    ...asset,
+    id: 99,
+    workflow_run: { ...asset.workflow_run, id: 3 },
+  };
   const warmRerun = {
     ...qualified,
     runs: { 3: { ...qualified.run, id: 3 } },
@@ -285,6 +361,53 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
   });
   expect(replaced.status).toBe(1);
   expect(replaced.error).toContain('Artifact ID must come from');
+  const replacementLog = uploadLog({ ...asset, id: 13 });
+  // An overwrite deletes the listed ID; keep a real mismatch fatal if it remains.
+  for (const metadata of [404, 410, { ...asset, expired: true }]) {
+    const disappeared = {
+      ...qualified,
+      log: replacementLog,
+      artifactsById: { 12: metadata },
+    };
+    const miss = restore(disappeared);
+    expect(miss.status, miss.error).toBe(0);
+    expect(miss.output).toContain('restored=false');
+    const nextDonor = restore({
+      ...disappeared,
+      assets: [asset, retained],
+      runs: { 3: { ...qualified.run, id: 3 } },
+      jobsByRun: { 3: [{ ...qualified.jobs[0], id: 33, run_id: 3 }] },
+      logsByJob: { 33: uploadLog(retained) },
+    });
+    expect(nextDonor.status, nextDonor.error).toBe(0);
+    expect(nextDonor.output).toContain('restored=true');
+    expect(nextDonor.summary).toContain('artifact 99 from run 3');
+  }
+  for (const status of [403, 500]) {
+    const unconfirmed = restore({
+      ...qualified,
+      log: replacementLog,
+      artifactsById: { 12: status },
+    });
+    expect(unconfirmed.status).toBe(1);
+    expect(unconfirmed.error).toContain('Artifact ID must come from');
+  }
+  const wrongDigest = restore({
+    ...qualified,
+    log: uploadLog({ ...asset, digest: 'sha256:' + 'a'.repeat(64) }),
+  });
+  expect(wrongDigest.status).toBe(1);
+  expect(wrongDigest.error).toContain('Artifact digest must come from');
+  const newerAttempt = restore({
+    ...qualified,
+    jobs: [{ ...qualified.jobs[0], run_attempt: 2 }],
+  });
+  expect(newerAttempt.status).toBe(0);
+  expect(newerAttempt.output).toContain('restored=false');
+  // A partial rerun can leave this platform's successful older job intact.
+  expect(
+    restore({ ...qualified, run: { ...qualified.run, run_attempt: 2 } }).output,
+  ).toContain('restored=true');
   expect(restore({ ...qualified, status: 410 }).output).toContain(
     'restored=false',
   );

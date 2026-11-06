@@ -7,6 +7,9 @@ const workflow = 'alpha-release-artifacts.yml';
 const uploadStep = 'Upload the native bundle';
 const api = (...args) =>
   JSON.parse(execFileSync('gh', ['api', ...args], { encoding: 'utf8' }));
+const approvedBranch = (branch) =>
+  branch === 'feat/codex-harness' ||
+  branch?.startsWith('ci/native-bundle/') === true;
 
 export function isProducer(run, workflowId) {
   return (
@@ -17,8 +20,7 @@ export function isProducer(run, workflowId) {
     run.event === 'push' &&
     run.workflow_id === workflowId &&
     run.path === '.github/workflows/' + workflow &&
-    (run.head_branch === 'feat/codex-harness' ||
-      run.head_branch?.startsWith('ci/native-bundle/')) &&
+    approvedBranch(run.head_branch) &&
     /^[a-f0-9]{40}$/.test(run.head_sha)
   );
 }
@@ -53,17 +55,27 @@ export function findNativeBundle(inputs, platform) {
   const name = 'native-' + inputs + '-' + platform + '.tar.gz';
   const workflowId = api('repos/' + repo + '/actions/workflows/' + workflow).id;
   // Exact-name lookup avoids a stale committed pointer and unrelated run scans.
-  const pages = api(
-    '--paginate',
-    '--slurp',
+  const page = api(
     'repos/' +
       repo +
       '/actions/artifacts?per_page=100&name=' +
       encodeURIComponent(name),
   );
-  for (const asset of pages.flatMap((page) => page.artifacts)) {
+  const seenRuns = new Set();
+  for (const asset of page.artifacts) {
     if (asset.expired || asset.name !== name) continue;
-    const path = 'repos/' + repo + '/actions/runs/' + asset.workflow_run.id;
+    const candidate = asset.workflow_run;
+    if (
+      !candidate ||
+      candidate.repository_id !== candidate.head_repository_id ||
+      !approvedBranch(candidate.head_branch)
+    )
+      continue;
+    if (seenRuns.has(candidate.id)) continue;
+    // Untrusted uploads must not turn an optional cache lookup into an unbounded scan.
+    if (seenRuns.size === 20) break;
+    seenRuns.add(candidate.id);
+    const path = 'repos/' + repo + '/actions/runs/' + candidate.id;
     const run = api(path);
     // PRs and running producers are ordinary misses, never a reason to wait.
     if (!isProducer(run, workflowId)) continue;
@@ -109,6 +121,7 @@ export function findNativeBundle(inputs, platform) {
     if (job?.conclusion !== 'success' || upload?.conclusion !== 'success')
       continue;
     assert.equal(job.run_id, run.id);
+    if (job.run_attempt > run.run_attempt) continue;
     const log = execFileSync(
       'gh',
       [
@@ -124,7 +137,22 @@ export function findNativeBundle(inputs, platform) {
       ],
       { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
     );
-    return { ...verifyUpload(jobName, asset, log), run: run.id };
+    try {
+      return { ...verifyUpload(jobName, asset, log), run: run.id };
+    } catch (error) {
+      // A successful rerun can replace the listed artifact before the log read.
+      try {
+        if (api('repos/' + repo + '/actions/artifacts/' + asset.id).expired)
+          continue;
+      } catch (recheckError) {
+        if (
+          recheckError.status === 1 &&
+          /\(HTTP (404|410)\)/.test(String(recheckError.stderr))
+        )
+          continue;
+      }
+      throw error;
+    }
   }
   return undefined;
 }

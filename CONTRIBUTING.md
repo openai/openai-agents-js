@@ -97,7 +97,7 @@ The runner isolates temporary files and Git configuration, passes only required 
 
 CI for `feat/codex-harness` builds and tests the current SDK on Linux, macOS and Windows. It automatically finds native bundles by the exact native input hash and platform. Only completed, successful direct Alpha push builds on `feat/codex-harness` or `ci/native-bundle/<name>` qualify. The producer must match the native sources and build workflow. A `ci/native-bundle/<name>` producer must match the complete proposed checkout.
 
-CI verifies each artifact's ID and digest against its owning upload step, then checks the downloaded bytes before extraction. It skips incomplete or expired candidates and builds from source immediately if no qualified bundle exists. The current SDK build and platform qualification still run after reuse. Artifacts expire after 90 days.
+CI verifies each artifact's ID and digest against its owning upload step, then checks the downloaded bytes before extraction. It skips incomplete or expired candidates and builds from source immediately if no qualified bundle is found. The current SDK build and platform qualification still run after reuse. Artifacts expire after 90 days.
 
 ### Code style
 
