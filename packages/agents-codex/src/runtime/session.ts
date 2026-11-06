@@ -2635,7 +2635,7 @@ export class Session<OutputT = string, Context = unknown> {
     const writableRoots =
       options?.writableRoots === undefined
         ? undefined
-        : captureWritableRoots(options.writableRoots);
+        : this.captureExecutorRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
     run.parentTrace = parentTrace;
     run.selection = selection;
@@ -3326,6 +3326,14 @@ export class Session<OutputT = string, Context = unknown> {
     this.mcpGeneration = generation;
   }
 
+  private captureExecutorRoots(roots: readonly string[]): string[] {
+    if (this.environment?.mounts?.length)
+      throw new TypeError(
+        'Cannot replace writableRoots while storage mounts are active',
+      );
+    return captureWritableRoots(roots);
+  }
+
   private startTurn(
     input: string | JsonValue[],
     interactive = true,
@@ -3348,7 +3356,7 @@ export class Session<OutputT = string, Context = unknown> {
     const roots =
       writableRoots === undefined
         ? undefined
-        : captureWritableRoots(writableRoots);
+        : this.captureExecutorRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
     run.parentTrace = parentTrace;
     run.writableRoots = roots;

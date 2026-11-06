@@ -49,6 +49,7 @@ The guides describe this source checkout. For the `0.22.0-alpha.1` starter, use 
 
 ## Connect tools and executors
 
+- [Mount local storage](../../examples/codex/guides/storage-mounts.md)
 - [Run local commands](../../examples/codex/guides/local-execution.md) · [Grant workspace access](../../examples/codex/guides/workspace-grants.md) · [Load instruction files and discover skills](../../examples/codex/guides/project-guidance.md)
 
 - <a name="input-tools-and-output"></a>[Send input and declare tools](../../examples/codex/guides/tools.md#input-tools-and-output) · <a name="function-tools"></a>[Function tools](../../examples/codex/guides/tools.md#function-tools) · <a name="tool-discovery"></a>[Tool discovery](../../examples/codex/guides/tools.md#tool-discovery)

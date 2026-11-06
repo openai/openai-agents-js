@@ -14,3 +14,29 @@ expectTypeOf(environment.capabilityDirectories).toEqualTypeOf<
 environment.capabilityDirectories = [];
 // @ts-expect-error Entries cannot be added to the captured selection.
 environment.capabilityDirectories?.push('/remote/new');
+
+import type { LocalStorageMount } from '@openai/agents';
+const storageMount: LocalStorageMount = {
+  source: '/data',
+  destination: '/data',
+  strategy: 'local_bind',
+};
+Environment.local({ cwd: '/workspace', mounts: [storageMount] });
+new Environment({
+  // @ts-expect-error Mounts belong only to local environments.
+  url: 'wss://executor.invalid',
+  cwd: '/workspace',
+  mounts: [storageMount],
+});
+// @ts-expect-error Strategy is explicit.
+const implicitMount: LocalStorageMount = {
+  source: '/data',
+  destination: '/data',
+};
+void implicitMount;
+const credentialMount: LocalStorageMount = {
+  ...storageMount,
+  // @ts-expect-error Provider credentials are not local storage configuration.
+  token: 'synthetic',
+};
+void credentialMount;

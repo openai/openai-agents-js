@@ -200,6 +200,10 @@ jobs:
             packages/agents-codex/test/native/local-executor-policy-native.test.ts \
             -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home' \
             --reporter=verbose
+          pnpm test:native \
+            packages/agents-codex/test/native/storage-mounts.test.ts \
+            packages/agents-codex/test/native/storage-mounts-native.test.ts \
+            --reporter=verbose
       - name: Qualify local executor grants on macOS
         if: runner.os == 'macOS'
         env:

@@ -97,6 +97,7 @@ export type {
 export type {
   EnvironmentOptions,
   LocalEnvironmentOptions,
+  LocalStorageMount,
   ExecutorContext,
 } from './runtime/environment';
 export { NativeAgents, NativeRole } from './runtime/native-agents';
