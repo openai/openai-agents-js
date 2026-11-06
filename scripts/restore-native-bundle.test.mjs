@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -13,7 +14,11 @@ import { dirname, join } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, URL } from 'node:url';
 import { expect, onTestFinished, test } from 'vitest';
-import { isProducer, verifyUpload } from './verified-native-bundle.mjs';
+import {
+  isProducer,
+  isNativePublication,
+  nativePlatforms,
+} from './verified-native-bundle.mjs';
 
 const repository = { full_name: 'openai/openai-agents-js' };
 const producer = {
@@ -29,23 +34,42 @@ const producer = {
   head_branch: 'feat/codex-harness',
   head_sha: 'a'.repeat(40),
 };
-const jobName =
-  'Package and test (' + process.platform + '-' + process.arch + ')';
-const step = 'Upload the native bundle';
-
-function uploadLog(asset) {
-  const prefix = jobName + '\t' + step + '\t2026-01-01T00:00:00Z ';
-  return (
-    prefix +
-    'Artifact ' +
-    asset.name +
-    ' successfully finalized. Artifact ID ' +
-    asset.id +
-    '\n' +
-    prefix +
-    'SHA256 digest of uploaded artifact is ' +
-    asset.digest.slice(7)
+const at = (second) =>
+  '2026-01-01T00:00:' + String(second).padStart(2, '0') + 'Z';
+function publicationJobs(platform, preflight = false) {
+  const key = Object.keys(nativePlatforms).find(
+    (key) => nativePlatforms[key] === platform,
   );
+  return [
+    {
+      id: 2,
+      run_id: 1,
+      run_attempt: 1,
+      conclusion: 'success',
+      name: preflight
+        ? 'Select native bundles'
+        : 'produce-' + key + ' / Native bundle (' + platform + ')',
+      steps: [
+        {
+          name: preflight
+            ? 'Publish native bundle (' + platform + ')'
+            : 'Publish native bundle',
+          conclusion: 'success',
+          started_at: at(1),
+          completed_at: at(3),
+        },
+      ],
+    },
+    {
+      id: 3,
+      run_id: 1,
+      run_attempt: 1,
+      conclusion: 'success',
+      name: 'Package and test (' + platform + ')',
+      started_at: at(10),
+      steps: [],
+    },
+  ];
 }
 
 test('only successful direct Alpha producers in approved branches are eligible', () => {
@@ -65,31 +89,87 @@ test('only successful direct Alpha producers in approved branches are eligible',
     expect(isProducer({ ...producer, ...change }, 1)).toBe(false);
 });
 
-test('artifact ID and digest must both come from the owning upload step', () => {
-  const asset = {
-    name: 'bundle.tar.gz',
-    id: 12,
-    digest: 'sha256:' + 'a'.repeat(64),
-  };
-  const log = uploadLog(asset);
-  expect(verifyUpload(jobName, asset, log)).toEqual({
-    id: 12,
-    sha256: 'a'.repeat(64),
-  });
-  for (const forged of [
-    log.replaceAll(step, 'Other step'),
-    log.replaceAll(jobName, 'Other job'),
-    log.replace('ID 12', 'ID 13'),
-    log.replace(
-      'digest of uploaded artifact is ' + 'a'.repeat(64),
-      'digest of uploaded artifact is ' + 'b'.repeat(64),
-    ),
-  ])
-    expect(() => verifyUpload(jobName, asset, forged)).toThrow();
+test('native publication precedes all SDK execution, including other platforms and prior attempts', () => {
+  const asset = { created_at: at(2) };
+  for (const platform of Object.values(nativePlatforms)) {
+    for (const preflight of [false, true]) {
+      const jobs = publicationJobs(platform, preflight);
+      expect(isNativePublication(asset, producer, jobs, platform)).toBe(true);
+      for (const created_at of [at(0), at(4)])
+        expect(
+          isNativePublication({ created_at }, producer, jobs, platform),
+        ).toBe(false);
+      const earlierSdk = {
+        ...jobs[1],
+        name: 'Package and test (other-platform)',
+        started_at: at(2),
+      };
+      expect(
+        isNativePublication(asset, producer, [...jobs, earlierSdk], platform),
+      ).toBe(false);
+      expect(
+        isNativePublication(
+          asset,
+          { ...producer, run_attempt: 2 },
+          [
+            ...jobs.map((j) => ({ ...j, run_attempt: 2 })),
+            { ...jobs[1], started_at: at(0) },
+          ],
+          platform,
+        ),
+      ).toBe(false);
+      expect(
+        isNativePublication(
+          asset,
+          producer,
+          [
+            ...jobs,
+            {
+              ...jobs[1],
+              run_attempt: 2,
+              conclusion: null,
+            },
+          ],
+          platform,
+        ),
+      ).toBe(false);
+      expect(
+        isNativePublication(
+          asset,
+          { ...producer, run_attempt: 2 },
+          [
+            ...jobs,
+            {
+              ...jobs[1],
+              run_attempt: 2,
+              conclusion: 'failure',
+            },
+          ],
+          platform,
+        ),
+      ).toBe(false);
+      expect(
+        isNativePublication(
+          asset,
+          producer,
+          [{ ...jobs[0], steps: [] }, jobs[1]],
+          platform,
+        ),
+      ).toBe(false);
+      expect(
+        isNativePublication(
+          asset,
+          producer,
+          [jobs[0], { ...jobs[1], started_at: undefined }],
+          platform,
+        ),
+      ).toBe(false);
+    }
+  }
 });
 
-// Exercise the real CLI and Git comparison; replace only GitHub transport.
-test('automatic reuse survives SDK changes, skips untrusted producers and fails on corrupt eligible bundles', () => {
+// Run the real CLI, Git fingerprint and selective extraction; replace only transport.
+test('preflight stages verified opaque archives and current-run transfers pin exact bytes', () => {
   const temp = mkdtempSync(join(tmpdir(), 'agents-native-reuse-'));
   onTestFinished(() => rmSync(temp, { recursive: true, force: true }));
   const repo = join(temp, 'repo');
@@ -100,7 +180,7 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
   mkdirSync(native, { recursive: true });
   const git = (...args) =>
     execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim();
-  function commit(message) {
+  const commit = (message) => {
     git('add', '.');
     git(
       '-c',
@@ -114,20 +194,15 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
       message,
     );
     return git('rev-parse', 'HEAD');
-  }
-  function restore(options = {}) {
-    writeFileSync(output, '');
-    writeFileSync(summary, '');
-    writeFileSync(requests, '');
+  };
+  function run(options = {}, transfer = false) {
+    for (const file of [output, summary, requests]) writeFileSync(file, '');
     const fixture = {
       assets: options.assets ?? [],
       run: options.run ?? producer,
       runs: options.runs ?? {},
       jobs: options.jobs ?? [],
       jobsByRun: options.jobsByRun ?? {},
-      logsByJob: options.logsByJob ?? {},
-      artifactsById: options.artifactsById ?? {},
-      log: options.log ?? '',
       bytes:
         options.bytes?.toString('base64') ??
         Buffer.from('wrong bytes').toString('base64'),
@@ -142,28 +217,31 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
       cp.execFileSync = (command, args, options) => {
         if (command !== 'gh') return original(command, args, options);
         appendFileSync(${JSON.stringify(requests)}, JSON.stringify(args) + '\\n');
-        if (args[0] === 'run') return fixture.logsByJob[args[args.indexOf('--job') + 1]] ?? fixture.log;
+        // Fresh provider logs have UNKNOWN STEP. They are not publication proof.
+        if (args[0] === 'run') throw new Error('Step logs are unavailable');
         const endpoint = args.at(-1);
         if (endpoint.includes('/actions/workflows/')) return JSON.stringify({id: 1});
         if (endpoint.includes('/actions/artifacts?')) {
           const params = new URL('https://github.invalid/' + endpoint).searchParams;
-          return JSON.stringify({artifacts: fixture.assets.filter(asset => asset.name === params.get('name')).slice(0, Number(params.get('per_page')))});
-        }
-        if (endpoint.includes('/actions/artifacts/')) {
-          const id = endpoint.split('/').at(-1);
-          const metadata = fixture.artifactsById[id] ?? fixture.assets.find(asset => String(asset.id) === id);
-          if (typeof metadata === 'number') throw Object.assign(new Error('GitHub API failure'), {status: 1, stderr: 'gh: Artifact request failed (HTTP ' + metadata + ')'});
-          return JSON.stringify(metadata);
+          return JSON.stringify({artifacts: fixture.assets.filter(a => a.name === params.get('name')).slice(0, Number(params.get('per_page')))});
         }
         if (endpoint.includes('/jobs?')) return JSON.stringify([{jobs: fixture.jobsByRun[endpoint.split('/').at(-2)] ?? fixture.jobs}]);
         if (endpoint.includes('/actions/runs/')) return JSON.stringify(fixture.runs[endpoint.split('/').at(-1)] ?? fixture.run);
         throw new Error('Unexpected endpoint: ' + endpoint);
       };
       syncBuiltinESMExports();
-      globalThis.fetch = async () => new Response(Buffer.from(fixture.bytes, 'base64'), {status: fixture.status});
+      globalThis.fetch = async (url) => {
+        appendFileSync(${JSON.stringify(requests)}, JSON.stringify(['download',url]) + '\\n');
+        return new Response(Buffer.from(fixture.bytes,'base64'), {status: fixture.status});
+      };
     `;
     const cli = fileURLToPath(
-      new URL('./restore-native-bundle.mjs', import.meta.url),
+      new URL(
+        transfer
+          ? './restore-native-bundle.mjs'
+          : './select-native-bundles.mjs',
+        import.meta.url,
+      ),
     );
     const result = spawnSync(
       process.execPath,
@@ -174,8 +252,11 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
         env: {
           ...process.env,
           GH_TOKEN: 'fixture',
+          RUNNER_TEMP: temp,
           GITHUB_OUTPUT: output,
           GITHUB_STEP_SUMMARY: summary,
+          NATIVE_INPUTS: options.inputs ?? '',
+          NATIVE_ARTIFACT: JSON.stringify(options.artifact ?? {}),
         },
       },
     );
@@ -189,17 +270,21 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
         .trim()
         .split('\n')
         .filter(Boolean)
-        .map((line) => JSON.parse(line)),
+        .map((s) => JSON.parse(s)),
     };
   }
   git('init', '-q');
   writeFileSync(join(native, 'lib.rs'), '// first input\n');
   const source = commit('native source');
-  const cold = restore();
-  expect(cold.status).toBe(0);
-  expect(cold.output).toContain('restored=false');
-  const inputs = /^inputs=([a-f0-9]{64})$/m.exec(cold.output)[1];
+  const cold = run();
+  expect(cold.status, cold.error).toBe(0);
+  const inputs = /^inputs_hash=([a-f0-9]{64})$/m.exec(cold.output)[1];
+  for (const key of Object.keys(nativePlatforms))
+    expect(cold.output).toContain(key + '_hit=false');
   const platform = process.platform + '-' + process.arch;
+  const key = Object.keys(nativePlatforms).find(
+    (k) => nativePlatforms[k] === platform,
+  );
   const bundle = join(temp, 'bundle');
   const products = [
     'native/codex.node',
@@ -221,259 +306,250 @@ test('automatic reuse survives SDK changes, skips untrusted producers and fails 
     name: 'native-' + inputs + '-' + platform + '.tar.gz',
     id: 12,
     expired: false,
+    created_at: at(2),
+    digest: 'sha256:' + createHash('sha256').update(archive).digest('hex'),
     workflow_run: {
       id: 1,
       repository_id: 1,
       head_repository_id: 1,
       head_branch: 'feat/codex-harness',
     },
-    digest: 'sha256:' + createHash('sha256').update(archive).digest('hex'),
   };
   const qualified = {
     assets: [asset],
     run: { ...producer, head_sha: source },
-    jobs: [
-      {
-        id: 2,
-        run_id: 1,
-        run_attempt: 1,
-        name: jobName,
-        conclusion: 'success',
-        steps: [{ name: step, conclusion: 'success' }],
-      },
-    ],
-    log: uploadLog(asset),
+    jobs: publicationJobs(platform),
     bytes: archive,
   };
   writeFileSync(join(repo, 'sdk.js'), 'export default 1;\n');
   commit('SDK only');
-  const restored = restore(qualified);
+  const staged = run(qualified);
+  expect(staged.status, staged.error).toBe(0);
+  expect(staged.output).toContain(key + '_hit=true');
+  expect(staged.summary).toContain('Verified native artifact 12 from run 1');
+  expect(staged.summary).toContain(inputs);
+  expect(staged.requests.some((args) => args[0] === 'run')).toBe(false);
+  expect(readFileSync(join(temp, asset.name))).toEqual(archive);
+  expect(existsSync(join(native, 'codex.node'))).toBe(false);
+
+  const allAssets = Object.values(nativePlatforms).map((p, i) => ({
+    ...asset,
+    id: 12 + i,
+    name: 'native-' + inputs + '-' + p + '.tar.gz',
+  }));
+  const allJobs = Object.values(nativePlatforms).flatMap((p) =>
+    publicationJobs(p),
+  );
+  const all = run({ ...qualified, assets: allAssets, jobs: allJobs });
+  expect(all.status, all.error).toBe(0);
+  for (const [k, p] of Object.entries(nativePlatforms)) {
+    expect(all.output).toContain(k + '_hit=true');
+    expect(
+      readFileSync(join(temp, 'native-' + inputs + '-' + p + '.tar.gz')),
+    ).toEqual(archive);
+  }
+  expect(existsSync(join(native, 'codex.node'))).toBe(false);
+
+  const pair = {
+    'artifact-id': '12',
+    'artifact-digest': asset.digest.slice(7),
+  };
+  const restored = run({ inputs, artifact: pair, bytes: archive }, true);
   expect(restored.status, restored.error).toBe(0);
-  expect(restored.output).toContain('restored=true');
-  expect(restored.summary).toContain(
-    'Restored verified native artifact 12 from run 1',
+  expect(restored.requests).toEqual([
+    [
+      'download',
+      'https://api.github.com/repos/openai/openai-agents-js/actions/artifacts/12/zip',
+    ],
+  ]);
+  for (const product of products)
+    expect(
+      readFileSync(join(repo, 'packages/agents-codex', product), 'utf8'),
+    ).toBe(product + '\n');
+  const corrupt = run(
+    { inputs, artifact: pair, bytes: Buffer.from('corrupt') },
+    true,
   );
-  expect(restored.summary).toContain(inputs);
-  // An identically named PR artifact must not hide a valid trusted producer.
-  expect(
-    restore({
-      ...qualified,
-      assets: [
-        { ...asset, id: 99, workflow_run: { ...asset.workflow_run, id: 3 } },
-        asset,
-      ],
-      runs: { 3: { ...qualified.run, event: 'pull_request' } },
-    }).output,
-  ).toContain('restored=true');
-  const runReads = (result) =>
-    result.requests.filter((args) => /\/actions\/runs\/\d+$/.test(args.at(-1)));
-  const ignored = Array.from({ length: 99 }, (_, index) => ({
-    ...asset,
-    id: 1000 + index,
-    workflow_run: {
-      ...asset.workflow_run,
-      id: 1000 + index,
-      head_branch: index % 2 ? 'feature/untrusted' : 'feat/codex-harness',
-      head_repository_id: index % 2 ? 1 : 2,
-    },
-  }));
-  const filtered = restore({ ...qualified, assets: [...ignored, asset] });
-  expect(filtered.status, filtered.error).toBe(0);
-  expect(filtered.output).toContain('restored=true');
-  expect(runReads(filtered)).toHaveLength(1);
-  const listings = filtered.requests.filter((args) =>
-    args.at(-1).includes('/actions/artifacts?'),
+  expect(corrupt.status).toBe(1);
+  expect(corrupt.error).toContain('Native bundle checksum mismatch');
+  const missingTransfer = run(
+    { inputs, artifact: pair, bytes: archive, status: 410 },
+    true,
   );
-  expect(listings).toHaveLength(1);
-  expect(listings[0]).not.toContain('--paginate');
-  const outsideWindow = restore({
-    ...qualified,
-    assets: [...ignored, ignored[0], asset],
-  });
-  expect(outsideWindow.status).toBe(0);
-  expect(outsideWindow.output).toContain('restored=false');
-  expect(runReads(outsideWindow)).toHaveLength(0);
-  const blocked = Array.from({ length: 21 }, (_, index) => ({
-    ...asset,
-    id: 2000 + index,
-    workflow_run: { ...asset.workflow_run, id: 2000 + index },
-  }));
-  const exhausted = restore({
-    ...qualified,
-    assets: [...blocked, asset],
-    runs: Object.fromEntries(
-      blocked.map((entry) => [
-        entry.workflow_run.id,
-        { ...qualified.run, id: entry.workflow_run.id, event: 'pull_request' },
-      ]),
-    ),
-  });
-  expect(exhausted.status, exhausted.error).toBe(0);
-  expect(exhausted.output).toContain('restored=false');
-  expect(runReads(exhausted)).toHaveLength(20);
-  // A retained cold artifact becomes ineligible after its producer has a warm rerun.
+  expect(missingTransfer.status).toBe(1);
+  expect(missingTransfer.error).toContain(
+    'Current-run native transfer is unavailable',
+  );
+  const changedInputs = run(
+    { inputs: '0'.repeat(64), artifact: pair, bytes: archive },
+    true,
+  );
+  expect(changedInputs.status).toBe(1);
+  expect(changedInputs.error).toContain(
+    'Native inputs changed after preflight',
+  );
+
   const retained = {
     ...asset,
     id: 99,
     workflow_run: { ...asset.workflow_run, id: 3 },
   };
-  const warmRerun = {
+  const untrusted = run({
     ...qualified,
-    runs: { 3: { ...qualified.run, id: 3 } },
-    jobsByRun: {
-      3: [
-        { ...qualified.jobs[0], run_id: 3 },
-        {
-          ...qualified.jobs[0],
-          run_id: 3,
-          run_attempt: 2,
-          steps: [{ name: step, conclusion: 'skipped' }],
-        },
-      ],
+    assets: [retained, asset],
+    runs: { 3: { ...qualified.run, id: 3, event: 'pull_request' } },
+  });
+  expect(untrusted.output).toContain(key + '_hit=true');
+  const ignored = Array.from({ length: 99 }, (_, i) => ({
+    ...asset,
+    id: 1000 + i,
+    workflow_run: {
+      ...asset.workflow_run,
+      id: 1000 + i,
+      head_branch: 'feature/untrusted',
     },
-  };
-  expect(restore({ ...warmRerun, assets: [retained, asset] }).output).toContain(
-    'restored=true',
-  );
-  const noDonor = restore({ ...warmRerun, assets: [retained] });
-  expect(noDonor.status).toBe(0);
-  expect(noDonor.output).toContain('restored=false');
-  expect(
-    restore({
-      ...qualified,
-      run: {
-        ...qualified.run,
-        head_sha: git('rev-parse', 'HEAD'),
-        head_branch: 'ci/native-bundle/test',
-      },
-    }).output,
-  ).toContain('restored=true');
-  for (const product of products)
-    expect(
-      readFileSync(join(repo, 'packages/agents-codex', product), 'utf8'),
-    ).toBe(product + '\n');
-  const corrupt = restore({ ...qualified, bytes: Buffer.from('corrupt') });
-  expect(corrupt.status).toBe(1);
-  expect(corrupt.error).toContain('Native bundle checksum mismatch');
-  const replaced = restore({
+  }));
+  const filtered = run({ ...qualified, assets: [...ignored, asset] });
+  const runReads = (r) =>
+    r.requests.filter((args) => /\/actions\/runs\/\d+$/.test(args.at(-1)));
+  expect(filtered.output).toContain(key + '_hit=true');
+  expect(runReads(filtered)).toHaveLength(1);
+  const outside = run({
     ...qualified,
-    log: uploadLog({ ...asset, id: 13 }),
+    assets: [...ignored, ignored[0], asset],
   });
-  expect(replaced.status).toBe(1);
-  expect(replaced.error).toContain('Artifact ID must come from');
-  const replacementLog = uploadLog({ ...asset, id: 13 });
-  // An overwrite deletes the listed ID; keep a real mismatch fatal if it remains.
-  for (const metadata of [404, 410, { ...asset, expired: true }]) {
-    const disappeared = {
-      ...qualified,
-      log: replacementLog,
-      artifactsById: { 12: metadata },
-    };
-    const miss = restore(disappeared);
-    expect(miss.status, miss.error).toBe(0);
-    expect(miss.output).toContain('restored=false');
-    const nextDonor = restore({
-      ...disappeared,
-      assets: [asset, retained],
-      runs: { 3: { ...qualified.run, id: 3 } },
-      jobsByRun: { 3: [{ ...qualified.jobs[0], id: 33, run_id: 3 }] },
-      logsByJob: { 33: uploadLog(retained) },
-    });
-    expect(nextDonor.status, nextDonor.error).toBe(0);
-    expect(nextDonor.output).toContain('restored=true');
-    expect(nextDonor.summary).toContain('artifact 99 from run 3');
-  }
-  for (const status of [403, 500]) {
-    const unconfirmed = restore({
-      ...qualified,
-      log: replacementLog,
-      artifactsById: { 12: status },
-    });
-    expect(unconfirmed.status).toBe(1);
-    expect(unconfirmed.error).toContain('Artifact ID must come from');
-  }
-  const wrongDigest = restore({
+  expect(outside.output).toContain(key + '_hit=false');
+  expect(runReads(outside)).toHaveLength(0);
+  const blocked = Array.from({ length: 21 }, (_, i) => ({
+    ...retained,
+    workflow_run: { ...retained.workflow_run, id: 2000 + i },
+  }));
+  const exhausted = run({
     ...qualified,
-    log: uploadLog({ ...asset, digest: 'sha256:' + 'a'.repeat(64) }),
+    assets: [...blocked, asset],
+    runs: Object.fromEntries(
+      blocked.map((a) => [
+        a.workflow_run.id,
+        { ...qualified.run, id: a.workflow_run.id, event: 'pull_request' },
+      ]),
+    ),
   });
-  expect(wrongDigest.status).toBe(1);
-  expect(wrongDigest.error).toContain('Artifact digest must come from');
-  const newerAttempt = restore({
-    ...qualified,
-    jobs: [{ ...qualified.jobs[0], run_attempt: 2 }],
-  });
-  expect(newerAttempt.status).toBe(0);
-  expect(newerAttempt.output).toContain('restored=false');
-  // A partial rerun can leave this platform's successful older job intact.
+  expect(exhausted.output).toContain(key + '_hit=false');
+  expect(runReads(exhausted)).toHaveLength(20);
   expect(
-    restore({ ...qualified, run: { ...qualified.run, run_attempt: 2 } }).output,
-  ).toContain('restored=true');
-  expect(restore({ ...qualified, status: 410 }).output).toContain(
-    'restored=false',
-  );
-  expect(
-    restore({ ...qualified, assets: [{ ...asset, expired: true }] }).output,
-  ).toContain('restored=false');
-  for (const change of [
+    exhausted.requests
+      .filter((args) => args.at(-1).includes('/actions/artifacts?'))
+      .every((args) => !args.includes('--paginate')),
+  ).toBe(true);
+
+  for (const changes of [
     { event: 'pull_request' },
     { status: 'in_progress' },
     { head_branch: 'ci/native-bundle/test' },
-  ]) {
+  ])
     expect(
-      restore({ ...qualified, run: { ...qualified.run, ...change } }).output,
-    ).toContain('restored=false');
-  }
-  // A rerun may start between reading the successful run and listing its jobs.
-  const racing = {
-    ...warmRerun,
-    jobsByRun: {
-      3: [
-        { ...qualified.jobs[0], run_id: 3 },
-        {
-          ...qualified.jobs[0],
-          run_id: 3,
-          run_attempt: 2,
-          conclusion: null,
-          steps: [],
-        },
-      ],
-    },
-  };
-  expect(restore({ ...racing, assets: [retained, asset] }).output).toContain(
-    'restored=true',
+      run({ ...qualified, run: { ...qualified.run, ...changes } }).output,
+    ).toContain(key + '_hit=false');
+  expect(
+    run({
+      ...qualified,
+      run: {
+        ...qualified.run,
+        head_branch: 'ci/native-bundle/test',
+        head_sha: git('rev-parse', 'HEAD'),
+      },
+    }).output,
+  ).toContain(key + '_hit=true');
+  expect(
+    run({
+      ...qualified,
+      jobs: [{ ...qualified.jobs[0], steps: [] }, qualified.jobs[1]],
+    }).output,
+  ).toContain(key + '_hit=false');
+  expect(
+    run({ ...qualified, assets: [{ ...asset, created_at: at(15) }] }).output,
+  ).toContain(key + '_hit=false');
+  expect(run({ ...qualified, status: 410 }).output).toContain(
+    key + '_hit=false',
   );
-  const racingMiss = restore({ ...racing, assets: [retained] });
-  expect(racingMiss.status).toBe(0);
-  expect(racingMiss.output).toContain('restored=false');
-  const failedLatest = restore({
-    ...qualified,
-    jobs: [
-      ...qualified.jobs,
-      { ...qualified.jobs[0], run_attempt: 2, conclusion: 'failure' },
-    ],
-  });
-  expect(failedLatest.status).toBe(0);
-  expect(failedLatest.output).toContain('restored=false');
-  // Newly tracked native inputs force a miss without accepting a nearby bundle.
+  expect(
+    run({ ...qualified, assets: [{ ...asset, expired: true }] }).output,
+  ).toContain(key + '_hit=false');
+  for (const options of [
+    { bytes: Buffer.from('corrupt') },
+    { status: 403 },
+    { assets: [{ ...asset, digest: 'invalid' }] },
+  ])
+    expect(run({ ...qualified, ...options }).status).toBe(1);
+
   writeFileSync(join(native, 'new.rs'), 'new native source\n');
   commit('native change');
-  expect(restore(qualified).output).toContain('restored=false');
+  expect(run(qualified).output).toContain(key + '_hit=false');
   mkdirSync(join(repo, '.cargo'));
   writeFileSync(
     join(repo, '.cargo/config.toml'),
     '[build]\nrustc-wrapper = "wrapper"\n',
   );
   writeFileSync(join(repo, 'wrapper'), 'first compiler wrapper\n');
-  const configured = restore({
-    ...qualified,
-    run: { ...qualified.run, head_sha: commit('configure wrapper') },
-  }).output;
+  commit('configure wrapper');
+  const configured = run().output;
   writeFileSync(join(repo, 'wrapper'), 'replacement compiler wrapper\n');
-  const changed = restore({
-    ...qualified,
-    run: { ...qualified.run, head_sha: commit('change wrapper') },
-  }).output;
-  expect(/^inputs=(.+)$/m.exec(changed)[1]).not.toBe(
-    /^inputs=(.+)$/m.exec(configured)[1],
+  commit('change wrapper');
+  expect(/^inputs_hash=(.+)$/m.exec(run().output)[1]).not.toBe(
+    /^inputs_hash=(.+)$/m.exec(configured)[1],
   );
 }, 30_000);
+
+test('workflow keeps the publication barrier and qualification coverage on explicit protected transfers', () => {
+  const path = (name) =>
+    fileURLToPath(new URL('../.github/workflows/' + name, import.meta.url));
+  const workflow = readFileSync(path('alpha-release-artifacts.yml'), 'utf8');
+  const native = readFileSync(path('native-bundle.yml'), 'utf8');
+  const select = workflow.slice(
+    workflow.indexOf('  select:'),
+    workflow.indexOf('  produce-linux:'),
+  );
+  const qualify = workflow.slice(workflow.indexOf('  package:'));
+  expect(qualify).toContain(
+    'needs: [select, produce-linux, produce-macos, produce-windows]',
+  );
+  expect(qualify).toContain("!cancelled() && needs.select.result == 'success'");
+  for (const key of Object.keys(nativePlatforms)) {
+    expect(workflow).toContain('toJSON(steps.upload_' + key + '.outputs)');
+    expect(qualify).toContain('needs.produce-' + key + ".result == 'skipped'");
+    expect(qualify).toContain('needs.produce-' + key + ".result == 'success'");
+    expect(qualify).toContain(
+      'needs.select.outputs.' +
+        key +
+        '_artifact || needs.produce-' +
+        key +
+        '.outputs.artifact',
+    );
+  }
+  expect(native).toContain('toJSON(steps.upload.outputs)');
+  expect(native).toContain('macos-15-xlarge');
+  expect(qualify).toContain('runner: macos-15\n');
+  expect(qualify).not.toContain('macos-15-xlarge');
+  expect(workflow + native).not.toContain('overwrite:');
+  for (const source of [select, native]) {
+    expect(source).not.toContain('pnpm install');
+    expect(source).not.toContain('pnpm build');
+    expect(source).not.toContain('pnpm/action-setup');
+  }
+  expect(qualify).toContain('name: Package and test (${{ matrix.platform }})');
+  expect(qualify).toContain('NATIVE_ARTIFACT: ${{ matrix.artifact }}');
+  expect(qualify).toContain('Check runner platform');
+  expect(qualify).toContain('apparmor-profiles bubblewrap');
+  for (const step of [
+    'Build the current SDK',
+    'Qualify canonical native storage',
+    'Qualify the Linux worker',
+    'Qualify local executor grants on macOS',
+    'Qualify completed child history on macOS',
+    'Qualify executor stop and process cleanup on macOS',
+    'Qualify owned child tracing on macOS',
+    'Qualify native tracing and decoded OTLP transports',
+    'Test the extracted bundles',
+  ])
+    expect(qualify).toContain('name: ' + step);
+});
