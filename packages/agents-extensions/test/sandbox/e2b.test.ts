@@ -1038,7 +1038,9 @@ describe('E2BSandboxClient', () => {
   test('persists and hydrates tar workspaces', async () => {
     const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
     runMock.mockImplementation(async (command: string) => {
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      const resolvedPath =
+        resolvedRemotePathFromValidationCommand(command) ??
+        resolvedRemoteEffectivePathFromCommand(command);
       if (resolvedPath) {
         return {
           stdout: `${resolvedPath}\n`,
@@ -1204,7 +1206,9 @@ describe('E2BSandboxClient', () => {
   test('falls back to tar snapshots when native snapshots cannot exclude ephemeral paths', async () => {
     const archive = makeTarArchive([{ name: 'keep.txt', content: 'keep' }]);
     runMock.mockImplementation(async (command: string) => {
-      const resolvedPath = resolvedRemotePathFromValidationCommand(command);
+      const resolvedPath =
+        resolvedRemotePathFromValidationCommand(command) ??
+        resolvedRemoteEffectivePathFromCommand(command);
       if (resolvedPath) {
         return {
           stdout: `${resolvedPath}\n`,

@@ -472,8 +472,10 @@ describe('VercelSandboxClient', () => {
     );
     const remountPathCalls = runCommandMock.mock.calls
       .slice(callsBeforeRemount)
-      .filter(([params]) =>
-        String(params.args?.[1]).includes('/usr/bin/realpath'),
+      .filter(
+        ([params]) =>
+          resolvedRemoteEffectivePathFromCommand(String(params.args?.[1])) ===
+          credentialPath,
       );
     expect(remountPathCalls.length).toBeGreaterThan(0);
     for (const [params] of remountPathCalls) {

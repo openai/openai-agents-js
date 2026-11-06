@@ -7,7 +7,15 @@ import {
   type SandboxArchiveLimits,
   type WorkspaceArchiveData,
 } from '@openai/agents-core/sandbox';
-import { shellQuote, validateRemoteSandboxPathForManifest } from './paths';
+import {
+  posixDirname,
+  relativePosixPathWithinRoot,
+} from '@openai/agents-core/sandbox/internal';
+import {
+  resolveRemoteSandboxEffectivePath,
+  shellQuote,
+  validateRemoteSandboxPathForManifest,
+} from './paths';
 import type { RemoteManifestWriter } from './types';
 
 const TAR_BLOCK_SIZE = 512;
@@ -60,10 +68,12 @@ export async function persistRemoteWorkspaceTar(args: {
   providerName: string;
   manifest: Manifest;
   io: RemoteWorkspaceTarIo;
+  /** Optional staging prefix; export uses a private directory beside this path. */
   archivePath?: string;
 }): Promise<Uint8Array> {
   const root = args.manifest.root;
-  const archivePath = args.archivePath ?? remoteArchivePath(args.providerName);
+  const archiveDirectory = `${args.archivePath ?? remoteArchivePath(args.providerName)}.d`;
+  const archivePath = `${archiveDirectory}/archive.tar`;
   assertRemoteWorkspaceTarRoot(args.providerName, root, archivePath, 'persist');
 
   const protectedPaths = workspaceTarProtectedPaths(args.manifest);
@@ -71,28 +81,61 @@ export async function persistRemoteWorkspaceTar(args: {
     return createEmptyWorkspaceTarArchive();
   }
 
-  await validateRemoteSandboxPathForManifest({
+  const effectiveRoot = await validateRemoteSandboxPathForManifest({
     manifest: args.manifest,
     path: root,
     options: { forWrite: true },
     runCommand: args.io.runCommand,
   });
 
+  const effectiveArchiveParent = await resolveRemoteSandboxEffectivePath({
+    path: posixDirname(archiveDirectory),
+    runCommand: args.io.runCommand,
+  });
+  const effectiveArchiveDirectory = `${effectiveArchiveParent}/${archiveDirectory.slice(archiveDirectory.lastIndexOf('/') + 1)}`;
   const excludeArgs = workspaceTarExcludeArgs(args.manifest);
+  const archiveRelPath = relativePosixPathWithinRoot(
+    effectiveRoot,
+    effectiveArchiveDirectory,
+  );
+  if (archiveRelPath !== null) {
+    excludeArgs.push(
+      `--exclude=${shellQuote(`./${archiveRelPath.replace(/([*?[\]\\])/gu, '\\$1')}`)}`,
+    );
+  }
   const tarCommand = [
     `mkdir -p -- ${shellQuote(root)}`,
     [
-      'tar',
+      '(umask 077 && tar',
       ...excludeArgs,
       '-C',
       shellQuote(root),
       '-cf',
       shellQuote(archivePath),
-      '.',
+      '.)',
     ].join(' '),
   ].join(' && ');
 
+  let archiveDirectoryCreated = false;
   try {
+    // Atomically create a private staging directory before writing any bytes.
+    // Existing entries, including symlinks and special files, must fail closed.
+    const reservation = await args.io.runCommand(
+      `(umask 077 && mkdir -m 0700 -- ${shellQuote(archiveDirectory)})`,
+    );
+    if (reservation.status !== 0) {
+      throw new SandboxArchiveError(
+        `${args.providerName} failed to reserve a private workspace tar archive.`,
+        {
+          provider: args.providerName,
+          root,
+          archivePath,
+          stdout: reservation.stdout ?? '',
+          stderr: reservation.stderr ?? '',
+        },
+      );
+    }
+    archiveDirectoryCreated = true;
     const result = await args.io.runCommand(tarCommand);
     if (result.status !== 0) {
       throw new SandboxArchiveError(
@@ -124,9 +167,11 @@ export async function persistRemoteWorkspaceTar(args: {
       },
     );
   } finally {
-    await args.io
-      .runCommand(`rm -f -- ${shellQuote(archivePath)}`)
-      .catch(() => {});
+    if (archiveDirectoryCreated) {
+      await args.io
+        .runCommand(`rm -rf -- ${shellQuote(archiveDirectory)}`)
+        .catch(() => {});
+    }
   }
 }
 
