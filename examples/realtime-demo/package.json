@@ -11,12 +11,12 @@
   },
   "devDependencies": {
     "typescript": "~5.8.3",
-    "vite": "^8.3.3"
+    "vite": "^8.3.5"
   },
   "dependencies": {
     "@openai/agents-realtime": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
-    "openai": "^7.45.1",
+    "openai": "^7.53.0",
     "tailwindcss": "^4.3.3",
     "zod": "^4.6.7"
   },
