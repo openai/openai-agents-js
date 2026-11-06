@@ -763,7 +763,11 @@ function parseTarOctal(
   if ((header[start] & 0x80) !== 0) {
     throw tarError('<tar>', 'base-256 tar sizes are not supported');
   }
-  const text = readTarString(header, start, length).trim();
+  const field = header.subarray(start, start + length);
+  const terminator = field.indexOf(0);
+  const text = decodeBytes(
+    terminator === -1 ? field : field.subarray(0, terminator),
+  ).trim();
   if (text.length === 0) {
     return 0;
   }
@@ -782,24 +786,17 @@ function readTarString(
 }
 
 function trimTarString(value: string): string {
-  // Only trim NUL suffixes after the last line terminator, matching the tar
-  // parser's existing dot-without-dotAll behavior without repeated scans.
-  let end = value.length;
-  for (let index = value.length - 1; index >= 0; index -= 1) {
-    const char = value[index];
-    if (
-      char === '\n' ||
-      char === '\r' ||
-      char === '\u2028' ||
-      char === '\u2029'
-    ) {
-      break;
-    }
-    if (char === '\0') {
-      end = index;
+  const terminator = value.indexOf('\0');
+  if (terminator !== -1) {
+    // Accept normal NUL padding, but reject hidden suffixes that could make
+    // validation and the extractor disagree about a path or link target.
+    for (let index = terminator + 1; index < value.length; index += 1) {
+      if (value[index] !== '\0') {
+        throw tarError('<tar>', 'non-padding data after NUL terminator');
+      }
     }
   }
-  return value.slice(0, end).replace(/\n$/u, '');
+  return terminator === -1 ? value : value.slice(0, terminator);
 }
 
 function decodeBytes(bytes: Uint8Array): string {
