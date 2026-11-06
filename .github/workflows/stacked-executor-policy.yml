@@ -12,7 +12,6 @@ on:
       - 'packages/agents-codex/native/**'
       - 'packages/agents-codex/scripts/**'
       - 'scripts/**'
-      - '.github/native-bundle.json'
       - 'packages/agents-codex/src/**'
       - 'packages/agents/src/**'
       - 'packages/agents-codex/test/native/**'
