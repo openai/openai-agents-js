@@ -84,9 +84,11 @@ export async function completeDisplay(
           !turns.has(item.turnId)
         )
           continue;
-        const text = item.content
-          .map((part) => (part.type === 'input_image' ? '' : part.text))
-          .join('');
+        const text =
+          item.displayText ??
+          item.content
+            .map((part) => (part.type === 'input_image' ? '' : part.text))
+            .join('');
         recorded.set(item.id, text);
         if (item.turnId !== last) continue;
         if (item.phase === 'final_answer') candidate = item.id;

@@ -138,6 +138,10 @@ export type {
   RecordedTokenUsage,
   ReceivedTokenUsage,
   RecordedResponse,
+  OutputTextPart,
+  SearchItem,
+  WebSearchAction,
+  WebSearchSource,
 } from './runtime/history';
 export { OutputValidationError } from './runtime/output';
 export type { OutputSpec } from './runtime/output';
@@ -190,7 +194,11 @@ export type {
 } from './runtime/local-recovery';
 
 export { webSearch } from './runtime/web-search';
-export type { WebSearch, WebSearchOptions } from './runtime/web-search';
+export type {
+  WebSearch,
+  WebSearchLocation,
+  WebSearchOptions,
+} from './runtime/web-search';
 
 export { selectMcpTools } from './runtime/selected-mcp';
 export type {

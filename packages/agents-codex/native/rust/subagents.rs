@@ -400,9 +400,8 @@ impl Instance {
                     let mut texts = content
                         .iter()
                         .filter_map(|part| match part {
-                            ContentItem::InputText { text } | ContentItem::OutputText { text } => {
-                                Some(text)
-                            }
+                            ContentItem::InputText { text }
+                            | ContentItem::OutputText { text, .. } => Some(text),
                             _ => None,
                         })
                         .peekable();

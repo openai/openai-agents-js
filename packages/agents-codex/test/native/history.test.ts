@@ -3,9 +3,80 @@ import type { JsonObject } from '../../src/runtime/binding';
 import {
   projectExecutionItem,
   projectHistory,
+  projectSearchItem,
+  repairItemFromWire,
   type ThreadHistory,
 } from '../../src/runtime/history';
 describe('native history projection', () => {
+  it('keeps original text parts and opaque annotations alongside visible text', () => {
+    const content: JsonObject[] = [
+      {
+        type: 'output_text',
+        text: '<hidden>Answer',
+        annotations: [
+          {
+            type: 'url_citation',
+            url: 'https://example.test/answer',
+            title: 'Answer',
+            start_index: 8,
+            end_index: 14,
+          },
+        ],
+      },
+      { type: 'output_text', text: '.', annotations: { type: 'future' } },
+    ];
+    const native = {
+      type: 'AgentMessage',
+      id: 'message',
+      display_text: 'Answer.',
+      content: content.map((part) => ({ ...part, type: 'Text' })),
+    };
+    const { items } = projectHistory(
+      [
+        {
+          type: 'event_msg',
+          payload: { type: 'task_started', turn_id: 'turn' },
+        },
+        {
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            id: 'message',
+            role: 'assistant',
+            content,
+          },
+        },
+        {
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            turn_id: 'turn',
+            item: native,
+          },
+        },
+        {
+          type: 'event_msg',
+          payload: {
+            type: 'task_complete',
+            turn_id: 'turn',
+            last_agent_message: 'Answer.',
+          },
+        },
+      ],
+      'thread',
+    );
+    expect(items).toEqual([
+      expect.objectContaining({
+        type: 'message',
+        content,
+        displayText: 'Answer.',
+      }),
+    ]);
+    const { data: _data, ...item } = items[0]!;
+    expect(projectSearchItem(native, 'turn', 'thread')).toEqual(item);
+    expect(repairItemFromWire(item)).toEqual(item);
+  });
+
   it('keeps canonical command, patch and MCP completions without a start record', () => {
     const rawItems: JsonObject[] = [
       {

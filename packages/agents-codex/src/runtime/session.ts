@@ -164,6 +164,7 @@ import {
 import {
   projectHistory,
   projectExecutionItem,
+  projectSearchItem,
   threadHistorySchema,
   recordedTurnToWire,
   recordedTurnFromWire,
@@ -4107,7 +4108,7 @@ export class Session<OutputT = string, Context = unknown> {
           continue;
         }
         if (!run) {
-          this.observeRootExecution(event);
+          this.observeRootItem(event);
           continue;
         }
         if (this.manualSuspending) {
@@ -4231,19 +4232,31 @@ export class Session<OutputT = string, Context = unknown> {
     if (typeof turnId !== 'string') return;
     if (msg.type === 'item_completed' && msg.thread_id === id) {
       const item = projectExecutionItem(msg.item, turnId, id);
-      if (item) {
+      const searchItem = item
+        ? undefined
+        : projectSearchItem(msg.item, turnId, id);
+      if (item || searchItem) {
         const owner = this.childCallbacks.find(id, incarnation, turnId);
         if (
           owner &&
           owner.observationPhase !== 'ended' &&
           (!owner.instanceId || owner.instanceId === event.subagent_instance_id)
         ) {
-          this.observations.append({
-            type: 'execution_item_completed',
-            turnId,
-            submissionId: `child:${id}:${incarnation}:${turnId}`,
-            item,
-          });
+          const submissionId = `child:${id}:${incarnation}:${turnId}`;
+          if (item)
+            this.observations.append({
+              type: 'execution_item_completed',
+              turnId,
+              submissionId,
+              item,
+            });
+          else if (searchItem)
+            this.observations.append({
+              type: 'search_item_completed',
+              turnId,
+              submissionId,
+              item: searchItem,
+            });
         } else {
           this.observations.gap();
         }
@@ -4574,7 +4587,7 @@ export class Session<OutputT = string, Context = unknown> {
     return true;
   }
 
-  private observeRootExecution(event: NativeEvent): void {
+  private observeRootItem(event: NativeEvent): void {
     const msg = event.msg;
     if (
       msg.type !== 'item_completed' ||
@@ -4586,18 +4599,30 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     const item = projectExecutionItem(msg.item, msg.turn_id, this.id);
-    if (!item) return;
+    const searchItem = item
+      ? undefined
+      : projectSearchItem(msg.item, msg.turn_id, this.id);
+    if (!item && !searchItem) return;
     const owner = this.lastRun;
     if (
       owner?.id === msg.turn_id &&
       submissions.get(owner)!.observation !== 'ended'
     ) {
-      this.observations.append({
-        type: 'execution_item_completed',
-        turnId: msg.turn_id,
-        submissionId: this.submissionIds.get(owner)!,
-        item,
-      });
+      const submissionId = this.submissionIds.get(owner)!;
+      if (item)
+        this.observations.append({
+          type: 'execution_item_completed',
+          turnId: msg.turn_id,
+          submissionId,
+          item,
+        });
+      else if (searchItem)
+        this.observations.append({
+          type: 'search_item_completed',
+          turnId: msg.turn_id,
+          submissionId,
+          item: searchItem,
+        });
     } else this.observations.gap();
   }
 
@@ -4631,7 +4656,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     const msg = event.msg;
     const kind = msg.type;
-    this.observeRootExecution(event);
+    this.observeRootItem(event);
     if (
       [
         'exec_approval_request',
@@ -6709,10 +6734,7 @@ export class Session<OutputT = string, Context = unknown> {
           'Apps registration is fixed; open a new Session to replace it',
         );
       const capturedSearch = this.options.webSearch;
-      if (
-        next.webSearch?.mode !== capturedSearch?.mode ||
-        next.webSearch?.route !== capturedSearch?.route
-      )
+      if (encode(next.webSearch ?? null) !== encode(capturedSearch ?? null))
         throw new TypeError(
           'Tool updates must retain the captured WebSearch declaration',
         );
@@ -9198,5 +9220,7 @@ function modelOverrides(model?: string, settings?: ModelSettings): JsonObject {
     overrides.summary = settings.reasoningSummary;
   if (settings?.serviceTier !== undefined)
     overrides.service_tier = settings.serviceTier;
+  if (settings?.toolChoice !== undefined)
+    overrides.tool_choice = settings.toolChoice;
   return overrides;
 }

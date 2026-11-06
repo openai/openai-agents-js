@@ -369,10 +369,27 @@ export function recordedTurnFromWire(turn: RecordedTurnWire): RecordedTurn {
 
 export type ItemStatus = 'in_progress' | 'completed' | 'failed' | 'incomplete';
 type ItemIdentity = { id: string; turnId: string };
-type TextPart = { type: 'input_text' | 'output_text'; text: string };
+const outputTextPartSchema = z.object({
+  type: z.literal('output_text'),
+  text: z.string(),
+  annotations: jsonValue.optional(),
+});
+/** Provider annotations use offsets into this part's original text. */
+export type OutputTextPart = z.infer<typeof outputTextPartSchema>;
+type InputTextPart = { type: 'input_text'; text: string };
 type ImagePart = { type: 'input_image'; image_url: string; detail?: string };
+const webSearchSourcesSchema = z.array(
+  z.object({ type: z.literal('url'), url: z.string() }),
+);
+export type WebSearchSource = z.infer<typeof webSearchSourcesSchema>[number];
 export type WebSearchAction =
-  | { type: 'search'; query: string | null; queries: string[] | null }
+  | {
+      type: 'search';
+      query: string | null;
+      queries: string[] | null;
+      /** URLs reported by the provider, when available. */
+      sources?: WebSearchSource[];
+    }
   | { type: 'open_page'; url: string | null }
   | { type: 'find_in_page'; url: string | null; pattern: string | null }
   | { type: 'other' };
@@ -384,7 +401,9 @@ export type SessionItem = ItemIdentity &
         role: 'user' | 'assistant';
         status: ItemStatus;
         phase: string | null;
-        content: (TextPart | ImagePart)[];
+        content: (InputTextPart | OutputTextPart | ImagePart)[];
+        /** Visible assistant text when Core removed markup from the original parts. */
+        displayText?: string;
       }
     | {
         type: 'reasoning';
@@ -465,6 +484,12 @@ export type SessionItem = ItemIdentity &
         recipientAgentId: string;
       }
   );
+
+/** A completed native hosted search call or an assistant message with annotations. */
+export type SearchItem = Extract<
+  SessionItem,
+  { type: 'web_search_call' | 'message' }
+>;
 const patchContentChanges = [
   z.object({ type: z.literal('add'), content: z.string() }),
   z.object({ type: z.literal('delete'), content: z.string() }),
@@ -518,12 +543,14 @@ const repairItemProjectionSchema = z.intersection(
       role: z.enum(['user', 'assistant']),
       status: repairItemStatusSchema,
       phase: z.string().nullable(),
+      displayText: z.string().optional(),
       content: z.array(
         z.discriminatedUnion('type', [
           z.object({
-            type: z.enum(['input_text', 'output_text']),
+            type: z.literal('input_text'),
             text: z.string(),
           }),
+          outputTextPartSchema,
           z.object({
             type: z.literal('input_image'),
             image_url: z.string(),
@@ -595,6 +622,7 @@ const repairItemProjectionSchema = z.intersection(
             type: z.literal('search'),
             query: z.string().nullable(),
             queries: z.array(z.string()).nullable(),
+            sources: webSearchSourcesSchema.optional(),
           }),
           z.object({
             type: z.literal('open_page'),
@@ -811,7 +839,8 @@ function webAction(raw: JsonObject): WebSearchAction | null {
       ? { type: 'search', query: raw.query, queries: null }
       : null;
   switch (action.type) {
-    case 'search':
+    case 'search': {
+      const sources = webSearchSourcesSchema.safeParse(action.sources);
       return {
         type: 'search',
         query: text(action.query),
@@ -820,7 +849,9 @@ function webAction(raw: JsonObject): WebSearchAction | null {
               (value): value is string => typeof value === 'string',
             )
           : null,
+        ...(sources.success ? { sources: sources.data } : {}),
       };
+    }
     case 'open_page':
     case 'openPage':
       return { type: 'open_page', url: text(action.url) };
@@ -875,7 +906,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       phase: raw.role === 'assistant' ? text(raw.phase) : null,
       content: objects(raw.content).filter((part) =>
         accepted.includes(String(part.type)),
-      ) as (TextPart | ImagePart)[],
+      ) as (InputTextPart | OutputTextPart | ImagePart)[],
     };
   }
   if (raw.type === 'reasoning')
@@ -1007,7 +1038,7 @@ function nativeItems(
           status: 'completed',
           phase: null,
           content: objects(raw.content).flatMap(
-            (part): (TextPart | ImagePart)[] =>
+            (part): (InputTextPart | ImagePart)[] =>
               part.type === 'text' && typeof part.text === 'string'
                 ? [{ type: 'input_text', text: part.text }]
                 : part.type === 'image' && typeof part.image_url === 'string'
@@ -1024,15 +1055,22 @@ function nativeItems(
           role: 'assistant',
           status: done ? 'completed' : 'in_progress',
           phase: text(raw.phase),
-          content: [
-            {
-              type: 'output_text',
-              text: objects(raw.content)
-                .filter((part) => part.type === 'Text')
-                .map((part) => text(part.text) ?? '')
-                .join(''),
-            },
-          ],
+          ...(typeof raw.display_text === 'string'
+            ? { displayText: raw.display_text }
+            : {}),
+          content: objects(raw.content).flatMap((part) =>
+            part.type === 'Text' && typeof part.text === 'string'
+              ? [
+                  {
+                    type: 'output_text',
+                    text: part.text,
+                    ...(part.annotations === undefined
+                      ? {}
+                      : { annotations: part.annotations }),
+                  },
+                ]
+              : [],
+          ),
         },
       ];
     case 'Reasoning':
@@ -1167,6 +1205,30 @@ function nativeItems(
     }
     default:
       return [];
+  }
+}
+
+/** Project completed native items carrying hosted search evidence for live consumers. */
+export function projectSearchItem(
+  value: JsonValue | undefined,
+  turnId: string,
+  threadId: string,
+): SearchItem | undefined {
+  const raw = object(value);
+  if (raw?.type !== 'AgentMessage' && raw?.type !== 'WebSearch') return;
+  const [item] = nativeItems(raw, true, turnId, threadId);
+  if (
+    item?.type === 'web_search_call' ||
+    (item?.type === 'message' &&
+      item.content.some(
+        (part) =>
+          part.type === 'output_text' &&
+          part.annotations != null &&
+          (!Array.isArray(part.annotations) || part.annotations.length > 0),
+      ))
+  ) {
+    const { data: _data, ...projected } = item;
+    return projected;
   }
 }
 

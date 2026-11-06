@@ -964,6 +964,7 @@ impl EngineState {
         startup.config.model_reasoning_effort = settings.reasoning_effort;
         startup.config.model_reasoning_summary = settings.reasoning_summary;
         startup.config.service_tier = settings.service_tier;
+        startup.config.sdk_tool_choice = settings.tool_choice;
         startup.config.mcp_servers.set(HashMap::new())?;
         let history = self.history(source.id).await?;
         startup.initial_history = history.clone();

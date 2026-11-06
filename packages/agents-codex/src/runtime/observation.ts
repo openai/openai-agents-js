@@ -1,4 +1,4 @@
-import type { ExecutionItem } from './history';
+import type { ExecutionItem, SearchItem } from './history';
 import type { ManualToolRequest } from './manual';
 import type { TokenUsageInfo } from './run-events';
 import type { ApiRateLimits } from './api-rate-limits';
@@ -82,6 +82,8 @@ export type Observation =
   | (SubmissionEvent &
       Readonly<{ type: 'output_text_delta'; itemId: string; delta: string }>)
   | (SubmissionEvent &
+      Readonly<{ type: 'search_item_completed'; item: SearchItem }>)
+  | (SubmissionEvent &
       Readonly<{ type: 'usage_updated'; usage: TokenUsageInfo | null }>)
   | ApiRateLimitsUpdated
   | (SubmissionEvent & Readonly<{ type: 'context_compacted'; itemId: string }>)
@@ -125,6 +127,8 @@ function projectObservation(
   event: RetainedObservation,
   includeExecutionDetails: boolean,
 ): Observation {
+  if (event.type === 'search_item_completed')
+    return Object.freeze({ ...event, item: structuredClone(event.item) });
   if (event.type !== 'execution_item_completed') return event;
   if (includeExecutionDetails)
     return Object.freeze({ ...event, item: structuredClone(event.item) });
@@ -220,7 +224,8 @@ export class ObservationBuffer {
     });
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
-      event.type === 'execution_item_completed'
+      event.type === 'execution_item_completed' ||
+        event.type === 'search_item_completed'
         ? JSON.stringify(event.item).length
         : 0,
     );

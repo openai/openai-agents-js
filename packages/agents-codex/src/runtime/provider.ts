@@ -172,4 +172,6 @@ export interface ModelSettings {
   reasoningSummary?: string;
   /** null clears an existing service tier override. */
   serviceTier?: string | null;
+  /** Outer Responses tool choice. Defaults to `auto` on a new Session. */
+  toolChoice?: 'auto' | 'none' | 'required';
 }

@@ -129,6 +129,302 @@ it('keeps a hosted grant after a refused Lite model update and allows the origin
   peer.model.assertExhausted();
 }, 30000);
 
+it('captures hosted controls and retains search evidence through events, history, restore, and model input', async () => {
+  const url = 'https://reports.example.test/annual';
+  const sources = [
+    { type: 'url', url },
+    { type: 'url', url: 'https://reports.example.test/data' },
+  ];
+  const action = { type: 'search', query: 'annual report', sources };
+  const markup =
+    '<oai-mem-citation><citation_entries>MEMORY.md:1-2|note=[fixture]</citation_entries></oai-mem-citation>';
+  const content: JsonObject[] = [
+    {
+      type: 'output_text',
+      text: markup + 'Annual report.',
+      annotations: [
+        {
+          type: 'url_citation',
+          url,
+          title: 'Annual report',
+          start_index: markup.length,
+          end_index: markup.length + 'Annual report'.length,
+        },
+      ],
+    },
+    {
+      type: 'output_text',
+      text: ' Appendix.',
+      annotations: [
+        {
+          type: 'url_citation',
+          url,
+          title: 'Appendix',
+          start_index: 1,
+          end_index: 9,
+        },
+        {
+          type: 'file_citation',
+          file_id: 'file_fixture',
+          filename: 'appendix.txt',
+          index: 1,
+        },
+        { type: 'future_annotation', detail: { reference: 'fixture' } },
+      ],
+    },
+    {
+      type: 'output_text',
+      text: ' Notes.',
+      annotations: { type: 'future_container', reference: 'fixture' },
+    },
+  ];
+  const usage = {
+    input_tokens: 11,
+    input_tokens_details: { cached_tokens: 0 },
+    output_tokens: 2,
+    total_tokens: 13,
+  };
+  await using peer = await searchPeer(
+    [
+      [
+        {
+          type: 'web_search_call',
+          id: 'ws_fixture',
+          status: 'completed',
+          action,
+        },
+        { ...message('unused'), content },
+      ],
+      [
+        {
+          type: 'web_search_call',
+          id: 'ws_missing_sources',
+          status: 'completed',
+          action: { type: 'search', query: 'supplement' },
+        },
+        message('No extra evidence.'),
+      ],
+    ],
+    [JSON.stringify(usage)],
+  );
+  await using provider = providerAt(peer.url);
+  const allowedDomains = ['example.test'];
+  const blockedDomains = ['excluded.example.test'];
+  const location = {
+    country: 'US',
+    region: 'Illinois',
+    city: 'Chicago',
+    timezone: 'America/Chicago',
+  };
+  const grant = webSearch({
+    route: 'hosted',
+    allowedDomains,
+    blockedDomains,
+    location,
+  });
+  const agent = new Agent({
+    instructions: 'Research the user question.',
+    model: 'gpt-5.5',
+    provider,
+    tools: [grant],
+  });
+  const expectedPolicy = {
+    type: 'web_search',
+    filters: {
+      allowed_domains: ['example.test'],
+      blocked_domains: ['excluded.example.test'],
+    },
+    user_location: { type: 'approximate', ...location },
+    external_web_access: false,
+  };
+  allowedDomains.push('other.test');
+  blockedDomains[0] = 'other.test';
+  location.timezone = 'Etc/UTC';
+
+  await using session = await agent.session({
+    modelSettings: { toolChoice: 'required' },
+  });
+  await expect(
+    session.update({ tools: [webSearch({ route: 'hosted', allowedDomains })] }),
+  ).rejects.toThrow('retain');
+  expect(peer.model.requests).toHaveLength(0);
+  const turn = await session.submit('Find the annual report.');
+  const events = Array.fromAsync(turn.events());
+  const result = await turn.wait();
+  const displayText = 'Annual report. Appendix. Notes.';
+  expect(result.finalOutput).toBe(displayText);
+  const evidence = [
+    expect.objectContaining({
+      type: 'web_search_call',
+      action: { ...action, queries: null },
+    }),
+    expect.objectContaining({
+      type: 'message',
+      role: 'assistant',
+      content,
+    }),
+  ];
+  const originalHistory = await Array.fromAsync(session.items());
+  const historyEvidence = originalHistory.filter(
+    (item) =>
+      item.type === 'web_search_call' ||
+      (item.type === 'message' && item.role === 'assistant'),
+  );
+  expect(historyEvidence).toEqual(evidence);
+  const sequence = (await events).filter(
+    (event) =>
+      event.type === 'turn_started' ||
+      event.type === 'search_item_completed' ||
+      event.type === 'turn_finished',
+  );
+  expect(sequence).toEqual([
+    expect.objectContaining({ type: 'turn_started', turnId: turn.turnId }),
+    expect.objectContaining({
+      type: 'search_item_completed',
+      turnId: turn.turnId,
+      item: historyEvidence[0],
+    }),
+    expect.objectContaining({
+      type: 'search_item_completed',
+      turnId: turn.turnId,
+      // In-memory history retains the original provider message. The live
+      // native item also carries the display text computed at finalization.
+      item: { ...historyEvidence[1], displayText },
+    }),
+    expect.objectContaining({
+      type: 'turn_finished',
+      turnId: turn.turnId,
+      status: 'completed',
+    }),
+  ]);
+  const [recorded] = await Array.fromAsync(session.turns());
+  expect(recorded.responses).toEqual([
+    expect.objectContaining({
+      usageSource: 'received',
+      usage: {
+        inputTokens: 11,
+        inputTokensDetails: { cachedTokens: 0 },
+        outputTokens: 2,
+        totalTokens: 13,
+      },
+    }),
+  ]);
+  expect(peer.model.requests[0]).toMatchObject({
+    tools: expect.arrayContaining([expect.objectContaining(expectedPolicy)]),
+    tool_choice: 'required',
+    include: expect.arrayContaining(['web_search_call.action.sources']),
+  });
+
+  await using restored = await agent.session({
+    state: await session.saveState(),
+  });
+  expect(await Array.fromAsync(restored.items())).toEqual(originalHistory);
+  const next = await restored.submit('Find any supplement.');
+  const nextEvents = Array.fromAsync(next.events());
+  expect((await next.wait()).finalOutput).toBe('No extra evidence.');
+  const restoredHistory = await Array.fromAsync(restored.items());
+  const nextHistory = restoredHistory.filter(
+    (item) =>
+      item.turnId === next.turnId &&
+      (item.type === 'web_search_call' ||
+        (item.type === 'message' && item.role === 'assistant')),
+  );
+  expect(nextHistory).toEqual([
+    expect.objectContaining({
+      type: 'web_search_call',
+      action: { type: 'search', query: 'supplement', queries: null },
+    }),
+    expect.objectContaining({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'No extra evidence.' }],
+    }),
+  ]);
+  expect(
+    (await nextEvents).flatMap((event) =>
+      event.type === 'search_item_completed' ? [event.item] : [],
+    ),
+  ).toEqual([nextHistory[0]]);
+  expect(peer.model.requests[1]).toMatchObject({
+    tool_choice: 'required',
+    input: expect.arrayContaining([
+      expect.objectContaining({
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: 'Find the annual report.' }],
+      }),
+      expect.objectContaining({ type: 'web_search_call', action }),
+      expect.objectContaining({
+        type: 'message',
+        role: 'assistant',
+        content: [
+          content[0],
+          {
+            ...content[1],
+            annotations: (content[1]!.annotations as JsonObject[]).slice(0, 2),
+          },
+          { type: 'output_text', text: ' Notes.' },
+        ],
+      }),
+    ]),
+  });
+  const last = (await Array.fromAsync(restored.turns())).at(-1);
+  expect(last?.responses).toEqual([
+    expect.objectContaining({ usageSource: 'received', usage: null }),
+  ]);
+  expect(peer.searches).toHaveLength(0);
+  peer.model.assertExhausted();
+}, 30000);
+
+it('allows an auto response without search and honors idle tool choice and per-step omission', async () => {
+  await using peer = await searchPeer([
+    [message('No search needed.')],
+    [message('No tools selected.')],
+  ]);
+  await using provider = providerAt(peer.url);
+  await expect(
+    new Agent({
+      instructions: 'Act',
+      provider,
+      tools: [{ ...webSearch(), blockedDomains: ['example.test'] }],
+    }).session(),
+  ).rejects.toThrow(/standalone.*hosted/);
+  expect(peer.model.requests).toHaveLength(0);
+  expect(peer.searches).toHaveLength(0);
+
+  await using session = await new Agent({
+    instructions: 'Act',
+    model: 'gpt-5.5',
+    provider,
+    tools: [webSearch({ route: 'hosted', blockedDomains: ['example.test'] })],
+  }).session();
+  const turn = await session.submit('Answer directly.');
+  const events = Array.fromAsync(turn.events());
+  const first = await turn.wait();
+  expect(first.finalOutput).toBe('No search needed.');
+  expect(
+    (await events).some((event) => event.type === 'search_item_completed'),
+  ).toBe(false);
+  expect(
+    (await Array.fromAsync(session.items())).some(
+      (item) => item.type === 'web_search_call',
+    ),
+  ).toBe(false);
+  expect(first.usage).toBeNull();
+  expect(peer.model.requests[0]).toMatchObject({
+    tool_choice: 'auto',
+    tools: expect.arrayContaining([
+      expect.objectContaining({ type: 'web_search' }),
+    ]),
+  });
+  await session.update({ modelSettings: { toolChoice: 'none' } });
+  await (await session.submit('Continue.', { beforeStep: () => [] })).wait();
+  expect(peer.model.requests[1]).toMatchObject({ tool_choice: 'none' });
+  expect(peer.model.requests[1].tools ?? []).toEqual([]);
+  expect(peer.searches).toHaveLength(0);
+  peer.model.assertExhausted();
+}, 30000);
+
 /** Refusal witness only: any attempted executor connection is observable and rejected. */
 async function forbiddenExecutor() {
   let attempts = 0;

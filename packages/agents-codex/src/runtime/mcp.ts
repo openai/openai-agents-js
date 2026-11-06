@@ -442,12 +442,8 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
       nativeAgents = tool;
     } else if ('kind' in tool && tool.kind === 'web_search') {
       if (search) throw new TypeError('Declare WebSearch only once');
-      for (const key of Object.keys(tool))
-        if (!['kind', 'mode', 'route'].includes(key))
-          throw new TypeError(
-            `Unsupported WebSearch declaration field: ${key}`,
-          );
-      search = webSearch({ mode: tool.mode, route: tool.route });
+      const { kind: _kind, ...options } = tool;
+      search = webSearch(options);
     } else if ('kind' in tool && tool.kind === 'native_goals')
       nativeGoals = true;
     else if ('kind' in tool && tool.kind === 'checklist') {
