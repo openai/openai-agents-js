@@ -1,4 +1,5 @@
 import { expectTypeOf } from 'vitest';
+import type { Session as ConvenienceSession } from '@openai/agents';
 import {
   Agent,
   nativeGoals,
@@ -19,5 +20,15 @@ const agent = new Agent({
 });
 agent.session({ storage: { path: '/current/profile' } });
 declare const session: Session;
-// @ts-expect-error No application goal mutation API is added.
-session.setGoal('invented');
+expectTypeOf<Session['setPausedGoal']>().toEqualTypeOf<
+  (
+    objective: string,
+    options?: { readonly tokenBudget?: number | bigint },
+  ) => Promise<Readonly<NativeGoal>>
+>();
+expectTypeOf<ConvenienceSession['setPausedGoal']>().toEqualTypeOf<
+  Session['setPausedGoal']
+>();
+expectTypeOf(
+  session.setPausedGoal('Prepare the release notes', { tokenBudget: 4000n }),
+).toEqualTypeOf<Promise<Readonly<NativeGoal>>>();

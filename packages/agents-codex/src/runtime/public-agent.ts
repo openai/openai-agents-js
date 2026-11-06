@@ -205,6 +205,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'turns'
   | 'rateLimits'
   | 'goal'
+  | 'setPausedGoal'
   | 'subagents'
   | 'checklist'
   | 'update'

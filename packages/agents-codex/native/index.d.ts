@@ -137,6 +137,10 @@ export class NativeThread {
     reply: string,
   ): boolean;
   _read_goal(): Promise<string>;
+  _set_paused_goal(
+    objective: string,
+    token_budget?: string | null,
+  ): Promise<string>;
   _fork_settled(): Promise<NativeThread>;
   _discard_fork(): Promise<string | null>;
   _export_checkpoint(
