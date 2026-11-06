@@ -34,6 +34,7 @@ import {
 } from './selection-state';
 import { readCheckpointSelections } from './state';
 import { nativeGoal, type NativeGoal } from './goals';
+import { RunBudgetTracker, type RunBudget } from './run-budget';
 import {
   NativeError,
   enrichNativeError,
@@ -305,6 +306,8 @@ export interface OperationOptions<Context = unknown> {
    * retries, output repairs, and child agents have separate lifecycles.
    */
   maxModelSteps?: number;
+  /** Observed budget for a new direct native root. See {@link RunBudget}. */
+  budget?: RunBudget;
   /**
    * Replace the current extra writable directories when a new root starts.
    * For a WSS macOS executor, choose the directories when opening the Session.
@@ -330,6 +333,7 @@ export interface OperationOptions<Context = unknown> {
   /**
    * Select a subset of the operation ceiling before each model preparation.
    * Returning undefined uses that ceiling. Indices start at zero.
+   * An exhausted step limit or run budget blocks this callback.
    */
   beforeStep?: (
     context: BeforeStepContext<Context>,
@@ -370,11 +374,24 @@ export function validateMaxModelSteps(
 interface OperationSelection {
   readonly names: readonly ReturnType<typeof toolIdentity>[] | undefined;
   readonly maxModelSteps?: number;
+  readonly budget?: RunBudgetTracker;
   readonly beforeStep?: OperationOptions<any>['beforeStep'];
   readonly prepareRequest?: OperationOptions<any>['prepareRequest'];
   preparationIndex: number;
   generation?: bigint;
   stepIndex: number;
+}
+
+function manualCaptureRefusal(
+  selection: OperationSelection | undefined,
+): string | undefined {
+  if (selection?.budget !== undefined)
+    return 'Cannot capture an active run with a budget';
+  if (
+    selection?.beforeStep !== undefined ||
+    selection?.prepareRequest !== undefined
+  )
+    return 'Cannot capture a callback-selected operation';
 }
 
 /** Scoped stop options. Defaults to scope 'root' and mode 'force'. */
@@ -2512,16 +2529,18 @@ export class Session<OutputT = string, Context = unknown> {
     input: string | JsonValue[],
     callerSignal?: AbortSignal,
     maxModelSteps?: number,
+    budget?: RunBudgetTracker,
   ): Promise<NativeRunResult> {
     this.startTurn(
       input,
       false,
       undefined,
       false,
-      this.captureSelection({
-        maxModelSteps,
-        prepareRequest: this.oneShot?.prepareRequest,
-      }),
+      this.captureSelection(
+        { maxModelSteps, prepareRequest: this.oneShot?.prepareRequest },
+        this.defaultOutput,
+        budget,
+      ),
       callerSignal,
     );
 
@@ -2681,6 +2700,7 @@ export class Session<OutputT = string, Context = unknown> {
         options?.tools !== undefined ||
         options?.beforeStep !== undefined ||
         options?.maxModelSteps !== undefined ||
+        options?.budget !== undefined ||
         options?.prepareRequest !== undefined ||
         options?.tracing !== undefined
       )
@@ -2766,15 +2786,17 @@ export class Session<OutputT = string, Context = unknown> {
   private captureSelection(
     options?: OperationOptions<Context>,
     output = this.defaultOutput,
+    budget = RunBudgetTracker.capture(options?.budget),
   ): OperationSelection | undefined {
     if (
       options?.tools === undefined &&
       options?.beforeStep === undefined &&
       options?.maxModelSteps === undefined &&
-      options?.prepareRequest === undefined
+      options?.prepareRequest === undefined &&
+      budget === undefined
     )
       return;
-    if (options.prepareRequest !== undefined) {
+    if (options?.prepareRequest !== undefined) {
       if (typeof options.prepareRequest !== 'function')
         throw new TypeError('prepareRequest must be callable');
       if (output.repair)
@@ -2799,13 +2821,14 @@ export class Session<OutputT = string, Context = unknown> {
         );
     }
     return {
-      prepareRequest: options.prepareRequest,
+      prepareRequest: options?.prepareRequest,
       names:
-        options.tools === undefined
+        options?.tools === undefined
           ? undefined
           : this.selectionNames([...options.tools]),
-      maxModelSteps: validateMaxModelSteps(options.maxModelSteps),
-      beforeStep: options.beforeStep,
+      maxModelSteps: validateMaxModelSteps(options?.maxModelSteps),
+      beforeStep: options?.beforeStep,
+      budget,
       preparationIndex: 0,
       stepIndex: 0,
     };
@@ -3353,7 +3376,8 @@ export class Session<OutputT = string, Context = unknown> {
               names: selection.names ?? null,
               before_step:
                 selection.beforeStep !== undefined ||
-                selection.maxModelSteps !== undefined,
+                selection.maxModelSteps !== undefined ||
+                selection.budget !== undefined,
               prepare_request: selection.prepareRequest !== undefined,
             },
           }
@@ -3697,6 +3721,14 @@ export class Session<OutputT = string, Context = unknown> {
             schema: prepared.repair!.schema,
             invalid_output: text,
           }),
+          true,
+          correction.defaultOutput,
+          false,
+          correction.captureSelection(
+            undefined,
+            correction.defaultOutput,
+            run.selection?.budget,
+          ),
         );
         possiblyAdmitted = true;
         result = await repair.run.wait();
@@ -4731,16 +4763,14 @@ export class Session<OutputT = string, Context = unknown> {
         delta: msg.delta,
       });
     }
-    if (
-      kind === 'raw_response_completed' &&
-      event.id === run.id &&
-      msg.token_usage !== null &&
-      typeof msg.token_usage === 'object' &&
-      !Array.isArray(msg.token_usage)
-    ) {
-      run.addUsage(msg.token_usage);
-    }
     if (kind === 'raw_response_completed' && event.id === run.id) {
+      const raw = msg.token_usage;
+      const usage =
+        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+          ? raw
+          : undefined;
+      if (usage) run.addUsage(usage);
+      run.selection?.budget?.observe(usage);
       this.notifyManualProgress();
       this.maybeSealManual(run);
     }
@@ -4933,27 +4963,27 @@ export class Session<OutputT = string, Context = unknown> {
     return this.invokeCallback(
       run,
       async () => {
+        const receipt = {
+          thread: this.id,
+          turn_id: msg.turn_id,
+          generation: msg.generation,
+          request_id: msg.request_id,
+        };
         let replied = false;
         const reply = (
           names: readonly ReturnType<typeof toolIdentity>[] | null,
         ) => {
           if (replied) return;
           replied = true;
-          const receipt = encode({
-            thread: this.id,
-            turn_id: msg.turn_id,
-            generation: msg.generation,
-            request_id: msg.request_id,
-            names,
-          });
+          const response = encode({ ...receipt, names });
           if (names === null) {
             // Native retirement may already have dropped this exact sender.
             try {
-              this.#native._reply_step(receipt);
+              this.#native._reply_step(response);
             } catch {
               /* Already revoked. */
             }
-          } else this.#native._reply_step(receipt);
+          } else this.#native._reply_step(response);
         };
         const abort = () => reply(null);
         signal.addEventListener('abort', abort, { once: true });
@@ -4977,6 +5007,18 @@ export class Session<OutputT = string, Context = unknown> {
               code: 'max_model_steps_exceeded',
               retryable: false,
             });
+          const nonce = encode(receipt);
+          const assertActive = () => {
+            signal.throwIfAborted();
+            if (
+              !this.current(run) ||
+              selection.generation !== this.catalog.generation ||
+              !this.#native._check_step(nonce)
+            )
+              throw new NativeError('Step selection is no longer active');
+          };
+          assertActive();
+          selection.budget?.check(assertActive);
           const stepIndex = selection.stepIndex++;
           const selected = await selection.beforeStep?.({
             context: this.options.context as Context,
@@ -4984,13 +5026,15 @@ export class Session<OutputT = string, Context = unknown> {
             stepIndex,
             signal,
           });
+          assertActive();
+          const names = this.selectedStepNames(
+            event,
+            selected,
+            selection.names,
+          );
           signal.throwIfAborted();
-          if (
-            !this.current(run) ||
-            selection.generation !== this.catalog.generation
-          )
-            throw new NativeError('Step selection is no longer active');
-          reply(this.selectedStepNames(event, selected, selection.names));
+          reply(names);
+          selection.budget?.charge();
         } catch (error) {
           reply(null);
           throw error;
@@ -5703,13 +5747,8 @@ export class Session<OutputT = string, Context = unknown> {
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
   ): Promise<SessionState> {
-    if (
-      run.selection?.beforeStep !== undefined ||
-      run.selection?.prepareRequest !== undefined
-    )
-      return Promise.reject(
-        new NativeError('Cannot capture a callback-selected operation'),
-      );
+    const refusal = manualCaptureRefusal(run.selection);
+    if (refusal) return Promise.reject(new NativeError(refusal));
     this.requireCompleteRepairReceipts();
 
     if (this.pendingRoots.length)
@@ -7430,14 +7469,8 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.lifecycle.kind !== 'turn')
       return checkpointStatus('notReady', 'No settled pending manual boundary');
     const run = this.lifecycle.run;
-    if (
-      run.selection?.beforeStep !== undefined ||
-      run.selection?.prepareRequest !== undefined
-    )
-      return checkpointStatus(
-        'notReady',
-        'Cannot capture a callback-selected operation',
-      );
+    const captureRefusal = manualCaptureRefusal(run.selection);
+    if (captureRefusal) return checkpointStatus('notReady', captureRefusal);
     const output = submissions.get(run)?.output;
     const valid = () =>
       this.current(run) &&
