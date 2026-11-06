@@ -5,8 +5,10 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  readlink,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -432,11 +434,13 @@ describe('DaytonaSandboxClient', () => {
       const root = await mkdtemp(join(tmpdir(), 'agents-daytona-editor-'));
       try {
         const privatePath = join(root, 'private.txt');
+        const privateLink = join(root, 'private-link.txt');
         const publicPath = join(root, 'public.txt');
         const newPath = join(root, 'new.txt');
         const movedPath = join(root, 'moved.txt');
         await writeFile(privatePath, 'private\n', { mode });
         await chmod(privatePath, mode);
+        await symlink(privatePath, privateLink);
         await writeFile(publicPath, 'public\n', { mode: 0o644 });
         await chmod(publicPath, 0o644);
         const originalPrivate = await stat(privatePath);
@@ -472,7 +476,7 @@ describe('DaytonaSandboxClient', () => {
         const editor = session.createEditor();
         await editor.updateFile({
           type: 'update_file',
-          path: 'private.txt',
+          path: 'private-link.txt',
           diff: '-private\n+updated private\n',
         });
         await editor.updateFile({
@@ -487,6 +491,7 @@ describe('DaytonaSandboxClient', () => {
         });
 
         expect(await readFile(privatePath, 'utf8')).toBe('updated private\n');
+        expect(await readlink(privateLink)).toBe(privatePath);
         expect((await stat(privatePath)).mode & 0o7777).toBe(expectedMode);
         expect((await stat(privatePath)).uid).toBe(originalPrivate.uid);
         expect((await stat(privatePath)).gid).toBe(originalPrivate.gid);
@@ -528,6 +533,98 @@ describe('DaytonaSandboxClient', () => {
         await expect(stat(privatePath)).rejects.toMatchObject({
           code: 'ENOENT',
         });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test
+    .skipIf(process.platform !== 'linux')
+    .each([
+      'mode-change',
+      'replacement',
+      'removal',
+      'creation',
+      'dangling-symlink',
+      'replacement-during-content',
+      'creation-during-content',
+    ])(
+    'rejects a concurrent target %s during editor publication',
+    async (change) => {
+      const root = await mkdtemp(join(tmpdir(), 'agents-daytona-race-'));
+      const target = join(root, 'target.txt');
+      const initiallyAbsent =
+        change === 'creation' ||
+        change === 'dangling-symlink' ||
+        change === 'creation-during-content';
+      try {
+        if (!initiallyAbsent) {
+          await writeFile(target, 'original\n', { mode: 0o600 });
+        }
+        const session = await new DaytonaSandboxClient().create(
+          new Manifest({ root }),
+        );
+        executeCommandMock.mockImplementation(async (command: string) => {
+          if (command.includes('tmp=$(mktemp')) {
+            const mutation = {
+              'mode-change': 'chmod 644 "$target"',
+              replacement:
+                'printf concurrent > "$target.next"; chmod 644 "$target.next"; mv -f -- "$target.next" "$target"',
+              removal: 'rm -f -- "$target"',
+              creation: 'printf concurrent > "$target"',
+              'dangling-symlink': 'ln -s -- "$target.missing" "$target"',
+              'replacement-during-content':
+                'printf concurrent > "$target.next"; chmod 644 "$target.next"; mv -f -- "$target.next" "$target"',
+              'creation-during-content': 'printf concurrent > "$target"',
+            }[change];
+            const trigger = change.endsWith('-during-content')
+              ? 'base64'
+              : initiallyAbsent
+                ? 'chmod'
+                : 'chown';
+            command = `${trigger}() { command ${trigger} "$@"; ${mutation}; }\n${command}`;
+          }
+          try {
+            const { stdout } = await execFileAsync('/bin/sh', ['-c', command]);
+            return { exitCode: 0, result: stdout, artifacts: { stdout } };
+          } catch (error) {
+            const failure = error as Error & { code?: number; stderr?: string };
+            const output = failure.stderr ?? failure.message;
+            return {
+              exitCode: failure.code ?? 1,
+              result: output,
+              artifacts: { stdout: output },
+            };
+          }
+        });
+        const editor = session.createEditor();
+        const operation = initiallyAbsent
+          ? editor.createFile({
+              type: 'create_file',
+              path: 'target.txt',
+              diff: '+edited private',
+            })
+          : editor.updateFile({
+              type: 'update_file',
+              path: 'target.txt',
+              diff: '-original\n+edited private\n',
+            });
+        await expect(operation).rejects.toThrow(
+          /file changed during update|cannot stat/u,
+        );
+        if (change === 'removal') {
+          await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' });
+        } else if (change === 'dangling-symlink') {
+          expect(await readlink(target)).toBe(`${target}.missing`);
+        } else {
+          expect(await readFile(target, 'utf8')).toBe(
+            change === 'mode-change' ? 'original\n' : 'concurrent',
+          );
+        }
+        expect(await readdir(root)).not.toContainEqual(
+          expect.stringMatching(/^\.openai-agents-write\./u),
+        );
       } finally {
         await rm(root, { recursive: true, force: true });
       }
