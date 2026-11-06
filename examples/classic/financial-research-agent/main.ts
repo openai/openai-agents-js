@@ -1,0 +1,25 @@
+import { withTrace } from '@openai/agents/classic';
+import { FinancialResearchManager } from './manager.ts';
+
+// Entrypoint for the financial bot example.
+// Run this as `npx tsx examples/classic/financial-research-agent/main.ts` and enter a financial research query, for example:
+// "Write up an analysis of Apple Inc.'s most recent quarter."
+
+async function main() {
+  const readline = await import('node:readline/promises');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  const query = await rl.question('Enter a financial research query: ');
+  rl.close();
+  await withTrace('Financial research workflow', async () => {
+    const manager = new FinancialResearchManager();
+    await manager.run(query);
+  });
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

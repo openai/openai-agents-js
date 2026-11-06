@@ -135,18 +135,18 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
-import modelCustomProviderExample from '../../../../../../examples/docs/models/customProviders.ts?raw';
-import setDefaultOpenAIKeyExample from '../../../../../../examples/docs/config/setDefaultOpenAIKey.ts?raw';
-import modelSettingsExample from '../../../../../../examples/docs/models/modelSettings.ts?raw';
-import promptIdExample from '../../../../../../examples/basic/prompt-id.ts?raw';
-import agentWithModelExample from '../../../../../../examples/docs/models/agentWithModel.ts?raw';
-import runnerWithModelExample from '../../../../../../examples/docs/models/runnerWithModel.ts?raw';
-import gpt5DefaultModelSettingsExample from '../../../../../../examples/docs/models/gpt5DefaultModelSettings.ts?raw';
-import setDefaultModelProviderExample from '../../../../../../examples/docs/models/setDefaultModelProvider.ts?raw';
-import setTracingExportApiKeyExample from '../../../../../../examples/docs/config/setTracingExportApiKey.ts?raw';
-import retryExample from '../../../../../../examples/docs/models/retry.ts?raw';
-import hostedMultiAgentExample from '../../../../../../examples/docs/models/hostedMultiAgent.ts?raw';
-import gpt56RequestControlsExample from '../../../../../../examples/docs/models/gpt56RequestControls.ts?raw';
+import modelCustomProviderExample from '../../../../../../examples/classic/docs/models/customProviders.ts?raw';
+import setDefaultOpenAIKeyExample from '../../../../../../examples/classic/docs/config/setDefaultOpenAIKey.ts?raw';
+import modelSettingsExample from '../../../../../../examples/classic/docs/models/modelSettings.ts?raw';
+import promptIdExample from '../../../../../../examples/classic/basic/prompt-id.ts?raw';
+import agentWithModelExample from '../../../../../../examples/classic/docs/models/agentWithModel.ts?raw';
+import runnerWithModelExample from '../../../../../../examples/classic/docs/models/runnerWithModel.ts?raw';
+import gpt5DefaultModelSettingsExample from '../../../../../../examples/classic/docs/models/gpt5DefaultModelSettings.ts?raw';
+import setDefaultModelProviderExample from '../../../../../../examples/classic/docs/models/setDefaultModelProvider.ts?raw';
+import setTracingExportApiKeyExample from '../../../../../../examples/classic/docs/config/setTracingExportApiKey.ts?raw';
+import retryExample from '../../../../../../examples/classic/docs/models/retry.ts?raw';
+import hostedMultiAgentExample from '../../../../../../examples/classic/docs/models/hostedMultiAgent.ts?raw';
+import gpt56RequestControlsExample from '../../../../../../examples/classic/docs/models/gpt56RequestControls.ts?raw';
 
 모든 에이전트는 궁극적으로 LLM을 호출합니다. SDK는 두 가지 경량 인터페이스로 모델을 추상화합니다.
 
@@ -292,7 +292,7 @@ WebSocket 프록시나 게이트웨이를 사용한다면 `OpenAIProvider`에서
 
 `OpenAIProvider`를 직접 인스턴스화한다면 연결 재사용을 위해 WebSocket 기반 Responses 모델 래퍼가 기본적으로 캐시된다는 점을 기억하세요. 종료 시 `await provider.close()`를 호출하여 캐시된 연결을 해제하세요. `withResponsesWebSocketSession(...)`의 주된 목적은 이 수명 주기를 대신 관리하는 것입니다. WebSocket이 활성화된 프로바이더와 러너를 생성하여 콜백에 전달하고, 이후에는 항상 프로바이더를 닫습니다. 임시 프로바이더에는 `providerOptions`를, 콜백 범위의 러너 기본값에는 `runnerConfig`를 사용하세요.
 
-Responses WebSocket 전송을 사용하는 전체 스트리밍 + HITL 코드 예제는 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)를 참고하세요.
+Responses WebSocket 전송을 사용하는 전체 스트리밍 + HITL 코드 예제는 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts)를 참고하세요.
 
 #### Responses 전용 지연 도구 로딩
 
@@ -330,7 +330,7 @@ npm install @openai/agents-openai openai
   title="호스티드 멀티 에이전트 워크플로 실행"
 />
 
-호스티드 협업 기록과 하위 에이전트 메시지를 포함한 스트리밍 관측성은 [전체 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/hosted-multi-agent-beta.ts)를 참고하세요.
+호스티드 협업 기록과 하위 에이전트 메시지를 포함한 스트리밍 관측성은 [전체 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/hosted-multi-agent-beta.ts)를 참고하세요.
 
 서비스 기본값인 현재 3을 유지하려면 `maxConcurrentSubagents`를 생략하세요. 값을 지정하는 경우 양의 정수여야 합니다.
 
@@ -478,7 +478,7 @@ SDK는 `retryPolicies`에서 미리 만들어진 헬퍼를 내보냅니다.
 - 에이전트는 `retry.backoff`의 일부만 재정의하고 같은 수준의 다른 백오프 필드는 러너의 값을 유지할 수 있습니다.
 - 상속된 `policy` 또는 `backoff`를 제거해야 한다면 해당 필드를 명시적으로 `undefined`로 설정하세요.
 
-로깅을 포함한 더 자세한 코드 예제는 [`examples/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/retry.ts)와 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)를 참고하세요.
+로깅을 포함한 더 자세한 코드 예제는 [`examples/classic/basic/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/retry.ts)와 [`examples/classic/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/ai-sdk/retry.ts)를 참고하세요.
 
 ---
 

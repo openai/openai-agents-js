@@ -4,11 +4,11 @@ description: Run a durable native agent, steer a specific turn, and recover afte
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import waitForWorkerExample from '../../../../../examples/docs/native-workers/waitForWorker.ts?raw';
+import waitForWorkerExample from '../../../../../examples/classic/docs/native-workers/waitForWorker.ts?raw';
 
 Run each worker in its own process with a workspace and a local profile for conversation history. The worker owns the live `Session` and its `Turn` handles. The supervisor reads progress from the application journal. Save `session.id` so a replacement worker can reopen the same conversation.
 
-Use Node.js 24 and build the SDK and matching native runtime from the `feat/codex-harness` checkout for these worker controls. Live model calls need an API key. The runnable example uses scripted responses. [Build from source](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/building.md) or [run the reference worker](#run-the-reference-worker).
+Use Node.js 24 and build the SDK and matching native runtime from the `feat/codex-harness` checkout for these worker controls. Live model calls need an API key. The runnable example uses scripted responses. [Build from source](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/building.md) or [run the reference worker](#run-the-reference-worker).
 
 ## Choose what the worker can do
 
@@ -36,13 +36,13 @@ For a WSS executor that reports macOS, choose the write roots when opening the s
 
 ### Connect a remote executor
 
-For a WSS executor, select the endpoint and credentials in trusted code. Set `writableRoots` on the environment to require the strict write policy. The SDK checks the capabilities that the executor reports. The application must trust that executor to enforce the policy. Read the startup error to distinguish a refused connection, a timeout, or denied authentication. Durable reopen and portable restore require a current trusted environment that matches the saved strict policy. [Configure executor tools and network policy](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/executors.md#managed-executor-network-policy).
+For a WSS executor, select the endpoint and credentials in trusted code. Set `writableRoots` on the environment to require the strict write policy. The SDK checks the capabilities that the executor reports. The application must trust that executor to enforce the policy. Read the startup error to distinguish a refused connection, a timeout, or denied authentication. Durable reopen and portable restore require a current trusted environment that matches the saved strict policy. [Configure executor tools and network policy](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/executors.md#managed-executor-network-policy).
 
 ### Select instructions and MCP tools
 
 The native SDK uses a managed Codex home. Pass trusted UTF-8 files as `instructionFiles` to add their contents to the session instructions in order.
 
-For a local profile, give `selectMcpTools` a client your application owns. List the tools the worker needs and set an approval rule for sensitive calls. Deny unexpected native approvals with `await session.respond(request.reply('deny'))` while the request is live. Select tools carefully because some can run without an approval request. [Select MCP tools](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/mcp.md#materialize-a-borrowed-sdk-mcp-namespace).
+For a local profile, give `selectMcpTools` a client your application owns. List the tools the worker needs and set an approval rule for sensitive calls. Deny unexpected native approvals with `await session.respond(request.reply('deny'))` while the request is live. Select tools carefully because some can run without an approval request. [Select MCP tools](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/mcp.md#materialize-a-borrowed-sdk-mcp-namespace).
 
 ## Steer a specific turn
 
@@ -60,7 +60,7 @@ If the root no longer owns that active native turn, `steerExact` rejects with `S
 - Live `requests` from this turn that the application can answer.
 - A `TurnNeedsAttention` with `type: 'needs_attention'`, the `error`, and current `rateLimits`. Known terminal reasons are `interrupted`, `connection_lost`, `rate_limited`, and `quota_blocked`.
 
-Unclassified failures reject the wait. To handle requests from across the session, [read its pending interactions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/interactions.md#read-pending-interactions).
+Unclassified failures reject the wait. To handle requests from across the session, [read its pending interactions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/interactions.md#read-pending-interactions).
 
 Give session opening its own deadline with the `signal` option. Set separate deadlines for application callbacks and MCP transports. An abort signal on `waitForAttention` stops that wait. When your deadline should also stop the turn, call `turn.cancel()` and wait for cleanup before releasing the worker. Cleanup can outlast the deadline. Earlier effects may already have reached the workspace or an external service.
 
@@ -110,4 +110,4 @@ The example runs two conversations in separate worker processes and workspaces. 
 
 Its snapshot measures opening, follow-up submission and completion separately. It distinguishes the first managed tool start (`firstToolMs`) from the first observed tool result (`firstToolResultMs`).
 
-Run the example on Linux to exercise supervision and recovery with scripted responses. Your application owns the worker processes, the journal, artifact review, publication, and production measurements. [Run the supervised worker example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/supervised-worker/README.md).
+Run the example on Linux to exercise supervision and recovery with scripted responses. Your application owns the worker processes, the journal, artifact review, publication, and production measurements. [Run the supervised worker example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/supervised-worker/README.md).

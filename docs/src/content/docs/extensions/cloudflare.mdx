@@ -4,7 +4,7 @@ description: Connect your Agents SDK agents from Cloudflare Workers/workerd usin
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
-import cloudflareBasicExample from '../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+import cloudflareBasicExample from '../../../../../examples/classic/docs/extensions/cloudflare-basic.ts?raw';
 
 The `CloudflareRealtimeTransportLayer` connects a `RealtimeSession` through a `fetch()` request with `Upgrade: websocket`. Use it in Cloudflare Workers or another workerd runtime that provides `response.webSocket` and the socket's `accept()` method.
 
@@ -19,7 +19,7 @@ The `CloudflareRealtimeTransportLayer` connects a `RealtimeSession` through a `f
 
 <Steps>
 
-1. [Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/installation.md#run-the-classic-extensions).
+1. [Build the classic extensions](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#run-the-classic-extensions).
 
 2. Enable the `nodejs_compat` compatibility flag in your Worker configuration. The SDK uses Node.js APIs provided by this flag.
 

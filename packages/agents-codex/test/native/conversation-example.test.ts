@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeProvider, type Session } from '@openai/agents';
-import { runConversation } from '../../examples/conversation';
+import { runConversation } from '../../../../examples/codex/conversation';
 import {
   ObservationBuffer,
   type ObservationPhase,
@@ -409,11 +409,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       try {
         const result = await exec(
           process.execPath,
-          [
-            '--import',
-            'tsx',
-            resolve('packages/agents-codex/examples/conversation.ts'),
-          ],
+          ['--import', 'tsx', resolve('examples/codex/conversation.ts')],
           {
             env: {
               ...process.env,

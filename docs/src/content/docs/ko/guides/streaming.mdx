@@ -48,14 +48,14 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import basicStreamingExample from '../../../../../../examples/docs/streaming/basicStreaming.ts?raw';
-import nodeTextStreamExample from '../../../../../../examples/docs/streaming/nodeTextStream.ts?raw';
-import handleAllEventsExample from '../../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
-import streamedHITLExample from '../../../../../../examples/docs/streaming/streamedHITL.ts?raw';
-import runRawModelStreamEventExample from '../../../../../../examples/docs/streaming/runRawModelStreamEvent.ts?raw';
-import openaiResponsesRawModelStreamEventExample from '../../../../../../examples/docs/streaming/openaiResponsesRawModelStreamEvent.ts?raw';
-import runItemStreamEventExample from '../../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
-import runAgentUpdatedStreamEventExample from '../../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
+import basicStreamingExample from '../../../../../../examples/classic/docs/streaming/basicStreaming.ts?raw';
+import nodeTextStreamExample from '../../../../../../examples/classic/docs/streaming/nodeTextStream.ts?raw';
+import handleAllEventsExample from '../../../../../../examples/classic/docs/streaming/handleAllEvents.ts?raw';
+import streamedHITLExample from '../../../../../../examples/classic/docs/streaming/streamedHITL.ts?raw';
+import runRawModelStreamEventExample from '../../../../../../examples/classic/docs/streaming/runRawModelStreamEvent.ts?raw';
+import openaiResponsesRawModelStreamEventExample from '../../../../../../examples/classic/docs/streaming/openaiResponsesRawModelStreamEvent.ts?raw';
+import runItemStreamEventExample from '../../../../../../examples/classic/docs/streaming/runItemStreamEvent.ts?raw';
+import runAgentUpdatedStreamEventExample from '../../../../../../examples/classic/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
 Agents SDK는 모델과 다른 실행 단계의 출력을 점진적으로 전달할 수 있습니다. 스트리밍을 사용하면 UI의 응답성을 유지하고, 전체 최종 결과가 나올 때까지 기다리지 않고도 사용자에게 업데이트를 제공할 수 있습니다.
 
@@ -92,7 +92,7 @@ Agents SDK는 모델과 다른 실행 단계의 출력을 점진적으로 전달
   title="모든 이벤트 수신"
 />
 
-일반 텍스트 스트림과 원문 이벤트 스트림을 모두 출력하는 완전한 스크립트는 [스트리밍 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)를 참고하세요.
+일반 텍스트 스트림과 원문 이벤트 스트림을 모두 출력하는 완전한 스크립트는 [스트리밍 코드 예제](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/streamed.ts)를 참고하세요.
 
 ### Responses WebSocket 전송 방식(선택 사항)
 
@@ -108,7 +108,7 @@ Agents SDK는 모델과 다른 실행 단계의 출력을 점진적으로 전달
 
 제공자를 직접 구성한다면 종료할 때 `await provider.close()`를 호출하는 것을 잊지 마세요. WebSocket 기반 모델 래퍼는 기본적으로 재사용을 위해 캐시되며, 제공자를 닫으면 해당 연결이 해제됩니다. `withResponsesWebSocketSession(...)`도 동일하게 연결을 재사용하지만, 단일 콜백 범위에서 자동으로 정리합니다.
 
-스트리밍, 도구 호출, 승인 및 `previousResponseId`를 사용하는 전체 코드 예제는 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)를 참고하세요.
+스트리밍, 도구 호출, 승인 및 `previousResponseId`를 사용하는 전체 코드 예제는 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts)를 참고하세요.
 
 ## 이벤트 유형
 
@@ -153,7 +153,7 @@ OpenAI 모델을 사용하면서 수동 타입 단언 없이 제공자별 페이
 
 이는 TypeScript가 기반 이벤트 구조를 인식하도록 유지하면서 `response.reasoning_summary_text.delta`, `response.output_item.done` 또는 MCP 인수 델타와 같은 Responses 전용 이벤트를 확인하려는 경우에 특히 유용합니다.
 
-더 상세한 OpenAI 전용 스트리밍 패턴은 [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts), [`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts), [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors)를 참고하세요.
+더 상세한 OpenAI 전용 스트리밍 패턴은 [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts), [`examples/classic/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/tools/code-interpreter.ts), [`examples/classic/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/connectors)를 참고하세요.
 
 ### run_item_stream_event
 
@@ -223,7 +223,7 @@ OpenAI 모델을 사용하면서 수동 타입 단언 없이 제공자별 페이
   title="스트리밍 중 사람의 승인 처리"
 />
 
-사용자와 상호작용하는 더 상세한 코드 예제는 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts)입니다.
+사용자와 상호작용하는 더 상세한 코드 예제는 [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/human-in-the-loop-stream.ts)입니다.
 
 ## 스트림 중지 및 동일 턴 계속 실행
 

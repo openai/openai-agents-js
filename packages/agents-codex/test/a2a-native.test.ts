@@ -25,7 +25,7 @@ import {
 import { connectA2A, type A2ALimits } from '../src/a2a/client';
 import { inputProposal } from '../src/a2a/content';
 import { FileA2AStore } from './a2a-store';
-import { runA2AExample } from '../examples/a2a/two-agents';
+import { runA2AExample } from '../../../examples/codex/a2a/two-agents';
 afterEach(() => vi.restoreAllMocks());
 
 const user = { isAuthenticated: true, userName: 'user' };

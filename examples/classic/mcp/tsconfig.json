@@ -1,0 +1,6 @@
+{
+  "extends": "../../../tsconfig.examples.json",
+  "compilerOptions": {
+    "lib": ["ES2018", "DOM", "esnext.disposable"]
+  }
+}

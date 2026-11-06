@@ -18,8 +18,8 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
-import twilioBasicExample from '../../../../../../examples/docs/extensions/twilio-basic.ts?raw';
-import twilioConnectExample from '../../../../../../examples/docs/extensions/twilio-connect.ts?raw';
+import twilioBasicExample from '../../../../../../examples/classic/docs/extensions/twilio-basic.ts?raw';
+import twilioConnectExample from '../../../../../../examples/classic/docs/extensions/twilio-connect.ts?raw';
 
 Twilio 提供了 [Media Streams API](https://www.twilio.com/docs/voice/media-streams)，可将电话通话的原始音频发送到 WebSocket 服务器。您可以通过这种方式将[语音智能体概述](/openai-agents-js/zh/guides/voice-agents)中介绍的语音智能体连接到 Twilio。您可以在 `websocket` 模式下使用默认的 Realtime 会话传输机制，将来自 Twilio 的事件接入 Realtime 会话。不过，由于电话通话的延迟通常高于基于 Web 的对话，您需要设置正确的音频格式，并自行调整打断时机。
 
@@ -81,6 +81,6 @@ Twilio 提供了 [Media Streams API](https://www.twilio.com/docs/voice/media-str
 
 ## 完整示例服务器
 
-[可运行的 Twilio 代码示例](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-twilio)包含带身份验证的 Fastify 路由和 Realtime 会话设置。其 README 说明了服务器端必需的 `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN` 和 `TWILIO_PUBLIC_BASE_URL` 设置。公共基础 URL 必须是 HTTPS 源，不含路径前缀、查询字符串或片段。当隧道的公共源发生变化时，请更新此设置。
+[可运行的 Twilio 代码示例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-twilio)包含带身份验证的 Fastify 路由和 Realtime 会话设置。其 README 说明了服务器端必需的 `OPENAI_API_KEY`、`TWILIO_AUTH_TOKEN` 和 `TWILIO_PUBLIC_BASE_URL` 设置。公共基础 URL 必须是 HTTPS 源，不含路径前缀、查询字符串或片段。当隧道的公共源发生变化时，请更新此设置。
 
 服务器会在建立 Realtime 连接之前，拒绝签名无效的呼叫请求和升级请求。Twilio Media Stream URL 使用 `wss://`，不支持查询参数。有关自定义参数的信息，请参阅 [Twilio Stream 文档](https://www.twilio.com/docs/voice/twiml/stream)。

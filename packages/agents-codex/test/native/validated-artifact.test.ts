@@ -7,7 +7,7 @@ import {
   publishArtifact,
   runValidatedArtifact,
   type ArtifactContext,
-} from '../../examples/validated-artifact';
+} from '../../../../examples/codex/validated-artifact';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 

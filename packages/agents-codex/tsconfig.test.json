@@ -17,6 +17,6 @@
     "lib": ["ESNext", "DOM"],
     "moduleResolution": "bundler"
   },
-  "include": ["src/**/*.ts", "examples/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts", "../../examples/codex/**/*.ts", "test/**/*.ts"],
   "exclude": ["dist/**", "native/**"]
 }

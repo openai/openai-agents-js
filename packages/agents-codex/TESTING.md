@@ -2,7 +2,7 @@
 
 Use `@openai/agents/testing` in Node to run a native Agent against scripted Responses events. The helper starts one loopback HTTP endpoint and supplies an ordinary `NativeProvider`. The native engine still executes the Agent loop and declared functions.
 
-Use Node.js 24 with matching [SDK packages and native runtime](examples/guides/installation.md). The native engine still needs its addon and packaged helpers, even without model credentials. Install Zod 4 in your application and save the following example as `scripted-test.mts`.
+Use Node.js 24 with matching [SDK packages and native runtime](../../examples/codex/guides/installation.md). The native engine still needs its addon and packaged helpers, even without model credentials. Install Zod 4 in your application and save the following example as `scripted-test.mts`.
 
 ```ts
 import assert from 'node:assert/strict';
@@ -49,7 +49,7 @@ The script prescribes both the tool call and final answer. Assert the callback's
 
 Each complete JSON-object POST to `/v1/responses` consumes the next script step. An item array emits its items in order. An empty array is valid. `httpError(400, { error: { message: 'synthetic failure' } })` serves a terminal HTTP error through the native provider. Retryable statuses follow the native retry policy and may consume more steps.
 
-For a namespaced function, pass `namespace` beside `callId`, for example `toolCall('lookup', { sku: 'PAPER' }, { callId: 'lookup-1', namespace: 'mcp__catalog' })`. The [stdio lesson](examples/stdio-programmatic/README.md) runs this against a real selected MCP peer.
+For a namespaced function, pass `namespace` beside `callId`, for example `toolCall('lookup', { sku: 'PAPER' }, { callId: 'lookup-1', namespace: 'mcp__catalog' })`. The [stdio lesson](../../examples/codex/stdio-programmatic/README.md) runs this against a real selected MCP peer.
 
 `customToolCall('exec', code, { callId: 'aggregate' })` prescribes a raw custom call for the Code Mode host. Use `peer.toolOutput(callId)` to read the submitted output for either form. The scripted server does not supply the MCP peer, executor, or JavaScript host itself.
 
@@ -88,6 +88,6 @@ That classic testing entrypoint also exports `scriptedSandboxSession`. Retained 
 
 ## Add evaluations and telemetry
 
-The [configurable evaluation runner](examples/evaluation/README.md) adds repeated scripted or explicitly selected live trials, recorded configurations, safe failure artifacts, and baseline comparisons. Run it from a source checkout with its default JSON inputs. Scripted mode checks the evaluation runner. Live mode requires model credentials and measures model behavior.
+The [configurable evaluation runner](../../examples/codex/evaluation/README.md) adds repeated scripted or explicitly selected live trials, recorded configurations, safe failure artifacts, and baseline comparisons. Run it from a source checkout with its default JSON inputs. Scripted mode checks the evaluation runner. Live mode requires model credentials and measures model behavior.
 
-The [small catalog evaluation](examples/evaluate-catalog.ts) checks actual ordered tool calls as well as exact answers and completion. It writes a synthetic JSON artifact and can compare one compatible baseline. The [native telemetry walkthrough](examples/native-telemetry.ts) uses a bounded local trace receiver in a fresh process. See the [two-case evaluation commands](examples/evaluation/README.md#compare-two-fixed-catalog-cases) and [telemetry walkthrough](examples/observability/README.md#record-four-local-outcomes).
+The [small catalog evaluation](../../examples/codex/evaluate-catalog.ts) checks actual ordered tool calls as well as exact answers and completion. It writes a synthetic JSON artifact and can compare one compatible baseline. The [native telemetry walkthrough](../../examples/codex/native-telemetry.ts) uses a bounded local trace receiver in a fresh process. See the [two-case evaluation commands](../../examples/codex/evaluation/README.md#compare-two-fixed-catalog-cases) and [telemetry walkthrough](../../examples/codex/observability/README.md#record-four-local-outcomes).

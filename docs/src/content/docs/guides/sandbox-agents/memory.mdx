@@ -4,11 +4,11 @@ description: Preserve and reuse lessons from previous sandbox-agent runs.
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import conversationIdentityExample from '../../../../../../examples/docs/sandbox-agents/conversation-identity.ts?raw';
-import enableMemoryExample from '../../../../../../examples/docs/sandbox-agents/enable-memory.ts?raw';
-import generateMemoryExample from '../../../../../../examples/docs/sandbox-agents/generate-memory.ts?raw';
-import memoryLayoutsExample from '../../../../../../examples/docs/sandbox-agents/memory-layouts.ts?raw';
-import readOnlyMemoryExample from '../../../../../../examples/docs/sandbox-agents/read-only-memory.ts?raw';
+import conversationIdentityExample from '../../../../../../examples/classic/docs/sandbox-agents/conversation-identity.ts?raw';
+import enableMemoryExample from '../../../../../../examples/classic/docs/sandbox-agents/enable-memory.ts?raw';
+import generateMemoryExample from '../../../../../../examples/classic/docs/sandbox-agents/generate-memory.ts?raw';
+import memoryLayoutsExample from '../../../../../../examples/classic/docs/sandbox-agents/memory-layouts.ts?raw';
+import readOnlyMemoryExample from '../../../../../../examples/classic/docs/sandbox-agents/read-only-memory.ts?raw';
 
 Memory lets future sandbox-agent runs learn from prior runs. It is separate from the SDK's conversational [Session](/openai-agents-js/guides/sessions) memory, which stores message history. Memory saves lessons from prior runs in files in the sandbox workspace. Treat these files as retained data and apply the same sensitivity and retention policy as for the workspace.
 

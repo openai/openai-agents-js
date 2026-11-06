@@ -4,13 +4,13 @@ description: Create your first AI Agent from scratch
 ---
 
 import { Aside, Code, Steps } from '@astrojs/starlight/components';
-import quickstartExample from '../../../../../examples/docs/quickstart/index.ts?raw';
-import createAgentExample from '../../../../../examples/docs/quickstart/createAgent.ts?raw';
-import runAgentExample from '../../../../../examples/docs/quickstart/runAgent.ts?raw';
-import agentWithToolsExample from '../../../../../examples/docs/quickstart/agentWithTools.ts?raw';
-import additionalAgentsExample from '../../../../../examples/docs/quickstart/additionalAgents.ts?raw';
-import defineHandoffsExample from '../../../../../examples/docs/quickstart/defineHandoffs.ts?raw';
-import runOrchestrationExample from '../../../../../examples/docs/quickstart/runOrchestration.ts?raw';
+import quickstartExample from '../../../../../examples/classic/docs/quickstart/index.ts?raw';
+import createAgentExample from '../../../../../examples/classic/docs/quickstart/createAgent.ts?raw';
+import runAgentExample from '../../../../../examples/classic/docs/quickstart/runAgent.ts?raw';
+import agentWithToolsExample from '../../../../../examples/classic/docs/quickstart/agentWithTools.ts?raw';
+import additionalAgentsExample from '../../../../../examples/classic/docs/quickstart/additionalAgents.ts?raw';
+import defineHandoffsExample from '../../../../../examples/classic/docs/quickstart/defineHandoffs.ts?raw';
+import runOrchestrationExample from '../../../../../examples/classic/docs/quickstart/runOrchestration.ts?raw';
 
 <Aside type="note" title="Looking for sandbox agents?">
   This quickstart builds a text agent that runs in your app process. If you want
@@ -31,7 +31,7 @@ import runOrchestrationExample from '../../../../../examples/docs/quickstart/run
    npm init -y
    ```
 
-2. [Install the alpha SDK](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/examples/guides/installation.md#add-the-sdk-to-an-existing-application) to use the `@openai/agents/classic` import shown below. Install Zod 4 for tool schemas and structured outputs.
+2. [Install the alpha SDK](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application) to use the `@openai/agents/classic` import shown below. Install Zod 4 for tool schemas and structured outputs.
 
    ```bash
    npm install zod@4

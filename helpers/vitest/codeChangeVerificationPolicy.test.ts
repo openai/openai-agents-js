@@ -43,7 +43,7 @@ describe('code-change verification policy', () => {
       ['integration-tests/released-api-contract.test.ts', true],
       ['integration-tests/_helpers/env.ts', true],
       ['integration-tests/node/package.json', true],
-      ['examples/docs/tools.ts', true],
+      ['examples/classic/docs/tools.ts', true],
       ['packages/agents-core/src/run.ts', true],
       ['pnpm-lock.yaml', true],
       ['pnpm-workspace.yaml', true],
@@ -67,7 +67,7 @@ describe('code-change verification policy', () => {
       '.agents/skills/code-change-verification/SKILL.md',
       'docs/src/scripts/headingAnchors.test.ts',
       'integration-tests/released-api-contract.test.ts',
-      'examples/docs/tools.ts',
+      'examples/classic/docs/tools.ts',
     ])('checks both sides of a rename from %s', async (previous_filename) => {
       expect(
         await runFilter(eventName, {
@@ -81,7 +81,7 @@ describe('code-change verification policy', () => {
         await runFilter(eventName, {
           files: [
             { filename: 'README.md' },
-            { filename: 'examples/docs/tools.ts' },
+            { filename: 'examples/classic/docs/tools.ts' },
           ],
         }),
       ).toBe('true');

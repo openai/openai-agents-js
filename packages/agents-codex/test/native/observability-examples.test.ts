@@ -16,8 +16,8 @@ import {
   evaluateCatalogCase,
   scoreCatalogTrial,
   type CatalogTrial,
-} from '../../examples/evaluate-catalog';
-import { startTraceReceiver } from '../../examples/native-telemetry';
+} from '../../../../examples/codex/evaluate-catalog';
+import { startTraceReceiver } from '../../../../examples/codex/native-telemetry';
 
 const trial: CatalogTrial = {
   id: 'known',
@@ -151,7 +151,7 @@ function command(file: string, args: string[] = [], failRequests = false) {
       ...(failRequests
         ? ['--import', resolve(__dirname, 'fixtures/catalog-failure.mjs')]
         : []),
-      resolve(__dirname, '../../examples', file),
+      resolve(__dirname, '../../../../examples/codex', file),
       ...args,
     ],
     {

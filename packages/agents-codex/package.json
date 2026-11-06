@@ -113,8 +113,6 @@
     "native/build-receipt.json",
     "bin",
     "NATIVE.md",
-    "examples/**/*.{ts,js,mjs,md,html}",
-    "!examples/**/node_modules/**",
     "licenses",
     "TESTING.md",
     "EXTERNAL_JOBS.md",

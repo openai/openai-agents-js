@@ -12,7 +12,7 @@ import {
   type ApprovalRequest,
   type Completed,
 } from '@openai/agents';
-import { continueCompletedText } from '../../examples/settled-text-continuation';
+import { continueCompletedText } from '../../../../examples/codex/settled-text-continuation';
 import { ModelServer, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 

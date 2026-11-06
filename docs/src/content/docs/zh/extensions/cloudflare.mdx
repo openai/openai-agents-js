@@ -13,7 +13,7 @@ canonicalHeadingIds:
 ---
 
 import { Aside, Steps, Code } from '@astrojs/starlight/components';
-import cloudflareBasicExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+import cloudflareBasicExample from '../../../../../../examples/classic/docs/extensions/cloudflare-basic.ts?raw';
 
 Cloudflare Workers 和其他 workerd 运行时无法使用全局 `WebSocket` 构造函数建立出站 WebSocket 连接。为简化从这些环境连接语音智能体的过程，扩展包提供了一种专用传输机制，在内部通过 `fetch()` 完成连接升级。
 

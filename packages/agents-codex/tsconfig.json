@@ -15,5 +15,5 @@
     },
     "moduleResolution": "bundler"
   },
-  "exclude": ["dist/**", "examples/**", "test/**", "native/**", "scripts/**"]
+  "exclude": ["dist/**", "test/**", "native/**", "scripts/**"]
 }

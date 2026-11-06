@@ -22,10 +22,10 @@ export default tseslint.config(
     '**/.tmp/**',
     '**/.cache/**',
     '**/docs/.astro/**',
-    'examples/realtime-next/**',
-    'examples/realtime-demo/**',
-    'examples/nextjs/**',
-    'examples/ai-sdk-ui/**',
+    'examples/classic/realtime-next/**',
+    'examples/classic/realtime-demo/**',
+    'examples/classic/nextjs/**',
+    'examples/classic/ai-sdk-ui/**',
     'integration-tests//**',
     'packages/agents-codex/native/.upstream/**',
     'packages/agents-codex/native/target/**',
@@ -58,7 +58,7 @@ export default tseslint.config(
       },
     },
     {
-      files: ['examples/docs/**'],
+      files: ['examples/classic/docs/**'],
       rules: {
         '@typescript-eslint/no-unused-vars': 'off',
       },

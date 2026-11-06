@@ -42,7 +42,7 @@ OpenAI Agents SDK は、次のサーバー環境でサポートされていま�
 - **React Native** :
   - `@openai/agents-core` と `@openai/agents-realtime` は、ポータブルな shim のために React Native 向けのパッケージ条件を提供していますが、組み込みの `OpenAIRealtimeWebRTC` は引き続きブラウザー専用です。
   - Realtime アプリでは、`react-native-webrtc` などのネイティブ WebRTC 実装を基盤とする、アプリ独自のトランスポートを用意する必要があります。また、権限、音声ルーティング、トランスポートのライフサイクルは、引き続きアプリ側の責任で管理する必要があります。
-  - Expo Go はネイティブ WebRTC モジュールを読み込めません。Expo 開発ビルドまたはネイティブの React Native プロジェクトを使用してください。[`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-react-native) のコード例を参照してください。
+  - Expo Go はネイティブ WebRTC モジュールを読み込めません。Expo 開発ビルドまたはネイティブの React Native プロジェクトを使用してください。[`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-react-native) のコード例を参照してください。
 - **v8 アイソレート** :
   - 適切なブラウザー向けポリフィルを備えたバンドラーを使用すれば、v8 アイソレート向けに SDK をバンドルできるはずですが、トレーシングは動作しません
   - v8 アイソレートでのテストは十分に行われていません

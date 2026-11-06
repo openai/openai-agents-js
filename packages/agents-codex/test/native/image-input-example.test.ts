@@ -1,6 +1,6 @@
 import { inflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { imageMessage } from '../../examples/image-input';
+import { imageMessage } from '../../../../examples/codex/image-input';
 import { nativeInput } from '../../src/runtime/input';
 
 describe('image input example without an addon', () => {

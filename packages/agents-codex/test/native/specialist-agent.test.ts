@@ -10,7 +10,7 @@ import {
   summarySchema,
   type Catalog,
   type Summary,
-} from '../../examples/specialist-agent';
+} from '../../../../examples/codex/specialist-agent';
 
 afterEach(() => vi.restoreAllMocks());
 

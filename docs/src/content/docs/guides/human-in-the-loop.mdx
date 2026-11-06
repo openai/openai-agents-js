@@ -4,9 +4,9 @@ description: Add a human in the loop check for your agent executions
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
-import humanInTheLoopExample from '../../../../../examples/docs/human-in-the-loop/index.ts?raw';
-import serverOwnedApprovalExample from '../../../../../examples/docs/human-in-the-loop/server.ts?raw';
-import toolApprovalDefinition from '../../../../../examples/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
+import humanInTheLoopExample from '../../../../../examples/classic/docs/human-in-the-loop/index.ts?raw';
+import serverOwnedApprovalExample from '../../../../../examples/classic/docs/human-in-the-loop/server.ts?raw';
+import toolApprovalDefinition from '../../../../../examples/classic/docs/human-in-the-loop/toolApprovalDefinition.ts?raw';
 
 This guide covers the SDK's approval-based human-in-the-loop flow. When a tool call requires approval, the SDK pauses the run, returns `interruptions`, and lets you resume later from the same `RunState`.
 
@@ -97,7 +97,7 @@ This more complete example prompts for approval in the terminal and temporarily 
   title="Human in the loop"
 />
 
-See [the full example script](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/human-in-the-loop.ts) for a working end-to-end version.
+See [the full example script](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/agent-patterns/human-in-the-loop.ts) for a working end-to-end version.
 
 ## Dealing with longer approval times
 
@@ -162,7 +162,7 @@ A request remains consumed if deserialization or execution fails, or if executio
   title="Server-owned approval state"
 />
 
-See the [CLI client/server simulation](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/human-in-the-loop-server.ts) for the complete example. This is not a deployable HTTP service. Production applications must supply trusted authentication, authorization for the displayed details and selected calls, request and CSRF protections where applicable, bounded storage retention, atomic consumption in shared storage, and a recovery policy. The CLI uses synthetic tool data and disables tracing; real application snapshots and diagnostics can contain sensitive data.
+See the [CLI client/server simulation](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/agent-patterns/human-in-the-loop-server.ts) for the complete example. This is not a deployable HTTP service. Production applications must supply trusted authentication, authorization for the displayed details and selected calls, request and CSRF protections where applicable, bounded storage retention, atomic consumption in shared storage, and a recovery policy. The CLI uses synthetic tool data and disables tracing; real application snapshots and diagnostics can contain sensitive data.
 
 #### Snapshots transported by clients
 

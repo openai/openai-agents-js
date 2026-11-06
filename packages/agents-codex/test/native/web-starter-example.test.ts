@@ -4,18 +4,18 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { Agent } from '@openai/agents';
-import { startWebStarter } from '../../examples/web-starter/server';
-import { TaskStore } from '../../examples/web-starter/store';
+import { startWebStarter } from '../../../../examples/codex/web-starter/server';
+import { TaskStore } from '../../../../examples/codex/web-starter/store';
 import {
   scriptedPresentation,
   type WorkerOptions,
-} from '../../examples/web-starter/worker';
+} from '../../../../examples/codex/web-starter/worker';
 import {
   terminal,
   type Owner,
   type Phase,
   type Snapshot,
-} from '../../examples/web-starter/protocol';
+} from '../../../../examples/codex/web-starter/protocol';
 
 const timeout = 25_000;
 type App = Awaited<ReturnType<typeof startWebStarter>>;

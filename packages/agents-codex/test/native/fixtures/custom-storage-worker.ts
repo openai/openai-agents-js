@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFile } from 'node:fs/promises';
 import { z } from 'zod';
-import { recordRecoveryIntent } from '../../../examples/custom-storage-recovery';
+import { recordRecoveryIntent } from '../../../../../examples/codex/custom-storage-recovery';
 import {
   Agent,
   NativeProvider,

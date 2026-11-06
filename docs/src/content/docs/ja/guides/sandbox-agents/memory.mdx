@@ -27,11 +27,11 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import conversationIdentityExample from '../../../../../../../examples/docs/sandbox-agents/conversation-identity.ts?raw';
-import enableMemoryExample from '../../../../../../../examples/docs/sandbox-agents/enable-memory.ts?raw';
-import generateMemoryExample from '../../../../../../../examples/docs/sandbox-agents/generate-memory.ts?raw';
-import memoryLayoutsExample from '../../../../../../../examples/docs/sandbox-agents/memory-layouts.ts?raw';
-import readOnlyMemoryExample from '../../../../../../../examples/docs/sandbox-agents/read-only-memory.ts?raw';
+import conversationIdentityExample from '../../../../../../../examples/classic/docs/sandbox-agents/conversation-identity.ts?raw';
+import enableMemoryExample from '../../../../../../../examples/classic/docs/sandbox-agents/enable-memory.ts?raw';
+import generateMemoryExample from '../../../../../../../examples/classic/docs/sandbox-agents/generate-memory.ts?raw';
+import memoryLayoutsExample from '../../../../../../../examples/classic/docs/sandbox-agents/memory-layouts.ts?raw';
+import readOnlyMemoryExample from '../../../../../../../examples/classic/docs/sandbox-agents/read-only-memory.ts?raw';
 
 メモリを使うと、今後のサンドボックスエージェントの実行で過去の実行から学んだことを活用できます。これは、メッセージ履歴を保存する SDK の会話用の[セッション](/openai-agents-js/ja/guides/sessions)メモリとは別のものです。メモリは過去の実行から得た教訓をサンドボックスのワークスペース内のファイルにまとめます。そのため、生成されたメモリアーティファクトは保持データとして扱い、ワークスペースに適用しているものと同じ機密性ポリシーと保持ポリシーを適用してください。
 

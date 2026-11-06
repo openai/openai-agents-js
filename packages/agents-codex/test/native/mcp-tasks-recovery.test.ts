@@ -6,7 +6,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { ThumbnailStore } from '../../examples/external-job-store';
+import { ThumbnailStore } from '../../../../examples/codex/external-job-store';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 
@@ -249,7 +249,7 @@ async function run(
       : [
           'exec',
           'tsx',
-          'packages/agents-codex/examples/mcp-tasks.ts',
+          'examples/codex/mcp-tasks.ts',
           'run',
           order,
           '--directory',

@@ -6,7 +6,7 @@ Applications import `@openai/agents` and its supported subpaths. Those imports l
 
 ## Install
 
-[Install the native SDK](examples/guides/installation.md) to run the release starter or add the SDK to an existing application. Use the [source build](examples/guides/building.md) for current branch features such as the [A2A adapter](A2A.md) and [supervised-worker controls](examples/supervised-worker/README.md).
+[Install the native SDK](../../examples/codex/guides/installation.md) to run the release starter or add the SDK to an existing application. Use the [source build](../../examples/codex/guides/building.md) for current branch features such as the [A2A adapter](A2A.md) and [supervised-worker controls](../../examples/codex/supervised-worker/README.md).
 
 ## Run an agent
 
@@ -36,15 +36,15 @@ npx tsx hello.ts
 
 The script makes a live model request and prints the reply. `agent.run()` creates and closes its own Session, and `await using` closes the provider.
 
-Try the [greeting](examples/basic.ts) and [typed-context](examples/typed-context.ts) examples.
+Try the [greeting](../../examples/codex/basic.ts) and [typed-context](../../examples/codex/typed-context.ts) examples.
 
 ## SDK guides
 
-- [Architecture](examples/guides/architecture.md). Understand the native runtime, how it differs from v0, and which adoption route fits your application.
+- [Architecture](../../examples/codex/guides/architecture.md). Understand the native runtime, how it differs from v0, and which adoption route fits your application.
 - [Native API guide](NATIVE.md). Find the reference for sessions, output, tools, and native interactions.
-- <a name="sessions"></a>[Sessions](examples/guides/sessions.md). Open a conversation and run multiple turns. Use [session configuration](examples/guides/session-configuration.md) to choose a provider, model, and tools.
-- [Session history and state](examples/guides/state.md). Save a checkpoint, resume pending work, or choose a persistent store.
-- [Native telemetry](examples/guides/telemetry.md). Trace one workflow or send native signals to a collector.
-- [Examples](examples/README.md). Find runnable workflows and their setup requirements.
+- <a name="sessions"></a>[Sessions](../../examples/codex/guides/sessions.md). Open a conversation and run multiple turns. Use [session configuration](../../examples/codex/guides/session-configuration.md) to choose a provider, model, and tools.
+- [Session history and state](../../examples/codex/guides/state.md). Save a checkpoint, resume pending work, or choose a persistent store.
+- [Native telemetry](../../examples/codex/guides/telemetry.md). Trace one workflow or send native signals to a collector.
+- [Examples](../../examples/codex/README.md). Find runnable workflows and their setup requirements.
 - [Testing](TESTING.md). Run scripted responses without model credentials.
 - [Classic API](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md). Use the classic Agent and Runner APIs.

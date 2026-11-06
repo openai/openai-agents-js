@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import type { Observation } from '@openai/agents';
-import { vercelResponse } from '../../examples/native-ui/vercel';
-import { agUiResponse } from '../../examples/native-ui/ag-ui';
+import { vercelResponse } from '../../../../examples/codex/native-ui/vercel';
+import { agUiResponse } from '../../../../examples/codex/native-ui/ag-ui';
 import {
   responseStream,
   type ViewTurn,
   type ViewSession,
-} from '../../examples/native-ui/projection';
+} from '../../../../examples/codex/native-ui/projection';
 
 function readerFixture() {
   const pending = Promise.withResolvers<IteratorResult<Observation>>();

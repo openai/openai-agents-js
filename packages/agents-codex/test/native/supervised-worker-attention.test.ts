@@ -15,8 +15,8 @@ import { z } from 'zod';
 import {
   WorkerSignals,
   type AccountQuotaObservation,
-} from '../../examples/supervised-worker/signals';
-import { waitForWorkerAttention } from '../../examples/supervised-worker/supervision';
+} from '../../../../examples/codex/supervised-worker/signals';
+import { waitForWorkerAttention } from '../../../../examples/codex/supervised-worker/supervision';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));

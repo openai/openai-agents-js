@@ -4,14 +4,14 @@ description: Stream agent output in real time using the Runner
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import basicStreamingExample from '../../../../../examples/docs/streaming/basicStreaming.ts?raw';
-import nodeTextStreamExample from '../../../../../examples/docs/streaming/nodeTextStream.ts?raw';
-import handleAllEventsExample from '../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
-import streamedHITLExample from '../../../../../examples/docs/streaming/streamedHITL.ts?raw';
-import runRawModelStreamEventExample from '../../../../../examples/docs/streaming/runRawModelStreamEvent.ts?raw';
-import openaiResponsesRawModelStreamEventExample from '../../../../../examples/docs/streaming/openaiResponsesRawModelStreamEvent.ts?raw';
-import runItemStreamEventExample from '../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
-import runAgentUpdatedStreamEventExample from '../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
+import basicStreamingExample from '../../../../../examples/classic/docs/streaming/basicStreaming.ts?raw';
+import nodeTextStreamExample from '../../../../../examples/classic/docs/streaming/nodeTextStream.ts?raw';
+import handleAllEventsExample from '../../../../../examples/classic/docs/streaming/handleAllEvents.ts?raw';
+import streamedHITLExample from '../../../../../examples/classic/docs/streaming/streamedHITL.ts?raw';
+import runRawModelStreamEventExample from '../../../../../examples/classic/docs/streaming/runRawModelStreamEvent.ts?raw';
+import openaiResponsesRawModelStreamEventExample from '../../../../../examples/classic/docs/streaming/openaiResponsesRawModelStreamEvent.ts?raw';
+import runItemStreamEventExample from '../../../../../examples/classic/docs/streaming/runItemStreamEvent.ts?raw';
+import runAgentUpdatedStreamEventExample from '../../../../../examples/classic/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
 The Agents SDK can stream output from the model and other execution steps. Streaming lets your UI update as output arrives, before the final result is complete.
 
@@ -52,7 +52,7 @@ Use a `for await` loop to inspect each event as it arrives, including low-level 
   title="Listening to all events"
 />
 
-See [the streamed example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/streamed.ts) for a fully worked script that prints both the plain text stream and the raw event stream.
+See [the streamed example](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/agent-patterns/streamed.ts) for a fully worked script that prints both the plain text stream and the raw event stream.
 
 ### Responses WebSocket transport (optional)
 
@@ -68,7 +68,7 @@ Continuation with `previousResponseId` works the same as with the HTTP transport
 
 If you build the provider yourself, call `await provider.close()` when shutting down. Websocket-backed model wrappers are cached for reuse by default, and closing the provider releases those connections. `withResponsesWebSocketSession(...)` gives you the same reuse but scopes cleanup to a single callback automatically.
 
-See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/basic/stream-ws.ts) for a complete example with streaming, tool calls, approvals, and `previousResponseId`.
+See [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/basic/stream-ws.ts) for a complete example with streaming, tool calls, approvals, and `previousResponseId`.
 
 ## Event types
 
@@ -113,7 +113,7 @@ For these OpenAI model events, `RunRawModelStreamEvent.source` is also populated
 
 These helpers let you inspect Responses-only events such as `response.reasoning_summary_text.delta`, `response.output_item.done`, or MCP argument deltas with TypeScript types for the underlying events.
 
-See [`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/basic/stream-ws.ts), [`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/tools/code-interpreter.ts), and [`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/connectors) for fuller OpenAI-specific streaming patterns.
+See [`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/basic/stream-ws.ts), [`examples/classic/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/tools/code-interpreter.ts), and [`examples/classic/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/connectors) for fuller OpenAI-specific streaming patterns.
 
 ### run_item_stream_event
 
@@ -192,7 +192,7 @@ This Node.js example asks for approval in the terminal before running a sample o
   title="Handling human approval while streaming"
 />
 
-A fuller example that interacts with the user is [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/agent-patterns/human-in-the-loop-stream.ts).
+A fuller example that interacts with the user is [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/classic/agent-patterns/human-in-the-loop-stream.ts).
 
 ## Stop a stream and continue the same turn
 

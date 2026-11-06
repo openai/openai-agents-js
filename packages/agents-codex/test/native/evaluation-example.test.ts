@@ -6,8 +6,8 @@ import { performance } from 'node:perf_hooks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeProvider, type Session } from '@openai/agents';
 import * as scripted from '@openai/agents/testing';
-import { evaluate, main } from '../../examples/evaluation/run';
-import * as scoring from '../../examples/evaluation/scoring';
+import { evaluate, main } from '../../../../examples/codex/evaluation/run';
+import * as scoring from '../../../../examples/codex/evaluation/scoring';
 
 const config = scoring.configurationSchema.parse({
   model: 'gpt-5.1',
@@ -156,7 +156,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'native evaluation lesson',
   () => {
     it('runs the shipped no-key cases twice through real lookup callbacks and native receipts', async () => {
-      const folder = resolve(__dirname, '../../examples/evaluation');
+      const folder = resolve(
+        __dirname,
+        '../../../../examples/codex/evaluation',
+      );
       const shippedConfig = scoring.configurationSchema.parse(
         JSON.parse(await readFile(join(folder, 'config.json'), 'utf8')),
       );

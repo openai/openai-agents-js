@@ -74,7 +74,7 @@ LLM によるオーケストレーションは強力ですが、コードによ�
 - タスクを実行するエージェントを、評価とフィードバックを行うエージェントとともに `while` ループ内で実行します。評価担当のエージェントが、出力は所定の基準を満たしていると判断するまで繰り返します。
 - たとえば JavaScript の `Promise.all` のような基本機能を使って、複数のエージェントを並列で実行します。互いに依存しないタスクが複数ある場合に、処理速度の向上に役立ちます。
 
-[`examples/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns) に多数のコード例を用意しています。
+[`examples/classic/agent-patterns`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns) に多数のコード例を用意しています。
 
 ## 関連ガイド
 

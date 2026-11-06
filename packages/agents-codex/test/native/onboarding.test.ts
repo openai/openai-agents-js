@@ -7,9 +7,9 @@ import {
   NativeProvider,
   type NativeProviderOptions,
 } from '@openai/agents';
-import { runGreeting } from '../../examples/basic';
-import { runToolUpdates } from '../../examples/tool-updates';
-import { runTypedContext } from '../../examples/typed-context';
+import { runGreeting } from '../../../../examples/codex/basic';
+import { runToolUpdates } from '../../../../examples/codex/tool-updates';
+import { runTypedContext } from '../../../../examples/codex/typed-context';
 import { ModelServer, call, message } from './fixtures/model-server';
 import type { JsonObject } from '../../src/runtime/binding';
 
@@ -183,11 +183,7 @@ nativeIt.each(['basic', 'typed-context'] as const)(
     const current = await options(server);
     const result = await exec(
       process.execPath,
-      [
-        '--import',
-        'tsx',
-        resolve('packages/agents-codex/examples/' + name + '.ts'),
-      ],
+      ['--import', 'tsx', resolve('examples/codex/' + name + '.ts')],
       {
         env: {
           ...process.env,

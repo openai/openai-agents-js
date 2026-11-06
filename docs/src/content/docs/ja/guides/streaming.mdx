@@ -49,14 +49,14 @@ canonicalHeadingIds:
 ---
 
 import { Code } from '@astrojs/starlight/components';
-import basicStreamingExample from '../../../../../../examples/docs/streaming/basicStreaming.ts?raw';
-import nodeTextStreamExample from '../../../../../../examples/docs/streaming/nodeTextStream.ts?raw';
-import handleAllEventsExample from '../../../../../../examples/docs/streaming/handleAllEvents.ts?raw';
-import streamedHITLExample from '../../../../../../examples/docs/streaming/streamedHITL.ts?raw';
-import runRawModelStreamEventExample from '../../../../../../examples/docs/streaming/runRawModelStreamEvent.ts?raw';
-import openaiResponsesRawModelStreamEventExample from '../../../../../../examples/docs/streaming/openaiResponsesRawModelStreamEvent.ts?raw';
-import runItemStreamEventExample from '../../../../../../examples/docs/streaming/runItemStreamEvent.ts?raw';
-import runAgentUpdatedStreamEventExample from '../../../../../../examples/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
+import basicStreamingExample from '../../../../../../examples/classic/docs/streaming/basicStreaming.ts?raw';
+import nodeTextStreamExample from '../../../../../../examples/classic/docs/streaming/nodeTextStream.ts?raw';
+import handleAllEventsExample from '../../../../../../examples/classic/docs/streaming/handleAllEvents.ts?raw';
+import streamedHITLExample from '../../../../../../examples/classic/docs/streaming/streamedHITL.ts?raw';
+import runRawModelStreamEventExample from '../../../../../../examples/classic/docs/streaming/runRawModelStreamEvent.ts?raw';
+import openaiResponsesRawModelStreamEventExample from '../../../../../../examples/classic/docs/streaming/openaiResponsesRawModelStreamEvent.ts?raw';
+import runItemStreamEventExample from '../../../../../../examples/classic/docs/streaming/runItemStreamEvent.ts?raw';
+import runAgentUpdatedStreamEventExample from '../../../../../../examples/classic/docs/streaming/runAgentUpdatedStreamEvent.ts?raw';
 
 Agents SDK は、モデルやその他の実行ステップからの出力を逐次配信できます。ストリーミングを使うと、UI の応答性を保ち、最終的な実行結果がすべて揃うのを待たずにユーザーに最新の情報を届けられます。
 
@@ -97,7 +97,7 @@ Promise `stream.completed` は、実行と保留中のすべてのコールバ�
   title="すべてのイベントの監視"
 />
 
-プレーンテキストのストリームと元のイベントストリームの両方を出力する完全なスクリプトについては、[ストリーミングのコード例](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/streamed.ts)を参照してください。
+プレーンテキストのストリームと元のイベントストリームの両方を出力する完全なスクリプトについては、[ストリーミングのコード例](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/streamed.ts)を参照してください。
 
 ### Responses WebSocket トランスポート（任意）
 
@@ -113,7 +113,7 @@ WebSocket 経由でストリーミングするだけであれば、`withResponse
 
 プロバイダーを自分で構築する場合は、終了時に忘れずに `await provider.close()` を呼び出してください。WebSocket を使用するモデルラッパーは、デフォルトで再利用のためにキャッシュされており、プロバイダーを閉じるとそれらの接続が解放されます。`withResponsesWebSocketSession(...)` でも同じように再利用できますが、クリーンアップの範囲が単一のコールバック内に自動的に限定されます。
 
-ストリーミング、ツール呼び出し、承認、`previousResponseId` を含む完全なコード例については、[`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts) を参照してください。
+ストリーミング、ツール呼び出し、承認、`previousResponseId` を含む完全なコード例については、[`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts) を参照してください。
 
 ## イベントの種類
 
@@ -158,7 +158,7 @@ OpenAI モデルを使用しており、手動でキャストせずにプロバ�
 
 これは、`response.reasoning_summary_text.delta`、`response.output_item.done`、MCP の引数の差分など、Responses 固有のイベントを確認しつつ、TypeScript が基となるイベントの構造を認識できるようにしたい場合に特に便利です。
 
-OpenAI 固有のストリーミングパターンのより詳しいコード例については、[`examples/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/basic/stream-ws.ts)、[`examples/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/tools/code-interpreter.ts)、[`examples/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/connectors) を参照してください。
+OpenAI 固有のストリーミングパターンのより詳しいコード例については、[`examples/classic/basic/stream-ws.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/basic/stream-ws.ts)、[`examples/classic/tools/code-interpreter.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/tools/code-interpreter.ts)、[`examples/classic/connectors/index.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/connectors) を参照してください。
 
 ### run_item_stream_event
 
@@ -228,7 +228,7 @@ OpenAI 固有のストリーミングパターンのより詳しいコード例�
   title="ストリーミング中の人間による承認の処理"
 />
 
-ユーザーとやり取りする、より詳しいコード例は [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/agent-patterns/human-in-the-loop-stream.ts) にあります。
+ユーザーとやり取りする、より詳しいコード例は [`human-in-the-loop-stream.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/agent-patterns/human-in-the-loop-stream.ts) にあります。
 
 ## ストリームの停止と同じターンの続行
 

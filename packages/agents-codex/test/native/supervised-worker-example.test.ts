@@ -9,11 +9,11 @@ import { expect, it, type TestContext } from 'vitest';
 import {
   publishAcceptedDraft,
   readWorkerSnapshot,
-} from '../../examples/supervised-worker/worker';
+} from '../../../../examples/codex/supervised-worker/worker';
 import {
   startReportPeer,
   type StoredReport,
-} from '../../examples/web-starter/mcp-peer';
+} from '../../../../examples/codex/web-starter/mcp-peer';
 import { call, message, ModelServer } from './fixtures/model-server';
 
 const script = fileURLToPath(

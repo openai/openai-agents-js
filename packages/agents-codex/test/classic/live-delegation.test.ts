@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createDelegationHandler,
   type LiveMessage,
-} from '../../examples/live/delegation';
+} from '../../../../examples/codex/live/delegation';
 
 function event(
   type: string,

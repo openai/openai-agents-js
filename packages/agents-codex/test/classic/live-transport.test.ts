@@ -7,9 +7,9 @@ import { Runner } from '@openai/agents/classic';
 import {
   createLiveTransport,
   closeSocket,
-} from '../../examples/live/transport';
-import { relay } from '../../examples/live/relay';
-import { createLiveApp } from '../../examples/live/server';
+} from '../../../../examples/codex/live/transport';
+import { relay } from '../../../../examples/codex/live/relay';
+import { createLiveApp } from '../../../../examples/codex/live/server';
 
 type Message = { type: string; [key: string]: unknown };
 const cleanup: (() => Promise<unknown>)[] = [];

@@ -9,12 +9,12 @@ import {
 import {
   vercelResponse,
   ownedVercelResponse,
-} from '../../examples/native-ui/vercel';
-import { agUiResponse } from '../../examples/native-ui/ag-ui';
+} from '../../../../examples/codex/native-ui/vercel';
+import { agUiResponse } from '../../../../examples/codex/native-ui/ag-ui';
 import type {
   ViewSession,
   ViewTurn,
-} from '../../examples/native-ui/projection';
+} from '../../../../examples/codex/native-ui/projection';
 
 const identity = { sessionId: 's', submissionId: 'owned', turnId: 't' };
 const start: Observation = { ...identity, sequence: 1, type: 'turn_started' };

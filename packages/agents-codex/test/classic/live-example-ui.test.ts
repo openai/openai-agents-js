@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import { expect, test } from 'vitest';
 
 const source = readFileSync(
-  new URL('../../examples/live/static/app.js', import.meta.url),
+  new URL('../../../../examples/codex/live/static/app.js', import.meta.url),
   'utf8',
 );
 

@@ -53,15 +53,15 @@ canonicalHeadingIds:
 ---
 
 import { Steps, Code } from '@astrojs/starlight/components';
-import aiSdkImportsExample from '../../../../../../examples/docs/extensions/ai-sdk-imports.ts?raw';
-import aiSdkModelExample from '../../../../../../examples/docs/extensions/ai-sdk-model.ts?raw';
-import aiSdkProviderDataExample from '../../../../../../examples/docs/extensions/ai-sdk-providerData.ts?raw';
-import aiSdkProviderMetadataExample from '../../../../../../examples/docs/extensions/ai-sdk-providerMetadata.ts?raw';
-import aiSdkSetupExample from '../../../../../../examples/docs/extensions/ai-sdk-setup.ts?raw';
-import aiSdkTransformOutputTextExample from '../../../../../../examples/docs/extensions/ai-sdk-transform-output-text.ts?raw';
-import aiSdkUiMessageStreamExample from '../../../../../../examples/docs/extensions/ai-sdk-ui-message-stream.ts?raw';
-import aiSdkUiMessageStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
-import aiSdkTextStreamResponseExample from '../../../../../../examples/docs/extensions/ai-sdk-text-stream-response.ts?raw';
+import aiSdkImportsExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-imports.ts?raw';
+import aiSdkModelExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-model.ts?raw';
+import aiSdkProviderDataExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-providerData.ts?raw';
+import aiSdkProviderMetadataExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-providerMetadata.ts?raw';
+import aiSdkSetupExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-setup.ts?raw';
+import aiSdkTransformOutputTextExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-transform-output-text.ts?raw';
+import aiSdkUiMessageStreamExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-ui-message-stream.ts?raw';
+import aiSdkUiMessageStreamResponseExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-ui-message-stream-response.ts?raw';
+import aiSdkTextStreamResponseExample from '../../../../../../examples/classic/docs/extensions/ai-sdk-text-stream-response.ts?raw';
 
 Agents SDK 开箱即用，可通过 Responses API 或 Chat Completions API 使用 OpenAI 模型。如果您想使用其他模型，[Vercel AI SDK](https://sdk.vercel.ai/) 支持多种模型，可通过此适配器将它们接入 Agents SDK。
 
@@ -155,7 +155,7 @@ AI SDK 适配器会将 Agents SDK 的 `input_file` 内容转换为 AI SDK v2、v
 - 组合使用 `networkError()`、`httpStatus([...])` 或 `providerSuggested()` 等 `retryPolicies`。
 - 请注意，只有当封装的 AI SDK 模型能够通过适配器提供重试建议时，`providerSuggested()` 才能发挥作用。
 
-有关使用 `aisdk(openai(...))` 的完整代码示例，请参阅 [`examples/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/retry.ts)。有关重试 API 本身的信息，包括流式传输和有状态后续请求的安全边界，请参阅[模型](/openai-agents-js/zh/guides/models#model-retries)指南。
+有关使用 `aisdk(openai(...))` 的完整代码示例，请参阅 [`examples/classic/ai-sdk/retry.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/ai-sdk/retry.ts)。有关重试 API 本身的信息，包括流式传输和有状态后续请求的安全边界，请参阅[模型](/openai-agents-js/zh/guides/models#model-retries)指南。
 
 ## 集成方案选择
 
@@ -168,7 +168,7 @@ AI SDK 适配器会将 Agents SDK 的 `input_file` 内容转换为 AI SDK v2、v
 
 - `@openai/agents-extensions/ai-sdk` 适配器仍处于 beta 阶段，因此建议针对您选择的提供商进行仔细测试，尤其是规模较小的提供商。
 - 如果使用 OpenAI 模型，请优先使用默认的 OpenAI 模型提供商，而不是此适配器。
-- 受支持的 AI SDK 提供商必须暴露值为 `v2`、`v3` 或 `v4` 的 `specificationVersion`。旧版 v1 提供商代码示例已停用。有关使用受支持提供商接口的代码示例，请参阅 [examples/ai-sdk](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk)。
+- 受支持的 AI SDK 提供商必须暴露值为 `v2`、`v3` 或 `v4` 的 `specificationVersion`。旧版 v1 提供商代码示例已停用。有关使用受支持提供商接口的代码示例，请参阅 [examples/classic/ai-sdk](https://github.com/openai/openai-agents-js/tree/main/examples/classic/ai-sdk)。
 - 通过此适配器使用计算机工具时，需要提供显示元数据。请确保工具同时包含 `environment` 和 `dimensions` 元数据。
 - 此适配器不支持 Responses 工具延迟加载流程，包括 `toolNamespace()`、设置了 `deferLoading: true` 的函数工具，以及 `toolSearchTool()`。如果需要工具搜索，请直接使用 OpenAI Responses 模型。请参阅[工具](/openai-agents-js/zh/guides/tools#deferred-tool-loading-with-tool-search)指南和[模型](/openai-agents-js/zh/guides/models#responses-only-deferred-tool-loading)指南。
 - AI SDK 模型适配器不支持编程式工具调用。它会拒绝 `programmaticToolCallingTool()`、`allowedCallers` 包含 `'programmatic'` 的工具、编程式工具调用历史记录项，以及 Responses `outputSchema`。如需使用这些功能，请直接使用 OpenAI Responses 模型。
@@ -177,7 +177,7 @@ AI SDK 适配器会将 Agents SDK 的 `input_file` 内容转换为 AI SDK v2、v
 
 适配器会保留函数工具返回的 `ToolOutputImage` 值，包括远程 URL、base64 数据和 OpenAI 文件 ID。AI SDK v2 模型接收 `media` 部分。AI SDK v3 模型接收 `image-url`、`image-data` 或 `image-file-id` 部分。AI SDK v4 模型接收 `file` 部分，其中的数据表示为 URL、内联数据，或用于文件 ID 的提供商引用。这样，每个受支持的模型版本都能使用原始的图像表示形式。
 
-有关完整代码示例，请参阅 [`examples/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/ai-sdk/image-tool-output.ts)。
+有关完整代码示例，请参阅 [`examples/classic/ai-sdk/image-tool-output.ts`](https://github.com/openai/openai-agents-js/tree/main/examples/classic/ai-sdk/image-tool-output.ts)。
 
 ## AI SDK UI 流辅助函数
 
@@ -219,4 +219,4 @@ UI 流辅助函数可以封装使用编程式工具调用的 OpenAI Responses �
   title="文本流响应"
 />
 
-有关端到端用法，请参阅此仓库中的 `examples/ai-sdk-ui` 应用。
+有关端到端用法，请参阅此仓库中的 `examples/classic/ai-sdk-ui` 应用。

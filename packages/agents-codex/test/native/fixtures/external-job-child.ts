@@ -10,7 +10,7 @@ import {
   settleJob,
   syntheticOrder,
   writeJobJson,
-} from '../../../examples/external-order-recovery';
+} from '../../../../../examples/codex/external-order-recovery';
 
 async function main() {
   const [, , directory, mode] = process.argv;

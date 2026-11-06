@@ -4,7 +4,10 @@ import {
   OutputValidationError,
   type NativeProviderOptions,
 } from '@openai/agents';
-import { runImageInput, type ImageAnswer } from '../../examples/image-input';
+import {
+  runImageInput,
+  type ImageAnswer,
+} from '../../../../examples/codex/image-input';
 import { ModelServer, message } from './fixtures/model-server';
 
 async function optionsFor(server: ModelServer): Promise<NativeProviderOptions> {

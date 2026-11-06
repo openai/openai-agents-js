@@ -14,8 +14,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Journal } from '../../examples/external-job-journal';
-import { Busy, ThumbnailStore } from '../../examples/external-job-store';
+import { Journal } from '../../../../examples/codex/external-job-journal';
+import {
+  Busy,
+  ThumbnailStore,
+} from '../../../../examples/codex/external-job-store';
 import type {
   JobBinding,
   JobClaim,
@@ -73,10 +76,8 @@ async function prepare(app: Journal) {
 // Child fixtures run the actual TS example through the repository's existing tsx loader.
 function worker(directory: string, body: string): ChildProcess {
   const script = join(directory, 'worker.mjs');
-  const store = resolve('packages/agents-codex/examples/external-job-store.ts');
-  const journals = resolve(
-    'packages/agents-codex/examples/external-job-journal.ts',
-  );
+  const store = resolve('examples/codex/external-job-store.ts');
+  const journals = resolve('examples/codex/external-job-journal.ts');
   writeFileSync(
     script,
     `import { ThumbnailStore } from ${JSON.stringify(store)};
@@ -539,8 +540,8 @@ describe.skipIf(process.platform === 'win32')(
       writeFileSync(
         script,
         `import { lstatSync } from 'node:fs';
-      import { ThumbnailStore } from ${JSON.stringify(resolve('packages/agents-codex/examples/external-job-store.ts'))};
-      import { Journal } from ${JSON.stringify(resolve('packages/agents-codex/examples/external-job-journal.ts'))};
+      import { ThumbnailStore } from ${JSON.stringify(resolve('examples/codex/external-job-store.ts'))};
+      import { Journal } from ${JSON.stringify(resolve('examples/codex/external-job-journal.ts'))};
       process.umask(0); const app = new Journal(new ThumbnailStore(${JSON.stringify(directory)},'studio'),'one');
       await app.owner(async () => { app.store.transaction(db => {
         db.exec("UPDATE orders SET phase='changed'");

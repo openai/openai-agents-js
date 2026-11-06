@@ -4,12 +4,12 @@ description: Learn about the different transport layers that can be used with Vo
 ---
 
 import { Aside, Code } from '@astrojs/starlight/components';
-import customWebRTCTransportExample from '../../../../../../examples/docs/voice-agents/customWebRTCTransport.ts?raw';
-import websocketSessionExample from '../../../../../../examples/docs/voice-agents/websocketSession.ts?raw';
-import sipTransportExample from '../../../../../../examples/docs/voice-agents/sipTransport.ts?raw';
-import transportEventsExample from '../../../../../../examples/docs/voice-agents/transportEvents.ts?raw';
-import thinClientExample from '../../../../../../examples/docs/voice-agents/thinClient.ts?raw';
-import cloudflareTransportExample from '../../../../../../examples/docs/extensions/cloudflare-basic.ts?raw';
+import customWebRTCTransportExample from '../../../../../../examples/classic/docs/voice-agents/customWebRTCTransport.ts?raw';
+import websocketSessionExample from '../../../../../../examples/classic/docs/voice-agents/websocketSession.ts?raw';
+import sipTransportExample from '../../../../../../examples/classic/docs/voice-agents/sipTransport.ts?raw';
+import transportEventsExample from '../../../../../../examples/classic/docs/voice-agents/transportEvents.ts?raw';
+import thinClientExample from '../../../../../../examples/classic/docs/voice-agents/thinClient.ts?raw';
+import cloudflareTransportExample from '../../../../../../examples/classic/docs/extensions/cloudflare-basic.ts?raw';
 
 Choose the transport based on where the session runs and how much raw media or event control you need.
 
@@ -88,13 +88,13 @@ Some applications need browser microphone capture and audio playback while keepi
   model-supplied tool arguments.
 </Aside>
 
-See the [`realtime-server-controlled` example](https://github.com/openai/openai-agents-js/tree/main/examples/realtime-server-controlled) for a complete application with an audio-only browser peer connection, server-enforced SDP policy, a sideband `RealtimeSession`, projected browser events, and cleanup behavior.
+See the [`realtime-server-controlled` example](https://github.com/openai/openai-agents-js/tree/main/examples/classic/realtime-server-controlled) for a complete application with an audio-only browser peer connection, server-enforced SDP policy, a sideband `RealtimeSession`, projected browser events, and cleanup behavior.
 
 ### React Native uses an app-owned transport
 
 `@openai/agents-core` and `@openai/agents-realtime` publish React Native package conditions so Metro can resolve portable SDK shims without Node.js built-ins. The built-in `OpenAIRealtimeWebRTC` remains a browser transport because it depends on browser WebRTC globals and DOM audio elements. In React Native, install and own a native WebRTC implementation, then connect it to `RealtimeSession` through a custom `RealtimeTransportLayer`.
 
-The [`examples/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/realtime-react-native) Expo development-build example demonstrates an app-owned `react-native-webrtc` transport, microphone permissions, audio routing, and a server-side ephemeral-token endpoint. Expo Go is not supported because `react-native-webrtc` contains native code. Keep standard OpenAI API keys on the server and pass only a short-lived ephemeral client token to the mobile app.
+The [`examples/classic/realtime-react-native`](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/realtime-react-native) Expo development-build example demonstrates an app-owned `react-native-webrtc` transport, microphone permissions, audio routing, and a server-side ephemeral-token endpoint. Expo Go is not supported because `react-native-webrtc` contains native code. Keep standard OpenAI API keys on the server and pass only a short-lived ephemeral client token to the mobile app.
 
 ### WebSocket is the default server choice
 

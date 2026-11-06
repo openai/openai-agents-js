@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeProvider, type Session } from '@openai/agents';
-import { runWithTimeout } from '../../examples/timeout-cleanup';
+import { runWithTimeout } from '../../../../examples/codex/timeout-cleanup';
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {

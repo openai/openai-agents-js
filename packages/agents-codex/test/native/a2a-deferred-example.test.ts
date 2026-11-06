@@ -9,7 +9,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 const example = fileURLToPath(
-  new URL('../../examples/a2a/deferred-thumbnail.ts', import.meta.url),
+  new URL(
+    '../../../../examples/codex/a2a/deferred-thumbnail.ts',
+    import.meta.url,
+  ),
 );
 const env = { ...process.env, OPENAI_API_KEY: '', CODEX_API_KEY: '' };
 const argv = ['--import', 'tsx', example];

@@ -2,7 +2,7 @@ import {
   runSales,
   scriptedSales,
   type Sales,
-} from '../../examples/stdio-programmatic/programmatic-tools';
+} from '../../../../examples/codex/stdio-programmatic/programmatic-tools';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,7 +14,7 @@ import {
   toolCall,
   withScriptedResponses,
 } from '@openai/agents/testing';
-import { catalogAgent } from '../../examples/stdio-programmatic/local-mcp';
+import { catalogAgent } from '../../../../examples/codex/stdio-programmatic/local-mcp';
 
 it.each([
   {
