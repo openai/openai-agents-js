@@ -2326,15 +2326,18 @@ describe('remote sandbox path helpers', () => {
       'hello',
     );
     expect(commands[0]).toMatchObject({
+      command: expect.stringContaining('umask 077 && mkdir --'),
+    });
+    expect(commands[1]).toMatchObject({
       command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
       options: { runAs: 'root' },
     });
-    expect(commands[1]).toMatchObject({
+    expect(commands[2]).toMatchObject({
       command: expect.stringContaining("cat -- '/tmp/openai-agents-"),
       options: { runAs: 'sandbox-user' },
     });
-    expect(commands[2]).toMatchObject({
-      command: expect.stringContaining("rm -f -- '/tmp/openai-agents-"),
+    expect(commands[3]).toMatchObject({
+      command: expect.stringContaining("rm -rf -- '/tmp/openai-agents-"),
       options: { runAs: 'root' },
     });
   });
@@ -2533,15 +2536,18 @@ describe('remote sandbox path helpers', () => {
       options: { runAs: 'sandbox-user' },
     });
     expect(commands[3]).toMatchObject({
+      command: expect.stringContaining('umask 077 && mkdir --'),
+    });
+    expect(commands[4]).toMatchObject({
       command: expect.stringContaining("chown 'sandbox-user':'sandbox-user'"),
       options: { runAs: 'root' },
     });
-    expect(commands[4]).toMatchObject({
+    expect(commands[5]).toMatchObject({
       command: expect.stringContaining("cat -- '/tmp/openai-agents-"),
       options: { runAs: 'sandbox-user' },
     });
-    expect(commands[5]).toMatchObject({
-      command: expect.stringContaining("rm -f -- '/tmp/openai-agents-"),
+    expect(commands[6]).toMatchObject({
+      command: expect.stringContaining("rm -rf -- '/tmp/openai-agents-"),
       options: { runAs: 'root' },
     });
   });
