@@ -4,6 +4,7 @@ import {
   chmod,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   stat,
   writeFile,
@@ -418,9 +419,16 @@ describe('DaytonaSandboxClient', () => {
     expect(uploadFileMock).not.toHaveBeenCalled();
   });
 
-  test.skipIf(process.platform !== 'linux').each([0o600, 0o640, 0o751, 0o2750])(
-    'preserves file mode %i through default editor updates',
-    async (mode) => {
+  test.skipIf(process.platform !== 'linux').each([
+    [0o600, 0o600],
+    [0o640, 0o640],
+    [0o751, 0o751],
+    [0o2750, 0o750],
+    [0o4750, 0o750],
+    [0o6750, 0o750],
+  ])(
+    'updates file mode %i to safe mode %i through the default editor',
+    async (mode, expectedMode) => {
       const root = await mkdtemp(join(tmpdir(), 'agents-daytona-editor-'));
       try {
         const privatePath = join(root, 'private.txt');
@@ -437,8 +445,14 @@ describe('DaytonaSandboxClient', () => {
         const session = await new DaytonaSandboxClient().create(
           new Manifest({ root }),
         );
+        let denyOwnershipCopy = false;
         executeCommandMock.mockImplementation(async (command: string) => {
           try {
+            if (denyOwnershipCopy) {
+              command =
+                'chown() { printf "Operation not permitted\\n" >&2; return 1; }\n' +
+                command;
+            }
             const { stdout } = await execFileAsync('/bin/sh', ['-c', command]);
             return { exitCode: 0, result: stdout, artifacts: { stdout } };
           } catch (error) {
@@ -473,7 +487,7 @@ describe('DaytonaSandboxClient', () => {
         });
 
         expect(await readFile(privatePath, 'utf8')).toBe('updated private\n');
-        expect((await stat(privatePath)).mode & 0o7777).toBe(mode);
+        expect((await stat(privatePath)).mode & 0o7777).toBe(expectedMode);
         expect((await stat(privatePath)).uid).toBe(originalPrivate.uid);
         expect((await stat(privatePath)).gid).toBe(originalPrivate.gid);
         expect(await readFile(publicPath, 'utf8')).toBe('updated public\n');
@@ -482,6 +496,26 @@ describe('DaytonaSandboxClient', () => {
         expect((await stat(publicPath)).gid).toBe(originalPublic.gid);
         expect(await readFile(newPath, 'utf8')).toBe('new');
         expect((await stat(newPath)).mode & 0o777).toBe(0o644);
+
+        const beforeFailedUpdate = await stat(privatePath);
+        denyOwnershipCopy = true;
+        await expect(
+          editor.updateFile({
+            type: 'update_file',
+            path: 'private.txt',
+            diff: '-updated private\n+denied replacement\n',
+          }),
+        ).rejects.toThrow('Operation not permitted');
+        denyOwnershipCopy = false;
+        const afterFailedUpdate = await stat(privatePath);
+        expect(await readFile(privatePath, 'utf8')).toBe('updated private\n');
+        expect(afterFailedUpdate.ino).toBe(beforeFailedUpdate.ino);
+        expect(afterFailedUpdate.mode).toBe(beforeFailedUpdate.mode);
+        expect(afterFailedUpdate.uid).toBe(beforeFailedUpdate.uid);
+        expect(afterFailedUpdate.gid).toBe(beforeFailedUpdate.gid);
+        expect(await readdir(root)).not.toContainEqual(
+          expect.stringMatching(/^\.openai-agents-write\./u),
+        );
 
         await editor.updateFile({
           type: 'update_file',

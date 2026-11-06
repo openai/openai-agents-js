@@ -1161,7 +1161,9 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
         'OPENAI_AGENTS_CONTENT',
         'if [ -e "$target" ]; then',
         '  chown --reference="$target" "$tmp"',
-        '  chmod --reference="$target" "$tmp"',
+        // Content changes must not restore set-user-ID or set-group-ID privileges.
+        '  mode=$(stat -c %a -- "$target")',
+        '  chmod "$(printf \'%o\' "$((0$mode & 0777))")" "$tmp"',
         'else',
         '  chmod 644 "$tmp"',
         'fi',
