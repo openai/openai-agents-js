@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll } from 'vitest';
 import { execa as execaBase } from 'execa';
+import { readFile } from 'node:fs/promises';
 
 import { createIntegrationSubprocessEnv } from './_helpers/env';
 
@@ -36,11 +37,17 @@ describe('Node.js', () => {
     'codex runner should not lose tracing context',
     { timeout: 120_000 },
     async () => {
+      const fixtureManifest = JSON.parse(
+        await readFile(new URL('./node/package.json', import.meta.url), 'utf8'),
+      );
       const { stdout } = await execa`npm run start:codex`;
       expect(stdout).toContain('codex thread started:');
       expect(stdout).toContain('codex turn completed, usage:');
-      expect(stdout).toMatch(
-        /\[CODEX_TOOL_RESPONSE\].*\^0\.164\.0.*\[\/CODEX_TOOL_RESPONSE\]/s,
+      const toolResponse = stdout.match(
+        /\[CODEX_TOOL_RESPONSE\](.*?)\[\/CODEX_TOOL_RESPONSE\]/s,
+      )?.[1];
+      expect(toolResponse).toContain(
+        fixtureManifest.dependencies['@openai/codex-sdk'],
       );
       expect(stdout).toContain('[CODEX_RESPONSE]');
     },
