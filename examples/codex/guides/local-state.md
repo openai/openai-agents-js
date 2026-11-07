@@ -51,6 +51,10 @@ An idle Session supports ordinary `compact()` in place using its current native 
 
 Use the memory and checkpoint route for portable `state`. Local storage and resume options are incompatible with portable state and are unavailable on `Agent.run()` or `Runner.run()`.
 
+### Preserve the recorded executor policy
+
+New Environments default to `writePolicy: 'strict'`. Reopening a local profile in strict mode requires recorded strict-mode evidence and the same applied executor policy. Legacy or unmarked remote history requires explicit `writePolicy: 'legacy'` and matching current authority. A missing marker does not prove how older work was confined. Reopening never automatically upgrades that policy. See [workspace write grants](workspace-grants.md#save-and-restore-the-current-grant).
+
 ### Reopen with descendant history
 
 Reopen through the original root Session ID. A recorded child or grandchild ID cannot open as a root. Before model or callback work, the SDK checks the root and all recorded descendants, including closed branches. An open descendant with an unfinished turn or any descendant with an unknown effect blocks reopening, even when the current Agent declares no NativeAgents.
