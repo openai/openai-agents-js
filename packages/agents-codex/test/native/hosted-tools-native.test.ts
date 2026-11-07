@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -345,7 +345,15 @@ it('inherits current hosted grants and delivers full partial images from a manag
       return events;
     })();
     await (await session.submit('Delegate an image.')).wait();
-    const children = await Array.fromAsync(session.subagents());
+    const children = await vi.waitFor(
+      async () => {
+        const children = await Array.fromAsync(session.subagents());
+        // The parent may finish before the child turn is published.
+        expect(children[0]?.turn).toBeTruthy();
+        return children;
+      },
+      { timeout: 5_000 },
+    );
     expect(children).toHaveLength(1);
     expect((await children[0].turn!.wait()).finalOutput).toBe('child done');
     await session.close();
