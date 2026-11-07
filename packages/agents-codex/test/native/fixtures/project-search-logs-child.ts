@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { writeFile } from 'node:fs/promises';
+import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Agent, Environment, NativeProvider, telemetry } from '../../../src';
 import type { JsonObject } from '../../../src/runtime/binding';
@@ -158,7 +158,7 @@ async function main() {
         });
         const environment = new Environment({
           url: executor.url,
-          cwd: executor.cwd,
+          cwd: await realpath(executor.cwd),
           headers: executor.headers,
           tools: ['project_grep'],
           async transformResult(_context, value) {

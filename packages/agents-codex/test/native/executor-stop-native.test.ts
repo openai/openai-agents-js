@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -143,7 +143,7 @@ async function open(
     session = await agent.session({
       environment: new Environment({
         url: executor.url,
-        cwd: executor.cwd,
+        cwd: await realpath(executor.cwd),
         headers: executor.headers,
         tools: ['exec_command', 'write_stdin', 'apply_patch'],
         approval: () => true,
