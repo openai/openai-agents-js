@@ -219,6 +219,8 @@ it.each(['checkpoint', 'local', 'canonical'] as const)(
       await rm(dir, { recursive: true, force: true });
     }
   },
+  // Persistent modes also open native readback and retired-tool sessions.
+  30_000,
 );
 
 it('rejects Classic and native state together before opening storage', async () => {
