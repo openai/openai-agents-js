@@ -88,7 +88,12 @@ export type EnvironmentConfig = z.infer<typeof environmentSchema>;
 export function captureWritableRoots(roots: readonly string[]): string[] {
   return z.array(capabilityDirectory).parse(roots);
 }
-export type ExecutorToolName = 'exec_command' | 'write_stdin' | 'apply_patch';
+export type ExecutorToolName =
+  | 'exec_command'
+  | 'write_stdin'
+  | 'apply_patch'
+  | 'project_glob'
+  | 'project_grep';
 
 export interface ExecutorContext<Context = unknown> {
   readonly call?: import('./call-metadata').ToolCallInfo;
@@ -113,6 +118,7 @@ export interface EnvironmentOptions<Context = unknown> {
   capabilityDirectories?: readonly string[];
   /** Extra writable directories on the executor. The workspace is always included. */
   writableRoots?: readonly string[];
+  /** Opt-in executor operations. Project search stays rooted at this Environment's cwd. */
   tools?: readonly ExecutorToolName[];
   /** Explicit managed proxy policy. Requires exec_command and a supported executor. */
   network?: NetworkPolicy;
@@ -231,7 +237,13 @@ export class Environment<Context = any> {
       new Set(tools).size !== tools.length ||
       tools.some(
         (name) =>
-          !['exec_command', 'write_stdin', 'apply_patch'].includes(name),
+          ![
+            'exec_command',
+            'write_stdin',
+            'apply_patch',
+            'project_glob',
+            'project_grep',
+          ].includes(name),
       )
     )
       throw new TypeError('Select distinct executor tool names');
@@ -347,4 +359,27 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
   )
     throw new TypeError('Executor cwd must be an absolute path or file URI');
   return native;
+}
+
+/** @internal Derive native search authority only from the current trusted Environment. */
+export function projectSearchRuntime(
+  environment: Environment | null | undefined,
+): {
+  _sdk_project_search?: {
+    root: string;
+    tools: ('project_glob' | 'project_grep')[];
+  };
+} {
+  const tools =
+    environment?.tools.filter(
+      (name) => name === 'project_glob' || name === 'project_grep',
+    ) ?? [];
+  return environment && tools.length
+    ? {
+        _sdk_project_search: {
+          root: environmentConfig(environment).cwd,
+          tools,
+        },
+      }
+    : {};
 }

@@ -1,0 +1,11 @@
+# Search project files with structured tools
+
+The current source build supports `project_glob` and `project_grep`. Select either tool in `Environment.tools`. Both tools search the selected executor, including a remote WSS executor. They do not need command tools or project guidance. See the [project search example](../project-search.ts).
+
+The trusted root is the Environment's opening `cwd`. A tool call cannot replace that root. Its optional `path` narrows the search to a relative subdirectory and defaults to `.`. Paths cannot contain `..`, absolute paths, file URIs, or backslashes. The tools reject symlink components, including a symlink in the root path.
+
+`project_glob` takes a `pattern`. `project_grep` takes a Rust regular expression in `pattern`, an optional file `glob` that defaults to `**/*`, and `context_lines` between 0 and 5. Both accept `max_results` between 1 and 1000, with a default of 100. Results use snake_case field names. They include `matches`, `truncated`, `truncation_reasons`, and `errors`. Grep matches include `path`, `line_number`, `line`, `before`, and `after`. Each element in `before` and `after` is an object with a one-based `line_number` and the text in `line`. For example, `{ line_number: 1, line: 'before' }` identifies the preceding line. These arrays are empty when no context is requested or available.
+
+Search includes hidden files and does not apply `.gitignore`. Grep reads regular UTF-8 text files. It reports unavailable reads through `path_unavailable` errors and the `read_errors` truncation reason, without diagnosing the cause as a file-size error. The runtime bounds directory traversal, file reads, and output size. A result can be incomplete even when it contains fewer than `max_results` matches. Inspect `truncated`, `truncation_reasons`, and `errors`; narrow the path or pattern and run another search when necessary. The tools do not provide an exhaustive continuation cursor.
+
+The Environment's write grants and capability directories do not add search roots. Saved history does not grant search tools on restore. Declare the tools again on the destination Environment, then use per-turn tool selection to narrow those opening grants.

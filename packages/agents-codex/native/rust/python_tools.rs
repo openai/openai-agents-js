@@ -201,6 +201,8 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
                         | "tool_search"
                         | "apply_patch"
                         | "write_stdin"
+                        | "project_glob"
+                        | "project_grep"
                 ))
                 && key.namespace.as_deref() != Some("tool_search")
                 && !matches!(
@@ -381,9 +383,15 @@ impl PythonTools {
                 .is_some_and(|items| !items.is_empty());
             if execution {
                 names.extend(
-                    ["exec_command", "write_stdin", "apply_patch"]
-                        .into_iter()
-                        .map(|name| ToolName::plain(name).with_default_namespace()),
+                    [
+                        "exec_command",
+                        "write_stdin",
+                        "apply_patch",
+                        "project_glob",
+                        "project_grep",
+                    ]
+                    .into_iter()
+                    .map(|name| ToolName::plain(name).with_default_namespace()),
                 );
             }
             if execution && startup.config.agents_enabled {

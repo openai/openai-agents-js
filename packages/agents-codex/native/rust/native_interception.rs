@@ -985,7 +985,11 @@ impl Control {
                 name.is_default_namespace()
                     && matches!(
                         name.name.as_str(),
-                        "exec_command" | "write_stdin" | "apply_patch"
+                        "exec_command"
+                            | "write_stdin"
+                            | "apply_patch"
+                            | "project_glob"
+                            | "project_grep"
                     )
                     && rule.2.is_none()
                     && (self.root || rule.1 == Scope::ThreadTree)
@@ -1013,7 +1017,7 @@ impl Control {
         if !name.is_default_namespace()
             || !matches!(
                 name.name.as_str(),
-                "exec_command" | "write_stdin" | "apply_patch"
+                "exec_command" | "write_stdin" | "apply_patch" | "project_glob" | "project_grep"
             )
         {
             return (false, false);
@@ -1524,7 +1528,11 @@ impl Control {
                         && key.is_default_namespace()
                         && matches!(
                             key.name.as_str(),
-                            "exec_command" | "write_stdin" | "apply_patch"
+                            "exec_command"
+                                | "write_stdin"
+                                | "apply_patch"
+                                | "project_glob"
+                                | "project_grep"
                         )
                         && request.phase() == Some("before")
                         && request.boundary() == Some("pre_dispatch"));
@@ -4878,10 +4886,32 @@ impl CodeModeSessionDelegate for Delegate {
                 input: &retained.input,
                 result: &result,
             };
-            match control
-                .decide_retained(request, &cancellation_token, bytes, None)
-                .await?
-            {
+            let decision = if let Some(lease) = lease.filter(|_| {
+                executor_before
+                    && matches!(
+                        retained.tool_name.name.as_str(),
+                        "project_glob" | "project_grep"
+                    )
+            }) {
+                control
+                    .decide_retained(
+                        OwnedRequest {
+                            request,
+                            owner: &lease.turn,
+                            retained: control.root,
+                            cell_owner_id: None,
+                        },
+                        &cancellation_token,
+                        bytes,
+                        None,
+                    )
+                    .await?
+            } else {
+                control
+                    .decide_retained(request, &cancellation_token, bytes, None)
+                    .await?
+            };
+            match decision {
                 Decision::Replace { value } => Ok(value),
                 _ => Ok(result),
             }

@@ -283,7 +283,15 @@
     {
       "path": "req682-hosted-search-evidence.patch",
       "sha256": "9999a2376c507d69d7a0e37e813c3c63730546ee045aa787a6257429aaa8778e"
+    },
+    {
+      "path": "0060-bounded-nofollow-filesystem.patch",
+      "sha256": "d2048388044ec4004ba13d1111b2da602a401fb4c572280ae24474cd6f480bc1"
+    },
+    {
+      "path": "0061-early-project-search-result-policy.patch",
+      "sha256": "ac413ec794493e2047724a5ee0473744c4a0464313d4330ba6975780bda6e5d3"
     }
   ],
-  "result_tree": "48f9b7e1f8bf2ce4fbd52ac26b62db55e2c636a1"
+  "result_tree": "46f8378f91ef21454bec6717b3beae30000d976f"
 }

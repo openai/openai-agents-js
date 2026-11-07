@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -200,6 +200,126 @@ function cleanupProbe() {
     },
   };
 }
+
+it.each([
+  { code: false, source: 'approval', name: 'project_grep' },
+  { code: false, source: 'transform', name: 'project_glob' },
+  { code: true, source: 'approval', name: 'project_glob' },
+  { code: true, source: 'transform', name: 'project_grep' },
+  { code: true, source: 'false approval', name: 'project_grep' },
+] as const)(
+  'stops search $name from $source with code=$code, joins cleanup, and preserves a successor',
+  async ({ code, source, name }) => {
+    const probe = cleanupProbe();
+    const secret = 'search-policy-private-stop-reason';
+    const args = {
+      pattern: name === 'project_grep' ? 'needle policy' : '*.txt',
+    };
+    const seen: ExecutorContext[] = [];
+    let first = true;
+    const decide = async (info: ExecutorContext) => {
+      if (info.toolName !== name || !first) return true;
+      first = false;
+      await probe.entered.promise;
+      seen.push(info);
+      return source === 'false approval' ? false : stopExecutorTurn(secret);
+    };
+    const policy: Partial<EnvironmentOptions> = {
+      tools: ['project_glob', 'project_grep'],
+      ...(source === 'transform'
+        ? {
+            transformArguments: async (info, value) =>
+              (await decide(info)) === true ? value : stopExecutorTurn(secret),
+          }
+        : { approval: decide }),
+    };
+    const initial = code
+      ? [
+          cell(`const cleanup = tools.executor_cleanup_probe({}).catch(() => {});
+try { await tools.${name}(${JSON.stringify(args)}); } catch { text('caught search denial'); }
+text('forbidden search continuation'); await cleanup;`),
+        ]
+      : [
+          call('executor_cleanup_probe', {}, { callId: 'search-cleanup' }),
+          call(name, args, { callId: 'search-stop' }),
+        ];
+    try {
+      await using f = await open(
+        [
+          initial,
+          [call(name, args, { callId: 'search-successor' })],
+          (request) => {
+            const output = (request.input as JsonObject[]).find(
+              (item) =>
+                item.type === 'function_call_output' &&
+                item.call_id === 'search-successor',
+            );
+            expect(output).toBeDefined();
+            const found = JSON.parse(String(output!.output));
+            expect(found.errors).toEqual([]);
+            expect(found.matches).toContainEqual(
+              name === 'project_glob'
+                ? 'policy-search.txt'
+                : expect.objectContaining({
+                    path: 'policy-search.txt',
+                    line_number: 1,
+                    line: 'needle policy',
+                  }),
+            );
+            return [message('search successor survived')];
+          },
+        ],
+        policy,
+        { code, tools: [probe.gate] },
+      );
+      await writeFile(
+        join(f.executor.cwd, 'policy-search.txt'),
+        'needle policy\n',
+      );
+      try {
+        const turn = await bounded(
+          f.session.submit('Stop this search.'),
+          'submit stopped search',
+        );
+        let settled = false;
+        const outcome = observe(turn.wait()).finally(() => {
+          settled = true;
+        });
+        await bounded(probe.cleaning.promise, 'search stop cleanup entry');
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        expect(settled).toBe(false);
+        expect(probe.cleaned).toBe(false);
+        expect(seen).toHaveLength(1);
+        expect(seen[0]?.submission).toBe(turn);
+        expect(seen[0]?.call?.route).toBe(code ? 'code' : 'direct');
+        probe.release.resolve();
+        stopped(await bounded(outcome, 'joined search policy stop'));
+        expect(probe.cleaned).toBe(true);
+        expect(f.model.requests).toHaveLength(1);
+        expect(starts(f.executor.requests)).toHaveLength(0);
+        const history = await bounded(
+          Array.fromAsync(f.session.items()),
+          'stopped search history',
+        );
+        expect(JSON.stringify(history)).not.toContain(secret);
+        const successor = await bounded(
+          f.session.submit('Search again.'),
+          'submit search successor',
+        );
+        expect(
+          (await bounded(successor.wait(), 'search successor')).finalOutput,
+        ).toBe('search successor survived');
+        expect(seen).toHaveLength(1);
+        f.model.assertExhausted();
+      } finally {
+        probe.release.resolve();
+      }
+    } finally {
+      probe.release.resolve();
+    }
+  },
+  45_000,
+);
 
 it.each(['command approval', 'patch transform'] as const)(
   'stops the root from %s before effects, redacts the reason, and permits a later root',

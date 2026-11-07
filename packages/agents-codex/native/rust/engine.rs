@@ -463,9 +463,11 @@ impl EngineState {
         if let Some(options) = &environment_options {
             options.check_ready(&config, &environment).await?;
         }
+        let project_search = config::project_search(&runtime_json)?;
         let manager = Arc::new_cyclic(|weak| {
             let extensions = extensions::build(
                 &config,
+                project_search.clone(),
                 auth.clone(),
                 goals.as_ref(),
                 local_checklist_store.is_some() || custom_store.is_some(),
