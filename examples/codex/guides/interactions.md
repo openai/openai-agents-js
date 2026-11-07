@@ -90,7 +90,7 @@ Idle forms and opening prompts before turn admission receive no application gran
 
 Root command and patch approvals require selected Environment tools. A child must also have interactions enabled and permission to request the operation. Core MCP approvals must match the original turn, call, and selected raw server and tool. These replies cannot change permission profiles, add network access, or approve other kinds of requests.
 
-`HttpMCP` and `StdioMCP` with `approvalMode: 'approve'` approve automatically. Ordinary `auto` mode follows Core policy and tool annotations. Without `onNativeQuestion`, a native question fails an owned run with `InteractionRequired`. `onInteraction` handles manual tools.
+`HttpMCP` and `StdioMCP` with `approvalMode: 'preapproved'` approve automatically. Ordinary `native` mode follows Core policy and tool annotations. Without `onNativeQuestion`, a native question fails an owned run with `InteractionRequired`. `onInteraction` handles manual tools.
 
 Opening starts with an empty native MCP roster, starts the sole event reader, then publishes the captured current roster and policies. A native question during publication fails opening and joins cleanup. The cancellation evidence covers a native Thread that already exists before the public Session promise resolves; it does not establish cancellation of pre-Thread construction or same-Engine sibling isolation.
 

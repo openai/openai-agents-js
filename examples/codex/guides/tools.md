@@ -8,7 +8,7 @@ Input is a string or a Responses-shaped user message. For images, send an inline
 
 ### Function tools
 
-`tool()` uses a Zod parameter schema and accepts synchronous or asynchronous callbacks. Use `z.strictObject(...)` to reject unrecognized arguments, as Python function tools do. The callback receives the application context, exact submission, original and validated arguments, and an `AbortSignal`. An optional `callbackTimeout` uses seconds. It starts after argument validation and covers callback execution. Cancellation cannot preempt synchronous JavaScript or undo external effects; callbacks should honor the signal and settle their cleanup.
+`tool()` uses a Zod parameter schema and accepts synchronous or asynchronous callbacks. Use `z.strictObject(...)` to reject unrecognized arguments, as Python function tools do. The callback receives the application context, exact submission, original and validated arguments, and an `AbortSignal`. An optional `callbackTimeout` uses seconds and must be in `(0, 2147483.647]`, the supported timer range. It starts after argument validation and covers callback execution. Cancellation cannot preempt synchronous JavaScript or undo external effects; callbacks should honor the signal and settle their cleanup.
 
 ### Tool discovery
 
