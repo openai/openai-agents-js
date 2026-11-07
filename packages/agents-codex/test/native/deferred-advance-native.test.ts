@@ -221,11 +221,11 @@ async function preparedFixture<Result>(
     const completion = originalTurn.wait().catch((error: unknown) => error);
     await expect
       .poll(async () => {
-        const batch = await originalTurn.wait({ until: 'request' });
+        const batch = await originalTurn.wait({ until: 'manual_tool' });
         return 'requests' in batch ? batch.requests.length : 0;
       })
       .toBe(tools.length);
-    const batch = await originalTurn.wait({ until: 'request' });
+    const batch = await originalTurn.wait({ until: 'manual_tool' });
     if (!('requests' in batch))
       throw new Error('Expected pending deferred batch');
     const stale = batch.requests[0]!;
@@ -511,7 +511,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(f.model.requests).toHaveLength(1);
         expect(f.project).not.toHaveBeenCalled();
         expect(f.journal.saveResult).not.toHaveBeenCalled();
-        const pending = await f.session.wait({ until: 'request' });
+        const pending = await f.session.wait({ until: 'manual_tool' });
         expect('requests' in pending).toBe(true);
         await f.session.respond(
           f.request.reply('The host confirmed the job stopped.'),

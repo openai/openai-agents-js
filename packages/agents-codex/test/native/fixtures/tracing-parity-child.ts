@@ -926,7 +926,7 @@ async function restoreCase(batches: unknown[]) {
           originalHandle = workflow.handle;
           await using session = await agent.session();
           const turn = await session.submit('lookup');
-          const result = await turn.wait({ until: 'request' });
+          const result = await turn.wait({ until: 'manual_tool' });
           assert('requests' in result && result.requests.length === 1);
           const request = lookup.match(result.requests[0]);
           assert(request);
@@ -934,7 +934,7 @@ async function restoreCase(batches: unknown[]) {
             { name: 'unrelated.direct.reply', parent: null },
             () =>
               assert.rejects(
-                session.submit(request.reply({ value: 'invalid' })),
+                session.respond(request.reply({ value: 'invalid' })),
                 /Manual tool result failed validation/,
               ),
           );
@@ -960,6 +960,9 @@ async function restoreCase(batches: unknown[]) {
           const result = await agent.run(null, {
             state,
             onInteraction(action) {
+              if (action.type !== 'action_requested')
+                throw new Error('Unexpected native request');
+
               callbackTrace = telemetry.getCurrentSpan()?.context.traceId ?? '';
               const request = lookup.match(action);
               assert(request);

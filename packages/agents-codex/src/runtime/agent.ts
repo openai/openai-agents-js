@@ -32,7 +32,7 @@ import {
   isManualSessionState,
   nativeCheckpoint,
 } from './state';
-import { environmentConfig } from './environment';
+import { environmentConfig, projectSearchRuntime } from './environment';
 import { NativeProviderRoutes, type SelectedModelRoute } from './http-model';
 import type { ProviderLease } from './provider';
 import { AsyncResource } from 'node:async_hooks';
@@ -74,7 +74,7 @@ export async function openSession(
         throw new TypeError(
           'Use null input to resume a pending manual checkpoint',
         );
-      if (!oneShot.onRequiredAction) throw new InteractionRequired(saved);
+      if (!options.onInteraction) throw new InteractionRequired(saved);
     } else if (oneShot.input == null) {
       throw new TypeError(
         'Input is required unless resuming a pending manual checkpoint',
@@ -95,11 +95,14 @@ export async function openSession(
     );
   }
   const native = await binding();
+  const { _sdk_project_search: _previousSearch, ...baseRuntime } =
+    setup.runtime;
   const runtime: RuntimeOptions = {
     ...native._packaged_runtime(),
-    ...setup.runtime,
+    ...baseRuntime,
     ...(model === undefined ? {} : { model }),
     ...(environment ? { environment: environmentConfig(environment) } : {}),
+    ...projectSearchRuntime(environment),
   };
   const parentTrace = captureTraceContext(options.parentTrace);
   const { _sdk_reconciled_calls, ...capturedThreadOptions } =
@@ -211,7 +214,7 @@ export async function openSession(
   if (
     oneShot &&
     manualTools.length &&
-    !oneShot.onRequiredAction &&
+    !options.onInteraction &&
     (!supportsManualCheckpoint(threadOptions, !!environment) ||
       options.output?.schema != null)
   )
@@ -391,6 +394,7 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
+      if (cleanupError === primary) throw primary;
       throw new AggregateError(
         [primary, cleanupError],
         'Native run failed and its owned cleanup is incomplete',
@@ -412,6 +416,7 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
+      if (cleanupError === primary) throw primary;
       throw new AggregateError(
         [primary, cleanupError],
         'Run completion and cleanup failed',

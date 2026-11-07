@@ -218,7 +218,7 @@ it('rejects delayed manual replies from an evicted child handle', async () => {
       },
       { timeout: 5_000 },
     );
-    const oldBatch = await old.turn!.wait({ until: 'request' });
+    const oldBatch = await old.turn!.wait({ until: 'manual_tool' });
     if (!('requests' in oldBatch))
       throw new Error('Expected original child request');
     expect(oldBatch.requests).toHaveLength(1);
@@ -275,7 +275,9 @@ it('rejects delayed manual replies from an evicted child handle', async () => {
         },
         { timeout: 5_000 },
       );
-      const replacementBatch = await current.turn!.wait({ until: 'request' });
+      const replacementBatch = await current.turn!.wait({
+        until: 'manual_tool',
+      });
       if (!('requests' in replacementBatch))
         throw new Error('Expected replacement child request');
       expect(replacementBatch.turn).toBe(current.turn);
@@ -283,7 +285,9 @@ it('rejects delayed manual replies from an evicted child handle', async () => {
       expect(replacementBatch.requests[0].submissionId).toBe(
         replacement.submissionId,
       );
-      expect(await original.wait({ until: 'request' })).toBe(originalResult);
+      expect(await original.wait({ until: 'manual_tool' })).toBe(
+        originalResult,
+      );
       expect(replacement.callId).toBe(first.callId);
       expect(replacement.submissionId).not.toBe(first.submissionId);
       expect(current.turn!.instanceId).not.toBe(original.instanceId);

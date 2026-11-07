@@ -75,7 +75,7 @@ it('discovers the native canonical catalog without creating an engine or acquiri
       supportsInlineArguments: false,
     },
     {
-      name: 'stop',
+      name: 'stop-background-terminals',
       description: 'stop all background terminals',
       supportsInlineArguments: false,
     },
@@ -94,7 +94,12 @@ it('refuses missing or extra arguments, aliases, TUI commands, unknown names, an
   const execute = vi.spyOn(NativeThread.prototype, '_execute_command');
   const compact = vi.spyOn(NativeThread.prototype, '_compact');
   try {
-    for (const text of ['rename', '/review  ', 'compact extra', '/stop extra'])
+    for (const text of [
+      'rename',
+      '/review  ',
+      'compact extra',
+      '/stop-background-terminals extra',
+    ])
       await expect(session.executeCommand(text)).rejects.toBeInstanceOf(
         TypeError,
       );
@@ -108,7 +113,12 @@ it('refuses missing or extra arguments, aliases, TUI commands, unknown names, an
   } finally {
     await session.close();
   }
-  for (const text of ['compact', 'stop', 'rename closed', 'review closed'])
+  for (const text of [
+    'compact',
+    'stop-background-terminals',
+    'rename closed',
+    'review closed',
+  ])
     await expect(session.executeCommand(text)).rejects.toBeInstanceOf(
       NativeError,
     );
@@ -245,9 +255,9 @@ it('runs native review after a selector-backed typed root without parsing or rep
     await vi.waitFor(() => expect(reviewEntered).toBe(true));
     const defaultWait = session.wait();
     defaultWait.catch(() => {});
-    await expect(
-      session.submit('Do not steer review.', { ifBusy: 'steer' }),
-    ).rejects.toThrow('Use the returned Turn');
+    await expect(session.submit('Do not steer review.')).rejects.toThrow(
+      'settled',
+    );
     releaseReview.resolve();
     await expect(defaultWait).rejects.toThrow('Use the returned Turn');
     expect((await command.turn.wait()).finalOutput).toEqual(reviewOutput);
@@ -389,9 +399,9 @@ it('keeps rename and stop available during a Turn while refusing idle-only comma
       sessionId: session.id,
       name: 'Active conversation',
     });
-    const stopped = await session.executeCommand('stop');
+    const stopped = await session.executeCommand('stop-background-terminals');
     expect(stopped).toEqual({
-      command: 'stop',
+      command: 'stop-background-terminals',
       sessionId: session.id,
       operationId: expect.any(String),
     });
@@ -593,10 +603,13 @@ print(json.dumps(dict(locks=locks,holders=holders)))
       snapshotLock('before-stop');
       const requestBoundary = executor.requests.length;
       preStopRequestBoundary = requestBoundary;
-      const stopped = await session.executeCommand('/stop');
-      if (stopped.command !== 'stop') throw new Error('Missing stop receipt');
+      const stopped = await session.executeCommand(
+        '/stop-background-terminals',
+      );
+      if (stopped.command !== 'stop-background-terminals')
+        throw new Error('Missing stop receipt');
       expect(stopped).toEqual({
-        command: 'stop',
+        command: 'stop-background-terminals',
         sessionId: session.id,
         operationId: expect.any(String),
       });

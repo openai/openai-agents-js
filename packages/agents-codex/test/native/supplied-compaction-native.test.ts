@@ -178,7 +178,7 @@ ${openingFile}`;
         budget: { maxRequests: 2, maxTokens: 10 },
       });
       const result = await turn.wait();
-      expect(result.usage?.totalTokenUsage.totalTokens).toBe(10);
+      expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(10);
       await session.update({ instructions: 'Current instructions' });
       await session.update({ modelSettings: { reasoningEffort: 'low' } });
       const id = session.id;
@@ -321,7 +321,7 @@ ${openingFile}`;
     }
 
     const turn = await session.submit('Original decision request');
-    const pending = await turn.wait({ until: 'request' });
+    const pending = await turn.wait({ until: 'manual_tool' });
     if (!('requests' in pending)) throw new Error('Expected a manual request');
     const request = approval.match(pending.requests[0]);
     if (!request) throw new Error('Expected the decision request');

@@ -28,7 +28,7 @@ it.each(MODELS)('uses documented omitted reasoning for %s', async (model) => {
     provider,
   }).run('one');
   expect(result.finalOutput).toBe('finished');
-  expect(result.usage?.modelContextWindow).toBe(258_400);
+  expect(result.threadUsage?.modelContextWindow).toBe(258_400);
   expect(server.requests[0]?.model).toBe(model);
   expect(server.requests[0]?.reasoning).toMatchObject({ effort: 'medium' });
   server.assertExhausted();
@@ -96,7 +96,7 @@ it('reselects omitted reasoning after model changes', async () => {
     await session.update({ model });
     const result = await (await session.submit('selected model')).wait();
     expect(result.finalOutput).toBe('finished');
-    expect(result.usage?.modelContextWindow).toBe(
+    expect(result.threadUsage?.modelContextWindow).toBe(
       model === unknown ? null : 258_400,
     );
   }
@@ -128,7 +128,7 @@ it('aligns omitted Astra effort with observed provider behavior while retaining 
         : { modelSettings: { reasoningEffort: effort } }),
     }).run('one');
     expect(result.finalOutput).toBe('finished');
-    expect(result.usage?.modelContextWindow).toBe(258_400);
+    expect(result.threadUsage?.modelContextWindow).toBe(258_400);
   }
   expect(server.requests.map((request) => request.reasoning)).toEqual([
     expect.objectContaining({ effort: 'medium' }),

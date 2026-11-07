@@ -457,10 +457,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(fork.repair_items).toEqual([]);
       await session.compact({ summary: 'The original output was invalid.' });
       expect(server.requests).toHaveLength(1);
-      const later = await session.submitWithOutput(
-        'LATER_PLAIN_ROOT',
-        z.string(),
-      );
+      const later = await session.submit('LATER_PLAIN_ROOT', {
+        outputType: z.string(),
+      });
       const completed = await later.wait();
       expect(completed.finalOutput).toBe('later ordinary result');
       expect(completed.repairAttempts).toEqual([]);

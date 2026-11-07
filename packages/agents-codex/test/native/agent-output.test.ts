@@ -256,12 +256,13 @@ describe('Agent output views', () => {
       expect(acquire).not.toHaveBeenCalled();
       const restored = await view.session({ state: first.state! });
       try {
-        const plain = await restored.submitWithOutput('PLAIN', z.string());
+        const plain = await restored.submit('PLAIN', {
+          outputType: z.string(),
+        });
         expect((await plain.wait()).finalOutput).toBe('per-operation text');
-        const queued = await restored.enqueue(
-          'QUEUED',
-          z.object({ label: z.string() }),
-        );
+        const queued = await restored.enqueue('QUEUED', {
+          outputType: z.object({ label: z.string() }),
+        });
         expectTypeOf((await queued.wait()).finalOutput).toEqualTypeOf<{
           label: string;
         }>();

@@ -1065,7 +1065,7 @@ async function runCaptured<Context, Output extends AgentOutputType = 'text'>(
       nativeInfo = {
         sessionId: session.id,
         turnId: outcome.value.turn.turnId,
-        usage: outcome.value.usage,
+        usage: outcome.value.threadUsage,
       };
       await finalize();
       if (captured.persistence.returnState) state = await session.saveState();

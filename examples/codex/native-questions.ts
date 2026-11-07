@@ -5,7 +5,7 @@ import {
   HttpMCP,
   NativeProvider,
   type ElicitationRequest,
-  type NativeQuestion,
+  type Interaction,
   type NativeQuestionReply,
   type Session,
   type UserVerificationRequest,
@@ -22,9 +22,11 @@ export type CollectFormValues = (
 /** Collect form values without inferring the originating tool or turn. */
 export function formQuestionHandler(collect: CollectFormValues) {
   return async (
-    request: NativeQuestion,
+    request: Interaction,
     signal: AbortSignal,
   ): Promise<NativeQuestionReply> => {
+    if (request.type === 'action_requested')
+      throw new Error('Expected a native question');
     signal.throwIfAborted();
     if (request.type === 'approval_request') return request.reply('deny');
     // This renderer collects form values, not verification proofs or URL consent.
@@ -98,7 +100,7 @@ export type DecideURLConsent = (
 ) => Promise<boolean>;
 
 /**
- * Call from an application-owned Session reader, outside onNativeQuestion.
+ * Call from an application-owned Session reader, outside onInteraction.
  * Peer-reported completion does not prove authorization.
  */
 export async function answerOwnedURL(
@@ -129,7 +131,7 @@ export type CollectVerificationProof = (
 ) => Promise<VerificationProof | null>;
 
 /**
- * Call from a Session reader; onNativeQuestion callbacks return replies instead.
+ * Call from a Session reader; onInteraction callbacks return replies instead.
  * Proof delivery is not service acceptance.
  */
 export async function answerVerificationRequest(
@@ -148,7 +150,10 @@ export async function answerVerificationRequest(
 /** Agent.run closes its session and joins the handler before returning. */
 export async function askOnce(agent: Agent, input: string) {
   return agent.run(input, {
-    onNativeQuestion(request, signal) {
+    onInteraction(request, signal) {
+      if (request.type === 'action_requested')
+        throw new Error('Unexpected manual request');
+
       signal.throwIfAborted();
       return request.type === 'approval_request'
         ? request.reply('deny')
@@ -163,7 +168,7 @@ export async function askOnceWithForms(
   input: string,
   collect: CollectFormValues,
 ) {
-  return agent.run(input, { onNativeQuestion: formQuestionHandler(collect) });
+  return agent.run(input, { onInteraction: formQuestionHandler(collect) });
 }
 
 /** Run one task while a single application reader owns question delivery. */

@@ -42,12 +42,12 @@ it('retains per-turn cache writes through public history and restore', async () 
     const first = await session.submit('first');
     firstId = first.turnId;
     expect(
-      (await first.wait()).usage?.totalTokenUsage.cacheWriteInputTokens,
+      (await first.wait()).threadUsage?.totalTokenUsage.cacheWriteInputTokens,
     ).toBe(8);
     const second = await session.submit('second');
     secondId = second.turnId;
     expect(
-      (await second.wait()).usage?.totalTokenUsage.cacheWriteInputTokens,
+      (await second.wait()).threadUsage?.totalTokenUsage.cacheWriteInputTokens,
     ).toBe(12);
     const turns: RecordedTurn[] = [];
     for await (const turn of session.turns()) turns.push(turn);

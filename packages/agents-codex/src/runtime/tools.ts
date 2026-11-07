@@ -214,6 +214,7 @@ export function tool<
 >(options: {
   /** Defer selected schema presentation; does not change execution admission. */
   deferLoading?: boolean;
+  /** Callback-body deadline in seconds, at most 2_147_483.647. */
   callbackTimeout?: number;
   name: string;
   description?: string;
@@ -241,9 +242,11 @@ export function tool<
     throw new TypeError('deferLoading must be a boolean');
   if (
     options.callbackTimeout !== undefined &&
-    (!Number.isFinite(options.callbackTimeout) || options.callbackTimeout <= 0)
+    (!Number.isFinite(options.callbackTimeout) ||
+      options.callbackTimeout <= 0 ||
+      options.callbackTimeout > 2_147_483_647 / 1000)
   )
-    throw new TypeError('callbackTimeout must be positive and finite');
+    throw new TypeError('callbackTimeout must be in (0, 2147483.647] seconds');
   const { name, parameters, execute, result, before, after, callbackTimeout } =
     options;
   return Object.freeze({

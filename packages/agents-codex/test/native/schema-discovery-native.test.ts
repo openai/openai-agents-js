@@ -274,7 +274,7 @@ it('adapts the current function and MCP roster when the model changes in both di
     name: 'records',
     url: peer.url,
     tools: ['lookup', 'hidden'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
     deferLoading: true,
   });
   const model = new ModelServer([
@@ -435,13 +435,13 @@ it('keeps direct and deferred MCP aliases distinct and excludes omitted leaves f
     url: lazyPeer.url,
     tools: ['lookup', 'destroy'],
     deferLoading: true,
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
   });
   const direct = new HttpMCP({
     name: 'direct',
     url: directPeer.url,
     tools: ['search'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
   });
   const model = new ModelServer([
     [search('synthetic skylark lookup', 'find-record')],

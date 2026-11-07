@@ -173,7 +173,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       try {
         const root = await session.submit('original');
         await originalEntered.promise;
-        const queued = await session.enqueue('must not promote', z.string());
+        const queued = await session.enqueue('must not promote', {
+          outputType: z.string(),
+        });
         originalRelease.resolve();
         const queuedFailure = queued.wait().catch((error: unknown) => error);
         const failure = await root.wait().catch((error: unknown) => error);
@@ -309,7 +311,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const second = root.wait();
         const sessionWait = session.wait();
         const states = [first, second, sessionWait].map(observe);
-        const queued = await session.enqueue('queued', z.string());
+        const queued = await session.enqueue('queued', {
+          outputType: z.string(),
+        });
         await expect(session.saveState()).rejects.toThrow();
         expect(await session.pendingInteractions()).toEqual([]);
         expect(states.every((state) => !state.settled)).toBe(true);

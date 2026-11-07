@@ -410,7 +410,7 @@ it('allows an auto response without search and honors idle tool choice and per-s
       (item) => item.type === 'web_search_call',
     ),
   ).toBe(false);
-  expect(first.usage).toBeNull();
+  expect(first.threadUsage).toBeNull();
   expect(peer.model.requests[0]).toMatchObject({
     tool_choice: 'auto',
     tools: expect.arrayContaining([

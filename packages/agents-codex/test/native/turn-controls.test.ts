@@ -41,7 +41,7 @@ afterEach(async () => {
 });
 
 describe('exact root Turn controls', () => {
-  it('keeps implicit steering and prevents an old root from controlling later work', async () => {
+  it('requires explicit steering and prevents an old root from controlling later work', async () => {
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const effects: string[] = [];
@@ -76,7 +76,7 @@ describe('exact root Turn controls', () => {
       tools: [hold],
     }).session();
     try {
-      const first = await session.submit('A', { ifBusy: 'steer' });
+      const first = await session.submit('A');
       const result = await first.wait();
       const second = await session.submit('B');
       await entered.promise;
@@ -90,7 +90,8 @@ describe('exact root Turn controls', () => {
         .catch((error: unknown) => error);
       expect(stale).toBeInstanceOf(StaleTurnError);
       expect(stale).toMatchObject({ effects: 'notStarted' });
-      expect(await session.submit('implicit detail')).toBe(second);
+      await expect(session.submit('independent busy task')).rejects.toThrow();
+      await second.steer('implicit detail');
       await second.steer('legacy detail');
       const firstReceipt = await second.steerExact('exact one', second.turnId);
       const secondReceipt = await second.steerExact('exact two', second.turnId);
@@ -187,7 +188,7 @@ describe('exact root Turn controls', () => {
       await expect(
         // @ts-expect-error FIFO admission is outside this slice.
         session.submit('invalid option', { ifBusy: 'queue' }),
-      ).rejects.toThrow('ifBusy must be steer or reject');
+      ).rejects.toThrow('submit rejects busy work');
       const outcomes = await Promise.allSettled([
         session.submit('one', { ifBusy: 'reject' } satisfies SubmitOptions),
         session.submit('two', { ifBusy: 'reject' }),
@@ -433,12 +434,12 @@ describe('exact root Turn controls', () => {
         turnId: request.turnId,
         inputId: expect.any(String),
       });
-      expect(await session.submit('implicit continuation detail')).toBe(first);
+      await first.steer('implicit continuation detail');
       await expect(
         // @ts-expect-error Manual replies cannot carry new-submission options.
-        session.submit(request.reply('yes'), {}),
-      ).rejects.toThrow('only to user input');
-      expect(await session.submit(request.reply('yes'))).toBe(first);
+        session.respond(request.reply('yes'), {}),
+      ).rejects.toThrow('without operation options');
+      await session.respond(request.reply('yes'));
       const completed = await result;
       await observing;
       expect(
@@ -449,7 +450,7 @@ describe('exact root Turn controls', () => {
       expect(completed.finalOutput).toBe('final native step');
       expect(completed.turn).toBe(first);
       expect(await first.wait()).toBe(completed);
-      expect(await first.wait({ until: 'request' })).toBe(completed);
+      expect(await first.wait({ until: 'manual_tool' })).toBe(completed);
       expect(await session.wait()).toBe(completed);
       const second = await session.submit('B');
       expect((await second.wait()).finalOutput).toBe('unrelated B');
@@ -517,7 +518,9 @@ describe('exact root Turn controls', () => {
         );
         const child = children[0]?.turn;
         if (!child) throw new Error('No live child Turn');
+        // @ts-expect-error Child controls are absent from the public type.
         await expect(child.cancel()).rejects.toThrow('root Turns only');
+        // @ts-expect-error Child controls are absent from the public type.
         await expect(child.steer('wrong scope')).rejects.toThrow(
           'root Turns only',
         );

@@ -4,7 +4,7 @@ Answer native approvals and forms, handle URL consent, or reply to a verificatio
 
 ## Native questions
 
-Use `onNativeQuestion` during `agent.run()` or read `session.interactions()` in an explicit Session. Match the request's type before preparing its reply.
+Use `onInteraction` during `agent.run()` or when opening `agent.session()`. You can also read `session.interactions()` in an explicit Session. Match the request's type before preparing its reply.
 
 | Request | Reply |
 | --- | --- |
@@ -17,12 +17,18 @@ This handler denies approvals and declines forms and URLs:
 
 ```ts
 const result = await agent.run('Use the selected tools.', {
-  onNativeQuestion(request) {
+  onInteraction(request) {
+    if (request.type === 'action_requested')
+      throw new Error('No manual-tool policy configured');
     if (request.type === 'approval_request') return request.reply('deny');
     return request.reply(null);
   },
 });
 ```
+
+An opening handler lives for the Session. It receives root and child requests, plus supported Session-scoped URL requests with null turn and submission IDs. It does not make startup questions available. Match the request type and return a reply constructed by that exact request. Use `session.respond(reply)` when the application owns delivery instead.
+
+Handler failures belong to the request owner. A failure for a Session-scoped request fails the Session, including queued work. Cancellation and close abort the relevant handler signals and join entered handlers before cleanup finishes. A handler that ignores its signal can delay cleanup.
 
 ### Collect form answers
 
@@ -58,7 +64,7 @@ Force cancellation, root completion, or Session close expires requests owned by 
 
 ### Read pending interactions
 
-For requests with an owning turn, `turn.wait({ until: 'interaction' })` returns a pending batch with its original `turn` and current `requests`. Narrow by `type`. `action_requested` is a manual tool request. `approval_request` is a limited native approval. `elicitation_request` has a form or URL mode. `user_verification_request` carries a verification challenge. Exact-turn waits exclude Session-scoped requests. `turn.wait()` still waits for completion; `until: 'request'` returns manual tool requests only.
+For requests with an owning turn, `turn.wait({ until: 'interaction' })` returns a pending batch with its original `turn` and current `requests`. Narrow by `type`. `action_requested` is a manual tool request. `approval_request` is a limited native approval. `elicitation_request` has a form or URL mode. `user_verification_request` carries a verification challenge. Exact-turn waits exclude Session-scoped requests. `turn.wait()` still waits for completion; `until: 'manual_tool'` returns manual tool requests only.
 
 An observer's `signal` cancels only that observer. It does not answer questions, cancel the turn, or consume grants. Completion and terminal errors take precedence over a pending batch. An owned continuation can give a request its own submission ID while the batch retains the original public turn. A returned batch does not reserve its requests; another observer or callback can answer first.
 
@@ -76,7 +82,7 @@ Narrow the returned value in this order:
 | `'type' in outcome` | A terminal `TurnNeedsAttention` result with `type: 'needs_attention'`. Inspect `reason`, `error`, and `rateLimits` before deciding what to do next. |
 | Otherwise | `Completed`. Read its validated `finalOutput`. |
 
-The terminal reasons are `interrupted`, `connection_lost`, `rate_limited`, and `quota_blocked`. These describe a stopped Turn; waiting again does not restart it. The original `turn.wait()` still rejects for that failure. `waitForAttention()` converts only these recognized native failures into values. Unrelated provider errors, application callback errors, output-validation failures, and cleanup failures still reject. Treat `rateLimits` as a diagnostic snapshot, not permission or a schedule to retry uncertain work.
+The terminal reasons are `interrupted`, `connection_lost`, `rate_limited`, `quota_blocked`, and `budget_exceeded`. These describe a stopped Turn; waiting again does not restart it. The original `turn.wait()` still rejects for that failure. `waitForAttention()` converts only these recognized native failures into values. Unrelated provider errors, application callback errors, output-validation failures, and cleanup failures still reject. Treat `rateLimits` as a diagnostic snapshot, not permission or a schedule to retry uncertain work.
 
 The optional signal aborts this waiter with its reason. It does not cancel the Turn, answer requests, or turn a deadline into an `interrupted` result. A settled public result takes precedence at the final scan. If the application stops supervising, [cancel the captured root or close its Session](sessions.md#choose-a-cancellation-lifetime) and join cleanup. Session-scoped requests remain outside this exact-Turn wait, as with `until: 'interaction'`.
 
@@ -90,7 +96,7 @@ Idle forms and opening prompts before turn admission receive no application gran
 
 Root command and patch approvals require selected Environment tools. A child must also have interactions enabled and permission to request the operation. Core MCP approvals must match the original turn, call, and selected raw server and tool. These replies cannot change permission profiles, add network access, or approve other kinds of requests.
 
-`HttpMCP` and `StdioMCP` with `approvalMode: 'approve'` approve automatically. Ordinary `auto` mode follows Core policy and tool annotations. Without `onNativeQuestion`, a native question fails an owned run with `InteractionRequired`. `onInteraction` handles manual tools.
+`HttpMCP` and `StdioMCP` with `approvalMode: 'preapproved'` approve automatically. Ordinary `native` mode follows Core policy and tool annotations. Without `onInteraction`, a native question fails an owned run with `InteractionRequired`. The same handler handles manual tool requests.
 
 Opening starts with an empty native MCP roster, starts the sole event reader, then publishes the captured current roster and policies. A native question during publication fails opening and joins cleanup. The cancellation evidence covers a native Thread that already exists before the public Session promise resolves; it does not establish cancellation of pre-Thread construction or same-Engine sibling isolation.
 
@@ -104,9 +110,9 @@ To accept a URL request from an application-owned Session reader:
 2. Construct `request.replyUrlAccept()` and deliver that exact reply with `await session.respond(reply)`. Constructing it alone sends nothing.
 3. Await `request.waitForCompletion({ timeoutMs, signal })` on the same issued request.
 
-`timeoutMs` must be positive and finite. A timeout retires the request. A waiter's signal cancels that waiter alone.
+`timeoutMs` must be positive and finite. A timeout or the waiter's signal stops only that observer. Other observers and the request remain live. Call `await request.expire()` to abandon that URL request and join its cancellation. Closing its owning Session also expires it.
 
-Run this flow in an application-owned Session reader. In `onNativeQuestion`, return the prepared reply for SDK delivery. Waiting for completion inside the callback would block consent delivery.
+Run this flow in an application-owned Session reader. In `onInteraction`, return the prepared reply for SDK delivery. Waiting for completion inside the callback would block consent delivery.
 
 Peer-reported completion is separate from consent and does not prove authorization. A failed wait does not establish that no effect occurred. The SDK retains a matching completion even if the peer reports it before or during consent delivery.
 

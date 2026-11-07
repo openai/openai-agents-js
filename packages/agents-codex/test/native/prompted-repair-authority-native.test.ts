@@ -111,7 +111,7 @@ describe.skipIf(
             new StdioMCP({
               name: 'local',
               tools: ['search'],
-              approvalMode: 'approve',
+              approvalMode: 'preapproved',
               command: process.execPath,
               args: [
                 resolve(import.meta.dirname, 'mcp-peer.mjs'),

@@ -157,7 +157,7 @@ native('real Environment approval boundaries', () => {
           const timer = setTimeout(() => observer.abort(reason), 10);
           try {
             await expect(
-              turn.wait({ until: 'request', signal: observer.signal }),
+              turn.wait({ until: 'manual_tool', signal: observer.signal }),
             ).rejects.toBe(reason);
             expect(await session.pendingInteractions()).toEqual([request]);
             await expect(access(targets.first)).rejects.toMatchObject({

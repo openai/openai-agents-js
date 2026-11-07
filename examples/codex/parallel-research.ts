@@ -7,12 +7,13 @@ import {
   NativeRole,
   tool,
   type Completed,
+  type ChildTurn,
+  type ChildCompleted,
   type EnvironmentOptions,
   type NativeProviderOptions,
   type ObservedEvent,
   type Subagent,
   type ToolCallInfo,
-  type Turn,
 } from '@openai/agents';
 import { z } from 'zod';
 
@@ -67,8 +68,8 @@ export interface ParallelResearchResult {
   children: Array<{
     sourceId: string;
     child: Subagent;
-    turn: Turn<string>;
-    completed: Completed<string>;
+    turn: ChildTurn;
+    completed: ChildCompleted;
   }>;
   sources: readonly SourceReceipt[];
   events: readonly ObservedEvent[];

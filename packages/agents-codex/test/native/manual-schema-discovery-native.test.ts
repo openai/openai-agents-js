@@ -221,9 +221,11 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         programmaticToolCalling: false,
       });
       await using source = await agent.session();
-      const original = await source.submitWithOutput('Render two pages.', {
-        mode: 'prompted',
-        schema: z.object({ report: z.string(), pages: z.number().int() }),
+      const original = await source.submit('Render two pages.', {
+        outputType: {
+          mode: 'prompted',
+          schema: z.object({ report: z.string(), pages: z.number().int() }),
+        },
       });
       const completion = original.wait().catch((error: unknown) => error);
       const request = await nextAction(source);

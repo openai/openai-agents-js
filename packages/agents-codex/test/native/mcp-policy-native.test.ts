@@ -219,7 +219,7 @@ const laterResult = 'follow-up recorded';
 const reconnectOptions = {
   name: 'fixture',
   tools: ['lookup'],
-  approvalMode: 'approve',
+  approvalMode: 'preapproved',
   executionTimeout: 10,
 } as const;
 const reconnectResult = { content: [{ type: 'text', text: laterResult }] };
@@ -603,7 +603,7 @@ it.each(['direct', 'code'] as const)(
         name: 'fixture',
         url: remote.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         before,
         approval,
         transformResult,
@@ -693,7 +693,7 @@ it.each([false, true])(
         name: 'fixture',
         url: remote.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         before,
         approval,
       }),
@@ -752,7 +752,7 @@ it.each(['false', 'nonboolean', 'throw'] as const)(
         name: 'fixture',
         url: remote.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         approval,
       }),
       [[lookup()]],
@@ -781,7 +781,7 @@ it('does not turn application approval into native approval authority', async ()
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'auto',
+      approvalMode: 'native',
       approval,
     }),
     [[lookup()]],
@@ -815,7 +815,7 @@ it('adds and removes the last policy then returns to ordinary MCP updates', asyn
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
     });
   const { session, model } = await open(plain(), [
     [lookup()],
@@ -834,7 +834,7 @@ it('adds and removes the last policy then returns to ordinary MCP updates', asyn
         name: 'fixture',
         url: remote.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         before,
       }),
     ],
@@ -864,7 +864,7 @@ it('close revokes approval promptly while joining an uncooperative physical call
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       approval(ctx) {
         signal = ctx.signal;
         return held;
@@ -911,7 +911,7 @@ it('application deadline force-stops approval but retains physical and failed en
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       async approval(ctx) {
         signal = ctx.signal;
         await release.promise;
@@ -1034,7 +1034,7 @@ it('joins a held result transform after native close without failing cleanup', a
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       async transformResult(_context, result) {
         entered = true;
         await release.promise;
@@ -1140,7 +1140,7 @@ it('keeps a real child policy on its original owner when root-idle update is ref
     name: 'fixture',
     url: remote.url,
     tools: ['find-record'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
     approval(ctx) {
       identity = ctx;
       return held;
@@ -1174,7 +1174,7 @@ it('keeps a real child policy on its original owner when root-idle update is ref
             name: 'fixture',
             url: remote.url,
             tools: ['find-record'],
-            approvalMode: 'approve',
+            approvalMode: 'preapproved',
             approval: replacement,
           }),
         ],
@@ -1215,7 +1215,7 @@ it('keeps a real child policy on its original owner when root-idle update is ref
             name: 'fixture',
             url: remote.url,
             tools: ['find-record'],
-            approvalMode: 'approve',
+            approvalMode: 'preapproved',
             approval: replacement,
           }),
         ],
@@ -1243,7 +1243,7 @@ it.each(['add', 'remove', 'replace', 'retain'] as const)(
         name: 'fixture',
         url: remote.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         approval,
       });
     const { session, model } = await open(
@@ -1313,7 +1313,7 @@ it('gives a new native child the accepted MCP roster and callback generation', a
       name: 'fixture',
       url: originalPeer.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       approval: original,
     }),
     Array.from({ length: 4 }, () => respond),
@@ -1325,7 +1325,7 @@ it('gives a new native child the accepted MCP roster and callback generation', a
         name: 'fixture',
         url: replacementPeer.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         approval: replacement,
       }),
     ],
@@ -1406,7 +1406,7 @@ it('excludes configured-disabled questions from a real child catalog while prese
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       approval,
     }),
     Array.from({ length: 4 }, () => reply),
@@ -1534,7 +1534,7 @@ it('updates the restored root MCP policy before reloading its recorded cold chil
       name: 'fixture',
       url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       approval,
     });
   const agent = new Agent({
@@ -1683,7 +1683,7 @@ it('preserves policy-free live-child replacement refusal and Session retirement'
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
     });
   const agent = new Agent({
     instructions: 'Delegate.',
@@ -1868,7 +1868,7 @@ it.each(['websocket', 'fallback'] as const)(
           name: 'fixture',
           url: remote.url,
           tools: ['lookup'],
-          approvalMode: 'approve',
+          approvalMode: 'preapproved',
           before,
         }),
       ],
@@ -1986,7 +1986,7 @@ it('stops only the owning child while its sibling and parent finish', async () =
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       approval: policy,
     }),
     Array.from({ length: 6 }, () => respond),
@@ -2066,7 +2066,7 @@ it('rejects a revoked late stop and preserves cancellation and successor effects
       name: 'fixture',
       url: remote.url,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       async before(ctx) {
         if (calls++ === 0) {
           entered.resolve(ctx);
@@ -2135,7 +2135,7 @@ it('restores the native MCP carrier with Session-only tracing and strict restric
         name: 'fixture',
         url: remote.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         async transformResult(context, result) {
           callbacks++;
           expect(context).not.toHaveProperty('tracing_context');

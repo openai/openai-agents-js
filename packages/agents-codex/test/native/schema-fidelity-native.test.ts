@@ -304,8 +304,9 @@ async function restoreWebSocketCheckpoint(entry: string) {
     sessions.push(restored);
     const current = await nextRequest(restored);
     expect(current.turnId).toBe(original.turnId);
-    await expect(restored.submit(original.reply('stale'))).rejects.toThrow();
-    const turn = await restored.submit(answerLookup(current));
+    await expect(restored.respond(original.reply('stale'))).rejects.toThrow();
+    const turn = restored.restoredTurn!;
+    await restored.respond(answerLookup(current));
     result = await turn.wait();
   } else {
     result = await agent.run(null, { state, onInteraction: answerLookup });

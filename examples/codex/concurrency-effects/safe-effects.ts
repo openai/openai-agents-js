@@ -94,7 +94,7 @@ export async function runSafeEffects() {
       }).session({ context });
       const turn = await session.submit('Write.');
       await turn.wait({
-        until: 'request',
+        until: 'manual_tool',
         signal: AbortSignal.timeout(10_000),
       });
       assert.equal(peer.toolOutput('first'), 'written');

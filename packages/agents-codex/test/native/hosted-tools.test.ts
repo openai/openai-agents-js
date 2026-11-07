@@ -22,6 +22,7 @@ import { vi } from 'vitest';
 describe('native provider-hosted declarations', () => {
   it('captures nested configuration separately from local callbacks', () => {
     const stores = ['vs_synthetic'];
+    const callers: ('direct' | 'programmatic')[] = ['direct'];
     const container = {
       type: 'auto' as const,
       file_ids: ['file_synthetic'],
@@ -49,7 +50,7 @@ describe('native provider-hosted declarations', () => {
         includeSearchResults: true,
         filters: { type: 'eq', key: 'team', value: 'sdk' },
       }),
-      codeInterpreter({ container }),
+      codeInterpreter({ container, allowedCallers: callers }),
       imageGeneration({
         action: 'edit',
         inputImageMask: mask,
@@ -61,6 +62,7 @@ describe('native provider-hosted declarations', () => {
       callback,
     ]);
     stores.push('vs_other');
+    callers.push('programmatic');
     container.file_ids.push('file_other');
     mask.image_url = 'changed';
     expect(declarations.tools).toEqual([callback]);
@@ -73,6 +75,7 @@ describe('native provider-hosted declarations', () => {
       },
       {
         type: 'code_interpreter',
+        allowed_callers: ['direct'],
         container: {
           type: 'auto',
           file_ids: ['file_synthetic'],

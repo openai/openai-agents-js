@@ -297,7 +297,7 @@ it.each(['direct', 'code'] as const)(
           name: 'ownership',
           url: peer.url,
           tools: ['lookup'],
-          approvalMode: 'approve',
+          approvalMode: 'preapproved',
         }),
       ],
     }).session();
@@ -305,7 +305,7 @@ it.each(['direct', 'code'] as const)(
     const originalCall = await peer.entered('original');
     peer.emit(originalCall);
     const first = await question(session, null, 'elicitation_request');
-    if (first.type !== 'elicitation_request')
+    if (first.type !== 'elicitation_request' || first.mode !== 'form')
       throw new Error('Expected a form');
     expect(first).toMatchObject({
       turnId: original.turnId,
@@ -325,7 +325,7 @@ it.each(['direct', 'code'] as const)(
     const successor = await session.submit('successor');
     peer.emit(await peer.entered('successor'));
     const second = await question(session, null, 'elicitation_request');
-    if (second.type !== 'elicitation_request')
+    if (second.type !== 'elicitation_request' || second.mode !== 'form')
       throw new Error('Expected a form');
     expect(second).not.toBe(first);
     expect(second.turnId).toBe(successor.turnId);
@@ -374,7 +374,7 @@ it('ends an unanswered issued root form at an application deadline without accep
         name: 'ownership',
         url: peer.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
       }),
     ],
   }).session();
@@ -382,7 +382,7 @@ it('ends an unanswered issued root form at an application deadline without accep
   const entered = await peer.entered('deadline');
   peer.emit(entered);
   const request = await question(session, null, 'elicitation_request');
-  if (request.type !== 'elicitation_request')
+  if (request.type !== 'elicitation_request' || request.mode !== 'form')
     throw new Error('Expected a form');
   expect(request).toMatchObject({
     turnId: turn.turnId,
@@ -448,7 +448,7 @@ it('declines late unassociated delivery while a successor uses the same server',
         name: 'ownership',
         url: peer.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
       }),
     ],
   }).session();
@@ -471,7 +471,7 @@ it('declines late unassociated delivery while a successor uses the same server',
   expect(peer.effects).toEqual([]);
   peer.emit(nextCall);
   const current = await question(session, null, 'elicitation_request');
-  if (current.type !== 'elicitation_request')
+  if (current.type !== 'elicitation_request' || current.mode !== 'form')
     throw new Error('Expected a form');
   expect(current.turnId).toBe(successor.turnId);
   await session.respond(current.reply({ value: 'actual-current-request' }));
@@ -540,7 +540,7 @@ it('binds opted-in child forms to the actual child incarnation and leaves a sibl
           name: 'ownership',
           url: peer.url,
           tools: ['lookup'],
-          approvalMode: 'approve',
+          approvalMode: 'preapproved',
         }),
       ],
     }).session({
@@ -570,7 +570,7 @@ it('binds opted-in child forms to the actual child incarnation and leaves a sibl
     const sibling = beta.turn;
     peer.emit(await peer.entered(alpha.id));
     const first = await question(session, alpha.id, 'elicitation_request');
-    if (first.type !== 'elicitation_request')
+    if (first.type !== 'elicitation_request' || first.mode !== 'form')
       throw new Error('Expected a child form');
     expect(first).toMatchObject({
       subagentId: alpha.id,
@@ -579,7 +579,7 @@ it('binds opted-in child forms to the actual child incarnation and leaves a sibl
     });
     peer.emit(await peer.entered(beta.id));
     const current = await question(session, beta.id, 'elicitation_request');
-    if (current.type !== 'elicitation_request')
+    if (current.type !== 'elicitation_request' || current.mode !== 'form')
       throw new Error('Expected a sibling form');
     expect(current).toMatchObject({
       subagentId: beta.id,
@@ -662,7 +662,7 @@ for (const interactions of [false, true]) {
             name: 'ownership',
             url: peer.url,
             tools: ['lookup'],
-            approvalMode: 'auto',
+            approvalMode: 'native',
           }),
         ],
       }).session({
@@ -916,7 +916,7 @@ async function stdioPeer(
     declaration: new StdioMCP({
       name,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       command: process.execPath,
       args: [program, config, starts, journal],
       cwd: directory,
@@ -1138,7 +1138,7 @@ for (const schedule of ['call', 'catalog'] as const) {
       for (const [index, expected] of ['first done', 'second done'].entries()) {
         const turn = await session.submit(`turn ${index + 1}`);
         const request = await question(session, null, 'elicitation_request');
-        if (request.type !== 'elicitation_request')
+        if (request.type !== 'elicitation_request' || request.mode !== 'form')
           throw new Error('Expected a real stdio form');
         expect(request).toMatchObject({
           turnId: turn.turnId,
@@ -1238,7 +1238,7 @@ it('refuses a default persistent stdio form without invoking the native-question
       [message('negative response observed')],
     ]);
     await using provider = await providerFor(model);
-    const onNativeQuestion = vi.fn(() => {
+    const onInteraction = vi.fn(() => {
       throw new Error('A session-scoped peer has no original-turn form grant');
     });
     const result = await new Agent({
@@ -1246,10 +1246,10 @@ it('refuses a default persistent stdio form without invoking the native-question
       model: 'gpt-5.5',
       provider,
       tools: [peer.declaration],
-    }).run('request input', { onNativeQuestion });
+    }).run('request input', { onInteraction });
     expect(result.finalOutput).toBe('negative response observed');
     expect(peer.declaration.lifetime).toBe('session');
-    expect(onNativeQuestion).not.toHaveBeenCalled();
+    expect(onInteraction).not.toHaveBeenCalled();
     const recorded = await stdioRecords(peer.journal);
     expect(recorded.filter((entry) => entry.kind === 'form')).toHaveLength(1);
     expect(recorded.filter((entry) => entry.kind === 'reply')).toHaveLength(1);

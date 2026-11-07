@@ -199,7 +199,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               name: 'records',
               url: remote.url,
               tools: ['lookup'],
-              approvalMode: 'approve',
+              approvalMode: 'preapproved',
             }),
           ],
         }).session({
@@ -308,7 +308,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               name: 'records',
               url: remote.url,
               tools: ['lookup'],
-              approvalMode: 'approve',
+              approvalMode: 'preapproved',
               async transformResult(ctx, result) {
                 seen.push(ctx);
                 atPolicy.resolve();
@@ -532,7 +532,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                       return { action: 'allow' as const };
                     },
                   }
-                : { approvalMode: 'approve' as const, approval: policy }),
+                : { approvalMode: 'preapproved' as const, approval: policy }),
             }),
             tool({
               name: 'failing',

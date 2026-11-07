@@ -141,17 +141,15 @@ describe('completed migration consumers on real native execution', () => {
       exported.length = 0;
       expect(result.history).toHaveLength(4);
       expect(
-        (await Array.fromAsync(result)).map((event) =>
+        (await Array.fromAsync(result.replayEvents())).map((event) =>
           event.type === 'run_item_stream_event' ? event.name : event.type,
         ),
       ).toEqual(['tool_called', 'tool_output', 'message_output_created']);
-      const reader = result.toStream().getReader();
+      const reader = result.replayEvents().getReader();
       expect((await reader.read()).done).toBe(false);
       await reader.cancel();
       await expect(result.completed).resolves.toBeUndefined();
-      expect(() => result.toTextStream()).toThrow(
-        'buffered semantic events only',
-      );
+      expect(result).not.toHaveProperty('toTextStream');
       model.assertComplete();
     },
   );
@@ -241,7 +239,7 @@ describe('completed migration consumers on real native execution', () => {
     const result = await running;
     expect(ended).toHaveBeenCalledTimes(1);
     expect(result.finalOutput).toBe('Done.');
-    expect(await Array.fromAsync(result)).toHaveLength(1);
+    expect(await Array.fromAsync(result.replayEvents())).toHaveLength(1);
   });
 
   it('rejects guard-blocked final output instead of returning a facade', async () => {

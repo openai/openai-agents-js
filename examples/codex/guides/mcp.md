@@ -24,7 +24,7 @@ Add `StdioMCP` or `HttpMCP` declarations to `tools`, naming the MCP tools the se
 | Root selects the server | Connects, exposes only admitted leaves, and confirms the native generation before model submission. |
 | Root omits the server | Performs no connection or discovery for that server. |
 
-For example, a declaration named `records` with raw leaf `find-record` selects that leaf with `toolRef('find_record', 'mcp__records')`. Discovery adds no authority beyond the opening declaration.
+For example, select the raw leaf `find-record` from a declaration held in `records` with `records.tool('find-record')`. The SDK projects the native namespace and tool name and rejects undeclared raw names. Discovery adds no authority beyond the opening declaration.
 
 Omitted operation options use Session defaults. A first submission can activate tools selected by default. Use `tools: []` to leave them dormant. Omit a server from a later selection to make it dormant again.
 
@@ -60,6 +60,8 @@ Server prompts from a persistent process without a trusted original turn are ref
 Both callbacks can return a value or Promise. They receive the original context, root or child submission, call metadata, and an AbortSignal. Raw server and tool names remain separate from model-visible names.
 
 `before` has a 30-second deadline. Cancellation or timeout blocks publication and aborts its signal. Close still waits for callbacks that already started.
+
+`approvalMode` defaults to `'native'`, which follows Core's approval rules. Set it to `'preapproved'` to preapprove the selected tools under native constraints. Application approval callbacks still run.
 
 Application approval is separate from native `approvalMode`. Returning `true` neither answers native approval nor adds tools or Environment permissions. Connections and discovery can precede these callbacks, so a denial can still involve server traffic.
 
