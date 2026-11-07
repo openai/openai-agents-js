@@ -460,7 +460,7 @@ describe('native active Agent handoff', () => {
     ]);
     expect(result.lastAgent).toBe(target);
     expect(result.finalOutput).toBe('Target finished.');
-    const events = await Array.fromAsync(result);
+    const events = await Array.fromAsync(result.replayEvents());
     expect(events.map((event) => event.type)).toEqual([
       'agent_updated_stream_event',
       'run_item_stream_event',
@@ -638,7 +638,7 @@ describe('native active Agent handoff', () => {
       )
         expect(item.agent).toBe(target);
     }
-    const events = await Array.fromAsync(result);
+    const events = await Array.fromAsync(result.replayEvents());
     expect(
       events.map((event) =>
         event.type === 'run_item_stream_event' ? event.name : event.type,
@@ -664,7 +664,7 @@ describe('native active Agent handoff', () => {
       expect(event.item).toBe(result.newItems[index]);
     });
     expect(requested.rawItem.callId).toBe('root-transfer');
-    const reader = result.toStream().getReader();
+    const reader = result.replayEvents().getReader();
     for (const event of events) {
       expect(await reader.read()).toEqual({ done: false, value: event });
     }

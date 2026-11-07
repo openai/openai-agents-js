@@ -5,7 +5,7 @@ import type { MigrationSemanticEvent } from './result';
 
 /** Own delivery without replacing the native producer's outcome or physical joins. */
 export function migrationStream<
-  Result extends AsyncIterable<MigrationSemanticEvent>,
+  Result extends { replayEvents(): ReadableStream<MigrationSemanticEvent> },
 >(
   produce: (
     signal: AbortSignal,
@@ -78,7 +78,7 @@ export function migrationStream<
 
   // Accepted semantics come from the existing guarded facade, not raw deltas.
   // Cancellation can close a pending reader without claiming a physical join.
-  const toStream = () => {
+  const replayEvents = () => {
     let cancelled = false;
     let events: AsyncIterator<MigrationSemanticEvent> | undefined;
     return new ReadableStream<MigrationSemanticEvent>(
@@ -87,7 +87,7 @@ export function migrationStream<
           try {
             const result = await completed;
             if (cancelled) return;
-            events ??= result[Symbol.asyncIterator]();
+            events ??= result.replayEvents()[Symbol.asyncIterator]();
             const event = await events.next();
             if (cancelled) return;
             if (event.done) controller.close();
@@ -108,9 +108,6 @@ export function migrationStream<
   return Object.freeze({
     unvalidatedRaw,
     completed,
-    toStream,
-    [Symbol.asyncIterator]() {
-      return toStream()[Symbol.asyncIterator]();
-    },
+    replayEvents,
   });
 }

@@ -264,7 +264,7 @@ describe('structured output with native tool-policy finish', () => {
         output: toSmartString(value),
       },
     });
-    expect(await Array.fromAsync(result)).toHaveLength(2);
+    expect(await Array.fromAsync(result.replayEvents())).toHaveLength(2);
     expect(current.order.indexOf('parse')).toBeGreaterThan(
       current.order.indexOf('provider closed'),
     );

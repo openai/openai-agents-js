@@ -1,3 +1,4 @@
+import { ReadableStream } from 'node:stream/web';
 import { describe, expect, it } from 'vitest';
 import {
   Agent,
@@ -15,8 +16,8 @@ const item = new RunItemStreamEvent(
   new RunMessageOutputItem(assistantMessage('Accepted.'), agent),
 );
 const result = {
-  async *[Symbol.asyncIterator]() {
-    yield item;
+  replayEvents() {
+    return ReadableStream.from([item]);
   },
 };
 const delta = (text: string) => ({
@@ -49,11 +50,13 @@ describe('migration stream delivery and producer ownership', () => {
     expect(
       (await Array.fromAsync(stream.unvalidatedRaw)).map((event) => event.data),
     ).toEqual([delta('one'), delta('two')]);
-    expect(await Array.fromAsync(stream)).toEqual([item]);
-    const reader = stream.toStream().getReader();
+    expect(await Array.fromAsync(stream.replayEvents())).toEqual([item]);
+    const reader = stream.replayEvents().getReader();
     expect((await reader.read()).value).toBe(item);
     expect(await reader.read()).toEqual({ done: true, value: undefined });
     expect(stream).not.toHaveProperty('cancel');
+    expect(Symbol.asyncIterator in stream).toBe(false);
+    expect(stream).not.toHaveProperty('toStream');
   });
 
   it('does not emit semantic content before the guarded producer accepts', async () => {
@@ -63,7 +66,7 @@ describe('migration stream delivery and producer ownership', () => {
       await release.promise;
       return result;
     });
-    const reader = stream.toStream().getReader();
+    const reader = stream.replayEvents().getReader();
     const read = reader.read();
     const state = settled(read);
     expect(
@@ -103,7 +106,7 @@ describe('migration stream delivery and producer ownership', () => {
     );
     release.resolve();
     await expect(stream.completed).rejects.toThrow('backlog');
-    await expect(stream.toStream().getReader().read()).rejects.toThrow(
+    await expect(stream.replayEvents().getReader().read()).rejects.toThrow(
       'backlog',
     );
   });
@@ -140,7 +143,7 @@ describe('migration stream delivery and producer ownership', () => {
       signal.throwIfAborted();
       return result;
     });
-    const reader = stream.toStream().getReader();
+    const reader = stream.replayEvents().getReader();
     const read = reader.read();
     const state = settled(stream.completed);
     await started.promise;
@@ -173,7 +176,9 @@ describe('migration stream delivery and producer ownership', () => {
     caller.abort(new Error('cancel request'));
     release.resolve();
     await expect(stream.completed).rejects.toBe(failure);
-    await expect(stream.toStream().getReader().read()).rejects.toBe(failure);
+    await expect(stream.replayEvents().getReader().read()).rejects.toBe(
+      failure,
+    );
   });
 
   it('does not replace a producer-confirmed successful outcome with a late cancel request', async () => {
@@ -184,7 +189,7 @@ describe('migration stream delivery and producer ownership', () => {
       return result;
     }, caller.signal);
     expect(await stream.completed).toBe(result);
-    expect(await Array.fromAsync(stream)).toEqual([item]);
+    expect(await Array.fromAsync(stream.replayEvents())).toEqual([item]);
   });
 
   it('keeps caught publication errors fatal and preserves undefined producer failures', async () => {
@@ -206,7 +211,7 @@ describe('migration stream delivery and producer ownership', () => {
     );
     expect(outcome).toEqual({ rejected: true, error: undefined });
     const delivery = await failed
-      .toStream()
+      .replayEvents()
       .getReader()
       .read()
       .then(
@@ -224,11 +229,11 @@ describe('migration stream delivery and producer ownership', () => {
       return result;
     });
     await stream.completed;
-    await stream.toStream().getReader().cancel();
+    await stream.replayEvents().getReader().cancel();
     expect((await Array.fromAsync(stream.unvalidatedRaw))[0]?.data).toEqual(
       delta('original'),
     );
-    expect(await Array.fromAsync(stream)).toEqual([item]);
+    expect(await Array.fromAsync(stream.replayEvents())).toEqual([item]);
   });
 
   it('rejects invalid private byte budgets before producer effects', () => {

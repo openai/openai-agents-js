@@ -206,13 +206,13 @@ describe('structured migration output on the native loop', () => {
     expect(result.history).toEqual(result.history);
     expect(result.output).toEqual(result.newItems.map((item) => item.rawItem));
     expect(result.rawResponses[0]).toBe(result.modelResponses[0]);
-    const events = await Array.fromAsync(result);
+    const events = await Array.fromAsync(result.replayEvents());
     expect(
       events.map((event) =>
         event.type === 'run_item_stream_event' ? event.name : event.type,
       ),
     ).toEqual(['message_output_created']);
-    expect(await Array.fromAsync(result.toStream())).toEqual(events);
+    expect(await Array.fromAsync(result.replayEvents())).toEqual(events);
     expect(result.finalOutput).toBe(seen[0]);
     expect(parses).toBe(1);
     expect(model.calls).toHaveLength(1);

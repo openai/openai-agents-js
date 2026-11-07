@@ -87,12 +87,10 @@ export interface MigrationRunResult<
   readonly output: AgentInputItem[];
   toInputList(): AgentInputItem[];
   /** Buffered accepted semantic events, not live Model streaming. */
-  toStream(): ReadableStream<MigrationSemanticEvent>;
-  [Symbol.asyncIterator](): AsyncGenerator<MigrationSemanticEvent>;
+  replayEvents(): ReadableStream<MigrationSemanticEvent>;
   readonly completed: Promise<void>;
   /** Idle native checkpoint returned when `returnState` is enabled. */
   readonly state?: SessionState;
-  toTextStream(): never;
   readonly finalOutput: ResolvedAgentOutput<Output>;
   readonly modelResponses: readonly ModelResponse[];
   readonly inputGuardrailResults: readonly InputGuardrailResult[];
@@ -147,7 +145,6 @@ export const SDKRunner: {
     /** The actual guarded native result or error, after physical callback joins. */
     readonly completed: Promise<MigrationRunResult<Context>>;
     /** Supported accepted SDK semantic events, buffered until completed. */
-    toStream(): ReadableStream<MigrationSemanticEvent>;
-    [Symbol.asyncIterator](): AsyncIterator<MigrationSemanticEvent>;
+    replayEvents(): ReadableStream<MigrationSemanticEvent>;
   }>;
 } = Object.freeze({ run, stream });

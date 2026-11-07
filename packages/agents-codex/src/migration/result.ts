@@ -210,17 +210,9 @@ export function migrationResult<
     },
     /** The run has already passed finalization and cleanup before this view exists. */
     completed: Promise.resolve(),
-    toStream(): ReadableStream<MigrationSemanticEvent> {
+    replayEvents(): ReadableStream<MigrationSemanticEvent> {
       return ReadableStream.from(
         migrationEvents(items, projection?.transition),
-      );
-    },
-    [Symbol.asyncIterator](): AsyncGenerator<MigrationSemanticEvent> {
-      return migrationEvents(items, projection?.transition);
-    },
-    toTextStream(): never {
-      throw new TypeError(
-        'Migration exposes buffered semantic events only; use @openai/agents/classic for raw text streaming',
       );
     },
   });
