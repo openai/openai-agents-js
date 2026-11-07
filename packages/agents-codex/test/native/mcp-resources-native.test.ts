@@ -86,6 +86,7 @@ const templatePages = {
 async function httpPeer(
   options: {
     name?: string;
+    tools?: string[];
     resources?: boolean;
     fail?: boolean;
     hold?: Promise<void>;
@@ -117,11 +118,21 @@ async function httpPeer(
         result = {
           protocolVersion: params.protocolVersion,
           capabilities:
-            options.resources === false ? { tools: {} } : { resources: {} },
+            options.resources === false
+              ? { tools: {} }
+              : { resources: {}, ...(options.tools ? { tools: {} } : {}) },
           serverInfo: { name: 'resources', version: '1' },
         };
-      } else if (rpc.method === 'tools/list' && options.resources === false)
-        result = { tools: [] };
+      } else if (
+        rpc.method === 'tools/list' &&
+        (options.resources === false || options.tools)
+      )
+        result = {
+          tools: (options.tools ?? []).map((name) => ({
+            name,
+            inputSchema: { type: 'object', properties: {} },
+          })),
+        };
       else if (options.elicit && rpc.method === 'resources/read') {
         pendingElicitation = { id: rpc.id, response };
         response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -187,7 +198,7 @@ async function httpPeer(
     calls,
     declaration: new HttpMCP({
       name: options.name ?? 'resources',
-      tools: [],
+      tools: options.tools ?? [],
       url: `http://127.0.0.1:${address.port}/mcp`,
       executionTimeout: 2,
     }),
@@ -396,6 +407,103 @@ it('preserves empty server selection across update and restore using current end
     'currently selected',
   );
 });
+
+for (const [withResourceOnlyPeer, withToolPeer] of [
+  [false, false],
+  [true, false],
+  [false, true],
+] as const) {
+  it(`restores a narrowed tool server with zero grants (${withResourceOnlyPeer ? 'resource-only sibling' : withToolPeer ? 'tool-bearing sibling' : 'alone'})`, async () => {
+    const original = await httpPeer({ name: 'A', tools: ['lookup'] });
+    const sibling = withResourceOnlyPeer
+      ? await httpPeer({ name: 'B' })
+      : undefined;
+    const toolSibling = withToolPeer
+      ? await httpPeer({ name: 'C', tools: ['retain'] })
+      : undefined;
+    const additional = [
+      ...(sibling ? [sibling.declaration] : []),
+      ...(toolSibling ? [toolSibling.declaration] : []),
+    ];
+    const { session } = await open([original.declaration, ...additional]);
+    await session.update({
+      tools: [
+        new HttpMCP({
+          name: 'A',
+          url: original.declaration.url,
+          tools: [],
+        }),
+        ...additional,
+      ],
+    });
+    const saved = await session.saveState();
+    expect(saved).toMatchObject({
+      default_resource_servers: {
+        selected: ['A', ...additional.map((server) => server.name)],
+        resource_only: ['A', ...(sibling ? ['B'] : [])],
+      },
+    });
+    const current = await httpPeer({ name: 'A', tools: ['lookup'] });
+    const model = new ModelServer([
+      [message('restored')],
+      [message('regranted')],
+    ]);
+    const { agent } = await open([current.declaration, ...additional], model);
+    const restored = await agent.session({ state: saved });
+    cleanup.push(() => restored.close());
+    const oldCount = original.calls.length;
+    expect(await restored.listMcpResources('A')).toEqual(resourcePages.first);
+    expect(original.calls).toHaveLength(oldCount);
+    expect(
+      current.calls.filter((call) => call.method === 'resources/list'),
+    ).toHaveLength(1);
+    expect((await (await restored.submit('Continue')).wait()).finalOutput).toBe(
+      'restored',
+    );
+    expect(JSON.stringify(model.requests[0])).not.toContain('lookup');
+    if (toolSibling)
+      expect(JSON.stringify(model.requests[0])).toContain('retain');
+    await restored.update({
+      tools: [current.declaration, ...additional],
+    });
+    expect(
+      (await (await restored.submit('Use admitted tools')).wait()).finalOutput,
+    ).toBe('regranted');
+    expect(JSON.stringify(model.requests[1])).toContain('lookup');
+    model.assertExhausted();
+    if (sibling) {
+      await restored.update({
+        tools: [
+          new HttpMCP({
+            name: 'A',
+            url: current.declaration.url,
+            tools: [],
+          }),
+        ],
+      });
+      const deselected = await restored.saveState();
+      expect(deselected).toMatchObject({
+        default_resource_servers: { selected: ['A'], resource_only: ['A'] },
+      });
+      const reopened = await agent.session({ state: deselected });
+      cleanup.push(() => reopened.close());
+      await expect(reopened.listMcpResources('B')).rejects.toThrow(
+        'currently selected',
+      );
+      expect(await reopened.listMcpResources('A')).toEqual(resourcePages.first);
+    }
+    await restored.update({ tools: [] });
+    const empty = await restored.saveState();
+    expect(empty).toMatchObject({
+      default_resource_servers: { selected: [], resource_only: [] },
+    });
+    const reopenedEmpty = await agent.session({ state: empty });
+    cleanup.push(() => reopenedEmpty.close());
+    await expect(reopenedEmpty.listMcpResources('A')).rejects.toThrow(
+      'currently selected',
+    );
+  });
+}
 
 it('fences turns, updates and checkpoint capture and joins resource work before closing', async () => {
   const held = Promise.withResolvers<void>();

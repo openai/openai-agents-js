@@ -291,18 +291,31 @@ describe('static selection checkpoint envelope', () => {
       undefined,
       undefined,
       undefined,
-      { default_resource_servers: ['resources'] },
+      {
+        default_resource_servers: {
+          selected: ['resources'],
+          resource_only: ['resources'],
+        },
+      },
     );
     expect(saved.format_version).toBe(8);
     expect(
       readCheckpointSelections(parseSessionState(JSON.stringify(saved))),
-    ).toEqual({ default_resource_servers: ['resources'] });
+    ).toEqual({
+      default_resource_servers: {
+        selected: ['resources'],
+        resource_only: ['resources'],
+      },
+    });
     const payload = nativeCheckpoint(saved);
     expect(payload).not.toHaveProperty('default_resource_servers');
     expect(() =>
       parseNativeCheckpoint({
         ...payload,
-        default_resource_servers: ['resources'],
+        default_resource_servers: {
+          selected: ['resources'],
+          resource_only: ['resources'],
+        },
       }),
     ).toThrow('SDK envelope');
     expect(() =>
@@ -312,10 +325,25 @@ describe('static selection checkpoint envelope', () => {
       parseSessionState(
         JSON.stringify({
           ...saved,
-          default_resource_servers: ['resources', 'resources'],
+          default_resource_servers: {
+            selected: ['resources', 'resources'],
+            resource_only: [],
+          },
         }),
       ),
     ).toThrow();
+    for (const selection of [
+      { selected: ['resources'], resource_only: ['resources', 'resources'] },
+      { selected: [], resource_only: ['resources'] },
+    ])
+      expect(() =>
+        parseSessionState(
+          JSON.stringify({
+            ...saved,
+            default_resource_servers: selection,
+          }),
+        ),
+      ).toThrow();
   });
 
   it('resolves defaults and operation authority independently against current declarations', () => {
@@ -381,24 +409,67 @@ describe('resource-only checkpoint selection authority', () => {
   });
   it('resolves credential-free names to current captured declarations and preserves deselection', () => {
     expect(
-      checkpointResourceServers(['resources'], [current, toolBearing]),
+      checkpointResourceServers(
+        { selected: ['resources', 'tools'], resource_only: ['resources'] },
+        [current, toolBearing],
+      ),
     ).toEqual([current, toolBearing]);
-    expect(checkpointResourceServers(['resources'], [current])[0]).toBe(
-      current,
-    );
-    expect(checkpointResourceServers([], [current, toolBearing])).toEqual([
+    expect(
+      checkpointResourceServers(
+        { selected: ['resources'], resource_only: ['resources'] },
+        [current],
+      )[0],
+    ).toBe(current);
+    expect(
+      checkpointResourceServers({ selected: ['tools'], resource_only: [] }, [
+        current,
+        toolBearing,
+      ]),
+    ).toEqual([toolBearing]);
+    expect(checkpointResourceServers(undefined, [current])).toEqual([current]);
+    expect(checkpointResourceServers(undefined, [toolBearing])).toEqual([
       toolBearing,
     ]);
-    expect(checkpointResourceServers(undefined, [current])).toEqual([current]);
+    expect(
+      checkpointResourceServers({ selected: [], resource_only: [] }, [
+        current,
+        toolBearing,
+      ]),
+    ).toEqual([]);
   });
-  it('rejects names outside current ordinary resource-only declarations', () => {
+  it('projects a current tool-bearing declaration to zero tools', () => {
+    const before = () => ({ action: 'allow' as const });
+    const currentBinding = new HttpMCP({
+      name: 'tools',
+      tools: ['lookup'],
+      url: 'https://current.invalid/mcp',
+      bearerToken: 'synthetic-current-token',
+      before,
+    });
+    const [narrowed] = checkpointResourceServers(
+      { selected: ['tools'], resource_only: ['tools'] },
+      [currentBinding],
+    );
+    expect(narrowed).not.toBe(currentBinding);
+    expect(narrowed).toMatchObject({
+      name: currentBinding.name,
+      url: currentBinding.url,
+      bearerToken: currentBinding.bearerToken,
+      tools: [],
+    });
+    expect(narrowed.before).toBe(before);
+    expect(currentBinding.tools).toEqual(['lookup']);
+  });
+  it('rejects names outside current ordinary declarations', () => {
     for (const [names, opening] of [
       [['missing'], [current]],
-      [['tools'], [toolBearing]],
       [['codex_apps'], [new ChatGPTAppsMCP({ tools: [] })]],
     ] as const)
-      expect(() => checkpointResourceServers(names, opening)).toThrow(
-        'current ordinary declarations',
-      );
+      expect(() =>
+        checkpointResourceServers(
+          { selected: names, resource_only: names },
+          opening,
+        ),
+      ).toThrow('current ordinary declarations');
   });
 });

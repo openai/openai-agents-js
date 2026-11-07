@@ -8494,17 +8494,30 @@ export class Session<OutputT = string, Context = unknown> {
     const changedDefaults =
       this.defaultTools.length !== this.catalog.tools.length ||
       this.defaultTools.some((tool, i) => tool !== this.catalog.tools[i]);
+    const resourceServers = this.defaultMcpTools.filter(
+      (server) => !isHostedRegistration(server),
+    );
+    const openingResourceServers = this.openingMcpTools.filter(
+      (server) => !isHostedRegistration(server),
+    );
+    const changedResourceSelection =
+      resourceServers.length !== openingResourceServers.length ||
+      resourceServers.some(
+        (server) =>
+          !server.tools.length ||
+          !openingResourceServers.some(
+            (opening) => opening.name === server.name,
+          ),
+      );
     return {
-      ...(this.openingMcpTools.some(
-        (server) => !server.tools.length && !isHostedRegistration(server),
-      )
+      ...(changedResourceSelection
         ? {
-            default_resource_servers: this.defaultMcpTools
-              .filter(
-                (server) =>
-                  !server.tools.length && !isHostedRegistration(server),
-              )
-              .map((server) => server.name),
+            default_resource_servers: {
+              selected: resourceServers.map((server) => server.name),
+              resource_only: resourceServers
+                .filter((server) => !server.tools.length)
+                .map((server) => server.name),
+            },
           }
         : {}),
       ...(changedDefaults
