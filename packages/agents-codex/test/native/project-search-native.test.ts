@@ -5,6 +5,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rm,
   symlink,
@@ -20,6 +21,7 @@ import {
   Environment,
   NativeAgents,
   NativeError,
+  fileSessionStore,
   localStorage,
   tool,
   toolRef,
@@ -1157,6 +1159,328 @@ it('admits selected native search tools with local conversation storage', async 
     await rm(storage, { recursive: true, force: true });
   }
 }, 30_000);
+
+it.skipIf(process.platform !== 'linux')(
+  'keeps project search rooted at cwd with a disjoint read-only storage mount',
+  async (context) => {
+    const directory = await realpath(
+      await mkdtemp(join(tmpdir(), 'agents-search-mount-')),
+    );
+    const cwd = join(directory, 'work');
+    const mounted = join(directory, 'storage');
+    const canary = 'needle mounted private content 51f2';
+    try {
+      await Promise.all([mkdir(cwd), mkdir(mounted)]);
+      await writeFile(join(cwd, 'visible.txt'), 'needle in cwd\n');
+      await writeFile(join(mounted, 'mounted-private.txt'), canary);
+      const searches = [
+        {
+          name: 'project_glob',
+          pattern: '**/*.txt',
+          path: '.',
+          expected: { matches: ['visible.txt'], errors: [], truncated: false },
+        },
+        {
+          name: 'project_grep',
+          pattern: 'needle',
+          path: '.',
+          expected: {
+            matches: [
+              {
+                path: 'visible.txt',
+                line_number: 1,
+                line: 'needle in cwd',
+                before: [],
+                after: [],
+              },
+            ],
+            errors: [],
+            truncated: false,
+          },
+        },
+        ...['project_glob', 'project_grep'].flatMap((name) =>
+          ['../storage', mounted].map((path) => ({
+            name,
+            pattern: name === 'project_glob' ? '**/*.txt' : 'needle',
+            path,
+            expected: {
+              matches: [],
+              errors: [{ path, code: 'invalid_path' }],
+              truncated: false,
+            },
+          })),
+        ),
+      ];
+      const searchCall = (index: number) => {
+        const { name, pattern, path } = searches[index]!;
+        return call(name, { pattern, path }, { callId: `mounted-${index}` });
+      };
+      const server = new ModelServer([
+        (request) => {
+          expect(wireToolNames(request)).toEqual([
+            'project_glob',
+            'project_grep',
+          ]);
+          return [searchCall(0)];
+        },
+        ...searches.map((search, index) => (request: JsonObject) => {
+          expect(result(request, `mounted-${index}`)).toMatchObject(
+            search.expected,
+          );
+          return index + 1 < searches.length
+            ? [searchCall(index + 1)]
+            : [message('search stayed in cwd')];
+        }),
+      ]);
+      await using provider = await providerFor(server);
+      const session = await new Agent({ provider, instructions: 'Search.' })
+        .session({
+          environment: Environment.local({
+            cwd,
+            tools: ['project_glob', 'project_grep'],
+            mounts: [
+              {
+                source: mounted,
+                destination: mounted,
+                strategy: 'local_bind',
+                readOnly: true,
+              },
+            ],
+          }),
+        })
+        .catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            error.message ===
+              'local executor could not establish the platform sandbox' &&
+            process.env.GITHUB_ACTIONS !== 'true' &&
+            process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+            process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+          ) {
+            expect(server.requests).toHaveLength(0);
+            context.skip('This host cannot launch a nested platform sandbox');
+          }
+          throw error;
+        });
+      await using owned = session;
+      expect(
+        (await (await owned.submit('Search the workspace.')).wait())
+          .finalOutput,
+      ).toBe('search stayed in cwd');
+      expect(JSON.stringify(server.requests)).not.toContain(canary);
+      expect(JSON.stringify(server.requests)).not.toContain(
+        'mounted-private.txt',
+      );
+      expect(await readFile(join(mounted, 'mounted-private.txt'), 'utf8')).toBe(
+        canary,
+      );
+      server.assertExhausted();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+it('revokes search grants when reopening completed local durable storage', async () => {
+  const executor = await startPublicExecutor();
+  const directory = await mkdtemp(join(tmpdir(), 'agents-search-local-store-'));
+  try {
+    const cwd = await realpath(executor.cwd);
+    await writeFile(join(cwd, 'visible.txt'), 'needle before close\n');
+    const canary = 'needle private content added after close 781c';
+    let requestIndex = -1;
+    const server = new ModelServer([
+      (request) => {
+        expect(wireToolNames(request)).toEqual([
+          'project_glob',
+          'project_grep',
+        ]);
+        return [
+          call(
+            'project_glob',
+            { pattern: '**/*.txt' },
+            { callId: 'durable-glob' },
+          ),
+        ];
+      },
+      (request) => {
+        expect(result(request, 'durable-glob')).toMatchObject({
+          matches: ['visible.txt'],
+          errors: [],
+          truncated: false,
+        });
+        return [
+          call(
+            'project_grep',
+            { pattern: 'needle' },
+            { callId: 'durable-grep' },
+          ),
+        ];
+      },
+      (request) => {
+        expect(result(request, 'durable-grep')).toMatchObject({
+          matches: [
+            {
+              path: 'visible.txt',
+              line_number: 1,
+              line: 'needle before close',
+            },
+          ],
+          errors: [],
+          truncated: false,
+        });
+        return [message('durable searches completed')];
+      },
+      (request) => {
+        for (const name of ['project_glob', 'project_grep'])
+          expect(wireToolNames(request)).not.toContain(name);
+        expect(JSON.stringify(request.input)).toContain(
+          'durable searches completed',
+        );
+        requestIndex = executor.requests.length;
+        return [
+          call(
+            'project_glob',
+            { pattern: '**/*.txt' },
+            { callId: 'revoked-glob' },
+          ),
+        ];
+      },
+      (request) => {
+        expect(output(request, 'revoked-glob')).toMatch(
+          /unsupported|not allowed|not available/i,
+        );
+        return [
+          call(
+            'project_grep',
+            { pattern: 'needle' },
+            { callId: 'revoked-grep' },
+          ),
+        ];
+      },
+      (request) => {
+        expect(output(request, 'revoked-grep')).toMatch(
+          /unsupported|not allowed|not available/i,
+        );
+        return [message('durable grants revoked')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    const connection = { cwd, url: executor.url, headers: executor.headers };
+    const approvals: string[] = [];
+    let id: string;
+    let history: unknown[];
+    {
+      await using session = await new Agent({
+        provider,
+        model: nativeDescendantModel,
+        instructions: 'Search.',
+      }).session({
+        storage: localStorage(join(directory, 'profile')),
+        environment: new Environment({
+          ...connection,
+          tools: ['project_glob', 'project_grep'],
+          approval(context) {
+            approvals.push(context.toolName);
+            return true;
+          },
+        }),
+      });
+      id = session.id;
+      expect(
+        (await (await session.submit('Search before closing.')).wait())
+          .finalOutput,
+      ).toBe('durable searches completed');
+      history = await Array.fromAsync(session.items());
+    }
+    expect(approvals).toEqual(['project_glob', 'project_grep']);
+    expect(executor.requests.map((request) => request.method)).toEqual(
+      expect.arrayContaining(['fs/walk', 'fs/readFile']),
+    );
+    expect(history).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          callId: 'durable-glob',
+        }),
+        expect.objectContaining({
+          type: 'function_call_output',
+          callId: 'durable-grep',
+        }),
+      ]),
+    );
+    await writeFile(join(cwd, 'after-close-private.txt'), canary);
+    const currentApproval = vi.fn(() => true);
+    {
+      await using restored = await new Agent({
+        provider,
+        model: nativeDescendantModel,
+        instructions: 'Search.',
+      }).session({
+        storage: localStorage(join(directory, 'profile')),
+        resume: id,
+        environment: new Environment({
+          ...connection,
+          tools: [],
+          approval: currentApproval,
+        }),
+      });
+      expect(restored.id).toBe(id);
+      expect(await Array.fromAsync(restored.items())).toEqual(history);
+      expect(
+        (await (await restored.submit('Try both searches again.')).wait())
+          .finalOutput,
+      ).toBe('durable grants revoked');
+    }
+    expect(currentApproval).not.toHaveBeenCalled();
+    expect(requestIndex).toBeGreaterThan(0);
+    expect(
+      executor.requests
+        .slice(requestIndex)
+        .filter((request) =>
+          ['fs/walk', 'fs/readFile'].includes(String(request.method)),
+        ),
+    ).toEqual([]);
+    expect(JSON.stringify(server.requests)).not.toContain(canary);
+    expect(JSON.stringify(server.requests)).not.toContain(
+      'after-close-private.txt',
+    );
+    server.assertExhausted();
+  } finally {
+    await executor.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it('rejects search environments with custom storage before acquiring resources', async () => {
+  const directory = await mkdtemp(
+    join(tmpdir(), 'agents-search-custom-store-'),
+  );
+  try {
+    const durable = fileSessionStore(join(directory, 'store'));
+    const acquire = vi.fn((id: string) => durable.acquire(id));
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    const approval = vi.fn(() => true);
+    await expect(
+      new Agent({ provider, instructions: 'Search.' }).session({
+        storage: { ...durable, acquire },
+        environment: Environment.local({
+          cwd: await realpath(directory),
+          tools: ['project_glob', 'project_grep'],
+          approval,
+        }),
+      }),
+    ).rejects.toThrow('Custom canonical storage does not support environments');
+    expect(acquire).not.toHaveBeenCalled();
+    expect(approval).not.toHaveBeenCalled();
+    expect(server.requests).toHaveLength(0);
+    server.assertExhausted();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it('lets turn selection narrow search grants without adding unselected tools', async () => {
   await using project = await workspace();
