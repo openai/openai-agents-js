@@ -3475,44 +3475,50 @@ describe('remote sandbox path helpers', () => {
     expect(runCommand).not.toHaveBeenCalled();
   });
 
-  test('rejects GNU sparse PAX destinations before hydration side effects', async () => {
-    const archive = makeTarArchive([
-      {
-        name: 'local-pax',
-        type: 'x',
-        content: makePaxRecord('GNU.sparse.name', 'logs/events.jsonl'),
-      },
-      { name: 'safe.txt', content: 'unsafe destination' },
-    ]);
-    const writeFile = vi.fn();
-    const runCommand = vi.fn();
+  test.each([
+    ['x', 'GNU.sparse.name', 'logs/events.jsonl'],
+    ['g', 'GNU.sparse.realsize', '1048576'],
+  ] as const)(
+    'rejects %s PAX %s before hydration side effects',
+    async (type, key, value) => {
+      const archive = makeTarArchive([
+        {
+          name: 'sparse-pax',
+          type,
+          content: makePaxRecord(key, value),
+        },
+        { name: 'safe.txt', content: 'unsafe destination' },
+      ]);
+      const writeFile = vi.fn();
+      const runCommand = vi.fn();
 
-    await expect(
-      hydrateRemoteWorkspaceTar({
-        providerName: 'FakeProvider',
-        manifest: new Manifest({
-          root: '/custom/workspace',
-          entries: {
-            logs: { type: 'dir', ephemeral: true },
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'FakeProvider',
+          manifest: new Manifest({
+            root: '/custom/workspace',
+            entries: {
+              logs: { type: 'dir', ephemeral: true },
+            },
+          }),
+          data: archive,
+          io: {
+            mkdir: vi.fn(),
+            readFile: vi.fn(),
+            writeFile,
+            runCommand,
           },
         }),
-        data: archive,
-        io: {
-          mkdir: vi.fn(),
-          readFile: vi.fn(),
-          writeFile,
-          runCommand,
+      ).rejects.toMatchObject({
+        details: {
+          reason: `PAX ${key} override not allowed`,
         },
-      }),
-    ).rejects.toMatchObject({
-      details: {
-        reason: 'PAX GNU.sparse.name override not allowed',
-      },
-    });
+      });
 
-    expect(writeFile).not.toHaveBeenCalled();
-    expect(runCommand).not.toHaveBeenCalled();
-  });
+      expect(writeFile).not.toHaveBeenCalled();
+      expect(runCommand).not.toHaveBeenCalled();
+    },
+  );
 
   test('rejects populated tar archives when the workspace root is ephemeral', async () => {
     const archive = makeTarArchive([

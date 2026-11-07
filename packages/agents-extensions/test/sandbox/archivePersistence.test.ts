@@ -19,6 +19,7 @@ import {
   persistRemoteWorkspaceTar,
   validateWorkspaceTarArchive,
 } from '../../src/sandbox/shared/archive';
+import { makePaxRecord, makeTarArchive } from './tarFixture';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -185,6 +186,59 @@ describe.skipIf(process.platform === 'win32')(
         );
       },
     );
+
+    test('rejects sparse PAX files before clearing the workspace', async () => {
+      const { root, archivePath } = await fixture();
+      const sentinel = join(root, 'sentinel.txt');
+      await writeFile(sentinel, 'keep');
+      const archive = makeTarArchive([
+        {
+          name: 'sparse-pax',
+          type: 'x',
+          content: [
+            makePaxRecord('GNU.sparse.size', '1048576'),
+            makePaxRecord('GNU.sparse.numblocks', '1'),
+            makePaxRecord('GNU.sparse.offset', '1048575'),
+            makePaxRecord('GNU.sparse.numbytes', '1'),
+          ].join(''),
+        },
+        { name: 'large.txt', content: 'x' },
+      ]);
+      const io = { mkdir, writeFile, readFile, runCommand };
+
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'LocalTest',
+          manifest: new Manifest({ root }),
+          archivePath,
+          data: archive,
+          archiveLimits: { maxExtractedBytes: 4 },
+          io,
+        }),
+      ).rejects.toThrow(/PAX GNU.sparse.size override not allowed/);
+      expect(await readFile(sentinel, 'utf8')).toBe('keep');
+      await expect(stat(join(root, 'large.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      const ordinaryArchive = makeTarArchive([
+        {
+          name: 'ordinary-pax',
+          type: 'x',
+          content: makePaxRecord('comment', 'ordinary metadata'),
+        },
+        { name: 'small.txt', content: 'ok' },
+      ]);
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'LocalTest',
+        manifest: new Manifest({ root }),
+        archivePath,
+        data: ordinaryArchive,
+        archiveLimits: { maxExtractedBytes: 4 },
+        io,
+      });
+      expect(await readFile(join(root, 'small.txt'), 'utf8')).toBe('ok');
+    });
 
     test.each(['file', 'symlink', 'fifo', 'directory'])(
       'rejects an existing %s without changing or removing it',
