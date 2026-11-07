@@ -70,7 +70,8 @@ export class VoicePipeline {
           options.signal.throwIfAborted();
           pending += text;
           let match: RegExpExecArray | null;
-          while ((match = /^([\s\S]*?[.!?](?:\s+|$))/.exec(pending))) {
+          // A text delta can end inside a decimal or URL; wait for whitespace.
+          while ((match = /^([\s\S]*?[.!?]\s+)/.exec(pending))) {
             const segment = match[0];
             pending = pending.slice(segment.length);
             for await (const frame of this.options.provider.synthesize(

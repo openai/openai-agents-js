@@ -150,6 +150,36 @@ describe('native voice workflow', () => {
 });
 
 describe('voice pipeline', () => {
+  it.each([
+    ['The value is 3.', '14 meters.'],
+    ['Visit https://example.', 'com/path.'],
+  ])(
+    'keeps chunk-ending punctuation inside text: %s + %s',
+    async (first, second) => {
+      async function synthesize(chunks: string[]) {
+        const spoken: string[] = [];
+        const provider: SpeechProvider = {
+          transcribe: async function* () {
+            yield 'question';
+          },
+          synthesize: async function* (text) {
+            spoken.push(text);
+            yield frame();
+          },
+        };
+        const workflow = {
+          run: async function* () {
+            yield* chunks;
+          },
+        };
+        await collect(new VoicePipeline({ provider, workflow }).run(frame()));
+        return spoken;
+      }
+      const text = first + second;
+      expect(await synthesize([first, second])).toEqual([text]);
+      expect(await synthesize([text])).toEqual([text]);
+    },
+  );
   it('synthesizes sentences and trailing text serially across transcripts', async () => {
     const spoken: string[] = [];
     const provider: SpeechProvider = {
@@ -185,7 +215,11 @@ describe('voice pipeline', () => {
     ]);
   });
   it('closes native work and transcription when the audio consumer exits', async () => {
-    const peer = fakeSession();
+    // This confirmed sentence boundary starts audio before native completion.
+    const peer = fakeSession([
+      { type: 'turn_started' },
+      { type: 'output_text_delta', delta: 'Hello. ' },
+    ]);
     let transcriptionClosed = false;
     const provider: SpeechProvider = {
       transcribe: async function* () {
