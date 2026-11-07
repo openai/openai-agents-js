@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { isAbsolute, win32 } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isAbsolute, win32, sep } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { JsonValue } from './binding';
 import type {
   ExecutorPolicyDecision,
@@ -65,6 +66,67 @@ const capabilityDirectory = z
     );
   }, 'Capability directories cannot contain URI queries or fragments');
 
+/** A caller-owned directory exposed through a command-private read-only bind. */
+export interface LocalStorageMount {
+  readonly source: string;
+  readonly destination: string;
+  readonly strategy: 'local_bind';
+  /** Defaults to true. Writable mounts are unsupported; use writableRoots. */
+  readonly readOnly?: boolean;
+}
+
+const storageMountSchema = z
+  .object({
+    source: z.string(),
+    destination: z.string(),
+    strategy: z.literal('local_bind'),
+    readOnly: z.literal(true).default(true),
+  })
+  .strict();
+const storageMountWireSchema = storageMountSchema
+  .omit({ readOnly: true })
+  .extend({
+    read_only: z.literal(true),
+  });
+
+function captureStorageMounts(
+  value: unknown,
+  cwd: string,
+  writableRoots: readonly string[],
+): readonly LocalStorageMount[] {
+  // Do not reflect unknown fields, credentials, or input values in errors.
+  try {
+    if (process.platform !== 'linux') throw new Error();
+    const mounts = z.array(storageMountSchema).parse(value);
+    const roots = [cwd, ...writableRoots].map((path) =>
+      realpathSync(path.startsWith('file:') ? fileURLToPath(path) : path),
+    );
+    const overlaps = (left: string, right: string) =>
+      left === right ||
+      left.startsWith(right + sep) ||
+      right.startsWith(left + sep) ||
+      left === sep ||
+      right === sep;
+    for (const mount of mounts) {
+      if (
+        !isAbsolute(mount.source) ||
+        mount.source === sep ||
+        mount.source !== mount.destination ||
+        realpathSync(mount.source) !== mount.source ||
+        !statSync(mount.source).isDirectory() ||
+        roots.some((root) => overlaps(root, mount.source))
+      )
+        throw new Error();
+      roots.push(mount.source);
+    }
+    return Object.freeze(mounts.map((mount) => Object.freeze(mount)));
+  } catch {
+    throw new TypeError(
+      'Invalid local storage mounts: require disjoint canonical existing Linux directories, same-path local_bind, and readOnly true',
+    );
+  }
+}
+
 const remoteEnvironmentSchema = z
   .object({
     url: z.string().url(),
@@ -78,7 +140,10 @@ const remoteEnvironmentSchema = z
   .strict();
 const localEnvironmentSchema = remoteEnvironmentSchema
   .omit({ url: true, headers: true, connect_timeout: true })
-  .extend({ local: z.literal(true) });
+  .extend({
+    local: z.literal(true),
+    mounts: z.array(storageMountWireSchema).optional(),
+  });
 const environmentSchema = z.union([
   remoteEnvironmentSchema,
   localEnvironmentSchema,
@@ -108,6 +173,8 @@ export interface ExecutorContext<Context = unknown> {
 }
 
 export interface EnvironmentOptions<Context = unknown> {
+  /** Storage mounts are available only through Environment.local. */
+  mounts?: never;
   url: string;
   cwd: string;
   capabilityDirectories?: readonly string[];
@@ -141,8 +208,11 @@ export interface EnvironmentOptions<Context = unknown> {
 
 export type LocalEnvironmentOptions<Context = unknown> = Omit<
   EnvironmentOptions<Context>,
-  'url' | 'headers' | 'connectTimeout'
->;
+  'url' | 'headers' | 'connectTimeout' | 'mounts'
+> & {
+  /** Linux only: canonical same-path read-only local_bind mounts. */
+  mounts?: readonly LocalStorageMount[];
+};
 
 export class Environment<Context = any> {
   /**
@@ -181,6 +251,7 @@ export class Environment<Context = any> {
   readonly cwd: string;
   readonly capabilityDirectories?: readonly string[];
   readonly writableRoots?: readonly string[];
+  readonly mounts?: readonly LocalStorageMount[];
   readonly tools: readonly ExecutorToolName[];
   readonly network?: CapturedNetworkPolicy;
   readonly headers: Readonly<Record<string, string>>;
@@ -196,6 +267,8 @@ export class Environment<Context = any> {
       | (LocalEnvironmentOptions<Context> & { local: true }),
   ) {
     this.kind = 'local' in options ? 'local' : 'remote';
+    if (this.kind === 'remote' && 'mounts' in options)
+      throw new TypeError('Storage mounts require Environment.local on Linux');
     if ('local' in options) {
       if (
         'url' in options ||
@@ -296,6 +369,12 @@ export class Environment<Context = any> {
       options.writableRoots === undefined
         ? undefined
         : Object.freeze(captureWritableRoots(options.writableRoots));
+    if ('mounts' in options && options.mounts !== undefined)
+      this.mounts = captureStorageMounts(
+        options.mounts,
+        this.cwd,
+        this.writableRoots ?? [],
+      );
     this.tools = Object.freeze(tools);
     this.network =
       options.network === undefined
@@ -325,6 +404,16 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
       ? { local: true }
       : { url: environment.url, headers: environment.headers }),
     cwd: environment.cwd,
+    ...(environment.mounts === undefined
+      ? {}
+      : {
+          mounts: environment.mounts.map((mount) => ({
+            source: mount.source,
+            destination: mount.destination,
+            strategy: mount.strategy,
+            read_only: true as const,
+          })),
+        }),
     ...(environment.capabilityDirectories === undefined
       ? {}
       : { capability_directories: environment.capabilityDirectories }),

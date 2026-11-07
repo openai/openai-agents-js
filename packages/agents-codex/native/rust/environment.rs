@@ -27,7 +27,8 @@ use codex_protocol::config_types::{
 };
 use codex_protocol::models::{PermissionProfile, PermissionProfileSnapshot, ResponseItem};
 use codex_protocol::permissions::{
-    FileSystemAccessMode, FileSystemPath, FileSystemSpecialPath, NetworkSandboxPolicy,
+    FileSystemAccessMode, FileSystemPath, FileSystemSandboxEntry, FileSystemSpecialPath,
+    NetworkSandboxPolicy,
 };
 use codex_protocol::protocol::{
     AskForApproval, EnvironmentConfig, EnvironmentConfigState, EventMsg, GranularApprovalConfig,
@@ -108,8 +109,33 @@ pub struct EnvironmentOptions {
     connect_timeout: Option<f64>,
     capability_directories: Option<Vec<PathUri>>,
     writable_roots: Option<Vec<PathUri>>,
+    #[serde(default, deserialize_with = "deserialize_mounts")]
+    mounts: Option<Vec<LocalStorageMount>>,
     #[serde(default, deserialize_with = "deserialize_network")]
     network: Option<EnvironmentNetworkPolicy>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalStorageMount {
+    source: String,
+    destination: String,
+    strategy: String,
+    #[serde(default = "mount_read_only")]
+    read_only: bool,
+}
+
+fn mount_read_only() -> bool {
+    true
+}
+
+fn deserialize_mounts<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<LocalStorageMount>>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    serde_json::from_value::<Vec<LocalStorageMount>>(value)
+        .map(Some)
+        .map_err(|_| serde::de::Error::custom("Invalid local storage mounts"))
 }
 
 #[derive(Default, Deserialize)]
@@ -158,6 +184,7 @@ fn deserialize_network<'de, D: Deserializer<'de>>(
 pub(crate) struct StrictExecutorWrites {
     canonical_cwd: PathUri,
     root_pins: HashMap<Vec<u8>, PathUri>,
+    has_storage_mounts: bool,
 }
 
 impl StrictExecutorWrites {
@@ -323,6 +350,7 @@ impl EnvironmentOptions {
     }
 
     pub(crate) fn check_config(&self, config: &Config) -> Result<()> {
+        self.validate_storage_mounts(config, None)?;
         if self.strict_writes() {
             check_writable_config(config, /*local_session_proxy*/ false)?;
         }
@@ -366,11 +394,90 @@ impl EnvironmentOptions {
         Ok(())
     }
 
+    // Read grants can expose private state just as write grants can corrupt it.
+    // Reuse physical/mount identity checks rather than compare path spellings only.
+    fn validate_storage_mounts(
+        &self,
+        config: &Config,
+        storage: Option<&Path>,
+    ) -> Result<Vec<PathUri>> {
+        let Some(declarations) = &self.mounts else {
+            return Ok(Vec::new());
+        };
+        ensure!(
+            self.local && cfg!(target_os = "linux"),
+            "Storage mounts require a local Linux Environment"
+        );
+        let error = "Invalid local storage mounts: require disjoint canonical existing directories, same-path local_bind, and read_only true";
+        let mut mounts = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut linked_mount_files = Vec::new();
+        let write_paths = std::iter::once(&self.cwd)
+            .chain(self.writable_roots.iter().flatten())
+            .map(|path| path.to_abs_path()?.canonicalize().context(error))
+            .collect::<Result<Vec<_>>>()?;
+        for mount in declarations {
+            ensure!(
+                mount.strategy == "local_bind"
+                    && mount.read_only
+                    && mount.source == mount.destination,
+                "{error}"
+            );
+            let source = Path::new(&mount.source);
+            ensure!(source.is_absolute() && source.parent().is_some(), "{error}");
+            let canonical = source.canonicalize().context(error)?;
+            ensure!(
+                canonical.as_os_str() == source.as_os_str() && canonical.is_dir(),
+                "{error}"
+            );
+            let path = PathUri::from_host_native_path(&canonical).context(error)?;
+            let absolute = vec![path.to_abs_path()?];
+            let authority = LocalWriteRoots::new(&absolute).context(error)?;
+            for other in write_paths.iter().map(|path| path.as_path()).chain(
+                mounts
+                    .iter()
+                    .map(|path: &PathUri| path.to_path_buf())
+                    .collect::<Vec<_>>()
+                    .iter()
+                    .map(PathBuf::as_path),
+            ) {
+                ensure!(
+                    !authority.contains_entry(other).context(error)?
+                        && !authority.has_root_at_or_below(other).context(error)?,
+                    "{error}"
+                );
+            }
+            check_local_session_write_roots(config, &authority, storage)
+                .context("Storage mounts must not expose private SDK state")?;
+            #[cfg(target_os = "linux")]
+            linked_mount_files.extend(linked_local_protected_files(
+                &canonical,
+                false,
+                /*storage_mount*/ true,
+                "Could not inspect storage mount files for hard links",
+            )?);
+            mounts.push(path);
+        }
+        #[cfg(target_os = "linux")]
+        if !linked_mount_files.is_empty() {
+            let roots = LocalWriteRoots::new(&write_paths).context(error)?;
+            ensure!(
+                !roots
+                    .contains_hard_link_to_any(&linked_mount_files)
+                    .context("Could not inspect writable roots for storage mount hard links")?,
+                "Storage mounts must not share hard-linked files with cwd or writable roots"
+            );
+        }
+        mounts.sort_by_key(ToString::to_string);
+        Ok(mounts)
+    }
+
     pub(crate) fn check_local_session_paths(
         &self,
         config: &Config,
         storage: Option<&Path>,
     ) -> Result<()> {
+        self.validate_storage_mounts(config, storage)?;
         if !self.local {
             return Ok(());
         }
@@ -482,12 +589,14 @@ impl EnvironmentOptions {
         local_storage: Option<&Path>,
     ) -> Result<(Option<StrictExecutorWrites>, PermissionProfile)> {
         if self.strict_writes() {
+            let mounts = self.validate_storage_mounts(config, local_storage)?;
             let (strict, profile) = strict_write_profile(
                 config,
                 environment,
                 info,
                 &self.cwd,
                 self.writable_roots.as_deref().unwrap_or_default(),
+                &mounts,
                 local_storage,
             )
             .await?;
@@ -727,6 +836,7 @@ async fn strict_write_profile(
     info: &EnvironmentInfo,
     cwd: &PathUri,
     additional: &[PathUri],
+    mounts: &[PathUri],
     local_storage: Option<&Path>,
 ) -> Result<(StrictExecutorWrites, PermissionProfile)> {
     ensure!(
@@ -811,10 +921,18 @@ async fn strict_write_profile(
         entry.access != FileSystemAccessMode::Read
             || !matches!(&entry.path, FileSystemPath::Path { path } if roots.contains(path))
     });
+    filesystem_policy
+        .entries
+        .extend(mounts.iter().map(|path| FileSystemSandboxEntry {
+            path: FileSystemPath::Path { path: path.clone() },
+            access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
+        }));
     Ok((
         StrictExecutorWrites {
             canonical_cwd: roots[0].clone(),
             root_pins,
+            has_storage_mounts: !mounts.is_empty(),
         },
         PermissionProfile::from_runtime_permissions(
             &filesystem_policy,
@@ -921,7 +1039,7 @@ fn check_local_protected_path(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let mut linked_files =
-            linked_local_protected_files(&resolved, private_runtime_home, resolve_error)?;
+            linked_local_protected_files(&resolved, private_runtime_home, false, resolve_error)?;
         if path == sqlite.home() {
             linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
             linked_files.extend(linked_relocated_rollout_files(roots, &resolved)?);
@@ -1118,6 +1236,7 @@ fn linked_relocated_sqlite_files(
 fn linked_local_protected_files(
     root: &Path,
     private_runtime_home: bool,
+    storage_mount: bool,
     resolve_error: &'static str,
 ) -> Result<Vec<PathBuf>> {
     use std::fs;
@@ -1128,16 +1247,17 @@ fn linked_local_protected_files(
     while let Some(directory) = directories.pop() {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
             Err(error) => return Err(error).context(resolve_error),
         };
         for entry in entries {
             let entry = entry.context(resolve_error)?;
             // DirEntry::metadata does not follow symlinks. Native state can
-            // also disappear during a normal rename or cleanup.
+            // also disappear during a normal rename or cleanup; mounted sources
+            // must remain enumerable, so their scans cannot ignore missing entries.
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
-                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
                 Err(error) => return Err(error).context(resolve_error),
             };
             // The SDK creates and owns this temporary directory. Public
@@ -1145,6 +1265,13 @@ fn linked_local_protected_files(
             ensure!(
                 !private_runtime_home || !metadata.file_type().is_symlink(),
                 "symbolic links inside the private native runtime home are unsupported"
+            );
+            ensure!(
+                !storage_mount
+                    || metadata.is_dir()
+                    || metadata.is_file()
+                    || metadata.file_type().is_symlink(),
+                "Storage mounts support only regular files, directories, and symlink entries"
             );
             if metadata.is_dir() {
                 directories.push(entry.path());
@@ -1231,6 +1358,10 @@ pub(crate) async fn replace_writable_roots(
     writable_roots: Vec<PathUri>,
     local_storage: Option<&Path>,
 ) -> Result<(TurnEnvironmentSelection, StrictExecutorWrites)> {
+    ensure!(
+        !previous.has_storage_mounts,
+        "Cannot replace writable_roots while storage mounts are active"
+    );
     // The SDK installs its local proxy after rejecting an ambient controller at selection.
     let local = selection.environment_id == LOCAL_ENVIRONMENT_ID;
     check_writable_config(config, local)?;
@@ -1249,6 +1380,7 @@ pub(crate) async fn replace_writable_roots(
         &info,
         &selection.cwd,
         &writable_roots,
+        &[],
         local_storage,
     )
     .await?;
@@ -1815,6 +1947,230 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn mount_wire_rejects_unknown_authority_without_reflecting_secrets() {
+        let error = serde_json::from_value::<EnvironmentOptions>(json!({
+            "local":true, "cwd":"file:///workspace", "mounts":[{
+                "source":"/data", "destination":"/data", "strategy":"local_bind",
+                "synthetic-secret":"synthetic-secret"
+            }]
+        }))
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(error.contains("Invalid local storage mounts"));
+        assert!(!error.contains("synthetic-secret"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn storage_mount_preflight_protects_private_state_and_rejects_unsupported_inputs() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let cwd = root.join("work");
+        let source = root.join("storage");
+        let home = root.join("home");
+        for path in [&cwd, &source, &home] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let (config, _) = crate::config::load(
+            "{}",
+            &json!({
+                "codex_home": home, "cwd": cwd,
+                "loader":{"ignore_user_config":true,"ignore_project_config":true}
+            })
+            .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+        let mount = json!({"source":source,"destination":source,"strategy":"local_bind"});
+        let options: EnvironmentOptions = serde_json::from_value(json!({
+            "local":true,"cwd":PathUri::from_host_native_path(&cwd).unwrap(),"mounts":[mount]
+        }))
+        .unwrap();
+        assert_eq!(
+            options
+                .validate_storage_mounts(&config, None)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            options
+                .validate_storage_mounts(&config, Some(&source.join("profile")))
+                .is_err()
+        );
+        for key in ["read_only", "strategy", "destination", "source"] {
+            let mut bad = options.clone();
+            match key {
+                "read_only" => bad.mounts.as_mut().unwrap()[0].read_only = false,
+                "strategy" => bad.mounts.as_mut().unwrap()[0].strategy = "synthetic-secret".into(),
+                "destination" => {
+                    bad.mounts.as_mut().unwrap()[0].destination = cwd.to_string_lossy().into_owned()
+                }
+                _ => {
+                    bad.mounts.as_mut().unwrap()[0].source = cwd.to_string_lossy().into_owned();
+                    bad.mounts.as_mut().unwrap()[0].destination =
+                        bad.mounts.as_ref().unwrap()[0].source.clone();
+                }
+            }
+            let error = bad
+                .validate_storage_mounts(&config, None)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("synthetic-secret"));
+        }
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        let mut aliased = options.clone();
+        aliased.mounts.as_mut().unwrap()[0].source = alias.to_string_lossy().into_owned();
+        aliased.mounts.as_mut().unwrap()[0].destination =
+            aliased.mounts.as_ref().unwrap()[0].source.clone();
+        assert!(aliased.validate_storage_mounts(&config, None).is_err());
+        let private = home.join("credentials.json");
+        std::fs::write(&private, "synthetic-private-state").unwrap();
+        std::fs::hard_link(&private, source.join("private-alias")).unwrap();
+        assert!(options.validate_storage_mounts(&config, None).is_err());
+        assert_eq!(
+            std::fs::read_to_string(private).unwrap(),
+            "synthetic-private-state"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn storage_mount_rejects_only_hard_links_in_writable_grants() {
+        use std::fs;
+        use std::os::unix::fs::{MetadataExt, symlink};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let cwd = root.join("work");
+        let extra = root.join("extra");
+        let source = root.join("storage");
+        let home = root.join("home");
+        let outside = root.join("outside");
+        for path in [&cwd, &extra, &source, &home, &outside] {
+            fs::create_dir(path).unwrap();
+        }
+        let (config, _) = crate::config::load(
+            "{}",
+            &json!({
+                "codex_home": home, "cwd": cwd,
+                "loader":{"ignore_user_config":true,"ignore_project_config":true}
+            })
+            .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+        let options: EnvironmentOptions = serde_json::from_value(json!({
+            "local":true,"cwd":PathUri::from_host_native_path(&cwd).unwrap(),
+            "writable_roots":[PathUri::from_host_native_path(&extra).unwrap()],
+            "mounts":[{"source":source,"destination":source,"strategy":"local_bind"}]
+        }))
+        .unwrap();
+        let marker = source.join("marker");
+        fs::write(&marker, "caller-owned").unwrap();
+        let mode = fs::metadata(&marker).unwrap().mode();
+        // No multiply-linked files: the writable-tree scan is unnecessary.
+        options.validate_storage_mounts(&config, None).unwrap();
+        fs::hard_link(&marker, source.join("readonly-alias")).unwrap();
+        fs::hard_link(&marker, outside.join("outside-alias")).unwrap();
+        symlink(&marker, cwd.join("symlink-alias")).unwrap();
+        // Read-only aliases and links outside the grants are harmless. A symlink
+        // inside a grant must not cause the identity scan to follow its target.
+        options.validate_storage_mounts(&config, None).unwrap();
+        for writable in [&cwd, &extra] {
+            let alias = writable.join("writable-alias");
+            fs::hard_link(&marker, &alias).unwrap();
+            let error = options.validate_storage_mounts(&config, None).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("must not share hard-linked files")
+            );
+            assert_eq!(fs::read_to_string(&marker).unwrap(), "caller-owned");
+            assert_eq!(fs::metadata(&marker).unwrap().mode(), mode);
+            fs::remove_file(alias).unwrap();
+            options.validate_storage_mounts(&config, None).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn storage_mount_file_scan_fails_when_required_inspection_cannot_complete() {
+        let temporary = tempfile::tempdir().unwrap();
+        let missing = temporary.path().join("disappeared-directory");
+        let error = "Could not inspect storage mount files for hard links";
+        assert_eq!(
+            linked_local_protected_files(&missing, false, true, error)
+                .unwrap_err()
+                .to_string(),
+            error
+        );
+        // Private SDK state retains its existing allowance for absent files.
+        assert!(
+            linked_local_protected_files(&missing, false, false, error)
+                .unwrap()
+                .is_empty()
+        );
+        let file = temporary.path().join("not-a-directory");
+        std::fs::write(&file, "caller-owned").unwrap();
+        assert!(linked_local_protected_files(&file, false, true, error).is_err());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "caller-owned");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn storage_mount_scan_accepts_data_tree_and_rejects_special_entries() {
+        use std::fs;
+        use std::os::unix::fs::{FileTypeExt, MetadataExt, symlink};
+        use std::os::unix::net::UnixListener;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("storage");
+        fs::create_dir(&source).unwrap();
+        let nested = source.join("nested");
+        fs::create_dir(&nested).unwrap();
+        let marker = nested.join("marker");
+        fs::write(&marker, "caller-owned").unwrap();
+        let outside = temporary.path().join("outside-socket");
+        let _outside_listener = UnixListener::bind(&outside).unwrap();
+        symlink(&outside, nested.join("unfollowed-socket-link")).unwrap();
+        let error = "Could not inspect storage mount files";
+        // The symlink entry is allowed; its special-file target is not inspected.
+        assert!(
+            linked_local_protected_files(&source, false, true, error)
+                .unwrap()
+                .is_empty()
+        );
+        let endpoint = source.join("socket");
+        let _listener = UnixListener::bind(&endpoint).unwrap();
+        let original = fs::symlink_metadata(&endpoint).unwrap();
+        let rejected = linked_local_protected_files(&source, false, true, error).unwrap_err();
+        assert!(
+            rejected
+                .to_string()
+                .contains("support only regular files, directories, and symlink entries")
+        );
+        // The shared collector must not add a special-file restriction to
+        // private-state scans, which use their existing symlink rules.
+        assert!(
+            linked_local_protected_files(&source, false, false, error)
+                .unwrap()
+                .is_empty()
+        );
+        let after = fs::symlink_metadata(&endpoint).unwrap();
+        assert!(after.file_type().is_socket());
+        assert_eq!(
+            (after.dev(), after.ino(), after.mode()),
+            (original.dev(), original.ino(), original.mode())
+        );
+        assert_eq!(fs::read_to_string(marker).unwrap(), "caller-owned");
+    }
+
+    #[test]
     fn legacy_executor_profile_supports_a_windows_wss_workspace() {
         let cwd: PathUri = "file:///C:/workspace".parse().unwrap();
         let extra: PathUri = "file:///C:/extra".parse().unwrap();
@@ -1841,6 +2197,7 @@ mod tests {
         let strict = StrictExecutorWrites {
             canonical_cwd: cwd.clone(),
             root_pins: HashMap::from([(write_root_key(&cwd), cwd)]),
+            has_storage_mounts: false,
         };
         let recorded = store.join("rollout.jsonl");
         let compressed = recorded.with_extension("jsonl.zst");
