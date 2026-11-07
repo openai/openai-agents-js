@@ -1,11 +1,15 @@
 import OpenAI, { toFile } from 'openai';
 import WebSocket from 'ws';
 import {
+  assertAudioFrame,
   pcmBytes,
   type AudioFrame,
   type AudioInput,
   type SpeechProvider,
 } from './pipeline';
+
+// Bound derived PCM/base64 buffers per write, without limiting utterance length.
+const STREAM_CHUNK_SAMPLES = 32 * 1024;
 
 export interface OpenAISpeechProviderOptions {
   /** HTTP client; streamed transcription reuses its URL, static key, organization, and project. */
@@ -198,13 +202,21 @@ export class OpenAISpeechProvider implements SpeechProvider {
       signal.throwIfAborted();
       return events.shift()!;
     };
-    const send = (event: object) => {
+    const send = async (event: object) => {
       signal.throwIfAborted();
       if (failure !== undefined) throw failure;
-      socket.send(JSON.stringify(event));
+      await abortable(
+        new Promise<void>((resolve, reject) => {
+          socket.send(JSON.stringify(event), (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        }),
+        transport.signal,
+      );
     };
     const commit = async () => {
-      send({ type: 'input_audio_buffer.commit' });
+      await send({ type: 'input_audio_buffer.commit' });
       const committed = await next();
       if (
         committed.type !== 'input_audio_buffer.committed' ||
@@ -249,7 +261,7 @@ export class OpenAISpeechProvider implements SpeechProvider {
         signal.addEventListener('abort', aborted, { once: true });
         if (signal.aborted) aborted();
       });
-      send({
+      await send({
         type: 'session.update',
         session: {
           type: 'transcription',
@@ -286,9 +298,20 @@ export class OpenAISpeechProvider implements SpeechProvider {
               buffered = false;
             }
           } else {
-            const bytes = pcmBytes(frame);
-            if (bytes.length) {
-              send({
+            assertAudioFrame(frame);
+            for (
+              let offset = 0;
+              offset < frame.data.length;
+              offset += STREAM_CHUNK_SAMPLES
+            ) {
+              const bytes = pcmBytes({
+                ...frame,
+                data: frame.data.subarray(
+                  offset,
+                  offset + STREAM_CHUNK_SAMPLES,
+                ),
+              });
+              await send({
                 type: 'input_audio_buffer.append',
                 audio: bytes.toString('base64'),
               });

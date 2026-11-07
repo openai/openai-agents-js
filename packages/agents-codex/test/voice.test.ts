@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import type { Session, Turn } from '../src/runtime/session';
 import {
   NativeSessionVoiceWorkflow,
@@ -1065,5 +1065,203 @@ it.each(['disconnect', 'error'] as const)(
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(peer.submit).toHaveBeenCalledOnce();
     expect(transport.sendFunctionCallOutputCalls).toHaveLength(0);
+  },
+);
+
+function holdFirstAudioWrite() {
+  const written = deferred<void>();
+  let held = false;
+  let release = () => {};
+  let fail: (error: Error) => void = () => {};
+  const original = WebSocket.prototype.send;
+  const spy = vi
+    .spyOn(WebSocket.prototype, 'send')
+    .mockImplementation(function (
+      this: WebSocket,
+      data: any,
+      options: any,
+      callback?: (error?: Error) => void,
+    ) {
+      const completed = typeof options === 'function' ? options : callback;
+      const settings = typeof options === 'object' ? options : {};
+      if (
+        !held &&
+        JSON.parse(String(data)).type === 'input_audio_buffer.append'
+      ) {
+        held = true;
+        fail = (error) => {
+          this.emit('error', error);
+        };
+        original.call(this, data, settings, (error?: Error) => {
+          release = () => completed?.(error);
+          written.resolve();
+        });
+      } else original.call(this, data, settings, completed);
+    });
+  return {
+    written: written.promise,
+    fail: (error: Error) => fail(error),
+    release: () => release(),
+    restore: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
+
+function acknowledgeTranscription(socket: WebSocket) {
+  socket.on('message', (raw) => {
+    const event = JSON.parse(raw.toString());
+    if (event.type === 'session.update')
+      socket.send(JSON.stringify({ type: 'session.updated' }));
+    if (event.type === 'input_audio_buffer.commit') {
+      socket.send(
+        JSON.stringify({
+          type: 'input_audio_buffer.committed',
+          item_id: 'bounded-audio',
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          type: 'conversation.item.input_audio_transcription.completed',
+          item_id: 'bounded-audio',
+          transcript: 'bounded',
+        }),
+      );
+    }
+  });
+}
+
+it('waits for an audio write before pulling the next input frame', async () => {
+  const held = holdFirstAudioWrite();
+  try {
+    await withSocket(
+      async (socket) => acknowledgeTranscription(socket),
+      async (provider) => {
+        const controller = new AbortController();
+        const next = vi
+          .fn<() => Promise<IteratorResult<AudioFrame>>>()
+          .mockResolvedValueOnce({ done: false, value: frame() })
+          .mockResolvedValueOnce({ done: true, value: undefined });
+        const source = { [Symbol.asyncIterator]: () => ({ next }) };
+        const result = collect(
+          provider.transcribe(source, { signal: controller.signal }),
+        );
+        try {
+          await held.written;
+          expect(next).toHaveBeenCalledTimes(1);
+          held.release();
+          expect(await result).toEqual(['bounded']);
+          expect(next).toHaveBeenCalledTimes(2);
+        } finally {
+          controller.abort();
+          held.release();
+          await result.catch(() => {});
+        }
+      },
+    );
+  } finally {
+    held.restore();
+  }
+});
+
+it('bounds encoded audio chunks from a large frame without changing samples', async () => {
+  const samples = Int16Array.from(
+    { length: 100000 },
+    (_, i) => (i % 65536) - 32768,
+  );
+  const original = samples.slice();
+  const packets: Buffer[] = [];
+  await withSocket(
+    async (socket) => {
+      acknowledgeTranscription(socket);
+      socket.on('message', (raw) => {
+        const event = JSON.parse(raw.toString());
+        if (event.type === 'input_audio_buffer.append')
+          packets.push(Buffer.from(event.audio, 'base64'));
+      });
+    },
+    async (provider) => {
+      async function* source() {
+        yield { ...frame([]), data: samples };
+      }
+      expect(
+        await collect(
+          provider.transcribe(source(), {
+            signal: new AbortController().signal,
+          }),
+        ),
+      ).toEqual(['bounded']);
+    },
+  );
+  expect(packets.length).toBeGreaterThan(1);
+  expect(packets.every((packet) => packet.length <= 64 * 1024)).toBe(true);
+  const expected = Buffer.alloc(samples.length * 2);
+  for (let i = 0; i < samples.length; i++)
+    expected.writeInt16LE(samples[i], i * 2);
+  expect(Buffer.concat(packets)).toEqual(expected);
+  expect(samples).toEqual(original);
+});
+
+it.each(['abort', 'disconnect', 'error'] as const)(
+  'releases a stalled audio write on %s without pulling more input',
+  async (mode) => {
+    const held = holdFirstAudioWrite();
+    let disconnect = () => {};
+    const closed = deferred<void>();
+    try {
+      await withSocket(
+        async (socket) => {
+          acknowledgeTranscription(socket);
+          socket.once('close', () => closed.resolve());
+          disconnect = () => socket.terminate();
+        },
+        async (provider) => {
+          const controller = new AbortController();
+          const next = vi
+            .fn<() => Promise<IteratorResult<AudioFrame>>>()
+            .mockResolvedValueOnce({ done: false, value: frame() })
+            .mockReturnValue(new Promise(() => {}));
+          const returned = vi.fn(async () => ({
+            done: true as const,
+            value: undefined,
+          }));
+          const source = {
+            [Symbol.asyncIterator]: () => ({ next, return: returned }),
+          };
+          const outcome = collect(
+            provider.transcribe(source, { signal: controller.signal }),
+          ).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+          try {
+            await held.written;
+            expect(next).toHaveBeenCalledTimes(1);
+            if (mode === 'abort') controller.abort(new Error('stop write'));
+            else if (mode === 'disconnect') disconnect();
+            else held.fail(new Error('write failure'));
+            expect(await outcome).toMatchObject({
+              message:
+                mode === 'abort'
+                  ? 'stop write'
+                  : mode === 'error'
+                    ? 'write failure'
+                    : 'Transcription connection closed before completion',
+            });
+            await closed.promise;
+            await vi.waitFor(() => expect(returned).toHaveBeenCalledOnce());
+            held.release();
+            expect(next).toHaveBeenCalledTimes(1);
+          } finally {
+            controller.abort();
+            held.release();
+            await outcome;
+          }
+        },
+      );
+    } finally {
+      held.restore();
+    }
   },
 );

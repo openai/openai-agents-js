@@ -23,13 +23,17 @@ export interface SpeechProvider {
   ): AsyncIterable<AudioFrame>;
 }
 
-export function pcmBytes(frame: AudioFrame): Buffer {
+export function assertAudioFrame(frame: AudioFrame): void {
   if (
     !(frame.data instanceof Int16Array) ||
     frame.sampleRate !== 24000 ||
     frame.channels !== 1
   )
     throw new TypeError('Voice audio must be mono PCM16 at 24000 Hz');
+}
+
+export function pcmBytes(frame: AudioFrame): Buffer {
+  assertAudioFrame(frame);
   const bytes = Buffer.alloc(frame.data.length * 2);
   for (let i = 0; i < frame.data.length; i++)
     bytes.writeInt16LE(frame.data[i], i * 2);
