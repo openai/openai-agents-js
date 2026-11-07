@@ -442,12 +442,7 @@ export class NativeA2AExecutor<
             await publish('completed', complete);
           }
         } catch (error) {
-          // Before Session handoff, only the original abort reason confirms clean cancellation.
-          // A distinct opening failure leaves resource cleanup unconfirmed.
-          let cleanupUnconfirmed =
-            session === undefined &&
-            controller.signal.aborted &&
-            error !== controller.signal.reason;
+          let cleanupUnconfirmed = false;
           if (session && !closed) {
             try {
               await session.close();
@@ -460,6 +455,13 @@ export class NativeA2AExecutor<
           await claim.current();
           if (record?.state === 'completed' || record?.state === 'waiting')
             throw error;
+          // Recheck after ownership validation: before Session handoff, only the
+          // original abort reason confirms clean cancellation. A distinct opening
+          // failure leaves resource cleanup unconfirmed.
+          cleanupUnconfirmed ||=
+            session === undefined &&
+            controller.signal.aborted &&
+            error !== controller.signal.reason;
           const canceled = controller.signal.aborted && !cleanupUnconfirmed;
           const desired = task(
             canceled

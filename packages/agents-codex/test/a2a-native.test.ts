@@ -282,6 +282,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             'late lease',
             'failed disposer',
             'source rejection',
+            'source rejection before cancellation',
             'abort reason',
           ] as const
         ).map((outcome) => ({ phase, outcome })),
@@ -300,7 +301,11 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               finishEntry = Promise.withResolvers<void>(),
               cleaning = Promise.withResolvers<void>(),
               finishCleanup = Promise.withResolvers<void>(),
+              checking = Promise.withResolvers<void>(),
+              finishCurrent = Promise.withResolvers<void>(),
               stopped = Promise.withResolvers<void>();
+            const beforeCancellation =
+              outcome === 'source rejection before cancellation';
             const failure = new Error('private opening rollback failure');
             const dispose = vi.fn(async () => {
               cleaning.resolve();
@@ -319,7 +324,30 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               provider: model.provider,
               tools: [decision],
             });
-            const store = new FileA2AStore();
+            let sourceRejected = false,
+              heldCurrent = false;
+            class OpeningStore extends FileA2AStore {
+              override async own<T>(
+                scope: NativeA2ABinding,
+                run: (claim: NativeA2AClaim) => Promise<T>,
+              ): Promise<T> {
+                return super.own(scope, (claim) =>
+                  run({
+                    ...claim,
+                    current: async () => {
+                      await claim.current();
+                      if (sourceRejected && !heldCurrent) {
+                        heldCurrent = true;
+                        checking.resolve();
+                        await finishCurrent.promise;
+                        await claim.current();
+                      }
+                    },
+                  }),
+                );
+              }
+            }
+            const store = new OpeningStore();
             let opening = phase === 'initial',
               executions = 0,
               taskId = '',
@@ -335,6 +363,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                   environment: opening
                     ? async ({ signal }: { signal: AbortSignal }) => {
                         entered.resolve();
+                        if (beforeCancellation) {
+                          sourceRejected = true;
+                          throw failure;
+                        }
                         await new Promise<void>((resolve) => {
                           const abort = () => {
                             aborted.resolve();
@@ -414,6 +446,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                 .sendMessage(request)
                 .catch((error: unknown) => error);
               await entered.promise;
+              if (beforeCancellation) await checking.promise;
               let cancellationSettled = false;
               const cancellation = cancel()
                 .then(
@@ -423,17 +456,25 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                 .finally(() => {
                   cancellationSettled = true;
                 });
-              await aborted.promise;
-              expect(cancellationSettled).toBe(false);
-              finishEntry.resolve();
-              await cleaning.promise;
-              expect(cancellationSettled).toBe(false);
-              finishCleanup.resolve();
+              if (beforeCancellation) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                expect(cancellationSettled).toBe(false);
+                finishCurrent.resolve();
+              } else {
+                await aborted.promise;
+                expect(cancellationSettled).toBe(false);
+                finishEntry.resolve();
+                await cleaning.promise;
+                expect(cancellationSettled).toBe(false);
+                finishCleanup.resolve();
+              }
               const canceled = await cancellation;
               await stopped.promise;
               await sending;
               const unconfirmed =
-                outcome === 'failed disposer' || outcome === 'source rejection';
+                outcome === 'failed disposer' ||
+                outcome === 'source rejection' ||
+                beforeCancellation;
               expect(canceled.ok).toBe(!unconfirmed);
               const record = store.record(taskId, context)!;
               expect(record.state).toBe(unconfirmed ? 'unknown' : 'canceled');
@@ -462,6 +503,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             } finally {
               finishEntry.resolve();
               finishCleanup.resolve();
+              finishCurrent.resolve();
               await remote.close();
             }
           },
