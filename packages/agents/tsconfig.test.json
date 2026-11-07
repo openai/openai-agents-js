@@ -28,7 +28,8 @@
         "./src/classic/realtime/testing/index.ts"
       ],
       "@openai/agents/classic/utils": ["./src/classic/utils/index.ts"],
-      "@openai/agents/a2a": ["./src/a2a/index.ts"]
+      "@openai/agents/a2a": ["./src/a2a/index.ts"],
+      "@openai/agents/voice": ["./src/voice/index.ts"]
     },
     "lib": ["ESNext", "DOM"],
     "moduleResolution": "bundler"
