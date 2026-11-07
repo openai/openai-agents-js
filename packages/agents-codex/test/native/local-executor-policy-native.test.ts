@@ -226,7 +226,11 @@ it.skipIf(!supported).for(['default', 'explicit'] as const)(
         model: 'gpt-5',
         instructions: 'Work.',
       });
-      const connection = { url: executor.url, headers: executor.headers };
+      const connection = {
+        url: executor.url,
+        headers: executor.headers,
+        writePolicy: 'legacy' as const,
+      };
       const network = {
         allowAllUnixSockets: true,
         allowedDomains: ['example.invalid'],
@@ -258,6 +262,7 @@ it.skipIf(!supported).for(['default', 'explicit'] as const)(
             ...connection,
             cwd: next,
             ...policy,
+            writePolicy: 'strict',
             writableRoots: [],
           }),
         }),

@@ -1,5 +1,6 @@
 import {
   Environment,
+  environmentConfig,
   projectSearchRuntime,
 } from '../../src/runtime/environment';
 import {
@@ -688,3 +689,42 @@ it.each([Number.NaN, Infinity, undefined, () => 'not JSON'])(
     expect(Object.prototype).not.toHaveProperty('ownKeyRetained');
   },
 );
+
+describe('Environment write policy', () => {
+  const remote = { url: 'wss://executor.invalid', cwd: '/workspace' };
+
+  it('defaults local and remote declarations to the existing strict roots wire format', () => {
+    for (const environment of [
+      new Environment(remote),
+      Environment.local({ cwd: remote.cwd }),
+    ]) {
+      expect(environment.writePolicy).toBe('strict');
+      expect(environment.writableRoots).toEqual([]);
+      expect(environmentConfig(environment).writable_roots).toEqual([]);
+      expect(Object.isFrozen(environment.writableRoots)).toBe(true);
+    }
+    expect(environmentConfig(new Environment(remote))).toEqual(
+      environmentConfig(new Environment({ ...remote, writableRoots: [] })),
+    );
+  });
+
+  it('requires an explicit remote legacy declaration without roots', () => {
+    const environment = new Environment({ ...remote, writePolicy: 'legacy' });
+    expect(environment.writePolicy).toBe('legacy');
+    expect(environmentConfig(environment)).not.toHaveProperty('writable_roots');
+    for (const writableRoots of [[], ['/output']]) {
+      expect(
+        () =>
+          new Environment({ ...remote, writePolicy: 'legacy', writableRoots }),
+      ).toThrow('Legacy write policy does not accept writableRoots');
+    }
+    expect(() =>
+      Environment.local({ cwd: remote.cwd, writePolicy: 'legacy' }),
+    ).toThrow('Legacy write policy requires a remote Environment');
+    for (const writePolicy of [null, '', 'unknown', false]) {
+      expect(
+        () => new Environment({ ...remote, writePolicy: writePolicy as never }),
+      ).toThrow('writePolicy must be strict or legacy');
+    }
+  });
+});

@@ -183,7 +183,9 @@ export interface EnvironmentOptions<Context = unknown> {
   url: string;
   cwd: string;
   capabilityDirectories?: readonly string[];
-  /** Extra writable directories on the executor. The workspace is always included. */
+  /** Strict writes by default. Legacy remote approval requires explicit opt-in. */
+  writePolicy?: 'strict' | 'legacy';
+  /** Extra writable directories under strict policy. The workspace is always included. */
   writableRoots?: readonly string[];
   /** Opt-in executor operations. Project search stays rooted at this Environment's cwd. */
   tools?: readonly ExecutorToolName[];
@@ -248,6 +250,7 @@ export class Environment<Context = any> {
 
   #remoteUrl?: string;
   readonly kind: 'local' | 'remote';
+  readonly writePolicy: 'strict' | 'legacy';
   /** WSS transport URL. A local Environment has no transport URL. */
   get url(): string {
     if (this.#remoteUrl === undefined)
@@ -273,6 +276,20 @@ export class Environment<Context = any> {
       | (LocalEnvironmentOptions<Context> & { local: true }),
   ) {
     this.kind = 'local' in options ? 'local' : 'remote';
+    this.writePolicy =
+      options.writePolicy === undefined ? 'strict' : options.writePolicy;
+    if (this.writePolicy !== 'strict' && this.writePolicy !== 'legacy')
+      throw new TypeError('writePolicy must be strict or legacy');
+    if (this.writePolicy === 'legacy') {
+      if (this.kind === 'local')
+        throw new TypeError(
+          'Legacy write policy requires a remote Environment',
+        );
+      if (options.writableRoots !== undefined)
+        throw new TypeError(
+          'Legacy write policy does not accept writableRoots; use strict',
+        );
+    }
     if (this.kind === 'remote' && 'mounts' in options)
       throw new TypeError('Storage mounts require Environment.local on Linux');
     if ('local' in options) {
@@ -377,10 +394,15 @@ export class Environment<Context = any> {
         : Object.freeze(
             z.array(capabilityDirectory).parse(options.capabilityDirectories),
           );
+    // Reuse the native roots field so existing strict policy identities remain stable.
     this.writableRoots =
-      options.writableRoots === undefined
+      this.writePolicy === 'legacy'
         ? undefined
-        : Object.freeze(captureWritableRoots(options.writableRoots));
+        : Object.freeze(
+            captureWritableRoots(
+              options.writableRoots === undefined ? [] : options.writableRoots,
+            ),
+          );
     if ('mounts' in options && options.mounts !== undefined)
       this.mounts = captureStorageMounts(
         options.mounts,

@@ -1635,8 +1635,8 @@ impl LocalResumeExecutorPolicy {
                             })
                     })
             } else if strict || self.strict {
-                // Legacy receipts lacked the mode and still require an exact profile.
-                strict_flag.is_none_or(|flag| flag.as_bool() == Some(self.strict))
+                // A strict reopen requires durable evidence of the recorded strict mode.
+                strict_flag.and_then(Value::as_bool) == Some(self.strict)
                     && *previous == self.values
             } else if self.values.is_empty() {
                 // A durable session without an Environment has no executor.

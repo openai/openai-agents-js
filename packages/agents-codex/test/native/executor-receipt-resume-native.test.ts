@@ -58,7 +58,10 @@ it
         cwd: mode === 'legacy' ? await realpath(executor.cwd) : executor.cwd,
         tools: ['exec_command'] as const,
       };
-      const implicit = new Environment(connection);
+      const implicit = new Environment({
+        ...connection,
+        writePolicy: 'legacy',
+      });
       const writableRoots: string[] = [];
       if (mode === 'receipt-free strict extra') {
         const extra = join(executor.cwd, '..', 'extra');
@@ -71,6 +74,7 @@ it
       else if (mode === 'strict' || mode.startsWith('receipt-free strict'))
         source = strict;
       const changed = source === strict ? implicit : strict;
+      const defaultStrict = new Environment(connection);
       let resume: string;
       {
         await using session = await agent.session({
@@ -87,6 +91,14 @@ it
           storage,
           resume,
           environment: source,
+        });
+        expect(reopened.id).toBe(resume);
+      }
+      if (source === strict && writableRoots.length === 0) {
+        await using reopened = await agent.session({
+          storage,
+          resume,
+          environment: defaultStrict,
         });
         expect(reopened.id).toBe(resume);
       }
@@ -184,11 +196,12 @@ it
           });
           await expect(reopen(explicitNetwork)).rejects.toThrow(policyError);
         }
-      } else if (
-        mode === 'legacy' ||
-        mode === 'before sampling' ||
-        mode === 'empty'
-      ) {
+      } else if (mode === 'legacy') {
+        await reopen(implicit);
+        await expect(reopen(defaultStrict)).rejects.toThrow(
+          /recorded executor write and network policy/,
+        );
+      } else if (mode === 'before sampling' || mode === 'empty') {
         await reopen(changed);
       } else {
         await expect(reopen(changed)).rejects.toThrow(
@@ -390,7 +403,10 @@ it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
         await using reopened = await agent.session({
           storage,
           resume,
-          environment: new Environment(connection),
+          environment: new Environment({
+            ...connection,
+            writePolicy: 'legacy',
+          }),
         });
         expect(reopened.id).toBe(resume);
         expect(
@@ -414,7 +430,10 @@ it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
           await using session = await agent.session({
             storage,
             resume,
-            environment: new Environment(connection),
+            environment: new Environment({
+              ...connection,
+              writePolicy: 'legacy',
+            }),
           });
           expect(session.id).toBe(resume);
         })(),
