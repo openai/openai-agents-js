@@ -216,8 +216,10 @@ export interface EnvironmentOptions<Context = unknown> {
 
 export type LocalEnvironmentOptions<Context = unknown> = Omit<
   EnvironmentOptions<Context>,
-  'url' | 'headers' | 'connectTimeout' | 'mounts'
+  'url' | 'headers' | 'connectTimeout' | 'mounts' | 'writePolicy'
 > & {
+  /** Local environments only support strict writes. */
+  writePolicy?: 'strict';
   /** Linux only: canonical same-path read-only local_bind mounts. */
   mounts?: readonly LocalStorageMount[];
 };

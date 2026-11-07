@@ -719,7 +719,7 @@ describe('Environment write policy', () => {
       ).toThrow('Legacy write policy does not accept writableRoots');
     }
     expect(() =>
-      Environment.local({ cwd: remote.cwd, writePolicy: 'legacy' }),
+      Environment.local({ cwd: remote.cwd, writePolicy: 'legacy' as never }),
     ).toThrow('Legacy write policy requires a remote Environment');
     for (const writePolicy of [null, '', 'unknown', false]) {
       expect(
