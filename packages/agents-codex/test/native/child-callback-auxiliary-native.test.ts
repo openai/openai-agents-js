@@ -248,7 +248,17 @@ for (const route of [
 ] as const) {
   it.each(['release', 'cancel', 'close', 'reader-end'] as const)(
     `waits for real native child publication before ${route} callback (%s)`,
-    async (mode: Mode) => {
+    async (mode: Mode, testContext) => {
+      // Only released executor work needs a real strict process sandbox.
+      // Keep cancellation, retirement and MCP publication coverage on this host.
+      if (
+        route !== 'mcp-result' &&
+        mode === 'release' &&
+        process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+        process.env.GITHUB_ACTIONS !== 'true' &&
+        process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+      )
+        testContext.skip();
       const gate = await holdMainBeforeChild(route);
       const context = { account: 'exact-child' };
       let executor: Awaited<ReturnType<typeof startPublicExecutor>> | undefined;
