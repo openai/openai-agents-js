@@ -103,6 +103,7 @@ import {
   assertRcloneMountEnvironmentAuthorityMatches,
   captureRcloneMountEnvironmentAuthorityForManifest,
   mountRcloneCloudBucket,
+  validateRcloneCloudBucketMount,
   rcloneMountEnvironmentAuthorityMatches,
   rclonePatternFromMountStrategy,
   validateRcloneMountEnvironmentCredentialExposure,
@@ -1381,6 +1382,16 @@ export class DaytonaSandboxClient implements SandboxClient<
       resolvedManifest,
       MOUNT_MANIFEST_METADATA_SUPPORT,
     );
+    for (const { entry } of resolvedManifest.mountTargets()) {
+      validateRcloneCloudBucketMount({
+        entry,
+        providerName: 'DaytonaSandboxClient',
+        providerId: 'daytona',
+        strategyType: 'daytona_cloud_bucket',
+        pattern: (entry.mountStrategy as { pattern?: unknown } | undefined)
+          ?.pattern,
+      });
+    }
     const client = await createDaytonaClient(resolvedOptions);
 
     return await withSandboxSpan(

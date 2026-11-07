@@ -123,3 +123,5 @@ export {
   sniffImageMediaType,
   toUint8Array,
 } from './shared/media';
+
+export { cleanupSandboxSession } from './runtime/sessionLifecycle';

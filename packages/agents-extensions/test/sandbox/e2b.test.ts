@@ -76,6 +76,25 @@ const processFailure = (stderr: string) => ({
 });
 
 describe('E2BSandboxClient', () => {
+  test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
+    const client = new E2BSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'synthetic',
+          mountStrategy: { type: 'docker_volume' },
+        },
+      },
+    });
+    await expect(client.create({ manifest })).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+    expect(createMock).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     files.clear();
     createMock.mockReset();
@@ -1632,9 +1651,7 @@ describe('E2BSandboxClient', () => {
           },
         }),
       ),
-    ).rejects.toThrow(
-      /SDK-supported strategy, provider, mount type, and pattern/iu,
-    );
+    ).rejects.toThrow(/require a rclone mount pattern/iu);
     await expect(
       new E2BSandboxClient({
         env: {

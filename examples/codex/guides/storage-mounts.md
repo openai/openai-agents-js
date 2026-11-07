@@ -1,6 +1,66 @@
-# Mount local storage for native commands
+# Storage mounts for native commands
 
-The current source build supports read-only local storage mounts on Linux. Pass `mounts` to `Environment.local`. Native commands receive a real read-only bind mount inside their process sandbox. The SDK does not copy files or create a host-wide mount. This feature requires the matching native addon and Linux sandbox helper from this checkout.
+Native commands can use provider storage through `sandboxEnvironment` or read-only local Linux mounts through `Environment.local`. Provider storage uses an authenticated executor in the prepared sandbox. Local mounts require the matching native addon and Linux sandbox helper from this checkout.
+
+## Provider-backed storage
+
+Import `sandboxEnvironment` and `renderStorageLayout` from `@openai/agents/sandbox`. The existing typed `Manifest` declares storage, and a `SandboxClient` creates and prepares the provider session. Native execution uses your application's authenticated gateway connector to that exact session. No Classic runner or second model loop is involved. See the [runnable provider example](../provider-storage-mount.ts).
+
+Both helpers require an application-authorized `Manifest` instance; they do not parse manifest init objects. Validate untrusted values before constructing a manifest. Construction alone does not authorize its paths, resources, or credential selections. The client, provider options, and connector must also come from trusted application configuration.
+
+```ts
+import {
+  Manifest,
+  s3Mount,
+  sandboxEnvironment,
+  renderStorageLayout,
+} from '@openai/agents/sandbox';
+import {
+  ModalSandboxClient,
+  ModalCloudBucketMountStrategy,
+} from '@openai/agents-extensions/sandbox/modal';
+
+const manifest = new Manifest({
+  entries: {
+    data: s3Mount({
+      bucket: 'reference-data',
+      mountStrategy: new ModalCloudBucketMountStrategy(),
+      description: 'Reference documents for this task.',
+    }),
+  },
+});
+const environment = sandboxEnvironment({
+  client: new ModalSandboxClient({ appName: 'my-existing-app' }),
+  manifest,
+  // Application-supplied: launch or find a matching native executor INSIDE
+  // sandbox, authenticate its gateway, and return Environment.lease(...).
+  connect,
+});
+const instructions = `Use these files:\n${renderStorageLayout(manifest)}`;
+```
+
+Pass the source to `agent.session({ environment })` or `agent.run(input, { environment })`. `connect(sandbox, { signal })` must return an `EnvironmentLease` whose Environment targets the supplied sandbox and whose disposer joins the gateway. Returning a host executor for a cloud sandbox does not connect its filesystem. The SDK does not deploy a gateway, provision cloud accounts, install Docker volume plugins, or make an arbitrary container suitable for native execution. The executor must support the native runtime's normal sandbox, including its namespaces and mount requirements; do not disable those controls to make a container work.
+
+The source captures the Manifest and plain provider `options` before asynchronous work. It preserves opaque SDK objects and functions by reference; the application owns their lifetime and mutations. Each opening calls the provider's normal `create()` pipeline. The provider owns validation of storage, strategy, credentials, selected resources and creation options. Strategies must be explicit. Mounts default to `readOnly: true`; writable requests work only where the provider supports them.
+
+| Resource provider | Existing storage implementation | Limits |
+| --- | --- | --- |
+| Docker | `local_bind`; `docker_volume` with configured Rclone/Mountpoint drivers; `in_container` helpers | Driver/pattern matrix varies. S3/GCS/R2/Azure/Box use supported drivers or helpers; S3 Files requires the `s3files` pattern. Read-only host binds cannot be combined with helpers requiring mount privileges. |
+| Modal | `modal_cloud_bucket`: S3/GCS/R2 | Native provider bucket API; GCS needs compatible HMAC credentials or provider secrets. |
+| Cloudflare | `cloudflare_bucket_mount`: S3/GCS/R2 | Native bucket API; credential/endpoint variants are provider-specific. |
+| E2B / Daytona | `e2b_cloud_bucket` / `daytona_cloud_bucket`: S3/GCS/R2/Azure/Box | Rclone FUSE/NFS; requires the corresponding runtime privileges and helper support. |
+| Blaxel | `blaxel_cloud_bucket`: S3/GCS/R2; separate drive strategy | Uses provider helpers; other typed storage types are unsupported. |
+| Vercel | `vercel_cloud_bucket`: S3 | Mountpoint, configured at creation; no dynamic mount or credential refresh contract. |
+
+These are existing implementation paths, not a claim of live cloud qualification. Credentials, prefixes, endpoints and writable modes have narrower provider-specific support. Invalid combinations fail in the owning provider before creation/helper effects. S3 Files requires an existing filesystem and suitable networking/identity; this integration does not provision or qualify that infrastructure.
+
+Mount credentials stay in trusted provider configuration. In-container helpers may expose credentials to the same sandbox principal: the existing policy denies that by default and requires an explicit acknowledgement for the exact mount path. The adapter never grants that acknowledgement. Prefer provider-native mounts or external drivers when suitable. `renderStorageLayout` returns only `{workspace, storage:[{path, access, description?}]}` with `read_only`/`read_write` access. It never renders provider configuration, environment values, source credentials or file contents, and does not resolve credentials. Paths and descriptions are intentional model-facing text; callers must keep those strings safe. If a provider rebases the workspace root, render its prepared `sandbox.state.manifest` or configure an explicit root supported by that provider.
+
+Native retirement finishes before the source releases the gateway and provider session. Cleanup uses the provider lifecycle with preservation disabled and attempts later owners even if an earlier cleanup fails. Selected resources follow that provider's actual ownership policy: selection does not universally mean preservation, so supply only resources you authorize that provider to dispose of. The source requires a cleanup route and reports failures the provider exposes; it cannot recover errors a provider suppresses internally.
+
+Native checkpoints do not serialize provider handles, credentials or a sandbox snapshot. Reopening uses current trusted Manifest/options and `connect`; it does not resume provider state from a checkpoint. Native permission checks still apply, but their receipt does not fingerprint provider mount configuration or prove identical backing data. Applications must establish that the new resource and data are appropriate for restored conversations.
+
+## Direct local Linux mounts
 
 ```ts
 import { Environment, type LocalStorageMount } from '@openai/agents';
@@ -20,7 +80,7 @@ const environment = Environment.local({
 
 Pass this environment to `agent.session({ environment })`. See [the complete example](../local-storage-mount.ts). Both directories must already exist. Source and destination must be identical canonical absolute paths without symlinks. The workspace remains writable; place mounted storage outside it and outside all writable roots. Mounts cannot overlap each other or expose private SDK runtime or session storage. Native validation also checks filesystem identities and mount aliases. It rejects existing hard links that share a regular file between mounted storage and `cwd` or an additional writable root. Hard links wholly within read-only storage or outside the writable grants are allowed.
 
-## Supported configurations
+## Direct local mount configurations
 
 | Environment | Storage and strategy | Access |
 | --- | --- | --- |

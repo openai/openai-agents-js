@@ -1,3 +1,5 @@
+import { Manifest } from '@openai/agents-core/sandbox';
+import { sandboxEnvironment } from '../../src/runtime/sandbox-environment';
 import { nativeEventBatch } from '../fixtures/native-event-batches';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -109,6 +111,49 @@ beforeEach(() => {
 });
 
 describe('Environment source public opening and actual Session cleanup', () => {
+  it('keeps the adapter resource until public Session native retirement, then joins every owner', async () => {
+    const entered = Promise.withResolvers<void>();
+    const retired = Promise.withResolvers<void>();
+    const events: string[] = [];
+    fixture.retire.mockImplementation(async () => {
+      entered.resolve();
+      await retired.promise;
+      events.push('native-retired');
+      return '';
+    });
+    const resource = {
+      state: { manifest: new Manifest() },
+      close: async () => {
+        events.push('sandbox');
+      },
+    };
+    const source = sandboxEnvironment({
+      manifest: new Manifest(),
+      client: {
+        backendId: 'controlled',
+        create: async () => resource,
+        delete: async () => {
+          events.push('delete');
+        },
+      },
+      connect: async (actual) => {
+        expect(actual).toBe(resource);
+        return Environment.lease(environment(), () => {
+          events.push('gateway');
+        });
+      },
+    });
+    await using provider = new NativeProvider({ apiKey: 'synthetic-key' });
+    const session = await new Agent({ instructions: 'Test', provider }).session(
+      { environment: source },
+    );
+    const closing = session.close();
+    await entered.promise;
+    expect(events).toEqual([]);
+    retired.resolve();
+    await closing;
+    expect(events).toEqual(['native-retired', 'gateway', 'sandbox', 'delete']);
+  });
   it('retains earlier provider opening cleanup while disposing its acquired source once', async () => {
     const provider = new NativeProvider({ apiKey: 'synthetic-key' });
     const acquire = provider._acquire.bind(provider);
@@ -418,6 +463,50 @@ describe('Environment source public opening and actual Session cleanup', () => {
     });
     await session.close();
     expect(observed).toBe('resource');
+  });
+
+  it('preserves gateway scope and rejects self-close before cleaning up the sandbox', async () => {
+    const provider = new NativeProvider({ apiKey: 'synthetic-key' });
+    const scope = new AsyncLocalStorage<string>();
+    const events: string[] = [];
+    let observed: string | undefined;
+    const session: PublicSession = await new Agent({
+      instructions: 'Test',
+      provider,
+    }).session({
+      environment: sandboxEnvironment({
+        manifest: new Manifest(),
+        client: {
+          backendId: 'controlled',
+          create: async () => ({
+            state: { manifest: new Manifest() },
+            close: async () => {
+              events.push('sandbox');
+            },
+          }),
+          delete: async () => {
+            events.push('delete');
+          },
+        },
+        connect: async () =>
+          scope.run('gateway', async () =>
+            Environment.lease(environment(), async (...args: unknown[]) => {
+              expect(args).toEqual([]);
+              observed = scope.getStore();
+              events.push('gateway');
+              await session.close();
+            }),
+          ),
+      }),
+    });
+    await expect(session.close()).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringContaining('own session'),
+      }),
+    });
+    expect(observed).toBe('gateway');
+    expect(events).toEqual(['gateway', 'sandbox', 'delete']);
+    await expect(provider.close()).resolves.toBeUndefined();
   });
 
   it('releases provider resources after a completed rejected disposer', async () => {
