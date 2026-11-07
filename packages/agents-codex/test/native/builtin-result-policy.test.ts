@@ -13,7 +13,15 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-it.each(['direct', 'code_mode'] as const)(
+// Successful native effects need sandbox helpers unavailable on this host.
+// Keep strict execution required in CI and cancellation coverage active locally.
+const effectTest = it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+);
+
+effectTest.each(['direct', 'code_mode'] as const)(
   'replaces a %s builtin result before model, observation and history publication',
   async (route) => {
     const executor = await startPublicExecutor();
@@ -205,7 +213,7 @@ it('cancels publication immediately and joins an abort-ignoring result callback'
   }
 }, 25_000);
 
-it('keeps the real process identity while replacing exec and stdin output', async () => {
+effectTest('keeps the real process identity while replacing exec and stdin output', async () => {
   const executor = await startPublicExecutor();
   const privateOutput = 'synthetic-private-poll-output';
   const policies: string[] = [];
@@ -303,7 +311,7 @@ it('keeps the real process identity while replacing exec and stdin output', asyn
   }
 }, 30_000);
 
-it('replaces the whole native patch result after one committed patch', async () => {
+effectTest('replaces the whole native patch result after one committed patch', async () => {
   const executor = await startPublicExecutor();
   const model = new ModelServer([
     [
