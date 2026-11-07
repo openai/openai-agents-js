@@ -138,6 +138,8 @@ native('application-owned completed-text continuation', () => {
         url: executor.url,
         cwd: executor.cwd,
         headers: executor.headers,
+        // This case exercises native escalation, which strict policy refuses.
+        writePolicy: 'legacy',
         tools: ['apply_patch'],
       });
       await using session = await new Agent({
