@@ -6715,7 +6715,7 @@ describe('DockerSandboxClient unit behavior', () => {
     ['nested local_dir', false],
     ['nested local_dir', true],
   ] as const)(
-    'joins %s workers before cleanup (later worker fails: %s)',
+    'joins active %s workers and skips queued entries after failure (later worker fails: %s)',
     async (kind, laterFailure) => {
       const actual =
         await vi.importActual<typeof import('node:fs/promises')>(
@@ -6725,7 +6725,9 @@ describe('DockerSandboxClient unit behavior', () => {
       const nestedSource = join(source, 'outer', 'inner');
       await mkdir(join(nestedSource, 'delayed'), { recursive: true });
       const failingSource = join(nestedSource, 'failing.txt');
+      const queuedSource = join(nestedSource, 'queued.txt');
       await writeFile(failingSource, 'keep caller data');
+      await writeFile(queuedSource, 'keep queued caller data');
       const firstError = new Error('first materialization failure');
       const laterError = new Error('later materialization failure');
       const entered = Promise.withResolvers<void>();
@@ -6734,6 +6736,7 @@ describe('DockerSandboxClient unit behavior', () => {
       const written = Promise.withResolvers<void>();
       const events: string[] = [];
       vi.mocked(open).mockImplementation(async (...args) => {
+        if (args[0] === queuedSource) events.push('queued-started');
         if (args[0] === failingSource) {
           await entered.promise;
           failed.resolve();
@@ -6766,13 +6769,17 @@ describe('DockerSandboxClient unit behavior', () => {
       processMocks.runSandboxProcess.mockResolvedValue(
         success('Docker version test'),
       );
-      const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        concurrencyLimits: { manifestEntries: 2, localDirFiles: 2 },
+      });
       const manifest = new Manifest({
         entries:
           kind === 'manifest'
             ? {
                 failing: { type: 'local_file', src: failingSource },
                 delayed: { type: 'dir' },
+                queued: { type: 'local_file', src: queuedSource },
               }
             : { copied: { type: 'local_dir', src: source } },
         extraPathGrants: [
@@ -6809,9 +6816,13 @@ describe('DockerSandboxClient unit behavior', () => {
       await expect(readFile(failingSource, 'utf8')).resolves.toBe(
         'keep caller data',
       );
+      await expect(readFile(queuedSource, 'utf8')).resolves.toBe(
+        'keep queued caller data',
+      );
       await expect(readdir(nestedSource)).resolves.toEqual([
         'delayed',
         'failing.txt',
+        'queued.txt',
       ]);
       expect(
         processMocks.runSandboxProcess.mock.calls.map(([, args]) => args[0]),

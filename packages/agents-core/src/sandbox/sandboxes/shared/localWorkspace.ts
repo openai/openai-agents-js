@@ -1505,14 +1505,20 @@ async function runLimited<T>(
   }
 
   let nextIndex = 0;
+  let failed = false;
   // This intentionally stays as a tiny work queue rather than adding a dependency for
   // the few manifest and local_dir concurrency limits used here.
   const workers = Array.from(
     { length: Math.min(limit, items.length) },
     async () => {
-      while (nextIndex < items.length) {
-        const item = items[nextIndex++];
-        await fn(item);
+      try {
+        while (!failed && nextIndex < items.length) {
+          const item = items[nextIndex++];
+          await fn(item);
+        }
+      } catch (error) {
+        failed = true;
+        throw error;
       }
     },
   );
