@@ -306,10 +306,13 @@ export function validateWorkspaceTarArchive(
             'PAX size override not allowed',
           );
         }
-        if (pax['GNU.sparse.name'] !== undefined) {
+        const sparseKey = Object.keys(pax).find((key) =>
+          key.startsWith('GNU.sparse.'),
+        );
+        if (sparseKey !== undefined) {
           throw tarError(
             readTarString(header, 0, 100),
-            'PAX GNU.sparse.name override not allowed',
+            `PAX ${sparseKey} override not allowed`,
           );
         }
         if (rawType === 'x') {
