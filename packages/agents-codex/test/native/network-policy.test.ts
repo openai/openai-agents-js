@@ -336,7 +336,10 @@ it.skipIf(
 
 it.skipIf(
   process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
-    process.platform !== 'linux',
+    process.platform !== 'linux' ||
+    (process.env.GITHUB_ACTIONS !== 'true' &&
+      process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+      process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
 )(
   'enforces allowed, overlapping-denied and unlisted proxy requests without direct bypass',
   async () => {
