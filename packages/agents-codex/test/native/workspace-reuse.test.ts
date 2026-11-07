@@ -78,7 +78,9 @@ esac
         process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
       ) {
-        context.skip('This host cannot isolate the app-server socket directory');
+        context.skip(
+          'This host cannot isolate the app-server socket directory',
+        );
       }
       expect(JSON.stringify(outputs[0])).toContain(
         text.replaceAll('\n', '\\n'),

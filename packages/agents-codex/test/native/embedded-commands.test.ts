@@ -424,29 +424,29 @@ it('keeps rename and stop available during a Turn while refusing idle-only comma
   }
 });
 
-// Strict terminal execution needs a native sandbox outside the outer Codex sandbox.
+// Strict terminal execution needs a working native sandbox.
 it.skipIf(
   process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
     process.env.GITHUB_ACTIONS !== 'true' &&
     process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
-)('stops an actual background terminal while a held foreground Turn survives', async ({
-  task,
-}) => {
-  const executor = await startPublicExecutor({
-    captureProcessDiagnostics: true,
-  });
-  const release = Promise.withResolvers<void>();
-  let held = false;
-  let afterStopOutput = '';
-  let preStopRequestBoundary: number | null = null;
-  let beforeDisposalDiagnosticCount: number | null = null;
-  const lockSnapshots: unknown[] = [];
-  const snapshotLock = (phase: string) => {
-    const result = execFileSync(
-      'python3',
-      [
-        '-c',
-        `
+)(
+  'stops an actual background terminal while a held foreground Turn survives',
+  async ({ task }) => {
+    const executor = await startPublicExecutor({
+      captureProcessDiagnostics: true,
+    });
+    const release = Promise.withResolvers<void>();
+    let held = false;
+    let afterStopOutput = '';
+    let preStopRequestBoundary: number | null = null;
+    let beforeDisposalDiagnosticCount: number | null = null;
+    const lockSnapshots: unknown[] = [];
+    const snapshotLock = (phase: string) => {
+      const result = execFileSync(
+        'python3',
+        [
+          '-c',
+          `
 import os, json
 path = os.path.join(__import__('sys').argv[1], 'stop-terminal.lock')
 s = os.stat(path)
@@ -472,203 +472,207 @@ for pid in os.listdir('/proc'):
     except OSError: pass
 print(json.dumps(dict(locks=locks,holders=holders)))
 `,
-        executor.cwd,
-      ],
-      { encoding: 'utf8' },
-    );
-    lockSnapshots.push({
-      phase,
-      requestCount: executor.requests.length,
-      processDiagnosticCount: executor.processDiagnostics.length,
-      ...JSON.parse(result),
-    });
-  };
-  const server = new ModelServer([
-    [
-      call(
-        'exec_command',
-        {
-          cmd: "flock -n stop-terminal.lock -c 'printf ready > stop-terminal.ready; read -r line'",
-          workdir: executor.cwd,
-          tty: true,
-          yield_time_ms: 1000,
-        },
-        { callId: 'background-terminal' },
-      ),
-    ],
-    (request) => {
-      expect(toolOutput(request, 'background-terminal')).toMatch(
-        /Process running with session ID \d+/,
+          executor.cwd,
+        ],
+        { encoding: 'utf8' },
       );
-      return [message('terminal started')];
-    },
-    [
-      call(
-        'exec_command',
-        {
-          cmd: "flock -n stop-terminal.lock -c 'printf acquired'",
-          workdir: executor.cwd,
-          yield_time_ms: 1000,
-        },
-        { callId: 'locked-before-stop' },
-      ),
-    ],
-    (request) => {
-      expect(toolOutput(request, 'locked-before-stop')).toContain(
-        'Process exited with code 1',
-      );
-      return [message('lock is held')];
-    },
-    async () => {
-      held = true;
-      await release.promise;
-      return [message('foreground survived')];
-    },
-    [
-      call(
-        'exec_command',
-        {
-          cmd: "for attempt in {1..100}; do flock -n stop-terminal.lock -c 'printf acquired' && exit 0; sleep 0.05; done; exit 1",
-          workdir: executor.cwd,
-          yield_time_ms: 10_000,
-        },
-        { callId: 'unlocked-after-stop' },
-      ),
-    ],
-    (request) => {
-      afterStopOutput = toolOutput(request, 'unlocked-after-stop');
-      return [message('terminal released its lock')];
-    },
-  ]);
-  try {
-    await using provider = await providerFor(server);
-    const agent = new Agent({ instructions: 'Use the terminal.', provider });
-    const environment = new Environment({
-      url: executor.url,
-      cwd: executor.cwd,
-      headers: executor.headers,
-      tools: ['exec_command', 'write_stdin'],
-    });
-    await using session = await agent.session({ environment });
-    await using observer = await agent.session({ environment });
-    try {
-      await (await session.submit('Start a background terminal.')).wait();
-      const requestIndex = executor.requests.findIndex(
-        (row) =>
-          row.method === 'process/start' &&
-          JSON.stringify((row.params as JsonObject).argv).includes(
-            'stop-terminal.ready',
-          ),
-      );
-      expect(requestIndex).toBeGreaterThanOrEqual(0);
-      const backgroundRequest = executor.processDiagnostics.find(
-        (row) =>
-          row.direction === 'request' &&
-          row.requestSequence === requestIndex + 1,
-      );
-      expect(backgroundRequest).toBeDefined();
-      const background = executor.processDiagnostics.find(
-        (row) =>
-          row.direction === 'response' &&
-          row.method === 'process/start' &&
-          row.connection === backgroundRequest!.connection &&
-          row.id === backgroundRequest!.id,
-      );
-      expect(background?.processId).toEqual(expect.any(String));
-      expect(background!.processId).toBe(backgroundRequest!.processId);
-      expect(
-        await readFile(join(executor.cwd, 'stop-terminal.ready'), 'utf8'),
-      ).toBe('ready');
-      expect(
-        (await (await observer.submit('Check the lock.')).wait()).finalOutput,
-      ).toBe('lock is held');
-      const foreground = await session.submit(
-        'Wait for the foreground answer.',
-      );
-      const completion = foreground.wait();
-      completion.catch(() => {});
-      let settled = false;
-      void completion.then(
-        () => {
-          settled = true;
-        },
-        () => {
-          settled = true;
-        },
-      );
-      await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
-      const execute = vi.spyOn(NativeThread.prototype, '_execute_command');
-      const compact = vi.spyOn(NativeThread.prototype, '_compact');
-      await expect(session.executeCommand('compact')).rejects.toThrow();
-      await expect(
-        session.executeCommand('review Inspect this change.'),
-      ).rejects.toThrow();
-      expect(execute).not.toHaveBeenCalled();
-      expect(compact).not.toHaveBeenCalled();
-      snapshotLock('before-stop');
-      const requestBoundary = executor.requests.length;
-      preStopRequestBoundary = requestBoundary;
-      const stopped = await session.executeCommand(
-        '/stop-background-terminals',
-      );
-      if (stopped.command !== 'stop-background-terminals')
-        throw new Error('Missing stop receipt');
-      expect(stopped).toEqual({
-        command: 'stop-background-terminals',
-        sessionId: session.id,
-        operationId: expect.any(String),
+      lockSnapshots.push({
+        phase,
+        requestCount: executor.requests.length,
+        processDiagnosticCount: executor.processDiagnostics.length,
+        ...JSON.parse(result),
       });
-      expect(stopped.operationId).toBe(
-        JSON.parse(await execute.mock.results[0].value).operation_id,
-      );
-      expect(stopped.operationId).not.toBe(foreground.turnId);
-      await vi.waitFor(
-        () =>
-          expect(
-            executor.processDiagnostics.some(
-              (row) =>
-                row.direction === 'response' &&
-                row.method === 'process/terminate' &&
-                row.connection === background!.connection &&
-                row.processId === background!.processId &&
-                Number(row.requestSequence) > requestBoundary,
-            ),
-          ).toBe(true),
-        { timeout: 10_000 },
-      );
-      expect(
-        (
-          await (
-            await observer.submit('Check that the terminal released its lock.')
-          ).wait()
-        ).finalOutput,
-      ).toBe('terminal released its lock');
-      snapshotLock('after-lock-probe');
-      expect(afterStopOutput).toContain('acquired');
-      expect(afterStopOutput).toContain('Process exited with code 0');
-      expect(settled).toBe(false);
-      release.resolve();
-      expect((await completion).finalOutput).toBe('foreground survived');
-      server.assertExhausted();
-    } finally {
-      try {
-        snapshotLock('before-session-disposal');
-      } catch (error) {
-        lockSnapshots.push({ error: String(error) });
-      }
-      beforeDisposalDiagnosticCount = executor.processDiagnostics.length;
-      release.resolve();
-    }
-  } finally {
-    Object.assign(task.meta, {
-      stopProcessDiagnostics: {
-        preStopRequestBoundary,
-        beforeDisposalDiagnosticCount,
-        process: executor.processDiagnostics,
-        lockSnapshots,
+    };
+    const server = new ModelServer([
+      [
+        call(
+          'exec_command',
+          {
+            cmd: "flock -n stop-terminal.lock -c 'printf ready > stop-terminal.ready; read -r line'",
+            workdir: executor.cwd,
+            tty: true,
+            yield_time_ms: 1000,
+          },
+          { callId: 'background-terminal' },
+        ),
+      ],
+      (request) => {
+        expect(toolOutput(request, 'background-terminal')).toMatch(
+          /Process running with session ID \d+/,
+        );
+        return [message('terminal started')];
       },
-    });
-    release.resolve();
-    await executor.close();
-  }
-}, 30_000);
+      [
+        call(
+          'exec_command',
+          {
+            cmd: "flock -n stop-terminal.lock -c 'printf acquired'",
+            workdir: executor.cwd,
+            yield_time_ms: 1000,
+          },
+          { callId: 'locked-before-stop' },
+        ),
+      ],
+      (request) => {
+        expect(toolOutput(request, 'locked-before-stop')).toContain(
+          'Process exited with code 1',
+        );
+        return [message('lock is held')];
+      },
+      async () => {
+        held = true;
+        await release.promise;
+        return [message('foreground survived')];
+      },
+      [
+        call(
+          'exec_command',
+          {
+            cmd: "for attempt in {1..100}; do flock -n stop-terminal.lock -c 'printf acquired' && exit 0; sleep 0.05; done; exit 1",
+            workdir: executor.cwd,
+            yield_time_ms: 10_000,
+          },
+          { callId: 'unlocked-after-stop' },
+        ),
+      ],
+      (request) => {
+        afterStopOutput = toolOutput(request, 'unlocked-after-stop');
+        return [message('terminal released its lock')];
+      },
+    ]);
+    try {
+      await using provider = await providerFor(server);
+      const agent = new Agent({ instructions: 'Use the terminal.', provider });
+      const environment = new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin'],
+      });
+      await using session = await agent.session({ environment });
+      await using observer = await agent.session({ environment });
+      try {
+        await (await session.submit('Start a background terminal.')).wait();
+        const requestIndex = executor.requests.findIndex(
+          (row) =>
+            row.method === 'process/start' &&
+            JSON.stringify((row.params as JsonObject).argv).includes(
+              'stop-terminal.ready',
+            ),
+        );
+        expect(requestIndex).toBeGreaterThanOrEqual(0);
+        const backgroundRequest = executor.processDiagnostics.find(
+          (row) =>
+            row.direction === 'request' &&
+            row.requestSequence === requestIndex + 1,
+        );
+        expect(backgroundRequest).toBeDefined();
+        const background = executor.processDiagnostics.find(
+          (row) =>
+            row.direction === 'response' &&
+            row.method === 'process/start' &&
+            row.connection === backgroundRequest!.connection &&
+            row.id === backgroundRequest!.id,
+        );
+        expect(background?.processId).toEqual(expect.any(String));
+        expect(background!.processId).toBe(backgroundRequest!.processId);
+        expect(
+          await readFile(join(executor.cwd, 'stop-terminal.ready'), 'utf8'),
+        ).toBe('ready');
+        expect(
+          (await (await observer.submit('Check the lock.')).wait()).finalOutput,
+        ).toBe('lock is held');
+        const foreground = await session.submit(
+          'Wait for the foreground answer.',
+        );
+        const completion = foreground.wait();
+        completion.catch(() => {});
+        let settled = false;
+        void completion.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          },
+        );
+        await vi.waitFor(() => expect(held).toBe(true), { timeout: 10_000 });
+        const execute = vi.spyOn(NativeThread.prototype, '_execute_command');
+        const compact = vi.spyOn(NativeThread.prototype, '_compact');
+        await expect(session.executeCommand('compact')).rejects.toThrow();
+        await expect(
+          session.executeCommand('review Inspect this change.'),
+        ).rejects.toThrow();
+        expect(execute).not.toHaveBeenCalled();
+        expect(compact).not.toHaveBeenCalled();
+        snapshotLock('before-stop');
+        const requestBoundary = executor.requests.length;
+        preStopRequestBoundary = requestBoundary;
+        const stopped = await session.executeCommand(
+          '/stop-background-terminals',
+        );
+        if (stopped.command !== 'stop-background-terminals')
+          throw new Error('Missing stop receipt');
+        expect(stopped).toEqual({
+          command: 'stop-background-terminals',
+          sessionId: session.id,
+          operationId: expect.any(String),
+        });
+        expect(stopped.operationId).toBe(
+          JSON.parse(await execute.mock.results[0].value).operation_id,
+        );
+        expect(stopped.operationId).not.toBe(foreground.turnId);
+        await vi.waitFor(
+          () =>
+            expect(
+              executor.processDiagnostics.some(
+                (row) =>
+                  row.direction === 'response' &&
+                  row.method === 'process/terminate' &&
+                  row.connection === background!.connection &&
+                  row.processId === background!.processId &&
+                  Number(row.requestSequence) > requestBoundary,
+              ),
+            ).toBe(true),
+          { timeout: 10_000 },
+        );
+        expect(
+          (
+            await (
+              await observer.submit(
+                'Check that the terminal released its lock.',
+              )
+            ).wait()
+          ).finalOutput,
+        ).toBe('terminal released its lock');
+        snapshotLock('after-lock-probe');
+        expect(afterStopOutput).toContain('acquired');
+        expect(afterStopOutput).toContain('Process exited with code 0');
+        expect(settled).toBe(false);
+        release.resolve();
+        expect((await completion).finalOutput).toBe('foreground survived');
+        server.assertExhausted();
+      } finally {
+        try {
+          snapshotLock('before-session-disposal');
+        } catch (error) {
+          lockSnapshots.push({ error: String(error) });
+        }
+        beforeDisposalDiagnosticCount = executor.processDiagnostics.length;
+        release.resolve();
+      }
+    } finally {
+      Object.assign(task.meta, {
+        stopProcessDiagnostics: {
+          preStopRequestBoundary,
+          beforeDisposalDiagnosticCount,
+          process: executor.processDiagnostics,
+          lockSnapshots,
+        },
+      });
+      release.resolve();
+      await executor.close();
+    }
+  },
+  30_000,
+);

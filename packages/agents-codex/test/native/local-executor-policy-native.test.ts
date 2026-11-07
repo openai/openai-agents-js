@@ -2367,12 +2367,14 @@ it.skipIf(process.platform !== 'darwin')(
 );
 
 // Honor the host restriction unless native sandbox execution is required.
-it.skipIf(
-  !supported ||
-    (process.env.GITHUB_ACTIONS !== 'true' &&
-      process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
-      process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
-).for(['portable', 'local'] as const)(
+it
+  .skipIf(
+    !supported ||
+      (process.env.GITHUB_ACTIONS !== 'true' &&
+        process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+        process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
+  )
+  .for(['portable', 'local'] as const)(
   'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
   { timeout: 120_000 },
   async (route) => {
