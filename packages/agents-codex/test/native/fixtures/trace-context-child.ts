@@ -480,7 +480,7 @@ async function graph() {
       session.submit('independent busy task', {
         parentTrace: parent(OVERRIDE),
       }),
-      /busy/,
+      /submit requires a settled open session/,
     );
     release.resolve();
     assert.equal((await first.wait()).finalOutput, 'first');

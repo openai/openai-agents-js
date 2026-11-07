@@ -492,7 +492,7 @@ describe('report observation transport', () => {
       },
     };
     const session = {
-      submitWithOutput: async () => turn,
+      submit: async () => turn,
       events: (options?: { after?: number }) => {
         const events = buffer.events(options);
         const original = events.return!.bind(events);
