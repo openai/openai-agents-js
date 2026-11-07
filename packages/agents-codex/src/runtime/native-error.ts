@@ -1,3 +1,4 @@
+import type { SessionStoreCleanup } from './custom-thread-store';
 import { encode } from './binding';
 
 /** Safe cause captured for the selected model-output failure, when known. */
@@ -46,6 +47,8 @@ type Metadata = {
 const metadata = new WeakMap<NativeError, Metadata>();
 
 export class NativeError extends Error {
+  /** Retry an unfinished storage release without repeating reconciliation. */
+  cleanup?: SessionStoreCleanup;
   constructor(message: string, options?: NativeErrorOptions) {
     super(message, options);
     this.name = new.target.name;

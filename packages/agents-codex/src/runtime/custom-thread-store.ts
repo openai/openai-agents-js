@@ -1,3 +1,4 @@
+import { NativeError } from './native-error';
 import { outputOf, ToolOutput } from './tools';
 
 /**
@@ -74,6 +75,36 @@ export function captureThreadStore(
   };
 }
 
+/** Retry only an unfinished reconciliation writer release. */
+export interface SessionStoreCleanup {
+  close(): Promise<void>;
+}
+
+class ReconciliationCleanup implements SessionStoreCleanup {
+  #owner?: { close(): Promise<void> };
+  #pending?: Promise<void>;
+
+  constructor(owner: { close(): Promise<void> }) {
+    this.#owner = owner;
+  }
+
+  close(): Promise<void> {
+    if (this.#pending) return this.#pending;
+    if (!this.#owner) return Promise.resolve();
+    const owner = this.#owner;
+    const pending = owner.close().then(() => {
+      this.#owner = undefined;
+    });
+    this.#pending = pending;
+    void pending
+      .finally(() => {
+        if (this.#pending === pending) this.#pending = undefined;
+      })
+      .catch(() => {});
+    return pending;
+  }
+}
+
 /** An externally verified outcome for an original unresolved native tool call. */
 export interface ReconciledToolResult {
   sessionId: string;
@@ -81,7 +112,11 @@ export interface ReconciledToolResult {
   callId: string;
   result: string | ToolOutput;
 }
-/** Record authoritative external reconciliation while no Session owns this thread. */
+/**
+ * Record authoritative external reconciliation while no Session owns this thread.
+ * If a NativeError exposes cleanup, await error.cleanup.close() after the backend
+ * recovers. Cleanup releases the original writer without repeating its receipt.
+ */
 export async function reconcileSessionStore(
   store: SessionStore,
   result: ReconciledToolResult,
@@ -99,7 +134,7 @@ export async function reconcileSessionStore(
   const output = outputOf(result.result);
   const { binding } = await import('./binding');
   const native = await binding();
-  await native.reconcile_thread_store(
+  const operation = native.reconcile_thread_store(
     captureThreadStore(store),
     JSON.stringify({
       threadId: result.sessionId,
@@ -108,4 +143,17 @@ export async function reconcileSessionStore(
       result: output,
     }),
   );
+  const cleanup = new ReconciliationCleanup(operation);
+  try {
+    await operation.run();
+  } catch (cause) {
+    // Native storage errors already contain fixed, redacted diagnostics.
+    const error = new NativeError(
+      cause instanceof Error
+        ? cause.message
+        : 'Canonical storage reconciliation failed',
+    );
+    error.cleanup = cleanup;
+    throw error;
+  }
 }
