@@ -1,4 +1,6 @@
 import type { ExecutionItem, SearchItem } from './history';
+import type { JsonObject } from './binding';
+import type { HostedToolItem } from './hosted-tools';
 import type { ManualToolRequest } from './manual';
 import type { TokenUsageInfo } from './run-events';
 import type { ApiRateLimits } from './api-rate-limits';
@@ -68,7 +70,19 @@ export type ModelResponseLinked = SubmissionEvent &
     responseObservationId: string;
   }>;
 
+/** Complete provider event; passive retention can report a gap for large payloads. */
+export type HostedToolProgress = SubmissionEvent &
+  Readonly<{
+    type: 'hosted_tool_call_progress';
+    threadId: string;
+    itemId: string | null;
+    event: JsonObject;
+  }>;
+
 export type Observation =
+  | HostedToolProgress
+  | (SubmissionEvent &
+      Readonly<{ type: 'hosted_tool_item_completed'; item: HostedToolItem }>)
   | ModelRequestDispatching
   | ModelResponseLinked
   | (Event & Readonly<{ type: 'warning'; message: string }>)
@@ -129,6 +143,10 @@ function projectObservation(
 ): Observation {
   if (event.type === 'search_item_completed')
     return Object.freeze({ ...event, item: structuredClone(event.item) });
+  if (event.type === 'hosted_tool_item_completed')
+    return Object.freeze({ ...event, item: structuredClone(event.item) });
+  if (event.type === 'hosted_tool_call_progress')
+    return Object.freeze({ ...event, event: structuredClone(event.event) });
   if (event.type !== 'execution_item_completed') return event;
   if (includeExecutionDetails)
     return Object.freeze({ ...event, item: structuredClone(event.item) });
@@ -141,8 +159,13 @@ function projectObservation(
 
 /** One passive bounded suffix, shared by independent readers. */
 export class ObservationBuffer {
-  private records: Array<{ event: RetainedObservation; size: number }> = [];
+  private records: Array<{
+    event: RetainedObservation;
+    size: number;
+    payloadSize: number;
+  }> = [];
   private characters = 0;
+  private payloadCharacters = 0;
   private sequence = 0;
   private closed = false;
   private changed = Promise.withResolvers<void>();
@@ -209,6 +232,7 @@ export class ObservationBuffer {
     this.sequence++;
     this.records = [];
     this.characters = 0;
+    this.payloadCharacters = 0;
     this.notify();
   }
 
@@ -222,21 +246,46 @@ export class ObservationBuffer {
       sessionId,
       sequence: ++this.sequence,
     });
+    // Only the provider's partial-image byte string has a separate budget.
+    // Metadata and every other payload retain the ordinary observation limit.
+    const partial =
+      event.type === 'hosted_tool_call_progress' &&
+      event.event.type === 'response.image_generation_call.partial_image' &&
+      typeof event.event.partial_image_b64 === 'string'
+        ? event.event.partial_image_b64
+        : undefined;
+    const payloadSize = partial?.length ?? 0;
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
       event.type === 'execution_item_completed' ||
-        event.type === 'search_item_completed'
+        event.type === 'search_item_completed' ||
+        event.type === 'hosted_tool_item_completed'
         ? JSON.stringify(event.item).length
-        : 0,
+        : event.type === 'hosted_tool_call_progress'
+          ? JSON.stringify(
+              partial === undefined
+                ? event.event
+                : { ...event.event, partial_image_b64: '' },
+            ).length
+          : 0,
     );
-    if (size > 65_536) {
+    if (size > 65_536 || payloadSize > 16 * 1024 * 1024) {
       this.records = [];
       this.characters = 0;
+      this.payloadCharacters = 0;
     } else {
-      this.records.push({ event, size });
+      this.records.push({ event, size, payloadSize });
       this.characters += size;
-      while (this.records.length > 256 || this.characters > 65_536)
-        this.characters -= this.records.shift()!.size;
+      this.payloadCharacters += payloadSize;
+      while (
+        this.records.length > 256 ||
+        this.characters > 65_536 ||
+        this.payloadCharacters > 32 * 1024 * 1024
+      ) {
+        const removed = this.records.shift()!;
+        this.characters -= removed.size;
+        this.payloadCharacters -= removed.payloadSize;
+      }
     }
     this.notify();
     return event;

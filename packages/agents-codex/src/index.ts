@@ -219,3 +219,19 @@ export type {
   MCPToolStartObservation,
   MCPToolEndObservation,
 } from '@openai/agents-core';
+
+export {
+  fileSearch,
+  codeInterpreter,
+  imageGeneration,
+} from './runtime/hosted-tools';
+export type {
+  FileSearch,
+  FileSearchOptions,
+  CodeInterpreter,
+  CodeInterpreterOptions,
+  ImageGeneration,
+  ImageGenerationOptions,
+} from './runtime/hosted-tools';
+export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
+export type { HostedToolProgress } from './runtime/observation';

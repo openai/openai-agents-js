@@ -3,6 +3,7 @@ import { jsonObject, type JsonObject } from './binding';
 import { interceptedCallInfo, type ToolCallInfo } from './call-metadata';
 import { invokeWithTimeout, toolIdentity, type ToolDecision } from './tools';
 import { webSearch, type WebSearch } from './web-search';
+import { captureHostedTool, type HostedTool } from './hosted-tools';
 import type { Environment } from './environment';
 import type { ToolCallContext, Tool, SessionTool } from './tools';
 import { NativeAgents } from './native-agents';
@@ -426,6 +427,7 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
   mcp: McpTool[];
   nativeAgents?: NativeAgents<any>;
   webSearch?: WebSearch;
+  hostedTools: readonly HostedTool[];
   nativeGoals: boolean;
   checklist: boolean;
 } {
@@ -433,6 +435,7 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
   const mcp: McpTool[] = [];
   let nativeAgents: NativeAgents<any> | undefined;
   let search: WebSearch | undefined;
+  const hostedTools: HostedTool[] = [];
   let nativeGoals = false;
   let checklist = false;
   for (const tool of tools) {
@@ -444,6 +447,15 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
       if (search) throw new TypeError('Declare WebSearch only once');
       const { kind: _kind, ...options } = tool;
       search = webSearch(options);
+    } else if (
+      'kind' in tool &&
+      (tool.kind === 'file_search' ||
+        tool.kind === 'code_interpreter' ||
+        tool.kind === 'image_generation')
+    ) {
+      if (hostedTools.some((prior) => prior.kind === tool.kind))
+        throw new TypeError(`Declare ${tool.kind} only once`);
+      hostedTools.push(captureHostedTool(tool));
     } else if ('kind' in tool && tool.kind === 'native_goals')
       nativeGoals = true;
     else if ('kind' in tool && tool.kind === 'checklist') {
@@ -476,6 +488,16 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
     })
   )
     throw new TypeError('Checklist reserves the tool name update_plan');
+  for (const hosted of hostedTools)
+    if (
+      functions.some((tool) => {
+        const identity = toolIdentity(tool);
+        return (
+          identity.namespace === 'functions' && identity.name === hosted.kind
+        );
+      })
+    )
+      throw new TypeError(`Hosted tool reserves the tool name ${hosted.kind}`);
   mcpToolNames(mcp);
   return {
     tools: functions,
@@ -484,6 +506,7 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
     nativeGoals,
     checklist,
     webSearch: search,
+    hostedTools: Object.freeze(hostedTools),
   };
 }
 

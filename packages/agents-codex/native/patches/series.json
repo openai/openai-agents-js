@@ -307,7 +307,11 @@
     {
       "path": "0077-avoid-unrequested-history-snapshots.patch",
       "sha256": "b2e54de97b16ffbb23d9936eeb900882fec19373a24c34bec4fc55ea73fa1903"
+    },
+    {
+      "path": "provider-hosted-tools.patch",
+      "sha256": "6d248c094770df64ffd2c7268ed2a8dfacc50c171c25852466ca79bc6c7df710"
     }
   ],
-  "result_tree": "43987570a911b8834832014708ce5afe1d649e70"
+  "result_tree": "375d284e8716fbf13872b26b7c13753fb18c598b"
 }

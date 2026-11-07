@@ -95,7 +95,10 @@ impl SupportedOutput {
                     }
                     ResponseItem::FunctionCall { .. }
                     | ResponseItem::CustomToolCall { .. }
-                    | ResponseItem::WebSearchCall { .. } => {
+                    | ResponseItem::WebSearchCall { .. }
+                    | ResponseItem::FileSearchCall { .. }
+                    | ResponseItem::CodeInterpreterCall { .. }
+                    | ResponseItem::ImageGenerationCall { .. } => {
                         self.pending_assistant = false;
                         self.completed_native_item = true;
                     }
@@ -215,6 +218,19 @@ mod tests {
                     ResponseEvent::OutputItemDone(receipt)
                 }));
             }
+        }
+    }
+
+    #[test]
+    fn provider_hosted_results_are_supported_without_a_local_tool_receipt() {
+        for value in [
+            json!({"type":"file_search_call","id":"fs_hosted","status":"completed","queries":["sdk"],"results":null}),
+            json!({"type":"code_interpreter_call","id":"ci_hosted","status":"failed","container_id":"cntr_hosted","code":null,"outputs":null}),
+            json!({"type":"image_generation_call","id":"ig_hosted","status":"completed","result":"aW1hZ2U="}),
+        ] {
+            let mut output = SupportedOutput::default();
+            assert!(!output.rejects(&ResponseEvent::OutputItemDone(item(value))));
+            assert!(!output.rejects(&completed(Some(true))));
         }
     }
 

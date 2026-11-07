@@ -3,7 +3,7 @@ export const nativeAgentTestIncludes =
     ? ['test/**/*.test.ts']
     : [
         'test/*.test.ts',
-        'test/native/{binding,history,tools,manual,state,local-storage-unit,native-goals-unit,testing,web-search,checklist,capabilities-unit,local-checklist,mcp-policy,history-counters,opening-cleanup,carrier-cleanup,onboarding,examples-native,parity-data,parity-agent,conversation-example,manual-replies,application-memory,validated-artifact}.test.ts',
+        'test/native/{binding,history,tools,manual,state,local-storage-unit,native-goals-unit,testing,web-search,hosted-tools,checklist,capabilities-unit,local-checklist,mcp-policy,history-counters,opening-cleanup,carrier-cleanup,onboarding,examples-native,parity-data,parity-agent,conversation-example,manual-replies,application-memory,validated-artifact}.test.ts',
         'test/native/timeout-cleanup-example.test.ts',
         'test/native/external-job.test.ts',
         'test/native/specialist-agent.test.ts',
@@ -11,6 +11,7 @@ export const nativeAgentTestIncludes =
         'test/native/memory-retrieval-examples.test.ts',
         'test/native/image-input-example.test.ts',
         'test/native/turn-events.test.ts',
+        'test/native/hosted-tool-observations.test.ts',
         'test/native/child-observations.test.ts',
         'test/native/selected-mcp.test.ts',
         'test/experimental/**/*.test.ts',

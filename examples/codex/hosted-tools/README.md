@@ -1,0 +1,15 @@
+# Provider-hosted tools in a native session
+
+Build the current source checkout using the native build guide before running this example. These declarations are part of the native API and are not available in the published stable SDK. Use an API key and a Responses model that supports the selected tools. The provider validates model-specific options; Responses Lite does not support these tools.
+
+Run `pnpm exec tsx examples/codex/hosted-tools/run.ts` from the repository root. Set `OPENAI_API_KEY`, optionally `OPENAI_MODEL`, and optionally `VECTOR_STORE_ID`. The example requests Code Interpreter and image generation. When you provide a vector store ID, it also enables file search with raw retrieval results. Upload files, complete indexing, and create the vector store before running it.
+
+The provider executes these tools. No application callback, workspace executor, or custom model loop runs them. Code Interpreter requires an explicit container: pass an existing container ID, or `{ type: 'auto' }` to request provider creation. The provider owns container reuse and expiry. Your application manages uploaded files, downloads artifacts before they expire, stores durable copies, and performs any explicit resource cleanup. Closing a session does not delete provider resources.
+
+The example prints hosted items from canonical history. Each item keeps provider field names, IDs, status, and complete `provider_data`, including code outputs, file references, image metadata, and image bytes. Do not log real retrieval content, code outputs, or images in a production application. File-search citations live in assistant text annotations; raw results require `includeSearchResults: true`.
+
+For editing, use `imageGeneration({ action: 'edit' })` and supply an inline base64 image through the existing native image input. Optional `inputImageMask` uses the provider mask shape. This feature does not add remote URL or uploaded-file message input support. Image quality, format, size, transparency, masks, and animation controls depend on the selected model.
+
+A session captures hosted declarations when it opens. Tool updates must retain those declarations. Restoring a conversation requires current declarations; saved history does not grant tools or restore credentials. Full idle history restore remains available. Hosted tools do not support a checkpoint taken while awaiting a manual tool result.
+
+`session.events()` provides passive, bounded observations for hosted progress and completed items. Progress retains the original provider event, including partial-image indices, base64 payloads, output indices, and sequence numbers. The buffer keeps at most 256 events and 65,536 metadata characters. Recognized partial-image base64 has a separate limit of 16 MiB per event and 32 MiB across retained events. These are observation retention limits, not provider output promises. A slow observer or an oversize payload can cause a gap; the SDK never truncates an image. Read complete final results through `session.items()`; do not treat a progress event as completion of the entire turn.

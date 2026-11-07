@@ -1892,6 +1892,17 @@ impl NativeThread {
         let inner = self.current()?;
         let _context_operation = inner.engine.operation(false).map_err(native_error)?;
         let current = inner.thread.config_snapshot().await;
+        if let Some(hosted) = inner
+            .thread
+            .thread_extension_data()
+            .get::<codex_extension_api::HostedModelTools>()
+        {
+            inner
+                .engine
+                .validate_hosted_tools_model(current.collaboration_mode.model(), &hosted)
+                .await
+                .map_err(input_error)?;
+        }
         inner
             .engine
             .validate_hosted_search_model(current.collaboration_mode.model())
@@ -1914,6 +1925,17 @@ impl NativeThread {
             .ok_or_else(|| input_error("model updates require a managed Session"))?;
         tools.check_idle(&inner.thread).await.map_err(input_error)?;
         if let Some(model) = &settings.model {
+            if let Some(hosted) = inner
+                .thread
+                .thread_extension_data()
+                .get::<codex_extension_api::HostedModelTools>()
+            {
+                inner
+                    .engine
+                    .validate_hosted_tools_model(model, &hosted)
+                    .await
+                    .map_err(input_error)?;
+            }
             inner
                 .engine
                 .validate_hosted_search_model(model)
