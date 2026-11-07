@@ -1,5 +1,13 @@
 /** Private binding. JSON authority fields must retain their original integer text. */
 export type NativeId = string;
+export class _ProviderHttpTransports {
+  private constructor();
+  /** Drops cached clients; does not claim an asynchronous transport drain. */
+  close(): void;
+}
+export function _create_provider_http_transports(
+  engine: Engine,
+): _ProviderHttpTransports;
 export class Engine {
   private constructor();
   readonly startup_warnings: string[];
@@ -7,6 +15,7 @@ export class Engine {
     base: string,
     grant: string,
     excluded_base: string | null,
+    shared_transports?: _ProviderHttpTransports | null,
   ): void;
   _sentinel_admit(provider_id: string, metadata: string): Promise<string>;
   _sentinel_claim(
@@ -351,6 +360,8 @@ declare const binding: {
     code_mode_host_exe: string;
   };
   Engine: typeof Engine;
+  _ProviderHttpTransports: typeof _ProviderHttpTransports;
+  _create_provider_http_transports: typeof _create_provider_http_transports;
   _ContextChange: typeof _ContextChange;
   _NativePolicyStop: typeof _NativePolicyStop;
   NativeThread: typeof NativeThread;
