@@ -237,7 +237,7 @@ export class Environment<Context = any> {
     dispose: () => void | Promise<void>,
     sourceSignal?: AbortSignal,
   ): EnvironmentLease<Context> {
-    return createEnvironmentLease(environment, dispose, sourceSignal);
+    return createEnvironmentLease(environment, () => dispose(), sourceSignal);
   }
 
   #remoteUrl?: string;

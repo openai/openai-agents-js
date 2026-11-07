@@ -81,6 +81,25 @@ vi.mock('@blaxel/core', () => ({
 }));
 
 describe('BlaxelSandboxClient', () => {
+  test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
+    const client = new BlaxelSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'synthetic',
+          mountStrategy: { type: 'docker_volume' },
+        },
+      },
+    });
+    await expect(client.create({ manifest })).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+    expect(createSandboxMock).not.toHaveBeenCalled();
+    expect(processExecMock).not.toHaveBeenCalled();
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     createSandboxMock.mockReset();
     getMock.mockReset();

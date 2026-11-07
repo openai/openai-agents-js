@@ -239,3 +239,9 @@ export type {
   HostedToolProgress,
   HostedToolItemSummary,
 } from './runtime/observation';
+
+export {
+  sandboxEnvironment,
+  renderStorageLayout,
+} from './runtime/sandbox-environment';
+export type { SandboxEnvironmentOptions } from './runtime/sandbox-environment';

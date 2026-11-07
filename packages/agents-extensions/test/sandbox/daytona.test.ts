@@ -87,6 +87,25 @@ vi.mock('@daytonaio/sdk', () => ({
 }));
 
 describe('DaytonaSandboxClient', () => {
+  test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
+    const client = new DaytonaSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        data: {
+          type: 's3_mount',
+          bucket: 'synthetic',
+          mountStrategy: { type: 'docker_volume' },
+        },
+      },
+    });
+    await expect(client.create({ manifest })).rejects.toBeInstanceOf(
+      SandboxUnsupportedFeatureError,
+    );
+    expect(createMock).not.toHaveBeenCalled();
+    expect(executeCommandMock).not.toHaveBeenCalled();
+    expect(uploadFileMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     createMock.mockReset();
     getMock.mockReset();

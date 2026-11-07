@@ -20,20 +20,25 @@ export type EnvironmentSource<Context = any> = (options: {
   readonly signal: AbortSignal;
 }) => Promise<EnvironmentLease<Context>>;
 
-type DisposeGuard = (dispose: () => void | Promise<void>) => Promise<void>;
+export type DisposeGuard = (
+  dispose: () => void | Promise<void>,
+) => Promise<void>;
 interface LeaseState {
   claimed: boolean;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
-  readonly dispose: () => void | Promise<void>;
+  readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
   disposal?: Promise<void>;
 }
 const leases = new WeakMap<EnvironmentLease, LeaseState>();
 
-/** @internal Called synchronously inside the application's acquired resource scope. */
+/**
+ * @internal Called synchronously inside the acquired resource scope. Internal
+ * composed disposers forward the guard when releasing a nested acquisition.
+ */
 export function createEnvironmentLease<Context>(
   environment: Environment<Context>,
-  dispose: () => void | Promise<void>,
+  dispose: (guard: DisposeGuard) => void | Promise<void>,
   sourceSignal?: AbortSignal,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
@@ -67,7 +72,7 @@ function disposeLease(state: LeaseState, guard: DisposeGuard): Promise<void> {
   // Restore the resource stores first. The Session guard must be installed inside
   // that scope because snapshot() also restores any captured callback guard.
   return (state.disposal ??= Promise.resolve().then(() =>
-    state.scope(() => guard(state.dispose)),
+    state.scope(() => guard(() => state.dispose(guard))),
   ));
 }
 

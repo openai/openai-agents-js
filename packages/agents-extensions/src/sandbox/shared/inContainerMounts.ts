@@ -363,9 +363,17 @@ export function rcloneCredentialEnvironmentForEntry(
   return mountCredentialEnvironmentForEntry(entry, environment);
 }
 
-export async function mountRcloneCloudBucket(
-  options: RcloneCloudBucketMountOptions,
-): Promise<RcloneMountHandle> {
+/** Reuse materializer validation before provider creation or helper effects. */
+export function validateRcloneCloudBucketMount(
+  options: Pick<
+    RcloneCloudBucketMountOptions,
+    | 'entry'
+    | 'strategyType'
+    | 'providerName'
+    | 'providerId'
+    | 'allowAmbientCredentials'
+  > & { pattern?: unknown },
+) {
   if (!isRcloneCloudBucketMountEntry(options.entry, options.strategyType)) {
     throw new SandboxUnsupportedFeatureError(
       `${options.providerName} only supports ${options.strategyType} mount entries for in-container cloud bucket mounts.`,
@@ -380,14 +388,13 @@ export async function mountRcloneCloudBucket(
   validateRcloneMountCredentialPairs(options.entry);
 
   const pattern = options.pattern ?? { type: 'rclone', mode: 'fuse' };
-  if (pattern.type !== 'rclone') {
+  if (!isRcloneMountPattern(pattern)) {
     throw new SandboxUnsupportedFeatureError(
       `${options.providerName} cloud bucket mounts require a rclone mount pattern.`,
       {
         provider: options.providerId,
         feature: 'entry.mountStrategy.pattern',
         mountType: options.entry.type,
-        patternType: pattern.type,
       },
     );
   }
@@ -403,6 +410,17 @@ export async function mountRcloneCloudBucket(
       },
     );
   }
+  buildRcloneMountConfig(options.entry as RcloneBucketMount, {
+    remoteName: 'preflight',
+    allowAmbientCredentials: options.allowAmbientCredentials === true,
+  });
+  return { pattern, mode };
+}
+
+export async function mountRcloneCloudBucket(
+  options: RcloneCloudBucketMountOptions,
+): Promise<RcloneMountHandle> {
+  const { pattern, mode } = validateRcloneCloudBucketMount(options);
   const remoteName = resolveRcloneRemoteName(pattern, options);
 
   if (mode === 'fuse') {
