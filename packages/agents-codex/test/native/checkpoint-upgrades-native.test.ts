@@ -57,7 +57,22 @@ it('retains original capture bytes and producer identity', () => {
   for (const name of ['idle', 'manual', 'code']) checkpoint(name);
 });
 
-describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
+it('rejects unknown envelope formats and foreign native revisions on every platform', () => {
+  const raw = JSON.parse(readFileSync(new URL('idle.json', producer), 'utf8'));
+  expect(() =>
+    parseSessionState(JSON.stringify({ ...raw, format_version: 999 })),
+  ).toThrow();
+  expect(() =>
+    parseSessionState(
+      JSON.stringify({ ...raw, codex_revision: '0'.repeat(40) }),
+    ),
+  ).toThrow();
+});
+
+// The original Linux history requires compatible POSIX native paths.
+const nativeTests = process.env.OPENAI_AGENTS_NATIVE_TESTS === '1';
+const posix = process.platform === 'linux' || process.platform === 'darwin';
+describe.skipIf(!nativeTests || !posix)(
   'real older checkpoint producer',
   () => {
     it('continues original idle history without rewriting the supplied state', async () => {
@@ -196,18 +211,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       server.assertExhausted();
     }, 25000);
 
-    it('keeps format, native revision and output contract rejection', async () => {
-      const raw = JSON.parse(
-        readFileSync(new URL('idle.json', producer), 'utf8'),
-      );
-      expect(() =>
-        parseSessionState(JSON.stringify({ ...raw, format_version: 999 })),
-      ).toThrow();
-      expect(() =>
-        parseSessionState(
-          JSON.stringify({ ...raw, codex_revision: '0'.repeat(40) }),
-        ),
-      ).toThrow();
+    it('keeps native output contract rejection', async () => {
       const server = new ModelServer([]);
       await using provider = await providerFor(server);
       const agent = new Agent({
@@ -221,5 +225,26 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       ).rejects.toThrow(/output/);
       server.assertExhausted();
     });
+  },
+);
+
+it.skipIf(!nativeTests || process.platform !== 'win32')(
+  'refuses original POSIX checkpoint history on Windows before model work',
+  async () => {
+    const state = checkpoint('idle');
+    const original = JSON.stringify(state);
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Remember checkpoint history.',
+      model: 'gpt-5.5',
+      provider,
+    });
+    await expect(agent.session({ state })).rejects.toThrow(
+      'AbsolutePathBuf deserialized without a base path',
+    );
+    expect(server.requests).toHaveLength(0);
+    expect(JSON.stringify(state)).toBe(original);
+    server.assertExhausted();
   },
 );

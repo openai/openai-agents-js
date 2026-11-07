@@ -90,6 +90,8 @@ Treat checkpoints as opaque data for this SDK and language. The current reader r
 
 The destination SDK must use the exact Codex revision that saved the checkpoint. A recognized envelope does not permit another native revision. Current trusted host configuration still supplies credentials, callbacks, tool bindings, the matching output contract, and executor policy; a recognized version grants none of those permissions.
 
+Portable checkpoints retain native history, including platform-specific absolute paths. Restore validates those paths on the destination platform, so moving a checkpoint between operating systems is not guaranteed. Do not rewrite saved paths to bypass validation.
+
 The [checkpoint capture provenance](../../../packages/agents-codex/test/native/fixtures/checkpoint-upgrades/README.md) records real idle, manual, and Code Mode captures from a preview source snapshot and its matching native artifact. Retained captures qualify later candidates by replaying accepted history and checking current restore refusals. They do not establish a stable-release upgrade, coverage of every historical preview, cross-language conversion, downgrade support, or arbitrary native-revision portability. Keep the producer SDK available until your candidate passes the relevant continuation tests.
 
 For a pending manual checkpoint, instructions and pending tool declarations/result schemas must match. Output-aware versions also require the same effective mode, JSON schema, and repair budget. Omitted, `undefined`, and zero repair budgets have the same output identity. Supply the matching output declaration on the destination Agent before restoring.
