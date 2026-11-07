@@ -679,21 +679,36 @@ it('rejects paths outside the root and unsupported search arguments', async () =
 it.each(
   (['project_glob', 'project_grep'] as const).flatMap((name) =>
     [
-      { label: 'TAB', control: '\t' },
-      { label: 'LF', control: '\n' },
-      { label: 'CR', control: '\r' },
+      ...[
+        { label: 'TAB', control: '\t' },
+        { label: 'LF', control: '\n' },
+        { label: 'CR', control: '\r' },
+      ].map(({ label, control }) => ({
+        label,
+        path: `sec${control}rets`,
+        deniedPath: 'secrets',
+      })),
+      {
+        label: 'leading dot segment',
+        path: './secrets',
+        deniedPath: 'secrets',
+      },
+      {
+        label: 'embedded dot segment',
+        path: 'public/./secrets',
+        deniedPath: 'public/secrets',
+      },
     ].map((entry) => ({ name, ...entry })),
   ),
 )(
   '$name rejects $label in approved paths before filesystem access',
-  async ({ name, control }) => {
+  async ({ name, path, deniedPath }) => {
     const executor = await startPublicExecutor();
     try {
       const root = await realpath(executor.cwd);
-      await mkdir(join(root, 'secrets'));
+      await mkdir(join(root, deniedPath), { recursive: true });
       const privateContent = 'private control-path needle 927a';
-      await writeFile(join(root, 'secrets', 'secret.txt'), privateContent);
-      const path = `sec${control}rets`;
+      await writeFile(join(root, deniedPath, 'secret.txt'), privateContent);
       const approvedPaths: string[] = [];
       let requestIndex = 0;
       let found: JsonObject | undefined;
@@ -722,7 +737,10 @@ it.each(
             const args = z.object({ path: z.string() }).parse(argumentsValue);
             approvedPaths.push(args.path);
             requestIndex = executor.requests.length;
-            return args.path.split('/')[0] !== 'secrets';
+            return (
+              args.path !== deniedPath &&
+              !args.path.startsWith(`${deniedPath}/`)
+            );
           },
         }),
       });
