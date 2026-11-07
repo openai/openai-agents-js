@@ -53,7 +53,7 @@ Use the memory and checkpoint route for portable `state`. Local storage and resu
 
 ### Preserve the recorded executor policy
 
-New Environments default to `writePolicy: 'strict'`. Reopening a local profile in strict mode requires recorded strict-mode evidence and the same applied executor policy. Legacy or unmarked remote history requires explicit `writePolicy: 'legacy'` and matching current authority. A missing marker does not prove how older work was confined. Reopening never automatically upgrades that policy. See [workspace write grants](workspace-grants.md#save-and-restore-the-current-grant).
+New Environments default to `writePolicy: 'strict'`. Reopening a local profile in strict mode requires recorded strict-mode evidence and the same applied executor policy. To keep remote execution when reopening legacy or unmarked remote history, supply an Environment with explicit `writePolicy: 'legacy'` and matching current authority. You can still omit the Environment for model-only work. A missing marker does not prove how older work was confined. Reopening never automatically upgrades that policy. See [workspace write grants](workspace-grants.md#save-and-restore-the-current-grant).
 
 ### Reopen with descendant history
 
