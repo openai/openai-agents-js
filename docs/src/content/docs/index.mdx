@@ -23,7 +23,7 @@ import helloWorldSandboxExample from '../../../../examples/classic/docs/toppage/
 The [OpenAI Agents SDK for TypeScript](https://github.com/openai/openai-agents-js) lets you build agentic AI apps with a small set of abstractions. It's a production-ready upgrade of our earlier agent experiment, [Swarm](https://github.com/openai/swarm/tree/main), and is also [available in Python](https://github.com/openai/openai-agents-python). The SDK provides:
 
 - **Agents**, which are LLMs equipped with instructions and tools
-- **Sandbox agents**, which pair agents with isolated filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state
+- **Sandbox agents**, which pair agents with filesystem workspaces, shell commands, file editing, snapshots, and sandbox session state. Isolation depends on the selected sandbox client and configuration
 - **Voice agents**, which support low-latency spoken interactions with tools, guardrails, handoffs, and conversation history
 - **Agents as tools and handoffs**, which allow agents to delegate to other agents for specific tasks
 - **Guardrails**, which validate agent inputs
@@ -41,7 +41,7 @@ Here are the main features of the SDK:
 - **Voice agents**: Automatic interruption detection and context management for spoken interactions.
 - **TypeScript-first**: Orchestrate and chain agents using native TypeScript language features, without needing to learn new abstractions.
 - **Guardrails**: Run input validation and safety checks in parallel with agent execution, and fail fast when checks do not pass.
-- **Function tools**: Turn any TypeScript function into a tool with automatic schema generation and schema-based validation.
+- **Function tools**: Wrap a function with `tool()` and a parameter schema. Zod and supported Standard Schema values provide local argument validation.
 - **MCP server tool calling**: Built-in integration that exposes tools from MCP servers to agents alongside function tools.
 - **Sessions**: A persistent memory layer for maintaining working context within an agent loop.
 - **Human in the loop**: Built-in mechanisms for involving humans across agent runs.

@@ -74,6 +74,8 @@ node scripts/verify-alpha-package.mjs --directory "$BUNDLE_DIRECTORY"
 
 The version argument labels your local artifacts and must have the form `X.Y.Z-alpha.N`. `BUNDLE_DIRECTORY` is an absolute, initially empty directory outside the checkout. Keep that path for the next steps. The producer writes five SDK tarballs, a starter archive, checksums, and a build record there. The verifier installs the bundle into temporary external applications and checks public ESM/CommonJS imports, TypeScript declarations, native helpers, and scripted tool/session behavior without a model key.
 
+### Install the local bundle
+
 Extract the generated starter into the same output directory:
 
 ```sh
@@ -81,8 +83,11 @@ PLATFORM=$(node -p "process.platform + '-' + process.arch")
 tar -xzf "$BUNDLE_DIRECTORY/agents-starter-0.22.0-alpha.2-$PLATFORM.tar.gz" -C "$BUNDLE_DIRECTORY"
 ```
 
-To add this build to an existing application, copy the extracted `agents-starter/vendor/agents/` directory into the application's `vendor/agents/` directory. Merge the generated `agents-starter/package.json` **dependencies** and **overrides** into the application's manifest, preserving its other entries. Include all five SDK dependencies and all four SDK overrides, including `@openai/agents-codex`, from that generated file. This keeps transitive imports on the same local packages.
+To add this build to an existing application:
 
-From the application directory, run `npm install --ignore-scripts` and retain its new lockfile together with all five tarballs. This flag disables lifecycle scripts for the whole installation; complete any application-owned dependency setup separately. For later installs, use `npm ci --ignore-scripts`. Run the [scripted native check](../../../packages/agents-codex/TESTING.md) in that application before making a live request. It verifies the installed native tool loop without model credentials.
+1. Copy the extracted `agents-starter/vendor/agents/` directory into the application's `vendor/agents/` directory.
+2. Merge the generated `agents-starter/package.json` **dependencies** and **overrides** into the application's manifest, preserving its other entries. Include all five SDK dependencies and all four SDK overrides, including `@openai/agents-codex`. This keeps transitive imports on the same local packages.
+3. From the application directory, run `npm install --ignore-scripts`. This flag disables lifecycle scripts for the whole installation; complete any application-owned dependency setup separately. Retain the new lockfile together with all five tarballs, and use `npm ci --ignore-scripts` for later installs.
+4. Run the [scripted native check](../../../packages/agents-codex/TESTING.md) in that application before making a live request. It verifies the installed native tool loop without model credentials.
 
 The published `0.22.0-alpha.1` bundles predate this split and contain four tarballs. Follow their [release installation instructions](installation.md#add-the-sdk-to-an-existing-application) when using that release.

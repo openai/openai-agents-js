@@ -1,5 +1,7 @@
 # Basic Examples
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 This directory contains small scripts that demonstrate features of the Agents SDK. Run them with `pnpm` using the commands shown below.
 
 - `hello-world.ts` – Basic agent that responds in haiku.

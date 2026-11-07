@@ -1,5 +1,7 @@
 # Research Bot
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 This example shows how to orchestrate several agents to produce a detailed research report.
 
 ## Files

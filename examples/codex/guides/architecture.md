@@ -77,7 +77,7 @@ sequenceDiagram
   App->>SDK: Close Session when the conversation ends
 ```
 
-An ordinary `session.submit()` steers the active Turn if one is already running. Use `ifBusy: 'reject'` to reject that case, or `session.enqueue()` for separate queued work. See [Session controls](sessions.md).
+`session.submit()` starts independent work and rejects while the Session is busy. Use the captured `turn.steer(input)` to add input to an active root, or `session.enqueue()` for separate queued work. See [Session controls](sessions.md).
 
 Use `turn.wait()` to determine completion. [Observations](sessions.md) provide UI progress, but their bounded streams can have gaps. One native step ending does not establish that the logical Turn has finished, and independent child work can outlive the root result. [Interactions](interactions.md) are separate live requests through which you answer an approval or supply a result.
 

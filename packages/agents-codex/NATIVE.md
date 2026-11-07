@@ -49,7 +49,7 @@ The guides describe this source checkout. For the `0.22.0-alpha.1` starter, use 
 
 ## Connect tools and executors
 
-- [Mount local storage](../../examples/codex/guides/storage-mounts.md)
+- [Search project files](../../examples/codex/guides/project-search.md) · [Mount local storage](../../examples/codex/guides/storage-mounts.md)
 - [Run local commands](../../examples/codex/guides/local-execution.md) · [Grant workspace access](../../examples/codex/guides/workspace-grants.md) · [Load instruction files and discover skills](../../examples/codex/guides/project-guidance.md)
 
 - <a name="input-tools-and-output"></a>[Send input and declare tools](../../examples/codex/guides/tools.md#input-tools-and-output) · <a name="function-tools"></a>[Function tools](../../examples/codex/guides/tools.md#function-tools) · <a name="tool-discovery"></a>[Tool discovery](../../examples/codex/guides/tools.md#tool-discovery)
@@ -58,7 +58,7 @@ The guides describe this source checkout. For the `0.22.0-alpha.1` starter, use 
 - <a name="inspect-or-change-tool-values"></a>[Inspect or change tool values](../../examples/codex/guides/tools.md#inspect-or-change-tool-values)
 - <a name="programmatic-tool-calling"></a>[Programmatic tool calling](../../examples/codex/guides/tools.md#programmatic-tool-calling)
 - <a name="native-web-search"></a>[Native web search](../../examples/codex/guides/tools.md#native-web-search)
-- <a name="remote-tools-and-children"></a>[Connect native MCP tools](../../examples/codex/guides/mcp.md#mcp-connections) · <a name="mcp-connections"></a>[Mcp connections](../../examples/codex/guides/mcp.md#mcp-connections) · <a name="connect-http-tools-on-demand"></a>[Connect HTTP tools on demand](../../examples/codex/guides/mcp.md#connect-http-tools-on-demand)
+- <a name="remote-tools-and-children"></a>[Connect native MCP tools](../../examples/codex/guides/mcp.md#mcp-connections) · <a name="mcp-connections"></a>[MCP connections](../../examples/codex/guides/mcp.md#mcp-connections) · <a name="connect-http-tools-on-demand"></a>[Connect HTTP tools on demand](../../examples/codex/guides/mcp.md#connect-http-tools-on-demand)
 - <a name="run-a-stdio-server-on-the-host-or-executor"></a>[Run a stdio server on the host or executor](../../examples/codex/guides/mcp.md#run-a-stdio-server-on-the-host-or-executor) · <a name="choose-a-stdio-process-lifetime"></a>[Choose a stdio process lifetime](../../examples/codex/guides/mcp.md#choose-a-stdio-process-lifetime) · <a name="mcp-call-policy"></a>[MCP call policy](../../examples/codex/guides/mcp.md#mcp-call-policy)
 - <a name="update-mcp-policy-while-idle"></a>[Update MCP policy while idle](../../examples/codex/guides/mcp.md#update-mcp-policy-while-idle) · <a name="mcp-and-executor-timeouts"></a>[MCP and executor timeouts](../../examples/codex/guides/mcp.md#mcp-and-executor-timeouts)
 - <a name="materialize-a-borrowed-sdk-mcp-namespace"></a>[Borrow an SDK MCP server](../../examples/codex/guides/mcp.md#materialize-a-borrowed-sdk-mcp-namespace) · <a name="await-observations-on-borrowed-mcp-calls"></a>[Await observations on borrowed MCP calls](../../examples/codex/guides/mcp.md#await-observations-on-borrowed-mcp-calls)

@@ -56,7 +56,7 @@ The `Agent` constructor takes a single configuration object. The table lists its
 | Property | Required | Description |
 | --- | --- | --- |
 | `name` | yes | A short human‑readable identifier. |
-| `instructions` | yes | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)). |
+| `instructions` | no | System prompt (string **or** function – see [Dynamic instructions](#dynamic-instructions)). |
 | `prompt` | no | OpenAI Responses API prompt configuration. Accepts a static prompt object or a function. See [Prompt](/openai-agents-js/guides/models#prompt). |
 | `handoffDescription` | no | Short description used when this agent is offered as a handoff tool. |
 | `handoffs` | no | Delegate the conversation to specialist agents. See [Composition patterns](#composition-patterns) and the [Handoffs guide](/openai-agents-js/guides/handoffs). |
@@ -199,7 +199,7 @@ The shared event names are:
 
 ### Guardrails
 
-Guardrails let you validate or transform user input and agent output. Configure them with the `inputGuardrails` and `outputGuardrails` arrays. See the [guardrails guide](/openai-agents-js/guides/guardrails) for details.
+Guardrails let you validate user input and agent output and stop the run when a check fails. Configure them with the `inputGuardrails` and `outputGuardrails` arrays. See the [guardrails guide](/openai-agents-js/guides/guardrails) for details.
 
 ---
 

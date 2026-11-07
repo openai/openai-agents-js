@@ -10,7 +10,7 @@ They intentionally stay small:
 
 Unlike the first-party Unix-local and Docker examples, these scripts depend on provider clients under dedicated subpaths such as `@openai/agents-extensions/sandbox/cloudflare`. Each example also depends on the matching provider SDK and credentials or endpoint configuration.
 
-Sandbox-specific SDK types such as `SandboxAgent` and `Manifest` now come from `@openai/agents/sandbox`, while the classic `Runner` comes from `@openai/agents/classic`.
+Sandbox-specific SDK types such as `SandboxAgent` and `Manifest` now come from `@openai/agents/classic/sandbox`, while the classic `Runner` comes from `@openai/agents/classic`.
 
 ## Migrating from Runloop
 

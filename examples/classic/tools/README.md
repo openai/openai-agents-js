@@ -1,6 +1,8 @@
 # Tool Integrations
 
-These examples demonstrate the hosted tools provided by the Agents SDK.
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
+These examples use hosted tools, local execution, and the Codex CLI with the classic Agents SDK.
 
 ## Examples
 
