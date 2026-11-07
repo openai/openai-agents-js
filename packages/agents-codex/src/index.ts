@@ -28,6 +28,7 @@ export {
   InteractionRequired,
   StaleTurnError,
   TurnAborted,
+  TurnNotSubmitted,
 } from './runtime/session';
 export type {
   Completed,

@@ -111,7 +111,7 @@ A Session opened with `NativeAgents` keeps its instructions and model/settings f
 
 ### Select tools before a child step
 
-Use the optional `NativeAgents.beforeStep` hook to select tools before a child's model step. Its result uses the existing `ToolSelector` contract or `undefined`. Its `ChildBeforeStepContext` extends `BeforeStepContext` with `child: ChildInvocation`. Use `submission` for the original child Turn, `context` for application data, `stepIndex` for its preparation index, and `signal` for cancellation. Keep application policy tied to that child incarnation rather than looking up a later child with the same ID.
+Use the optional `NativeAgents.beforeStep` hook to select tools before a child's model step. Its result uses the existing `ToolSelector` contract or `undefined`. Its `ChildBeforeStepContext` has the same preparation fields as `BeforeStepContext`, with `child: ChildInvocation` and `submission: ChildTurn`. Use `submission` to observe and wait for the original child Turn, `context` for application data, `stepIndex` for its preparation index, and `signal` for cancellation. Keep application policy tied to that child incarnation rather than looking up a later child with the same ID.
 
 Select from the child's admitted tools within its existing collaboration approval. Return `undefined` for the child's defaults or `[]` to select no tools. Narrowing later steps leaves issued work in place.
 

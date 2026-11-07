@@ -8,6 +8,7 @@ import {
   StdioMCP,
   checklist,
   manualTool,
+  nativeGoals,
   tool,
 } from '../../src';
 import * as nativeBinding from '../../src/runtime/binding';
@@ -140,7 +141,25 @@ describe('offline Agent declaration validation', () => {
     },
   );
 
+  it('allows an application create_goal when NativeGoals is absent', async () => {
+    const provider = new NativeProvider();
+    await provider.close();
+    const agent = new Agent({
+      instructions: 'Use the application goal tool.',
+      provider,
+      tools: [{ ...lookup(), name: 'create_goal' }],
+    });
+    await expect(agent.validate()).resolves.toBeUndefined();
+    await expect(agent.session()).rejects.toThrow('NativeProvider is closed');
+  });
+
   const invalidDefaults = [
+    {
+      name: 'NativeGoals and application create_goal collision',
+      make: () => ({
+        tools: [nativeGoals(), { ...lookup(), name: 'create_goal' }],
+      }),
+    },
     {
       name: 'reserved native name',
       make: () => ({ tools: [{ ...lookup(), name: 'exec_command' }] }),
