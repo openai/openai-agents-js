@@ -8,5 +8,4 @@ it('exposes the native speech implementations through the convenience voice subp
   );
   expect(voice.VoicePipeline).toBe(owningVoice.VoicePipeline);
   expect(voice.OpenAISpeechProvider).toBe(owningVoice.OpenAISpeechProvider);
-  expect(voice.VoiceEventGapError).toBe(owningVoice.VoiceEventGapError);
 });

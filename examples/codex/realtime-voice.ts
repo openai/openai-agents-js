@@ -12,6 +12,7 @@ import { z } from 'zod';
  * The interval starts after connect and includes preambles and delayed answers.
  * It is a recording deadline, not a guarantee that delegated work finishes in time.
  * The caller owns the native Session and the audio sink.
+ * Delegated answers reach Realtime only after native output validation and repair finish.
  */
 export async function recordDelegatedVoice(
   session: Session<string>,

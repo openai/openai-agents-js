@@ -8,10 +8,8 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import type { Session, Turn } from '../src/runtime/session';
-import type { Observation } from '../src/runtime/observation';
 import {
   NativeSessionVoiceWorkflow,
-  VoiceEventGapError,
   VoicePipeline,
   OpenAISpeechProvider,
   type AudioFrame,
@@ -35,33 +33,16 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-function fakeSession(
-  events: Record<string, unknown>[] = [
-    { type: 'turn_started' },
-    { type: 'output_text_delta', delta: 'Hello.' },
-  ],
-  error?: Error,
-) {
+function fakeSession(finalOutput: unknown = 'Hello.', error?: Error) {
   const cancel = vi.fn(async () => {});
   const wait = vi.fn(async () => {
     if (error) throw error;
-    return { finalOutput: 'Hello.' };
+    return { finalOutput };
   });
-  const turn = {
-    submissionId: 'voice-root',
-    turnId: 'native-root',
-    events: async function* () {
-      yield* events.map((event) => ({
-        sessionId: 'session',
-        sequence: 1,
-        submissionId: 'voice-root',
-        turnId: 'native-root',
-        ...event,
-      })) as Observation[];
-    },
-    wait,
-    cancel,
-  } as unknown as Turn<string>;
+  const events = vi.fn(async function* () {
+    yield { type: 'output_text_delta', delta: 'secret. ' };
+  });
+  const turn = { events, wait, cancel } as unknown as Turn<string>;
   const submit = vi.fn(async (_text: string) => turn);
   return {
     session: { submit } as unknown as Session<string>,
@@ -69,6 +50,7 @@ function fakeSession(
     turn,
     wait,
     cancel,
+    events,
   };
 }
 
@@ -81,54 +63,89 @@ describe('native voice workflow', () => {
     expect(peer.submit.mock.calls).toEqual([['first'], ['second']]);
     expect(peer.wait).toHaveBeenCalledTimes(2);
     expect(peer.cancel).not.toHaveBeenCalled();
-    const empty = fakeSession([]);
-    await collect(new NativeSessionVoiceWorkflow(empty.session).run('empty'));
+    const empty = fakeSession('');
+    expect(
+      await collect(new NativeSessionVoiceWorkflow(empty.session).run('empty')),
+    ).toEqual(['']);
     expect(empty.wait).toHaveBeenCalledOnce();
   });
   it('preserves a terminal failure when cancellation cleanup also fails', async () => {
     const primary = new Error('native failure');
-    const peer = fakeSession([], primary);
+    const peer = fakeSession('ignored', primary);
     peer.cancel.mockRejectedValue(new Error('cleanup'));
     await expect(
       collect(new NativeSessionVoiceWorkflow(peer.session).run('input')),
     ).rejects.toBe(primary);
   });
-  it('ignores old history gaps only after observing this turn start', async () => {
-    const old = fakeSession([
-      { type: 'gap' },
-      { type: 'turn_started' },
-      { type: 'output_text_delta', delta: 'ok' },
-    ]);
-    expect(
-      await collect(new NativeSessionVoiceWorkflow(old.session).run('input')),
-    ).toEqual(['ok']);
-    for (const events of [
-      [{ type: 'gap' }, { type: 'output_text_delta', delta: 'partial' }],
-      [{ type: 'turn_started' }, { type: 'gap' }],
-      [{ type: 'gap' }],
-      [
-        { type: 'gap' },
-        { type: 'turn_started', submissionId: 'continuation' },
-        { type: 'output_text_delta', delta: 'missing beginning' },
-      ],
-    ]) {
-      const peer = fakeSession(events);
-      await expect(
-        collect(new NativeSessionVoiceWorkflow(peer.session).run('input')),
-      ).rejects.toBeInstanceOf(VoiceEventGapError);
-      expect(peer.cancel).toHaveBeenCalledOnce();
-    }
+  it('never sends rejected native text to speech', async () => {
+    const primary = new Error('rejected final output');
+    const peer = fakeSession('ignored', primary);
+    const synthesize = vi.fn(async function* () {
+      yield frame();
+    });
+    const provider: SpeechProvider = {
+      transcribe: async function* () {
+        yield 'question';
+      },
+      synthesize,
+    };
+    await expect(
+      collect(
+        new VoicePipeline({
+          workflow: new NativeSessionVoiceWorkflow(peer.session),
+          provider,
+        }).run(frame()),
+      ),
+    ).rejects.toBe(primary);
+    expect(synthesize).not.toHaveBeenCalled();
   });
-  it('rejects concurrent speech and joins only its owned turn on early exit', async () => {
+  it('waits for accepted output without observing raw text and rejects concurrent speech', async () => {
+    const peer = fakeSession();
+    const completed = deferred<{ finalOutput: string }>();
+    peer.wait.mockReturnValue(completed.promise);
+    const workflow = new NativeSessionVoiceWorkflow(peer.session);
+    const text: string[] = [];
+    const run = (async () => {
+      for await (const value of workflow.run('first')) text.push(value);
+    })();
+    await vi.waitFor(() => expect(peer.wait).toHaveBeenCalledOnce());
+    expect(text).toEqual([]);
+    expect(peer.events).not.toHaveBeenCalled();
+    await expect(collect(workflow.run('second'))).rejects.toThrow('busy');
+    completed.resolve({ finalOutput: 'Accepted answer.' });
+    await run;
+    expect(text).toEqual(['Accepted answer.']);
+    expect(peer.cancel).not.toHaveBeenCalled();
+  });
+  it('rejects a settled non-string result without speech or cancelling completed work', async () => {
+    const peer = fakeSession({ secret: 'private' });
+    const synthesize = vi.fn(async function* () {
+      yield frame();
+    });
+    const provider: SpeechProvider = {
+      transcribe: async function* () {
+        yield 'question';
+      },
+      synthesize,
+    };
+    const workflow = new NativeSessionVoiceWorkflow(peer.session);
+    await expect(
+      collect(new VoicePipeline({ workflow, provider }).run(frame())),
+    ).rejects.toThrow('custom VoiceWorkflow');
+    expect(synthesize).not.toHaveBeenCalled();
+    expect(peer.cancel).not.toHaveBeenCalled();
+    peer.wait.mockResolvedValueOnce({ finalOutput: 'next' });
+    expect(await collect(workflow.run('next'))).toEqual(['next']);
+  });
+  it('does not cancel settled native work when the consumer exits after accepted text', async () => {
     const peer = fakeSession();
     const workflow = new NativeSessionVoiceWorkflow(peer.session);
     const first = workflow.run('first');
     expect(await first.next()).toMatchObject({ value: 'Hello.' });
-    await expect(collect(workflow.run('second'))).rejects.toThrow('busy');
     await first.return(undefined);
-    expect(peer.cancel).toHaveBeenCalledOnce();
     await workflow.cancel();
-    expect(peer.cancel).toHaveBeenCalledOnce();
+    expect(peer.cancel).not.toHaveBeenCalled();
+    expect(await collect(workflow.run('second'))).toEqual(['Hello.']);
   });
   it('cancels a turn published after cancellation and keeps busy until cancellation joins', async () => {
     const peer = fakeSession();
@@ -214,12 +231,8 @@ describe('voice pipeline', () => {
       'session_ended',
     ]);
   });
-  it('closes native work and transcription when the audio consumer exits', async () => {
-    // This confirmed sentence boundary starts audio before native completion.
-    const peer = fakeSession([
-      { type: 'turn_started' },
-      { type: 'output_text_delta', delta: 'Hello. ' },
-    ]);
+  it('closes transcription without cancelling settled native work when the audio consumer exits', async () => {
+    const peer = fakeSession();
     let transcriptionClosed = false;
     const provider: SpeechProvider = {
       transcribe: async function* () {
@@ -240,7 +253,7 @@ describe('voice pipeline', () => {
     for await (const event of pipeline.run(frame())) {
       if (event.type === 'audio') break;
     }
-    expect(peer.cancel).toHaveBeenCalledOnce();
+    expect(peer.cancel).not.toHaveBeenCalled();
     expect(transcriptionClosed).toBe(true);
   });
 });
@@ -513,6 +526,38 @@ it('delegates an actual Realtime function call through an ordinary tool', async 
   }
 });
 
+// Exercise raw provider deltas as well as authoritative final output.
+function streamedAnswer(text: string, id: string) {
+  const item = {
+    type: 'message',
+    id: `message-${id}`,
+    role: 'assistant',
+    content: [{ type: 'output_text', text }],
+  };
+  const events = [
+    { type: 'response.created', response: { id } },
+    {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { ...item, content: [] },
+    },
+    {
+      type: 'response.output_text.delta',
+      item_id: item.id,
+      output_index: 0,
+      content_index: 0,
+      delta: text,
+    },
+    { type: 'response.output_item.done', output_index: 0, item },
+    { type: 'response.completed', response: { id, output: [item] } },
+  ];
+  return {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+    body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+  };
+}
+
 it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'retains native Session history over Realtime delegation and a chained speech turn',
   async () => {
@@ -536,39 +581,6 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       parameters: z.object({}),
       result: z.object({ approved: z.boolean() }),
     });
-    // The ordinary scripted helper emits final items only; voice needs actual SSE deltas.
-    function streamedAnswer(text: string, id: string) {
-      const item = {
-        type: 'message',
-        id: `message-${id}`,
-        role: 'assistant',
-        content: [{ type: 'output_text', text }],
-      };
-      const events = [
-        { type: 'response.created', response: { id } },
-        {
-          type: 'response.output_item.added',
-          output_index: 0,
-          item: { ...item, content: [] },
-        },
-        {
-          type: 'response.output_text.delta',
-          item_id: item.id,
-          output_index: 0,
-          content_index: 0,
-          delta: text,
-        },
-        { type: 'response.output_item.done', output_index: 0, item },
-        { type: 'response.completed', response: { id, output: [item] } },
-      ];
-      return {
-        status: 200,
-        headers: { 'content-type': 'text/event-stream' },
-        body: events
-          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-          .join(''),
-      };
-    }
     const server = new ModelServer([
       [
         call('lookup', { key: 'color' }, { callId: 'lookup-1' }),
@@ -685,9 +697,83 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   25000,
 );
 
+it
+  .skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')
+  .each(['rejected', 'repaired', 'normalized'] as const)(
+  'speaks only validated native final output: %s',
+  async (mode) => {
+    const { Agent, NativeProvider, OutputValidationError } =
+      await import('../src');
+    const { ModelServer } = await import('./native/fixtures/model-server');
+    const schema =
+      mode === 'normalized'
+        ? z.string().transform((text) => text.trim())
+        : z.string().refine((text) => !text.includes('secret'));
+    const server = new ModelServer([
+      streamedAnswer(
+        JSON.stringify(
+          mode === 'normalized' ? '  accepted answer.  ' : 'secret. ',
+        ),
+        'original',
+      ),
+      ...(mode === 'repaired'
+        ? [streamedAnswer(JSON.stringify('accepted answer.'), 'repair')]
+        : []),
+    ]);
+    try {
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-voice',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        instructions: 'Answer.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using session = await agent
+        .withOutputType({
+          mode: 'prompted',
+          schema,
+          maxRetries: mode === 'repaired' ? 1 : 0,
+        })
+        .session();
+      const spoken: string[] = [];
+      const speech: SpeechProvider = {
+        transcribe: async function* () {
+          yield 'question';
+        },
+        synthesize: async function* (text) {
+          spoken.push(text);
+          yield frame();
+        },
+      };
+      const result = collect(
+        new VoicePipeline({
+          workflow: new NativeSessionVoiceWorkflow(session),
+          provider: speech,
+        }).run(frame()),
+      );
+      if (mode === 'rejected') {
+        await expect(result).rejects.toBeInstanceOf(OutputValidationError);
+        expect(spoken).toEqual([]);
+      } else {
+        await result;
+        expect(spoken).toEqual(['accepted answer.']);
+      }
+      server.assertExhausted();
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+  25000,
+);
+
 it('retains failed exact-turn cleanup for explicit retry before accepting new speech', async () => {
   const primary = new Error('primary');
-  const peer = fakeSession([], primary);
+  const peer = fakeSession('ignored', primary);
   peer.cancel.mockRejectedValueOnce(new Error('cleanup'));
   const workflow = new NativeSessionVoiceWorkflow(peer.session);
   await expect(collect(workflow.run('first'))).rejects.toBe(primary);
@@ -701,7 +787,7 @@ it('retains failed exact-turn cleanup for explicit retry before accepting new sp
 });
 
 it('does not report success when aborted during final native settlement', async () => {
-  const peer = fakeSession([]);
+  const peer = fakeSession('');
   const finished = deferred<{ finalOutput: string }>();
   peer.wait.mockReturnValueOnce(finished.promise);
   const workflow = new NativeSessionVoiceWorkflow(peer.session);
@@ -883,16 +969,10 @@ it.each(['disconnect', 'error'] as const)(
     const released = deferred<void>();
     const cancellation = deferred<void>();
     vi.spyOn(transport, 'sendMessage').mockImplementation(() => sent.resolve());
-    vi.spyOn(peer.turn, 'events').mockImplementation(async function* () {
-      yield {
-        type: 'turn_started',
-        sessionId: 'session',
-        sequence: 1,
-        submissionId: 'voice-root',
-        turnId: 'native-root',
-      };
+    peer.wait.mockImplementation(async () => {
       started.resolve();
       await released.promise;
+      return { finalOutput: 'late answer' };
     });
     peer.cancel.mockImplementation(async () => {
       expect(transport.closeCalls).toBe(1);

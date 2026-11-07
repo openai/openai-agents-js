@@ -8,13 +8,6 @@ export interface VoiceWorkflow {
   ): AsyncIterable<string>;
 }
 
-export class VoiceEventGapError extends Error {
-  constructor() {
-    super('Native voice text was lost from the observation stream');
-    this.name = 'VoiceEventGapError';
-  }
-}
-
 interface ActiveVoiceTurn {
   controller: AbortController;
   submission?: Promise<Turn<string>>;
@@ -24,7 +17,9 @@ interface ActiveVoiceTurn {
   finished: boolean;
 }
 
-/** Speech adapter for a caller-owned Session. It never approves requests or closes the Session. */
+/** Speaks only a caller-owned Session's validated final string, after settlement.
+ * It never approves requests or closes the Session. Structured output needs a custom VoiceWorkflow.
+ */
 export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
   private active?: ActiveVoiceTurn;
 
@@ -73,29 +68,14 @@ export class NativeSessionVoiceWorkflow implements VoiceWorkflow {
       });
       const turn = await active.submission;
       active.controller.signal.throwIfAborted();
-      let started = false;
-      let priorGap = false;
-      for await (const event of turn.events()) {
-        active.controller.signal.throwIfAborted();
-        if (event.type === 'gap') {
-          if (started) throw new VoiceEventGapError();
-          priorGap = true;
-        } else if (
-          event.type === 'turn_started' &&
-          event.submissionId === turn.submissionId
-        ) {
-          started = true;
-          priorGap = false;
-        } else {
-          if (priorGap) throw new VoiceEventGapError();
-          if (event.type === 'output_text_delta') yield event.delta;
-        }
-      }
-      if (priorGap) throw new VoiceEventGapError();
-      active.controller.signal.throwIfAborted();
-      await turn.wait();
+      const completed = await turn.wait();
       active.controller.signal.throwIfAborted();
       active.settled = true;
+      if (typeof completed.finalOutput !== 'string')
+        throw new TypeError(
+          'Native voice requires a string final output; use a custom VoiceWorkflow for structured output',
+        );
+      yield completed.finalOutput;
     } catch (error) {
       failed = true;
       throw signal?.aborted ? signal.reason : error;

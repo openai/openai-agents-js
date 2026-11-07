@@ -6,7 +6,7 @@ import {
   VoicePipeline,
 } from '@openai/agents/voice';
 
-/** Transcribe raw mono PCM16 24 kHz input, execute native work, and save spoken PCM. */
+/** Transcribe mono PCM16 24 kHz input and speak the validated final native answer. */
 export async function speakFile(inputPath: string, outputPath: string) {
   const bytes = await readFile(inputPath);
   if (bytes.length % 2)

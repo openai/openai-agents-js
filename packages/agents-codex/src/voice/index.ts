@@ -1,4 +1,4 @@
-export { NativeSessionVoiceWorkflow, VoiceEventGapError } from './workflow';
+export { NativeSessionVoiceWorkflow } from './workflow';
 export type { VoiceWorkflow } from './workflow';
 export { VoicePipeline } from './pipeline';
 export type {
