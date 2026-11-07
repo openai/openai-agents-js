@@ -2,7 +2,13 @@ import { z } from 'zod';
 import { binding, decode } from './binding';
 import type { Turn } from './session';
 
-const commandName = z.enum(['compact', 'stop', 'rename', 'review']);
+const nativeCommandName = z.enum(['compact', 'stop', 'rename', 'review']);
+const commandName = z.enum([
+  'compact',
+  'stop-background-terminals',
+  'rename',
+  'review',
+]);
 export type EmbeddedCommandName = z.infer<typeof commandName>;
 
 /** Native command metadata, not a promise of eligibility in a live Session. */
@@ -14,7 +20,7 @@ export interface EmbeddedCommand {
 
 const commandCatalog = z.array(
   z.object({
-    name: commandName,
+    name: nativeCommandName,
     description: z.string(),
     supports_inline_arguments: z.boolean(),
   }),
@@ -26,7 +32,8 @@ export async function embeddedCommands(): Promise<readonly EmbeddedCommand[]> {
   return Object.freeze(
     decode(commandCatalog, native._embedded_commands()).map((command) =>
       Object.freeze({
-        name: command.name,
+        name:
+          command.name === 'stop' ? 'stop-background-terminals' : command.name,
         description: command.description,
         supportsInlineArguments: command.supports_inline_arguments,
       }),
@@ -79,7 +86,7 @@ export type EmbeddedCommandResult =
       readonly turn: Turn<NativeReviewOutput | null>;
     }
   | {
-      readonly command: 'stop';
+      readonly command: 'stop-background-terminals';
       readonly sessionId: string;
       readonly operationId: string;
     }
@@ -99,7 +106,7 @@ export function parseEmbeddedCommand(input: string): {
   if (!parsed.success) throw new TypeError('Unsupported embedded command');
   const name = parsed.data;
   const arguments_ = match?.[2] ?? '';
-  if (name === 'compact' || name === 'stop') {
+  if (name === 'compact' || name === 'stop-background-terminals') {
     if (arguments_.trim())
       throw new TypeError(`${name} does not accept inline arguments`);
   } else if (!arguments_.trim()) {

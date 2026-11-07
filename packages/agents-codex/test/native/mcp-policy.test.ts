@@ -1,6 +1,8 @@
 import { afterEach, expect, expectTypeOf, it, vi } from 'vitest';
 import {
   HttpMCP,
+  StdioMCP,
+  type ToolRef,
   type MCPBeforeDecision,
   type MCPCallContext,
 } from '../../src';
@@ -8,6 +10,7 @@ import {
   applyMcpPrePolicy,
   hasMcpPrePolicy,
   mcpPrePolicyRules,
+  mcpConfig,
 } from '../../src/runtime/mcp';
 import type { JsonObject } from '../../src/runtime/binding';
 import { issueTurn } from '../../src/runtime/session';
@@ -45,6 +48,57 @@ const original = (): JsonObject => ({
   }),
 });
 afterEach(() => vi.useRealTimers());
+
+it('names native MCP preapproval without changing native policy or application gates', () => {
+  const approval = vi.fn(() => false);
+  const options = {
+    name: 'records',
+    tools: ['find-record'],
+    url: 'https://example.invalid/mcp',
+    approval,
+  };
+  const native = new HttpMCP(options);
+  expect(native.approvalMode).toBe('native');
+  expect(mcpConfig([native]).records).not.toHaveProperty('tools');
+  const preapproved = new HttpMCP({ ...options, approvalMode: 'preapproved' });
+  expect(preapproved.approval).toBe(approval);
+  expect(mcpConfig([preapproved]).records).toMatchObject({
+    enabled_tools: ['find-record'],
+    tools: { 'find-record': { approval_mode: 'approve' } },
+  });
+  expectTypeOf<HttpMCP['approvalMode']>().toEqualTypeOf<
+    'native' | 'preapproved'
+  >();
+  for (const approvalMode of ['auto', 'approve']) {
+    expect(
+      () => new HttpMCP({ ...options, approvalMode: approvalMode as never }),
+    ).toThrow('Invalid MCP approvalMode');
+  }
+});
+
+it('selects declared raw MCP leaves through their native projected identities', () => {
+  const options = {
+    name: 'records/api',
+    tools: ['find-record', 'list records'],
+  };
+  const http = new HttpMCP({ ...options, url: 'https://example.invalid/mcp' });
+  const stdio = new StdioMCP({ ...options, command: 'peer' });
+  for (const server of [http, stdio]) {
+    expect(server.tool('find-record')).toEqual({
+      kind: 'tool_ref',
+      name: 'find_record',
+      namespace: 'mcp__records_api',
+    });
+    expect(server.tool('list records')).toEqual({
+      kind: 'tool_ref',
+      name: 'list_records',
+      namespace: 'mcp__records_api',
+    });
+    expectTypeOf(server.tool('find-record')).toEqualTypeOf<ToolRef>();
+    expect(() => server.tool('find_record')).toThrow('not declared');
+    expect(() => server.tool('unselected')).toThrow('not declared');
+  }
+});
 
 it('captures optional callbacks without serializing them or changing policy-free classification', () => {
   const plain = new HttpMCP({

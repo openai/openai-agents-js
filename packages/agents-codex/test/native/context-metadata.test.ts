@@ -39,8 +39,8 @@ it('reports an unknown limit as null in results and usage events', async () => {
       const turn = await session.submit('one');
       const result = await turn.wait();
       expect(result.finalOutput).toBe('finished');
-      expect(result.usage?.modelContextWindow).toBeNull();
-      expect(result.usage?.totalTokenUsage.totalTokens).toBe(24);
+      expect(result.threadUsage?.modelContextWindow).toBeNull();
+      expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(24);
       const observed = [];
       for await (const event of turn.events()) {
         if (event.type !== 'usage_updated') continue;
@@ -50,7 +50,7 @@ it('reports an unknown limit as null in results and usage events', async () => {
         }
       }
       expect(observed.length).toBeGreaterThan(0);
-      expect(observed.at(-1)).toEqual(result.usage);
+      expect(observed.at(-1)).toEqual(result.threadUsage);
       expect(server.requests[0]?.model).toBe(UNKNOWN_MODEL);
       server.assertExhausted();
     } finally {
@@ -78,20 +78,20 @@ it('clears a prior limit only on new usage and preserves null through restore an
     const session = await agent.session();
     try {
       const known = await (await session.submit('known model')).wait();
-      expect(known.usage?.modelContextWindow).toBeGreaterThan(0);
+      expect(known.threadUsage?.modelContextWindow).toBeGreaterThan(0);
       await session.update({ model: UNKNOWN_MODEL });
       const unchanged = await (
         await session.submit('unknown without new usage')
       ).wait();
-      expect(unchanged.usage).toEqual(known.usage);
+      expect(unchanged.threadUsage).toEqual(known.threadUsage);
 
       const unknown = await (
         await session.submit('unknown with new usage')
       ).wait();
-      expect(unknown.usage?.modelContextWindow).toBeNull();
-      expect(unknown.usage?.totalTokenUsage.totalTokens).toBe(48);
-      expect(unknown.usage?.lastTokenUsage.totalTokens).toBe(24);
-      expect(known.usage?.modelContextWindow).toBeGreaterThan(0);
+      expect(unknown.threadUsage?.modelContextWindow).toBeNull();
+      expect(unknown.threadUsage?.totalTokenUsage.totalTokens).toBe(48);
+      expect(unknown.threadUsage?.lastTokenUsage.totalTokens).toBe(24);
+      expect(known.threadUsage?.modelContextWindow).toBeGreaterThan(0);
       const saved = parseSessionState(
         JSON.stringify(await session.saveState()),
       );
@@ -101,12 +101,12 @@ it('clears a prior limit only on new usage and preserves null through restore an
         const restored = await agent.session({ state });
         try {
           const turn = await restored.submit('keep the observed snapshot');
-          expect((await turn.wait()).usage).toEqual(unknown.usage);
+          expect((await turn.wait()).threadUsage).toEqual(unknown.threadUsage);
           let observed = 0;
           for await (const event of turn.events()) {
             if (event.type !== 'usage_updated') continue;
             observed++;
-            expect(event.usage).toEqual(unknown.usage);
+            expect(event.usage).toEqual(unknown.threadUsage);
           }
           expect(observed).toBeGreaterThan(0);
         } finally {
@@ -205,7 +205,7 @@ it('reports the model context used for child compaction and sampling', async () 
       const root = await session.submit('Start the research child');
       await childEntered.promise;
       const parent = await root.wait();
-      expect(parent.usage?.modelContextWindow).toBe(258_400);
+      expect(parent.threadUsage?.modelContextWindow).toBe(258_400);
       const children = await vi.waitFor(
         async () => {
           const children = await Array.fromAsync(session.subagents());
@@ -219,8 +219,8 @@ it('reports the model context used for child compaction and sampling', async () 
       releaseChild.resolve();
       const result = await child.wait();
       expect(result.finalOutput).toBe('child finished');
-      expect(result.usage?.modelContextWindow).toBe(353_400);
-      expect(result.usage?.lastTokenUsage.totalTokens).toBe(24);
+      expect(result.threadUsage?.modelContextWindow).toBe(353_400);
+      expect(result.threadUsage?.lastTokenUsage.totalTokens).toBe(24);
       const childUsage = [];
       for await (const event of child.events()) {
         if (event.type === 'usage_updated' && event.usage !== null) {
@@ -235,7 +235,7 @@ it('reports the model context used for child compaction and sampling', async () 
       for (const usage of childUsage.slice(1)) {
         expect(usage.modelContextWindow).toBe(353_400);
       }
-      expect(childUsage.at(-1)).toEqual(result.usage);
+      expect(childUsage.at(-1)).toEqual(result.threadUsage);
       const parentUsage = [];
       for await (const event of root.events()) {
         if (event.type !== 'usage_updated') continue;
@@ -244,9 +244,9 @@ it('reports the model context used for child compaction and sampling', async () 
           expect(event.usage.modelContextWindow).toBe(258_400);
       }
       expect(parentUsage.length).toBeGreaterThan(0);
-      expect(parentUsage.at(-1)).toEqual(parent.usage);
+      expect(parentUsage.at(-1)).toEqual(parent.threadUsage);
       // The settled parent snapshot keeps its own limit after child completion.
-      expect(parent.usage?.modelContextWindow).toBe(258_400);
+      expect(parent.threadUsage?.modelContextWindow).toBe(258_400);
       expect(
         server.requests.filter(
           (request) => request.model === 'gpt-daybreak-red-latest',

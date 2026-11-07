@@ -183,3 +183,60 @@ it('joins a real interrupted tool callback before ending the scripted scope', as
     },
   );
 });
+
+it('uses scripted usage and headers for real budget admission and rate observations', async () => {
+  let effects = 0;
+  await withScriptedResponses(
+    [
+      {
+        items: [toolCall('lookup', {}, { callId: 'budget-lookup' })],
+        usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
+        headers: {
+          'x-ratelimit-limit-requests': '10',
+          'x-ratelimit-remaining-requests': '5',
+          'x-ratelimit-reset-requests': '1s',
+        },
+      },
+    ],
+    async (peer) => {
+      const agent = new Agent({
+        instructions: 'Use lookup.',
+        model: 'gpt-5.5',
+        provider: peer.provider,
+        tools: [
+          tool({
+            name: 'lookup',
+            parameters: z.object({}),
+            execute: () => {
+              effects++;
+              return 'found';
+            },
+          }),
+        ],
+      });
+      const session = await agent.session();
+      try {
+        const turn = await session.submit('Lookup.', {
+          budget: { maxTokens: 7 },
+        });
+        await expect(turn.wait()).rejects.toMatchObject({
+          code: 'run_budget_exceeded',
+        });
+        const events = [];
+        for await (const event of turn.events()) events.push(event);
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: 'api_rate_limits_updated',
+            snapshot: expect.objectContaining({
+              requests: { limit: 10, remaining: 5, resetAfterSeconds: 1 },
+            }),
+          }),
+        );
+        expect(effects).toBe(1);
+        expect(peer.requests).toHaveLength(1);
+      } finally {
+        await session.close();
+      }
+    },
+  );
+});

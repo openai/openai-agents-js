@@ -1,33 +1,18 @@
-import {
-  captureThreadStore,
-  type SessionStore,
-} from '../runtime/custom-thread-store';
-import {
-  captureReconciledCalls,
-  type ReconciledCall,
-} from '../runtime/local-recovery';
+import type { SessionPersistenceOptions } from '../runtime/persistence-options';
+import { captureThreadStore } from '../runtime/custom-thread-store';
+import { captureReconciledCalls } from '../runtime/local-recovery';
 import { localStoragePath, type LocalStorage } from '../runtime/local-storage';
-import {
-  isManualSessionState,
-  sessionStateSchema,
-  type SessionState,
-} from '../runtime/state';
+import { isManualSessionState, sessionStateSchema } from '../runtime/state';
 import type { ThreadHistory } from '../runtime/history';
 import type { SessionOptions } from '../runtime/session';
 
 /** Native persistence for an SDKRunner invocation. */
-export interface MigrationNativePersistence {
-  /** Restore an idle native checkpoint using the current application bindings. */
-  state?: SessionState;
-  /** Persist native history in a local profile or an application-owned canonical store. */
-  storage?: LocalStorage | SessionStore;
-  /** Reopen this native session ID in storage. */
-  resume?: string;
-  /** Confirm outcomes for unresolved effects before reopening a local profile. */
-  reconciledCalls?: readonly ReconciledCall[];
-  /** Include the completed idle native checkpoint in the result. */
-  returnState?: boolean;
-}
+export type MigrationNativePersistence =
+  | (SessionPersistenceOptions & { returnState?: false })
+  | (Extract<SessionPersistenceOptions, { storage?: never }> & {
+      /** Include the completed idle portable checkpoint in the result. */
+      returnState?: boolean;
+    });
 
 /** Capture application declarations before any asynchronous work. */
 export function captureNativePersistence(options: MigrationNativePersistence) {

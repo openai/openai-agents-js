@@ -357,7 +357,7 @@ it.each([false, true])(
         tools: [
           new HttpMCP({
             name: 'planner',
-            approvalMode: 'approve',
+            approvalMode: 'preapproved',
             url: `http://127.0.0.1:${port}`,
             tools: ['update_plan'],
           }),

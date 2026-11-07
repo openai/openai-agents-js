@@ -209,7 +209,7 @@ it('withholds a rejected MCP result and sanitizes its transform error', async ()
         command: process.execPath,
         args: [resolve(import.meta.dirname, 'mcp-peer.mjs'), roster, calls],
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         transformResult(_context, value) {
           seen = value;
           throw new Error(JSON.stringify(value));

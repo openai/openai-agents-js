@@ -37,29 +37,45 @@ export interface ApprovalRequest extends QuestionIdentity {
  * An issued form or URL request. The SDK never visits the URL or retries a tool
  * because a peer reports completion.
  */
-export interface ElicitationRequest extends QuestionIdentity {
+export interface FormRequest extends QuestionIdentity {
   readonly type: 'elicitation_request';
-  readonly mode: 'form' | 'url';
+  readonly mode: 'form';
   readonly schema: Readonly<Record<string, unknown>>;
-  readonly url: string | null;
-  readonly elicitationId: string | null;
-  readonly serverName: string | null;
-  /** Forms accept values or null; URL requests retain null-only decline here. */
+  readonly url: null;
+  readonly elicitationId: null;
+  readonly serverName: null;
   reply(values: Readonly<JsonObject> | null): NativeQuestionReply;
-  /** Prepare URL consent. Only Session.respond delivers it to the issuing peer. */
-  replyUrlAccept(): NativeQuestionReply;
-  /**
-   * Observe matched peer completion, even after the original root turn ends.
-   * A deadline retires this URL lifecycle and joins its native cancellation.
-   * Aborting signal cancels only this observer. Completion is a peer report,
-   * not proof of authorization or cryptographic verification.
-   */
-  waitForCompletion(options: NativeUrlCompletionOptions): Promise<void>;
 }
+
+export interface UrlRequest extends QuestionIdentity {
+  readonly type: 'elicitation_request';
+  readonly mode: 'url';
+  readonly schema: Readonly<Record<string, unknown>>;
+  readonly url: string;
+  readonly elicitationId: string;
+  readonly serverName: string;
+  reply(value: null): NativeQuestionReply;
+  replyUrlAccept(): NativeQuestionReply;
+  /** Observer deadlines and aborts leave this shared lifecycle active. */
+  waitForCompletion(options: NativeUrlCompletionOptions): Promise<void>;
+  /** Retire this exact URL lifecycle and join native cancellation. */
+  expire(): Promise<void>;
+}
+
+export type ElicitationRequest = FormRequest | UrlRequest;
 
 export type NativeQuestion =
   ApprovalRequest | ElicitationRequest | UserVerificationRequest;
 export type Interaction = ManualToolRequest | NativeQuestion;
+
+/** A reply bound to one live request. Only its issuing Session can deliver it. */
+export type InteractionReply =
+  import('./manual').ManualToolReply | NativeQuestionReply;
+/** Session-owned application policy; closing the Session joins entered handlers. */
+export type InteractionHandler = (
+  request: Interaction,
+  signal: AbortSignal,
+) => InteractionReply | Promise<InteractionReply>;
 
 /** @internal Only Session may issue and deliver a live request. */
 export interface NativeQuestionGrant {
@@ -189,15 +205,6 @@ export function issueNativeQuestion(
       url: { value: null },
       elicitationId: { value: null },
       serverName: { value: null },
-      replyUrlAccept: {
-        value: () => {
-          throw new TypeError('This form does not support URL consent');
-        },
-      },
-      waitForCompletion: {
-        value: () =>
-          Promise.reject(new TypeError('This form has no URL completion')),
-      },
     });
   Object.freeze(request);
   return {
@@ -241,6 +248,7 @@ export function urlQuestionReply(
 export function urlQuestionPresentation(
   fields: { url: string; elicitationId: string; serverName: string },
   wait: (options: NativeUrlCompletionOptions) => Promise<void>,
+  expire: () => Promise<void>,
 ): NativeQuestionPresentation {
   const captured = { ...fields };
   return (target, prepareReply) => {
@@ -251,6 +259,7 @@ export function urlQuestionPresentation(
       serverName: { value: captured.serverName },
       replyUrlAccept: { value: () => prepareReply(urlConsent) },
       waitForCompletion: { value: wait },
+      expire: { value: expire },
     });
   };
 }

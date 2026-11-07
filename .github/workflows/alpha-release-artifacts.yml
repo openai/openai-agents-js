@@ -204,6 +204,7 @@ jobs:
             packages/agents-codex/test/native/storage-mounts.test.ts \
             packages/agents-codex/test/native/storage-mounts-native.test.ts \
             --reporter=verbose
+          pnpm test:native --mode full --maxWorkers=4 --reporter=verbose
       - name: Qualify local executor grants on macOS
         if: runner.os == 'macOS'
         env:

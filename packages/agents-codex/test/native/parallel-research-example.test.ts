@@ -6,10 +6,11 @@ import {
   NativeAgents,
   NativeError,
   NativeProvider,
-  type Completed,
   type ObservedEvent,
   type Session,
   type Subagent,
+  type ChildTurn,
+  type ChildCompleted,
   type Turn,
 } from '@openai/agents';
 import {
@@ -126,10 +127,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const parentSecondRequest = Promise.withResolvers<void>();
         const bothIssued = Promise.withResolvers<void>();
         const opened = Promise.withResolvers<Session>();
-        const issued = new Map<
-          string,
-          { child: Subagent; turn: Turn<string> }
-        >();
+        const issued = new Map<string, { child: Subagent; turn: ChildTurn }>();
         const assignmentKeys = new Map<string, string>();
         const childSources = new Map<string, keyof typeof findings>();
         const counts = new Map<string, number>();
@@ -151,7 +149,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             >
           | undefined;
         const failures: unknown[] = [];
-        const earlyChildResults = new Map<string, Promise<Completed<string>>>();
+        const earlyChildResults = new Map<string, Promise<ChildCompleted>>();
         const childOutcomes = new Map<string, unknown>();
 
         try {
@@ -859,7 +857,7 @@ describe('parallel research admission and owned lifecycle without Core', () => {
         firstStarted.resolve();
         return first.promise;
       }),
-    } as unknown as Turn<string>;
+    } as unknown as ChildTurn;
     const secondTurn = {
       sessionId,
       childId: 'second-child-double',
@@ -877,7 +875,7 @@ describe('parallel research admission and owned lifecycle without Core', () => {
         calls.push('second.reject');
         throw secondFailure;
       }),
-    } as unknown as Turn<string>;
+    } as unknown as ChildTurn;
     const children = [firstTurn, secondTurn].map(
       (turn, index) =>
         ({

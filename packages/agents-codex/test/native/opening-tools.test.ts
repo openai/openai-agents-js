@@ -80,7 +80,7 @@ async function mcpPeer(value: string) {
     tool: new HttpMCP({
       name: 'fixture',
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       url: `http://127.0.0.1:${address.port}/mcp`,
     }),
     async close() {
@@ -556,10 +556,9 @@ describe('opening tool declarations', () => {
         const current = currentTool.match(event);
         expect(current).toBeDefined();
         if (!current) throw new Error('Expected current opening grant');
-        expect(
-          (await (await destination.submit(current.reply('yes'))).wait())
-            .finalOutput,
-        ).toBe('accepted');
+        const turn = destination.restoredTurn!;
+        await destination.respond(current.reply('yes'));
+        expect((await turn.wait()).finalOutput).toBe('accepted');
         break;
       }
     } finally {

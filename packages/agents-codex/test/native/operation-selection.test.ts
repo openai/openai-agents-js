@@ -126,7 +126,7 @@ it('blocks an off-roster call and keeps its handler and manual requests untouche
   const turn = await session.submit('go', { tools: [] });
   await turn.wait();
   expect(effects).toBe(0);
-  expect('requests' in (await turn.wait({ until: 'request' }))).toBe(false);
+  expect('requests' in (await turn.wait({ until: 'manual_tool' }))).toBe(false);
   expect(server.requests.map(names)).toEqual([[], []]);
   server.assertExhausted();
 });
@@ -211,7 +211,7 @@ it('resolves stale selectors to acknowledged bindings and keeps defaults and FIF
   await session.update({ tools: [replacement] });
   await session.update({ tools: [] });
   const selectors = [old];
-  const selected = await session.enqueue('selected', undefined, {
+  const selected = await session.enqueue('selected', {
     tools: selectors,
   });
   selectors.length = 0;
@@ -301,7 +301,7 @@ it('refuses callback-selected capture without consuming its manual reply', async
     tools: [decision],
     beforeStep: () => [decision],
   });
-  const batch = await turn.wait({ until: 'request' });
+  const batch = await turn.wait({ until: 'manual_tool' });
   if (!('requests' in batch)) throw new Error('Expected a manual request');
   expect(await session.checkpointStatus({ kind: 'manualWait' })).toEqual({
     status: 'notReady',
@@ -639,7 +639,7 @@ it.each(['prepare', 'start'] as const)(
       tools: [declaration],
       beforeStep: () => [declaration],
     });
-    const batch = await turn.wait({ until: 'request' });
+    const batch = await turn.wait({ until: 'manual_tool' });
     if (!('requests' in batch))
       throw new Error('Expected the selected manual request');
     const request = batch.requests[0];

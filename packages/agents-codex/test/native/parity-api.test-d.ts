@@ -16,15 +16,10 @@ declare const output: FunctionCallOutput;
 declare const either: UserInput | ActionReply;
 
 expectTypeOf(session.submit(input)).toEqualTypeOf<Promise<Turn<RootOutput>>>();
-expectTypeOf(session.submit(reply)).toEqualTypeOf<
-  Promise<Turn<RootOutput> | Turn<string>>
->();
-expectTypeOf(session.submit(output)).toEqualTypeOf<
-  Promise<Turn<RootOutput> | Turn<string>>
->();
-expectTypeOf(session.submit(either)).toEqualTypeOf<
-  Promise<Turn<RootOutput> | Turn<string>>
->();
+expectTypeOf(session.respond(reply)).toEqualTypeOf<Promise<void>>();
+expectTypeOf(session.respond(output)).toEqualTypeOf<Promise<void>>();
+// @ts-expect-error User input and bound replies require different operations.
+session.respond(either);
 
 expectTypeOf(session.fork()).toEqualTypeOf<Promise<SessionState>>();
 // @ts-expect-error fork captures only the latest settled root, without selectors.

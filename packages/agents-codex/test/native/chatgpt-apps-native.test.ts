@@ -260,7 +260,7 @@ it.each<BackendOutcome>(['401', '403', 'redirect'])(
     const f = await application(peer);
     const handler = vi.fn();
     try {
-      await f.agent.run('Authenticate once', { onNativeQuestion: handler });
+      await f.agent.run('Authenticate once', { onInteraction: handler });
       expect(handler).not.toHaveBeenCalled();
       expect(peer.calls).toHaveLength(1);
       expect(peer.initRequests).toHaveLength(1);

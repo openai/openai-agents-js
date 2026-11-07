@@ -176,7 +176,7 @@ describe('exact request waits with the native pending owner', () => {
       ).rejects.toThrow();
       await expect(session.update({ tools: [decision] })).rejects.toThrow();
       expect(native._manual_tool_current(encodeReceipt(old.msg))).toBe(true);
-      const batch = await first.wait({ until: 'request' });
+      const batch = await first.wait({ until: 'manual_tool' });
       if (!('requests' in batch))
         throw new Error('Replacement consumed the original request');
       await session.respond(batch.requests[0].reply('first reply'));
@@ -184,7 +184,7 @@ describe('exact request waits with the native pending owner', () => {
       expect((await first.wait()).finalOutput).toBe('first done');
       await session.update({ tools: [decision] });
       const second = await session.submit('second');
-      const next = await second.wait({ until: 'request' });
+      const next = await second.wait({ until: 'manual_tool' });
       if (!('requests' in next))
         throw new Error('Expected replacement catalogue request');
       const [current] = parseEvents(
@@ -252,7 +252,7 @@ describe('exact request waits with the native pending owner', () => {
       );
       expect(grants.every((grant) => typeof grant === 'string')).toBe(true);
       expect(new Set(grants).size).toBe(2);
-      const batch = await turn.wait({ until: 'request' });
+      const batch = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in batch))
         throw new Error('Expected both distinct native grants');
       expect(batch.requests).toHaveLength(2);
@@ -270,7 +270,7 @@ describe('exact request waits with the native pending owner', () => {
       );
       await session.respond(a.reply('A reply'));
       await pendingCount(native, turn.turnId, 1);
-      const remaining = await turn.wait({ until: 'request' });
+      const remaining = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in remaining))
         throw new Error('Expected B to remain live');
       expect(remaining.requests).toHaveLength(1);
@@ -282,7 +282,7 @@ describe('exact request waits with the native pending owner', () => {
       reader.release();
       const completed = await turn.wait();
       expect(completed.finalOutput).toBe('both accepted');
-      expect(await turn.wait({ until: 'request' })).toBe(completed);
+      expect(await turn.wait({ until: 'manual_tool' })).toBe(completed);
       expect(parse).toHaveBeenCalledTimes(2);
       await session.close();
       const observations = await Array.fromAsync(session.events());
@@ -334,7 +334,7 @@ describe('exact request waits with the native pending owner', () => {
       );
       const ordinary = turn.wait().catch((error: unknown) => error);
       let exposed = false;
-      const waiting = turn.wait({ until: 'request' }).then(
+      const waiting = turn.wait({ until: 'manual_tool' }).then(
         (outcome) => {
           exposed = 'requests' in outcome;
           return outcome;
@@ -357,7 +357,9 @@ describe('exact request waits with the native pending owner', () => {
       expect(failure).toBeInstanceOf(Error);
       expect(failure).toBe(await ordinary);
       expect(
-        await turn.wait({ until: 'request' }).catch((error: unknown) => error),
+        await turn
+          .wait({ until: 'manual_tool' })
+          .catch((error: unknown) => error),
       ).toBe(failure);
       expect(parse).not.toHaveBeenCalled();
       expect(exposed).toBe(false);
@@ -415,7 +417,7 @@ describe('exact request waits with the native pending owner', () => {
       await pendingCount(native, turn.turnId, 1);
       const ordinary = turn.wait().catch((error: unknown) => error);
       let exposed = false;
-      const waiting = turn.wait({ until: 'request' }).then(
+      const waiting = turn.wait({ until: 'manual_tool' }).then(
         (outcome) => {
           exposed = 'requests' in outcome;
           return outcome;
@@ -492,7 +494,7 @@ describe('exact request waits with the native pending owner', () => {
       } finally {
         await events.return?.();
       }
-      const batch = await turn.wait({ until: 'request' });
+      const batch = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in batch))
         throw new Error(
           'Expected live owner discovery despite lost observations',
@@ -572,13 +574,13 @@ describe('exact request waits with the native pending owner', () => {
     }).session();
     try {
       const turn = await session.submit('begin');
-      const original = await turn.wait({ until: 'request' });
+      const original = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in original))
         throw new Error('Expected portable live requests');
       const suspending = session.suspend();
       await sealEntered.promise;
       let exposed = false;
-      const waiting = turn.wait({ until: 'request' }).then((outcome) => {
+      const waiting = turn.wait({ until: 'manual_tool' }).then((outcome) => {
         exposed = 'requests' in outcome;
         return outcome;
       });
@@ -626,7 +628,7 @@ describe('exact request waits with the native pending owner', () => {
     const detached = signalListeners(controller.signal);
     notifyObservers(session);
     expect(
-      await turn.wait({ until: 'request', signal: controller.signal }),
+      await turn.wait({ until: 'manual_tool', signal: controller.signal }),
     ).toBe(completed);
     detached();
     expect(await turn.wait()).toBe(completed);
@@ -654,7 +656,7 @@ describe('exact request waits with the native pending owner', () => {
     const firstController = new AbortController();
     const firstDetached = signalListeners(firstController.signal);
     const failure = await turn
-      .wait({ until: 'request', signal: firstController.signal })
+      .wait({ until: 'manual_tool', signal: firstController.signal })
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     expect(await turn.wait().catch((error: unknown) => error)).toBe(failure);
@@ -665,7 +667,7 @@ describe('exact request waits with the native pending owner', () => {
     notifyObservers(session);
     expect(
       await turn
-        .wait({ until: 'request', signal: lateController.signal })
+        .wait({ until: 'manual_tool', signal: lateController.signal })
         .catch((error: unknown) => error),
     ).toBe(failure);
     lateDetached();
@@ -704,8 +706,8 @@ describe('exact request waits with the native pending owner', () => {
       const turn = await session.submit('begin');
       await pendingCount(native, turn.turnId, 2);
       const [first, second] = await Promise.all([
-        turn.wait({ until: 'request' }),
-        turn.wait({ until: 'request' }),
+        turn.wait({ until: 'manual_tool' }),
+        turn.wait({ until: 'manual_tool' }),
       ]);
       if (!('requests' in first) || !('requests' in second))
         throw new Error('Expected the two pending manual calls');
@@ -733,7 +735,7 @@ describe('exact request waits with the native pending owner', () => {
           session.respond(alias.reply('duplicate')),
         ).rejects.toThrow();
         if (answered.size === 1) {
-          const remaining = await turn.wait({ until: 'request' });
+          const remaining = await turn.wait({ until: 'manual_tool' });
           if (!('requests' in remaining))
             throw new Error('Expected the surviving sibling');
           expect(remaining.requests.map((item) => item.callId)).toEqual(
@@ -747,7 +749,7 @@ describe('exact request waits with the native pending owner', () => {
       reader.release();
       const completed = await turn.wait();
       expect(completed.finalOutput).toBe('done');
-      expect(await turn.wait({ until: 'request' })).toBe(completed);
+      expect(await turn.wait({ until: 'manual_tool' })).toBe(completed);
       expect(parse).toHaveBeenCalledTimes(2);
       expect(execute).toHaveBeenCalledTimes(1);
       await session.close();
@@ -804,7 +806,7 @@ describe('exact request waits with the native pending owner', () => {
       await pendingCount(native, turn.turnId, 2);
       const completion = turn.wait().catch((error: unknown) => error);
       let exposed = false;
-      const waiting = turn.wait({ until: 'request' }).then(
+      const waiting = turn.wait({ until: 'manual_tool' }).then(
         (outcome) => {
           exposed = 'requests' in outcome;
           return outcome;
@@ -855,9 +857,9 @@ describe('exact request waits with the native pending owner', () => {
       const native = await reader.entered;
       const turn = await session.submit('begin');
       await pendingCount(native, turn.turnId, 1);
-      const first = turn.wait({ until: 'request' });
+      const first = turn.wait({ until: 'manual_tool' });
       await admission.entered;
-      const second = turn.wait({ until: 'request' });
+      const second = turn.wait({ until: 'manual_tool' });
       reader.release();
       await reader.delivered;
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -926,7 +928,7 @@ describe('exact request waits with the native pending owner', () => {
       const native = await reader.entered;
       const turn = await session.submit('begin');
       await pendingCount(native, turn.turnId, 2);
-      const waiting = turn.wait({ until: 'request' });
+      const waiting = turn.wait({ until: 'manual_tool' });
       await admission.entered;
       expect(admission.count()).toBe(2);
       expect(parse).not.toHaveBeenCalled();
@@ -962,7 +964,7 @@ describe('exact request waits with the native pending owner', () => {
       await session.respond(batch.requests[0].reply('SDK answer b'));
       const completed = await turn.wait();
       expect(completed.finalOutput).toBe('both replies accepted');
-      expect(await turn.wait({ until: 'request' })).toBe(completed);
+      expect(await turn.wait({ until: 'manual_tool' })).toBe(completed);
       await session.close();
       const events = await Array.fromAsync(session.events());
       expect(
@@ -1031,7 +1033,7 @@ describe('exact request waits with the native pending owner', () => {
       expect(original.map((event) => event.msg.callId)).toEqual(['A']);
       const completion = turn.wait().catch((error: unknown) => error);
       let exposed = false;
-      const waiting = turn.wait({ until: 'request' }).then(
+      const waiting = turn.wait({ until: 'manual_tool' }).then(
         (outcome) => {
           exposed = 'requests' in outcome;
           return outcome;
@@ -1102,7 +1104,7 @@ describe('exact request waits with the native pending owner', () => {
       tools: [decision],
     }).session();
     try {
-      await expect(session.wait({ until: 'request' })).rejects.toThrow(
+      await expect(session.wait({ until: 'manual_tool' })).rejects.toThrow(
         'Submit input before waiting',
       );
       const turn = await session.submit('begin');
@@ -1111,17 +1113,17 @@ describe('exact request waits with the native pending owner', () => {
       const earlyReason = new Error('already stopped');
       alreadyAborted.abort(earlyReason);
       await expect(
-        turn.wait({ until: 'request', signal: alreadyAborted.signal }),
+        turn.wait({ until: 'manual_tool', signal: alreadyAborted.signal }),
       ).rejects.toBe(earlyReason);
       const controller = new AbortController();
       const reason = new Error('observer stopped');
       const detached = signalListeners(controller.signal);
       const cancelled = turn.wait({
-        until: 'request',
+        until: 'manual_tool',
         signal: controller.signal,
       });
       const rejected = expect(cancelled).rejects.toBe(reason);
-      const other = turn.wait({ until: 'request' });
+      const other = turn.wait({ until: 'manual_tool' });
       controller.abort(reason);
       await rejected;
       detached();
@@ -1168,10 +1170,10 @@ describe('exact request waits with the native pending owner', () => {
     try {
       const a = await session.submit('A');
       await entered.promise;
-      const anchored = session.wait({ until: 'request' });
+      const anchored = session.wait({ until: 'manual_tool' });
       const b = await session.enqueue('B');
       expect(b.turnId).toBeNull();
-      const waitingB = b.wait({ until: 'request' });
+      const waitingB = b.wait({ until: 'manual_tool' });
       release.resolve();
       const first = await anchored;
       if (!('requests' in first)) throw new Error('Missing A request');
@@ -1186,7 +1188,7 @@ describe('exact request waits with the native pending owner', () => {
       await session.respond(second.requests[0].reply('B reply'));
       expect((await b.wait()).finalOutput).toBe('B done');
       await session.close();
-      expect(await a.wait({ until: 'request' })).toBe(aCompleted);
+      expect(await a.wait({ until: 'manual_tool' })).toBe(aCompleted);
       server.assertExhausted();
     } finally {
       release.resolve();
@@ -1234,7 +1236,7 @@ describe('exact request waits with the native pending owner', () => {
       const b = await session.enqueue('B');
       await entered.promise;
       expect(b.turnId).toBeNull();
-      const captured = session.wait({ until: 'request' });
+      const captured = session.wait({ until: 'manual_tool' });
       const c = await session.enqueue('C');
       expect(c.turnId).toBeNull();
       release.resolve();
@@ -1283,14 +1285,14 @@ describe('exact request waits with the native pending owner', () => {
     }).session();
     try {
       const turn = await session.submit('begin');
-      const batch = await turn.wait({ until: 'request' });
+      const batch = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in batch))
         throw new Error('Expected a portable pending request');
       const suspending = session.suspend();
       await entered.promise;
       let exposed = false;
       let settled = false;
-      const waiting = turn.wait({ until: 'request' }).then(
+      const waiting = turn.wait({ until: 'manual_tool' }).then(
         (outcome) => {
           exposed = 'requests' in outcome;
           settled = true;
@@ -1349,7 +1351,7 @@ describe('exact request waits with the native pending owner', () => {
         },
         { timeout: 5_000 },
       );
-      const batch = await turn.wait({ until: 'request' });
+      const batch = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in batch))
         throw new Error('Expected pending original root');
       expect(batch.requests).toHaveLength(2);
@@ -1360,7 +1362,7 @@ describe('exact request waits with the native pending owner', () => {
       await original.close();
     }
     await using restored = await agent.session({ state });
-    const batch = await restored.wait({ until: 'request' });
+    const batch = await restored.wait({ until: 'manual_tool' });
     if (!('requests' in batch)) throw new Error('Expected restored exact root');
     expect(batch.requests).toHaveLength(2);
     expect(batch.turn.sessionId).toBe(restored.id);
@@ -1371,7 +1373,7 @@ describe('exact request waits with the native pending owner', () => {
       await restored.respond(request.reply('fresh authority'));
     const completed = await batch.turn.wait();
     expect(completed.finalOutput).toBe('restored done');
-    expect(await restored.wait({ until: 'request' })).toBe(completed);
+    expect(await restored.wait({ until: 'manual_tool' })).toBe(completed);
     server.assertExhausted();
   });
 
@@ -1383,10 +1385,10 @@ describe('exact request waits with the native pending owner', () => {
         const own = context.submission;
         if (!('wait' in own)) throw new Error('Expected root submission');
         await expect(
-          Promise.resolve().then(() => own.wait({ until: 'request' })),
+          Promise.resolve().then(() => own.wait({ until: 'manual_tool' })),
         ).rejects.toThrow();
         await expect(
-          Promise.resolve().then(() => session.wait({ until: 'request' })),
+          Promise.resolve().then(() => session.wait({ until: 'manual_tool' })),
         ).rejects.toThrow();
         return 'guarded';
       },
@@ -1403,11 +1405,11 @@ describe('exact request waits with the native pending owner', () => {
       tools: [selfWait],
     }).session();
     try {
-      const turn = await session.submitWithOutput('begin', z.number());
-      await expect(session.wait({ until: 'request' })).rejects.toThrow(
+      const turn = await session.submit('begin', { outputType: z.number() });
+      await expect(session.wait({ until: 'manual_tool' })).rejects.toThrow(
         'returned Turn',
       );
-      const completed = await turn.wait({ until: 'request' });
+      const completed = await turn.wait({ until: 'manual_tool' });
       if ('requests' in completed)
         throw new Error('Callback tools are not manual requests');
       expect(completed.finalOutput).toBe(7);
@@ -1507,7 +1509,7 @@ describe('exact request waits with the native pending owner', () => {
           normalSettled = true;
           return result;
         });
-        const request = turn.wait({ until: 'request' }).then((result) => {
+        const request = turn.wait({ until: 'manual_tool' }).then((result) => {
           requestSettled = true;
           return result;
         });
@@ -1521,7 +1523,7 @@ describe('exact request waits with the native pending owner', () => {
         expect(await request).toBe(completed);
         expect(completed.finalOutput).toBe('child done');
         expect(await turn.wait()).toBe(completed);
-        expect(await turn.wait({ until: 'request' })).toBe(completed);
+        expect(await turn.wait({ until: 'manual_tool' })).toBe(completed);
         server.assertExhausted();
       } finally {
         rootSettled.resolve();
@@ -1586,7 +1588,7 @@ describe('exact request waits with the native pending owner', () => {
         }),
       });
       const root = await session.submit('begin');
-      const completed = await root.wait({ until: 'request' });
+      const completed = await root.wait({ until: 'manual_tool' });
       if ('requests' in completed)
         throw new Error('Root exposed child-only requests');
       expect(completed.finalOutput).toBe('root done');
@@ -1617,7 +1619,7 @@ describe('exact request waits with the native pending owner', () => {
       );
       for (const child of children) {
         if (!child.turn) throw new Error('Expected a live issued child Turn');
-        const batch = await child.turn.wait({ until: 'request' });
+        const batch = await child.turn.wait({ until: 'manual_tool' });
         if (!('requests' in batch))
           throw new Error('Expected child manual request');
         expect(batch.turn).toBe(child.turn);
@@ -1632,7 +1634,7 @@ describe('exact request waits with the native pending owner', () => {
           `child ${child.id} done`,
         );
       }
-      expect(await root.wait({ until: 'request' })).toBe(completed);
+      expect(await root.wait({ until: 'manual_tool' })).toBe(completed);
       server.assertExhausted();
     } finally {
       await executor.close();

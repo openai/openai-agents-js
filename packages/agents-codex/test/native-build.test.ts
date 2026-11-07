@@ -716,7 +716,8 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           readFileSync(join(native, 'build-receipt.json')),
         ).toThrow();
       },
-      15_000,
+      // This fixture includes real download backoff and subprocess startup.
+      30_000,
     );
   },
 );

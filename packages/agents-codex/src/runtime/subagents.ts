@@ -7,10 +7,15 @@ import {
   type Turn,
   type TurnRequestWait,
   type Completed,
+  type PendingRequests,
+  type RequestWaitOptions,
+  type InteractionWaitOptions,
+  type TurnNeedsAttention,
 } from './session';
 import { NativeError, nativeError, enrichNativeError } from './native-error';
 import type { FunctionCallOutput, UserInput } from './input';
-import type { ManualToolReply } from './manual';
+import type { ManualToolReply, ManualToolRequest } from './manual';
+import type { Interaction } from './native-questions';
 import { tokenUsageInfo } from './run-events';
 import type { Observation, ObservationOptions } from './observation';
 export const subagentSchema = z
@@ -45,6 +50,32 @@ export let issueSubagent: (
   tryCancel: (turn: Turn<string>) => Promise<boolean>,
 ) => Subagent;
 
+/** A child can observe and await its exact native work; controls belong to Subagent. */
+export interface ChildTurn extends Pick<
+  Turn<string>,
+  'sessionId' | 'turnId' | 'submissionId' | 'childId' | 'instanceId' | 'events'
+> {
+  wait(): Promise<ChildCompleted>;
+  wait(
+    options: RequestWaitOptions,
+  ): Promise<ChildCompleted | ChildPendingRequests<ManualToolRequest>>;
+  wait(
+    options: RequestWaitOptions | InteractionWaitOptions,
+  ): Promise<ChildCompleted | ChildPendingRequests<Interaction>>;
+  waitForAttention(options?: {
+    signal?: AbortSignal;
+  }): Promise<
+    ChildCompleted | ChildPendingRequests<Interaction> | TurnNeedsAttention
+  >;
+}
+export type ChildCompleted = Omit<Completed<string>, 'turn'> & {
+  readonly turn: ChildTurn;
+};
+type ChildPendingRequests<RequestT extends Interaction> = Omit<
+  PendingRequests<string, string, RequestT>,
+  'turn'
+> & { readonly turn: ChildTurn };
+
 /** A captured descendant. Reading it never starts or resumes a native runtime. */
 export class Subagent {
   readonly id: string;
@@ -55,7 +86,7 @@ export class Subagent {
   readonly openedAt: number;
   readonly closedAt: number | null;
   readonly isLive: boolean;
-  readonly turn: Turn<string> | null;
+  readonly turn: ChildTurn | null;
   readonly #submit: (
     input: UserInput | ManualToolReply | FunctionCallOutput,
   ) => Promise<Turn<string>>;
@@ -90,7 +121,7 @@ export class Subagent {
 
   submit(
     input: UserInput | ManualToolReply | FunctionCallOutput,
-  ): Promise<Turn<string>> {
+  ): Promise<ChildTurn> {
     return this.#submit(input);
   }
 
@@ -100,8 +131,8 @@ export class Subagent {
    * False means native cancellation was not confirmed, including pending input.
    * Cleanup continues if the caller stops waiting; uncooperative callbacks can delay it.
    */
-  tryCancel(turn: Turn<string>): Promise<boolean> {
-    return this.#tryCancel(turn);
+  tryCancel(turn: ChildTurn): Promise<boolean> {
+    return this.#tryCancel(turn as Turn<string>);
   }
 }
 export const subagentsSchema = z.array(subagentSchema);
@@ -143,7 +174,7 @@ export function issueChildTurn(
     return Object.freeze({
       turn,
       finalOutput: result.final_output,
-      usage: tokenUsageInfo(result.usage),
+      threadUsage: tokenUsageInfo(result.usage),
       repairAttempts: Object.freeze([]),
     });
   };

@@ -1,7 +1,13 @@
 import { fileURLToPath } from 'node:url';
 import { jsonObject, type JsonObject } from './binding';
 import { interceptedCallInfo, type ToolCallInfo } from './call-metadata';
-import { invokeWithTimeout, toolIdentity, type ToolDecision } from './tools';
+import {
+  invokeWithTimeout,
+  toolIdentity,
+  toolRef,
+  type ToolDecision,
+  type ToolRef,
+} from './tools';
 import { webSearch, type WebSearch } from './web-search';
 import { captureHostedTool, type HostedTool } from './hosted-tools';
 import type { Environment } from './environment';
@@ -46,7 +52,8 @@ export interface MCPOptions<Context = unknown> {
   deferLoading?: boolean;
   name: string;
   tools: readonly string[];
-  approvalMode?: 'auto' | 'approve';
+  /** Follow native rules (default), or preapprove selected tools. Application approval still applies. */
+  approvalMode?: 'native' | 'preapproved';
   /** Inspect or replace arguments before native dispatch; has a 30-second deadline. */
   before?: (
     context: MCPCallContext<Context>,
@@ -69,7 +76,7 @@ abstract class MCP<Context> {
   readonly deferLoading: boolean;
   readonly name: string;
   readonly tools: readonly string[];
-  readonly approvalMode: 'auto' | 'approve';
+  readonly approvalMode: 'native' | 'preapproved';
   readonly startupTimeout: number;
   readonly executionTimeout: number;
   readonly before?: MCPOptions<Context>['before'];
@@ -97,8 +104,8 @@ abstract class MCP<Context> {
     this.deferLoading = options.deferLoading ?? false;
     this.name = options.name;
     this.tools = Object.freeze([...options.tools]);
-    this.approvalMode = options.approvalMode ?? 'auto';
-    if (!['auto', 'approve'].includes(this.approvalMode))
+    this.approvalMode = options.approvalMode ?? 'native';
+    if (!['native', 'preapproved'].includes(this.approvalMode))
       throw new TypeError('Invalid MCP approvalMode');
     this.startupTimeout = positive(options.startupTimeout ?? 10);
     this.executionTimeout = positive(options.executionTimeout ?? 60);
@@ -126,6 +133,17 @@ abstract class MCP<Context> {
     Object.defineProperty(this, 'transformResult', { enumerable: false });
     this.transformResultTimeout = options.transformResultTimeout;
     mcpToolNames([this]);
+  }
+
+  /** Select one declared raw MCP tool without exposing native name projection. */
+  tool(rawName: string): ToolRef {
+    const index = this.tools.indexOf(rawName);
+    if (index < 0)
+      throw new TypeError(
+        `MCP tool ${rawName} is not declared on server ${this.name}`,
+      );
+    const selected = mcpToolNames([this])[index]!;
+    return toolRef(selected.name, selected.namespace);
   }
 }
 
@@ -308,7 +326,7 @@ function mcpServerConfig(
     startup_readiness: 'connection',
     startup_timeout_sec: server.startupTimeout,
     tool_timeout_sec: server.executionTimeout,
-    ...(server.approvalMode === 'approve'
+    ...(server.approvalMode === 'preapproved'
       ? {
           tools: Object.fromEntries(
             server.tools.map((name) => [name, { approval_mode: 'approve' }]),

@@ -35,11 +35,11 @@ try {
 
 `await session.submit()` returns a Turn handle. Await `turn.wait()` for its completed result. Choose what a submission should do while another turn is active:
 
-- Ordinary `session.submit(input)` steers the active turn and returns it.
-- `session.submit(input, { ifBusy: 'reject' })` rejects a busy submission.
+- `session.submit(input)` starts an independent root and rejects while busy.
+- `turn.steer(input)` sends new input to that captured active root.
 - `session.enqueue()` queues independent work. See [queued turns](output.md#queue-independent-turns).
 
-Use `turn.wait()` to follow the captured turn. `session.wait()` follows the Session's current continuation.
+Use `turn.wait()` to follow the captured turn and preserve its result type. `session.wait()` remains a shortcut for default-output roots.
 
 ### Choose a cancellation lifetime
 
@@ -89,7 +89,7 @@ Both projections use the same bounded event buffer. A slow or reconnecting reade
 
 ### Steer a logical root or one native step
 
-Use `turn.steer(input)` when new input should follow that captured root through its owned continuations. Ordinary busy `session.submit(input)` follows the active default-output root too. Neither method starts an independent root; use `enqueue()` for separate work.
+Use `turn.steer(input)` when new input should follow that captured root through its owned continuations. `session.submit(input)` rejects while busy. Use `enqueue()` for separate work.
 
 With the current [source build](building.md), `turn.steerExact(input, expectedTurnId)` instead targets one native step. The `0.22.0-alpha.1` bundles do not provide this method. Capture the expected ID from the `turn_started` observation for the step that the application displayed. A root's `turn.turnId` remains its initial native ID even after a continuation starts, so that property cannot identify a later step.
 
@@ -103,11 +103,15 @@ Both steering methods control roots only, and output repair accepts no steering 
 
 `session.interrupt()` requests a force stop of the root turn. Set `mode: 'graceful'` to let current work settle, or `scope: 'all'` to include descendants. The method returns when the stop is accepted. `session.close()` waits for owned cleanup. Always close retained sessions. If cleanup fails, address the reported unsettled work and retry closing.
 
+### Stop background terminals
+
+`await session.executeCommand('stop-background-terminals')` queues cleanup for background terminals. Its receipt confirms that the operation was queued, not that every terminal exited. The foreground Turn continues. Use `turn.cancel()` to stop that captured task, or `session.interrupt()` for its documented scope.
+
 ### Cancel one root turn
 
 Use `await turn.cancel()` to stop the captured root and wait for cleanup. Force is the default. `await turn.cancel({ mode: 'graceful' })` lets admitted work settle and can still wait for a manual reply.
 
-Canceling a settled or superseded root is a no-op. Canceling a queued Turn withdraws only that entry. Canceling the active root preserves other queued roots, and independent native children can continue. The root-only `cancel()` and `steer()` methods are unavailable for child Turns.
+Canceling a settled or superseded root is a no-op. Canceling a queued Turn withdraws only that entry. Canceling the active root preserves other queued roots, and independent native children can continue. The root-only `cancel()`, `steer()`, and `steerExact()` methods are absent from `ChildTurn`, including the child handle returned in `ChildCompleted.turn`. Use `child.tryCancel(turn)` for a captured child.
 
 Close the Session to stop and join all work it owns. Completed effects remain.
 

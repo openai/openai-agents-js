@@ -591,7 +591,7 @@ impl EngineState {
             );
             self.ensure_no_live_owner(id).await?;
             if let Some(store) = &self.custom_store {
-                store.open(id, true).await?;
+                store.open_for_resume(id).await?;
             }
             let saved = self.read_stored_thread(id).await?;
             if startup.config.model.is_none() {

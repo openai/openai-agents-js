@@ -6,6 +6,7 @@ import { isZodObject } from '@openai/agents-core/utils';
 import { convertAgentOutputTypeToSerializable } from '@openai/agents-core/utils/internal';
 import {
   OutputValidationError,
+  outputValidationIssues,
   prepareOutput,
   type PreparedOutput,
 } from '../runtime/output';
@@ -59,9 +60,9 @@ export function captureOutput<C, O extends AgentOutputType>(
       parse(text) {
         try {
           return captured.processFinalOutput(text);
-        } catch {
-          // Retain native's redacted message and omit parser issues and causes.
-          throw new OutputValidationError(text);
+        } catch (error) {
+          // Preserve sensitive codes/paths only through deliberate diagnostic access.
+          throw new OutputValidationError(text, outputValidationIssues(error));
         }
       },
     },

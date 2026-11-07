@@ -341,7 +341,7 @@ describe('public live capabilities and checkpoint advice', () => {
       }).session();
       const output =
         mode === 'plain' ? z.string() : { mode, schema: z.string() };
-      const turn = await session.submitWithOutput('override', output);
+      const turn = await session.submit('override', { outputType: output });
       const request = await nextAction(session);
       expect(session.capabilities.get('nativeOutput').status).toBe('supported');
       expect(session.capabilities.get('promptedOutput').status).toBe('limited');
@@ -372,9 +372,11 @@ describe('public live capabilities and checkpoint advice', () => {
       provider,
       tools: [decision()],
     }).session();
-    const turn = await session.submitWithOutput('prompted', {
-      mode: 'prompted',
-      schema: z.string(),
+    const turn = await session.submit('prompted', {
+      outputType: {
+        mode: 'prompted',
+        schema: z.string(),
+      },
     });
     const request = await nextAction(session);
     await observed.settleManual();
@@ -448,7 +450,9 @@ describe('public live capabilities and checkpoint advice', () => {
       tools: [decision()],
       outputType: { mode: 'prompted', schema: z.string() },
     }).session();
-    const turn = await session.submitWithOutput('plain override', z.string());
+    const turn = await session.submit('plain override', {
+      outputType: z.string(),
+    });
     const request = await nextAction(session);
     expect(request.callId).toBe('successor-manual');
     expect(turn.turnId).toBe(initialId);
@@ -850,9 +854,11 @@ describe('public live capabilities and checkpoint advice', () => {
       expect(
         (
           await (
-            await session.submitWithOutput('native', {
-              mode: 'native',
-              schema: z.number(),
+            await session.submit('native', {
+              outputType: {
+                mode: 'native',
+                schema: z.number(),
+              },
             })
           ).wait()
         ).finalOutput,
@@ -860,9 +866,11 @@ describe('public live capabilities and checkpoint advice', () => {
       expect(
         (
           await (
-            await session.submitWithOutput('prompted', {
-              mode: 'prompted',
-              schema: z.number(),
+            await session.submit('prompted', {
+              outputType: {
+                mode: 'prompted',
+                schema: z.number(),
+              },
             })
           ).wait()
         ).finalOutput,
@@ -1080,9 +1088,11 @@ describe('public live capabilities and checkpoint advice', () => {
     };
     try {
       const turn = await bounded(
-        session.submitWithOutput('override', {
-          mode: 'native',
-          schema: z.string(),
+        session.submit('override', {
+          outputType: {
+            mode: 'native',
+            schema: z.string(),
+          },
         }),
         'submission',
       );

@@ -128,7 +128,7 @@ it.skipIf(process.platform !== 'linux')(
           session.submit('No root replacement.', { writableRoots: [] }),
         ).rejects.toThrow('storage mounts');
         await expect(
-          session.enqueue('No queued replacement.', undefined, {
+          session.enqueue('No queued replacement.', {
             writableRoots: [],
           }),
         ).rejects.toThrow('storage mounts');

@@ -125,7 +125,7 @@ it('selects native MCP tools and applies the captured async result transform bef
         name: 'fixture',
         url: `http://127.0.0.1:${address.port}/mcp`,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         async transformResult(info: MCPResultContext<typeof context>, result) {
           invocation = info;
           expect(result.content).toEqual([

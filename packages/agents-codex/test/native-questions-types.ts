@@ -29,7 +29,7 @@ export async function questionTypes(
   const childId: string | null = approval.subagentId;
   const complete: Promise<Completed<string>> = turn.wait();
   const oldWait: Promise<Completed<string> | PendingRequests<string>> =
-    turn.wait({ until: 'request' });
+    turn.wait({ until: 'manual_tool' });
   const mixed: Promise<
     Completed<string> | PendingRequests<string, string, Interaction>
   > = turn.wait({ until: 'interaction' });
@@ -39,14 +39,19 @@ export async function questionTypes(
     session.pendingInteractions();
   const stream: AsyncIterableIterator<Interaction> = session.interactions();
   const negative: NativeQuestionReply = elicitation.reply(null);
-  const form: NativeQuestionReply = elicitation.reply({ value: 'answer' });
+  const form: NativeQuestionReply =
+    elicitation.mode === 'form'
+      ? elicitation.reply({ value: 'answer' })
+      : elicitation.reply(null);
   // Legacy form callbacks need no mode guard for an object reply.
   await agent.run('form input', {
-    onNativeQuestion: (request) =>
+    onInteraction: (request) =>
       request.type === 'approval_request'
         ? request.reply('deny')
         : request.type === 'elicitation_request'
-          ? request.reply({ value: 'answer' })
+          ? request.mode === 'form'
+            ? request.reply({ value: 'answer' })
+            : request.reply(null)
           : request.reply(null),
   });
   if (elicitation.mode === 'url') {
@@ -68,12 +73,15 @@ export async function questionTypes(
   // @ts-expect-error Persistent decisions are outside this limited approval API.
   approval.reply('allow_always');
   await agent.run('input', {
-    onInteraction: (request) => request.reply('manual result'),
-    onNativeQuestion: (request) =>
-      request.type === 'approval_request'
+    onInteraction: (request) => {
+      if (request.type === 'action_requested')
+        return request.reply('manual result');
+      return request.type === 'approval_request'
         ? request.reply('deny')
-        : request.reply(null),
+        : request.reply(null);
+    },
   });
+
   return {
     manualResponse,
     rawResponse,

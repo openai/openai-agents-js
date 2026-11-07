@@ -15,12 +15,54 @@ export type OutputSpec<Output> =
       readonly maxRetries?: number;
     };
 
-/** Local final-output validation failed. The message never includes rejected text. */
+/** Sensitive diagnostic from the captured validator; access with care like rawOutput. */
+export interface OutputValidationIssue {
+  readonly code: string;
+  /** Application-data path; native SDK response wrappers are omitted. Wrapper failures use []. */
+  readonly path: readonly PropertyKey[];
+}
+
+/** Local final-output validation failed. Ordinary error display omits sensitive data. */
 export class OutputValidationError extends Error {
-  constructor(readonly rawOutput: string) {
+  #rawOutput: string;
+  #issues: readonly OutputValidationIssue[];
+
+  constructor(
+    rawOutput: string,
+    issues: readonly OutputValidationIssue[] = [],
+  ) {
     super('Final output did not match the requested output type');
     this.name = 'OutputValidationError';
+    this.#rawOutput = rawOutput;
+    this.#issues = Object.freeze(
+      issues.map(({ code, path }) =>
+        Object.freeze({ code, path: Object.freeze([...path]) }),
+      ),
+    );
   }
+
+  /** Deliberate sensitive access to rejected provider output. */
+  get rawOutput(): string {
+    return this.#rawOutput;
+  }
+
+  /** Deliberate sensitive access: custom codes and field names can contain private data. */
+  get issues(): readonly OutputValidationIssue[] {
+    return this.#issues;
+  }
+}
+
+/** @internal Retain diagnostic codes and paths without retaining the validator exception. */
+export function outputValidationIssues(
+  error: unknown,
+  wrapped = false,
+): OutputValidationIssue[] {
+  return error instanceof z.ZodError
+    ? error.issues.map(({ code, path }) => ({
+        code,
+        path: wrapped ? (path[0] === 'response' ? path.slice(1) : []) : path,
+      }))
+    : [{ code: 'validation_error', path: [] }];
 }
 
 /** Portable schema meaning, not identity of application parser code. */
@@ -101,13 +143,16 @@ export function prepareOutput<Output>(
   }
   const schema = explicit ? output.schema : output;
   const validate =
-    (parse: (text: string) => Output) =>
+    (parse: (text: string) => Output, wrapped = false) =>
     (text: string): Output => {
       try {
         return parse(text);
-      } catch {
-        // Keep validator issues and rejected values out of messages and causes.
-        throw new OutputValidationError(text);
+      } catch (error) {
+        // Retain only explicitly accessed codes/paths, never the validator exception.
+        throw new OutputValidationError(
+          text,
+          outputValidationIssues(error, wrapped),
+        );
       }
     };
   if (explicit && output.mode === 'prompted') {
@@ -182,6 +227,6 @@ export function prepareOutput<Output>(
       return wrapped
         ? z.strictObject({ response: schema }).parse(value).response
         : schema.parse(value);
-    }),
+    }, wrapped),
   };
 }

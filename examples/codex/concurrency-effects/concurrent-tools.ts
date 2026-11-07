@@ -59,7 +59,7 @@ export async function runConcurrentTools() {
           await Promise.all(
             turns.map((turn) =>
               turn.wait({
-                until: 'request',
+                until: 'manual_tool',
                 signal: AbortSignal.timeout(10_000),
               }),
             ),

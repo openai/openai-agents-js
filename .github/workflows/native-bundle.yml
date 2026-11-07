@@ -66,12 +66,13 @@ jobs:
 
       - name: Build the native runtime
         run: node packages/agents-codex/scripts/native.mjs package
-      - name: Build the macOS WSS test fixture
-        if: runner.os == 'macOS'
+      - name: Build the executor test fixture
+        if: runner.os == 'Linux' || runner.os == 'macOS'
         working-directory: packages/agents-codex/native
         run: |
-          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_aarch64-apple-darwin.a.gz"
-          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_aarch64-apple-darwin.rs"
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
+          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_${native_host}.rs"
           cargo build --locked --release --example exec-server-fixture
           mkdir -p test-bin
           install -m 0755 "$CARGO_TARGET_DIR/release/examples/exec-server-fixture" test-bin/exec-server-fixture
@@ -81,7 +82,7 @@ jobs:
           INPUTS: ${{ inputs.inputs_hash }}
         run: |
           products=(native/codex.node native/build-receipt.json bin)
-          if [[ "$EXPECTED_PLATFORM" == darwin-arm64 ]]; then
+          if [[ "$EXPECTED_PLATFORM" == linux-x64 || "$EXPECTED_PLATFORM" == darwin-arm64 ]]; then
             products+=(native/test-bin/exec-server-fixture)
           fi
           tar -czf - "${products[@]}" > "$RUNNER_TEMP/native-$INPUTS-$EXPECTED_PLATFORM.tar.gz"

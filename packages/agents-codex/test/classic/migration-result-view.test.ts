@@ -67,6 +67,9 @@ describe('completed migration consumer view', () => {
     > = result;
     expect(consumer.finalOutput).toBe('Done.');
     expect(result.finalOutput).toBe(base.finalOutput);
+    expect(Symbol.asyncIterator in result).toBe(false);
+    expect(result).not.toHaveProperty('toStream');
+    expect(result).not.toHaveProperty('toTextStream');
     expect(result.rawResponses).toEqual(base.modelResponses);
     expect(result.rawResponses[0]).toBe(base.modelResponses[0]);
     expect(result.modelResponses).toBe(base.modelResponses);
@@ -114,21 +117,19 @@ describe('completed migration consumer view', () => {
       [{ type: 'model', response }],
     );
     await expect(result.completed).resolves.toBeUndefined();
-    const events = await Array.fromAsync(result);
+    const events = await Array.fromAsync(result.replayEvents());
     expect(
       events.map((event) => [
         event.type,
         event.type === 'run_item_stream_event' ? event.name : event.type,
       ]),
     ).toEqual([['run_item_stream_event', 'message_output_created']]);
-    const reader = result.toStream().getReader();
+    const reader = result.replayEvents().getReader();
     expect((await reader.read()).value).toMatchObject({
       name: 'message_output_created',
     });
     expect(await reader.read()).toEqual({ done: true, value: undefined });
-    expect(() => result.toTextStream()).toThrow(
-      'buffered semantic events only',
-    );
+    expect(result).not.toHaveProperty('toTextStream');
   });
 
   it('keeps terminal-tool output without adding a model message or response', () => {

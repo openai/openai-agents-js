@@ -345,7 +345,7 @@ describe('public native local profiles', () => {
           threadId,
           turnId,
           callId,
-          outcome: 'applied',
+          outcome: 'applied' as const,
           result: 'Verified in the application journal',
         },
       ],
@@ -573,7 +573,7 @@ describe('public native local profiles', () => {
     await expect(session.saveState()).rejects.toThrow('Local storage');
     await expect(session.suspend()).rejects.toThrow('Local storage');
     await expect(session.compact()).rejects.toThrow('settled open session');
-    await session.submit(request.reply('known receipt'));
+    await session.respond(request.reply('known receipt'));
     expect((await turn.wait()).finalOutput).toBe('answered');
     await session.close();
     await provider.close();

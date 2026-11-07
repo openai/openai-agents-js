@@ -52,7 +52,7 @@ async function main() {
     const result = await live.completed;
     // These SDK semantics are buffered until guards and physical cleanup pass.
     const semanticNames: string[] = [];
-    for await (const event of live) {
+    for await (const event of live.replayEvents()) {
       if (event.type === 'run_item_stream_event') {
         semanticNames.push(event.name);
       } else {

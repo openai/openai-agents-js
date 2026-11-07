@@ -106,8 +106,10 @@ async function capacityWrapper(
     if (first) throw first.error;
   };
   try {
+    // Exact gpt-5.5 entry from CODEX_REVISION 7c2ce90716335c889a5076ded9a630459f9c9899.
+    // Keep qualification independent of the producer's unshipped .upstream tree.
     const sourceUrl = new URL(
-      '../../native/.upstream/codex/codex-rs/models-manager/models.json',
+      './fixtures/history-counter-models.json',
       import.meta.url,
     );
     boundary(evidence, 'CATALOG_READ_BEGIN', fileURLToPath(sourceUrl));
@@ -878,7 +880,7 @@ describe(
         const turn = await session.submit('begin exact summary');
         const result = await unwrap(context.track(turn.wait()));
         expect(result.finalOutput).toBe('original done');
-        assertUsageInfo(result.usage, usageOf(scenario, true), true);
+        assertUsageInfo(result.threadUsage, usageOf(scenario, true), true);
         const responseObservations = (await collect(session.turns()))[0]
           .responses;
         expect(responseObservations).toHaveLength(2);
@@ -1151,15 +1153,15 @@ describe(
               timer.abort();
             }
             const events = await unwrap(watching);
-            context.evidence.details.completed = completed.usage;
+            context.evidence.details.completed = completed.threadUsage;
             expect(completed.finalOutput).toBe('root done');
             assertUsageInfo(
-              completed.usage,
+              completed.threadUsage,
               usageOf(scenario, true),
               scenario.name === 'large',
             );
-            expect(completed.usage.lastTokenUsage.inputTokens).toBe(7);
-            expect(completed.usage.lastTokenUsage.totalTokens).toBe(9);
+            expect(completed.threadUsage.lastTokenUsage.inputTokens).toBe(7);
+            expect(completed.threadUsage.lastTokenUsage.totalTokens).toBe(9);
             assertLiveUsage(events, turn.submissionId, usageOf(scenario));
             const turns = await collect(session.turns());
             context.evidence.details.history = turns;
@@ -1362,15 +1364,15 @@ describe(
               turnId: original.turnId,
               submissionId: original.submissionId,
             };
-            context.evidence.details.childCompleted = result.usage;
+            context.evidence.details.childCompleted = result.threadUsage;
             expect(result.turn).toBe(original);
             expect(result.finalOutput).toBe('child done');
             assertUsageInfo(
-              result.usage,
+              result.threadUsage,
               usageOf(scenario, true),
               scenario.name === 'large',
             );
-            expect(result.usage.lastTokenUsage.inputTokens).toBe(7);
+            expect(result.threadUsage.lastTokenUsage.inputTokens).toBe(7);
             assertLiveUsage(events, original.submissionId, usageOf(scenario));
             const turns = await collect(
               session.turns({ subagentId: child.id }),
@@ -1645,9 +1647,8 @@ describe(
               await collect(second.session.turns()),
             );
             context.evidence.details.firstRestoredHistory = restoredTurns;
-            const continuing = await second.session.submit(
-              action1.reply('approved first'),
-            );
+            const continuing = second.session.restoredTurn!;
+            await second.session.respond(action1.reply('approved first'));
             const continuingWait = context.track(continuing.wait());
             expect(
               (
@@ -1710,14 +1711,14 @@ describe(
               { turnId, outcome: third.pending! },
             );
             expect(server.requests).toHaveLength(2);
-            const finalTurn = await third.session.submit(
-              action2.reply('approved second'),
-            );
+            const finalTurn = third.session.restoredTurn!;
+            await third.session.respond(action2.reply('approved second'));
             const completed = await unwrap(context.track(finalTurn.wait()));
-            context.evidence.details.finalCompletedUsage = completed.usage;
+            context.evidence.details.finalCompletedUsage =
+              completed.threadUsage;
             expect(completed.finalOutput).toBe('manual done');
-            expect(completed.usage?.lastTokenUsage.inputTokens).toBe(5);
-            expect(completed.usage?.lastTokenUsage.totalTokens).toBe(6);
+            expect(completed.threadUsage?.lastTokenUsage.inputTokens).toBe(5);
+            expect(completed.threadUsage?.lastTokenUsage.totalTokens).toBe(6);
             const firstNativeUsage = context.evidence.observations[0].find(
               (event) =>
                 event.type === 'usage_updated' &&

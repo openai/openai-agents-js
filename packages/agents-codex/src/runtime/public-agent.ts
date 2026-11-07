@@ -1,3 +1,4 @@
+import type { SessionPersistenceOptions } from './persistence-options';
 import { captureTracing } from './tracing-context';
 import type { TraceOptions } from './telemetry';
 import {
@@ -30,8 +31,7 @@ import {
 } from './environment-source';
 import type { UserInput } from './input';
 import { nativeInput } from './input';
-import type { ManualToolReply, ManualToolRequest } from './manual';
-import type { NativeQuestion, NativeQuestionReply } from './native-questions';
+import type { InteractionHandler } from './native-questions';
 import {
   ChatGPTAppsMCP,
   isHostedRegistration,
@@ -48,7 +48,7 @@ import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
-import { captureReconciledCalls, type ReconciledCall } from './local-recovery';
+import { captureReconciledCalls } from './local-recovery';
 import { captureTools, toolIdentity, type Tool } from './tools';
 import { validateMaxModelSteps, type OperationOptions } from './session';
 import type {
@@ -69,7 +69,9 @@ export interface AgentOptions<Context = undefined, Output = string> {
   programmaticToolCalling?: boolean;
 }
 
-export interface SessionOptions<Context = undefined> {
+export interface SessionBaseOptions<Context = undefined> {
+  /** Answer live requests for this Session lifetime. Omission leaves replies to application readers. */
+  onInteraction?: InteractionHandler;
   tracing?: TraceOptions;
   /**
    * Explicit native parent; never read from ambient tracing or persisted state.
@@ -78,17 +80,12 @@ export interface SessionOptions<Context = undefined> {
    */
   parentTrace?: TraceContext | TraceContextHeaders | null;
   context?: Context;
-  state?: SessionState;
   /** Borrow this provider instead of the Agent provider. */
   provider?: NativeProvider;
   /** Override the Agent model for a new conversation; omit when restoring state. */
   model?: string;
   /** Merge defined keys over Agent settings; null serviceTier clears its override. */
   modelSettings?: ModelSettings;
-  storage?: LocalStorage | SessionStore;
-  resume?: string;
-  /** Application-confirmed outcomes for unknown calls on this local resume. */
-  reconciledCalls?: readonly ReconciledCall[];
   environment?: Environment<Context> | EnvironmentSource<Context>;
   /**
    * Load trusted UTF-8 instruction files in the supplied order at opening.
@@ -106,10 +103,14 @@ export interface SessionOptions<Context = undefined> {
   tools?: readonly Tool<Context>[];
 }
 
+export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
+  SessionPersistenceOptions;
+
 export interface RunOptions<Context = undefined> extends Omit<
-  SessionOptions<Context>,
-  'tools' | 'storage' | 'resume' | 'reconciledCalls'
+  SessionBaseOptions<Context>,
+  'tools'
 > {
+  state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
   /** Observed budget for a new direct native run with input. See {@link RunBudget}. */
@@ -120,14 +121,6 @@ export interface RunOptions<Context = undefined> extends Omit<
    */
   prepareRequest?: import('./session').OperationOptions<Context>['prepareRequest'];
   returnState?: boolean;
-  onNativeQuestion?: (
-    request: NativeQuestion,
-    signal: AbortSignal,
-  ) => NativeQuestionReply | Promise<NativeQuestionReply>;
-  onInteraction?: (
-    action: ManualToolRequest,
-    signal: AbortSignal,
-  ) => ManualToolReply | Promise<ManualToolReply>;
 }
 
 const ownedRun = Symbol('ownedRun');
@@ -149,6 +142,7 @@ interface CapturedOpening {
   readonly provider: NativeProvider;
   readonly apiKey: string | undefined;
   readonly context: unknown;
+  readonly onInteraction?: InteractionHandler;
 }
 type OwnedSessionOptions<Context> = SessionOptions<Context> & {
   [outputSelection]?: OutputSpec<unknown>;
@@ -192,10 +186,10 @@ export interface AgentOutput<Context = undefined, Output = string> {
 export type Session<Output = string, Context = any> = Pick<
   CoreSession<Output, Context>,
   | 'id'
+  | 'restoredTurn'
   | 'capabilities'
   | 'checkpointStatus'
   | 'submit'
-  | 'submitWithOutput'
   | 'enqueue'
   | 'respond'
   | 'wait'
@@ -311,6 +305,11 @@ export class Agent<Context = undefined, Output = string> {
       parentTrace: captureTraceContext(args[0]?.parentTrace),
     };
     options.signal?.throwIfAborted();
+    if (
+      options.onInteraction !== undefined &&
+      typeof options.onInteraction !== 'function'
+    )
+      throw new TypeError('onInteraction must be callable');
     let tracingCapture = captureTracing(options.tracing);
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
@@ -399,6 +398,7 @@ export class Agent<Context = undefined, Output = string> {
     const factory = this.session;
     const sessionOptions: OwnedSessionOptions<Context> = {
       context: options.context,
+      onInteraction: options.onInteraction,
       tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
       state: options.state,
@@ -415,11 +415,6 @@ export class Agent<Context = undefined, Output = string> {
       [ownedRun]: {
         input: preparedInput,
         prepareRequest: options.prepareRequest,
-        onNativeQuestion: options.onNativeQuestion,
-        onRequiredAction: options.onInteraction
-          ? (action, signal) =>
-              options.onInteraction!(action as ManualToolRequest, signal)
-          : undefined,
       },
     };
     const session = await factory.apply(this, [
@@ -966,6 +961,7 @@ export class Agent<Context = undefined, Output = string> {
         localResume: resume !== undefined,
         environment,
         context,
+        onInteraction: options.onInteraction,
         applicationAgent: this,
         output,
         restoredOutput: selection?.restoredOutput,
@@ -1022,6 +1018,7 @@ export class Agent<Context = undefined, Output = string> {
           provider,
           apiKey: lease.apiKey,
           context,
+          onInteraction: options.onInteraction,
         });
       // Without a captured key, native reopening would reread ambient auth.
       if (captured.apiKey !== undefined) {
@@ -1036,6 +1033,7 @@ export class Agent<Context = undefined, Output = string> {
             const restoredOptions: OwnedSessionOptions<any> = {
               parentTrace,
               context: captured.context,
+              onInteraction: captured.onInteraction,
               state,
               [deferredOpening]: {
                 opening: captured,

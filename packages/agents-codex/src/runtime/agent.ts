@@ -74,7 +74,7 @@ export async function openSession(
         throw new TypeError(
           'Use null input to resume a pending manual checkpoint',
         );
-      if (!oneShot.onRequiredAction) throw new InteractionRequired(saved);
+      if (!options.onInteraction) throw new InteractionRequired(saved);
     } else if (oneShot.input == null) {
       throw new TypeError(
         'Input is required unless resuming a pending manual checkpoint',
@@ -211,7 +211,7 @@ export async function openSession(
   if (
     oneShot &&
     manualTools.length &&
-    !oneShot.onRequiredAction &&
+    !options.onInteraction &&
     (!supportsManualCheckpoint(threadOptions, !!environment) ||
       options.output?.schema != null)
   )
@@ -391,6 +391,7 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
+      if (cleanupError === primary) throw primary;
       throw new AggregateError(
         [primary, cleanupError],
         'Native run failed and its owned cleanup is incomplete',
@@ -412,6 +413,7 @@ async function completeOwnedSession<Output>(
     try {
       await session.close();
     } catch (cleanupError) {
+      if (cleanupError === primary) throw primary;
       throw new AggregateError(
         [primary, cleanupError],
         'Run completion and cleanup failed',

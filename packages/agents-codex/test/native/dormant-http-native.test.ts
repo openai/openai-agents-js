@@ -104,7 +104,7 @@ async function peer(denied = false) {
         tools: ['find-record', 'read'],
         url,
         activation: 'operation',
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         ...options,
       });
     },
@@ -240,8 +240,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         ).toBe('empty');
         expect(http.connections).toBe(0);
         expect(
-          (await (await session.submit('find', { tools: [find] })).wait())
-            .finalOutput,
+          (
+            await (
+              await session.submit('find', {
+                tools: [declaration.tool('find-record')],
+              })
+            ).wait()
+          ).finalOutput,
         ).toBe('found');
         expect(http.effects).toEqual(['find-record']);
         expect(receipts.at(-1)!.result.policy_generation).toBe(1);
@@ -371,7 +376,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const pending = session.submit('activate', { tools: [find] });
         pending.catch(() => {});
         await http.initializing;
-        const queued = await session.enqueue('successor', undefined, {
+        const queued = await session.enqueue('successor', {
           tools: [read],
         });
         const result = queued.wait();
@@ -465,16 +470,15 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       try {
         expect(dormant.connections).toBe(0);
         expect(eager.methods).toContain('tools/list');
-        await (await session.enqueue('empty', undefined, { tools: [] })).wait();
+        await (await session.enqueue('empty', { tools: [] })).wait();
         expect(dormant.connections).toBe(0);
         expect(
           (
             await (
-              await session.submitWithOutput(
-                'json',
-                z.object({ ok: z.boolean() }),
-                { tools: [read] },
-              )
+              await session.submit('json', {
+                ...{ tools: [read] },
+                outputType: z.object({ ok: z.boolean() }),
+              })
             ).wait()
           ).finalOutput,
         ).toEqual({ ok: true });
@@ -635,13 +639,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         tools: [http.declaration()],
       }).session();
       try {
-        const active = await session.enqueue('activate', undefined, {
+        const active = await session.enqueue('activate', {
           tools: [find],
         });
         const outcome = active.wait();
         outcome.catch(() => {});
         await http.initializing;
-        const queued = await session.enqueue('successor', undefined, {
+        const queued = await session.enqueue('successor', {
           tools: [read],
         });
         const next = queued.wait();

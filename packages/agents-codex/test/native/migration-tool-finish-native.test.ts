@@ -1156,7 +1156,7 @@ describe('migration tool finish on the actual native loop', () => {
       void completed.catch(() => {});
       const live = await deadline.wait(starting);
       const completion = observeSettlement(live.completed);
-      const reader = live.toStream().getReader();
+      const reader = live.replayEvents().getReader();
       const firstSemantic = observeSettlement(
         reader.read().then((event) => {
           expectStreamCleanup(events);
@@ -1264,9 +1264,11 @@ describe('migration tool finish on the actual native loop', () => {
           throw error;
         }),
       );
-      const reader = live.toStream().getReader();
+      const reader = live.replayEvents().getReader();
       const first = observeSettlement(reader.read());
-      const independentSemantics = observeSettlement(Array.fromAsync(live));
+      const independentSemantics = observeSettlement(
+        Array.fromAsync(live.replayEvents()),
+      );
       await deadline.wait(beforeCompletion(entered.promise, live.completed));
       await deadline.wait(
         beforeCompletion(reader.cancel(reason), live.completed),
@@ -1328,8 +1330,12 @@ describe('migration tool finish on the actual native loop', () => {
       void completed.catch(() => {});
       const live = await deadline.wait(starting);
       const completion = observeSettlement(live.completed);
-      const semantic = observeSettlement(live.toStream().getReader().read());
-      const directSemantics = observeSettlement(Array.fromAsync(live));
+      const semantic = observeSettlement(
+        live.replayEvents().getReader().read(),
+      );
+      const directSemantics = observeSettlement(
+        Array.fromAsync(live.replayEvents()),
+      );
       const raw = live.unvalidatedRaw.getReader();
       // These are real tool-call Model frames, visible before final approval.
       expect(

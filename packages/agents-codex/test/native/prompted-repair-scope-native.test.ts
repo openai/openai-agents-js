@@ -73,7 +73,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           schema: report,
           maxRetries: 1,
         };
-        const queued = await session.enqueue('QUEUED_PROMPTED_ROOT', output);
+        const queued = await session.enqueue('QUEUED_PROMPTED_ROOT', {
+          outputType: output,
+        });
         expect(queued.turnId).toBeNull();
         output.maxRetries = 0;
         output.schema = z.object({ label: z.string().min(20) });
@@ -192,10 +194,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         provider,
         tools: [tool({ name: 'record', parameters: z.object({}), execute })],
       }).session();
-      const turn = await session.submitWithOutput('SCOPED_OVERRIDE_ROOT', {
-        mode: 'prompted',
-        schema: report,
-        maxRetries: 1,
+      const turn = await session.submit('SCOPED_OVERRIDE_ROOT', {
+        outputType: {
+          mode: 'prompted',
+          schema: report,
+          maxRetries: 1,
+        },
       });
       const completed = await turn.wait();
       expect(completed.turn).toBe(turn);

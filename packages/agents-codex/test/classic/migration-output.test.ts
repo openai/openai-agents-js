@@ -69,9 +69,18 @@ describe('migration captured output contract', () => {
     });
   });
 
-  it.each(['not-json-SENSITIVE', '{"answer":17}'])(
-    'retains native validation error redaction for rejected output %s',
-    (raw) => {
+  it.each([
+    {
+      raw: 'not-json-SENSITIVE',
+      issues: [{ code: 'validation_error', path: [] }],
+    },
+    {
+      raw: '{"answer":17}',
+      issues: [{ code: 'invalid_type', path: ['answer'] }],
+    },
+  ])(
+    'retains native validation error redaction for rejected output $raw',
+    ({ raw, issues }) => {
       const agent = new Agent({
         name: 'Reject',
         outputType: z.object({ answer: z.string() }).strict(),
@@ -84,6 +93,7 @@ describe('migration captured output contract', () => {
       } catch (error) {
         expect(error).toBeInstanceOf(OutputValidationError);
         expect((error as OutputValidationError).rawOutput).toBe(raw);
+        expect((error as OutputValidationError).issues).toEqual(issues);
         expect((error as Error).message).not.toContain(raw);
         expect((error as Error).cause).toBeUndefined();
       }
