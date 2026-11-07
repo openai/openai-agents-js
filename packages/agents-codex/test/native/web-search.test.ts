@@ -185,6 +185,7 @@ describe('captured native WebSearch', () => {
       const lease: ProviderLease = {
         failedOpeningCleanup: undefined,
         websocketsAllowed: false,
+        httpTransports: () => undefined,
         apiKey: 'synthetic-capture',
         config: {
           'model_providers.native_agent': {

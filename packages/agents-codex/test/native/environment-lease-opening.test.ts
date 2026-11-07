@@ -25,6 +25,7 @@ vi.mock('../../src/runtime/binding', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/runtime/binding')>()),
   binding: async () => ({
     _packaged_runtime: () => ({}),
+    _create_provider_http_transports: () => ({ close: () => undefined }),
     _validate_python_tool_declarations: () => undefined,
     _validate_application_instructions: () => undefined,
     create_engine: fixture.createEngine,

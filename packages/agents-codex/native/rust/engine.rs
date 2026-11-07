@@ -74,6 +74,9 @@ pub struct EngineState {
     pub(crate) service_config: Config,
     pub(crate) application_apps: Option<codex_mcp::ApplicationApps>,
     pub(crate) sentinel: Arc<RwLock<Option<(String, String, Option<String>)>>>,
+    pub(crate) transport_binding_sealed: AtomicBool,
+    pub(crate) provider_http_transports:
+        OnceLock<Arc<crate::provider_transports::ProviderTransports>>,
     pub(crate) interception: Arc<crate::native_interception::Boundary>,
     sentinel_transports: std::sync::Mutex<
         HashMap<
@@ -551,6 +554,8 @@ impl EngineState {
             service_config: config,
             application_apps: None,
             sentinel,
+            transport_binding_sealed: AtomicBool::new(false),
+            provider_http_transports: OnceLock::new(),
             sentinel_transports: std::sync::Mutex::new(HashMap::new()),
             interception,
             restored_creation_times: Mutex::new(HashMap::new()),
@@ -736,6 +741,7 @@ impl EngineState {
         instructions: Arc<options::ThreadInstructions>,
         local_resume_admission: Option<&crate::local_storage::LocalResumeAdmission<'_>>,
     ) -> anyhow::Result<NativeThread> {
+        self.seal_transport_binding();
         if let Some(application) = &self.application_apps {
             startup.thread_extension_init.insert(application.clone());
         }
@@ -1404,10 +1410,16 @@ impl EngineState {
         }
     }
 
+    fn seal_transport_binding(&self) {
+        let _binding = self.sentinel.write().expect("sentinel poisoned");
+        self.transport_binding_sealed.store(true, Ordering::Release);
+    }
+
     pub(crate) async fn build_startup(
         &self,
         options: options::ThreadOptions,
     ) -> anyhow::Result<(StartThreadOptions, Arc<options::ThreadInstructions>)> {
+        self.seal_transport_binding();
         self.interception.check_code_import_admission()?;
         ensure!(
             !self.closed.load(Ordering::Acquire),
@@ -1613,23 +1625,35 @@ impl EngineState {
             });
         }
         let factory = self.service_config.http_client_factory().clone();
-        let (transport, websocket) = self
+        let mut transports = self
             .sentinel_transports
             .lock()
-            .expect("sentinel transports poisoned")
-            .entry(no_redirects)
-            .or_insert_with(|| {
+            .expect("sentinel transports poisoned");
+        let (transport, websocket) = if let Some(cached) = transports.get(&no_redirects) {
+            cached.clone()
+        } else {
+            let shared = self.provider_http_transports.get().filter(|_| {
+                !self.sdk_selected_model
+                    && self.manager.auth_manager().auth_mode()
+                        == Some(codex_protocol::auth::AuthMode::ApiKey)
+                    && !factory.has_chatgpt_cookies()
+            });
+            let transport = if let Some(shared) = shared {
+                shared
+                    .transport(&factory, no_redirects, builder)
+                    .map_err(crate::native_error)?
+            } else {
                 let pool = codex_http_client::RouteAwareClientPool::with_builder(
                     factory.clone(),
                     codex_http_client::ClientRouteClass::Api,
                     builder,
                 );
-                (
-                    codex_http_client::ReqwestTransport::from_route_aware_client_pool(pool),
-                    crate::model_websocket::ConnectorCache::default(),
-                )
-            })
-            .clone();
+                codex_http_client::ReqwestTransport::from_route_aware_client_pool(pool)
+            };
+            let cached = (transport, crate::model_websocket::ConnectorCache::default());
+            transports.insert(no_redirects, cached.clone());
+            cached
+        };
         Ok(Arc::new(crate::NativeModelRoute {
             provider: codex_model_provider::create_model_provider(info, None),
             transport,

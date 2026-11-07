@@ -15,6 +15,7 @@ import { once } from 'node:events';
 import type {
   NativeModelResponse,
   NativeModelWebSocket,
+  _ProviderHttpTransports,
 } from '../../native/index.js';
 import {
   binding,
@@ -190,11 +191,11 @@ export class NativeProviderRoutes {
     this.enableWebsockets();
     return { config, runtime, apiKey };
   }
-  bindEngine(engine: Engine): void {
+  bindEngine(engine: Engine, transports?: _ProviderHttpTransports): void {
     if (!this.localOrigin)
       throw new NativeError('Model request carrier has not started');
     const grant = randomBytes(32).toString('base64url');
-    engine._sentinel_bind(this.localOrigin, grant, null);
+    engine._sentinel_bind(this.localOrigin, grant, null, transports ?? null);
     this.sentinelEngines.set(grant, engine);
   }
   /** Release only the retired engine's routing grants; the Session owns the carrier. */

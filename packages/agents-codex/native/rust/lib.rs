@@ -31,6 +31,7 @@ mod node_runtime;
 mod ops;
 mod options;
 mod provider_error;
+mod provider_transports;
 mod python_tools;
 mod recovery_guard;
 mod response_control;
@@ -216,6 +217,56 @@ impl<T> Drop for RuntimeOwned<T> {
     }
 }
 
+// Only an empty owner is created on Node; physical clients stay lazy in Core.
+#[napi(js_name = "_ProviderHttpTransports")]
+pub struct ProviderHttpTransports {
+    inner: RuntimeOwned<provider_transports::ProviderTransports>,
+    environment: usize,
+}
+
+impl ProviderHttpTransports {
+    fn for_engine(
+        &self,
+        env: &napi::Env,
+        engine: &RuntimeOwned<engine::EngineState>,
+    ) -> napi::Result<Arc<provider_transports::ProviderTransports>> {
+        if self.environment != env.raw() as usize || self.inner.runtime.id() != engine.runtime.id()
+        {
+            return Err(native_error(
+                "Provider transports belong to another Node runtime",
+            ));
+        }
+        self.inner.check_open().map_err(native_error)?;
+        Ok(Arc::clone(&self.inner))
+    }
+}
+
+#[napi]
+impl ProviderHttpTransports {
+    // Drops cached handles only. Core exposes no asynchronous transport drain.
+    #[napi]
+    pub fn close(&self) {
+        let _entered = self.inner.runtime.enter();
+        self.inner.close();
+    }
+}
+
+#[napi(js_name = "_create_provider_http_transports")]
+pub fn create_provider_http_transports(
+    env: napi::Env,
+    engine: &Engine,
+) -> napi::Result<ProviderHttpTransports> {
+    let engine = engine.current()?;
+    let _permit = engine.operation(false).map_err(native_error)?;
+    Ok(ProviderHttpTransports {
+        inner: RuntimeOwned {
+            value: Some(Arc::new(provider_transports::ProviderTransports::default())),
+            runtime: engine.runtime.clone(),
+        },
+        environment: env.raw() as usize,
+    })
+}
+
 #[napi(js_name = "Engine")]
 pub struct Engine {
     inner: Arc<std::sync::Mutex<EngineOwner>>,
@@ -290,15 +341,32 @@ impl Engine {
     #[napi(js_name = "_sentinel_bind")]
     pub fn _sentinel_bind(
         &self,
+        env: napi::Env,
         base: String,
         grant: String,
         excluded_base: Option<String>,
+        shared_transports: Option<&ProviderHttpTransports>,
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let _permit = inner.operation(false).map_err(native_error)?;
         let mut binding = inner.sentinel.write().expect("sentinel poisoned");
         if binding.is_some() || grant.is_empty() {
             return Err(native_error("Sentinel already bound or empty"));
+        }
+        if let Some(shared) = shared_transports {
+            if inner
+                .transport_binding_sealed
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(native_error(
+                    "Provider transports must bind before root startup",
+                ));
+            }
+            let shared = shared.for_engine(&env, &inner)?;
+            inner
+                .provider_http_transports
+                .set(shared)
+                .map_err(|_| native_error("Provider transports already bound"))?;
         }
         *binding = Some((base, grant, excluded_base));
         Ok(())
