@@ -1,14 +1,18 @@
 import {
   mkdir,
   mkdtemp,
+  open,
   readFile,
   rm,
   symlink,
+  truncate,
   unlink,
   writeFile,
 } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   PAGE_CHARS,
@@ -171,6 +175,128 @@ describe('application-owned native examples', () => {
       Buffer.from(original.replace('draft', 'reviewed'), 'utf8'),
     );
   });
+
+  it('continues dense searches without losing or repeating matches', async () => {
+    const { cwd } = await workspace();
+    const phrase = '🌿 needle ';
+    await writeFile(join(cwd, 'selected.txt'), phrase.repeat(38));
+    const documents = await SelectedDocuments.open({
+      root: cwd,
+      selected: { report: 'selected.txt' },
+    });
+    const offsets: number[] = [];
+    let offset: number | null = 0;
+    let revision: string | undefined;
+    const counts: number[] = [];
+    // Three calls suffice for 38 matches with a 16-match response limit.
+    for (let page = 0; page < 3 && offset !== null; page++) {
+      const result = await documents.search(
+        'report',
+        'needle',
+        offset,
+        revision,
+      );
+      revision = result.revision;
+      counts.push(result.matches.length);
+      for (const match of result.matches) {
+        expect(Array.from(match.text).length).toBeLessThanOrEqual(128);
+        offsets.push(match.offset);
+      }
+      offset = result.nextOffset;
+    }
+    expect(counts).toEqual([16, 16, 6]);
+    expect(offset).toBeNull();
+    // The emoji counts as one code point; each phrase occupies nine positions.
+    expect(offsets).toEqual(
+      Array.from({ length: 38 }, (_, index) => index * 9 + 2),
+    );
+  });
+
+  it('rejects files outside the selected root and invalid text inputs', async () => {
+    const { cwd, codex_home } = await workspace();
+    const outside = join(codex_home, 'outside.txt');
+    await writeFile(outside, 'Keep this file unchanged.');
+    await writeFile(join(cwd, 'invalid.txt'), Buffer.from([0xc3, 0x28]));
+    await writeFile(join(cwd, 'oversized.txt'), '');
+    await truncate(join(cwd, 'oversized.txt'), 16 * 1024 * 1024 + 1);
+    await mkdir(join(cwd, 'directory'));
+    const documents = await SelectedDocuments.open({
+      root: cwd,
+      selected: {
+        outside,
+        relativeOutside: relative(cwd, outside),
+        invalid: 'invalid.txt',
+        oversized: 'oversized.txt',
+        directory: 'directory',
+      },
+    });
+    await expect(documents.read('outside')).rejects.toThrow('selected path');
+    await expect(documents.read('relativeOutside')).rejects.toThrow(
+      'selected path',
+    );
+    await expect(documents.read('invalid')).rejects.toThrow();
+    await expect(documents.read('oversized')).rejects.toThrow('16 MiB');
+    await expect(documents.read('directory')).rejects.toThrow(
+      'regular text file',
+    );
+    expect(await readFile(outside, 'utf8')).toBe('Keep this file unchanged.');
+  });
+
+  it('rejects ambiguous edits without changing the file or blocking a later edit', async () => {
+    const { cwd } = await workspace();
+    const path = join(cwd, 'selected.txt');
+    await writeFile(path, 'Draft: repeat repeat.');
+    const documents = await SelectedDocuments.open({
+      root: cwd,
+      selected: { report: 'selected.txt' },
+      writable: ['report'],
+    });
+    const page = await documents.read('report');
+    await expect(
+      documents.revise('report', page.revision, 'repeat', 'replacement'),
+    ).rejects.toThrow('exactly once');
+    expect(await readFile(path, 'utf8')).toBe('Draft: repeat repeat.');
+    await documents.revise('report', page.revision, 'Draft:', 'Reviewed:');
+    expect(await readFile(path, 'utf8')).toBe('Reviewed: repeat repeat.');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a selected FIFO without waiting for a writer',
+    async () => {
+      const { cwd } = await workspace();
+      const path = join(cwd, 'selected.pipe');
+      execFileSync('mkfifo', [path], { stdio: 'pipe' });
+      const documents = await SelectedDocuments.open({
+        root: cwd,
+        selected: { pipe: 'selected.pipe' },
+      });
+      const read = documents.read('pipe');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const outcome = await Promise.race([
+          read.then(
+            () => 'unexpected success',
+            (error: Error) => error.message,
+          ),
+          new Promise<string>((resolve) => {
+            timer = setTimeout(
+              () => resolve('blocked waiting for a writer'),
+              1000,
+            );
+          }),
+        ]);
+        expect(outcome).toBe('Select a regular text file of at most 16 MiB');
+      } finally {
+        clearTimeout(timer);
+        // Release a regressed blocking open so it cannot leave a worker hanging.
+        await open(path, constants.O_WRONLY | constants.O_NONBLOCK).then(
+          (writer) => writer.close(),
+          (error: NodeJS.ErrnoException) => expect(error.code).toBe('ENXIO'),
+        );
+        await read.catch(() => undefined);
+      }
+    },
+  );
 
   it.each(['read_document', 'search_document', 'revise_document'])(
     'returns a stale revision through %s, then permits a fresh read and edit',
