@@ -32,13 +32,13 @@ Pass this environment to `agent.session({ environment })`. See [the complete exa
 
 The SDK validates the complete list before launching execution helpers or making model requests. It rejects unsupported fields without including their values in the error. You cannot replace `writableRoots` for a Session with active mounts, including through queued turns. Open a new Session to change its filesystem grants.
 
-The SDK must be able to list every source directory and inspect its entries. During preflight, the SDK traverses each source without following symlinks and collects files with multiple hard links. If it finds any, it scans the writable grants once for hard links to the same files, stopping at the first conflict. This costs a source-tree traversal and, when needed, a writable-tree traversal on each validation. The SDK rejects configurations when required inspection fails.
+The SDK must be able to list every source directory and inspect its entries. During preflight, the SDK traverses each source without following symlinks and collects files with multiple hard links. If it finds any, it scans the writable grants once for hard links to the same files, stopping at the first conflict. This costs a source-tree traversal and, when needed, a writable-tree traversal on each validation. The SDK rejects configurations when required inspection fails. Mounted sources may contain only regular files, directories, and symlink entries. Preflight rejects sockets, FIFOs, devices, and other special entries without opening them or following symlinks. A read-only bind alone does not prevent special-file IPC.
 
 ## Ownership and cancellation
 
 Your application owns the source directories. The SDK never deletes or changes ownership or permissions of mounted storage. Existing native process cleanup releases each command's mount namespace. Await Session close before releasing application resources; cancellation does not undo completed effects in writable directories.
 
-The application host and source ancestors must remain trusted. Keep sources and filesystem topology stable while a Session uses them. The hard-link check covers existing aliases at preflight; a trusted host must not introduce new writable aliases afterward. Read-only access restricts native commands, including children and continued processes. It does not restrict application function callbacks, which run with the Node process's permissions. It also does not prevent another host process from changing the data. A mount is not a snapshot or a backup.
+The application host and source ancestors must remain trusted. Keep sources and filesystem topology stable while a Session uses them. The source checks run at preflight; a trusted host must not introduce special entries or new writable hard-link aliases afterward. Read-only access restricts native commands, including children and continued processes. It does not restrict application function callbacks, which run with the Node process's permissions. It also does not prevent another host process from changing the data. A mount is not a snapshot or a backup.
 
 ## Save, restore, and reconnect
 

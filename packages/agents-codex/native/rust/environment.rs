@@ -453,7 +453,7 @@ impl EnvironmentOptions {
             linked_mount_files.extend(linked_local_protected_files(
                 &canonical,
                 false,
-                /*allow_missing*/ false,
+                /*storage_mount*/ true,
                 "Could not inspect storage mount files for hard links",
             )?);
             mounts.push(path);
@@ -1039,7 +1039,7 @@ fn check_local_protected_path(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let mut linked_files =
-            linked_local_protected_files(&resolved, private_runtime_home, true, resolve_error)?;
+            linked_local_protected_files(&resolved, private_runtime_home, false, resolve_error)?;
         if path == sqlite.home() {
             linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
             linked_files.extend(linked_relocated_rollout_files(roots, &resolved)?);
@@ -1236,7 +1236,7 @@ fn linked_relocated_sqlite_files(
 fn linked_local_protected_files(
     root: &Path,
     private_runtime_home: bool,
-    allow_missing: bool,
+    storage_mount: bool,
     resolve_error: &'static str,
 ) -> Result<Vec<PathBuf>> {
     use std::fs;
@@ -1247,7 +1247,7 @@ fn linked_local_protected_files(
     while let Some(directory) = directories.pop() {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
-            Err(error) if allow_missing && error.kind() == ErrorKind::NotFound => continue,
+            Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
             Err(error) => return Err(error).context(resolve_error),
         };
         for entry in entries {
@@ -1257,7 +1257,7 @@ fn linked_local_protected_files(
             // must remain enumerable, so their scans cannot ignore missing entries.
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
-                Err(error) if allow_missing && error.kind() == ErrorKind::NotFound => continue,
+                Err(error) if !storage_mount && error.kind() == ErrorKind::NotFound => continue,
                 Err(error) => return Err(error).context(resolve_error),
             };
             // The SDK creates and owns this temporary directory. Public
@@ -1265,6 +1265,13 @@ fn linked_local_protected_files(
             ensure!(
                 !private_runtime_home || !metadata.file_type().is_symlink(),
                 "symbolic links inside the private native runtime home are unsupported"
+            );
+            ensure!(
+                !storage_mount
+                    || metadata.is_dir()
+                    || metadata.is_file()
+                    || metadata.file_type().is_symlink(),
+                "Storage mounts support only regular files, directories, and symlink entries"
             );
             if metadata.is_dir() {
                 directories.push(entry.path());
@@ -2097,21 +2104,70 @@ mod tests {
         let missing = temporary.path().join("disappeared-directory");
         let error = "Could not inspect storage mount files for hard links";
         assert_eq!(
-            linked_local_protected_files(&missing, false, false, error)
+            linked_local_protected_files(&missing, false, true, error)
                 .unwrap_err()
                 .to_string(),
             error
         );
         // Private SDK state retains its existing allowance for absent files.
         assert!(
-            linked_local_protected_files(&missing, false, true, error)
+            linked_local_protected_files(&missing, false, false, error)
                 .unwrap()
                 .is_empty()
         );
         let file = temporary.path().join("not-a-directory");
         std::fs::write(&file, "caller-owned").unwrap();
-        assert!(linked_local_protected_files(&file, false, false, error).is_err());
+        assert!(linked_local_protected_files(&file, false, true, error).is_err());
         assert_eq!(std::fs::read_to_string(file).unwrap(), "caller-owned");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn storage_mount_scan_accepts_data_tree_and_rejects_special_entries() {
+        use std::fs;
+        use std::os::unix::fs::{FileTypeExt, MetadataExt, symlink};
+        use std::os::unix::net::UnixListener;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("storage");
+        fs::create_dir(&source).unwrap();
+        let nested = source.join("nested");
+        fs::create_dir(&nested).unwrap();
+        let marker = nested.join("marker");
+        fs::write(&marker, "caller-owned").unwrap();
+        let outside = temporary.path().join("outside-socket");
+        let _outside_listener = UnixListener::bind(&outside).unwrap();
+        symlink(&outside, nested.join("unfollowed-socket-link")).unwrap();
+        let error = "Could not inspect storage mount files";
+        // The symlink entry is allowed; its special-file target is not inspected.
+        assert!(
+            linked_local_protected_files(&source, false, true, error)
+                .unwrap()
+                .is_empty()
+        );
+        let endpoint = source.join("socket");
+        let _listener = UnixListener::bind(&endpoint).unwrap();
+        let original = fs::symlink_metadata(&endpoint).unwrap();
+        let rejected = linked_local_protected_files(&source, false, true, error).unwrap_err();
+        assert!(
+            rejected
+                .to_string()
+                .contains("support only regular files, directories, and symlink entries")
+        );
+        // The shared collector must not add a special-file restriction to
+        // private-state scans, which use their existing symlink rules.
+        assert!(
+            linked_local_protected_files(&source, false, false, error)
+                .unwrap()
+                .is_empty()
+        );
+        let after = fs::symlink_metadata(&endpoint).unwrap();
+        assert!(after.file_type().is_socket());
+        assert_eq!(
+            (after.dev(), after.ino(), after.mode()),
+            (original.dev(), original.ino(), original.mode())
+        );
+        assert_eq!(fs::read_to_string(marker).unwrap(), "caller-owned");
     }
 
     #[test]

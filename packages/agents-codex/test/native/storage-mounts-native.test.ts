@@ -1,13 +1,17 @@
+import { execFileSync } from 'node:child_process';
 import {
   link,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -233,6 +237,80 @@ it.skipIf(process.platform !== 'linux').each(['cwd', 'writableRoots'] as const)(
       expect((await stat(marker)).mode).toBe(originalMode);
       expect((await stat(source)).mode).toBe(sourceMode);
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(process.platform !== 'linux').each(['fifo', 'socket'] as const)(
+  'rejects a mounted %s before startup without changing caller storage',
+  async (kind) => {
+    const { root, cwd, source } = await directories();
+    const marker = join(source, 'marker');
+    const originalMode = (await stat(marker)).mode;
+    const sourceMode = (await stat(source)).mode;
+    const endpoint = join(source, 'endpoint');
+    const server = new ModelServer([]);
+    let connections = 0;
+    const endpointServer = createServer((socket) => {
+      connections++;
+      socket.destroy();
+    });
+    try {
+      if (kind === 'fifo') {
+        execFileSync('mkfifo', [endpoint], { stdio: 'pipe' });
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          endpointServer.once('error', reject);
+          endpointServer.listen(endpoint, resolve);
+        });
+      }
+      const before = await lstat(endpoint);
+      expect(kind === 'fifo' ? before.isFIFO() : before.isSocket()).toBe(true);
+      // Symlinks remain entries; validation must not follow or open targets.
+      await symlink(endpoint, join(source, 'endpoint-link'));
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        model: 'gpt-5',
+        provider,
+        instructions: 'Do not start.',
+      });
+      await expect(
+        agent
+          .session({
+            environment: Environment.local({
+              cwd,
+              mounts: [{ source, destination: source, strategy: 'local_bind' }],
+            }),
+          })
+          .then(async (session) => {
+            await session.close();
+            throw new Error('Unexpectedly admitted a special storage entry');
+          }),
+      ).rejects.toThrow(
+        /Storage mounts support only regular files, directories, and symlink entries/,
+      );
+      expect(server.requests).toHaveLength(0);
+      expect(connections).toBe(0);
+      const after = await lstat(endpoint);
+      expect([after.dev, after.ino, after.mode]).toEqual([
+        before.dev,
+        before.ino,
+        before.mode,
+      ]);
+      expect(kind === 'fifo' ? after.isFIFO() : after.isSocket()).toBe(true);
+      expect(
+        (await lstat(join(source, 'endpoint-link'))).isSymbolicLink(),
+      ).toBe(true);
+      expect(await readFile(marker, 'utf8')).toBe('caller-owned');
+      expect((await stat(marker)).mode).toBe(originalMode);
+      expect((await stat(source)).mode).toBe(sourceMode);
+    } finally {
+      if (endpointServer.listening) {
+        await new Promise<void>((resolve, reject) => {
+          endpointServer.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
       await rm(root, { recursive: true, force: true });
     }
   },
