@@ -138,7 +138,12 @@ it.each(['wrong-host', 'untrusted-ca', 'forbidden'] as const)(
   20_000,
 );
 
-it('retains a real remote effect after losing its start acknowledgement without replay', async () => {
+// Strict process effects require a native sandbox outside the outer Codex sandbox.
+it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)('retains a real remote effect after losing its start acknowledgement without replay', async () => {
   const executor = await startPublicExecutor({
     dropStartReplyAfter: { path: 'started.txt', contents: 'started' },
   });
@@ -213,7 +218,12 @@ it('retains a real remote effect after losing its start acknowledgement without 
   }
 }, 25_000);
 
-it('isolates colliding executor calls, credentials and roots while a sibling closes', async () => {
+// Strict process effects require a native sandbox outside the outer Codex sandbox.
+it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)('isolates colliding executor calls, credentials and roots while a sibling closes', async () => {
   const left = await startPublicExecutor({
     authorization: 'Bearer synthetic-left-executor',
   });

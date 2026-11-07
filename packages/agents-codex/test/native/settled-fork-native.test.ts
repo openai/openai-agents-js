@@ -313,7 +313,12 @@ describe('settled root fork', () => {
     }
   });
 
-  it('refuses a live root terminal without terminating it, then forks after the source retires it', async () => {
+  // Strict process effects require a native sandbox outside the outer Codex sandbox.
+  it.skipIf(
+    process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+      process.env.GITHUB_ACTIONS !== 'true' &&
+      process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+  )('refuses a live root terminal without terminating it, then forks after the source retires it', async () => {
     const executor = await startPublicExecutor();
     let processId = 0;
     const { server, provider } = await setup([
