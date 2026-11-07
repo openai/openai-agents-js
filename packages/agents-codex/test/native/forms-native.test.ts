@@ -3,12 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
 import { afterEach, expect, it, vi } from 'vitest';
-import {
-  Agent,
-  HttpMCP,
-  NativeProvider,
-  type ElicitationRequest,
-} from '../../src';
+import { Agent, HttpMCP, NativeProvider, type FormRequest } from '../../src';
 import {
   binding,
   type JsonObject,
@@ -292,11 +287,14 @@ for (const mode of ['form', 'openai/form', 'openaiForm'] as const) {
         : { profile: { names: ['Ada', 'Grace'] } };
     const f = await formPeer(mode, schema, mode === 'openaiForm' ? '873' : 873);
     let count = 0;
-    let issued: ElicitationRequest | undefined;
+    let issued: FormRequest | undefined;
     try {
       const result = await f.agent.run('Read the fixture', {
-        onNativeQuestion(request, signal) {
-          if (request.type !== 'elicitation_request')
+        onInteraction(request, signal) {
+          if (request.type === 'action_requested')
+            throw new Error('Unexpected manual request');
+
+          if (request.type !== 'elicitation_request' || request.mode !== 'form')
             throw new Error('Expected form');
           issued = request;
           count++;
@@ -384,8 +382,11 @@ for (const mode of ['form', 'openai/form', 'openaiForm'] as const) {
     let count = 0;
     try {
       const result = await f.agent.run('Read the fixture', {
-        onNativeQuestion(request) {
-          if (request.type !== 'elicitation_request')
+        onInteraction(request) {
+          if (request.type === 'action_requested')
+            throw new Error('Unexpected manual request');
+
+          if (request.type !== 'elicitation_request' || request.mode !== 'form')
             throw new Error('Expected form');
           count++;
           expect(request.schema).toEqual(schema);
@@ -453,8 +454,11 @@ for (const mode of ['form', 'openai/form', 'openaiForm'] as const) {
     let count = 0;
     try {
       const result = await f.agent.run('Read the fixture', {
-        onNativeQuestion(request) {
-          if (request.type !== 'elicitation_request')
+        onInteraction(request) {
+          if (request.type === 'action_requested')
+            throw new Error('Unexpected manual request');
+
+          if (request.type !== 'elicitation_request' || request.mode !== 'form')
             throw new Error('Expected form');
           count++;
           expect(request.schema).toEqual(schema);
@@ -492,7 +496,11 @@ it('keeps an invalid real form reply live, rejects foreign delivery and consumes
     const turn = await session.submit('Read the fixture');
     const next = await interactions.next();
     await interactions.return?.();
-    if (next.done || next.value.type !== 'elicitation_request')
+    if (
+      next.done ||
+      next.value.type !== 'elicitation_request' ||
+      next.value.mode !== 'form'
+    )
       throw new Error('Expected form');
     const request = next.value;
     expect(() => request.reply({ value: '' })).toThrow('failed validation');
@@ -540,7 +548,11 @@ it('keeps a real URI form live after malformed authority answers and delivers on
     const turn = await session.submit('Read the fixture');
     const next = await interactions.next();
     await interactions.return?.();
-    if (next.done || next.value.type !== 'elicitation_request')
+    if (
+      next.done ||
+      next.value.type !== 'elicitation_request' ||
+      next.value.mode !== 'form'
+    )
       throw new Error('Expected URI form');
     const request = next.value;
     for (const value of [
@@ -576,8 +588,11 @@ it('delivers null as a real form decline without content', async () => {
   const f = await formPeer();
   try {
     const result = await f.agent.run('Read the fixture', {
-      onNativeQuestion(request) {
-        if (request.type !== 'elicitation_request')
+      onInteraction(request) {
+        if (request.type === 'action_requested')
+          throw new Error('Unexpected manual request');
+
+        if (request.type !== 'elicitation_request' || request.mode !== 'form')
           throw new Error('Expected form');
         return request.reply(null);
       },
@@ -598,7 +613,7 @@ it('refuses an unsupported real extension form schema without a callback', async
   let count = 0;
   try {
     const result = await f.agent.run('Read the fixture', {
-      onNativeQuestion() {
+      onInteraction() {
         count++;
         throw new Error('Unsupported schema reached the application');
       },
@@ -621,7 +636,11 @@ for (const mode of ['force', 'graceful'] as const) {
       try {
         const a = await session.submit('Read A');
         const first = await interactions.next();
-        if (first.done || first.value.type !== 'elicitation_request')
+        if (
+          first.done ||
+          first.value.type !== 'elicitation_request' ||
+          first.value.mode !== 'form'
+        )
           throw new Error('Expected registered A form');
         const requestA = first.value;
         const preparedA = requestA.reply({ value: 'A value' });
@@ -642,7 +661,11 @@ for (const mode of ['force', 'graceful'] as const) {
 
         const b = await session.submit('Read B');
         const second = await interactions.next();
-        if (second.done || second.value.type !== 'elicitation_request')
+        if (
+          second.done ||
+          second.value.type !== 'elicitation_request' ||
+          second.value.mode !== 'form'
+        )
           throw new Error('Expected newly registered B form');
         const requestB = second.value;
         expect(requestB).not.toBe(requestA);
@@ -686,7 +709,11 @@ it('expires a pending real form and its prepared reply when Session closes', asy
     const turn = await session.submit('Read the fixture');
     const next = await interactions.next();
     await interactions.return?.();
-    if (next.done || next.value.type !== 'elicitation_request')
+    if (
+      next.done ||
+      next.value.type !== 'elicitation_request' ||
+      next.value.mode !== 'form'
+    )
       throw new Error('Expected pending form');
     const request = next.value;
     const prepared = request.reply({ value: 'prepared before close' });
@@ -715,13 +742,16 @@ it('expires a pending real form and its prepared reply when Session closes', asy
 it('preserves a form handler failure and expires its request before run rejects', async () => {
   const f = await formPeer();
   const failure = new Error('Application form collection failed');
-  let issued: ElicitationRequest | undefined;
+  let issued: FormRequest | undefined;
   let callbackSignal: AbortSignal | undefined;
   try {
     await expect(
       f.agent.run('Read the fixture', {
-        async onNativeQuestion(request, signal) {
-          if (request.type !== 'elicitation_request')
+        async onInteraction(request, signal) {
+          if (request.type === 'action_requested')
+            throw new Error('Unexpected manual request');
+
+          if (request.type !== 'elicitation_request' || request.mode !== 'form')
             throw new Error('Expected form');
           issued = request;
           callbackSignal = signal;
@@ -757,7 +787,11 @@ it('publishes a real extension form only after its owned schema preparation comp
       expect(f.replies).toEqual([]);
       gate.release();
       const next = await interactions.next();
-      if (next.done || next.value.type !== 'elicitation_request')
+      if (
+        next.done ||
+        next.value.type !== 'elicitation_request' ||
+        next.value.mode !== 'form'
+      )
         throw new Error('Expected prepared extension form');
       expect(next.value.schema).toEqual(extensionSchema);
       const reply = next.value.reply({ profile: { names: ['Ada'] } });
@@ -944,7 +978,11 @@ for (const { label, mode, escalate, repeatInterrupt } of [
 
         const b = await session.submit('Read B');
         const next = await nextQuestion;
-        if (next.done || next.value.type !== 'elicitation_request')
+        if (
+          next.done ||
+          next.value.type !== 'elicitation_request' ||
+          next.value.mode !== 'form'
+        )
           throw new Error('Expected newly prepared B form');
         // A never issued a wrapper; only B's fresh registration becomes visible.
         expect(next.value).toMatchObject({

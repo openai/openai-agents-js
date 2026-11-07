@@ -60,6 +60,14 @@ it.each([0, 2])(
       beforeStep,
     });
     await expect(turn.wait()).rejects.toMatchObject(exceeded);
+    const attention = await turn.waitForAttention();
+    expect(attention).toMatchObject({
+      type: 'needs_attention',
+      reason: 'budget_exceeded',
+      error: exceeded,
+    });
+    if (!('type' in attention)) throw new Error('Expected the budget stop');
+    await expect(turn.wait()).rejects.toBe(attention.error);
     expect(beforeStep).toHaveBeenCalledTimes(maxRequests);
     expect(server.requests).toHaveLength(maxRequests);
     expect(effects).toBe(maxRequests);
@@ -272,7 +280,7 @@ it('validates before opening or allocating a root and preserves the independent 
   expect(opening).not.toHaveBeenCalled();
   await using session = await agent.session();
   await expect(
-    session.enqueue('invalid', undefined, { budget: {} }),
+    session.enqueue('invalid', { budget: {} }),
   ).rejects.toBeInstanceOf(TypeError);
   const stopped = await session.submit('step cap', {
     maxModelSteps: 0,
@@ -282,7 +290,7 @@ it('validates before opening or allocating a root and preserves the independent 
     code: 'max_model_steps_exceeded',
   });
   expect(server.requests).toHaveLength(0);
-  const turn = await session.enqueue('go', undefined, {
+  const turn = await session.enqueue('go', {
     budget: { maxRequests: 1 },
   });
   await expect(turn.wait()).resolves.toMatchObject({ finalOutput: 'finished' });
@@ -310,7 +318,7 @@ it('preserves the budget through a warm reply, refuses active capture, and reset
   const budget = { maxRequests: 1 };
   await using session = await agent.session();
   const turn = await session.submit('go', { budget });
-  const batch = await turn.wait({ until: 'request' });
+  const batch = await turn.wait({ until: 'manual_tool' });
   if (!('requests' in batch)) throw new Error('Expected a manual request');
   const request = decision.match(batch.requests[0]);
   if (!request) throw new Error('Expected the decision request');
@@ -409,15 +417,14 @@ it.each([1, 2])(
       instructions: 'Answer.',
       provider,
     }).session();
-    const turn = await session.submitWithOutput(
-      'go',
-      {
+    const turn = await session.submit('go', {
+      ...{ budget: { maxRequests }, maxModelSteps: 1 },
+      outputType: {
         mode: 'prompted',
         schema: z.object({ count: z.number() }),
         maxRetries: 1,
       },
-      { budget: { maxRequests }, maxModelSteps: 1 },
-    );
+    });
     if (maxRequests === 1)
       await expect(turn.wait()).rejects.toMatchObject(exceeded);
     else

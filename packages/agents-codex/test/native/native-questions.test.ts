@@ -864,7 +864,10 @@ it('waits for an owned MCP approval, preserves manual-only observation, and cons
     expect((await stream.next()).value).toBe(request);
     await stream.return?.();
     const observer = new AbortController();
-    const aborted = turn.wait({ until: 'request', signal: observer.signal });
+    const aborted = turn.wait({
+      until: 'manual_tool',
+      signal: observer.signal,
+    });
     observer.abort(new Error('observer only'));
     await expect(aborted).rejects.toThrow('observer only');
     expect(f.calls).toHaveLength(0);
@@ -899,7 +902,10 @@ it('runs the native-question callback with the same issued reply protocol', asyn
   try {
     let count = 0;
     const result = await f.agent.run('Change the fixture', {
-      onNativeQuestion(request, signal) {
+      onInteraction(request, signal) {
+        if (request.type === 'action_requested')
+          throw new Error('Unexpected manual request');
+
         expect(signal.aborted).toBe(false);
         if (request.type !== 'approval_request')
           throw new Error('Expected approval');
@@ -919,7 +925,10 @@ it('denies an approval without invoking the MCP tool', async () => {
   const f = await fixture();
   try {
     const result = await f.agent.run('Change the fixture', {
-      onNativeQuestion(request) {
+      onInteraction(request) {
+        if (request.type === 'action_requested')
+          throw new Error('Unexpected manual request');
+
         if (request.type !== 'approval_request')
           throw new Error('Expected approval');
         return request.reply('deny');
@@ -973,7 +982,7 @@ for (const formOrigin of ['previous', 'current'] as const) {
     try {
       f.trace('agent_run_wait');
       const result = await f.agent.run('Call lookup twice', {
-        onNativeQuestion() {
+        onInteraction() {
           issued++;
           throw new Error('An unsolicited form must not issue a grant');
         },
@@ -1045,7 +1054,10 @@ for (const route of ['exec', 'patch'] as const) {
             headers: executor.headers,
             tools: ['exec_command', 'write_stdin', 'apply_patch'],
           }),
-          async onNativeQuestion(request) {
+          async onInteraction(request) {
+            if (request.type === 'action_requested')
+              throw new Error('Unexpected manual request');
+
             if (request.type !== 'approval_request')
               throw new Error('Expected approval');
             await expect(access(target)).rejects.toThrow();
@@ -1176,7 +1188,11 @@ it.each(['early', 'late'] as const)(
       const turn = await session.submit('Use lookup');
       const item = await cursor.next();
       await cursor.return?.();
-      if (item.done || item.value.type !== 'elicitation_request')
+      if (
+        item.done ||
+        item.value.type !== 'elicitation_request' ||
+        item.value.mode !== 'url'
+      )
         throw new Error('Expected URL');
       const request = item.value;
       expect(request.mode).toBe('url');
@@ -1223,7 +1239,7 @@ it.each(['early', 'late'] as const)(
   30_000,
 );
 
-it('URL consent deadline ignores late delivery of an already-consented native completion', async () => {
+it('explicit URL expiry ignores late delivery of an already-consented native completion', async () => {
   const { NativeThread: Thread } = await binding();
   const originalRead = Thread.prototype._next_session_events;
   const originalStatus = Thread.prototype._native_url_completion_status;
@@ -1279,7 +1295,11 @@ it('URL consent deadline ignores late delivery of an already-consented native co
     finished.catch(() => {});
     const item = await cursor.next();
     await cursor.return?.();
-    if (item.done || item.value.type !== 'elicitation_request')
+    if (
+      item.done ||
+      item.value.type !== 'elicitation_request' ||
+      item.value.mode !== 'url'
+    )
       throw new Error('Expected URL');
     const request = item.value;
     const prepared = request.replyUrlAccept();
@@ -1294,6 +1314,7 @@ it('URL consent deadline ignores late delivery of an already-consented native co
     });
     await probeCaptured.promise;
     await timedOut;
+    await request.expire();
     expect(pendingAfterCancellation).toBe(false);
     await f.questionAnswered;
     expect(f.formReplies).toMatchObject([
@@ -1318,7 +1339,7 @@ it('URL consent deadline ignores late delivery of an already-consented native co
   }
 }, 30_000);
 
-it('URL consent timeout refuses a foreign completion and a prepared late reply', async () => {
+it('explicit URL expiry refuses a foreign completion and a prepared late reply', async () => {
   const f = await fixture({ urlQuestion: true, urlCompletion: true });
   let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
   try {
@@ -1327,7 +1348,11 @@ it('URL consent timeout refuses a foreign completion and a prepared late reply',
     const turn = await session.submit('Use lookup');
     const item = await cursor.next();
     await cursor.return?.();
-    if (item.done || item.value.type !== 'elicitation_request')
+    if (
+      item.done ||
+      item.value.type !== 'elicitation_request' ||
+      item.value.mode !== 'url'
+    )
       throw new Error('Expected URL');
     const request = item.value;
     const late = request.replyUrlAccept();
@@ -1337,6 +1362,7 @@ it('URL consent timeout refuses a foreign completion and a prepared late reply',
     await expect(
       request.waitForCompletion({ timeoutMs: 100 }),
     ).rejects.toMatchObject({ name: 'TimeoutError' });
+    await request.expire();
     await f.questionAnswered;
     expect(f.formReplies).toMatchObject([
       { id: 873, result: { action: 'cancel' } },
@@ -1361,7 +1387,7 @@ it('URL consent timeout refuses a foreign completion and a prepared late reply',
   }
 }, 30_000);
 
-it('URL consent deadline retires the accepted native lifecycle after its root turn', async () => {
+it('explicit URL expiry retires the accepted native lifecycle after its root turn', async () => {
   const { NativeThread: Thread } = await binding();
   const read = Thread.prototype._next_session_events;
   const retired = Promise.withResolvers<void>();
@@ -1393,7 +1419,11 @@ it('URL consent deadline retires the accepted native lifecycle after its root tu
     const turn = await session.submit('Use lookup');
     const item = await cursor.next();
     await cursor.return?.();
-    if (item.done || item.value.type !== 'elicitation_request')
+    if (
+      item.done ||
+      item.value.type !== 'elicitation_request' ||
+      item.value.mode !== 'url'
+    )
       throw new Error('Expected URL');
     const request = item.value;
     await session.respond(request.replyUrlAccept());
@@ -1402,6 +1432,7 @@ it('URL consent deadline retires the accepted native lifecycle after its root tu
     await expect(
       request.waitForCompletion({ timeoutMs: 100 }),
     ).rejects.toMatchObject({ name: 'TimeoutError' });
+    await request.expire();
     await retired.promise;
     await f.completeUrl();
     await expect(
@@ -1428,7 +1459,11 @@ it('URL consent for a required-URL tool error does not invent an RPC reply or re
     const turn = await session.submit('Use lookup');
     const item = await cursor.next();
     await cursor.return?.();
-    if (item.done || item.value.type !== 'elicitation_request')
+    if (
+      item.done ||
+      item.value.type !== 'elicitation_request' ||
+      item.value.mode !== 'url'
+    )
       throw new Error('Expected URL');
     const request = item.value;
     await session.respond(request.replyUrlAccept());
@@ -1458,7 +1493,11 @@ it('URL consent close retires completion observers and joins the original owner'
     settled.catch(() => {});
     const item = await cursor.next();
     await cursor.return?.();
-    if (item.done || item.value.type !== 'elicitation_request')
+    if (
+      item.done ||
+      item.value.type !== 'elicitation_request' ||
+      item.value.mode !== 'url'
+    )
       throw new Error('Expected URL');
     const request = item.value;
     await session.respond(request.replyUrlAccept());
@@ -1542,9 +1581,12 @@ it('URL consent uses the callback and matched completion over native stdio', asy
         }),
       ],
     });
-    let issued: import('../../src').ElicitationRequest | undefined;
+    let issued: import('../../src').UrlRequest | undefined;
     const result = await agent.run('Use lookup', {
-      onNativeQuestion(request) {
+      onInteraction(request) {
+        if (request.type === 'action_requested')
+          throw new Error('Unexpected manual request');
+
         if (request.type !== 'elicitation_request' || request.mode !== 'url')
           throw new Error('Expected URL');
         issued = request;
@@ -1743,6 +1785,7 @@ it.each(['complete', 'cancel'] as const)(
       if (
         item.done ||
         item.value.type !== 'elicitation_request' ||
+        item.value.mode !== 'url' ||
         !item.value.subagentId
       )
         throw new Error('Expected captured child URL');
@@ -1814,7 +1857,11 @@ it('keeps session-scoped URL declines outside exact-turn waits', async () => {
     const item = await stream.next();
     f.trace('interaction_received');
     await stream.return?.();
-    if (item.done || item.value.type !== 'elicitation_request')
+    if (
+      item.done ||
+      item.value.type !== 'elicitation_request' ||
+      item.value.mode !== 'url'
+    )
       throw new Error('Expected URL request');
     const request = item.value;
     expect(request).toMatchObject({
@@ -1931,15 +1978,9 @@ it('preserves the manual-checkpoint refusal before opening an MCP profile', asyn
         }),
       ],
     });
-    await expect(
-      agent.run('Begin', {
-        onNativeQuestion(request) {
-          return request.type === 'approval_request'
-            ? request.reply('deny')
-            : request.reply(null);
-        },
-      }),
-    ).rejects.toBeInstanceOf(InteractionRequired);
+    await expect(agent.run('Begin')).rejects.toBeInstanceOf(
+      InteractionRequired,
+    );
     expect(f.methods).toEqual([]);
     expect(f.model.requests).toEqual([]);
   } finally {
@@ -2003,7 +2044,10 @@ it('answers an actual Core approval for the selected host stdio MCP tool', async
     });
     let answered = 0;
     const result = await agent.run('Change the fixture', {
-      async onNativeQuestion(request) {
+      async onInteraction(request) {
+        if (request.type === 'action_requested')
+          throw new Error('Unexpected manual request');
+
         if (request.type !== 'approval_request')
           throw new Error('Expected approval');
         await expect(access(calls)).rejects.toThrow();
@@ -2326,8 +2370,14 @@ it('keeps original child tracing through question reply and physical handler cle
                 headers: executor.headers,
                 tools: ['exec_command', 'write_stdin', 'apply_patch'],
               }),
-              onNativeQuestion: async (request) => {
-                if (request.type !== 'elicitation_request')
+              onInteraction: async (request) => {
+                if (request.type === 'action_requested')
+                  throw new Error('Unexpected manual request');
+
+                if (
+                  request.type !== 'elicitation_request' ||
+                  request.mode !== 'form'
+                )
                   throw new Error('Expected child form');
                 expect(request.subagentId).not.toBeNull();
                 check();
@@ -2378,3 +2428,136 @@ it('keeps original child tracing through question reply and physical handler cle
     await telemetry.forceFlush();
   }
 }, 60_000);
+
+it('dispatches a Session-scoped URL through a retained handler and preserves post-root completion', async () => {
+  const f = await fixture({ urlQuestion: true, urlCompletion: true });
+  let request: import('../../src').UrlRequest | undefined;
+  let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
+  try {
+    session = await f.agent.session({
+      onInteraction(interaction) {
+        if (
+          interaction.type !== 'elicitation_request' ||
+          interaction.mode !== 'url'
+        )
+          throw new Error('Expected URL');
+        request = interaction;
+        expect(interaction.turnId).toBeNull();
+        expect(interaction.submissionId).toBeNull();
+        return interaction.replyUrlAccept();
+      },
+    });
+    const root = await session.submit('Use lookup');
+    expect((await root.wait()).finalOutput).toBe('done');
+    if (!request) throw new Error('Expected handler request');
+    const short = request.waitForCompletion({ timeoutMs: 1 });
+    await expect(short).rejects.toMatchObject({ name: 'TimeoutError' });
+    const long = request.waitForCompletion({ timeoutMs: 5000 });
+    await f.completeUrl();
+    await expect(long).resolves.toBeUndefined();
+    expect(f.formReplies).toHaveLength(1);
+    expect(f.calls).toHaveLength(1);
+  } finally {
+    await session?.close();
+    await f.close();
+  }
+}, 30_000);
+
+it.each(['throws', 'missing_reply'] as const)(
+  'fails Session-scoped handler %s without admitting queued work',
+  async (kind) => {
+    const f = await fixture({ urlQuestion: true, urlCompletion: true });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const problem = new Error('Application consent failed');
+    let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
+    try {
+      session = await f.agent.session({
+        async onInteraction() {
+          entered.resolve();
+          await release.promise;
+          if (kind === 'throws') throw problem;
+          return undefined as never;
+        },
+      });
+      const root = await session.submit('Use lookup');
+      const failedRoot = expect(root.wait()).rejects.toThrow(
+        kind === 'throws' ? problem.message : 'issued reply',
+      );
+      await entered.promise;
+      const queued = await session.enqueue('Must not reach the model');
+      const failedQueue = expect(queued.wait()).rejects.toThrow(
+        kind === 'throws' ? problem.message : 'issued reply',
+      );
+      release.resolve();
+      await failedRoot;
+      await failedQueue;
+      await expect(session.close()).rejects.toThrow(
+        kind === 'throws' ? problem.message : 'issued reply',
+      );
+      expect(f.model.requests).toHaveLength(1);
+      for (const reply of f.formReplies)
+        expect(reply.result?.action).not.toBe('accept');
+    } finally {
+      release.resolve();
+      await session?.close().catch(() => {});
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+it('rejects a sibling Session reply and preserves that sibling authority', async () => {
+  const foreign = await fixture({ urlQuestion: true, urlCompletion: true });
+  const failing = await fixture({
+    urlQuestion: true,
+    urlCompletion: true,
+  });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let source: Awaited<ReturnType<typeof foreign.agent.session>> | undefined;
+  let destination:
+    Awaited<ReturnType<typeof failing.agent.session>> | undefined;
+  try {
+    source = await foreign.agent.session();
+    const sourceTurn = await source.submit('Use lookup');
+    const cursor = source.interactions();
+    const item = await cursor.next();
+    await cursor.return?.();
+    if (
+      item.done ||
+      item.value.type !== 'elicitation_request' ||
+      item.value.mode !== 'url'
+    )
+      throw new Error('Expected sibling URL');
+    const reply = item.value.replyUrlAccept();
+    destination = await failing.agent.session({
+      async onInteraction() {
+        entered.resolve();
+        await release.promise;
+        return reply;
+      },
+    });
+    const root = await destination.submit('Use lookup');
+    const failedRoot = expect(root.wait()).rejects.toThrow('foreign');
+    await entered.promise;
+    const queued = await destination.enqueue('Must not start');
+    const failedQueue = expect(queued.wait()).rejects.toThrow('foreign');
+    release.resolve();
+    await failedRoot;
+    await failedQueue;
+    await expect(destination.close()).rejects.toThrow('foreign');
+    expect(failing.model.requests).toHaveLength(1);
+    await source.respond(reply);
+    expect((await sourceTurn.wait()).finalOutput).toBe('done');
+    expect(foreign.formReplies).toMatchObject([
+      { result: { action: 'accept' } },
+    ]);
+  } finally {
+    release.resolve();
+    await destination?.close().catch(() => {});
+    await source?.close();
+    await failing.close();
+    await foreign.close();
+  }
+}, 30_000);

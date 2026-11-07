@@ -8,7 +8,7 @@ afterEach(() => ModelServer.closeAll());
 
 it('excludes unselected native questions and independently unselected messages from root registration and dispatch', async () => {
   const execute = vi.fn(() => 'must not run');
-  const onNativeQuestion = vi.fn(() => {
+  const onInteraction = vi.fn(() => {
     throw new Error('An unselected tool must not request a question grant.');
   });
   const unselected = [
@@ -37,7 +37,7 @@ it('excludes unselected native questions and independently unselected messages f
   });
   // Agent.run joins its Session before provider disposal and model closure.
   expect(
-    (await agent.run('Probe the unselected names.', { onNativeQuestion }))
+    (await agent.run('Probe the unselected names.', { onInteraction }))
       .finalOutput,
   ).toBe('All unselected calls were refused.');
   expect(model.requests).toHaveLength(2);
@@ -55,7 +55,7 @@ it('excludes unselected native questions and independently unselected messages f
     expect(outputs.find((item) => item.call_id === name)?.output).toBe(
       `unsupported call: ${name}`,
     );
-  expect(onNativeQuestion).not.toHaveBeenCalled();
+  expect(onInteraction).not.toHaveBeenCalled();
   expect(execute).not.toHaveBeenCalled();
   model.assertExhausted();
 }, 20_000);

@@ -48,6 +48,7 @@ const snapshotSchema = z.strictObject({
       'connection_lost',
       'rate_limited',
       'quota_blocked',
+      'budget_exceeded',
     ])
     .optional(),
   steering: z

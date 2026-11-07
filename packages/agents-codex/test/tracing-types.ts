@@ -26,7 +26,7 @@ export async function tracingTypes(agent: Agent, session: Session) {
     tracing: { parent: handle },
     ifBusy: 'reject',
   });
-  await session.enqueue('input', undefined, { tracing: options });
+  await session.enqueue('input', { tracing: options });
   await session.executeCommand('/compact', { tracing: options });
   const processor: TraceProcessor = {
     onEvent: async (event) => {

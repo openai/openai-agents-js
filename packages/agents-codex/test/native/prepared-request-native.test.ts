@@ -634,7 +634,7 @@ it('rejects a new request editor before restoring an admitted manual turn', asyn
   });
   await using session = await agent.session();
   const turn = await session.submit('go');
-  const pending = await turn.wait({ until: 'request' });
+  const pending = await turn.wait({ until: 'manual_tool' });
   expect(pending).toHaveProperty('requests');
   const state = await session.suspend();
   await session.close();
@@ -682,7 +682,7 @@ it('refuses active manual checkpoint readiness and export after preparation sett
       return undefined;
     },
   });
-  const pending = await turn.wait({ until: 'request' });
+  const pending = await turn.wait({ until: 'manual_tool' });
   if (!('requests' in pending)) throw new Error('Expected manual request');
   expect((await session.checkpointStatus({ kind: 'manualWait' })).status).toBe(
     'notReady',
@@ -1238,10 +1238,16 @@ it('rejects correction-enabled Session defaults and per-operation overrides befo
     provider,
   }).session();
   await expect(
-    plain.submitWithOutput('override', outputType, { prepareRequest: editor }),
+    plain.submit('override', {
+      ...{ prepareRequest: editor },
+      outputType: outputType,
+    }),
   ).rejects.toThrow('output correction attempts');
   await expect(
-    plain.enqueue('queued override', outputType, { prepareRequest: editor }),
+    plain.enqueue('queued override', {
+      ...{ prepareRequest: editor },
+      outputType: outputType,
+    }),
   ).rejects.toThrow('output correction attempts');
   expect(server.requests).toHaveLength(0);
   expect(editor).not.toHaveBeenCalled();

@@ -101,14 +101,14 @@ it.each([1, 2])(
         return [decision];
       },
     });
-    const batch = await turn.wait({ until: 'request' });
+    const batch = await turn.wait({ until: 'manual_tool' });
     if (!('requests' in batch))
       throw new Error('Expected the original request');
     expect(batch.requests).toHaveLength(1);
     const request = decision.match(batch.requests[0]);
     if (!request) throw new Error('Expected the original decision');
     expect(request.callId).toBe('budget-decision');
-    const again = await turn.wait({ until: 'request' });
+    const again = await turn.wait({ until: 'manual_tool' });
     if (!('requests' in again)) throw new Error('Expected the held request');
     const repeated = decision.match(again.requests[0]);
     expect(repeated).toMatchObject({
@@ -213,7 +213,7 @@ it('keeps preparation indices through live steering and its original manual repl
     await entered.promise;
     await turn.steer(marker);
     release.resolve();
-    const batch = await turn.wait({ until: 'request' });
+    const batch = await turn.wait({ until: 'manual_tool' });
     if (!('requests' in batch))
       throw new Error('Expected the successor request');
     expect(batch.turn).toBe(turn);
@@ -256,7 +256,7 @@ it.each([1, 2])(
     });
     await using session = await agent.session();
     const turn = await session.submit('go', { maxModelSteps });
-    const batch = await turn.wait({ until: 'request' });
+    const batch = await turn.wait({ until: 'manual_tool' });
     expect(batch).toHaveProperty('requests');
     const state = parseSessionState(JSON.stringify(await session.suspend()));
     await session.close();
@@ -269,6 +269,9 @@ it.each([1, 2])(
     const resumed = agent.run(null, {
       state,
       onInteraction(action) {
+        if (action.type !== 'action_requested')
+          throw new Error('Unexpected native request');
+
         return decision.match(action)!.reply('approved');
       },
     });

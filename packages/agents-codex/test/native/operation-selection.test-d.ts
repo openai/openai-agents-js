@@ -42,12 +42,12 @@ export async function operationSelectionContracts() {
   });
   expectTypeOf(selected).toEqualTypeOf<Promise<Turn<string>>>();
   expectTypeOf(
-    session.enqueue('go', undefined, {
+    session.enqueue('go', {
       tools: [toolRef('a'), toolRef('lookup', 'mcp__reports')],
     }),
   ).toEqualTypeOf<Promise<Turn<string, string | null>>>();
   expectTypeOf(
-    session.submitWithOutput('go', z.number(), { tools: [] }),
+    session.submit('go', { ...{ tools: [] }, outputType: z.number() }),
   ).toEqualTypeOf<Promise<Turn<number>>>();
   const incompatible = tool({
     name: 'incompatible',

@@ -99,7 +99,7 @@ it('reports sparse HTTP limits before usage and keeps the latest usable response
       finish.resolve();
       const result = await turn.wait();
       expect(result.finalOutput).toBe('done');
-      expect(result.usage?.totalTokenUsage.totalTokens).toBe(7);
+      expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(7);
       expect(session.rateLimits()).toEqual(second.snapshot);
     } finally {
       update.resolve();
@@ -181,10 +181,12 @@ it.each([false, true])(
         model: 'gpt-5',
         provider,
       }).session();
-      const turn = await session.submitWithOutput('Reply.', {
-        mode: 'prompted',
-        schema: z.object({ label: z.string().min(2) }),
-        maxRetries: 1,
+      const turn = await session.submit('Reply.', {
+        outputType: {
+          mode: 'prompted',
+          schema: z.object({ label: z.string().min(2) }),
+          maxRetries: 1,
+        },
       });
       const events = turn.events();
       try {

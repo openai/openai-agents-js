@@ -67,7 +67,7 @@ describe('FIFO root enqueue', () => {
         content: [{ type: 'input_text' as const, text: 'B frozen' }],
       };
       const output = { mode: 'native' as const, schema: z.number() };
-      const b = await session.enqueue(input, output);
+      const b = await session.enqueue(input, { outputType: output });
       const c = await session.enqueue('C');
       expectTypeOf(a).toEqualTypeOf<Turn<string, string | null>>();
       expectTypeOf(b).toEqualTypeOf<Turn<number, string | null>>();
@@ -87,7 +87,7 @@ describe('FIFO root enqueue', () => {
         'not another root',
         erased,
       );
-      await expect(rejected).rejects.toThrow('ifBusy must be steer or reject');
+      await expect(rejected).rejects.toThrow('submit rejects busy work');
       await expect(
         session.update({ instructions: 'changed' }),
       ).rejects.toThrow();
@@ -376,7 +376,7 @@ describe('FIFO root enqueue', () => {
         break;
       }
     expect(request).toBeDefined();
-    const b = await session.enqueue('B', z.number());
+    const b = await session.enqueue('B', { outputType: z.number() });
     const c = await session.enqueue('C');
     await expect(session.suspend()).rejects.toThrow('queued');
     const defaultResult = session.wait();
@@ -406,8 +406,10 @@ describe('FIFO root enqueue', () => {
     }).session();
     try {
       const a = await session.enqueue('A', {
-        mode: 'prompted',
-        schema: z.number(),
+        outputType: {
+          mode: 'prompted',
+          schema: z.number(),
+        },
       });
       const ar = expect(a.wait()).rejects.toThrow('output type');
       const b = await session.enqueue('B');
@@ -689,10 +691,12 @@ describe('FIFO root enqueue', () => {
       }).session();
       try {
         const a = await session.enqueue('A', {
-          mode: 'prompted',
-          schema: z
-            .object({ response: z.number() })
-            .transform((value) => value.response),
+          outputType: {
+            mode: 'prompted',
+            schema: z
+              .object({ response: z.number() })
+              .transform((value) => value.response),
+          },
         });
         await entered.promise;
         const b = await session.enqueue('B');
@@ -730,13 +734,13 @@ async function queueTypes(
   session: Awaited<ReturnType<Agent['session']>>,
   schema: OutputSpec<number> | undefined,
 ) {
-  const optional = await session.enqueue('optional', schema);
+  const optional = await session.enqueue('optional', { outputType: schema });
   expectTypeOf(optional).toEqualTypeOf<Turn<string | number, string | null>>();
   const ordinary = await session.submit('ordinary');
   expectTypeOf(ordinary.turnId).toEqualTypeOf<string>();
   // @ts-expect-error Queue intent has its own entrypoint.
   session.submit('queue', { ifBusy: 'queue' });
   // @ts-expect-error The admitted output method keeps its two-argument contract.
-  session.submitWithOutput('count', z.number(), { ifBusy: 'queue' });
+  session.submit('count', { ...{ ifBusy: 'queue' }, outputType: z.number() });
 }
 void queueTypes;

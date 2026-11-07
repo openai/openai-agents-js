@@ -2,6 +2,8 @@ import {
   Agent,
   Runner,
   type Completed,
+  type ChildTurn,
+  type ElicitationRequest,
   type FunctionTool,
   type Session,
 } from '../../src';
@@ -42,4 +44,29 @@ export async function replaceContextualTool(
   await outputOnly.update({ tools: [accountTool] });
   // @ts-expect-error Replacement tools receive the session's original context.
   await session.update({ tools: [cartTool] });
+}
+
+// Child result handles never regain unsupported root controls.
+export async function childControls(child: ChildTurn) {
+  const completed = await child.wait();
+  // @ts-expect-error Root cancellation is not a child capability.
+  child.cancel();
+  // @ts-expect-error JS child steering is not supported.
+  child.steer('new input');
+  // @ts-expect-error Exact root steering is not a child capability.
+  child.steerExact('new input', 'native-id');
+  // @ts-expect-error Completed.turn keeps the child view.
+  completed.turn.cancel();
+}
+
+export function elicitationModes(request: ElicitationRequest) {
+  if (request.mode === 'form') {
+    // @ts-expect-error Forms have no URL completion observer.
+    request.waitForCompletion();
+    // @ts-expect-error Forms cannot grant URL consent.
+    request.replyUrlAccept();
+  } else {
+    // @ts-expect-error URL replies cannot contain form answers.
+    request.reply({ answer: true });
+  }
 }

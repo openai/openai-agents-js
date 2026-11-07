@@ -534,6 +534,15 @@ it.each([
         nativeAgents: new NativeAgents({
           beforeStep: observe,
         }),
+        onInteraction:
+          callback === 'manual'
+            ? async (action) => {
+                await observe();
+                const request = manual.match(action);
+                if (!request) throw new Error('Expected manual request');
+                return request.reply('done');
+              }
+            : undefined,
       },
       {},
       events,
@@ -562,16 +571,7 @@ it.each([
         },
       },
       [probe],
-      callback === 'manual'
-        ? {
-            input: 'run',
-            onRequiredAction: async (action) => {
-              await observe();
-              const request = manual.match(action)!;
-              return request.reply('done');
-            },
-          }
-        : undefined,
+      callback === 'manual' ? { input: 'run' } : undefined,
     );
     let childToken: string | undefined;
     try {
@@ -1110,7 +1110,7 @@ it('captures tracing and writable roots together before queued admission', async
     roots[0] = '/changed';
     const first = await active;
     const nextRoots = ['/queued'];
-    const queued = session.enqueue('next', undefined, {
+    const queued = session.enqueue('next', {
       writableRoots: nextRoots,
       tracing: { includeSensitiveData: false },
     });
@@ -1358,11 +1358,11 @@ it.each(['traced', 'disabled', 'untraced'] as const)(
       ).manualCalls;
       const record = [...records.values()][0];
       await withTrace({ name: 'unrelated' }, async () => {
-        await expect(session.submit(request.reply('invalid'))).rejects.toThrow(
+        await expect(session.respond(request.reply('invalid'))).rejects.toThrow(
           'Manual tool result failed validation',
         );
         expect(records.size).toBe(1);
-        await session.submit(request.reply('valid'));
+        await session.respond(request.reply('valid'));
       });
       expect(observations).toHaveLength(2);
       for (const observed of observations) {
@@ -1829,8 +1829,8 @@ it.each(['submit', 'submitWithOutput', 'enqueue'] as const)(
           method === 'submit'
             ? session.submit('root', options)
             : method === 'submitWithOutput'
-              ? session.submitWithOutput('root', z.string(), options)
-              : session.enqueue('root', undefined, options);
+              ? session.submit('root', { ...options, outputType: z.string() })
+              : session.enqueue('root', options);
         selected.traceparent = 'changed after admission capture';
         await admitted;
       });

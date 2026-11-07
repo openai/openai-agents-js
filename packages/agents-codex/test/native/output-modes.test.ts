@@ -218,7 +218,7 @@ describe('declaration output modes', () => {
         outputType: capturedOutput,
       }).session({ state });
       const plain = await (
-        await restored.submitWithOutput('ROOT_PLAIN', z.string())
+        await restored.submit('ROOT_PLAIN', { outputType: z.string() })
       ).wait();
       expect(plain.finalOutput).toBe('ordinary text after restore');
       expect(execute).toHaveBeenCalledTimes(1);
@@ -488,7 +488,7 @@ describe('declaration output modes', () => {
         }
       }
       if (!action) throw new Error('Expected decision request');
-      const replyTurn = await session.submit(action.reply('accepted'));
+      const replyTurn = await session.respond(action.reply('accepted'));
       expect(replyTurn).toBe(turn);
       expect((await turn.wait()).finalOutput).toEqual({ answer: 'accepted' });
       server.assertExhausted();
@@ -536,7 +536,8 @@ describe('declaration output modes', () => {
       try {
         for await (const event of restored.events()) {
           if (event.type !== 'action_requested') continue;
-          const turn = await restored.submit(event.reply('accepted'));
+          const turn = restored.restoredTurn!;
+          await restored.respond(event.reply('accepted'));
           expect((await turn.wait()).finalOutput).toBe('accepted');
           break;
         }

@@ -323,10 +323,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const sessionModule = await import('../../src/runtime/session');
         const entered = Promise.withResolvers<void>();
         const release = Promise.withResolvers<void>();
-        const original = sessionModule.Session.prototype.submitWithOutput;
+        const original = sessionModule.Session.prototype.submit;
         vi.spyOn(
           sessionModule.Session.prototype,
-          'submitWithOutput',
+          'submit',
         ).mockImplementationOnce(async function (
           this: Session,
           ...args: Parameters<typeof original>

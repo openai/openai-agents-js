@@ -542,7 +542,7 @@ describe('passive real-native root Turn events', () => {
       if (event.type !== 'action_requested') continue;
       expect(ended).toBe(false);
       expect(seen.every((item) => !('reply' in item))).toBe(true);
-      expect(await session.submit(event.reply('approved'))).toBe(turn);
+      expect(await session.respond(event.reply('approved'))).toBe(turn);
       await passive;
       expect(seen.every((item) => !('reply' in item))).toBe(true);
       expect(seen.at(-1)).toMatchObject({

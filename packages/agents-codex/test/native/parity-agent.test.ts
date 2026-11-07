@@ -317,7 +317,7 @@ describe('Python-aligned public Agent API', () => {
       const first = await turn.wait();
       expect(first.finalOutput).toBe(streamedOutput);
       expect((await right.next()).value).toMatchObject({ type: 'gap' });
-      expect(first.usage).toMatchObject({
+      expect(first.threadUsage).toMatchObject({
         totalTokenUsage: { inputTokens: 5, outputTokens: 3, totalTokens: 8 },
       });
       const snapshot = session.items();

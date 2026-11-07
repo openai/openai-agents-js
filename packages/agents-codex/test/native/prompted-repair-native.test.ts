@@ -116,7 +116,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(result.turn).toBe(turn);
       expect(result.finalOutput).toEqual({ label: 'corrected' });
       expect(await turn.wait()).toBe(result);
-      expect(result.usage?.totalTokenUsage.totalTokens).toBe(7);
+      expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(7);
       expect(result.repairAttempts).toHaveLength(1);
       const attempt = result.repairAttempts[0];
       expect(attempt).toMatchObject({
@@ -350,10 +350,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(again.repair_turns).toHaveLength(2);
         expect(server.requests).toHaveLength(4);
         expect(effects).toEqual(['once']);
-        const later = await restored.submitWithOutput(
-          'LATER_PLAIN_ROOT',
-          z.string(),
-        );
+        const later = await restored.submit('LATER_PLAIN_ROOT', {
+          outputType: z.string(),
+        });
         const plain = await later.wait();
         expect(plain.finalOutput).toBe('later plain root');
         expect(plain.repairAttempts).toEqual([]);

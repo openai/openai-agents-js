@@ -365,10 +365,11 @@ describe('actual native opening overrides', () => {
         const request = approval.match(event);
         if (!request) continue;
         expect(request).not.toBe(originalRequest);
-        expect(
-          (await (await restored.submit(request.reply('approved'))).wait())
-            .finalOutput,
-        ).toBe('Manual continuation completed');
+        const turn = restored.restoredTurn!;
+        await restored.respond(request.reply('approved'));
+        expect((await turn.wait()).finalOutput).toBe(
+          'Manual continuation completed',
+        );
         resumed = true;
         break;
       }

@@ -113,9 +113,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         outputType,
       }).session({ state });
       const fresh = await nextAction(restored);
-      await expect(restored.submit(staleReply)).rejects.toThrow();
+      await expect(restored.respond(staleReply)).rejects.toThrow();
       expect(server.requests).toHaveLength(1);
-      const resumed = await restored.submit(fresh.reply('CURRENT_OWNER_REPLY'));
+      const resumed = restored.restoredTurn!;
+      await restored.respond(fresh.reply('CURRENT_OWNER_REPLY'));
       expect(resumed.turnId).toBe(root.turnId);
       const completed = await resumed.wait();
       expect(completed.finalOutput).toEqual({ label: 'fixed' });
@@ -231,23 +232,27 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           maxRetries: 2,
         };
         await expect(
-          session.submitWithOutput('positive override', positive),
+          session.submit('positive override', { outputType: positive }),
         ).rejects.toThrow('Local storage');
         await expect(
-          session.enqueue('positive queued override', positive),
+          session.enqueue('positive queued override', { outputType: positive }),
         ).rejects.toThrow('Local storage');
         expect(server.requests).toHaveLength(0);
-        const zero = await session.submitWithOutput('explicit zero', {
-          mode: 'prompted',
-          schema: report,
-          maxRetries: 0,
+        const zero = await session.submit('explicit zero', {
+          outputType: {
+            mode: 'prompted',
+            schema: report,
+            maxRetries: 0,
+          },
         });
         const zeroResult = await zero.wait();
         expect(zeroResult.finalOutput).toEqual({ label: 'explicit zero' });
         expect(zeroResult.repairAttempts).toEqual([]);
         const omitted = await session.enqueue('omitted zero', {
-          mode: 'prompted',
-          schema: report,
+          outputType: {
+            mode: 'prompted',
+            schema: report,
+          },
         });
         const omittedResult = await omitted.wait();
         expect(omittedResult.finalOutput).toEqual({ label: 'omitted zero' });

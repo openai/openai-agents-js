@@ -166,7 +166,7 @@ describe('application memory recipe without native execution', () => {
     };
     const run = vi.spyOn(Agent.prototype, 'run').mockResolvedValueOnce({
       turn: {} as Turn,
-      usage: null,
+      threadUsage: null,
       finalOutput: 'Use plain language.',
       repairAttempts: [],
     });

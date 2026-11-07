@@ -97,7 +97,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       try {
         const root = await session.submit('original root');
         await originalEntered.promise;
-        const queued = await session.enqueue('queued root', z.string());
+        const queued = await session.enqueue('queued root', {
+          outputType: z.string(),
+        });
         const first = root.wait();
         const second = root.wait();
         const states = [first, second].map(observe);
@@ -207,7 +209,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       try {
         const root = await session.submit('original root');
         await originalEntered.promise;
-        const queued = await session.enqueue('must never promote', z.string());
+        const queued = await session.enqueue('must never promote', {
+          outputType: z.string(),
+        });
         const queuedOutcome = queued.wait().catch((error: unknown) => error);
         const first = root.wait();
         const second = root.wait();
