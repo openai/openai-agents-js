@@ -66,6 +66,12 @@ jobs:
 
       - name: Build the native runtime
         run: node packages/agents-codex/scripts/native.mjs package
+      - name: Test Windows project-search filename handling
+        if: runner.os == 'Windows'
+        working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
+        run: |
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture
       - name: Build the executor test fixture
         if: runner.os == 'Linux' || runner.os == 'macOS'
         working-directory: packages/agents-codex/native
