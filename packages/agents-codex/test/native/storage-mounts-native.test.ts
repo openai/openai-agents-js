@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import {
   Agent,
   Environment,
@@ -381,8 +381,18 @@ it.skipIf(process.platform !== 'linux')(
         });
       await using _owned = session;
       await (await session.submit('Delegate storage verification.')).wait();
-      for await (const child of session.subagents())
-        if (child.turn) await child.turn.wait();
+      const children = await vi.waitFor(
+        async () => {
+          const children = await Array.fromAsync(session.subagents());
+          expect(children).toHaveLength(1);
+          expect(children[0].turn).toBeTruthy();
+          return children;
+        },
+        { timeout: 25_000 },
+      );
+      expect((await children[0].turn!.wait()).finalOutput).toBe(
+        'child verified',
+      );
       expect(await readFile(join(cwd, 'child-proof'), 'utf8')).toBe(
         'child-proof',
       );
@@ -392,4 +402,5 @@ it.skipIf(process.platform !== 'linux')(
       await rm(root, { recursive: true, force: true });
     }
   },
+  30_000,
 );
