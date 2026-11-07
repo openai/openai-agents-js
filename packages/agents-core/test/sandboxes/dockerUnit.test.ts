@@ -2,6 +2,7 @@ import {
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
   realpath,
@@ -14,7 +15,7 @@ import {
 } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { UserError } from '../../src/errors';
@@ -45,6 +46,15 @@ vi.mock('../../src/sandbox/sandboxes/shared/runProcess', () => ({
   formatSandboxProcessError: (result: SandboxProcessResult) =>
     result.stderr || result.stdout || result.error?.message || 'process failed',
 }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rm: vi.fn(actual.rm),
+    mkdir: vi.fn(actual.mkdir),
+    open: vi.fn(actual.open),
+  };
+});
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return {
@@ -263,6 +273,9 @@ describe('DockerSandboxClient unit behavior', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.mocked(rm).mockReset();
+    vi.mocked(mkdir).mockReset();
+    vi.mocked(open).mockReset();
     await rm(rootDir, { recursive: true, force: true });
   });
 
@@ -6630,13 +6643,211 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(client.create(new Manifest())).rejects.toThrow(
       /requires a working Docker CLI and daemon/,
     );
+    await expect(readdir(rootDir)).resolves.toEqual([]);
 
     processMocks.runSandboxProcess
       .mockResolvedValueOnce(success('Docker version test'))
       .mockResolvedValueOnce(failure('pull failed'));
 
-    await expect(client.create(new Manifest())).rejects.toThrow(
+    const sourcePath = join(rootDir, 'caller-owned.txt');
+    await writeFile(sourcePath, 'keep caller data');
+    const manifest = new Manifest({
+      entries: {
+        data: s3Mount({
+          bucket: 'fixture',
+          readOnly: true,
+          mountStrategy: dockerVolumeMountStrategy({ driver: 'rclone' }),
+        }),
+        'copied.txt': { type: 'local_file', src: sourcePath },
+      },
+      extraPathGrants: [
+        { path: '/sources', hostPath: rootDir, readOnly: true },
+      ],
+    });
+    await expect(client.create(manifest)).rejects.toThrow(
       /Failed to start Docker sandbox container: pull failed/,
     );
+    await expect(readdir(rootDir)).resolves.toEqual(['caller-owned.txt']);
+    await expect(readFile(sourcePath, 'utf8')).resolves.toBe(
+      'keep caller data',
+    );
+    expect(
+      processMocks.runSandboxProcess.mock.calls.map(([, args]) => args[0]),
+    ).toEqual(['version', 'version', 'run']);
+  });
+
+  it('removes the owned workspace when local file materialization fails', async () => {
+    processMocks.runSandboxProcess.mockResolvedValue(
+      success('Docker version test'),
+    );
+    const sourcePath = join(rootDir, 'caller-owned.txt');
+    await writeFile(sourcePath, 'keep caller data');
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+
+    await expect(
+      client.create(
+        new Manifest({
+          entries: {
+            'missing.txt': {
+              type: 'local_file',
+              src: join(rootDir, 'missing.txt'),
+            },
+          },
+          extraPathGrants: [
+            { path: '/sources', hostPath: rootDir, readOnly: true },
+          ],
+        }),
+      ),
+    ).rejects.toThrow(/ENOENT|local_file/);
+
+    await expect(readdir(rootDir)).resolves.toEqual(['caller-owned.txt']);
+    await expect(readFile(sourcePath, 'utf8')).resolves.toBe(
+      'keep caller data',
+    );
+    expect(
+      processMocks.runSandboxProcess.mock.calls.map(([, args]) => args[0]),
+    ).toEqual(['version']);
+  });
+
+  it.each([
+    ['manifest', false],
+    ['manifest', true],
+    ['nested local_dir', false],
+    ['nested local_dir', true],
+  ] as const)(
+    'joins active %s workers and skips queued entries after failure (later worker fails: %s)',
+    async (kind, laterFailure) => {
+      const actual =
+        await vi.importActual<typeof import('node:fs/promises')>(
+          'node:fs/promises',
+        );
+      const source = join(rootDir, 'caller-source');
+      const nestedSource = join(source, 'outer', 'inner');
+      await mkdir(join(nestedSource, 'delayed'), { recursive: true });
+      const failingSource = join(nestedSource, 'failing.txt');
+      const queuedSource = join(nestedSource, 'queued.txt');
+      await writeFile(failingSource, 'keep caller data');
+      await writeFile(queuedSource, 'keep queued caller data');
+      const firstError = new Error('first materialization failure');
+      const laterError = new Error('later materialization failure');
+      const entered = Promise.withResolvers<void>();
+      const failed = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const written = Promise.withResolvers<void>();
+      const events: string[] = [];
+      vi.mocked(open).mockImplementation(async (...args) => {
+        if (args[0] === queuedSource) events.push('queued-started');
+        if (args[0] === failingSource) {
+          await entered.promise;
+          failed.resolve();
+          throw firstError;
+        }
+        return actual.open(...args);
+      });
+      vi.mocked(mkdir).mockImplementation(async (...args) => {
+        if (
+          basename(String(args[0])) === 'delayed' &&
+          args[0] !== join(nestedSource, 'delayed')
+        ) {
+          entered.resolve();
+          await release.promise;
+          try {
+            const result = await actual.mkdir(...args);
+            events.push('writer-finished');
+            if (laterFailure) throw laterError;
+            return result;
+          } finally {
+            written.resolve();
+          }
+        }
+        return actual.mkdir(...args);
+      });
+      vi.mocked(rm).mockImplementation(async (...args) => {
+        events.push('cleanup');
+        return actual.rm(...args);
+      });
+      processMocks.runSandboxProcess.mockResolvedValue(
+        success('Docker version test'),
+      );
+      const client = new DockerSandboxClient({
+        workspaceBaseDir: rootDir,
+        concurrencyLimits: { manifestEntries: 2, localDirFiles: 2 },
+      });
+      const manifest = new Manifest({
+        entries:
+          kind === 'manifest'
+            ? {
+                failing: { type: 'local_file', src: failingSource },
+                delayed: { type: 'dir' },
+                queued: { type: 'local_file', src: queuedSource },
+              }
+            : { copied: { type: 'local_dir', src: source } },
+        extraPathGrants: [
+          { path: '/sources', hostPath: source, readOnly: true },
+        ],
+      });
+      let settled = false;
+      const creation = client.create(manifest).then(
+        () => {
+          settled = true;
+          throw new Error('expected materialization failure');
+        },
+        (error) => {
+          settled = true;
+          return error;
+        },
+      );
+      let settledBeforeRelease: boolean;
+      try {
+        await failed.promise;
+        // A scheduler checkpoint lets rejection handlers run while the writer is
+        // explicitly gated; no elapsed-time threshold controls the assertion.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        settledBeforeRelease = settled;
+      } finally {
+        release.resolve();
+      }
+      const error = await creation;
+      await written.promise;
+      expect(settledBeforeRelease).toBe(false);
+      expect(error).toBe(firstError);
+      expect(events).toEqual(['writer-finished', 'cleanup']);
+      await expect(readdir(rootDir)).resolves.toEqual(['caller-source']);
+      await expect(readFile(failingSource, 'utf8')).resolves.toBe(
+        'keep caller data',
+      );
+      await expect(readFile(queuedSource, 'utf8')).resolves.toBe(
+        'keep queued caller data',
+      );
+      await expect(readdir(nestedSource)).resolves.toEqual([
+        'delayed',
+        'failing.txt',
+        'queued.txt',
+      ]);
+      expect(
+        processMocks.runSandboxProcess.mock.calls.map(([, args]) => args[0]),
+      ).toEqual(['version']);
+    },
+  );
+
+  it('retains startup and workspace cleanup errors when both fail', async () => {
+    const startupError = new Error('Docker startup failed');
+    const cleanupError = new Error('workspace removal failed');
+    processMocks.runSandboxProcess
+      .mockResolvedValueOnce(success('Docker version test'))
+      .mockRejectedValueOnce(startupError);
+    vi.mocked(rm).mockRejectedValueOnce(cleanupError);
+    const client = new DockerSandboxClient({ workspaceBaseDir: rootDir });
+
+    await expect(client.create(new Manifest())).rejects.toMatchObject({
+      code: 'lifecycle_error',
+      details: { errors: [startupError, cleanupError] },
+    });
+    const leftovers = await readdir(rootDir);
+    expect(leftovers).toHaveLength(1);
+    expect(leftovers[0]).toMatch(/^openai-agents-docker-sandbox-/);
+    expect(
+      processMocks.runSandboxProcess.mock.calls.map(([, args]) => args[0]),
+    ).toEqual(['version', 'run']);
   });
 });

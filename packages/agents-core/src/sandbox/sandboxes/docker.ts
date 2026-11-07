@@ -1493,72 +1493,81 @@ export class DockerSandboxClient implements SandboxClient<
       ),
     );
 
-    await materializeLocalWorkspaceManifest(manifest, workspaceRootPath, {
-      concurrencyLimits: resolvedOptions.concurrencyLimits,
-      allowLocalBindMounts: false,
-      allowIdentityMetadata: true,
-      supportsMount: isSupportedDockerCreateMount,
-      materializeMount: async ({ logicalPath, entry }) => {
-        await materializeDockerMountPoint(
-          workspaceRootPath,
-          manifest.root,
-          logicalPath,
-          entry,
-        );
-      },
-    });
-    await prepareDockerWorkspaceRoot(workspaceRootPath, manifest);
-    const image = resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE;
-    const defaultUser = getHostDockerUser();
-    const sessionIdentity = randomUUID();
-    const container = await startDockerContainer({
-      image,
-      manifest,
-      manifestRoot: manifest.root,
-      workspaceRootPath,
-      sessionIdentity,
-      environment,
-      defaultUser,
-      exposedPorts: configuredExposedPorts,
-      networkMode,
-      labels,
-    });
-    const session = new DockerSandboxSession({
-      state: {
-        sessionIdentity,
-        materializedEntriesFingerprint:
-          dockerMaterializedEntriesFingerprint(manifest),
-        manifest,
-        workspaceRootPath,
-        workspaceRootOwned: true,
-        environment,
-        snapshotSpec: resolvedOptions.snapshot ?? null,
-        snapshot: null,
-        image,
-        containerId: container.containerId,
-        defaultUser,
-        configuredExposedPorts,
-        networkMode,
-        labels: { ...labels },
-        dockerVolumeNames: container.volumeNames,
-      },
-      archiveLimits: resolvedOptions.archiveLimits,
-    });
+    let cleanupToken: StartedDockerCleanupToken | undefined;
     try {
-      await provisionDockerAccounts(container.containerId, manifest);
-      await applyDockerInContainerMounts(session, manifest);
-      captureLiveMountCredentialAuthority(manifest, environment);
-    } catch (error) {
-      const cleanupToken = {
+      await materializeLocalWorkspaceManifest(manifest, workspaceRootPath, {
+        concurrencyLimits: resolvedOptions.concurrencyLimits,
+        allowLocalBindMounts: false,
+        allowIdentityMetadata: true,
+        supportsMount: isSupportedDockerCreateMount,
+        materializeMount: async ({ logicalPath, entry }) => {
+          await materializeDockerMountPoint(
+            workspaceRootPath,
+            manifest.root,
+            logicalPath,
+            entry,
+          );
+        },
+      });
+      await prepareDockerWorkspaceRoot(workspaceRootPath, manifest);
+      const image = resolvedOptions.image ?? DEFAULT_DOCKER_IMAGE;
+      const defaultUser = getHostDockerUser();
+      const sessionIdentity = randomUUID();
+      const container = await startDockerContainer({
+        image,
+        manifest,
+        manifestRoot: manifest.root,
+        workspaceRootPath,
+        sessionIdentity,
+        environment,
+        defaultUser,
+        exposedPorts: configuredExposedPorts,
+        networkMode,
+        labels,
+      });
+      cleanupToken = {
         containerId: container.containerId,
         volumeNames: container.volumeNames,
         workspaceRootPath,
         removeWorkspace: true,
-      } satisfies StartedDockerCleanupToken;
-      this.failedCreateCleanupTokens.set(container.containerId, cleanupToken);
+      };
+      const session = new DockerSandboxSession({
+        state: {
+          sessionIdentity,
+          materializedEntriesFingerprint:
+            dockerMaterializedEntriesFingerprint(manifest),
+          manifest,
+          workspaceRootPath,
+          workspaceRootOwned: true,
+          environment,
+          snapshotSpec: resolvedOptions.snapshot ?? null,
+          snapshot: null,
+          image,
+          containerId: container.containerId,
+          defaultUser,
+          configuredExposedPorts,
+          networkMode,
+          labels: { ...labels },
+          dockerVolumeNames: container.volumeNames,
+        },
+        archiveLimits: resolvedOptions.archiveLimits,
+      });
+      await provisionDockerAccounts(container.containerId, manifest);
+      await applyDockerInContainerMounts(session, manifest);
+      captureLiveMountCredentialAuthority(manifest, environment);
+      return session;
+    } catch (error) {
       try {
-        await cleanupStartedDockerContainer(cleanupToken);
-        this.failedCreateCleanupTokens.delete(container.containerId);
+        if (cleanupToken) {
+          this.failedCreateCleanupTokens.set(
+            cleanupToken.containerId,
+            cleanupToken,
+          );
+          await cleanupStartedDockerContainer(cleanupToken);
+          this.failedCreateCleanupTokens.delete(cleanupToken.containerId);
+        } else {
+          await rm(workspaceRootPath, { recursive: true, force: true });
+        }
       } catch (cleanupError) {
         throw new SandboxLifecycleError(
           'Docker sandbox creation failed and cleanup could not complete.',
@@ -1567,8 +1576,6 @@ export class DockerSandboxClient implements SandboxClient<
       }
       throw error;
     }
-
-    return session;
   }
 
   async resume(
