@@ -424,7 +424,12 @@ it('keeps rename and stop available during a Turn while refusing idle-only comma
   }
 });
 
-it('stops an actual background terminal while a held foreground Turn survives', async ({
+// Strict terminal execution needs a native sandbox outside the outer Codex sandbox.
+it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)('stops an actual background terminal while a held foreground Turn survives', async ({
   task,
 }) => {
   const executor = await startPublicExecutor({
