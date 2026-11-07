@@ -53,6 +53,22 @@ For a namespaced function, pass `namespace` beside `callId`, for example `toolCa
 
 `customToolCall('exec', code, { callId: 'aggregate' })` prescribes a raw custom call for the Code Mode host. Use `peer.toolOutput(callId)` to read the submitted output for either form. The scripted server does not supply the MCP peer, executor, or JavaScript host itself.
 
+## Supply usage and rate-limit metadata
+
+Keep item arrays for ordinary text/tool tests. To test budget or quota handling, use a response envelope:
+
+```ts
+const response = {
+  items: [text('Synthetic answer.')],
+  usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
+  headers: { 'x-ratelimit-remaining-requests': '5' },
+};
+```
+
+Pass this object as a script step to `withScriptedResponses`. The peer sends the headers on that HTTP response and the usage on `response.completed`. The ordinary native parser produces usage and rate-limit observations. Omitted usage stays unknown; reported zero stays zero. The helper captures metadata before starting HTTP. Content type, content length, and transfer encoding remain SDK-owned.
+
+A token or cost budget stops the next sampling admission. An already admitted final response can reach or exceed the limit and still succeed. To test rejection, script a tool response with usage and assert that the next model request is refused. Keep any tool effects before that boundary in your assertions.
+
 ## Inspect recorded requests
 
 The helper captures scripts before its first await. `toolCall` also captures its JSON arguments. `peer.requests` returns fresh snapshots of request bodies. `peer.toolOutput(callId)` searches the latest submitted tool results. You can still read the recorded data after the callback ends.
