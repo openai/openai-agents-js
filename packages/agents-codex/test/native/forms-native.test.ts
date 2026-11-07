@@ -243,7 +243,7 @@ async function formPeer(
         name: 'fixture',
         url: `http://127.0.0.1:${address.port}`,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
       }),
     ],
   });

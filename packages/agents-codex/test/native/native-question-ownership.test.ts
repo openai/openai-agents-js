@@ -297,7 +297,7 @@ it.each(['direct', 'code'] as const)(
           name: 'ownership',
           url: peer.url,
           tools: ['lookup'],
-          approvalMode: 'approve',
+          approvalMode: 'preapproved',
         }),
       ],
     }).session();
@@ -374,7 +374,7 @@ it('ends an unanswered issued root form at an application deadline without accep
         name: 'ownership',
         url: peer.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
       }),
     ],
   }).session();
@@ -448,7 +448,7 @@ it('declines late unassociated delivery while a successor uses the same server',
         name: 'ownership',
         url: peer.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
       }),
     ],
   }).session();
@@ -540,7 +540,7 @@ it('binds opted-in child forms to the actual child incarnation and leaves a sibl
           name: 'ownership',
           url: peer.url,
           tools: ['lookup'],
-          approvalMode: 'approve',
+          approvalMode: 'preapproved',
         }),
       ],
     }).session({
@@ -662,7 +662,7 @@ for (const interactions of [false, true]) {
             name: 'ownership',
             url: peer.url,
             tools: ['lookup'],
-            approvalMode: 'auto',
+            approvalMode: 'native',
           }),
         ],
       }).session({
@@ -916,7 +916,7 @@ async function stdioPeer(
     declaration: new StdioMCP({
       name,
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       command: process.execPath,
       args: [program, config, starts, journal],
       cwd: directory,

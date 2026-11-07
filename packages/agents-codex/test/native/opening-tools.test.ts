@@ -80,7 +80,7 @@ async function mcpPeer(value: string) {
     tool: new HttpMCP({
       name: 'fixture',
       tools: ['lookup'],
-      approvalMode: 'approve',
+      approvalMode: 'preapproved',
       url: `http://127.0.0.1:${address.port}/mcp`,
     }),
     async close() {

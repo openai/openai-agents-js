@@ -101,7 +101,7 @@ async function peer(label: string, field: string, holdCall = false) {
   const declaration = new StdioMCP({
     name: 'fixture',
     tools: ['lookup'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
     command: process.execPath,
     args: [resolve(import.meta.dirname, 'mcp-peer.mjs'), roster, calls, starts],
     cwd: directory,
@@ -272,7 +272,7 @@ it('runs captured stdio before and application approval before the selected peer
     command: fixture.declaration.command,
     args: fixture.declaration.args,
     cwd: fixture.declaration.cwd,
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
     before,
     approval,
   });

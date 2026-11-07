@@ -585,7 +585,7 @@ async function fixture(
         name: 'fixture',
         url: `http://127.0.0.1:${address.port}`,
         tools: ['lookup'],
-        approvalMode: sessionStream ? 'approve' : 'auto',
+        approvalMode: sessionStream ? 'preapproved' : 'native',
       }),
     ],
   });
@@ -1531,7 +1531,7 @@ it('URL consent uses the callback and matched completion over native stdio', asy
         new StdioMCP({
           name: 'fixture',
           tools: ['lookup'],
-          approvalMode: 'approve',
+          approvalMode: 'preapproved',
           command: process.execPath,
           args: [
             fileURLToPath(new URL('./mcp-peer.mjs', import.meta.url)),
@@ -1990,7 +1990,7 @@ it('answers an actual Core approval for the selected host stdio MCP tool', async
         new StdioMCP({
           name: 'fixture',
           tools: ['lookup'],
-          approvalMode: 'auto',
+          approvalMode: 'native',
           command: process.execPath,
           args: [
             fileURLToPath(new URL('./mcp-peer.mjs', import.meta.url)),

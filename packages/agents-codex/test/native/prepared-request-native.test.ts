@@ -138,7 +138,7 @@ it('combines prepared edits, argument correction and result shaping through publ
     name: 'records',
     url: remote.url,
     tools: ['lookup'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
     approval: ({ call, effectiveArguments }) => {
       expect(call.callId).toBe('remote');
       expect(effectiveArguments).toEqual({ value: 'allowed' });
@@ -702,7 +702,7 @@ it('edits the combined function/MCP conversation after both results while origin
     name: 'records',
     url: remote.url,
     tools: ['lookup'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
     approval: ({ effectiveArguments }) => {
       approvals.push(effectiveArguments.value);
       return effectiveArguments.value === 'allowed'

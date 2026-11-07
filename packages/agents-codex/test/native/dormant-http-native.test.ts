@@ -104,7 +104,7 @@ async function peer(denied = false) {
         tools: ['find-record', 'read'],
         url,
         activation: 'operation',
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         ...options,
       });
     },
@@ -240,8 +240,13 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         ).toBe('empty');
         expect(http.connections).toBe(0);
         expect(
-          (await (await session.submit('find', { tools: [find] })).wait())
-            .finalOutput,
+          (
+            await (
+              await session.submit('find', {
+                tools: [declaration.tool('find-record')],
+              })
+            ).wait()
+          ).finalOutput,
         ).toBe('found');
         expect(http.effects).toEqual(['find-record']);
         expect(receipts.at(-1)!.result.policy_generation).toBe(1);
