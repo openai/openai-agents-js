@@ -227,6 +227,7 @@ jobs:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: >-
           pnpm test:native packages/agents-codex/test/native/executor-stop-native.test.ts
+          packages/agents-codex/test/native/project-search-native.test.ts
           packages/agents-codex/test/native/selected-process-termination-native.test.ts
           --maxWorkers=4 --reporter=verbose
       - name: Qualify owned child tracing on macOS

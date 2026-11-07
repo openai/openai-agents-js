@@ -1694,6 +1694,7 @@ dependencies = [
  "native-tls",
  "opentelemetry",
  "pretty_assertions",
+ "regex",
  "rmcp",
  "serde",
  "serde_ignored",

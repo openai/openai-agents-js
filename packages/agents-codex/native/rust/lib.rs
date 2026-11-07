@@ -30,6 +30,7 @@ mod native_interception;
 mod node_runtime;
 mod ops;
 mod options;
+mod project_search;
 mod provider_error;
 mod python_tools;
 mod recovery_guard;

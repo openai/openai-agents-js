@@ -192,7 +192,11 @@ import {
 } from './state';
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
-import { captureWritableRoots, Environment } from './environment';
+import {
+  captureWritableRoots,
+  Environment,
+  projectSearchRuntime,
+} from './environment';
 import {
   captureTools,
   toolIdentity,
@@ -7893,14 +7897,17 @@ export class Session<OutputT = string, Context = unknown> {
       );
       // The candidate owns the effective Environment, including changes
       // accepted since the original opening declaration.
-      const { environment: _openingEnvironment, ...runtime } =
-        this.threadOptions.runtime ?? {};
+      const {
+        environment: _openingEnvironment,
+        _sdk_project_search: _openingSearch,
+        ...runtime
+      } = this.threadOptions.runtime ?? {};
       const options: ThreadOptions = {
         ...this.threadOptions,
         instructions: current.instructions,
         _sdk_instruction_files: current.instruction_files,
         config: { ...this.threadOptions.config, mcp_servers: servers },
-        runtime,
+        runtime: { ...runtime, ...projectSearchRuntime(this.environment) },
       };
       beforeRetirement();
       owner.creation = owner.change.createCandidateEngine(
@@ -8837,12 +8844,18 @@ export class Session<OutputT = string, Context = unknown> {
               name.namespace === 'functions') &&
             (name.name === 'exec_command' ||
               name.name === 'write_stdin' ||
-              name.name === 'apply_patch');
+              name.name === 'apply_patch' ||
+              name.name === 'project_glob' ||
+              name.name === 'project_grep');
           const before =
             request!.phase === 'before' && request!.boundary === 'pre_dispatch';
           const after =
             request!.phase === 'after' &&
-            request!.boundary === 'executor_return';
+            (request!.boundary === 'executor_return' ||
+              (builtin &&
+                (name.name === 'project_glob' ||
+                  name.name === 'project_grep') &&
+                request!.boundary === 'nested_return'));
           needsLease = after || request!.cell_owner_id !== undefined;
           if (
             builtin &&

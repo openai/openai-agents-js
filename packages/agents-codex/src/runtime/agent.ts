@@ -32,7 +32,7 @@ import {
   isManualSessionState,
   nativeCheckpoint,
 } from './state';
-import { environmentConfig } from './environment';
+import { environmentConfig, projectSearchRuntime } from './environment';
 import { NativeProviderRoutes, type SelectedModelRoute } from './http-model';
 import type { ProviderLease } from './provider';
 import { AsyncResource } from 'node:async_hooks';
@@ -95,11 +95,14 @@ export async function openSession(
     );
   }
   const native = await binding();
+  const { _sdk_project_search: _previousSearch, ...baseRuntime } =
+    setup.runtime;
   const runtime: RuntimeOptions = {
     ...native._packaged_runtime(),
-    ...setup.runtime,
+    ...baseRuntime,
     ...(model === undefined ? {} : { model }),
     ...(environment ? { environment: environmentConfig(environment) } : {}),
+    ...projectSearchRuntime(environment),
   };
   const parentTrace = captureTraceContext(options.parentTrace);
   const { _sdk_reconciled_calls, ...capturedThreadOptions } =

@@ -1,4 +1,7 @@
-import { Environment } from '../../src/runtime/environment';
+import {
+  Environment,
+  projectSearchRuntime,
+} from '../../src/runtime/environment';
 import {
   executorPolicyRules,
   applyExecutorPolicy,
@@ -40,6 +43,70 @@ const context = {
   callId: 'c',
   signal: new AbortController().signal,
 };
+
+describe('project search declarations', () => {
+  it('derives private native configuration from the trusted normalized opening root', () => {
+    const selected = new Environment({
+      url: 'wss://executor.invalid',
+      cwd: '/project with spaces',
+      tools: ['exec_command', 'project_grep'],
+      writableRoots: ['/output'],
+      capabilityDirectories: ['/skills'],
+    });
+    expect(projectSearchRuntime(selected)).toEqual({
+      _sdk_project_search: {
+        root: 'file:///project%20with%20spaces',
+        tools: ['project_grep'],
+      },
+    });
+    const captured = projectSearchRuntime(selected);
+    captured._sdk_project_search!.tools.length = 0;
+    expect(projectSearchRuntime(selected)._sdk_project_search?.tools).toEqual([
+      'project_grep',
+    ]);
+    expect(projectSearchRuntime(undefined)).toEqual({});
+    expect(
+      projectSearchRuntime(
+        new Environment({
+          url: 'wss://executor.invalid',
+          cwd: '/project',
+          tools: ['exec_command'],
+        }),
+      ),
+    ).toEqual({});
+  });
+  it.each(['local', 'remote'] as const)(
+    'admits search without command tools on a %s Environment',
+    (kind) => {
+      const options = {
+        cwd: '/workspace',
+        tools: ['project_glob', 'project_grep'] as const,
+      };
+      const environment =
+        kind === 'local'
+          ? Environment.local(options)
+          : new Environment({ ...options, url: 'wss://executor.invalid' });
+      expect(environment.tools).toEqual(['project_glob', 'project_grep']);
+      expect(Object.isFrozen(environment.tools)).toBe(true);
+    },
+  );
+
+  it('leaves search disabled by default and rejects duplicate or unknown names', () => {
+    const connection = { cwd: '/workspace', url: 'wss://executor.invalid' };
+    expect(new Environment(connection).tools).toEqual([]);
+    expect(
+      () =>
+        new Environment({
+          ...connection,
+          tools: ['project_glob', 'project_glob'],
+        }),
+    ).toThrow('Select distinct executor tool names');
+    expect(
+      () =>
+        new Environment({ ...connection, tools: ['project_search' as never] }),
+    ).toThrow('Select distinct executor tool names');
+  });
+});
 
 it('preserves old structural context and request shapes', () => {
   expectTypeOf<
