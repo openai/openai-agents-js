@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -1048,7 +1048,16 @@ it.each([true, false])(
       ]),
     });
     await (await session.submit('Go.')).wait();
-    const descendants = await Array.fromAsync(session.subagents());
+    const descendants = await vi.waitUntil(
+      async () => {
+        const descendants = await Array.fromAsync(session.subagents());
+        // Retry only the snapshot with one unpublished child turn.
+        if (descendants.length === 1 && descendants[0]!.turn === null)
+          return false;
+        return descendants;
+      },
+      { timeout: 3000 },
+    );
     expect(descendants).toHaveLength(1);
     const child = descendants[0]!;
     expect(child.turn).not.toBeNull();
