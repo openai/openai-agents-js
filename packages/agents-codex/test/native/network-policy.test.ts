@@ -84,6 +84,8 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               url: executor.url,
               cwd: executor.cwd,
               headers: executor.headers,
+              // Isolate network admission from strict write-policy validation.
+              writePolicy: 'legacy',
               tools: ['exec_command'],
               network: { allowAllUnixSockets: true },
             }),
@@ -139,6 +141,8 @@ it.skipIf(
             environment: new Environment({
               url: executor.url,
               headers: executor.headers,
+              // Isolate network admission from strict write-policy validation.
+              writePolicy: 'legacy',
               tools: ['exec_command'],
               cwd: option.cwd,
               network: option.network,
