@@ -98,7 +98,11 @@ function commandOutput(request: JsonObject, callId: string) {
   );
 }
 
-it('reconnects fresh clients to one retained executor with current credentials', async () => {
+it.skipIf(
+  process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)('reconnects fresh clients to one retained executor with current credentials', async () => {
   const executor = await startPublicExecutor();
   const oldAuthorization = executor.headers.Authorization;
   const currentAuthorization = 'Bearer synthetic-reconnected-executor-token';
