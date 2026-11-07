@@ -106,8 +106,10 @@ async function capacityWrapper(
     if (first) throw first.error;
   };
   try {
+    // Exact gpt-5.5 entry from CODEX_REVISION 7c2ce90716335c889a5076ded9a630459f9c9899.
+    // Keep qualification independent of the producer's unshipped .upstream tree.
     const sourceUrl = new URL(
-      '../../native/.upstream/codex/codex-rs/models-manager/models.json',
+      './fixtures/history-counter-models.json',
       import.meta.url,
     );
     boundary(evidence, 'CATALOG_READ_BEGIN', fileURLToPath(sourceUrl));
