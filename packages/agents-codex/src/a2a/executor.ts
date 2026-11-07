@@ -442,12 +442,17 @@ export class NativeA2AExecutor<
             await publish('completed', complete);
           }
         } catch (error) {
-          let cleanupFailed = false;
+          // Before Session handoff, only the original abort reason confirms clean cancellation.
+          // A distinct opening failure leaves resource cleanup unconfirmed.
+          let cleanupUnconfirmed =
+            session === undefined &&
+            controller.signal.aborted &&
+            error !== controller.signal.reason;
           if (session && !closed) {
             try {
               await session.close();
             } catch {
-              cleanupFailed = true;
+              cleanupUnconfirmed = true;
             } finally {
               closed = true;
             }
@@ -455,23 +460,23 @@ export class NativeA2AExecutor<
           await claim.current();
           if (record?.state === 'completed' || record?.state === 'waiting')
             throw error;
-          const canceled = controller.signal.aborted && !cleanupFailed;
+          const canceled = controller.signal.aborted && !cleanupUnconfirmed;
           const desired = task(
             canceled
               ? TaskState.TASK_STATE_CANCELED
               : TaskState.TASK_STATE_FAILED,
           );
-          if (cleanupFailed)
+          if (cleanupUnconfirmed)
             desired.metadata = {
               ...desired.metadata,
               'agents.a2a.outcome': 'unknown',
             };
           await publish(
-            cleanupFailed ? 'unknown' : canceled ? 'canceled' : 'failed',
+            cleanupUnconfirmed ? 'unknown' : canceled ? 'canceled' : 'failed',
             desired,
           );
-          // An unconfirmed close must not become a successful cancellation acknowledgment.
-          if (cleanupFailed) throw error;
+          // Unconfirmed cleanup must not become a successful cancellation acknowledgment.
+          if (cleanupUnconfirmed) throw error;
         } finally {
           controller.signal.removeEventListener('abort', stop);
           if (session && !closed) await session.close();

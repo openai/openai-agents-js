@@ -275,6 +275,201 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       30000,
     );
 
+    it.each(
+      (['initial', 'resume'] as const).flatMap((phase) =>
+        (
+          [
+            'late lease',
+            'failed disposer',
+            'source rejection',
+            'abort reason',
+          ] as const
+        ).map((outcome) => ({ phase, outcome })),
+      ),
+    )(
+      'joins $phase Environment opening cancellation with $outcome',
+      async ({ phase, outcome }) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        await withScriptedResponses(
+          phase === 'resume'
+            ? [[toolCall('decision', {}, { callId: 'decision' })]]
+            : [],
+          async (model) => {
+            const entered = Promise.withResolvers<void>(),
+              aborted = Promise.withResolvers<void>(),
+              finishEntry = Promise.withResolvers<void>(),
+              cleaning = Promise.withResolvers<void>(),
+              finishCleanup = Promise.withResolvers<void>(),
+              stopped = Promise.withResolvers<void>();
+            const failure = new Error('private opening rollback failure');
+            const dispose = vi.fn(async () => {
+              cleaning.resolve();
+              await finishCleanup.promise;
+              if (outcome === 'failed disposer') throw failure;
+            });
+            const decision = manualTool({
+              name: 'decision',
+              description: 'Choose.',
+              parameters: z.strictObject({}),
+              result: z.boolean(),
+            });
+            const agent = new Agent({
+              instructions: 'Ask for a decision.',
+              model: 'gpt-5.5',
+              provider: model.provider,
+              tools: [decision],
+            });
+            const store = new FileA2AStore();
+            let opening = phase === 'initial',
+              executions = 0,
+              taskId = '',
+              ownerFailure: unknown,
+              cancel!: () => Promise<void>;
+            const native = new NativeA2AExecutor({
+              store,
+              agentFactory: async (scope) => {
+                taskId = scope.taskId;
+                return {
+                  agent,
+                  context: undefined,
+                  environment: opening
+                    ? async ({ signal }: { signal: AbortSignal }) => {
+                        entered.resolve();
+                        await new Promise<void>((resolve) => {
+                          const abort = () => {
+                            aborted.resolve();
+                            resolve();
+                          };
+                          if (signal.aborted) abort();
+                          else
+                            signal.addEventListener('abort', abort, {
+                              once: true,
+                            });
+                        });
+                        await finishEntry.promise;
+                        if (
+                          outcome === 'source rejection' ||
+                          outcome === 'abort reason'
+                        ) {
+                          cleaning.resolve();
+                          await finishCleanup.promise;
+                          if (outcome === 'source rejection') throw failure;
+                          signal.throwIfAborted();
+                        }
+                        return Environment.lease(
+                          new Environment({
+                            url: 'wss://executor.invalid',
+                            cwd: '/workspace',
+                            writePolicy: 'legacy',
+                          }),
+                          dispose,
+                        );
+                      }
+                    : undefined,
+                };
+              },
+            });
+            const remote = await host(store, {
+              execute: async (request, bus) => {
+                const target = ++executions === (phase === 'initial' ? 1 : 2);
+                if (target)
+                  cancel = () => native.cancelTask(request.taskId, bus);
+                try {
+                  await native.execute(request, bus);
+                } catch (error) {
+                  if (target) ownerFailure = error;
+                  throw error;
+                } finally {
+                  if (target) stopped.resolve();
+                }
+              },
+              cancelTask: native.cancelTask,
+            });
+            try {
+              let request = input([Part.fromJSON({ text: 'begin' })]);
+              if (phase === 'resume') {
+                const created = await remote.client.sendMessage(request);
+                if (!('id' in created)) throw new Error('Expected Task');
+                const waiting = await settled(remote.client, created);
+                expect(waiting.status?.state).toBe(
+                  TaskState.TASK_STATE_INPUT_REQUIRED,
+                );
+                const proposal = inputProposal(waiting)!;
+                opening = true;
+                request = input(
+                  [
+                    Part.fromJSON({
+                      data: {
+                        challenge: proposal.challenge,
+                        generation: proposal.generation,
+                        result: true,
+                      },
+                    }),
+                  ],
+                  waiting.id,
+                  waiting.contextId,
+                );
+              }
+              const sending = remote.client
+                .sendMessage(request)
+                .catch((error: unknown) => error);
+              await entered.promise;
+              let cancellationSettled = false;
+              const cancellation = cancel()
+                .then(
+                  () => ({ ok: true as const }),
+                  (error: unknown) => ({ ok: false as const, error }),
+                )
+                .finally(() => {
+                  cancellationSettled = true;
+                });
+              await aborted.promise;
+              expect(cancellationSettled).toBe(false);
+              finishEntry.resolve();
+              await cleaning.promise;
+              expect(cancellationSettled).toBe(false);
+              finishCleanup.resolve();
+              const canceled = await cancellation;
+              await stopped.promise;
+              await sending;
+              const unconfirmed =
+                outcome === 'failed disposer' || outcome === 'source rejection';
+              expect(canceled.ok).toBe(!unconfirmed);
+              const record = store.record(taskId, context)!;
+              expect(record.state).toBe(unconfirmed ? 'unknown' : 'canceled');
+              expect(record.desired.status?.state).toBe(
+                unconfirmed
+                  ? TaskState.TASK_STATE_FAILED
+                  : TaskState.TASK_STATE_CANCELED,
+              );
+              expect(record.desired.metadata?.['agents.a2a.outcome']).toBe(
+                unconfirmed ? 'unknown' : undefined,
+              );
+              expect(ownerFailure === undefined).toBe(!unconfirmed);
+              expect(record.checkpoint).toBeUndefined();
+              expect(record.pending).toBeUndefined();
+              expect(JSON.stringify(Task.toJSON(record.desired))).not.toContain(
+                failure.message,
+              );
+              expect(dispose).toHaveBeenCalledTimes(
+                outcome === 'late lease' || outcome === 'failed disposer'
+                  ? 1
+                  : 0,
+              );
+              expect(model.requests).toHaveLength(phase === 'resume' ? 1 : 0);
+              expect(await store.load(taskId, context)).toEqual(record.desired);
+              model.assertExhausted();
+            } finally {
+              finishEntry.resolve();
+              finishCleanup.resolve();
+              await remote.close();
+            }
+          },
+        );
+      },
+      30000,
+    );
+
     it.each([false, true])(
       'retires a fresh factory cancellation with commit failure=%s',
       async (commitFailure) => {
