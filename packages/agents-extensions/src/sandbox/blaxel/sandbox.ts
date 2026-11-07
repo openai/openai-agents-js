@@ -74,6 +74,7 @@ import {
 import {
   blaxelFuseMountHandle,
   isBlaxelCloudBucketMountEntry,
+  buildBlaxelCloudBucketMountConfig,
   isBlaxelDriveMountEntry,
   mountBlaxelCloudBucket,
   mountBlaxelDrive,
@@ -883,6 +884,16 @@ export class BlaxelSandboxClient implements SandboxClient<
       SANDBOX_MANIFEST_METADATA_SUPPORT,
     );
     validateMountCredentialBoundaries(manifest);
+    for (const { entry, mountPath } of manifest.mountTargets()) {
+      if (isBlaxelCloudBucketMountEntry(entry)) {
+        buildBlaxelCloudBucketMountConfig(entry, mountPath, 'preflight');
+      } else if (!isBlaxelDriveMountEntry(entry)) {
+        throw new SandboxUnsupportedFeatureError(
+          'BlaxelSandboxClient only supports Blaxel cloud bucket or drive mount strategies.',
+          { provider: 'blaxel', feature: 'entry.mountStrategy' },
+        );
+      }
+    }
     const SandboxInstance = await loadBlaxelSandboxClass();
 
     return await withSandboxSpan(

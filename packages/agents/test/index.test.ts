@@ -1,3 +1,4 @@
+import * as ClassicSandbox from '../src/classic/sandbox';
 import * as Agents from '../src/classic';
 import type {
   AgentHookEvents,
@@ -109,6 +110,10 @@ describe('Sandbox exports', () => {
     expect('Capabilities' in Agents).toBe(false);
     expect('filesystem' in Agents).toBe(false);
 
+    expect(typeof Sandbox.sandboxEnvironment).toBe('function');
+    expect(typeof Sandbox.renderStorageLayout).toBe('function');
+    expect(ClassicSandbox.Manifest).toBe(Sandbox.Manifest);
+    expect('sandboxEnvironment' in ClassicSandbox).toBe(false);
     expect(typeof Sandbox.SandboxAgent).toBe('function');
     expect(typeof Sandbox.Manifest).toBe('function');
     expect(typeof Sandbox.Capabilities.default).toBe('function');

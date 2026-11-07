@@ -64,6 +64,7 @@ import {
 import {
   captureRcloneMountEnvironmentAuthorityForManifest,
   mountRcloneCloudBucket,
+  validateRcloneCloudBucketMount,
   rcloneMountEnvironmentAuthorityMatches,
   rclonePatternFromMountStrategy,
   validateRcloneMountEnvironmentCredentialExposure,
@@ -906,6 +907,16 @@ export class E2BSandboxClient implements SandboxClient<
           manifest,
           SANDBOX_MANIFEST_METADATA_SUPPORT,
         );
+        for (const { entry } of manifest.mountTargets()) {
+          validateRcloneCloudBucketMount({
+            entry,
+            providerName: 'E2BSandboxClient',
+            providerId: 'e2b',
+            strategyType: 'e2b_cloud_bucket',
+            pattern: (entry.mountStrategy as { pattern?: unknown } | undefined)
+              ?.pattern,
+          });
+        }
         const Sandbox = await loadE2BSandboxClass(
           resolvedOptions.sandboxType ?? 'e2b',
         );
