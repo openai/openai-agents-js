@@ -86,11 +86,17 @@ Fork retains those accepted settings too. A different model or setting on the de
 
 ### Output and checkpoint versions
 
+Treat checkpoints as opaque data for this SDK and language. The current reader retains SDK envelope versions 2 through 15, subject to each version's restore checks below, and rejects unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
+
+The destination SDK must use the exact Codex revision that saved the checkpoint. A recognized envelope does not permit another native revision. Current trusted host configuration still supplies credentials, callbacks, tool bindings, the matching output contract, and executor policy; a recognized version grants none of those permissions.
+
+The [checkpoint capture provenance](../../../packages/agents-codex/test/native/fixtures/checkpoint-upgrades/README.md) records real idle, manual, and Code Mode captures from a preview source snapshot and its matching native artifact. Retained captures qualify later candidates by replaying accepted history and checking current restore refusals. They do not establish a stable-release upgrade, coverage of every historical preview, cross-language conversion, downgrade support, or arbitrary native-revision portability. Keep the producer SDK available until your candidate passes the relevant continuation tests.
+
 For a pending manual checkpoint, instructions and pending tool declarations/result schemas must match. Output-aware versions also require the same effective mode, JSON schema, and repair budget. Omitted, `undefined`, and zero repair budgets have the same output identity. Supply the matching output declaration on the destination Agent before restoring.
 
 | Idle / pending versions | Data and restore constraints |
 | --- | --- |
-| Legacy pending v3 | Plain-text final output only. |
+| Legacy idle v2 / pending v3 | Plain-text final output only. |
 | v4 / v5 | Effective output contract. Pending v5 supports plain or prompted output over HTTP or WebSocket; native structured output retains the active turn's schema, including a per-turn override. |
 | v6 / v7 | Adds settled Code Mode stored JSON, cell counters, and terminal observations. |
 | v8 / v9 | Retains managed defaults; pending v9 can retain the paused operation's static selection. |
