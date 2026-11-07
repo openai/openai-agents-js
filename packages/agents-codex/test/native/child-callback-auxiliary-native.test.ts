@@ -246,8 +246,9 @@ for (const route of [
   'executor-before',
   'executor-after',
 ] as const) {
-  it.each(['release', 'cancel', 'close', 'reader-end'] as const)(
+  it.for(['release', 'cancel', 'close', 'reader-end'] as const)(
     `waits for real native child publication before ${route} callback (%s)`,
+    { timeout: 30_000 },
     async (mode: Mode, testContext) => {
       // Only released executor work needs a real strict process sandbox.
       // Keep cancellation, retirement and MCP publication coverage on this host.
@@ -507,6 +508,5 @@ for (const route of [
         }
       }
     },
-    30000,
   );
 }
