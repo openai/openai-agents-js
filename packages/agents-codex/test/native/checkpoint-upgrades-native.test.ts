@@ -240,8 +240,9 @@ it.skipIf(!nativeTests || process.platform !== 'win32')(
       model: 'gpt-5.5',
       provider,
     });
+    // Native history validation exposes its contextual error at this boundary.
     await expect(agent.session({ state })).rejects.toThrow(
-      'AbsolutePathBuf deserialized without a base path',
+      'Invalid checkpoint history record',
     );
     expect(server.requests).toHaveLength(0);
     expect(JSON.stringify(state)).toBe(original);
