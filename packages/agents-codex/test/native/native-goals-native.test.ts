@@ -18,25 +18,11 @@ import { binding, type NativeThread } from '../../src/runtime/binding';
 import { captureTools } from '../../src/runtime/tools';
 import { ModelServer, call, message } from './fixtures/model-server';
 
-// Expect only Node's initial SQLite import warning; restore normal handling
-// before the tests execute.
-const restoreSqliteWarning = vi.hoisted(() => {
-  const emitWarning = process.emitWarning;
-  const warning = vi
-    .spyOn(process, 'emitWarning')
-    .mockImplementation((...args: unknown[]) => {
-      if (
-        args[0] ===
-          'SQLite is an experimental feature and might change at any time' &&
-        args[1] === 'ExperimentalWarning' &&
-        args.slice(2).every((argument) => argument === undefined)
-      )
-        return;
-      Reflect.apply(emitWarning, process, args);
-    });
-  return () => warning.mockRestore();
+// Load SQLite before the remaining imports; keep every unrelated warning guarded.
+await vi.hoisted(async () => {
+  const { loadSqliteForTest } = await import('./fixtures/sqlite-warning');
+  loadSqliteForTest();
 });
-restoreSqliteWarning();
 
 const homes: string[] = [];
 const workers = new Map<ChildProcess, Promise<void>>();

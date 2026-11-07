@@ -1,3 +1,5 @@
+import type { NativeEventBatch } from '../fixtures/native-event-batches';
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { createHash } from 'node:crypto';
 import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -84,7 +86,15 @@ async function providerFor(server: ModelServer) {
 }
 
 async function oneChild(session: Session) {
-  const children = await Array.fromAsync(session.subagents());
+  const children = await vi.waitUntil(
+    async () => {
+      const children = await Array.fromAsync(session.subagents());
+      // Retry only the observed snapshot with one unpublished child turn.
+      if (children.length === 1 && children[0]!.turn === null) return false;
+      return children;
+    },
+    { timeout: 3000 },
+  );
   expect(children).toHaveLength(1);
   const child = children[0]!;
   if (!child.turn) throw new Error('Missing real native child turn');
@@ -205,7 +215,7 @@ it.each([
 describe('passive real-native child Turn events', () => {
   it('drains the real child terminal after its native result settles', async () => {
     const native = await binding();
-    const next = native.NativeThread.prototype._next_session_event;
+    const next = native.NativeThread.prototype._next_session_events;
     const childEntered = Promise.withResolvers<void>();
     const releaseModel = Promise.withResolvers<void>();
     const terminalHeld = Promise.withResolvers<NativeEvent>();
@@ -214,10 +224,10 @@ describe('passive real-native child Turn events', () => {
     // Hold only JS delivery of the actual multiplexed child terminal.
     vi.spyOn(
       native.NativeThread.prototype,
-      '_next_session_event',
+      '_next_session_events',
     ).mockImplementation(async function (this: NativeThread) {
       const raw = await next.call(this);
-      const event = parseEvent(raw);
+      const event = parseEvent(firstNativeBatchWire(raw));
       if (
         !held &&
         event.subagent_id &&
@@ -298,20 +308,20 @@ describe('passive real-native child Turn events', () => {
 
   it('keeps a newer acknowledged child open while an older start awaits delivery', async () => {
     const native = await binding();
-    const next = native.NativeThread.prototype._next_session_event;
+    const next = native.NativeThread.prototype._next_session_events;
     const firstStart = Promise.withResolvers<NativeEvent>();
     const secondStart = Promise.withResolvers<NativeEvent>();
     const releaseFirstStart = Promise.withResolvers<void>();
     const releaseSecondStart = Promise.withResolvers<void>();
-    const queued: string[] = [];
+    const queued: NativeEventBatch[] = [];
     let starts = 0;
     // Preserve native event order while controlling when Session receives it.
     vi.spyOn(
       native.NativeThread.prototype,
-      '_next_session_event',
+      '_next_session_events',
     ).mockImplementation(async function (this: NativeThread) {
       const raw = queued.shift() ?? (await next.call(this));
-      const event = parseEvent(raw);
+      const event = parseEvent(firstNativeBatchWire(raw));
       if (
         event.subagent_id &&
         ['task_started', 'turn_started'].includes(event.msg?.type)
@@ -323,7 +333,7 @@ describe('passive real-native child Turn events', () => {
           for (;;) {
             const pending = await next.call(this);
             queued.push(pending);
-            const observed = parseEvent(pending);
+            const observed = parseEvent(firstNativeBatchWire(pending));
             if (
               observed.subagent_id === event.subagent_id &&
               ['task_complete', 'turn_complete'].includes(observed.msg?.type)

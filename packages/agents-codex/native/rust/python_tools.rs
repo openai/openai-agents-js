@@ -201,8 +201,6 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
                         | "tool_search"
                         | "apply_patch"
                         | "write_stdin"
-                        | "project_glob"
-                        | "project_grep"
                 ))
                 && key.namespace.as_deref() != Some("tool_search")
                 && !matches!(
@@ -713,6 +711,13 @@ impl PythonTools {
             .read()
             .expect("JavaScript catalog poisoned")
             .clone()
+    }
+
+    pub(crate) fn has_pending_request(&self) -> bool {
+        self.family
+            .receiver
+            .try_lock()
+            .map_or(true, |receiver| !receiver.is_empty())
     }
 
     pub async fn next_request(self: &Arc<Self>) -> Value {
@@ -2977,6 +2982,23 @@ mod declaration_validation_tests {
                 .to_string()
                 .contains("reserved name")
         );
+    }
+
+    #[test]
+    fn search_names_are_valid_application_declarations() {
+        for name in ["project_glob", "project_grep"] {
+            let function = json!({
+                "type": "function", "name": name, "description": "Application tool.",
+                "inputSchema": {"type": "object", "properties": {}}, "deferLoading": false,
+            });
+            for specs in [
+                json!([function.clone()]),
+                json!([{"type": "namespace", "name": "functions", "description": "Default namespace.", "tools": [function]}]),
+            ] {
+                let specs: Vec<DynamicToolSpec> = serde_json::from_value(specs).unwrap();
+                assert!(validate_declarations(&specs).is_ok());
+            }
+        }
     }
 
     #[test]

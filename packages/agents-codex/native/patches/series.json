@@ -285,6 +285,30 @@
       "sha256": "9999a2376c507d69d7a0e37e813c3c63730546ee045aa787a6257429aaa8778e"
     },
     {
+      "path": "0061-cache-converted-ca-bundles.patch",
+      "sha256": "2d16bc0c9b57d90e95df52e2b4e2ebb1e375946faa6c2dd50578cb8d99d92115"
+    },
+    {
+      "path": "0063-native-model-http-dispatch.patch",
+      "sha256": "e7469d55c4756e3ff8af235e9f5ae15cd86158223bb115e1463e546e890118a9"
+    },
+    {
+      "path": "0083-native-performance-regression-tests.patch",
+      "sha256": "892b91e4143900de39692110261e02c4f6327f385dee7bb474b8fcb6b9a3b1ed"
+    },
+    {
+      "path": "0069-test-root-termination-under-backpressure.patch",
+      "sha256": "937a81392a18b15207c1177aeab9012629178d0600f6348c892455b8f0af8898"
+    },
+    {
+      "path": "0084-update-native-test-fixtures.patch",
+      "sha256": "ec86c33a20e83f3fb6f60e60400ce63475cd126704530de293798f9ca476bd65"
+    },
+    {
+      "path": "0077-avoid-unrequested-history-snapshots.patch",
+      "sha256": "b2e54de97b16ffbb23d9936eeb900882fec19373a24c34bec4fc55ea73fa1903"
+    },
+    {
       "path": "0060-bounded-nofollow-filesystem.patch",
       "sha256": "d2048388044ec4004ba13d1111b2da602a401fb4c572280ae24474cd6f480bc1"
     },
@@ -293,5 +317,5 @@
       "sha256": "ac413ec794493e2047724a5ee0473744c4a0464313d4330ba6975780bda6e5d3"
     }
   ],
-  "result_tree": "46f8378f91ef21454bec6717b3beae30000d976f"
+  "result_tree": "1828ee666dc818c57ca811bec7f923508210d709"
 }

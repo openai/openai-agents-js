@@ -1,3 +1,7 @@
+import {
+  firstNativeBatchWire,
+  replaceSingletonNativeBatchEvent,
+} from '../fixtures/native-event-batches';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -245,15 +249,15 @@ describe('persistent per-operation output contracts', () => {
     'inherits the captured %s contract through a real native successor',
     async (mode) => {
       const native = await binding();
-      const nextEvent = native.NativeThread.prototype._next_session_event;
+      const nextEvent = native.NativeThread.prototype._next_session_events;
       const submit = native.NativeThread.prototype._submit;
       let originalId: string | undefined;
       vi.spyOn(
         native.NativeThread.prototype,
-        '_next_session_event',
+        '_next_session_events',
       ).mockImplementation(async function (this: NativeThread) {
         const raw = await nextEvent.call(this);
-        const event = JSON.parse(raw);
+        const event = JSON.parse(firstNativeBatchWire(raw));
         if (
           !originalId &&
           !event.subagent_id &&
@@ -261,7 +265,7 @@ describe('persistent per-operation output contracts', () => {
         ) {
           originalId = event.id;
           event.sdk_unsampled_steering = true;
-          return JSON.stringify(event);
+          return replaceSingletonNativeBatchEvent(raw, event);
         }
         return raw;
       });

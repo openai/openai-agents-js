@@ -82,10 +82,18 @@ it('accepts a live child manual reply during graceful tree interruption', async 
       }
     }
     if (!request) throw new Error('Missing child manual request');
-    let child: Subagent | undefined;
-    for await (const candidate of session.subagents()) {
-      if (candidate.id === request.subagentId) child = candidate;
-    }
+    const childSession = session;
+    const child = await vi.waitFor(
+      async () => {
+        let child: Subagent | undefined;
+        for await (const candidate of childSession.subagents()) {
+          if (candidate.id === request!.subagentId) child = candidate;
+        }
+        expect(child?.turn).toBeTruthy();
+        return child;
+      },
+      { timeout: 5_000 },
+    );
     if (!child?.turn) throw new Error('Missing live child turn');
     const original = child.turn;
     expect(request.call).toMatchObject({
@@ -202,7 +210,14 @@ it('rejects delayed manual replies from an evicted child handle', async () => {
       )!;
     await (await session.submit('start alpha')).wait();
     const first = await nextDecision();
-    const old = await alpha();
+    const old = await vi.waitFor(
+      async () => {
+        const child = await alpha();
+        expect(child?.turn?.turnId).toBe(first.turnId);
+        return child;
+      },
+      { timeout: 5_000 },
+    );
     const oldBatch = await old.turn!.wait({ until: 'request' });
     if (!('requests' in oldBatch))
       throw new Error('Expected original child request');
@@ -252,7 +267,14 @@ it('rejects delayed manual replies from an evicted child handle', async () => {
       );
       await (await session.submit('reload alpha')).wait();
       const replacement = await nextDecision();
-      const current = await alpha();
+      const current = await vi.waitFor(
+        async () => {
+          const child = await alpha();
+          expect(child?.turn?.turnId).toBe(replacement.turnId);
+          return child;
+        },
+        { timeout: 5_000 },
+      );
       const replacementBatch = await current.turn!.wait({ until: 'request' });
       if (!('requests' in replacementBatch))
         throw new Error('Expected replacement child request');

@@ -14,12 +14,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   Agent,
   Environment,
   NativeAgents,
   NativeError,
   localStorage,
+  tool,
   toolRef,
   type ExecutorContext,
   type SessionState,
@@ -115,6 +117,168 @@ function wireToolNames(request: JsonObject): string[] {
         add(item.tools);
   return names.sort();
 }
+
+it.each([false, true])(
+  'allows application search names with native search disabled (Environment=%s)',
+  async (withEnvironment) => {
+    await using project = await workspace();
+    const invoked: string[] = [];
+    const names = ['project_glob', 'project_grep'];
+    const tools = names.map((name) =>
+      tool({
+        name,
+        parameters: z.object({}),
+        execute: () => {
+          invoked.push(name);
+          return `application ${name}`;
+        },
+      }),
+    );
+    const server = new ModelServer([
+      (request) => {
+        expect(wireToolNames(request)).toEqual(names);
+        return [call('project_glob', {}, { callId: 'application-glob' })];
+      },
+      (request) => {
+        expect(output(request, 'application-glob')).toContain(
+          'application project_glob',
+        );
+        return [call('project_grep', {}, { callId: 'application-grep' })];
+      },
+      (request) => {
+        expect(output(request, 'application-grep')).toContain(
+          'application project_grep',
+        );
+        return [message('application tools completed')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      provider,
+      instructions: 'Use application tools.',
+      tools,
+    });
+    await agent.validate();
+    const answer = await agent.run(
+      'Run both tools.',
+      withEnvironment ? { environment: project.environment([]) } : {},
+    );
+    expect(answer.finalOutput).toBe('application tools completed');
+    expect(invoked).toEqual(names);
+    server.assertExhausted();
+  },
+  30_000,
+);
+
+it.each(['project_glob', 'project_grep'] as const)(
+  'rejects an application collision with selected native %s before model access',
+  async (name) => {
+    await using project = await workspace();
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    let invoked = false;
+    const agent = new Agent({
+      provider,
+      instructions: 'Do not open conflicting tools.',
+      tools: [
+        tool({
+          name,
+          parameters: z.object({}),
+          execute: () => {
+            invoked = true;
+            return 'unexpected';
+          },
+        }),
+      ],
+    });
+    await expect(
+      agent.session({ environment: project.environment([name]) }),
+    ).rejects.toThrow(`Duplicate selected tool functions.${name}`);
+    expect(invoked).toBe(false);
+    expect(server.requests).toHaveLength(0);
+  },
+);
+
+it.each(['project_glob', 'project_grep'] as const)(
+  'reserves only selected native %s and preserves the application update ceiling',
+  async (nativeName) => {
+    await using project = await workspace();
+    const applicationName =
+      nativeName === 'project_glob' ? 'project_grep' : 'project_glob';
+    const invoked: string[] = [];
+    const application = (value: string, name = applicationName) =>
+      tool({
+        name,
+        parameters: z.object({}),
+        execute: () => {
+          invoked.push(value);
+          return value;
+        },
+      });
+    const server = new ModelServer([
+      (request) => {
+        expect(wireToolNames(request)).toEqual([
+          'project_glob',
+          'project_grep',
+        ]);
+        return [call(applicationName, {}, { callId: 'application-first' })];
+      },
+      (request) => {
+        expect(output(request, 'application-first')).toContain(
+          'original callback',
+        );
+        return [message('first completed')];
+      },
+      [call(applicationName, {}, { callId: 'application-updated' })],
+      (request) => {
+        expect(output(request, 'application-updated')).toContain(
+          'updated callback',
+        );
+        return [
+          call(
+            nativeName,
+            { pattern: nativeName === 'project_glob' ? '**/*.ts' : 'needle' },
+            { callId: 'native-search' },
+          ),
+        ];
+      },
+      (request) => {
+        const found = result(request, 'native-search');
+        expect(found.errors).toEqual([]);
+        expect(found.matches).toHaveLength(3);
+        return [message('update completed')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      provider,
+      instructions: 'Use the distinct application and native tools.',
+      tools: [application('original callback')],
+    }).session({ environment: project.environment([nativeName]) });
+    expect(
+      (await (await session.submit('Run application tool.')).wait())
+        .finalOutput,
+    ).toBe('first completed');
+    await expect(
+      session.update({
+        tools: [application('unexpected native replacement', nativeName)],
+      }),
+    ).rejects.toThrow(
+      'Updated tools must have been declared when the Session opened',
+    );
+    await session.update({ tools: [application('updated callback')] });
+    expect(
+      (
+        await (
+          await session.submit('Run updated tool and native search.')
+        ).wait()
+      ).finalOutput,
+    ).toBe('update completed');
+    expect(invoked).toEqual(['original callback', 'updated callback']);
+    server.assertExhausted();
+  },
+  30_000,
+);
 
 it.each(['local', 'remote'] as const)(
   'searches the selected %s workspace without command grants or project guidance',

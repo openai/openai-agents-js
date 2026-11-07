@@ -3,6 +3,8 @@ import type { ObservationPhase } from './observation';
 /** Shared by a native owner's readers and their observed child turns. */
 export interface ChildObservationProducer {
   ended: boolean;
+  /** The ordered event reader ended; auxiliary callback readers may still drain. */
+  eventReaderEnded: boolean;
 }
 
 /** Internal callback ownership for independently running native child turns. */

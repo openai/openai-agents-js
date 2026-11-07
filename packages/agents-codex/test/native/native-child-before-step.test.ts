@@ -348,7 +348,15 @@ it('uses child defaults for undefined and removes them for an explicit empty sel
     expect(
       (await (await session.submit('Start a child.')).wait()).finalOutput,
     ).toBe('root complete');
-    const [child] = await Array.fromAsync(session.subagents());
+    const children = await vi.waitFor(
+      async () => {
+        const children = await Array.fromAsync(session.subagents());
+        expect(children[0]?.turn).toBeTruthy();
+        return children;
+      },
+      { timeout: 5_000 },
+    );
+    const [child] = children;
     expect((await child.turn!.wait()).finalOutput).toBe('child complete');
     expect(invoked).toBe(true);
     expect(callbacks.map((callback) => callback.stepIndex)).toEqual(

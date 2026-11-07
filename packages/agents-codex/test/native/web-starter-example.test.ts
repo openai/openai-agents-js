@@ -17,6 +17,12 @@ import {
   type Snapshot,
 } from '../../../../examples/codex/web-starter/protocol';
 
+// Load SQLite before the remaining imports; keep every unrelated warning guarded.
+await vi.hoisted(async () => {
+  const { loadSqliteForTest } = await import('./fixtures/sqlite-warning');
+  loadSqliteForTest();
+});
+
 const timeout = 25_000;
 type App = Awaited<ReturnType<typeof startWebStarter>>;
 async function withApp(

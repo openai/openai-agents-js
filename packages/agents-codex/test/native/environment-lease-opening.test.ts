@@ -1,3 +1,4 @@
+import { nativeEventBatch } from '../fixtures/native-event-batches';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -64,12 +65,14 @@ function scriptedEvents() {
         queueMicrotask(() => submitted.resolve());
         return JSON.stringify({ status: 'started', turn_id: 'run-one' });
       },
-      _next_session_event: () =>
-        queued.length
-          ? Promise.resolve(queued.shift()!)
-          : new Promise<string>((resolve) => {
-              readers.push(resolve);
-            }),
+      _next_session_events: async () =>
+        nativeEventBatch([
+          await (queued.length
+            ? Promise.resolve(queued.shift()!)
+            : new Promise<string>((resolve) => {
+                readers.push(resolve);
+              })),
+        ]),
       _finish_child_event_reader: () => {},
       _check_python_tool: () => {},
       _respond_python_tool: async () => {

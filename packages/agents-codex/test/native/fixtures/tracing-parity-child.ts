@@ -1,3 +1,7 @@
+import {
+  firstNativeBatchWire,
+  replaceSingletonNativeBatchEvent,
+} from '../../fixtures/native-event-batches';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -652,7 +656,7 @@ async function retainedCase(
   authorization: (string | undefined)[],
 ) {
   const native = await binding();
-  const nextEvent = native.NativeThread.prototype._next_session_event;
+  const nextEvent = native.NativeThread.prototype._next_session_events;
   const submit = native.NativeThread.prototype._submit;
   for (const disabled of [true, false]) {
     const entered = Promise.withResolvers<void>();
@@ -668,11 +672,11 @@ async function retainedCase(
     });
     // Reuse the established conditional-tail seam: only the unsampled hint and
     // conditional admission are projected; both model turns execute natively.
-    native.NativeThread.prototype._next_session_event = async function (
+    native.NativeThread.prototype._next_session_events = async function (
       this: NativeThread,
     ) {
       const raw = await nextEvent.call(this);
-      const event = JSON.parse(raw);
+      const event = JSON.parse(firstNativeBatchWire(raw));
       if (
         !originalId &&
         !event.subagent_id &&
@@ -680,7 +684,7 @@ async function retainedCase(
       ) {
         originalId = event.id;
         event.sdk_unsampled_steering = true;
-        return JSON.stringify(event);
+        return replaceSingletonNativeBatchEvent(raw, event);
       }
       return raw;
     };
@@ -814,7 +818,7 @@ async function retainedCase(
       release.resolve();
       sessionCredential.close();
       rootCredential.close();
-      native.NativeThread.prototype._next_session_event = nextEvent;
+      native.NativeThread.prototype._next_session_events = nextEvent;
       native.NativeThread.prototype._submit = submit;
     }
   }

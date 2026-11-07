@@ -5,10 +5,16 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { ThumbnailStore } from '../../../../examples/codex/external-job-store';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
+
+// Load SQLite before the remaining imports; keep every unrelated warning guarded.
+await vi.hoisted(async () => {
+  const { loadSqliteForTest } = await import('./fixtures/sqlite-warning');
+  loadSqliteForTest();
+});
 
 const ORIGINAL_CALL = 'original-thumbnail-call';
 const RESULT_BYTES = '{"byteCount":3085}';

@@ -1,3 +1,4 @@
+import { nativeEventBatch } from '../fixtures/native-event-batches';
 import { afterEach, expect, expectTypeOf, it, vi } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -49,14 +50,14 @@ function reader() {
   const accepted = Promise.withResolvers<string>();
   const native = {
     id: 'session',
-    _next_session_event: vi.fn(async () => {
+    _next_session_events: vi.fn(async () => {
       ++reads;
       barriers.get(reads)?.resolve();
       while (!pending.length) {
         if (closed) throw new Error('Reader closed');
         await changed.promise;
       }
-      return pending.shift()!;
+      return nativeEventBatch([pending.shift()!]);
     }),
     _submit: vi.fn(() => accepted.promise),
     _finish_child_event_reader: vi.fn(),

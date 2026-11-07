@@ -817,8 +817,14 @@ it('inherits the captured standalone grant into a current admitted child', async
       }),
     });
     await (await session.submit('Delegate')).wait();
-    const children = [];
-    for await (const child of session.subagents()) children.push(child);
+    const children = await vi.waitFor(
+      async () => {
+        const children = await Array.fromAsync(session.subagents());
+        expect(children[0]?.turn).toBeTruthy();
+        return children;
+      },
+      { timeout: 5_000 },
+    );
     expect(children).toHaveLength(1);
     expect((await children[0].turn!.wait()).finalOutput).toBe('child done');
     expect(peer.searches).toHaveLength(1);
@@ -1015,11 +1021,19 @@ async function savedAgentModels(
       }),
     });
     await (await session.submit('Finish')).wait();
-    const children = [];
-    for await (const child of session.subagents()) children.push(child);
     if (childModel) {
-      expect(children).toHaveLength(1);
-      expect((await children[0].turn!.wait()).finalOutput).toBe('child done');
+      const turn = await vi.waitFor(
+        async () => {
+          const children = await Array.fromAsync(session.subagents());
+          expect(children).toHaveLength(1);
+          const [child] = children;
+          const turn = child?.turn;
+          if (!turn) throw new Error('Expected the saved child turn');
+          return turn;
+        },
+        { timeout: 5_000 },
+      );
+      expect((await turn.wait()).finalOutput).toBe('child done');
     }
     const state = await session.saveState();
     if (childModel) {

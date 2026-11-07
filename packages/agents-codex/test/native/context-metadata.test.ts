@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import {
   Agent,
   Environment,
@@ -206,7 +206,14 @@ it('reports the model context used for child compaction and sampling', async () 
       await childEntered.promise;
       const parent = await root.wait();
       expect(parent.usage?.modelContextWindow).toBe(258_400);
-      const children = await Array.fromAsync(session.subagents());
+      const children = await vi.waitFor(
+        async () => {
+          const children = await Array.fromAsync(session.subagents());
+          expect(children[0]?.turn).toBeTruthy();
+          return children;
+        },
+        { timeout: 5_000 },
+      );
       expect(children).toHaveLength(1);
       const child = children[0]!.turn!;
       releaseChild.resolve();

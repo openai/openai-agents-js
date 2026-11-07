@@ -20,6 +20,113 @@ function scope(
 }
 
 describe('passive turn observation cursors', () => {
+  it('shares the next change without replaying notifications from before capture', async () => {
+    const buffer = new ObservationBuffer('session');
+    buffer.notify();
+    buffer.notify();
+    const first = buffer.waitForChange();
+    expect(buffer.waitForChange()).toBe(first);
+    let firstChanged = false;
+    void first.then(() => {
+      firstChanged = true;
+    });
+    await Promise.resolve();
+    expect(firstChanged).toBe(false);
+
+    buffer.notify();
+    const second = buffer.waitForChange();
+    expect(second).not.toBe(first);
+    expect(buffer.waitForChange()).toBe(second);
+    let secondChanged = false;
+    void second.then(() => {
+      secondChanged = true;
+    });
+    await first;
+    expect(firstChanged).toBe(true);
+    expect(secondChanged).toBe(false);
+    buffer.notify();
+    await second;
+    expect(secondChanged).toBe(true);
+  });
+
+  it('wakes independent parked readers and preserves the sibling when one closes', async () => {
+    const buffer = new ObservationBuffer('session');
+    const first = buffer.events(
+      {},
+      scope(() => 'open'),
+    );
+    const second = buffer.events(
+      {},
+      scope(() => 'open'),
+    );
+    const firstRead = first.next();
+    const secondRead = second.next();
+    const changed = buffer.waitForChange();
+    const start = buffer.append({ type: 'turn_started', ...turn });
+    buffer.notify();
+    await changed;
+    expect(await firstRead).toEqual({ done: false, value: start });
+    expect(await secondRead).toEqual({ done: false, value: start });
+
+    const closedRead = first.next();
+    const siblingRead = second.next();
+    await first.return!();
+    expect(await closedRead).toEqual({ done: true, value: undefined });
+    const delta = buffer.append({
+      type: 'output_text_delta',
+      ...turn,
+      itemId: 'message',
+      delta: 'α🙂',
+    });
+    expect(await siblingRead).toEqual({ done: false, value: delta });
+    await second.return!();
+  });
+
+  it('captures a producer notification during state inspection before awaiting', async () => {
+    const buffer = new ObservationBuffer('session');
+    let inspected = false;
+    const reader = buffer.events(
+      {},
+      scope(() => {
+        if (inspected) return 'ended';
+        inspected = true;
+        buffer.notify();
+        return 'open';
+      }),
+    );
+    expect(await reader.next()).toEqual({ done: true, value: undefined });
+  });
+
+  it('wakes parked readers for a gap and drains finish before EOF', async () => {
+    const buffer = new ObservationBuffer('session');
+    const reader = buffer.events();
+    const missing = reader.next();
+    const changed = buffer.waitForChange();
+    buffer.gap();
+    await changed;
+    expect(await missing).toEqual({
+      done: false,
+      value: {
+        type: 'gap',
+        sessionId: 'session',
+        firstSequence: 1,
+        sequence: 1,
+      },
+    });
+    const ended = reader.next();
+    buffer.finish('closed');
+    expect(await ended).toEqual({
+      done: false,
+      value: {
+        type: 'session_ended',
+        sessionId: 'session',
+        sequence: 2,
+        reason: 'closed',
+      },
+    });
+    expect(await reader.next()).toEqual({ done: true, value: undefined });
+  });
+
   it('replays only owned observations to independent readers without reading requests', async () => {
     const pendingManual = vi.fn(() => {
       throw new Error('a passive reader must not enumerate requests');
