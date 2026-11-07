@@ -20,9 +20,9 @@ The returned handle exposes two event views. `unvalidatedRaw` is a Web ReadableS
 
 ### Accepted semantic replay
 
-Use `for await (const event of live)` or `live.toStream()` for supported SDK semantic events: `tool_called`, `tool_output`, and `message_output_created`. They replay accepted items in Model-batch and tool-call order after guarded completion and physical cleanup. A rejected run emits no accepted semantic items. This route does not promise pre-completion semantic delivery, every classic stream event, or a fabricated RunState.
+Use `for await (const event of live.replayEvents())` for supported SDK semantic events: `tool_called`, `tool_output`, and `message_output_created`. They replay accepted items in Model-batch and tool-call order after guarded completion and physical cleanup. A rejected run emits no accepted semantic items. This route does not promise pre-completion semantic delivery, every classic stream event, or a fabricated RunState.
 
-Completed results also support `for await (const event of result)` and `result.toStream()` for accepted semantic replay. For a completed handoff, events replay in this order:
+Completed results also support `for await (const event of result.replayEvents())` for accepted semantic replay. For a completed handoff, events replay in this order:
 
 1. `handoff_requested` and `handoff_occurred` for retained transfer items.
 2. An `agent_updated_stream_event` with the actual target Agent, followed by that Agent's items.

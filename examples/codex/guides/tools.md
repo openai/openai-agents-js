@@ -39,11 +39,11 @@ SDK-issued function, collaboration, and executor callback contexts include froze
 
 ### Manual tool requests
 
-`manualTool()` creates a declaration whose `ActionRequested` events require an application reply. Call `request.reply(value)` and submit that reply to the session. Validation occurs on submission, so an invalid reply does not consume the request. For one-shot runs, `onInteraction` supplies replies.
+`manualTool()` creates a declaration whose `ActionRequested` events require an application reply. Call `request.reply(value)` and deliver that reply with `session.respond()`. Validation occurs on submission, so an invalid reply does not consume the request. An `onInteraction` handler supplied to `run()` or `session()` can supply replies instead.
 
 To answer manual tools in an explicit Session:
 
-1. Await `turn.wait({ until: 'request' })` for the captured turn's completion or current request batch.
+1. Await `turn.wait({ until: 'manual_tool' })` for the captured turn's completion or current request batch.
 2. Check `'requests' in outcome` to distinguish the frozen batch from `Completed`.
 3. Match each request with its `manualTool` declaration, construct `request.reply(value)`, and deliver it through `session.respond()`.
 4. Wait again to observe the next batch or final result. Answered requests leave later batches.
@@ -58,13 +58,13 @@ Before returning a batch, the SDK validates every manual request pending for tha
 
 The SDK parses each full native grant once even when waiters and the normal event reader overlap. A callback tool still runs through its ordinary reader path.
 
-`session.wait({ until: 'request' })` captures the current logical root at call entry, including pending admission and restored manual roots. A later independent submission cannot retarget that wait. Keep an overridden root's issued Turn, as with ordinary waits. Queued Turns retain their nullable IDs, and an exact child Turn exposes only its own current requests. Root waits exclude child requests. Waits without arguments still return only `Completed`.
+`session.wait({ until: 'manual_tool' })` captures the current logical root at call entry, including pending admission and restored manual roots. A later independent submission cannot retarget that wait. Keep an overridden root's issued Turn, as with ordinary waits. Queued Turns retain their nullable IDs, and an exact child Turn exposes only its own current requests. Root waits exclude child requests. Waits without arguments still return only `Completed`.
 
 An optional `signal` cancels only that caller's wait with its reason. Native work, other waiters and reply grants remain usable. Completion wins if its shared public result has already settled at the final scan. Waits inside a callback for the same Session retain the existing deadlock refusal. These request waits cover manual function tools; approval, form and startup questions remain separate capabilities.
 
 ## Select tools for one root
 
-Use `session.submit(input, { tools, beforeStep })` to select tools for one new root from the tools admitted at opening. `enqueue(input, outputType, options)` and `submitWithOutput(input, outputType, options)` accept the same options.
+Use `session.submit(input, { tools, beforeStep })` to select tools for one new root from the tools admitted at opening. `enqueue(input, options)` accepts the same options. Both methods also accept `outputType` in that object.
 
 Omit `tools` to use the current defaults. Pass `tools: []` to select none. To select one tool, pass an array containing its declaration, such as `tools: [lookup]`, or its exact reference, such as `tools: [toolRef('lookup', 'crm')]` for an admitted MCP tool. An omitted or null namespace means `functions`.
 

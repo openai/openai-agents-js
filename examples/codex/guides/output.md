@@ -41,7 +41,7 @@ The original root keeps its FIFO position until repair, receipt collection, and 
 
 #### Read repair results
 
-Successful completion exposes `repairAttempts`, detached records of the actual correction turns with their IDs, status, usage, and original-parent links. Session `items()` and `turns()` also expose passive repair history. `Completed.usage` still reports the original conversation's usage separately. No attempt means an empty array; absent attempt usage remains null.
+Successful completion exposes `repairAttempts`, detached records of the actual correction turns with their IDs, status, usage, and original-parent links. Session `items()` and `turns()` also expose passive repair history. `Completed.threadUsage` still reports the original conversation's usage separately. No attempt means an empty array; absent attempt usage remains null.
 
 If validation still fails after the budget is exhausted, `OutputValidationError.rawOutput` contains the latest invalid text. The error's fixed message excludes that text. Rejected text and repair history may contain sensitive data. Choose where to store or display them.
 
@@ -53,13 +53,13 @@ The [output modes example](../output-modes.ts) shows a native greeting and promp
 
 ### Override output for one turn
 
-`session.submitWithOutput(input, outputType)` always starts a new root and rejects a busy Session. Keep the returned `Turn`. Its `wait()` returns the inferred value and follows automatic continuations. The next ordinary `submit` uses the opening default again.
+`session.submit(input, { outputType })` always starts a new root and rejects a busy Session. Keep the returned `Turn`. Its `wait()` returns the inferred value and follows automatic continuations. The next ordinary `submit` uses the opening default again.
 
 ### Queue independent turns
 
-`session.enqueue(input, outputType?)` registers FIFO work and returns its exact Turn before native admission. Omit the output contract to capture the Session default, or pass one accepted by `submitWithOutput`.
+`session.enqueue(input, { outputType })` registers FIFO work and returns its exact Turn before native admission. Omit `outputType` to capture the Session default. Both methods infer the selected output type.
 
-A queued Turn has `turnId: string | null` and an immediate `submissionId`. On admission, `turnId` becomes the initial native ID. Ordinary submit and submitWithOutput Turns keep string IDs and their current acknowledgment behavior. Legacy submit rejects `ifBusy: 'queue'`, including through an options alias.
+A queued Turn has `turnId: string | null` and an immediate `submissionId`. On admission, `turnId` becomes the initial native ID. Submitted Turns keep string IDs after native admission. `submit` rejects while busy. Choose `enqueue` for independent work or `turn.steer` for new input to the active root.
 
 Enqueue captures input and output before it returns. The next root starts after the current root's automatic or manual continuations, entered callbacks, and any repair and cleanup settle. Waiting on a later entry leaves the order intact.
 
@@ -71,7 +71,7 @@ If you force-cancel before the SDK receives the native admission acknowledgment,
 
 ### Wait, steer, and reply on an overridden turn
 
-Legacy `submit` rejects an `outputType` field, including one hidden by an options alias; use `submitWithOutput` to select a contract.
+Pass the per-turn `outputType` in the same options object as tool selection and other operation options.
 
 Keep the Turn returned for the overridden root and use it throughout that operation:
 
@@ -79,11 +79,11 @@ Keep the Turn returned for the overridden root and use it throughout that operat
 - Use `turn.steer()` for input while it runs. With the current source build, use [exact native-step steering](sessions.md#steer-a-logical-root-or-one-native-step) when the input must target a captured step. Implicit busy steering through `session.submit(input)` rejects.
 - Deliver manual replies with `session.respond(reply)`, which returns no final result. Result-returning `session.submit(reply)` rejects.
 
-A later default submission restores the ordinary shortcuts. Existing default-only submissions keep their result types and steering behavior.
+A later default submission restores the ordinary shortcuts. Default-only submissions keep their result types.
 
 The [output overrides example](../output-overrides.ts) runs native, prompted, and manual operations in one open Session, then returns to its default.
 
-To suspend a settled manual request, save it with its selected root contract. Plain text, prompted JSON, and native structured output all support this path. Restore with a matching declaration, including the repair budget. A per-operation choice makes a formatting request only when prompted validation fails and the selected budget permits repair.
+To suspend a settled manual request, save it with its selected root contract. Plain text, prompted JSON, and native structured output all support this path. Restore with a matching declaration, including the repair budget. Then capture `restored.restoredTurn`, deliver the new request's reply with `restored.respond()`, and await that Turn for the typed result. `restoredTurn` is null when opening did not restore a pending manual root. A per-operation choice makes a formatting request only when prompted validation fails and the selected budget permits repair.
 
 Usage reports native cumulative thread totals separately from the latest response. See [retained response usage](state.md#read-retained-response-usage) for provider observations, unknown counters, and their relationship to Turn success.
 
@@ -105,7 +105,7 @@ const restored = await counts.session({ state: result.state! });
 await restored.close();
 ```
 
-A view exposes its fixed `outputType`, `run()` and `session()`. It is not an Agent instance and does not expose application subclass methods. The view captures the mode, schema and retry fields in an output-mode wrapper when it is created. Existing `session.submitWithOutput()` and typed `session.enqueue()` still select output for individual operations.
+A view exposes its fixed `outputType`, `run()` and `session()`. It is not an Agent instance and does not expose application subclass methods. The view captures the mode, schema and retry fields in an output-mode wrapper when it is created. `session.submit(input, { outputType })` and `session.enqueue(input, { outputType })` select output for individual operations.
 
 ### Output policies in subclasses
 
