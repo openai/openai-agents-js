@@ -58,6 +58,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | <a name="bounded-mcp-reports"></a>Bound MCP results | [The report recipe](mcp-reports.md) runs [mcp-reports.ts](mcp-reports.ts) and keeps the full result in application storage. |
 | <a name="await-mcp-call-observers"></a>Observe one classic MCP call | Run [mcp-observers.ts](mcp-observers.ts). It uses the built classic packages and local synthetic callbacks. |
 | Search the web through the native provider | Run [native-web-search.ts](native-web-search.ts) with model credentials. See [native web search](guides/tools.md#native-web-search) for search modes and limits. |
+| Use provider-hosted file search, code, and images | Follow [the hosted-tools example](hosted-tools/README.md) with the current native source build and model credentials. |
 | Call two remote Agents over A2A | Follow the [A2A guide](../../packages/agents-codex/A2A.md) to run the [two-agent example](a2a/two-agents.ts) against local scripted peers. Use the current source checkout. |
 | Resume deferred A2A work after a coordinator restart | Follow [the deferred A2A workflow](../../packages/agents-codex/A2A.md#run-deferred-work-across-coordinator-restarts) to run [deferred-thumbnail.ts](a2a/deferred-thumbnail.ts) against a long-lived local peer. |
 

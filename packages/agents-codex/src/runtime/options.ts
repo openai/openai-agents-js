@@ -24,4 +24,5 @@ export type ThreadOptions = JsonObject & {
   runtime?: RuntimeOptions;
   instructions?: string;
   dynamic_tools?: JsonValue[];
+  _hosted_tools?: JsonObject[];
 };

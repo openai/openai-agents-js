@@ -13,6 +13,7 @@ import { collaborationTools } from './native-agents';
 import { binding, type JsonObject } from './binding';
 import { prepareOutput, type OutputSpec, type PreparedOutput } from './output';
 import { webSearchName } from './web-search';
+import { hostedToolSpecs } from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 
@@ -555,6 +556,7 @@ export class Agent<Context = undefined, Output = string> {
       customStore &&
       (environmentInput !== undefined ||
         declarations.webSearch ||
+        declarations.hostedTools.length > 0 ||
         declarations.checklist ||
         declarations.nativeGoals ||
         declarations.nativeAgents ||
@@ -609,6 +611,7 @@ export class Agent<Context = undefined, Output = string> {
         declarations.nativeGoals ||
         declarations.checklist ||
         declarations.webSearch ||
+        declarations.hostedTools.length > 0 ||
         declarations.tools.some((tool) => tool.deferLoading) ||
         declarations.mcp.some(
           (tool) => tool.deferLoading || isHostedRegistration(tool),
@@ -723,6 +726,10 @@ export class Agent<Context = undefined, Output = string> {
           }))
         : []),
       ...(search ? [webSearchName(search)] : []),
+      ...declarations.hostedTools.map((tool) => ({
+        name: tool.kind,
+        namespace: 'functions',
+      })),
       ...declarations.tools.map(toolIdentity),
       ...(deferredSchemas
         ? [{ name: 'tool_search', namespace: 'functions' }]
@@ -922,6 +929,7 @@ export class Agent<Context = undefined, Output = string> {
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
         },
         threadOptions: {
+          _hosted_tools: hostedToolSpecs(declarations.hostedTools),
           ...(projectGuidance ? { _canonical_rules: true } : {}),
           ...(files.length ? { _sdk_instruction_files: [...files] } : {}),
           ...(resume === undefined ? {} : { _sdk_resume_thread_id: resume }),
@@ -963,6 +971,7 @@ export class Agent<Context = undefined, Output = string> {
         restoredOutput: selection?.restoredOutput,
         nativeAgents,
         webSearch: search,
+        hostedTools: declarations.hostedTools,
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,

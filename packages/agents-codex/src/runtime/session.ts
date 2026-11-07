@@ -75,6 +75,7 @@ import { createUrlCompletion } from './url-elicitation';
 import { prepareNativeForm, type PreparedNativeForm } from './native-forms';
 import { z } from 'zod';
 import type { WebSearch } from './web-search';
+import { hostedToolSpecs, type HostedTool } from './hosted-tools';
 import {
   OutputValidationError,
   prepareOutput,
@@ -166,6 +167,7 @@ import {
   projectHistory,
   projectExecutionItem,
   projectSearchItem,
+  projectNativeHostedToolItem,
   threadHistorySchema,
   recordedTurnToWire,
   recordedTurnFromWire,
@@ -249,6 +251,7 @@ export interface SessionOptions {
   context?: unknown;
   initialModelSettings?: ModelSettings;
   webSearch?: WebSearch;
+  hostedTools?: readonly HostedTool[];
   mcpTools?: readonly McpTool[];
   nativeAgents?: NativeAgents;
   nativeGoals?: boolean;
@@ -1222,7 +1225,10 @@ export class Session<OutputT = string, Context = unknown> {
             );
         }
       }
-      if (this.options.webSearch?.route === 'hosted')
+      if (
+        this.options.webSearch?.route === 'hosted' ||
+        this.options.hostedTools?.length
+      )
         await this.#native._validate_hosted_search_model();
       if (this.options.initialModelSettings && !this.restored) {
         const settings = modelOverrides(
@@ -2831,6 +2837,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.codeModeEnabled ||
         this.environment ||
         this.options.webSearch ||
+        !!this.options.hostedTools?.length ||
         this.options.nativeGoals ||
         this.options.checklist ||
         this.openingMcpTools.some(isHostedRegistration)
@@ -4262,16 +4269,32 @@ export class Session<OutputT = string, Context = unknown> {
         'turn_complete',
         'turn_aborted',
         'token_count',
+        'hosted_tool_call_progress',
       ].includes(msg.type)
         ? event.id
         : undefined);
     if (typeof turnId !== 'string') return;
+    if (msg.type === 'hosted_tool_call_progress') {
+      const owner = this.childCallbacks.find(id, incarnation, turnId);
+      if (
+        owner &&
+        owner.observationPhase !== 'ended' &&
+        (!owner.instanceId || owner.instanceId === event.subagent_instance_id)
+      )
+        this.observeHostedProgress(
+          event,
+          turnId,
+          `child:${id}:${incarnation}:${turnId}`,
+          id,
+        );
+    }
     if (msg.type === 'item_completed' && msg.thread_id === id) {
       const item = projectExecutionItem(msg.item, turnId, id);
       const searchItem = item
         ? undefined
         : projectSearchItem(msg.item, turnId, id);
-      if (item || searchItem) {
+      const hostedItem = projectNativeHostedToolItem(msg.item, turnId);
+      if (item || searchItem || hostedItem) {
         const owner = this.childCallbacks.find(id, incarnation, turnId);
         if (
           owner &&
@@ -4279,6 +4302,13 @@ export class Session<OutputT = string, Context = unknown> {
           (!owner.instanceId || owner.instanceId === event.subagent_instance_id)
         ) {
           const submissionId = `child:${id}:${incarnation}:${turnId}`;
+          if (hostedItem)
+            this.observations.append({
+              type: 'hosted_tool_item_completed',
+              turnId,
+              submissionId,
+              item: hostedItem,
+            });
           if (item)
             this.observations.append({
               type: 'execution_item_completed',
@@ -4626,6 +4656,24 @@ export class Session<OutputT = string, Context = unknown> {
     return true;
   }
 
+  private observeHostedProgress(
+    event: NativeEvent,
+    turnId: string,
+    submissionId: string,
+    threadId: string,
+  ): void {
+    const raw = event.msg.event;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return;
+    this.observations.append({
+      type: 'hosted_tool_call_progress',
+      turnId,
+      submissionId,
+      threadId,
+      itemId: typeof raw.item_id === 'string' ? raw.item_id : null,
+      event: structuredClone(raw),
+    });
+  }
+
   private observeRootItem(event: NativeEvent): void {
     const msg = event.msg;
     if (
@@ -4641,13 +4689,21 @@ export class Session<OutputT = string, Context = unknown> {
     const searchItem = item
       ? undefined
       : projectSearchItem(msg.item, msg.turn_id, this.id);
-    if (!item && !searchItem) return;
+    const hostedItem = projectNativeHostedToolItem(msg.item, msg.turn_id);
+    if (!item && !searchItem && !hostedItem) return;
     const owner = this.lastRun;
     if (
       owner?.id === msg.turn_id &&
       submissions.get(owner)!.observation !== 'ended'
     ) {
       const submissionId = this.submissionIds.get(owner)!;
+      if (hostedItem)
+        this.observations.append({
+          type: 'hosted_tool_item_completed',
+          turnId: msg.turn_id,
+          submissionId,
+          item: hostedItem,
+        });
       if (item)
         this.observations.append({
           type: 'execution_item_completed',
@@ -4827,6 +4883,13 @@ export class Session<OutputT = string, Context = unknown> {
         delta: msg.delta,
       });
     }
+    if (kind === 'hosted_tool_call_progress' && event.id === run.id)
+      this.observeHostedProgress(
+        event,
+        run.id!,
+        this.submissionIds.get(run)!,
+        this.id,
+      );
     if (kind === 'raw_response_completed' && event.id === run.id) {
       const raw = msg.token_usage;
       const usage =
@@ -6829,6 +6892,13 @@ export class Session<OutputT = string, Context = unknown> {
       )
         throw new TypeError(
           'Apps registration is fixed; open a new Session to replace it',
+        );
+      if (
+        encode(hostedToolSpecs(next.hostedTools)) !==
+        encode(hostedToolSpecs(this.options.hostedTools ?? []))
+      )
+        throw new TypeError(
+          'Tool updates must retain the captured hosted tool declarations',
         );
       const capturedSearch = this.options.webSearch;
       if (encode(next.webSearch ?? null) !== encode(capturedSearch ?? null))

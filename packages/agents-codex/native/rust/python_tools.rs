@@ -337,6 +337,25 @@ impl PythonTools {
         }
         let search = crate::config::web_search_tool(&startup.config);
         fixed.extend(search.iter().cloned());
+        let hosted_names: HashSet<_> = startup
+            .thread_extension_init
+            .get::<codex_extension_api::HostedModelTools>()
+            .map(|hosted| {
+                hosted
+                    .tools
+                    .iter()
+                    .map(|tool| {
+                        ToolName::plain(match tool {
+                            codex_tools::HostedToolSpec::FileSearch(_) => "file_search",
+                            codex_tools::HostedToolSpec::CodeInterpreter(_) => "code_interpreter",
+                            codex_tools::HostedToolSpec::ImageGeneration(_) => "image_generation",
+                        })
+                        .with_default_namespace()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        fixed.extend(hosted_names.iter().cloned());
         let policy = startup
             .thread_extension_init
             .get::<ToolPolicy>()
@@ -371,6 +390,7 @@ impl PythonTools {
                 .is_some()
         {
             let mut names = tool_names(&specs);
+            names.extend(hosted_names.iter().cloned());
             names.extend(goal_names.iter().cloned());
             // These are current startup grants, not names read from history.
             // Keep the explicit ToolPolicy ceiling and all normal native
@@ -932,6 +952,12 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
                     .get::<manual::ManualProgress>()
                 {
                     input.thread_store.get_or_init(|| (*progress).clone());
+                }
+                if let Some(hosted) = parent
+                    .thread_extension_data()
+                    .get::<codex_extension_api::HostedModelTools>()
+                {
+                    input.thread_store.get_or_init(|| (*hosted).clone());
                 }
                 if let Some(parent_tools) = parent.thread_extension_data().get::<PythonTools>()
                     && parent_tools.inherit_children

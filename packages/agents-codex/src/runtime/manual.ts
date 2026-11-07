@@ -73,6 +73,7 @@ export function supportsManualCheckpoint(
   const codeMode = config['features.code_mode'];
   return !(
     hasEnvironment ||
+    !!threadOptions._hosted_tools?.length ||
     runtime?.environment ||
     config['agents.enabled'] === true ||
     codeMode === true ||

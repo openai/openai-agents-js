@@ -231,6 +231,8 @@ pub struct ThreadOptions {
     session_source: Option<SessionSource>,
     thread_source: Option<ThreadSource>,
     dynamic_tools: Vec<DynamicToolSpec>,
+    #[serde(rename = "_hosted_tools")]
+    hosted_tools: Vec<codex_tools::HostedToolSpec>,
     metrics_service_name: Option<String>,
     parent_trace: Option<W3cTraceContext>,
     environments: Option<Value>,
@@ -329,6 +331,11 @@ impl ThreadOptions {
         let source = merged(base_config, self.config)?;
         let configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
         let mut options = StartThreadOptions::new(configuration);
+        options
+            .thread_extension_init
+            .insert(codex_extension_api::HostedModelTools {
+                tools: self.hosted_tools,
+            });
         anyhow::ensure!(
             !self.native_agent_before_step || self.native_agent_roles.is_some(),
             "Child step selection requires NativeAgents roles"

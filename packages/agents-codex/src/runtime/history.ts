@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { HostedToolItem } from './hosted-tools';
 import {
   projectTurnReceipt,
   repairTurnReceiptSchema,
@@ -396,6 +397,7 @@ export type WebSearchAction =
 
 export type SessionItem = ItemIdentity &
   (
+    | HostedToolItem
     | {
         type: 'message';
         role: 'user' | 'assistant';
@@ -535,6 +537,15 @@ const repairItemStatusSchema = z.enum([
   'failed',
   'incomplete',
 ]);
+const hostedToolStatusSchema = z.enum([
+  'in_progress',
+  'searching',
+  'interpreting',
+  'generating',
+  'completed',
+  'incomplete',
+  'failed',
+]);
 const repairItemProjectionSchema = z.intersection(
   z.object({ id: z.string().min(1), turnId: z.string().min(1) }),
   z.discriminatedUnion('type', [
@@ -612,6 +623,31 @@ const repairItemProjectionSchema = z.intersection(
       changes: z.record(z.string(), patchChangeSchema),
       stdout: z.string().nullable(),
       stderr: z.string().nullable(),
+    }),
+    z.object({
+      type: z.literal('file_search_call'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      queries: z.array(z.string()),
+      results: jsonValue,
+    }),
+    z.object({
+      type: z.literal('code_interpreter_call'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      container_id: z.string(),
+      code: z.string().nullable(),
+      outputs: jsonValue,
+    }),
+    z.object({
+      type: z.literal('image_generation_call'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      result: z.string().nullable(),
+      revised_prompt: z.string().nullable(),
     }),
     z.object({
       type: z.literal('web_search_call'),
@@ -892,6 +928,8 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       : null);
   if (!id) return null;
   const common = { id, turnId, data: raw };
+  const hosted = projectHostedToolItem(raw, turnId);
+  if (hosted) return { ...hosted, data: raw };
   if (
     raw.type === 'message' &&
     (raw.role === 'user' || raw.role === 'assistant')
@@ -1124,6 +1162,14 @@ function nativeItems(
           error,
         },
       ];
+    }
+    case 'hosted_tool_call': {
+      const item = projectHostedToolItem(raw.item, turnId);
+      return item ? [{ ...item, data: raw }] : [];
+    }
+    case 'ImageGeneration': {
+      const item = projectNativeHostedToolItem(raw, turnId);
+      return item ? [{ ...item, data: raw }] : [];
     }
     case 'WebSearch':
       return [
@@ -1622,10 +1668,11 @@ export function projectHistory(
       else if (!occurrence.native) {
         const terminal = turns.get(item.turnId)?.status;
         item.status =
-          output?.status ??
-          (terminal && terminal !== 'in_progress'
-            ? 'incomplete'
-            : 'in_progress');
+          output?.type === 'function_call_output'
+            ? output.status
+            : terminal && terminal !== 'in_progress'
+              ? 'incomplete'
+              : 'in_progress';
       }
     }
   }
@@ -1644,3 +1691,77 @@ type HistoryOccurrence = {
   recordedId: boolean;
   output?: HistoryOccurrence;
 };
+
+/** Preserve provider identity and payload in live results, history, and repair. */
+export function projectHostedToolItem(
+  value: JsonValue | undefined,
+  turnId: string,
+): HostedToolItem | undefined {
+  const raw = object(value);
+  if (!raw || typeof raw.id !== 'string') return;
+  const status = hostedToolStatusSchema.safeParse(raw.status);
+  if (!status.success) return;
+  const {
+    internal_chat_message_metadata_passthrough: _coreMetadata,
+    ...provider
+  } = raw;
+  const common = {
+    id: raw.id,
+    turnId,
+    turn_id: turnId,
+    status: status.data,
+    provider_data: structuredClone(provider),
+  };
+  switch (raw.type) {
+    case 'file_search_call':
+      return {
+        ...common,
+        type: raw.type,
+        queries: Array.isArray(raw.queries)
+          ? raw.queries.filter(
+              (query): query is string => typeof query === 'string',
+            )
+          : [],
+        results: raw.results ?? null,
+      };
+    case 'code_interpreter_call':
+      return {
+        ...common,
+        type: raw.type,
+        container_id: text(raw.container_id) ?? '',
+        code: text(raw.code),
+        outputs: raw.outputs ?? null,
+      };
+    case 'image_generation_call':
+      return {
+        ...common,
+        type: raw.type,
+        result: text(raw.result),
+        revised_prompt: text(raw.revised_prompt),
+      };
+  }
+}
+
+/** @internal Project the native typed envelope without losing provider fields. */
+export function projectNativeHostedToolItem(
+  value: JsonValue | undefined,
+  turnId: string,
+): HostedToolItem | undefined {
+  const raw = object(value);
+  if (raw?.type === 'hosted_tool_call')
+    return projectHostedToolItem(raw.item, turnId);
+  if (raw?.type === 'ImageGeneration') {
+    const preserved = object(raw.provider_data);
+    if (preserved) return projectHostedToolItem(preserved, turnId);
+    const {
+      saved_path: _savedPath,
+      provider_data: _providerData,
+      type: _nativeType,
+      ...provider
+    } = raw;
+    return projectHostedToolItem(
+      { ...provider, type: 'image_generation_call' },
+      turnId,
+    );
+  }
+}
