@@ -14,7 +14,11 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-const native = describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
+// This suite's file effects require a filesystem sandbox, which Codex cannot nest.
+const native = describe.skipIf(
+  process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
+    process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1',
+);
 
 native('selected remote workspace authority', () => {
   it('writes an ordinary file and refuses all four protected metadata paths in one unattended session', async () => {

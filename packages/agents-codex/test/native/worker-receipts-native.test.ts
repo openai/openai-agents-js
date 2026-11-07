@@ -138,6 +138,8 @@ it('records sampled instructions, build identity and matching live and retained 
       url: executor.url,
       cwd: executor.cwd,
       headers: executor.headers,
+      // Retained receipt inspection below intentionally restores without an Environment.
+      writePolicy: 'legacy',
       tools: ['exec_command'],
       approval: () => true,
     });

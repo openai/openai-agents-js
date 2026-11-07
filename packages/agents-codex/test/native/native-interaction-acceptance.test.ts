@@ -82,6 +82,8 @@ async function executorFixture(
       url: executor.url,
       cwd: executor.cwd,
       headers: executor.headers,
+      // These approval cases exercise legacy escalation, including protected paths.
+      ...(mode !== 'workspace' ? { writePolicy: 'legacy' as const } : {}),
       tools: ['exec_command', 'write_stdin', 'apply_patch'],
       ...(mode === 'protected'
         ? { capabilityDirectories: [join(executor.cwd, '.git')] }
@@ -198,28 +200,33 @@ native('unattended native interactions', () => {
     }
   }, 30_000);
 
-  it('writes its assigned remote workspace without requesting approval', async () => {
-    await using fixture = await executorFixture('patch', 'workspace');
-    let questions = 0;
-    const result = await Runner.run(fixture.agent, 'Write the proof.', {
-      environment: fixture.environment,
-      onInteraction() {
-        questions++;
-        throw new Error('Workspace write unexpectedly requested approval');
-      },
-    });
-    expect(result.finalOutput).toBe('finished');
-    expect(await readFile(fixture.target, 'utf8')).toBe('proof\n');
-    expect(questions).toBe(0);
-    const outputs = (fixture.model.requests[1]!.input as JsonObject[]).filter(
-      (item) =>
-        item.type === 'custom_tool_call_output' &&
-        item.call_id === 'unanswered-action',
-    );
-    expect(outputs).toHaveLength(1);
-    expect(String(outputs[0]!.output)).toContain('workspace-proof');
-    fixture.model.assertExhausted();
-  }, 30_000);
+  // Strict file effects require a real filesystem sandbox, which Codex cannot nest.
+  it.skipIf(process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1')(
+    'writes its assigned remote workspace without requesting approval',
+    async () => {
+      await using fixture = await executorFixture('patch', 'workspace');
+      let questions = 0;
+      const result = await Runner.run(fixture.agent, 'Write the proof.', {
+        environment: fixture.environment,
+        onInteraction() {
+          questions++;
+          throw new Error('Workspace write unexpectedly requested approval');
+        },
+      });
+      expect(result.finalOutput).toBe('finished');
+      expect(await readFile(fixture.target, 'utf8')).toBe('proof\n');
+      expect(questions).toBe(0);
+      const outputs = (fixture.model.requests[1]!.input as JsonObject[]).filter(
+        (item) =>
+          item.type === 'custom_tool_call_output' &&
+          item.call_id === 'unanswered-action',
+      );
+      expect(outputs).toHaveLength(1);
+      expect(String(outputs[0]!.output)).toContain('workspace-proof');
+      fixture.model.assertExhausted();
+    },
+    30_000,
+  );
 
   it('capability discovery does not authorize a protected metadata patch', async () => {
     await using fixture = await executorFixture('patch', 'protected');

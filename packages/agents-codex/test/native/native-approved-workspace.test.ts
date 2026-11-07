@@ -13,7 +13,11 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
+// Strict command effects require a real filesystem sandbox, which Codex cannot nest.
+it.skipIf(
+  process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
+    process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1',
+)(
   'ordinary approved commands retain writable-workspace and protected-path policy',
   async () => {
     const executor = await startPublicExecutor();
