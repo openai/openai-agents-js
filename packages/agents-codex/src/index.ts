@@ -234,4 +234,7 @@ export type {
   ImageGenerationOptions,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
-export type { HostedToolProgress } from './runtime/observation';
+export type {
+  HostedToolProgress,
+  HostedToolItemSummary,
+} from './runtime/observation';

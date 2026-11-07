@@ -52,6 +52,39 @@ it('accepts a hosted-only terminal image without repair or another model request
       provider_data: image,
     }),
   );
+  const summary = {
+    type: image.type,
+    id: image.id,
+    turn_id: turn.turnId,
+    turnId: turn.turnId,
+    status: 'completed',
+  };
+  const turnEvents = await Array.fromAsync(turn.events());
+  expect(
+    turnEvents.find((event) => event.type === 'hosted_tool_item_completed'),
+  ).toMatchObject({ item: summary });
+  expect(JSON.stringify(turnEvents)).not.toContain(String(image.result));
+  expect(
+    await Array.fromAsync(turn.events({ includeExecutionDetails: true })),
+  ).toContainEqual(
+    expect.objectContaining({
+      type: 'hosted_tool_item_completed',
+      item: expect.objectContaining({
+        provider_data: image,
+        result: image.result,
+      }),
+    }),
+  );
+  const sessionEvents = Array.fromAsync(session.events());
+  await session.close();
+  const observed = await sessionEvents;
+  expect(observed).toContainEqual(
+    expect.objectContaining({
+      type: 'hosted_tool_item_completed',
+      item: summary,
+    }),
+  );
+  expect(JSON.stringify(observed)).not.toContain(String(image.result));
   model.assertExhausted();
 }, 30_000);
 
@@ -305,7 +338,9 @@ it('inherits current hosted grants and delivers full partial images from a manag
     });
     const progress = (async () => {
       const events = [];
-      for await (const event of session.events())
+      for await (const event of session.events({
+        includeExecutionDetails: true,
+      }))
         if (event.type === 'hosted_tool_call_progress') events.push(event);
       return events;
     })();
@@ -406,7 +441,7 @@ it('edits an inline base64 image without expanding native input routes', async (
   });
   const progress = (async () => {
     const events = [];
-    for await (const event of turn.events())
+    for await (const event of turn.events({ includeExecutionDetails: true }))
       if (event.type === 'hosted_tool_call_progress') events.push(event);
     return events;
   })();
@@ -527,7 +562,9 @@ it('preserves hosted preview ordering and canonical history across streamed text
   }).session();
   const turn = await session.submit('Generate and describe a synthetic image.');
   expect((await turn.wait()).finalOutput).toBe(text);
-  const events = await Array.fromAsync(turn.events());
+  const events = await Array.fromAsync(
+    turn.events({ includeExecutionDetails: true }),
+  );
   expect(events.some((event) => event.type === 'gap')).toBe(false);
   expect(
     events.flatMap((event) =>

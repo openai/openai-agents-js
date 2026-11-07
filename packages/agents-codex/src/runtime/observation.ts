@@ -26,14 +26,20 @@ export type ExecutionItemSummary = Readonly<
   >
 >;
 
+export type HostedToolItemSummary = Readonly<
+  Pick<HostedToolItem, 'type' | 'id' | 'turn_id' | 'turnId' | 'status'>
+>;
+
 export type ObservationOptions = {
   after?: number;
-  /** Include execution payloads for a trusted consumer. */
+  /** Include local and hosted tool payloads for a trusted consumer. */
   includeExecutionDetails?: boolean;
 };
 
 type ExecutionObservation = SubmissionEvent &
   Readonly<{ type: 'execution_item_completed' }>;
+type HostedToolItemObservation = SubmissionEvent &
+  Readonly<{ type: 'hosted_tool_item_completed' }>;
 
 export type ApiRateLimitsUpdated = SubmissionEvent &
   Readonly<{ type: 'api_rate_limits_updated'; snapshot: ApiRateLimits }>;
@@ -70,7 +76,9 @@ export type ModelResponseLinked = SubmissionEvent &
     responseObservationId: string;
   }>;
 
-/** Complete provider event; passive retention can report a gap for large payloads. */
+/** Provider event type by default; includeExecutionDetails exposes the full event.
+ * Passive retention can report a gap for large payloads.
+ */
 export type HostedToolProgress = SubmissionEvent &
   Readonly<{
     type: 'hosted_tool_call_progress';
@@ -81,8 +89,8 @@ export type HostedToolProgress = SubmissionEvent &
 
 export type Observation =
   | HostedToolProgress
-  | (SubmissionEvent &
-      Readonly<{ type: 'hosted_tool_item_completed'; item: HostedToolItem }>)
+  | (HostedToolItemObservation &
+      Readonly<{ item: HostedToolItemSummary | HostedToolItem }>)
   | ModelRequestDispatching
   | ModelResponseLinked
   | (Event & Readonly<{ type: 'warning'; message: string }>)
@@ -123,8 +131,9 @@ export type Observation =
 
 type WithoutIdentity<T> = T extends Event ? Omit<T, keyof Event> : never;
 type RetainedObservation =
-  | Exclude<Observation, ExecutionObservation>
-  | (ExecutionObservation & Readonly<{ item: ExecutionItem }>);
+  | Exclude<Observation, ExecutionObservation | HostedToolItemObservation>
+  | (ExecutionObservation & Readonly<{ item: ExecutionItem }>)
+  | (HostedToolItemObservation & Readonly<{ item: HostedToolItem }>);
 export type ObservationInput = WithoutIdentity<
   Exclude<RetainedObservation, { type: 'gap' }>
 >;
@@ -143,10 +152,22 @@ function projectObservation(
 ): Observation {
   if (event.type === 'search_item_completed')
     return Object.freeze({ ...event, item: structuredClone(event.item) });
-  if (event.type === 'hosted_tool_item_completed')
-    return Object.freeze({ ...event, item: structuredClone(event.item) });
+  if (event.type === 'hosted_tool_item_completed') {
+    if (includeExecutionDetails)
+      return Object.freeze({ ...event, item: structuredClone(event.item) });
+    const { type, id, turn_id, turnId, status } = event.item;
+    return Object.freeze({
+      ...event,
+      item: Object.freeze({ type, id, turn_id, turnId, status }),
+    });
+  }
   if (event.type === 'hosted_tool_call_progress')
-    return Object.freeze({ ...event, event: structuredClone(event.event) });
+    return Object.freeze({
+      ...event,
+      event: includeExecutionDetails
+        ? structuredClone(event.event)
+        : Object.freeze({ type: event.event.type }),
+    });
   if (event.type !== 'execution_item_completed') return event;
   if (includeExecutionDetails)
     return Object.freeze({ ...event, item: structuredClone(event.item) });
