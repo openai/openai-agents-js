@@ -8,6 +8,7 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  LocalRecoveryRequired,
   NativeAgents,
   nativeGoals,
   checklist,
@@ -197,6 +198,7 @@ describe('public native custom storage durability', () => {
       .session({
         storage,
         resume: threadId,
+        // @ts-expect-error Verify runtime rejection for untyped custom-store callers.
         reconciledCalls: [
           {
             threadId,
@@ -311,6 +313,109 @@ describe('public native custom storage durability', () => {
     successor.child.send('close');
     await successor.wait('done');
     await successor.exited;
+    server.assertExhausted();
+  }, 45000);
+
+  it('inspects a durable native intent before application code journals its identity', async () => {
+    const path = await directory();
+    const effects = join(path, 'effects');
+    const server = new ModelServer([
+      [call('record', {}, { callId: 'intent-before-callback' })],
+    ]);
+    const first = await worker(server, {
+      directory: path,
+      effects,
+      mode: 'hold-intent',
+    });
+    const opened = await first.wait('opened');
+    await first.wait('durable-intent');
+    first.child.kill('SIGKILL');
+    await first.exited;
+    await expect(readFile(effects)).rejects.toMatchObject({ code: 'ENOENT' });
+    await rm(join(path, `${opened.id}.lock`), { recursive: true });
+    const provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use record when requested.',
+      model: 'gpt-5',
+      provider,
+    });
+    let required!: LocalRecoveryRequired;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await agent
+        .session({ storage: fileSessionStore(path), resume: opened.id })
+        .catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(LocalRecoveryRequired);
+      required = error as LocalRecoveryRequired;
+      expect(required.calls).toEqual([
+        expect.objectContaining({
+          threadId: opened.id,
+          turnId: expect.any(String),
+          callId: 'intent-before-callback',
+          name: 'record',
+          arguments: '{}',
+        }),
+      ]);
+      expect(required.items).toContainEqual(
+        expect.objectContaining({
+          type: 'function_call',
+          callId: 'intent-before-callback',
+        }),
+      );
+    }
+    const blockedProvider = await providerFor(server);
+    const blockedAgent = new Agent({
+      instructions: 'Use record when requested.',
+      model: 'gpt-5',
+      provider: blockedProvider,
+    });
+    const durable = fileSessionStore(path);
+    let releaseBlocked = true;
+    try {
+      const blocked = await blockedAgent
+        .session({
+          storage: {
+            ...durable,
+            async release(...args) {
+              if (releaseBlocked)
+                throw new Error('fixture release unavailable');
+              await durable.release(...args);
+            },
+          },
+          resume: opened.id,
+        })
+        .catch((error: unknown) => error);
+      expect(blocked).toBeInstanceOf(AggregateError);
+      const original = (blocked as AggregateError).cause;
+      expect(original).toBeInstanceOf(LocalRecoveryRequired);
+      expect((original as LocalRecoveryRequired).calls).toEqual(required.calls);
+      await expect(durable.acquire(opened.id)).rejects.toMatchObject({
+        code: 'EEXIST',
+      });
+    } finally {
+      releaseBlocked = false;
+      // Cleanup may report its retained release diagnostic after the physical
+      // unlock. A repeat through the same public owner must finish successfully.
+      await blockedProvider.close().catch(() => {});
+      await blockedProvider.close();
+    }
+    await reconcileSessionStore(fileSessionStore(path), {
+      sessionId: required.calls[0].threadId,
+      turnId: required.calls[0].turnId,
+      callId: required.calls[0].callId,
+      result: 'Application verified that no effect was dispatched.',
+    });
+    const resumed = await agent.session({
+      storage: fileSessionStore(path),
+      resume: opened.id,
+    });
+    expect(
+      (await history(resumed)).filter(
+        (item) => item.type === 'function_call_output',
+      ),
+    ).toEqual([expect.objectContaining({ callId: 'intent-before-callback' })]);
+    await resumed.close();
+    await provider.close();
+    await expect(readFile(effects)).rejects.toMatchObject({ code: 'ENOENT' });
     server.assertExhausted();
   }, 45000);
 

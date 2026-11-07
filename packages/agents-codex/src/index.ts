@@ -5,6 +5,7 @@ export type {
   AgentOptions,
   AgentOutput,
   Session,
+  SessionBaseOptions,
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';

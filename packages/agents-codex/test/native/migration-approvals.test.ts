@@ -87,13 +87,14 @@ afterEach(async () => {
   }
 }, 15_000);
 
+type PauseOptions<T> = T extends unknown
+  ? Omit<T, 'context' | 'approvals'>
+  : never;
+
 async function pause<Context>(
   agent: Agent<Context, 'text'>,
   context: Context,
-  options: Omit<
-    MigrationApprovalOptions<Context>,
-    'context' | 'approvals'
-  > = {},
+  options: PauseOptions<MigrationApprovalOptions<Context>> = {},
 ) {
   const result = await watch(
     SDKRunner.run(agent, 'Input.', {

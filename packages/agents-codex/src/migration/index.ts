@@ -44,10 +44,10 @@ export type MigrationModelSettings = Pick<
   | 'toolChoice'
 >;
 
-export interface MigrationRunOptions<
+export type MigrationRunOptions<
   Context,
   Output extends AgentOutputType = 'text',
-> extends MigrationNativePersistence {
+> = MigrationNativePersistence & {
   context: Context;
   session?: Session;
   sessionInputCallback?: SessionInputCallback;
@@ -61,15 +61,15 @@ export interface MigrationRunOptions<
   hooks?: RunHooks<Context, Output>;
   /** Selects the Model method; stream invocation buffers through EOF and cleanup. */
   modelInvocation?: 'response' | 'stream';
-}
+};
 
 /** Opt in to one in-process held function; dynamic predicates remain unsupported. */
-export interface MigrationApprovalOptions<
+export type MigrationApprovalOptions<
   Context,
   Output extends AgentOutputType = 'text',
-> extends MigrationRunOptions<Context, Output> {
+> = MigrationRunOptions<Context, Output> & {
   approvals: 'manual';
-}
+};
 
 export interface MigrationRunResult<
   Context = any,

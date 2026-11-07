@@ -345,7 +345,7 @@ describe('public native local profiles', () => {
           threadId,
           turnId,
           callId,
-          outcome: 'applied',
+          outcome: 'applied' as const,
           result: 'Verified in the application journal',
         },
       ],

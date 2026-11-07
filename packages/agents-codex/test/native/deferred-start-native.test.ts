@@ -34,7 +34,10 @@ class FactoryAgent extends Agent {
   readonly opened: Session[] = [];
   readonly restoredRequests: ActionRequested[] = [];
   holdRestore?: ReturnType<typeof gate>;
-  openingDefaults?: Parameters<Agent['session']>[0];
+  openingDefaults?: Pick<
+    NonNullable<Parameters<Agent['session']>[0]>,
+    'provider' | 'model' | 'modelSettings'
+  >;
   failRestore = false;
   #calls = 0;
   get factoryCalls() {

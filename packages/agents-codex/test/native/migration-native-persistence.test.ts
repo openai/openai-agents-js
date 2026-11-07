@@ -189,6 +189,7 @@ it.each(['checkpoint', 'local', 'canonical'] as const)(
         }
       }
       if (mode === 'local') {
+        if (!storage) throw new Error('Expected the selected local profile');
         const retiredCall = new ScriptedModel([
           modelResponse([
             functionCall(

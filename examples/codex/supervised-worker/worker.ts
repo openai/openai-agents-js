@@ -326,7 +326,12 @@ export async function superviseArtifact(options: WorkerOptions) {
         if (!receipt) throw error;
         receipts.push(receipt);
       }
-      return agent.session({ ...config, reconciledCalls: receipts });
+      if (!previous) throw error;
+      return agent.session({
+        ...config,
+        resume: previous.threadId,
+        reconciledCalls: receipts,
+      });
     }
   };
   let closingSession: Promise<void> | undefined;

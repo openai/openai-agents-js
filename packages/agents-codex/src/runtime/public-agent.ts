@@ -1,3 +1,4 @@
+import type { SessionPersistenceOptions } from './persistence-options';
 import { captureTracing } from './tracing-context';
 import type { TraceOptions } from './telemetry';
 import {
@@ -48,7 +49,7 @@ import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
-import { captureReconciledCalls, type ReconciledCall } from './local-recovery';
+import { captureReconciledCalls } from './local-recovery';
 import { captureTools, toolIdentity, type Tool } from './tools';
 import { validateMaxModelSteps, type OperationOptions } from './session';
 import type {
@@ -69,7 +70,7 @@ export interface AgentOptions<Context = undefined, Output = string> {
   programmaticToolCalling?: boolean;
 }
 
-export interface SessionOptions<Context = undefined> {
+export interface SessionBaseOptions<Context = undefined> {
   tracing?: TraceOptions;
   /**
    * Explicit native parent; never read from ambient tracing or persisted state.
@@ -78,17 +79,12 @@ export interface SessionOptions<Context = undefined> {
    */
   parentTrace?: TraceContext | TraceContextHeaders | null;
   context?: Context;
-  state?: SessionState;
   /** Borrow this provider instead of the Agent provider. */
   provider?: NativeProvider;
   /** Override the Agent model for a new conversation; omit when restoring state. */
   model?: string;
   /** Merge defined keys over Agent settings; null serviceTier clears its override. */
   modelSettings?: ModelSettings;
-  storage?: LocalStorage | SessionStore;
-  resume?: string;
-  /** Application-confirmed outcomes for unknown calls on this local resume. */
-  reconciledCalls?: readonly ReconciledCall[];
   environment?: Environment<Context> | EnvironmentSource<Context>;
   /**
    * Load trusted UTF-8 instruction files in the supplied order at opening.
@@ -106,10 +102,14 @@ export interface SessionOptions<Context = undefined> {
   tools?: readonly Tool<Context>[];
 }
 
+export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
+  SessionPersistenceOptions;
+
 export interface RunOptions<Context = undefined> extends Omit<
-  SessionOptions<Context>,
-  'tools' | 'storage' | 'resume' | 'reconciledCalls'
+  SessionBaseOptions<Context>,
+  'tools'
 > {
+  state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
   /** Observed budget for a new direct native run with input. See {@link RunBudget}. */
