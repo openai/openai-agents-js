@@ -73,6 +73,15 @@ export {
   HostedVerificationMCP,
   ChatGPTAppsMCP,
 } from './runtime/mcp';
+export type {
+  MCPResource,
+  MCPResourceTemplate,
+  MCPTextResourceContents,
+  MCPBlobResourceContents,
+  MCPListResourcesResult,
+  MCPListResourceTemplatesResult,
+  MCPReadResourceResult,
+} from './runtime/mcp';
 export type { ChatGPTAuth } from './runtime/chatgpt-auth';
 export type {
   UserVerificationRequest,

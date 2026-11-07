@@ -30,6 +30,7 @@ import {
 import {
   assertAdmittedToolReference,
   checkpointDefaultTools,
+  checkpointResourceServers,
   type CheckpointSelections,
 } from './selection-state';
 import { readCheckpointSelections } from './state';
@@ -114,7 +115,9 @@ import {
 } from './executor-policy';
 import {
   HttpMCP,
+  StdioMCP,
   selectHttpLeaves,
+  resourceMcpBinding,
   mcpConfig,
   mcpPolicies,
   mcpPrePolicyRules,
@@ -126,6 +129,9 @@ import {
   splitToolDeclarations,
   isHostedRegistration,
   type McpTool,
+  type MCPListResourcesResult,
+  type MCPListResourceTemplatesResult,
+  type MCPReadResourceResult,
 } from './mcp';
 import {
   createManualRequest,
@@ -1136,10 +1142,15 @@ export class Session<OutputT = string, Context = unknown> {
       );
     this.openingMcpTools = Object.freeze([...(options.mcpTools ?? [])]);
     this.mcpBindings = this.openingMcpTools;
-    this.defaultMcpTools = this.openingMcpTools;
-    this.mcpTools = this.openingMcpTools.filter(
+    this.defaultMcpTools = checkpointResourceServers(
+      readCheckpointSelections(restored).default_resource_servers,
+      this.openingMcpTools,
+    );
+    this.mcpTools = this.defaultMcpTools.filter(
       (server) =>
-        !(server instanceof HttpMCP) || server.activation !== 'operation',
+        (server.tools.length > 0 ||
+          (server instanceof StdioMCP && server.lifetime === 'turn')) &&
+        (!(server instanceof HttpMCP) || server.activation !== 'operation'),
     );
     this.allowedMcpTools = new Set(
       mcpToolNames(this.openingMcpTools).map((tool) =>
@@ -3266,7 +3277,18 @@ export class Session<OutputT = string, Context = unknown> {
     const next = this.mcpBindings.flatMap((server) => {
       if (!(server instanceof HttpMCP) || server.activation !== 'operation')
         return this.defaultMcpTools.filter(
-          (selected) => selected.name === server.name,
+          (selected) =>
+            selected.name === server.name &&
+            (selected.tools.length > 0 ||
+              this.mcpTools.some((active) => active.name === selected.name)),
+        );
+      if (!server.tools.length)
+        return this.mcpTools.filter(
+          (active) =>
+            active.name === server.name &&
+            this.defaultMcpTools.some(
+              (selected) => selected.name === server.name,
+            ),
         );
       const tools =
         names === undefined
@@ -6989,7 +7011,10 @@ export class Session<OutputT = string, Context = unknown> {
           );
       const active = next.mcp.filter(
         (server) =>
-          !(server instanceof HttpMCP) || server.activation !== 'operation',
+          (server.tools.length > 0 ||
+            (server instanceof StdioMCP && server.lifetime === 'turn') ||
+            this.mcpTools.some((active) => active.name === server.name)) &&
+          (!(server instanceof HttpMCP) || server.activation !== 'operation'),
       );
       const guarded = hasMcpPrePolicy(this.mcpTools) || hasMcpPrePolicy(active);
       const candidate = captureTools(next.tools, this.catalog.generation + 1n);
@@ -7187,6 +7212,126 @@ export class Session<OutputT = string, Context = unknown> {
       }
     });
   }
+  /**
+   * Read one resource page from a currently selected ordinary MCP server while idle.
+   * Pass nextCursor explicitly for another page. Servers without the resources
+   * capability return an empty list. Results never enter model context.
+   * An inactive selected server connects lazily without granting tools.
+   */
+  async listMcpResources(
+    server: string,
+    cursor?: string,
+  ): Promise<MCPListResourcesResult> {
+    if (cursor !== undefined && typeof cursor !== 'string')
+      throw new TypeError('MCP cursor must be a string');
+    return this.mcpResourceRequest(
+      'list_mcp_resources',
+      server,
+      cursor === undefined ? {} : { cursor },
+    ) as Promise<MCPListResourcesResult>;
+  }
+
+  /**
+   * Read one template page while idle, preserving the cursor and metadata.
+   * Servers without the resources capability return an empty list.
+   */
+  async listMcpResourceTemplates(
+    server: string,
+    cursor?: string,
+  ): Promise<MCPListResourceTemplatesResult> {
+    if (cursor !== undefined && typeof cursor !== 'string')
+      throw new TypeError('MCP cursor must be a string');
+    return this.mcpResourceRequest(
+      'list_mcp_resource_templates',
+      server,
+      cursor === undefined ? {} : { cursor },
+    ) as Promise<MCPListResourceTemplatesResult>;
+  }
+
+  /**
+   * Read a URI while idle as transport data, including text, base64 blobs and metadata.
+   * The SDK never adds the result to instructions or model context. Native errors
+   * propagate as NativeError. The existing Session reader cancels idle elicitation.
+   * Turn-lifetime stdio is unavailable; use a session-lifetime declaration instead.
+   */
+  async readMcpResource(
+    server: string,
+    uri: string,
+  ): Promise<MCPReadResourceResult> {
+    if (typeof uri !== 'string' || !uri)
+      throw new TypeError('MCP resource URI must be a nonempty string');
+    return this.mcpResourceRequest('read_mcp_resource', server, {
+      uri,
+    }) as Promise<MCPReadResourceResult>;
+  }
+
+  private async mcpResourceRequest(
+    operation:
+      | 'list_mcp_resources'
+      | 'list_mcp_resource_templates'
+      | 'read_mcp_resource',
+    server: string,
+    params: JsonObject,
+  ): Promise<unknown> {
+    this.checkCallbackOperation(operation);
+    this.idle(operation);
+    const selected = this.defaultMcpTools.find(
+      (candidate) => candidate.name === server,
+    );
+    if (!selected || isHostedRegistration(selected))
+      throw new TypeError(
+        'Resource operations require a currently selected ordinary MCP server',
+      );
+    if (selected instanceof StdioMCP && selected.lifetime === 'turn')
+      throw new TypeError(
+        'Idle resource operations require session-lifetime MCP stdio',
+      );
+    return this.mutate(async () => {
+      try {
+        if (!this.mcpTools.some((active) => active.name === server)) {
+          const next = [...this.mcpTools, resourceMcpBinding(selected)];
+          const generation = this.mcpGeneration + 1n;
+          try {
+            const receipt = parseNative(
+              await this.#native._replace_mcp_servers(
+                encode(
+                  mcpConfig(
+                    next,
+                    this.environment ?? undefined,
+                    this.codeModeEnabled,
+                    this.mcpBindings,
+                  ),
+                ),
+                mcpPolicies(next, generation),
+                hasMcpPrePolicy(this.mcpTools) || hasMcpPrePolicy(next)
+                  ? encode(this.interceptionRules(next, generation))
+                  : undefined,
+                undefined,
+                undefined,
+                undefined,
+                true,
+              ),
+            );
+            checkMcpPublication(receipt, next, generation, this.mcpBindings);
+            this.mcpTools = next;
+            this.mcpGeneration = generation;
+          } catch (error) {
+            this.retire(error);
+            throw error;
+          }
+        }
+        return parseNative(
+          await this.#native.call(operation, encode({ server, params })),
+        );
+      } catch (error) {
+        throw new NativeError(
+          error instanceof Error ? error.message : String(error),
+          { cause: error },
+        );
+      }
+    });
+  }
+
   /** Read current native goal state without starting model work. */
   async goal(): Promise<Readonly<NativeGoal> | null> {
     if (!this.isOpen) throw new NativeError('Session is closed');
@@ -8350,6 +8495,18 @@ export class Session<OutputT = string, Context = unknown> {
       this.defaultTools.length !== this.catalog.tools.length ||
       this.defaultTools.some((tool, i) => tool !== this.catalog.tools[i]);
     return {
+      ...(this.openingMcpTools.some(
+        (server) => !server.tools.length && !isHostedRegistration(server),
+      )
+        ? {
+            default_resource_servers: this.defaultMcpTools
+              .filter(
+                (server) =>
+                  !server.tools.length && !isHostedRegistration(server),
+              )
+              .map((server) => server.name),
+          }
+        : {}),
       ...(changedDefaults
         ? { default_tools: this.defaultTools.map(toolIdentity) }
         : {}),

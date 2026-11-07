@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isHostedRegistration, type McpTool } from './mcp';
 import { toolIdentity, type SessionTool, type ToolCatalog } from './tools';
 
 const referenceSchema = z
@@ -21,10 +22,18 @@ export const checkpointToolReferencesSchema = z
   });
 export type CheckpointToolReference = z.infer<typeof referenceSchema>;
 export interface CheckpointSelections {
+  readonly default_resource_servers?: readonly string[];
   readonly default_tools?: readonly CheckpointToolReference[];
   readonly operation_tools?: readonly CheckpointToolReference[];
 }
+const resourceServerNames = z
+  .array(z.string().min(1))
+  .refine(
+    (names) => new Set(names).size === names.length,
+    'Duplicate checkpoint resource server',
+  );
 export const checkpointSelectionFields = {
+  default_resource_servers: resourceServerNames.optional(),
   default_tools: checkpointToolReferencesSchema.optional(),
   operation_tools: checkpointToolReferencesSchema.optional(),
 };
@@ -101,4 +110,28 @@ export function assertCheckpointSelections(
     throw new TypeError(
       'Checkpoint selection does not admit its pending manual tools',
     );
+}
+
+/** @internal Resolve empty resource selections against current declarations only. */
+export function checkpointResourceServers(
+  names: readonly string[] | undefined,
+  opening: readonly McpTool[],
+): readonly McpTool[] {
+  if (names === undefined) return opening;
+  const resourceOnly = (server: McpTool) =>
+    !server.tools.length && !isHostedRegistration(server);
+  if (
+    names.some(
+      (name) =>
+        !opening.some((server) => resourceOnly(server) && server.name === name),
+    )
+  )
+    throw new TypeError(
+      'Checkpoint resource servers require matching current ordinary declarations',
+    );
+  return Object.freeze(
+    opening.filter(
+      (server) => !resourceOnly(server) || names.includes(server.name),
+    ),
+  );
 }

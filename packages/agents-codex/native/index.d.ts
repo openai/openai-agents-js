@@ -155,7 +155,12 @@ export class NativeThread {
   _pending_manual_tools(owner_json: string): string;
   _manual_tool_current(request_json: string): boolean;
   call(
-    operation: 'set_instructions' | 'list_subagents',
+    operation:
+      | 'set_instructions'
+      | 'list_subagents'
+      | 'list_mcp_resources'
+      | 'list_mcp_resource_templates'
+      | 'read_mcp_resource',
     params_json: string,
   ): Promise<string>;
   _submit(params_json: string): Promise<string>;
@@ -187,6 +192,7 @@ export class NativeThread {
     tool_generation?: string,
     specs_json?: string,
     startup_boundary?: string,
+    cancel_on_resource_close?: boolean,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(response_json: string): Promise<boolean>;

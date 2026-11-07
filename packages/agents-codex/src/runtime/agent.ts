@@ -2,7 +2,10 @@ import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
 import { assertCheckpointNetworkPolicy } from './state';
-import { assertCheckpointSelections } from './selection-state';
+import {
+  assertCheckpointSelections,
+  checkpointResourceServers,
+} from './selection-state';
 import { readCheckpointSelections } from './state';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -133,6 +136,10 @@ export async function openSession(
     instructions,
   };
   if (saved) {
+    checkpointResourceServers(
+      readCheckpointSelections(saved).default_resource_servers,
+      options.mcpTools ?? [],
+    );
     const policy = threadOptions.tool_policy;
     assertCheckpointSelections(
       readCheckpointSelections(saved),
