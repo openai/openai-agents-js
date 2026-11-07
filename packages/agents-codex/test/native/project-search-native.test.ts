@@ -853,9 +853,10 @@ it
 
 it
   .skipIf(process.platform === 'win32')
-  .each(['project_glob', 'project_grep'] as const)(
+  .for(['project_glob', 'project_grep'] as const)(
   '%s retains valid root and nested matches beside a non-UTF-8 filename',
-  async (name) => {
+  { timeout: 30_000 },
+  async (name, context) => {
     await using project = await workspace();
     await mkdir(join(project.root, 'nested'));
     await writeFile(
@@ -866,14 +867,25 @@ it
       join(project.root, 'nested', 'encoding-nested.txt'),
       'encoding-match nested\n',
     );
-    await writeFile(
-      Buffer.concat([
-        Buffer.from(join(project.root, 'invalid-')),
-        Buffer.from([0xff]),
-        Buffer.from('.txt'),
-      ]),
-      'unrelated content\n',
-    );
+    try {
+      await writeFile(
+        Buffer.concat([
+          Buffer.from(join(project.root, 'invalid-')),
+          Buffer.from([0xff]),
+          Buffer.from('.txt'),
+        ]),
+        'unrelated content\n',
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'EILSEQ'
+      ) {
+        context.skip('This filesystem does not support non-UTF-8 filenames.');
+      }
+      throw error;
+    }
     const server = new ModelServer([
       [
         call(
@@ -918,7 +930,6 @@ it
     });
     server.assertExhausted();
   },
-  30_000,
 );
 
 it.skipIf(process.platform === 'win32')(

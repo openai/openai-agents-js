@@ -309,13 +309,17 @@
       "sha256": "b2e54de97b16ffbb23d9936eeb900882fec19373a24c34bec4fc55ea73fa1903"
     },
     {
-      "path": "0060-bounded-nofollow-filesystem.patch",
-      "sha256": "7bfe357792d3f8feb13c96f76ea2f54e1b71c77b975fe8132c4422df73cd95cf"
+      "path": "provider-hosted-tools.patch",
+      "sha256": "6d248c094770df64ffd2c7268ed2a8dfacc50c171c25852466ca79bc6c7df710"
     },
     {
-      "path": "0061-early-project-search-result-policy.patch",
+      "path": "0085-bounded-nofollow-filesystem.patch",
+      "sha256": "5b0b7cb12755c813665ca67bb942e324e60384f37615618c2c0eeb69698916f7"
+    },
+    {
+      "path": "0086-early-project-search-result-policy.patch",
       "sha256": "ac413ec794493e2047724a5ee0473744c4a0464313d4330ba6975780bda6e5d3"
     }
   ],
-  "result_tree": "3751fa6beda1d5d6d338aa44fb8827514e1344e5"
+  "result_tree": "ae019f46b7657a8ebf8260d24fd89c77503580f7"
 }

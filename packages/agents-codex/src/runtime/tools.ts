@@ -9,6 +9,7 @@ import {
 } from './binding';
 import type { Turn } from './session';
 import type { WebSearch } from './web-search';
+import type { HostedTool } from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
 import type { HttpMCP, StdioMCP } from './mcp';
 import type { ManualTool } from './manual';
@@ -199,6 +200,7 @@ export type Tool<Context = any> =
   | StdioMCP<Context>
   | NativeAgents<Context>
   | WebSearch
+  | HostedTool
   | NativeGoals
   | Checklist;
 

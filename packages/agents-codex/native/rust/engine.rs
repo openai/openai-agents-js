@@ -103,6 +103,25 @@ impl EngineState {
         Ok(())
     }
 
+    pub(crate) async fn validate_hosted_tools_model(
+        &self,
+        model: &str,
+        hosted: &codex_extension_api::HostedModelTools,
+    ) -> anyhow::Result<()> {
+        if !hosted.tools.is_empty() {
+            let info = self
+                .manager
+                .get_models_manager()
+                .get_model_info(model, &self.service_config.to_models_manager_config())
+                .await;
+            ensure!(
+                !info.use_responses_lite,
+                "Provider-hosted tools require Responses; Responses Lite is unsupported"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) async fn validate_hosted_search_model(&self, model: &str) -> anyhow::Result<()> {
         if crate::config::web_search_tool(&self.service_config)
             .is_some_and(|name| name.is_default_namespace())
