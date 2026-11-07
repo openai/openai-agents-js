@@ -1,4 +1,5 @@
 import {
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -187,6 +188,50 @@ it.skipIf(process.platform !== 'linux')(
       expect(await readFile(join(source, 'marker'), 'utf8')).toBe(
         'caller-owned',
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(process.platform !== 'linux').each(['cwd', 'writableRoots'] as const)(
+  'rejects a writable hard-link alias in %s before startup',
+  async (location) => {
+    const { root, cwd, source } = await directories();
+    const extra = join(root, 'extra');
+    const marker = join(source, 'marker');
+    const originalMode = (await stat(marker)).mode;
+    const sourceMode = (await stat(source)).mode;
+    const server = new ModelServer([]);
+    try {
+      await mkdir(extra);
+      const alias = join(location === 'cwd' ? cwd : extra, 'writable-alias');
+      await link(marker, alias);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        model: 'gpt-5',
+        provider,
+        instructions: 'Do not start.',
+      });
+      await expect(
+        agent
+          .session({
+            environment: Environment.local({
+              cwd,
+              writableRoots: [extra],
+              mounts: [{ source, destination: source, strategy: 'local_bind' }],
+            }),
+          })
+          .then(async (session) => {
+            await session.close();
+            throw new Error('Unexpectedly admitted a writable hard-link alias');
+          }),
+      ).rejects.toThrow(/Storage mounts must not share hard-linked files/);
+      expect(server.requests).toHaveLength(0);
+      expect(await readFile(marker, 'utf8')).toBe('caller-owned');
+      expect(await readFile(alias, 'utf8')).toBe('caller-owned');
+      expect((await stat(marker)).mode).toBe(originalMode);
+      expect((await stat(source)).mode).toBe(sourceMode);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

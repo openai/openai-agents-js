@@ -410,6 +410,8 @@ impl EnvironmentOptions {
         );
         let error = "Invalid local storage mounts: require disjoint canonical existing directories, same-path local_bind, and read_only true";
         let mut mounts = Vec::new();
+        #[cfg(target_os = "linux")]
+        let mut linked_mount_files = Vec::new();
         let write_paths = std::iter::once(&self.cwd)
             .chain(self.writable_roots.iter().flatten())
             .map(|path| path.to_abs_path()?.canonicalize().context(error))
@@ -447,7 +449,24 @@ impl EnvironmentOptions {
             }
             check_local_session_write_roots(config, &authority, storage)
                 .context("Storage mounts must not expose private SDK state")?;
+            #[cfg(target_os = "linux")]
+            linked_mount_files.extend(linked_local_protected_files(
+                &canonical,
+                false,
+                /*allow_missing*/ false,
+                "Could not inspect storage mount files for hard links",
+            )?);
             mounts.push(path);
+        }
+        #[cfg(target_os = "linux")]
+        if !linked_mount_files.is_empty() {
+            let roots = LocalWriteRoots::new(&write_paths).context(error)?;
+            ensure!(
+                !roots
+                    .contains_hard_link_to_any(&linked_mount_files)
+                    .context("Could not inspect writable roots for storage mount hard links")?,
+                "Storage mounts must not share hard-linked files with cwd or writable roots"
+            );
         }
         mounts.sort_by_key(ToString::to_string);
         Ok(mounts)
@@ -1020,7 +1039,7 @@ fn check_local_protected_path(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let mut linked_files =
-            linked_local_protected_files(&resolved, private_runtime_home, resolve_error)?;
+            linked_local_protected_files(&resolved, private_runtime_home, true, resolve_error)?;
         if path == sqlite.home() {
             linked_files.extend(linked_relocated_sqlite_files(roots, sqlite, overlap_error)?);
             linked_files.extend(linked_relocated_rollout_files(roots, &resolved)?);
@@ -1217,6 +1236,7 @@ fn linked_relocated_sqlite_files(
 fn linked_local_protected_files(
     root: &Path,
     private_runtime_home: bool,
+    allow_missing: bool,
     resolve_error: &'static str,
 ) -> Result<Vec<PathBuf>> {
     use std::fs;
@@ -1227,16 +1247,17 @@ fn linked_local_protected_files(
     while let Some(directory) = directories.pop() {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) if allow_missing && error.kind() == ErrorKind::NotFound => continue,
             Err(error) => return Err(error).context(resolve_error),
         };
         for entry in entries {
             let entry = entry.context(resolve_error)?;
             // DirEntry::metadata does not follow symlinks. Native state can
-            // also disappear during a normal rename or cleanup.
+            // also disappear during a normal rename or cleanup; mounted sources
+            // must remain enumerable, so their scans cannot ignore missing entries.
             let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
-                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) if allow_missing && error.kind() == ErrorKind::NotFound => continue,
                 Err(error) => return Err(error).context(resolve_error),
             };
             // The SDK creates and owns this temporary directory. Public
@@ -2007,6 +2028,90 @@ mod tests {
             std::fs::read_to_string(private).unwrap(),
             "synthetic-private-state"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn storage_mount_rejects_only_hard_links_in_writable_grants() {
+        use std::fs;
+        use std::os::unix::fs::{MetadataExt, symlink};
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let cwd = root.join("work");
+        let extra = root.join("extra");
+        let source = root.join("storage");
+        let home = root.join("home");
+        let outside = root.join("outside");
+        for path in [&cwd, &extra, &source, &home, &outside] {
+            fs::create_dir(path).unwrap();
+        }
+        let (config, _) = crate::config::load(
+            "{}",
+            &json!({
+                "codex_home": home, "cwd": cwd,
+                "loader":{"ignore_user_config":true,"ignore_project_config":true}
+            })
+            .to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+        let options: EnvironmentOptions = serde_json::from_value(json!({
+            "local":true,"cwd":PathUri::from_host_native_path(&cwd).unwrap(),
+            "writable_roots":[PathUri::from_host_native_path(&extra).unwrap()],
+            "mounts":[{"source":source,"destination":source,"strategy":"local_bind"}]
+        }))
+        .unwrap();
+        let marker = source.join("marker");
+        fs::write(&marker, "caller-owned").unwrap();
+        let mode = fs::metadata(&marker).unwrap().mode();
+        // No multiply-linked files: the writable-tree scan is unnecessary.
+        options.validate_storage_mounts(&config, None).unwrap();
+        fs::hard_link(&marker, source.join("readonly-alias")).unwrap();
+        fs::hard_link(&marker, outside.join("outside-alias")).unwrap();
+        symlink(&marker, cwd.join("symlink-alias")).unwrap();
+        // Read-only aliases and links outside the grants are harmless. A symlink
+        // inside a grant must not cause the identity scan to follow its target.
+        options.validate_storage_mounts(&config, None).unwrap();
+        for writable in [&cwd, &extra] {
+            let alias = writable.join("writable-alias");
+            fs::hard_link(&marker, &alias).unwrap();
+            let error = options.validate_storage_mounts(&config, None).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("must not share hard-linked files")
+            );
+            assert_eq!(fs::read_to_string(&marker).unwrap(), "caller-owned");
+            assert_eq!(fs::metadata(&marker).unwrap().mode(), mode);
+            fs::remove_file(alias).unwrap();
+            options.validate_storage_mounts(&config, None).unwrap();
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn storage_mount_file_scan_fails_when_required_inspection_cannot_complete() {
+        let temporary = tempfile::tempdir().unwrap();
+        let missing = temporary.path().join("disappeared-directory");
+        let error = "Could not inspect storage mount files for hard links";
+        assert_eq!(
+            linked_local_protected_files(&missing, false, false, error)
+                .unwrap_err()
+                .to_string(),
+            error
+        );
+        // Private SDK state retains its existing allowance for absent files.
+        assert!(
+            linked_local_protected_files(&missing, false, true, error)
+                .unwrap()
+                .is_empty()
+        );
+        let file = temporary.path().join("not-a-directory");
+        std::fs::write(&file, "caller-owned").unwrap();
+        assert!(linked_local_protected_files(&file, false, false, error).is_err());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "caller-owned");
     }
 
     #[test]
