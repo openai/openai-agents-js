@@ -96,7 +96,8 @@ For a pending manual checkpoint, instructions and pending tool declarations/resu
 
 | Idle / pending versions | Data and restore constraints |
 | --- | --- |
-| Legacy idle v2 / pending v3 | Plain-text final output only. |
+| Legacy idle v2 | No saved output contract. Current output settings apply to new turns. |
+| Legacy pending v3 | Plain-text final output only. |
 | v4 / v5 | Effective output contract. Pending v5 supports plain or prompted output over HTTP or WebSocket; native structured output retains the active turn's schema, including a per-turn override. |
 | v6 / v7 | Adds settled Code Mode stored JSON, cell counters, and terminal observations. |
 | v8 / v9 | Retains managed defaults; pending v9 can retain the paused operation's static selection. |
