@@ -127,6 +127,61 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       model.assertExhausted();
     }, 30_000);
 
+    it('keeps the Provider connection through supplied compaction without disrupting another Session', async () => {
+      const model = new ModelServer([
+        [message('before compaction')],
+        [message('sibling answer')],
+        [message('after compaction')],
+        [message('sibling continues')],
+      ]);
+      const observed = connections(model);
+      await using provider = new NativeProvider({
+        baseUrl: await baseUrl(model),
+        apiKey: 'synthetic-compaction-key',
+        supportsWebsockets: false,
+      });
+      const agent = agentFor(provider);
+      await using session = await agent.session();
+      await using sibling = await agent.session();
+      expect(
+        (await (await session.submit('before compaction marker')).wait())
+          .finalOutput,
+      ).toBe('before compaction');
+      expect(
+        (await (await sibling.submit('sibling isolated marker')).wait())
+          .finalOutput,
+      ).toBe('sibling answer');
+      await session.compact({ summary: 'Supplied transport summary.' });
+      expect(model.requests).toHaveLength(2);
+      expect(
+        (await (await session.submit('after compaction marker')).wait())
+          .finalOutput,
+      ).toBe('after compaction');
+      expect(
+        (await (await sibling.submit('sibling continues marker')).wait())
+          .finalOutput,
+      ).toBe('sibling continues');
+      expect(observed.requests).toHaveLength(4);
+      expect(new Set(observed.requests).size).toBe(1);
+      expect(observed.accepted).toBe(1);
+      const compactedInput = JSON.stringify(model.requests[2].input);
+      expect(compactedInput).toContain('Supplied transport summary.');
+      expect(compactedInput).not.toContain('before compaction marker');
+      expect(compactedInput).not.toContain('sibling isolated marker');
+      expect(
+        model.requestHeaders.map((headers) => headers.authorization),
+      ).toEqual(Array(4).fill('Bearer synthetic-compaction-key'));
+      await session.close();
+      await sibling.close();
+      await provider.close();
+      await expect
+        .poll(() => observed.closed.has(observed.requests[0]!), {
+          timeout: 5_000,
+        })
+        .toBe(true);
+      model.assertExhausted();
+    }, 30_000);
+
     it('cancels one in-flight root without closing another root or poisoning its next turn', async () => {
       const enteredA = Promise.withResolvers<void>();
       const enteredB = Promise.withResolvers<void>();
