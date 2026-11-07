@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NativeConfig } from './config';
+import type { Engine, _ProviderHttpTransports } from '../../native/index.js';
 import { captureChatGPTAuth, type ChatGPTAuth } from './chatgpt-auth';
 
 export interface NativeProviderOptions {
@@ -29,11 +30,16 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
   return token.pending;
 }
 
-/** A lazy native Responses connection. Close sessions before closing their provider. */
+/**
+ * A lazy native Responses connection. Close sessions before closing their provider.
+ * Ordinary API-key HTTP clients may retain default/custom trust and ambient proxy
+ * state until close. Construct a new provider to force fresh physical clients.
+ */
 export class NativeProvider {
   #options: Readonly<NativeProviderOptions>;
   #leases = new Set<LeaseToken>();
   #closed = false;
+  #httpTransports?: _ProviderHttpTransports;
 
   constructor(options: NativeProviderOptions = {}) {
     for (const key of ['baseUrl', 'apiKey'] as const) {
@@ -90,6 +96,13 @@ export class NativeProvider {
           : undefined;
       },
       websocketsAllowed,
+      httpTransports: (create, engine) => {
+        if (options.chatGPT) return undefined;
+        if (released || this.#closed)
+          throw new Error('NativeProvider lease is closed');
+        // Synchronous empty allocation: no first-opening signal or pending task.
+        return (this.#httpTransports ??= create(engine));
+      },
       chatGPT: options.chatGPT,
       apiKey: captured
         ? captured.apiKey
@@ -152,6 +165,8 @@ export class NativeProvider {
       throw new AggregateError(failures, 'NativeProvider cleanup failed', {
         cause: failures[0],
       });
+    this.#httpTransports?.close();
+    this.#httpTransports = undefined;
   }
 
   [Symbol.asyncDispose](): Promise<void> {
@@ -164,6 +179,10 @@ export interface ProviderLease {
   readonly chatGPT?: Readonly<ChatGPTAuth>;
   readonly failedOpeningCleanup: (() => Promise<void>) | undefined;
   readonly websocketsAllowed: boolean;
+  httpTransports(
+    create: (engine: Engine) => _ProviderHttpTransports,
+    engine: Engine,
+  ): _ProviderHttpTransports | undefined;
   apiKey: string | undefined;
   config: NativeConfig;
   open(): Promise<{ codex_home: string; cwd: string }>;

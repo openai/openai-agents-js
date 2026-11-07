@@ -15,6 +15,7 @@ import { once } from 'node:events';
 import type {
   NativeModelResponse,
   NativeModelWebSocket,
+  _ProviderHttpTransports,
 } from '../../native/index.js';
 import {
   binding,
@@ -163,6 +164,8 @@ export class NativeProviderRoutes {
   private readonly tasks = new Set<Promise<unknown>>();
   private readonly remoteSockets = new Set<Prefix>();
   private readonly sentinelEngines = new Map<string, Engine>();
+  // Borrowed from the Provider across this Session's replacement Engines.
+  private providerTransports?: _ProviderHttpTransports;
   private stopping?: Promise<void>;
 
   constructor(private readonly selected?: SelectedModelRoute) {}
@@ -190,11 +193,12 @@ export class NativeProviderRoutes {
     this.enableWebsockets();
     return { config, runtime, apiKey };
   }
-  bindEngine(engine: Engine): void {
+  bindEngine(engine: Engine, transports = this.providerTransports): void {
     if (!this.localOrigin)
       throw new NativeError('Model request carrier has not started');
     const grant = randomBytes(32).toString('base64url');
-    engine._sentinel_bind(this.localOrigin, grant, null);
+    engine._sentinel_bind(this.localOrigin, grant, null, transports ?? null);
+    this.providerTransports = transports;
     this.sentinelEngines.set(grant, engine);
   }
   /** Release only the retired engine's routing grants; the Session owns the carrier. */
@@ -676,6 +680,7 @@ export class NativeProviderRoutes {
         this.websocketServer?.close();
         this.websocketServer = undefined;
         this.sentinelEngines.clear();
+        this.providerTransports = undefined;
         this.server = undefined;
         this.localOrigin = undefined;
       })().finally(() => {

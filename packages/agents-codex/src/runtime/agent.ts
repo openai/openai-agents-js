@@ -277,7 +277,12 @@ export async function openSession(
           setup.applicationAppsJson ?? null,
         );
   options.environmentOwner?.signal.throwIfAborted();
-  await carrier.bindEngine(engine);
+  await carrier.bindEngine(
+    engine,
+    setup.selectedModel
+      ? undefined
+      : lease.httpTransports(native._create_provider_http_transports, engine),
+  );
   options.environmentOwner?.signal.throwIfAborted();
   if (saved) {
     thread = await engine.restore_checkpoint(
