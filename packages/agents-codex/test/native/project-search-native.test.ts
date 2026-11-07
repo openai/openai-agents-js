@@ -676,6 +676,181 @@ it('rejects paths outside the root and unsupported search arguments', async () =
   server.assertExhausted();
 }, 30_000);
 
+it.each(
+  (['project_glob', 'project_grep'] as const).flatMap((name) =>
+    [
+      { label: 'TAB', control: '\t' },
+      { label: 'LF', control: '\n' },
+      { label: 'CR', control: '\r' },
+    ].map((entry) => ({ name, ...entry })),
+  ),
+)(
+  '$name rejects $label in approved paths before filesystem access',
+  async ({ name, control }) => {
+    const executor = await startPublicExecutor();
+    try {
+      const root = await realpath(executor.cwd);
+      await mkdir(join(root, 'secrets'));
+      const privateContent = 'private control-path needle 927a';
+      await writeFile(join(root, 'secrets', 'secret.txt'), privateContent);
+      const path = `sec${control}rets`;
+      const approvedPaths: string[] = [];
+      let requestIndex = 0;
+      let found: JsonObject | undefined;
+      const server = new ModelServer([
+        [
+          call(
+            name,
+            { pattern: name === 'project_glob' ? '*' : 'needle', path },
+            { callId: 'control-path' },
+          ),
+        ],
+        (request) => {
+          found = result(request, 'control-path');
+          return [message('searched')];
+        },
+      ]);
+      await using provider = await providerFor(server);
+      await new Agent({ provider, instructions: 'Search.' }).run('Go.', {
+        environment: new Environment({
+          url: executor.url,
+          cwd: root,
+          headers: executor.headers,
+          tools: [name],
+          approval(context, argumentsValue) {
+            expect(context.toolName).toBe(name);
+            const args = z.object({ path: z.string() }).parse(argumentsValue);
+            approvedPaths.push(args.path);
+            requestIndex = executor.requests.length;
+            return args.path.split('/')[0] !== 'secrets';
+          },
+        }),
+      });
+      expect(approvedPaths).toEqual([path]);
+      expect.soft(found).toMatchObject({
+        matches: [],
+        errors: [{ path, code: 'invalid_path' }],
+        truncated: false,
+      });
+      expect
+        .soft(
+          executor.requests
+            .slice(requestIndex)
+            .filter((request) =>
+              ['fs/walk', 'fs/readFile'].includes(String(request.method)),
+            ),
+        )
+        .toEqual([]);
+      expect
+        .soft(JSON.stringify(server.requests))
+        .not.toContain(privateContent);
+      expect.soft(JSON.stringify(server.requests)).not.toContain('secret.txt');
+      server.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+  30_000,
+);
+
+it
+  .skipIf(process.platform === 'win32')
+  .each(
+    (['project_glob', 'project_grep'] as const).flatMap((name) =>
+      ['.', 'narrow'].map((path) => ({ name, path })),
+    ),
+  )(
+  '$name preserves literal filesystem names below path=$path',
+  async ({ name, path }) => {
+    const executor = await startPublicExecutor();
+    try {
+      const parent = await realpath(executor.cwd);
+      const root = join(parent, 'project');
+      const subtree = path === '.' ? root : join(root, path);
+      await mkdir(join(subtree, 'nested'), { recursive: true });
+      await mkdir(join(subtree, 'dir\nname'));
+      const outsideCanary = 'entry-marker outside selected subtree 927a';
+      await writeFile(
+        join(path === '.' ? parent : root, 'outside.txt'),
+        outsideCanary,
+      );
+      const files = [
+        ['secrets', 'entry-marker ordinary'],
+        ['sec\trets', 'entry-marker tab'],
+        ['sec\nrets', 'entry-marker newline'],
+        ['sec\rrets', 'entry-marker carriage return'],
+        ['.\n.', 'entry-marker parent-like regular file'],
+        ['.\n', 'entry-marker current-like regular file'],
+        ['\n', 'entry-marker newline regular file'],
+        ['%2e%2e', 'entry-marker literal percent'],
+        ['%0A', 'entry-marker encoded newline'],
+        ['%2F', 'entry-marker encoded slash'],
+        ['%5C', 'entry-marker encoded backslash'],
+        ['question?', 'entry-marker question mark'],
+        ['hash#', 'entry-marker hash'],
+        ['with space', 'entry-marker space'],
+        ['back\\slash', 'entry-marker backslash'],
+        ['raw\vname', 'entry-marker vertical tab'],
+        ['dir\nname/child.txt', 'entry-marker control directory'],
+        ['nested/plain.txt', 'entry-marker nested'],
+      ] as const;
+      for (const [file, content] of files)
+        await writeFile(join(subtree, file), content);
+      let found: JsonObject | undefined;
+      const server = new ModelServer([
+        [
+          call(
+            name,
+            {
+              pattern: name === 'project_glob' ? '**/*' : 'entry-marker',
+              path,
+            },
+            { callId: 'literal-names' },
+          ),
+        ],
+        (request) => {
+          found = result(request, 'literal-names');
+          return [message('searched')];
+        },
+      ]);
+      await using provider = await providerFor(server);
+      await new Agent({ provider, instructions: 'Search.' }).run('Go.', {
+        environment: new Environment({
+          url: executor.url,
+          cwd: root,
+          headers: executor.headers,
+          tools: [name],
+        }),
+      });
+      expect.soft(found).toMatchObject({
+        errors: [],
+        truncated: false,
+        truncation_reasons: [],
+      });
+      const matches = files.map(([file, content]) => {
+        const relativePath = path === '.' ? file : `${path}/${file}`;
+        return name === 'project_glob'
+          ? relativePath
+          : {
+              path: relativePath,
+              line_number: 1,
+              line: content,
+              before: [],
+              after: [],
+            };
+      });
+      expect.soft(found?.matches).toEqual(expect.arrayContaining(matches));
+      expect.soft(found?.matches).toHaveLength(matches.length);
+      expect.soft(JSON.stringify(server.requests)).not.toContain(outsideCanary);
+      expect.soft(JSON.stringify(found)).not.toContain('outside.txt');
+      server.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+  30_000,
+);
+
 it
   .skipIf(process.platform === 'win32')
   .each(['project_glob', 'project_grep'] as const)(
