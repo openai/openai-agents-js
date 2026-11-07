@@ -50,6 +50,13 @@ afterEach(() =>
   bounded(ModelServer.closeAll(), 'provider fixture cleanup', 5_000),
 );
 
+// Positive strict filesystem effects require a host that can run the native sandbox.
+const sandboxEffect = it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+);
+
 const cell = (input: string, callId = 'executor-stop-cell'): JsonObject => ({
   type: 'custom_tool_call',
   name: 'exec',
@@ -321,7 +328,7 @@ text('forbidden search continuation'); await cleanup;`),
   45_000,
 );
 
-it.each(['command approval', 'patch transform'] as const)(
+sandboxEffect.each(['command approval', 'patch transform'] as const)(
   'stops the root from %s before effects, redacts the reason, and permits a later root',
   async (source) => {
     const secret = 'executor-root-private-reason';
@@ -595,7 +602,7 @@ await tools.exec_command({cmd:'printf escaped > stdin-continuation.txt'});`),
   f.model.assertExhausted();
 }, 45_000);
 
-it('stops the exact generated child while its parent and sibling remain usable', async () => {
+sandboxEffect('stops the exact generated child while its parent and sibling remain usable', async () => {
   let rootId: string | undefined;
   let stoppedId: string | undefined;
   const counts = new Map<string, number>();
@@ -726,7 +733,7 @@ it('stops the exact generated child while its parent and sibling remain usable',
   }
 }, 45_000);
 
-it('rejects a cancelled late decision before a successor can dispatch once', async () => {
+sandboxEffect('rejects a cancelled late decision before a successor can dispatch once', async () => {
   const probe = cleanupProbe();
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -994,7 +1001,7 @@ it('validates raw action replacement data without granting stop authority', asyn
   }
 }, 45_000);
 
-it('keeps public completion pending until the real native stop finish is released', async () => {
+sandboxEffect('keeps public completion pending until the real native stop finish is released', async () => {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let approvals = 0;
@@ -1098,7 +1105,7 @@ await tools.exec_command({cmd:'printf escaped > finish-continuation.txt'});`),
 // queue at InterruptIfNoPendingInput's check, nor force a real held-stop refusal.
 // Exact pending-mailbox/refusal coverage still needs an owned native fixture gate;
 // neither an unconditional null mock nor a successful acknowledgement proves it.
-it('keeps accepted steering before stop fail-closed and preserves a later owner', async () => {
+sandboxEffect('keeps accepted steering before stop fail-closed and preserves a later owner', async () => {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const nativeFinished = Promise.withResolvers<void>();
