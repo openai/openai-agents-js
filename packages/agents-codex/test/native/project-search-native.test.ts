@@ -282,9 +282,10 @@ it.each(['project_glob', 'project_grep'] as const)(
   30_000,
 );
 
-it.each(['local', 'remote'] as const)(
+it.for(['local', 'remote'] as const)(
   'searches the selected %s workspace without command grants or project guidance',
-  async (kind) => {
+  { timeout: 30_000 },
+  async (kind, context) => {
     await using project = await workspace(kind);
     const server = new ModelServer([
       (request) => {
@@ -348,13 +349,30 @@ it.each(['local', 'remote'] as const)(
     const answer = await new Agent({
       provider,
       instructions: 'Search the project.',
-    }).run('Search.', {
-      environment: project.environment(['project_glob', 'project_grep']),
-    });
+    })
+      .run('Search.', {
+        environment: project.environment(['project_glob', 'project_grep']),
+      })
+      .catch((error: unknown) => {
+        if (
+          kind === 'local' &&
+          typeof error === 'object' &&
+          error !== null &&
+          'message' in error &&
+          error.message ===
+            'local executor could not establish the platform sandbox' &&
+          process.env.GITHUB_ACTIONS !== 'true' &&
+          process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+          process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+        ) {
+          expect(server.requests).toHaveLength(0);
+          context.skip('This host cannot launch a nested platform sandbox');
+        }
+        throw error;
+      });
     expect(answer.finalOutput).toBe('searched');
     server.assertExhausted();
   },
-  30_000,
 );
 
 it('bounds results and permits a narrower rerun after truncation', async () => {
