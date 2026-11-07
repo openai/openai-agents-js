@@ -77,6 +77,10 @@ The adapter requests identity HTTP encoding and cancels responses that declare a
 
 `agentFactory(binding, callContext)` returns current trusted Agent configuration, application context, and optional `parentTrace`. The binding contains the authenticated principal, tenant, task ID, and conversation context ID. Saved checkpoints and inbound metadata never supply configuration or credentials. Each task gets its own native Session, including tasks that share a conversation context. The factory can read the current authenticated `ServerCallContext`, validate its transport headers with `TraceContext`, and choose an admitted trace parent.
 
+With the current source build, the trusted factory result can also provide `environment: Environment<Context> | EnvironmentSource<Context>`. Supply the current Environment or a fresh lease source on every opening, including checkpoint restore. The factory can configure executor tools, write and network policy, and existing Environment approval or result callbacks. Saved state and peer input cannot select that authority; restore still requires a matching saved executor policy.
+
+The adapter retains ownership of Session state, cancellation, and publication. The factory has no general Session or Turn options bag. Root `beforeStep` and `prepareRequest` callbacks and portable checkpoints with an active run budget are unsupported by this adapter profile. Use direct Agent or Session calls when those controls are required.
+
 Ordinary function tools use native execution and cleanup. The resumable profile supports one settled root manual request. Native `Session.suspend()` owns checkpoint admission; live callbacks, multiple pending requests, and unsupported nested states cannot become resumable A2A input requests.
 
 Before consuming a reply, the adapter checks its challenge and generation and validates its answer against the current manual declaration. Invalid answers preserve the waiting checkpoint.
