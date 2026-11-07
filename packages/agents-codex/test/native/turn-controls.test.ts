@@ -507,8 +507,14 @@ describe('exact root Turn controls', () => {
       try {
         const root = await session.submit('A');
         await Promise.all([rootEntered.promise, childEntered.promise]);
-        const children = [];
-        for await (const child of session.subagents()) children.push(child);
+        const children = await vi.waitFor(
+          async () => {
+            const children = await Array.fromAsync(session.subagents());
+            expect(children[0]?.turn).toBeTruthy();
+            return children;
+          },
+          { timeout: 5_000 },
+        );
         const child = children[0]?.turn;
         if (!child) throw new Error('No live child Turn');
         await expect(child.cancel()).rejects.toThrow('root Turns only');

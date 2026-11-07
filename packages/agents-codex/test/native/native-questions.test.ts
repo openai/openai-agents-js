@@ -757,8 +757,15 @@ for (const queuedInput of [false, true]) {
       ]);
       expect(f.calls).toHaveLength(1);
       step('child owner snapshot');
-      const children = [];
-      for await (const child of session.subagents()) children.push(child);
+      const childSession = session;
+      const children = await vi.waitFor(
+        async () => {
+          const children = await Array.fromAsync(childSession.subagents());
+          expect(children[0]?.turn).toBeTruthy();
+          return children;
+        },
+        { timeout: 5_000 },
+      );
       expect(children).toHaveLength(1);
       const child = children[0];
       if (!child.turn) throw new Error('Expected the actual live child turn');

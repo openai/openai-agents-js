@@ -207,7 +207,14 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect((await root.wait()).finalOutput).toBe('root settled');
         const request = await action(events);
         await events.return?.();
-        const children = await Array.fromAsync(source.subagents());
+        const children = await vi.waitFor(
+          async () => {
+            const children = await Array.fromAsync(source.subagents());
+            expect(children[0]?.turn).toBeTruthy();
+            return children;
+          },
+          { timeout: 5_000 },
+        );
         expect(children).toHaveLength(1);
         const child = children[0]!;
         if (!child.turn) throw new Error('Expected the real child turn');
@@ -392,7 +399,14 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             ),
           ).toBe(true);
           expect((await root.wait()).finalOutput).toBe('root settled');
-          const children = await Array.fromAsync(source.subagents());
+          const children = await vi.waitFor(
+            async () => {
+              const children = await Array.fromAsync(source.subagents());
+              expect(children[0]?.turn).toBeTruthy();
+              return children;
+            },
+            { timeout: 5_000 },
+          );
           expect(children).toHaveLength(1);
           const child = children[0]!;
           childId = child.id;
@@ -443,7 +457,18 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             (await (await restored.submit('Continue the writer.')).wait())
               .finalOutput,
           ).toBe('root resumed');
-          const resumedChildren = await Array.fromAsync(restored.subagents());
+          const resumedChildren = await vi.waitFor(
+            async () => {
+              const resumedChildren = await Array.fromAsync(
+                restored.subagents(),
+              );
+              expect(
+                resumedChildren.find((item) => item.id === childId)?.turn,
+              ).toBeTruthy();
+              return resumedChildren;
+            },
+            { timeout: 5_000 },
+          );
           const resumed = resumedChildren.find((item) => item.id === childId);
           if (!resumed?.turn)
             throw new Error('Expected the resumed child turn');

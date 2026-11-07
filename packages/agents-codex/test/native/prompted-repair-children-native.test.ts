@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, Environment, NativeAgents, NativeProvider } from '../../src';
 import type { JsonObject } from '../../src/runtime/binding';
@@ -173,12 +173,14 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             );
             const children = await waitForPhase(
               'initial child list/read',
-              (async () => {
-                const result = [];
-                for await (const child of session.subagents())
-                  result.push(child);
-                return result;
-              })(),
+              vi.waitFor(
+                async () => {
+                  const result = await Array.fromAsync(session.subagents());
+                  expect(result[0]?.turn).toBeTruthy();
+                  return result;
+                },
+                { timeout: 5_000 },
+              ),
             );
             expect(children).toHaveLength(1);
             const child = children[0].turn;

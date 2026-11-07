@@ -1705,8 +1705,14 @@ it('preserves policy-free live-child replacement refusal and Session retirement'
       'root done',
     );
     await vi.waitFor(() => expect(remote.effects).toHaveLength(1));
-    const children = [];
-    for await (const child of session.subagents()) children.push(child);
+    const children = await vi.waitFor(
+      async () => {
+        const children = await Array.fromAsync(session.subagents());
+        expect(children[0]?.turn).toBeTruthy();
+        return children;
+      },
+      { timeout: 5_000 },
+    );
     expect(children).toHaveLength(1);
     expect(children[0]?.turn).toBeTruthy();
     const childId = children[0]!.id;
