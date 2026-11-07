@@ -317,6 +317,35 @@ describe('OpenAI speech provider', () => {
       else expect((await result).flatMap((f) => [...f.data])).toEqual([1, 2]);
     }
   });
+  it('forwards configured client account headers to streaming transcription', async () => {
+    let handshake: import('node:http').IncomingHttpHeaders | undefined;
+    await withSocket(
+      async (socket, _events, headers) => {
+        handshake = headers;
+        socket.on('message', () =>
+          socket.send(JSON.stringify({ type: 'session.updated' })),
+        );
+      },
+      async (provider) => {
+        async function* source() {
+          yield frame([]);
+        }
+        expect(
+          await collect(
+            provider.transcribe(source(), {
+              signal: new AbortController().signal,
+            }),
+          ),
+        ).toEqual([]);
+        expect(handshake).toMatchObject({
+          authorization: 'Bearer synthetic',
+          'openai-organization': 'org-voice',
+          'openai-project': 'proj-voice',
+        });
+      },
+      { organization: 'org-voice', project: 'proj-voice' },
+    );
+  });
   it('commits explicit utterances and EOF, drains exact final items, and never commits empty input', async () => {
     await withSocket(
       async (socket, events) => {
@@ -456,18 +485,20 @@ async function withSocket(
   setup: (
     socket: import('ws').WebSocket,
     events: Record<string, any>[],
+    headers: import('node:http').IncomingHttpHeaders,
   ) => Promise<void>,
   test: (
     provider: OpenAISpeechProvider,
     events: Record<string, any>[],
   ) => Promise<void>,
+  account: { organization?: string; project?: string } = {},
 ) {
   const server = createServer();
   const websocket = new WebSocketServer({ server });
   const events: Record<string, any>[] = [];
   websocket.on('connection', (socket, request) => {
     expect(request.url).toBe('/realtime?intent=transcription');
-    void setup(socket, events);
+    void setup(socket, events, request.headers);
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -475,8 +506,11 @@ async function withSocket(
   if (!address || typeof address === 'string')
     throw new Error('missing address');
   const provider = new OpenAISpeechProvider({
-    apiKey: 'synthetic',
-    baseURL: `http://127.0.0.1:${address.port}`,
+    client: new OpenAI({
+      apiKey: 'synthetic',
+      baseURL: `http://127.0.0.1:${address.port}`,
+      ...account,
+    }),
     timeoutMs: 1000,
   });
   try {

@@ -8,6 +8,7 @@ import {
 } from './pipeline';
 
 export interface OpenAISpeechProviderOptions {
+  /** HTTP client; streamed transcription reuses its URL, static key, organization, and project. */
   client?: OpenAI;
   apiKey?: string;
   baseURL?: string;
@@ -130,7 +131,15 @@ export class OpenAISpeechProvider implements SpeechProvider {
         'Streaming transcription requires a static API key on the speech client',
       );
     const socket = new WebSocket(url, {
-      headers: { Authorization: `Bearer ${this.client.apiKey}` },
+      headers: {
+        Authorization: `Bearer ${this.client.apiKey}`,
+        ...(this.client.organization
+          ? { 'OpenAI-Organization': this.client.organization }
+          : {}),
+        ...(this.client.project
+          ? { 'OpenAI-Project': this.client.project }
+          : {}),
+      },
     });
     const events: Record<string, unknown>[] = [];
     let failure: unknown;
