@@ -31,7 +31,16 @@ export async function tracingTypes(agent: Agent, session: Session) {
   const processor: TraceProcessor = {
     onEvent: async (event) => {
       const id: string = event.trace_id;
-      void id;
+      const name: string = event.name;
+      const kind: string = event.kind;
+      const started: bigint = BigInt(event.start_time_unix_nanos);
+      const ended: bigint | null =
+        event.end_time_unix_nanos === null
+          ? null
+          : BigInt(event.end_time_unix_nanos);
+      const attributes: Readonly<Record<string, unknown>> = event.attributes;
+      const outcome: 'ok' | 'error' | 'unset' = event.outcome;
+      void [id, name, kind, started, ended, attributes, outcome];
     },
   };
   await telemetry.configure({ traceProcessors: [processor] });
