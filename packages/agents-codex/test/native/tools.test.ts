@@ -87,6 +87,26 @@ it('requires explicit managed source and preserves unavailable native attributio
 });
 
 describe('function tools', () => {
+  it('rejects callback deadlines beyond the timer range before executing work', () => {
+    const execute = vi.fn(() => 'done');
+    const options = { name: 'bounded', parameters: z.object({}), execute };
+    expect(() =>
+      tool({ ...options, callbackTimeout: 2_147_483.647 }),
+    ).not.toThrow();
+    for (const callbackTimeout of [
+      2_147_483.648,
+      30 * 24 * 60 * 60,
+      Infinity,
+      NaN,
+      0,
+    ]) {
+      expect(() => tool({ ...options, callbackTimeout })).toThrow(
+        'callbackTimeout',
+      );
+    }
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('returns an inline image through the function tool output pipeline', async () => {
     const imageUrl = 'data:image/png;base64,aW1hZ2U=';
     const definedTool = tool({
