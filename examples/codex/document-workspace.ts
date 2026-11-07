@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { open, realpath, rename, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { tool, ToolOutput } from '@openai/agents';
 
@@ -64,12 +64,16 @@ export class SelectedDocuments {
     if (
       !within ||
       within === '..' ||
-      within.startsWith('../') ||
+      within.startsWith(`..${sep}`) ||
       isAbsolute(within) ||
       (await realpath(path)) !== path
     )
       throw new Error('Selected document must remain at its selected path');
-    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // A selected FIFO must reach the regular-file check without waiting for a writer.
+    const file = await open(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     try {
       const stat = await file.stat();
       if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
