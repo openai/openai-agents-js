@@ -13,7 +13,7 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-// Strict command effects require a real filesystem sandbox, which Codex cannot nest.
+// Native filesystem sandbox effects honor the explicit host restriction.
 it.skipIf(
   process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
     process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1',

@@ -14,7 +14,7 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-// This suite's file effects require a filesystem sandbox, which Codex cannot nest.
+// Native filesystem sandbox effects honor the explicit host restriction.
 const native = describe.skipIf(
   process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
     process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1',

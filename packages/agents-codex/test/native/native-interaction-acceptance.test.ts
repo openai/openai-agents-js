@@ -200,7 +200,7 @@ native('unattended native interactions', () => {
     }
   }, 30_000);
 
-  // Strict file effects require a real filesystem sandbox, which Codex cannot nest.
+  // Native filesystem sandbox effects honor the explicit host restriction.
   it.skipIf(process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1')(
     'writes its assigned remote workspace without requesting approval',
     async () => {
