@@ -365,11 +365,17 @@ describe('declaration output modes', () => {
     'exposes safe %s validation errors and permits a later root',
     async (mode) => {
       const invalid = [
-        'private-invalid-json',
-        '{"answer":"private-wrong-type"}',
+        {
+          text: 'private-invalid-json',
+          issues: [{ code: 'validation_error', path: [] }],
+        },
+        {
+          text: '{"answer":"private-wrong-type"}',
+          issues: [{ code: 'invalid_type', path: ['answer'] }],
+        },
       ];
       const server = new ModelServer([
-        ...invalid.map((text) => [message(text)]),
+        ...invalid.map(({ text }) => [message(text)]),
         [message('{"answer":7}')],
         [message('Summary: seven')],
       ]);
@@ -381,7 +387,7 @@ describe('declaration output modes', () => {
         outputType: { mode, schema: z.object({ answer: z.number() }) },
       }).session();
       try {
-        for (const text of invalid) {
+        for (const { text, issues } of invalid) {
           const turn = await session.submit('Answer');
           const failure = await turn.wait().catch((error: unknown) => error);
           expect(failure).toBeInstanceOf(OutputValidationError);
@@ -392,7 +398,7 @@ describe('declaration output modes', () => {
           );
           expect(failure.rawOutput).toBe(text);
           expect(failure).not.toHaveProperty('cause');
-          expect(failure).not.toHaveProperty('issues');
+          expect(failure.issues).toEqual(issues);
           expect(String(failure)).not.toContain('private');
           await expect(turn.wait()).rejects.toBe(failure);
         }
@@ -488,9 +494,10 @@ describe('declaration output modes', () => {
         }
       }
       if (!action) throw new Error('Expected decision request');
-      const replyTurn = await session.respond(action.reply('accepted'));
-      expect(replyTurn).toBe(turn);
-      expect((await turn.wait()).finalOutput).toEqual({ answer: 'accepted' });
+      await session.respond(action.reply('accepted'));
+      const completed = await turn.wait();
+      expect(completed.turn).toBe(turn);
+      expect(completed.finalOutput).toEqual({ answer: 'accepted' });
       server.assertExhausted();
     } finally {
       await session.close();

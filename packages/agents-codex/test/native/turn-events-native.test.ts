@@ -542,12 +542,13 @@ describe('passive real-native root Turn events', () => {
       if (event.type !== 'action_requested') continue;
       expect(ended).toBe(false);
       expect(seen.every((item) => !('reply' in item))).toBe(true);
-      expect(await session.respond(event.reply('approved'))).toBe(turn);
+      await session.respond(event.reply('approved'));
       await passive;
       expect(seen.every((item) => !('reply' in item))).toBe(true);
       expect(seen.at(-1)).toMatchObject({
         type: 'turn_finished',
         status: 'completed',
+        submissionId: turn.submissionId,
       });
       server.assertExhausted();
       return;
