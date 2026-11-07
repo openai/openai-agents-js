@@ -126,6 +126,7 @@ it('joins an entered retained handler before cancellation or queued work can set
 it('keeps the retained handler alive for a child after its root completes', async () => {
   const executor = await startPublicExecutor();
   const entered = Promise.withResolvers<void>();
+  const allowQuestion = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const decision = manualTool({
     name: 'decision',
@@ -136,7 +137,7 @@ it('keeps the retained handler alive for a child after its root completes', asyn
   let rootId: string | undefined;
   const counts = new Map<string, number>();
   const server = new ModelServer(
-    Array.from({ length: 4 }, () => (request) => {
+    Array.from({ length: 4 }, () => async (request) => {
       const metadata = request.client_metadata as Record<string, string>;
       const id = String(
         JSON.parse(metadata['x-codex-turn-metadata']).thread_id,
@@ -154,6 +155,7 @@ it('keeps the retained handler alive for a child after its root completes', asyn
               ),
             ]
           : [message('root done')];
+      if (count === 1) await allowQuestion.promise;
       return count === 1
         ? [call('decision', {}, { callId: 'manual-child' })]
         : [message('child done')];
@@ -187,6 +189,7 @@ it('keeps the retained handler alive for a child after its root completes', asyn
     const root = await session.submit('Delegate.');
     const result = await root.wait();
     expect(result.finalOutput).toBe('root done');
+    allowQuestion.resolve();
     await entered.promise;
     const children = await Array.fromAsync(session.subagents());
     const childTurn = children[0]?.turn;
@@ -196,6 +199,7 @@ it('keeps the retained handler alive for a child after its root completes', asyn
     await session.close();
     server.assertExhausted();
   } finally {
+    allowQuestion.resolve();
     release.resolve();
     try {
       await session?.close();
