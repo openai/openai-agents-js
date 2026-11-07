@@ -515,7 +515,7 @@ await cleanup; text('forbidden continuation');`;
   45_000,
 );
 
-it('denies generated stdin against a real live process after a positive write, without continuation', async () => {
+sandboxEffect('denies generated stdin against a real live process after a positive write, without continuation', async () => {
   let processId: number | undefined;
   let denied: ExecutorContext | undefined;
   await using f = await open(

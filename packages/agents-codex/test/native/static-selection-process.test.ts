@@ -81,7 +81,12 @@ function launch(config: object) {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'static selection fresh-process recovery',
   () => {
-    it('restores checked native output, settled VM values and a typed manual subset across processes', async () => {
+    // The seed process must complete a real strict sandbox effect before capture.
+    it.skipIf(
+      process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+        process.env.GITHUB_ACTIONS !== 'true' &&
+        process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+    )('restores checked native output, settled VM values and a typed manual subset across processes', async () => {
       const directory = await mkdtemp(
         join(tmpdir(), 'agents-static-selection-'),
       );

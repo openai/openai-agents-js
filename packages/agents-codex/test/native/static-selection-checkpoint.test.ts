@@ -21,7 +21,13 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
+// Capturing the accepted native result requires a successful strict sandbox effect.
+it.skipIf(
+  process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
+    (process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+      process.env.GITHUB_ACTIONS !== 'true' &&
+      process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
+)(
   'retains an accepted transformed native result and typed manual subset without repeating its effect',
   async () => {
     const executor = await startPublicExecutor();
