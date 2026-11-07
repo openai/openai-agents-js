@@ -313,69 +313,77 @@ describe('settled root fork', () => {
     }
   });
 
-  it('refuses a live root terminal without terminating it, then forks after the source retires it', async () => {
-    const executor = await startPublicExecutor();
-    let processId = 0;
-    const { server, provider } = await setup([
-      [
-        call(
-          'exec_command',
-          {
-            cmd: 'read -r value; printf "finished:%s\\n" "$value"',
-            tty: true,
-            yield_time_ms: 1000,
-          },
-          { callId: 'start-process' },
-        ),
-      ],
-      (request) => {
-        const input = JSON.stringify(request.input);
-        const match = /Process running with session ID (\d+)/.exec(input);
-        expect(match).not.toBeNull();
-        processId = Number(match![1]);
-        return [message('settled with terminal')];
-      },
-      () => [
-        call(
-          'write_stdin',
-          { session_id: processId, chars: 'done\n', yield_time_ms: 1000 },
-          { callId: 'finish-process' },
-        ),
-      ],
-      [message('process retired')],
-    ]);
-    let source: Session | undefined;
-    try {
-      source = await new Agent({
-        instructions: 'Use the selected tools.',
-        model: 'gpt-5',
-        provider,
-      }).session({
-        environment: new Environment({
-          url: executor.url,
-          cwd: executor.cwd,
-          headers: executor.headers,
-          tools: ['exec_command', 'write_stdin'],
-        }),
-      });
-      await (await source.submit('Start a process.')).wait();
-      const before = executor.requests.length;
-      await expect(source.fork()).rejects.toThrow('background terminals');
-      expect(executor.requests).toHaveLength(before);
-      expect(
-        executor.requests.some(
-          (request) => request.method === 'process/terminate',
-        ),
-      ).toBe(false);
-      await (await source.submit('Finish the process.')).wait();
-      expect((await source.fork()).source_session_id).not.toBe(source.id);
-      server.assertExhausted();
-    } finally {
-      await source?.close();
-      await provider.close();
-      await executor.close();
-    }
-  });
+  // Strict process effects require a working native sandbox.
+  it.skipIf(
+    process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+      process.env.GITHUB_ACTIONS !== 'true' &&
+      process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+  )(
+    'refuses a live root terminal without terminating it, then forks after the source retires it',
+    async () => {
+      const executor = await startPublicExecutor();
+      let processId = 0;
+      const { server, provider } = await setup([
+        [
+          call(
+            'exec_command',
+            {
+              cmd: 'read -r value; printf "finished:%s\\n" "$value"',
+              tty: true,
+              yield_time_ms: 1000,
+            },
+            { callId: 'start-process' },
+          ),
+        ],
+        (request) => {
+          const input = JSON.stringify(request.input);
+          const match = /Process running with session ID (\d+)/.exec(input);
+          expect(match).not.toBeNull();
+          processId = Number(match![1]);
+          return [message('settled with terminal')];
+        },
+        () => [
+          call(
+            'write_stdin',
+            { session_id: processId, chars: 'done\n', yield_time_ms: 1000 },
+            { callId: 'finish-process' },
+          ),
+        ],
+        [message('process retired')],
+      ]);
+      let source: Session | undefined;
+      try {
+        source = await new Agent({
+          instructions: 'Use the selected tools.',
+          model: 'gpt-5',
+          provider,
+        }).session({
+          environment: new Environment({
+            url: executor.url,
+            cwd: executor.cwd,
+            headers: executor.headers,
+            tools: ['exec_command', 'write_stdin'],
+          }),
+        });
+        await (await source.submit('Start a process.')).wait();
+        const before = executor.requests.length;
+        await expect(source.fork()).rejects.toThrow('background terminals');
+        expect(executor.requests).toHaveLength(before);
+        expect(
+          executor.requests.some(
+            (request) => request.method === 'process/terminate',
+          ),
+        ).toBe(false);
+        await (await source.submit('Finish the process.')).wait();
+        expect((await source.fork()).source_session_id).not.toBe(source.id);
+        server.assertExhausted();
+      } finally {
+        await source?.close();
+        await provider.close();
+        await executor.close();
+      }
+    },
+  );
 
   it.each(['paused', 'complete'] as const)(
     'forks retained %s goal and checklist data without grants or replay',

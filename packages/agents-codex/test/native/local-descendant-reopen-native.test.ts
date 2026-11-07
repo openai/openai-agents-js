@@ -224,6 +224,8 @@ for (const depth of [1, 2]) {
               headers: executor.headers,
             },
             depth,
+            // These destinations intentionally reopen without an Environment.
+            ...(noChildren ? { writePolicy: 'legacy' } : {}),
           };
           const source = start({ ...common, mode });
           const opened = await source.wait('opened');

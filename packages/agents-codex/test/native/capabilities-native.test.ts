@@ -910,6 +910,8 @@ describe('public live capabilities and checkpoint advice', () => {
             url: executor.url,
             cwd: executor.cwd,
             headers: executor.headers,
+            // This fixture intentionally removes or replaces discovery authority on restore.
+            writePolicy: 'legacy',
             capabilityDirectories: [executor.cwd],
           }),
         });
@@ -945,6 +947,8 @@ describe('public live capabilities and checkpoint advice', () => {
             url: executor.url,
             cwd: executor.cwd,
             headers: executor.headers,
+            // This fixture intentionally removes or replaces discovery authority on restore.
+            writePolicy: 'legacy',
             capabilityDirectories,
           }),
         });

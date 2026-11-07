@@ -87,8 +87,8 @@ export async function openSession(
   );
   if (
     saved !== null &&
-    saved.executor_policy_digest === undefined &&
-    (environment?.kind === 'local' || environment?.writableRoots !== undefined)
+    (saved.executor_policy_digest !== undefined) !==
+      (environment?.writePolicy === 'strict')
   ) {
     throw new TypeError(
       'Restore requires the recorded executor write and network policy',

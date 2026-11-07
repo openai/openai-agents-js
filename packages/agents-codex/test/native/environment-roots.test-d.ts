@@ -22,6 +22,17 @@ const storageMount: LocalStorageMount = {
   strategy: 'local_bind',
 };
 Environment.local({ cwd: '/workspace', mounts: [storageMount] });
+Environment.local({ cwd: '/workspace', writePolicy: 'strict' });
+Environment.local({
+  cwd: '/workspace',
+  // @ts-expect-error Local environments require strict writes.
+  writePolicy: 'legacy',
+});
+new Environment({
+  url: 'wss://executor.invalid',
+  cwd: '/workspace',
+  writePolicy: 'legacy',
+});
 new Environment({
   // @ts-expect-error Mounts belong only to local environments.
   url: 'wss://executor.invalid',

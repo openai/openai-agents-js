@@ -13,7 +13,15 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-it.each(['direct', 'code_mode'] as const)(
+// Successful native effects need sandbox helpers unavailable on this host.
+// Keep strict execution required in CI and cancellation coverage active locally.
+const effectTest = it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+);
+
+effectTest.each(['direct', 'code_mode'] as const)(
   'replaces a %s builtin result before model, observation and history publication',
   async (route) => {
     const executor = await startPublicExecutor();
@@ -205,197 +213,209 @@ it('cancels publication immediately and joins an abort-ignoring result callback'
   }
 }, 25_000);
 
-it('keeps the real process identity while replacing exec and stdin output', async () => {
-  const executor = await startPublicExecutor();
-  const privateOutput = 'synthetic-private-poll-output';
-  const policies: string[] = [];
-  const rawResults: unknown[] = [];
-  const model = new ModelServer([
-    [
-      call(
-        'exec_command',
-        {
-          cmd: 'cat private.txt; read -r line; cat private.txt',
-          tty: true,
-          yield_time_ms: 1000,
-        },
-        { callId: 'start' },
-      ),
-    ],
-    (request) => {
-      const start = (request.input as Array<Record<string, unknown>>).find(
-        (item) =>
-          item.type === 'function_call_output' && item.call_id === 'start',
-      );
-      expect(start).toBeDefined();
-      const accepted = JSON.parse(String(start!.output));
-      expect(
-        accepted.session_id,
-        JSON.stringify({ accepted, rawResults }),
-      ).toBeDefined();
-      return [
+effectTest(
+  'keeps the real process identity while replacing exec and stdin output',
+  async () => {
+    const executor = await startPublicExecutor();
+    const privateOutput = 'synthetic-private-poll-output';
+    const policies: string[] = [];
+    const rawResults: unknown[] = [];
+    const model = new ModelServer([
+      [
         call(
-          'write_stdin',
-          { session_id: accepted.session_id, chars: '\n', yield_time_ms: 1000 },
-          { callId: 'poll' },
+          'exec_command',
+          {
+            cmd: 'cat private.txt; read -r line; cat private.txt',
+            tty: true,
+            yield_time_ms: 1000,
+          },
+          { callId: 'start' },
         ),
-      ];
-    },
-    (request) => {
-      expect(JSON.stringify(request)).toContain('accepted-poll-output');
-      expect(JSON.stringify(request)).not.toContain(privateOutput);
-      return [message('polled')];
-    },
-  ]);
-  const config = await model.config();
-  const provider = new NativeProvider({
-    baseUrl: (config['model_providers.fixture'] as { base_url: string })
-      .base_url,
-    apiKey: 'synthetic-poll-policy',
-    supportsWebsockets: false,
-  });
-  const environment = new Environment({
-    url: executor.url,
-    cwd: executor.cwd,
-    headers: executor.headers,
-    tools: ['exec_command', 'write_stdin'],
-    transformResult(info, value) {
-      policies.push(info.toolName);
-      rawResults.push(value);
-      if (value === null || typeof value !== 'object' || Array.isArray(value))
-        throw new Error('Expected executor result object');
-      return { ...value, output: 'accepted-poll-output' };
-    },
-  });
-  const agent = new Agent({
-    instructions: 'Run and poll once.',
-    provider,
-    model: 'gpt-5',
-  });
-  let session: Awaited<ReturnType<typeof agent.session>> | undefined;
-  try {
-    await writeFile(join(executor.cwd, 'private.txt'), privateOutput);
-    session = await agent.session({ environment });
-    const turn = await session.submit('Run and poll.');
-    const observations = [];
-    for await (const event of turn.events()) observations.push(event);
-    expect((await turn.wait()).finalOutput).toBe('polled');
-    const items = [];
-    for await (const item of session.items()) items.push(item);
-    expect(policies).toEqual(['exec_command', 'write_stdin']);
-    expect(
-      JSON.stringify({ observations, items, requests: model.requests }),
-    ).not.toContain(privateOutput);
-    expect(
-      executor.requests.some((request) => request.method === 'process/write'),
-    ).toBe(true);
-    model.assertExhausted();
-  } finally {
-    try {
-      try {
-        await session?.close();
-      } finally {
-        await provider.close();
-      }
-    } finally {
-      await executor.close();
-    }
-  }
-}, 30_000);
-
-it('replaces the whole native patch result after one committed patch', async () => {
-  const executor = await startPublicExecutor();
-  const model = new ModelServer([
-    [
-      {
-        type: 'custom_tool_call',
-        name: 'apply_patch',
-        call_id: 'patch',
-        input:
-          '*** Begin Patch\n*** Add File: artifact.txt\n+checked\n*** End Patch',
+      ],
+      (request) => {
+        const start = (request.input as Array<Record<string, unknown>>).find(
+          (item) =>
+            item.type === 'function_call_output' && item.call_id === 'start',
+        );
+        expect(start).toBeDefined();
+        const accepted = JSON.parse(String(start!.output));
+        expect(
+          accepted.session_id,
+          JSON.stringify({ accepted, rawResults }),
+        ).toBeDefined();
+        return [
+          call(
+            'write_stdin',
+            {
+              session_id: accepted.session_id,
+              chars: '\n',
+              yield_time_ms: 1000,
+            },
+            { callId: 'poll' },
+          ),
+        ];
       },
-    ],
-    (request) => {
-      expect(JSON.stringify(request)).toContain('accepted-patch-result');
-      expect(JSON.stringify(request)).not.toContain('Success. Updated');
-      return [message('patched')];
-    },
-  ]);
-  const config = await model.config();
-  const provider = new NativeProvider({
-    baseUrl: (config['model_providers.fixture'] as { base_url: string })
-      .base_url,
-    apiKey: 'synthetic-patch-policy',
-    supportsWebsockets: false,
-  });
-  const transformResult = vi.fn((_info: ExecutorContext, value: unknown) => {
-    // Core exposes an empty JSON result for apply_patch; the committed file
-    // and accepted model output below prove the effect and replacement.
-    expect(value).toEqual({});
-    return { accepted: 'accepted-patch-result' };
-  });
-  const environment = new Environment({
-    url: executor.url,
-    cwd: executor.cwd,
-    headers: executor.headers,
-    tools: ['apply_patch'],
-    transformResult,
-  });
-  const agent = new Agent({
-    instructions: 'Apply the patch once.',
-    provider,
-    model: 'gpt-6.1-sol',
-  });
-  let session: Awaited<ReturnType<typeof agent.session>> | undefined;
-  try {
-    session = await agent.session({ environment });
-    const turn = await session.submit('Apply patch.');
-    const events: unknown[] = [];
-    const reader = (async () => {
-      for await (const event of turn.events()) events.push(event);
-    })();
-    let cancellation: Promise<void> | undefined;
-    const deadline = setTimeout(() => {
-      cancellation = turn.cancel();
-      // The original await below and finally join both remain the owners.
-      void cancellation.catch(() => {});
-    }, 8000);
+      (request) => {
+        expect(JSON.stringify(request)).toContain('accepted-poll-output');
+        expect(JSON.stringify(request)).not.toContain(privateOutput);
+        return [message('polled')];
+      },
+    ]);
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-poll-policy',
+      supportsWebsockets: false,
+    });
+    const environment = new Environment({
+      url: executor.url,
+      cwd: executor.cwd,
+      headers: executor.headers,
+      tools: ['exec_command', 'write_stdin'],
+      transformResult(info, value) {
+        policies.push(info.toolName);
+        rawResults.push(value);
+        if (value === null || typeof value !== 'object' || Array.isArray(value))
+          throw new Error('Expected executor result object');
+        return { ...value, output: 'accepted-poll-output' };
+      },
+    });
+    const agent = new Agent({
+      instructions: 'Run and poll once.',
+      provider,
+      model: 'gpt-5',
+    });
+    let session: Awaited<ReturnType<typeof agent.session>> | undefined;
     try {
-      expect((await turn.wait()).finalOutput).toBe('patched');
-    } catch (error) {
-      throw new Error(
-        JSON.stringify({
-          message: 'Patch did not settle with accepted output',
-          resultCallbacks: transformResult.mock.calls.length,
-          executorMethods: executor.requests.map((request) => request.method),
-          declaredTools: model.requests.map((request) => request.tools),
-          events,
-        }),
-        { cause: error },
+      await writeFile(join(executor.cwd, 'private.txt'), privateOutput);
+      session = await agent.session({ environment });
+      const turn = await session.submit('Run and poll.');
+      const observations = [];
+      for await (const event of turn.events()) observations.push(event);
+      expect((await turn.wait()).finalOutput).toBe('polled');
+      const items = [];
+      for await (const item of session.items()) items.push(item);
+      expect(policies).toEqual(['exec_command', 'write_stdin']);
+      expect(
+        JSON.stringify({ observations, items, requests: model.requests }),
+      ).not.toContain(privateOutput);
+      expect(
+        executor.requests.some((request) => request.method === 'process/write'),
+      ).toBe(true);
+      model.assertExhausted();
+    } finally {
+      try {
+        try {
+          await session?.close();
+        } finally {
+          await provider.close();
+        }
+      } finally {
+        await executor.close();
+      }
+    }
+  },
+  30_000,
+);
+
+effectTest(
+  'replaces the whole native patch result after one committed patch',
+  async () => {
+    const executor = await startPublicExecutor();
+    const model = new ModelServer([
+      [
+        {
+          type: 'custom_tool_call',
+          name: 'apply_patch',
+          call_id: 'patch',
+          input:
+            '*** Begin Patch\n*** Add File: artifact.txt\n+checked\n*** End Patch',
+        },
+      ],
+      (request) => {
+        expect(JSON.stringify(request)).toContain('accepted-patch-result');
+        expect(JSON.stringify(request)).not.toContain('Success. Updated');
+        return [message('patched')];
+      },
+    ]);
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-patch-policy',
+      supportsWebsockets: false,
+    });
+    const transformResult = vi.fn((_info: ExecutorContext, value: unknown) => {
+      // Core exposes an empty JSON result for apply_patch; the committed file
+      // and accepted model output below prove the effect and replacement.
+      expect(value).toEqual({});
+      return { accepted: 'accepted-patch-result' };
+    });
+    const environment = new Environment({
+      url: executor.url,
+      cwd: executor.cwd,
+      headers: executor.headers,
+      tools: ['apply_patch'],
+      transformResult,
+    });
+    const agent = new Agent({
+      instructions: 'Apply the patch once.',
+      provider,
+      model: 'gpt-6.1-sol',
+    });
+    let session: Awaited<ReturnType<typeof agent.session>> | undefined;
+    try {
+      session = await agent.session({ environment });
+      const turn = await session.submit('Apply patch.');
+      const events: unknown[] = [];
+      const reader = (async () => {
+        for await (const event of turn.events()) events.push(event);
+      })();
+      let cancellation: Promise<void> | undefined;
+      const deadline = setTimeout(() => {
+        cancellation = turn.cancel();
+        // The original await below and finally join both remain the owners.
+        void cancellation.catch(() => {});
+      }, 8000);
+      try {
+        expect((await turn.wait()).finalOutput).toBe('patched');
+      } catch (error) {
+        throw new Error(
+          JSON.stringify({
+            message: 'Patch did not settle with accepted output',
+            resultCallbacks: transformResult.mock.calls.length,
+            executorMethods: executor.requests.map((request) => request.method),
+            declaredTools: model.requests.map((request) => request.tools),
+            events,
+          }),
+          { cause: error },
+        );
+      } finally {
+        clearTimeout(deadline);
+        try {
+          await cancellation;
+        } finally {
+          await reader;
+        }
+      }
+      expect(await readFile(join(executor.cwd, 'artifact.txt'), 'utf8')).toBe(
+        'checked\n',
       );
+      expect(transformResult).toHaveBeenCalledTimes(1);
+      expect(transformResult.mock.calls[0]?.[0].submission).toBe(turn);
+      model.assertExhausted();
     } finally {
-      clearTimeout(deadline);
       try {
-        await cancellation;
+        try {
+          await session?.close();
+        } finally {
+          await provider.close();
+        }
       } finally {
-        await reader;
+        await executor.close();
       }
     }
-    expect(await readFile(join(executor.cwd, 'artifact.txt'), 'utf8')).toBe(
-      'checked\n',
-    );
-    expect(transformResult).toHaveBeenCalledTimes(1);
-    expect(transformResult.mock.calls[0]?.[0].submission).toBe(turn);
-    model.assertExhausted();
-  } finally {
-    try {
-      try {
-        await session?.close();
-      } finally {
-        await provider.close();
-      }
-    } finally {
-      await executor.close();
-    }
-  }
-}, 25_000);
+  },
+  25_000,
+);

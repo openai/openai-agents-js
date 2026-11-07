@@ -13,7 +13,11 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
+// Native filesystem sandbox effects honor the explicit host restriction.
+it.skipIf(
+  process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
+    process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1',
+)(
   'ordinary approved commands retain writable-workspace and protected-path policy',
   async () => {
     const executor = await startPublicExecutor();

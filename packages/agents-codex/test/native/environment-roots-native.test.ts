@@ -59,6 +59,8 @@ it.each(['selected', 'omitted', 'empty', 'no-environment'] as const)(
         url: executor.url,
         cwd: executor.cwd,
         headers: executor.headers,
+        // This discovery-only fixture also restores without an Environment.
+        writePolicy: 'legacy' as const,
       };
       const sourceEnvironment = new Environment({
         ...connection,

@@ -11,6 +11,8 @@ import {
   type TaskStore,
 } from '@a2a-js/sdk/server';
 import { type Agent, type Session } from '../runtime/public-agent';
+import type { Environment } from '../runtime/environment';
+import type { EnvironmentSource } from '../runtime/environment-source';
 import {
   manualResultSchema,
   prepareManualResult,
@@ -96,7 +98,13 @@ export interface NativeA2AStore extends TaskStore {
 
 export interface NativeA2AExecutorOptions<Context, Output> {
   readonly store: NativeA2AStore;
-  /** Return CURRENT trusted configuration/context. Saved state never supplies these. */
+  /**
+   * Return CURRENT trusted configuration/context, including on resume. Saved state
+   * and peer metadata never supply these. Session owns Environment acquisition,
+   * policy matching and cleanup, including current Environment callbacks. Portable
+   * checkpoints with active RunBudget or root prepareRequest callbacks are not
+   * supported; use Agent/Session directly for those execution profiles.
+   */
   agentFactory(
     binding: NativeA2ABinding,
     callContext: ServerCallContext,
@@ -104,6 +112,7 @@ export interface NativeA2AExecutorOptions<Context, Output> {
     agent: Agent<Context, Output>;
     context: Context;
     parentTrace?: TraceContext | TraceContextHeaders | null;
+    environment?: Environment<Context> | EnvironmentSource<Context>;
   }>;
   readonly limits?: A2ALimits;
 }
@@ -307,6 +316,7 @@ export class NativeA2AExecutor<
             ...(checkpoint ? { state: checkpoint } : {}),
             signal: controller.signal,
             parentTrace: setup.parentTrace,
+            environment: setup.environment,
           });
           controller.signal.addEventListener('abort', stop, { once: true });
           await current();
@@ -432,12 +442,12 @@ export class NativeA2AExecutor<
             await publish('completed', complete);
           }
         } catch (error) {
-          let cleanupFailed = false;
+          let cleanupUnconfirmed = false;
           if (session && !closed) {
             try {
               await session.close();
             } catch {
-              cleanupFailed = true;
+              cleanupUnconfirmed = true;
             } finally {
               closed = true;
             }
@@ -445,23 +455,30 @@ export class NativeA2AExecutor<
           await claim.current();
           if (record?.state === 'completed' || record?.state === 'waiting')
             throw error;
-          const canceled = controller.signal.aborted && !cleanupFailed;
+          // Recheck after ownership validation: before Session handoff, only the
+          // original abort reason confirms clean cancellation. A distinct opening
+          // failure leaves resource cleanup unconfirmed.
+          cleanupUnconfirmed ||=
+            session === undefined &&
+            controller.signal.aborted &&
+            error !== controller.signal.reason;
+          const canceled = controller.signal.aborted && !cleanupUnconfirmed;
           const desired = task(
             canceled
               ? TaskState.TASK_STATE_CANCELED
               : TaskState.TASK_STATE_FAILED,
           );
-          if (cleanupFailed)
+          if (cleanupUnconfirmed)
             desired.metadata = {
               ...desired.metadata,
               'agents.a2a.outcome': 'unknown',
             };
           await publish(
-            cleanupFailed ? 'unknown' : canceled ? 'canceled' : 'failed',
+            cleanupUnconfirmed ? 'unknown' : canceled ? 'canceled' : 'failed',
             desired,
           );
-          // An unconfirmed close must not become a successful cancellation acknowledgment.
-          if (cleanupFailed) throw error;
+          // Unconfirmed cleanup must not become a successful cancellation acknowledgment.
+          if (cleanupUnconfirmed) throw error;
         } finally {
           controller.signal.removeEventListener('abort', stop);
           if (session && !closed) await session.close();

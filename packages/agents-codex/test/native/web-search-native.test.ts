@@ -426,7 +426,7 @@ it('allows an auto response without search and honors idle tool choice and per-s
 }, 30000);
 
 /** Refusal witness only: any attempted executor connection is observable and rejected. */
-async function forbiddenExecutor() {
+async function forbiddenExecutor(writePolicy: 'strict' | 'legacy' = 'strict') {
   let attempts = 0;
   const server = createServer((_request, response) =>
     response.writeHead(503).end(),
@@ -445,6 +445,7 @@ async function forbiddenExecutor() {
       url: `wss://127.0.0.1:${address.port}`,
       cwd: tmpdir(),
       tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      writePolicy,
     }),
     get attempts() {
       return attempts;
@@ -518,7 +519,8 @@ it.each(['gpt-5.5', 'gpt-5.6-sol'])(
       state = await original.saveState();
     }
     if (model === 'gpt-5.6-sol') {
-      await using executor = await forbiddenExecutor();
+      // Retain the source policy so this checks saved-model admission.
+      await using executor = await forbiddenExecutor('legacy');
       await expect(
         new Agent({
           instructions: 'Act',
@@ -564,7 +566,8 @@ it.each(['managed-specs', 'root-identity'] as const)(
     if (corruption === 'root-identity')
       raw.root_metadata.thread_id = '00000000-0000-4000-8000-000000000123';
     else raw.managed_tool_specs = [{ name: 'ungranted' }];
-    await using executor = await forbiddenExecutor();
+    // Retain the source policy so malformed state reaches its own validation.
+    await using executor = await forbiddenExecutor('legacy');
     await expect(
       new Agent({
         instructions: 'Act',
@@ -932,7 +935,7 @@ it('local reopen neither replays a completed search nor restores its grant', asy
   }
 }, 30000);
 
-/** Real source-side graph; returns only after its Session/provider/executor close. */
+/** Real source-side graph with legacy policy for restore into fresh workspaces. */
 async function savedAgentModels(
   rootModel: string,
   childModel?: string,
@@ -1018,6 +1021,7 @@ async function savedAgentModels(
         cwd: executor.cwd,
         headers: executor.headers,
         tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        writePolicy: 'legacy',
       }),
     });
     await (await session.submit('Finish')).wait();
@@ -1058,7 +1062,7 @@ it.each([false, true])(
       peer.url,
       'synthetic-saved-model-destination',
     );
-    await using executor = await forbiddenExecutor();
+    await using executor = await forbiddenExecutor('legacy');
     await expect(
       new Agent({
         instructions: 'Act',
@@ -1120,6 +1124,7 @@ it('admits a closed saved Lite child as inert history without widening current c
         cwd: executor.cwd,
         headers: executor.headers,
         tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        writePolicy: 'legacy',
       }),
     });
     const children = [];
@@ -1139,7 +1144,7 @@ it('checks a saved NativeAgents root model before current compatible roles can h
   const state = await savedAgentModels('gpt-5.6-sol', undefined, true);
   await using peer = await searchPeer([]);
   await using provider = providerAt(peer.url);
-  await using executor = await forbiddenExecutor();
+  await using executor = await forbiddenExecutor('legacy');
   await expect(
     new Agent({
       instructions: 'Act',
@@ -1325,7 +1330,7 @@ it.each(wireUsageCases)(
             : [],
       });
       {
-        await using forbidden = await forbiddenExecutor();
+        await using forbidden = await forbiddenExecutor('legacy');
         await expect(
           agent.session({ state: unsafe, environment: forbidden.environment }),
         ).rejects.toThrow(/Unsafe numeric checkpoint usage counter/i);
@@ -1340,6 +1345,7 @@ it.each(wireUsageCases)(
           cwd: executor.cwd,
           headers: executor.headers,
           tools: ['exec_command', 'write_stdin', 'apply_patch'],
+          writePolicy: 'legacy',
         }),
       });
       expect(restored.id).toBe(state.source_session_id);

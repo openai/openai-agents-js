@@ -1052,6 +1052,8 @@ for (const route of ['exec', 'patch'] as const) {
             url: executor.url,
             cwd: executor.cwd,
             headers: executor.headers,
+            // This loop verifies the explicit legacy escalation approval flow.
+            writePolicy: 'legacy',
             tools: ['exec_command', 'write_stdin', 'apply_patch'],
           }),
           async onInteraction(request) {

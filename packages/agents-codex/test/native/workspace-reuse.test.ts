@@ -17,7 +17,7 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-it('reuses selected executor workspace files across turns and a fresh host with current grants', async () => {
+it('reuses selected executor workspace files across turns and a fresh host with current grants', async (context) => {
   const executor = await startPublicExecutor();
   const controller = await mkdtemp(
     join(tmpdir(), 'agents-workspace-controller-'),
@@ -70,6 +70,18 @@ esac
         (item) => item.type === 'function_call_output' && item.call_id === id,
       );
       expect(outputs).toHaveLength(1);
+      if (
+        String(outputs[0]?.output).includes(
+          'error building bubblewrap command: app-server socket directory must be a user-owned directory with mode 0700',
+        ) &&
+        process.env.GITHUB_ACTIONS !== 'true' &&
+        process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+        process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'
+      ) {
+        context.skip(
+          'This host cannot isolate the app-server socket directory',
+        );
+      }
       expect(JSON.stringify(outputs[0])).toContain(
         text.replaceAll('\n', '\\n'),
       );

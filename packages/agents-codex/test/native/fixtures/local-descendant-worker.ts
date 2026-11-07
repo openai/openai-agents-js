@@ -21,6 +21,7 @@ const config = JSON.parse(process.argv[2]) as {
   mode: 'settled' | 'unknown' | 'active' | 'destination';
   resume?: string;
   noChildren?: boolean;
+  writePolicy?: 'legacy';
 };
 const destination = config.mode === 'destination';
 const provider = new NativeProvider({
@@ -67,6 +68,7 @@ async function main() {
         : {
             environment: new Environment({
               ...config.executor,
+              writePolicy: config.writePolicy,
               tools: ['exec_command', 'write_stdin', 'apply_patch'],
             }),
           }),

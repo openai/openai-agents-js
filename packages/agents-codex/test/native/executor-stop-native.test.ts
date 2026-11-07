@@ -50,6 +50,13 @@ afterEach(() =>
   bounded(ModelServer.closeAll(), 'provider fixture cleanup', 5_000),
 );
 
+// Positive strict filesystem effects require a host that can run the native sandbox.
+const sandboxEffect = it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+);
+
 const cell = (input: string, callId = 'executor-stop-cell'): JsonObject => ({
   type: 'custom_tool_call',
   name: 'exec',
@@ -321,7 +328,7 @@ text('forbidden search continuation'); await cleanup;`),
   45_000,
 );
 
-it.each(['command approval', 'patch transform'] as const)(
+sandboxEffect.each(['command approval', 'patch transform'] as const)(
   'stops the root from %s before effects, redacts the reason, and permits a later root',
   async (source) => {
     const secret = 'executor-root-private-reason';
@@ -508,303 +515,320 @@ await cleanup; text('forbidden continuation');`;
   45_000,
 );
 
-it('denies generated stdin against a real live process after a positive write, without continuation', async () => {
-  let processId: number | undefined;
-  let denied: ExecutorContext | undefined;
-  await using f = await open(
-    [
-      [
-        call(
-          'exec_command',
-          {
-            cmd: 'read -r first; printf "%s" "$first" > stdin-positive.txt; read -r second; printf "%s" "$second" > stdin-denied.txt',
-            tty: true,
-            yield_time_ms: 1000,
-          },
-          { callId: 'live-process' },
-        ),
-      ],
-      () => {
-        expect(processId).toBeTypeOf('number');
-        return [
-          call(
-            'write_stdin',
-            {
-              session_id: processId!,
-              chars: 'positive\n',
-              yield_time_ms: 1000,
-            },
-            { callId: 'positive-stdin' },
-          ),
-        ];
-      },
-      () => [
-        cell(`try { await tools.write_stdin(${JSON.stringify({ session_id: processId, chars: 'denied\n', yield_time_ms: 1000 })}); } catch { text('caught stdin denial'); }
-await tools.exec_command({cmd:'printf escaped > stdin-continuation.txt'});`),
-      ],
-    ],
-    {
-      approval(info, value) {
-        if (
-          info.toolName === 'write_stdin' &&
-          value !== null &&
-          typeof value === 'object' &&
-          !Array.isArray(value) &&
-          value.chars === 'denied\n'
-        ) {
-          denied = info;
-          return false;
-        }
-        return true;
-      },
-      transformResult(info, value) {
-        if (info.toolName === 'exec_command') {
-          if (
-            value === null ||
-            typeof value !== 'object' ||
-            Array.isArray(value)
-          )
-            throw new Error('Missing real process result');
-          expect(value.session_id).toBeTypeOf('number');
-          processId = value.session_id as number;
-        }
-        return value;
-      },
-    },
-    { code: true },
-  );
-  const turn = await bounded(
-    f.session.submit('Start, write once, then deny stdin from code.'),
-    'submit stdin',
-  );
-  stopped(await bounded(observe(turn.wait()), 'stdin owner stop'));
-  expect(denied?.call?.route).toBe('code');
-  expect(denied?.submission).toBe(turn);
-  expect(await contents(join(f.executor.cwd, 'stdin-positive.txt'))).toBe(
-    'positive',
-  );
-  expect(await contents(join(f.executor.cwd, 'stdin-denied.txt'))).toBeNull();
-  expect(
-    await contents(join(f.executor.cwd, 'stdin-continuation.txt')),
-  ).toBeNull();
-  expect(
-    f.executor.requests.filter((request) => request.method === 'process/write'),
-  ).toHaveLength(1);
-  expect(starts(f.executor.requests)).toHaveLength(1);
-  expect(f.model.requests).toHaveLength(3);
-  f.model.assertExhausted();
-}, 45_000);
-
-it('stops the exact generated child while its parent and sibling remain usable', async () => {
-  let rootId: string | undefined;
-  let stoppedId: string | undefined;
-  const counts = new Map<string, number>();
-  const approvals: ExecutorContext[] = [];
-  const releaseParent = Promise.withResolvers<void>();
-  const respond = async (request: JsonObject): Promise<JsonObject[]> => {
-    const metadata = request.client_metadata as Record<string, string>;
-    const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
-    rootId ??= id;
-    const count = (counts.get(id) ?? 0) + 1;
-    counts.set(id, count);
-    if (id === rootId) {
-      if (count > 1) {
-        const outputs = Array.isArray(request.input) ? request.input : [];
-        const output = outputs.find(
-          (item) =>
-            item !== null &&
-            typeof item === 'object' &&
-            !Array.isArray(item) &&
-            item.type === 'function_call_output' &&
-            item.call_id === `spawn-${count - 1}`,
-        );
-        expect(
-          output,
-          'Previous spawn must succeed before child admission',
-        ).toMatchObject({
-          output: expect.stringContaining('"task_name"'),
-        });
-      }
-      if (count === 3) await releaseParent.promise;
-      return count < 3
-        ? [
-            call(
-              'spawn_agent',
-              {
-                task_name: `executor_child_${count}`,
-                message: 'Run the selected command.',
-              },
-              { namespace: 'collaboration', callId: `spawn-${count}` },
-            ),
-          ]
-        : [message('parent done')];
-    }
-    return count === 1
-      ? [
-          cell(
-            `text(await tools.exec_command({cmd:${JSON.stringify(`printf child > child-${id}.txt`)}}));`,
-            `child-cell-${id}`,
-          ),
-        ]
-      : [message('sibling done')];
-  };
-  await using f = await open(
-    Array.from({ length: 6 }, () => respond),
-    {
-      approval(info) {
-        expect(info.call?.childId).toBeTypeOf('string');
-        approvals.push(info);
-        stoppedId ??= info.call!.childId!;
-        return info.call!.childId === stoppedId
-          ? stopExecutorTurn('private-child-reason')
-          : true;
-      },
-    },
-    { children: true, code: true },
-  );
-  try {
-    const parent = await bounded(
-      f.session.submit('Start two executor children.'),
-      'submit children',
-    );
-    let parentFinished = false;
-    const parentResult = observe(parent.wait()).finally(() => {
-      parentFinished = true;
-    });
-    await Promise.race([
-      vi.waitFor(() => expect(approvals).toHaveLength(2), {
-        timeout: 10_000,
-      }),
-      parentResult.then((result) => {
-        if (!result.ok) throw result.error;
-        throw new Error('Parent finished before both child approvals');
-      }),
-    ]);
-    const children = await bounded(
-      Array.fromAsync(f.session.subagents()),
-      'list children',
-    );
-    expect(children).toHaveLength(2);
-    const selected = children.find((child) => child.id === stoppedId);
-    const sibling = children.find((child) => child.id !== stoppedId);
-    expect(selected?.turn).toBeDefined();
-    expect(sibling?.turn).toBeDefined();
-    stopped(await bounded(observe(selected!.turn!.wait()), 'child stop'));
-    expect(
-      approvals.find((info) => info.call?.childId === stoppedId)?.submission,
-    ).toBe(selected!.turn);
-    expect(
-      approvals.find((info) => info.call?.childId === stoppedId)?.call?.route,
-    ).toBe('code');
-    expect(
-      (await bounded(sibling!.turn!.wait(), 'sibling completion')).finalOutput,
-    ).toBe('sibling done');
-    expect(counts.get(stoppedId!)).toBe(1);
-    expect(starts(f.executor.requests)).toHaveLength(1);
-    expect(
-      await contents(join(f.executor.cwd, `child-${stoppedId}.txt`)),
-    ).toBeNull();
-    expect(
-      await contents(join(f.executor.cwd, `child-${sibling!.id}.txt`)),
-    ).toBe('child');
-    expect(
-      JSON.stringify(
-        await bounded(
-          Array.fromAsync(selected!.turn!.events()),
-          'child observations',
-        ),
-      ),
-    ).not.toContain('private-child-reason');
-    expect(parentFinished).toBe(false);
-    releaseParent.resolve();
-    const completedParent = await bounded(parentResult, 'parent completion');
-    if (!completedParent.ok) throw completedParent.error;
-    expect(completedParent.value.finalOutput).toBe('parent done');
-    f.model.assertExhausted();
-  } finally {
-    releaseParent.resolve();
-  }
-}, 45_000);
-
-it('rejects a cancelled late decision before a successor can dispatch once', async () => {
-  const probe = cleanupProbe();
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  let calls = 0;
-  probe.release.resolve();
-  try {
+sandboxEffect(
+  'denies generated stdin against a real live process after a positive write, without continuation',
+  async () => {
+    let processId: number | undefined;
+    let denied: ExecutorContext | undefined;
     await using f = await open(
       [
         [
-          cell(`const probe = tools.executor_cleanup_probe({}).catch(() => {});
-await tools.exec_command({cmd:'printf stale > stale-denied.txt'}); await probe;`),
-        ],
-        [
           call(
             'exec_command',
-            { cmd: 'printf successor > successor.txt' },
-            { callId: 'successor-call' },
+            {
+              cmd: 'read -r first; printf "%s" "$first" > stdin-positive.txt; read -r second; printf "%s" "$second" > stdin-denied.txt',
+              tty: true,
+              yield_time_ms: 1000,
+            },
+            { callId: 'live-process' },
           ),
         ],
-        [message('successor done')],
+        () => {
+          expect(processId).toBeTypeOf('number');
+          return [
+            call(
+              'write_stdin',
+              {
+                session_id: processId!,
+                chars: 'positive\n',
+                yield_time_ms: 1000,
+              },
+              { callId: 'positive-stdin' },
+            ),
+          ];
+        },
+        () => [
+          cell(`try { await tools.write_stdin(${JSON.stringify({ session_id: processId, chars: 'denied\n', yield_time_ms: 1000 })}); } catch { text('caught stdin denial'); }
+await tools.exec_command({cmd:'printf escaped > stdin-continuation.txt'});`),
+        ],
       ],
       {
-        async approval() {
-          if (calls++ === 0) {
-            await probe.entered.promise;
-            entered.resolve();
-            await release.promise;
-            return stopExecutorTurn('late-private-reason');
+        approval(info, value) {
+          if (
+            info.toolName === 'write_stdin' &&
+            value !== null &&
+            typeof value === 'object' &&
+            !Array.isArray(value) &&
+            value.chars === 'denied\n'
+          ) {
+            denied = info;
+            return false;
           }
           return true;
         },
+        transformResult(info, value) {
+          if (info.toolName === 'exec_command') {
+            if (
+              value === null ||
+              typeof value !== 'object' ||
+              Array.isArray(value)
+            )
+              throw new Error('Missing real process result');
+            expect(value.session_id).toBeTypeOf('number');
+            processId = value.session_id as number;
+          }
+          return value;
+        },
       },
-      { code: true, tools: [probe.gate] },
+      { code: true },
+    );
+    const turn = await bounded(
+      f.session.submit('Start, write once, then deny stdin from code.'),
+      'submit stdin',
+    );
+    stopped(await bounded(observe(turn.wait()), 'stdin owner stop'));
+    expect(denied?.call?.route).toBe('code');
+    expect(denied?.submission).toBe(turn);
+    expect(await contents(join(f.executor.cwd, 'stdin-positive.txt'))).toBe(
+      'positive',
+    );
+    expect(await contents(join(f.executor.cwd, 'stdin-denied.txt'))).toBeNull();
+    expect(
+      await contents(join(f.executor.cwd, 'stdin-continuation.txt')),
+    ).toBeNull();
+    expect(
+      f.executor.requests.filter(
+        (request) => request.method === 'process/write',
+      ),
+    ).toHaveLength(1);
+    expect(starts(f.executor.requests)).toHaveLength(1);
+    expect(f.model.requests).toHaveLength(3);
+    f.model.assertExhausted();
+  },
+  45_000,
+);
+
+sandboxEffect(
+  'stops the exact generated child while its parent and sibling remain usable',
+  async () => {
+    let rootId: string | undefined;
+    let stoppedId: string | undefined;
+    const counts = new Map<string, number>();
+    const approvals: ExecutorContext[] = [];
+    const releaseParent = Promise.withResolvers<void>();
+    const respond = async (request: JsonObject): Promise<JsonObject[]> => {
+      const metadata = request.client_metadata as Record<string, string>;
+      const id = String(
+        JSON.parse(metadata['x-codex-turn-metadata']).thread_id,
+      );
+      rootId ??= id;
+      const count = (counts.get(id) ?? 0) + 1;
+      counts.set(id, count);
+      if (id === rootId) {
+        if (count > 1) {
+          const outputs = Array.isArray(request.input) ? request.input : [];
+          const output = outputs.find(
+            (item) =>
+              item !== null &&
+              typeof item === 'object' &&
+              !Array.isArray(item) &&
+              item.type === 'function_call_output' &&
+              item.call_id === `spawn-${count - 1}`,
+          );
+          expect(
+            output,
+            'Previous spawn must succeed before child admission',
+          ).toMatchObject({
+            output: expect.stringContaining('"task_name"'),
+          });
+        }
+        if (count === 3) await releaseParent.promise;
+        return count < 3
+          ? [
+              call(
+                'spawn_agent',
+                {
+                  task_name: `executor_child_${count}`,
+                  message: 'Run the selected command.',
+                },
+                { namespace: 'collaboration', callId: `spawn-${count}` },
+              ),
+            ]
+          : [message('parent done')];
+      }
+      return count === 1
+        ? [
+            cell(
+              `text(await tools.exec_command({cmd:${JSON.stringify(`printf child > child-${id}.txt`)}}));`,
+              `child-cell-${id}`,
+            ),
+          ]
+        : [message('sibling done')];
+    };
+    await using f = await open(
+      Array.from({ length: 6 }, () => respond),
+      {
+        approval(info) {
+          expect(info.call?.childId).toBeTypeOf('string');
+          approvals.push(info);
+          stoppedId ??= info.call!.childId!;
+          return info.call!.childId === stoppedId
+            ? stopExecutorTurn('private-child-reason')
+            : true;
+        },
+      },
+      { children: true, code: true },
     );
     try {
-      const old = await bounded(
-        f.session.submit('Cancel before policy returns.'),
-        'submit stale',
+      const parent = await bounded(
+        f.session.submit('Start two executor children.'),
+        'submit children',
       );
-      const result = observe(old.wait());
-      await bounded(entered.promise, 'late policy entry');
-      const cancelling = observe(old.cancel());
-      await bounded(probe.cleaning.promise, 'observed original cancellation');
-      expect((await probe.entered.promise).signal.aborted).toBe(true);
-      release.resolve();
-      const cancelled = await bounded(cancelling, 'cancel cleanup');
-      if (!cancelled.ok) throw cancelled.error;
-      const original = await bounded(result, 'original cancellation result');
-      expect(original.ok).toBe(false);
-      if (original.ok)
-        throw new Error('Cancelled owner completed successfully');
-      expect(original.error).toBeInstanceOf(TurnAborted);
-      expect(f.model.requests).toHaveLength(1);
-      expect(starts(f.executor.requests)).toHaveLength(0);
-      const next = await bounded(
-        f.session.submit('Use a fresh owner.'),
-        'submit successor',
+      let parentFinished = false;
+      const parentResult = observe(parent.wait()).finally(() => {
+        parentFinished = true;
+      });
+      await Promise.race([
+        vi.waitFor(() => expect(approvals).toHaveLength(2), {
+          timeout: 10_000,
+        }),
+        parentResult.then((result) => {
+          if (!result.ok) throw result.error;
+          throw new Error('Parent finished before both child approvals');
+        }),
+      ]);
+      const children = await bounded(
+        Array.fromAsync(f.session.subagents()),
+        'list children',
       );
+      expect(children).toHaveLength(2);
+      const selected = children.find((child) => child.id === stoppedId);
+      const sibling = children.find((child) => child.id !== stoppedId);
+      expect(selected?.turn).toBeDefined();
+      expect(sibling?.turn).toBeDefined();
+      stopped(await bounded(observe(selected!.turn!.wait()), 'child stop'));
       expect(
-        (await bounded(next.wait(), 'successor completion')).finalOutput,
-      ).toBe('successor done');
+        approvals.find((info) => info.call?.childId === stoppedId)?.submission,
+      ).toBe(selected!.turn);
       expect(
-        await contents(join(f.executor.cwd, 'stale-denied.txt')),
-      ).toBeNull();
-      expect(await contents(join(f.executor.cwd, 'successor.txt'))).toBe(
-        'successor',
-      );
+        approvals.find((info) => info.call?.childId === stoppedId)?.call?.route,
+      ).toBe('code');
+      expect(
+        (await bounded(sibling!.turn!.wait(), 'sibling completion'))
+          .finalOutput,
+      ).toBe('sibling done');
+      expect(counts.get(stoppedId!)).toBe(1);
       expect(starts(f.executor.requests)).toHaveLength(1);
-      expect(calls).toBe(2);
+      expect(
+        await contents(join(f.executor.cwd, `child-${stoppedId}.txt`)),
+      ).toBeNull();
+      expect(
+        await contents(join(f.executor.cwd, `child-${sibling!.id}.txt`)),
+      ).toBe('child');
+      expect(
+        JSON.stringify(
+          await bounded(
+            Array.fromAsync(selected!.turn!.events()),
+            'child observations',
+          ),
+        ),
+      ).not.toContain('private-child-reason');
+      expect(parentFinished).toBe(false);
+      releaseParent.resolve();
+      const completedParent = await bounded(parentResult, 'parent completion');
+      if (!completedParent.ok) throw completedParent.error;
+      expect(completedParent.value.finalOutput).toBe('parent done');
       f.model.assertExhausted();
     } finally {
-      release.resolve();
+      releaseParent.resolve();
     }
-  } finally {
-    release.resolve();
+  },
+  45_000,
+);
+
+sandboxEffect(
+  'rejects a cancelled late decision before a successor can dispatch once',
+  async () => {
+    const probe = cleanupProbe();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let calls = 0;
     probe.release.resolve();
-  }
-}, 45_000);
+    try {
+      await using f = await open(
+        [
+          [
+            cell(`const probe = tools.executor_cleanup_probe({}).catch(() => {});
+await tools.exec_command({cmd:'printf stale > stale-denied.txt'}); await probe;`),
+          ],
+          [
+            call(
+              'exec_command',
+              { cmd: 'printf successor > successor.txt' },
+              { callId: 'successor-call' },
+            ),
+          ],
+          [message('successor done')],
+        ],
+        {
+          async approval() {
+            if (calls++ === 0) {
+              await probe.entered.promise;
+              entered.resolve();
+              await release.promise;
+              return stopExecutorTurn('late-private-reason');
+            }
+            return true;
+          },
+        },
+        { code: true, tools: [probe.gate] },
+      );
+      try {
+        const old = await bounded(
+          f.session.submit('Cancel before policy returns.'),
+          'submit stale',
+        );
+        const result = observe(old.wait());
+        await bounded(entered.promise, 'late policy entry');
+        const cancelling = observe(old.cancel());
+        await bounded(probe.cleaning.promise, 'observed original cancellation');
+        expect((await probe.entered.promise).signal.aborted).toBe(true);
+        release.resolve();
+        const cancelled = await bounded(cancelling, 'cancel cleanup');
+        if (!cancelled.ok) throw cancelled.error;
+        const original = await bounded(result, 'original cancellation result');
+        expect(original.ok).toBe(false);
+        if (original.ok)
+          throw new Error('Cancelled owner completed successfully');
+        expect(original.error).toBeInstanceOf(TurnAborted);
+        expect(f.model.requests).toHaveLength(1);
+        expect(starts(f.executor.requests)).toHaveLength(0);
+        const next = await bounded(
+          f.session.submit('Use a fresh owner.'),
+          'submit successor',
+        );
+        expect(
+          (await bounded(next.wait(), 'successor completion')).finalOutput,
+        ).toBe('successor done');
+        expect(
+          await contents(join(f.executor.cwd, 'stale-denied.txt')),
+        ).toBeNull();
+        expect(await contents(join(f.executor.cwd, 'successor.txt'))).toBe(
+          'successor',
+        );
+        expect(starts(f.executor.requests)).toHaveLength(1);
+        expect(calls).toBe(2);
+        f.model.assertExhausted();
+      } finally {
+        release.resolve();
+      }
+    } finally {
+      release.resolve();
+      probe.release.resolve();
+    }
+  },
+  45_000,
+);
 
 it.each([
   ['cancel', 'ordinary sampling'],
@@ -994,246 +1018,257 @@ it('validates raw action replacement data without granting stop authority', asyn
   }
 }, 45_000);
 
-it('keeps public completion pending until the real native stop finish is released', async () => {
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  let approvals = 0;
-  await using f = await open(
-    [
+sandboxEffect(
+  'keeps public completion pending until the real native stop finish is released',
+  async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let approvals = 0;
+    await using f = await open(
       [
-        cell(`try { await tools.exec_command({cmd:'printf denied > finish-denied.txt'}); } catch { text('caught'); }
+        [
+          cell(`try { await tools.exec_command({cmd:'printf denied > finish-denied.txt'}); } catch { text('caught'); }
 await tools.exec_command({cmd:'printf escaped > finish-continuation.txt'});`),
+        ],
+        [
+          call(
+            'exec_command',
+            { cmd: 'printf successor > finish-successor.txt' },
+            { callId: 'finish-successor' },
+          ),
+        ],
+        [message('finish successor done')],
       ],
-      [
-        call(
-          'exec_command',
-          { cmd: 'printf successor > finish-successor.txt' },
-          { callId: 'finish-successor' },
-        ),
-      ],
-      [message('finish successor done')],
-    ],
-    {
-      approval: () =>
-        approvals++ === 0 ? stopExecutorTurn('private-finish-reason') : true,
-    },
-    { code: true },
-  );
-  const addon = await binding();
-  const finish = addon._NativePolicyStop.prototype.finish;
-  const spy = vi
-    .spyOn(addon._NativePolicyStop.prototype, 'finish')
-    .mockImplementation(async function (
-      this: NonNullable<
-        ReturnType<NativeThread['_hold_native_interception_for_stop']>
-      >,
-    ) {
-      // Preserve real native fencing, cancellation and cell retirement.
-      await finish.call(this);
-      entered.resolve();
-      await release.promise;
-    });
-  let cleanup: Promise<unknown> | undefined;
-  try {
-    const turn = await bounded(
-      f.session.submit('Stop and join the native receipt.'),
-      'submit held finish',
+      {
+        approval: () =>
+          approvals++ === 0 ? stopExecutorTurn('private-finish-reason') : true,
+      },
+      { code: true },
     );
-    let settled = false;
-    const result = observe(turn.wait()).finally(() => {
-      settled = true;
-    });
-    cleanup = result;
-    await bounded(
-      Promise.race([
-        entered.promise,
-        result.then(() => {
-          throw new Error('Public turn settled before the native finish gate');
-        }),
-      ]),
-      'real native finish gate',
-    );
-    expect(settled).toBe(false);
-    expect(starts(f.executor.requests)).toHaveLength(0);
-    expect(
-      await contents(join(f.executor.cwd, 'finish-denied.txt')),
-    ).toBeNull();
-    expect(
-      await contents(join(f.executor.cwd, 'finish-continuation.txt')),
-    ).toBeNull();
-    expect(f.model.requests).toHaveLength(1);
-    release.resolve();
-    stopped(await bounded(result, 'released native finish'));
-    expect(settled).toBe(true);
-    const next = await bounded(
-      f.session.submit('Run a fresh owner after retirement.'),
-      'submit finish successor',
-    );
-    expect((await bounded(next.wait(), 'finish successor')).finalOutput).toBe(
-      'finish successor done',
-    );
-    expect(await contents(join(f.executor.cwd, 'finish-successor.txt'))).toBe(
-      'successor',
-    );
-    expect(
-      await contents(join(f.executor.cwd, 'finish-denied.txt')),
-    ).toBeNull();
-    expect(
-      await contents(join(f.executor.cwd, 'finish-continuation.txt')),
-    ).toBeNull();
-    expect(starts(f.executor.requests)).toHaveLength(1);
-    f.model.assertExhausted();
-  } finally {
-    release.resolve();
+    const addon = await binding();
+    const finish = addon._NativePolicyStop.prototype.finish;
+    const spy = vi
+      .spyOn(addon._NativePolicyStop.prototype, 'finish')
+      .mockImplementation(async function (
+        this: NonNullable<
+          ReturnType<NativeThread['_hold_native_interception_for_stop']>
+        >,
+      ) {
+        // Preserve real native fencing, cancellation and cell retirement.
+        await finish.call(this);
+        entered.resolve();
+        await release.promise;
+      });
+    let cleanup: Promise<unknown> | undefined;
     try {
-      if (cleanup) await bounded(cleanup, 'held finish cleanup');
+      const turn = await bounded(
+        f.session.submit('Stop and join the native receipt.'),
+        'submit held finish',
+      );
+      let settled = false;
+      const result = observe(turn.wait()).finally(() => {
+        settled = true;
+      });
+      cleanup = result;
+      await bounded(
+        Promise.race([
+          entered.promise,
+          result.then(() => {
+            throw new Error(
+              'Public turn settled before the native finish gate',
+            );
+          }),
+        ]),
+        'real native finish gate',
+      );
+      expect(settled).toBe(false);
+      expect(starts(f.executor.requests)).toHaveLength(0);
+      expect(
+        await contents(join(f.executor.cwd, 'finish-denied.txt')),
+      ).toBeNull();
+      expect(
+        await contents(join(f.executor.cwd, 'finish-continuation.txt')),
+      ).toBeNull();
+      expect(f.model.requests).toHaveLength(1);
+      release.resolve();
+      stopped(await bounded(result, 'released native finish'));
+      expect(settled).toBe(true);
+      const next = await bounded(
+        f.session.submit('Run a fresh owner after retirement.'),
+        'submit finish successor',
+      );
+      expect((await bounded(next.wait(), 'finish successor')).finalOutput).toBe(
+        'finish successor done',
+      );
+      expect(await contents(join(f.executor.cwd, 'finish-successor.txt'))).toBe(
+        'successor',
+      );
+      expect(
+        await contents(join(f.executor.cwd, 'finish-denied.txt')),
+      ).toBeNull();
+      expect(
+        await contents(join(f.executor.cwd, 'finish-continuation.txt')),
+      ).toBeNull();
+      expect(starts(f.executor.requests)).toHaveLength(1);
+      f.model.assertExhausted();
     } finally {
-      spy.mockRestore();
+      release.resolve();
+      try {
+        if (cleanup) await bounded(cleanup, 'held finish cleanup');
+      } finally {
+        spy.mockRestore();
+      }
     }
-  }
-}, 45_000);
+  },
+  45_000,
+);
 
 // This is an accepted-steering schedule, not an assertion about an unobservable
 // Core queue. Turn.steer acknowledges admission. ModelServer cannot freeze that
 // queue at InterruptIfNoPendingInput's check, nor force a real held-stop refusal.
 // Exact pending-mailbox/refusal coverage still needs an owned native fixture gate;
 // neither an unconditional null mock nor a successful acknowledgement proves it.
-it('keeps accepted steering before stop fail-closed and preserves a later owner', async () => {
-  const entered = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const nativeFinished = Promise.withResolvers<void>();
-  let approvals = 0;
-  await using f = await open(
-    [
+sandboxEffect(
+  'keeps accepted steering before stop fail-closed and preserves a later owner',
+  async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const nativeFinished = Promise.withResolvers<void>();
+    let approvals = 0;
+    await using f = await open(
       [
-        cell(`try { await tools.exec_command({cmd:'printf denied > steering-denied.txt'}); } catch { text('caught'); }
+        [
+          cell(`try { await tools.exec_command({cmd:'printf denied > steering-denied.txt'}); } catch { text('caught'); }
 await tools.exec_command({cmd:'printf escaped > steering-continuation.txt'});`),
+        ],
+        [
+          call(
+            'exec_command',
+            { cmd: 'printf successor > steering-successor.txt' },
+            { callId: 'steering-successor' },
+          ),
+        ],
+        [message('steering successor done')],
       ],
-      [
-        call(
-          'exec_command',
-          { cmd: 'printf successor > steering-successor.txt' },
-          { callId: 'steering-successor' },
-        ),
-      ],
-      [message('steering successor done')],
-    ],
-    {
-      async approval() {
-        if (approvals++ === 0) {
-          entered.resolve();
-          await release.promise;
-          return stopExecutorTurn('private-steering-reason');
-        }
-        return true;
+      {
+        async approval() {
+          if (approvals++ === 0) {
+            entered.resolve();
+            await release.promise;
+            return stopExecutorTurn('private-steering-reason');
+          }
+          return true;
+        },
       },
-    },
-    { code: true },
-  );
-  const addon = await binding();
-  const hold = addon.NativeThread.prototype._hold_native_interception_for_stop;
-  const finish = addon._NativePolicyStop.prototype.finish;
-  const claims: boolean[] = [];
-  let finishResult: { ok: true } | { ok: false; error: unknown } | undefined;
-  const holdSpy = vi
-    .spyOn(addon.NativeThread.prototype, '_hold_native_interception_for_stop')
-    .mockImplementation(function (this: NativeThread, nonce) {
-      const receipt = hold.call(this, nonce);
-      claims.push(receipt !== null);
-      return receipt;
-    });
-  const finishSpy = vi
-    .spyOn(addon._NativePolicyStop.prototype, 'finish')
-    .mockImplementation(async function (
-      this: NonNullable<
-        ReturnType<NativeThread['_hold_native_interception_for_stop']>
-      >,
-    ) {
-      try {
-        await finish.call(this);
-        finishResult = { ok: true };
-      } catch (error) {
-        finishResult = { ok: false, error };
-        throw error;
-      } finally {
-        nativeFinished.resolve();
-      }
-    });
-  try {
-    const turn = await bounded(
-      f.session.submit('Hold approval, accept steering, then stop.'),
-      'submit steering',
+      { code: true },
     );
-    const result = observe(turn.wait());
+    const addon = await binding();
+    const hold =
+      addon.NativeThread.prototype._hold_native_interception_for_stop;
+    const finish = addon._NativePolicyStop.prototype.finish;
+    const claims: boolean[] = [];
+    let finishResult: { ok: true } | { ok: false; error: unknown } | undefined;
+    const holdSpy = vi
+      .spyOn(addon.NativeThread.prototype, '_hold_native_interception_for_stop')
+      .mockImplementation(function (this: NativeThread, nonce) {
+        const receipt = hold.call(this, nonce);
+        claims.push(receipt !== null);
+        return receipt;
+      });
+    const finishSpy = vi
+      .spyOn(addon._NativePolicyStop.prototype, 'finish')
+      .mockImplementation(async function (
+        this: NonNullable<
+          ReturnType<NativeThread['_hold_native_interception_for_stop']>
+        >,
+      ) {
+        try {
+          await finish.call(this);
+          finishResult = { ok: true };
+        } catch (error) {
+          finishResult = { ok: false, error };
+          throw error;
+        } finally {
+          nativeFinished.resolve();
+        }
+      });
     try {
-      await bounded(entered.promise, 'held executor approval');
-      await bounded(
-        turn.steer('accepted executor-stop steering input'),
-        'accepted steering',
+      const turn = await bounded(
+        f.session.submit('Hold approval, accept steering, then stop.'),
+        'submit steering',
       );
-      expect(f.model.requests).toHaveLength(1);
-      release.resolve();
-      const outcome = await bounded(result, 'steered stop outcome');
-      expect(outcome.ok).toBe(false);
-      if (outcome.ok)
-        throw new Error(
-          'Steered denied executor owner reported successful completion',
+      const result = observe(turn.wait());
+      try {
+        await bounded(entered.promise, 'held executor approval');
+        await bounded(
+          turn.steer('accepted executor-stop steering input'),
+          'accepted steering',
         );
-      expect(outcome.error).toBeInstanceOf(Error);
-      if (claims.includes(true)) {
-        await bounded(nativeFinished.promise, 'steered native finish');
-        if (finishResult?.ok) stopped(outcome);
-        else {
-          // A rejected native finish cannot masquerade as a joined policy stop.
-          expect(finishResult?.ok).toBe(false);
+        expect(f.model.requests).toHaveLength(1);
+        release.resolve();
+        const outcome = await bounded(result, 'steered stop outcome');
+        expect(outcome.ok).toBe(false);
+        if (outcome.ok)
+          throw new Error(
+            'Steered denied executor owner reported successful completion',
+          );
+        expect(outcome.error).toBeInstanceOf(Error);
+        if (claims.includes(true)) {
+          await bounded(nativeFinished.promise, 'steered native finish');
+          if (finishResult?.ok) stopped(outcome);
+          else {
+            // A rejected native finish cannot masquerade as a joined policy stop.
+            expect(finishResult?.ok).toBe(false);
+            expect((outcome.error as Error).message).not.toBe(
+              'Turn stopped by executor policy',
+            );
+          }
+        } else {
+          // No accepted receipt means there is no successful native stop to report.
           expect((outcome.error as Error).message).not.toBe(
             'Turn stopped by executor policy',
           );
+          expect(finishResult).toBeUndefined();
         }
-      } else {
-        // No accepted receipt means there is no successful native stop to report.
-        expect((outcome.error as Error).message).not.toBe(
-          'Turn stopped by executor policy',
+        expect(starts(f.executor.requests)).toHaveLength(0);
+        expect(
+          await contents(join(f.executor.cwd, 'steering-denied.txt')),
+        ).toBeNull();
+        expect(
+          await contents(join(f.executor.cwd, 'steering-continuation.txt')),
+        ).toBeNull();
+        expect(f.model.requests).toHaveLength(1);
+        const next = await bounded(
+          f.session.submit('Use the successor after steering and stop.'),
+          'submit steering successor',
         );
-        expect(finishResult).toBeUndefined();
+        expect(
+          (await bounded(next.wait(), 'steering successor')).finalOutput,
+        ).toBe('steering successor done');
+        // Accepted steering survives the stopped task exactly once in the next
+        // request's real history.
+        expect(
+          JSON.stringify(f.model.requests[1]?.input)?.split(
+            'accepted executor-stop steering input',
+          ),
+        ).toHaveLength(2);
+        expect(
+          await contents(join(f.executor.cwd, 'steering-successor.txt')),
+        ).toBe('successor');
+        expect(
+          await contents(join(f.executor.cwd, 'steering-continuation.txt')),
+        ).toBeNull();
+        expect(starts(f.executor.requests)).toHaveLength(1);
+        f.model.assertExhausted();
+      } finally {
+        release.resolve();
+        await bounded(result, 'steering result cleanup');
       }
-      expect(starts(f.executor.requests)).toHaveLength(0);
-      expect(
-        await contents(join(f.executor.cwd, 'steering-denied.txt')),
-      ).toBeNull();
-      expect(
-        await contents(join(f.executor.cwd, 'steering-continuation.txt')),
-      ).toBeNull();
-      expect(f.model.requests).toHaveLength(1);
-      const next = await bounded(
-        f.session.submit('Use the successor after steering and stop.'),
-        'submit steering successor',
-      );
-      expect(
-        (await bounded(next.wait(), 'steering successor')).finalOutput,
-      ).toBe('steering successor done');
-      // Accepted steering survives the stopped task exactly once in the next
-      // request's real history.
-      expect(
-        JSON.stringify(f.model.requests[1]?.input)?.split(
-          'accepted executor-stop steering input',
-        ),
-      ).toHaveLength(2);
-      expect(
-        await contents(join(f.executor.cwd, 'steering-successor.txt')),
-      ).toBe('successor');
-      expect(
-        await contents(join(f.executor.cwd, 'steering-continuation.txt')),
-      ).toBeNull();
-      expect(starts(f.executor.requests)).toHaveLength(1);
-      f.model.assertExhausted();
     } finally {
       release.resolve();
-      await bounded(result, 'steering result cleanup');
+      finishSpy.mockRestore();
+      holdSpy.mockRestore();
     }
-  } finally {
-    release.resolve();
-    finishSpy.mockRestore();
-    holdSpy.mockRestore();
-  }
-}, 45_000);
+  },
+  45_000,
+);

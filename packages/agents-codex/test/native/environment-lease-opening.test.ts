@@ -605,6 +605,7 @@ describe('Environment source public opening and actual Session cleanup', () => {
         format_version: 2,
         codex_revision: CODEX_REVISION,
         source_session_id: 'saved-root',
+        executor_policy_digest: 'a'.repeat(64),
         root_metadata: {},
         history: [],
         managed_tool_specs: [],
@@ -719,3 +720,47 @@ describe('Environment source public opening and actual Session cleanup', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 });
+
+it.each([
+  'legacy-to-default',
+  'legacy-to-explicit-strict',
+  'strict-to-legacy',
+  'strict-to-none',
+] as const)(
+  'rejects checkpoint write mode mismatch before native acquisition: %s',
+  async (mode) => {
+    await using provider = new NativeProvider({ apiKey: 'synthetic-key' });
+    const state = parseSessionState(
+      JSON.stringify({
+        format_version: 2,
+        codex_revision: CODEX_REVISION,
+        source_session_id: 'saved-root',
+        root_metadata: {},
+        history: [],
+        managed_tool_specs: [],
+        agent_options: {},
+        ...(mode.startsWith('strict-to-')
+          ? { executor_policy_digest: 'a'.repeat(64) }
+          : {}),
+      }),
+    );
+    const selected = new Environment({
+      url: 'wss://executor.invalid',
+      cwd: '/workspace',
+      ...(mode === 'strict-to-legacy'
+        ? { writePolicy: 'legacy' as const }
+        : {}),
+      ...(mode === 'legacy-to-explicit-strict' ? { writableRoots: [] } : {}),
+    });
+    await expect(
+      new Agent({ instructions: 'Test', provider }).session({
+        state,
+        environment: mode === 'strict-to-none' ? undefined : selected,
+      }),
+    ).rejects.toThrow(
+      'Restore requires the recorded executor write and network policy',
+    );
+    expect(fixture.createEngine).not.toHaveBeenCalled();
+    expect(fixture.createCheckpointEngine).not.toHaveBeenCalled();
+  },
+);

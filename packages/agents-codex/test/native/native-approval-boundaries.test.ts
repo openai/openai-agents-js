@@ -78,6 +78,8 @@ async function withApproval(
       url: executor.url,
       cwd: executor.cwd,
       headers: executor.headers,
+      // These cases exercise the explicit legacy escalation approval flow.
+      writePolicy: 'legacy',
       tools: ['exec_command', 'write_stdin', 'apply_patch'],
     });
     await using session = await new Agent({

@@ -433,6 +433,8 @@ describe('native opening options without loading native code', () => {
     const environment = new Environment({
       url: 'wss://executor.invalid',
       cwd: '/workspace',
+      // This markerless fixture tests native model admission through legacy restore.
+      writePolicy: 'legacy',
       tools: ['exec_command', 'write_stdin', 'apply_patch'],
     });
     await expect(agent.session({ environment })).rejects.toThrow(

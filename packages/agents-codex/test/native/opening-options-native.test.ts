@@ -445,6 +445,8 @@ describe('actual native opening overrides', () => {
           url: executor.url,
           cwd: executor.cwd,
           headers: executor.headers,
+          // This fixture intentionally relocates the checkpoint to a new executor.
+          writePolicy: 'legacy',
           tools: ['exec_command', 'write_stdin', 'apply_patch'],
         }),
       });
@@ -474,6 +476,8 @@ describe('actual native opening overrides', () => {
         url: executor.url,
         cwd: executor.cwd,
         headers: executor.headers,
+        // This fixture intentionally relocates the checkpoint to a new executor.
+        writePolicy: 'legacy',
         tools: ['exec_command', 'write_stdin', 'apply_patch'],
         approval,
       });

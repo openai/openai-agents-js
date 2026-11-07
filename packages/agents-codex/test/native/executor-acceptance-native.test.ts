@@ -138,228 +138,254 @@ it.each(['wrong-host', 'untrusted-ca', 'forbidden'] as const)(
   20_000,
 );
 
-it('retains a real remote effect after losing its start acknowledgement without replay', async () => {
-  const executor = await startPublicExecutor({
-    dropStartReplyAfter: { path: 'started.txt', contents: 'started' },
-  });
-  const releaseModel = Promise.withResolvers<void>();
-  const model = new ModelServer([
-    [
-      call(
-        'exec_command',
-        { cmd: 'printf started >> started.txt; sleep 1', yield_time_ms: 1000 },
-        { callId: 'lost-start' },
-      ),
-    ],
-    async () => {
-      // Keep a transport-error continuation from completing before explicit cancellation.
-      await releaseModel.promise;
-      return [message('unused after cancellation')];
-    },
-  ]);
-  const provider = await providerFor(model, 'synthetic-lost-ack-model');
-  let session: Awaited<ReturnType<Agent['session']>> | undefined;
-  try {
-    session = await new Agent({
-      instructions: 'Use the selected executor.',
-      provider,
-      model: 'gpt-5',
-    }).session({ environment: environmentFor(executor) });
-    const turn = await session.submit('Start once.');
-    const outcome = turn.wait().catch((error: unknown) => error);
-    const deadline = Date.now() + 10_000;
-    while (!executor.droppedStartReply && Date.now() < deadline)
-      await delay(10);
-    expect(executor.droppedStartReply, JSON.stringify(executor.requests)).toBe(
-      true,
-    );
-    await turn.cancel();
-    const failure = await outcome;
-    // Cancellation settles this admitted operation; it does not undo the remote write.
-    expect(turn.turnId).toEqual(expect.any(String));
-    expect(failure).toBeInstanceOf(NativeError);
-    expect(failure).toMatchObject({ name: 'TurnAborted', retryable: null });
-    const history = [];
-    for await (const recorded of session.turns()) history.push(recorded);
-    expect(
-      history.find((recorded) => recorded.id === turn.turnId),
-    ).toMatchObject({
-      status: 'cancelled',
+// Strict process effects require a working native sandbox.
+it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)(
+  'retains a real remote effect after losing its start acknowledgement without replay',
+  async () => {
+    const executor = await startPublicExecutor({
+      dropStartReplyAfter: { path: 'started.txt', contents: 'started' },
     });
-    expectNoSecrets(failure, [
-      executor.headers.Authorization,
-      'synthetic-lost-ack-model',
-    ]);
-    expect(await readFile(join(executor.cwd, 'started.txt'), 'utf8')).toBe(
-      'started',
-    );
-    expect(starts(executor), JSON.stringify(executor.requests)).toHaveLength(1);
-    // No receipt claims that transport loss rolled back the observed remote effect.
-    expectNoSecrets(await session.saveState(), [
-      executor.headers.Authorization,
-      'synthetic-lost-ack-model',
-    ]);
-  } finally {
-    releaseModel.resolve();
-    try {
-      await session?.close();
-    } finally {
-      try {
-        await provider.close();
-      } finally {
-        await executor.close();
-      }
-    }
-  }
-}, 25_000);
-
-it('isolates colliding executor calls, credentials and roots while a sibling closes', async () => {
-  const left = await startPublicExecutor({
-    authorization: 'Bearer synthetic-left-executor',
-  });
-  const right = await startPublicExecutor({
-    authorization: 'Bearer synthetic-right-executor',
-  });
-  // Both peers must be trusted together before native transport loads its roots.
-  const bundle = join(right.cwd, 'combined-ca.pem');
-  await writeFile(
-    bundle,
-    Buffer.concat(
-      await Promise.all([
-        readFile(left.caCertificate),
-        readFile(right.caCertificate),
-      ]),
-    ),
-  );
-  process.env.SSL_CERT_FILE = bundle;
-  process.env.CODEX_CA_CERTIFICATE = bundle;
-  const secrets = [
-    'synthetic-left-executor',
-    'synthetic-right-executor',
-    'synthetic-left-model',
-    'synthetic-right-model',
-  ];
-  const models = [left, right].map(
-    (_, index) =>
-      new ModelServer(
-        [
-          [
-            call(
-              'exec_command',
-              { cmd: 'cat marker.txt' },
-              { callId: 'same-native-call' },
-            ),
-          ],
-          [message(index === 0 ? 'left complete' : 'right complete')],
-          [
-            call(
-              'exec_command',
-              { cmd: 'cat marker.txt' },
-              { callId: 'same-native-call' },
-            ),
-          ],
-          [message('right survives')],
-        ].slice(0, index === 0 ? 2 : 4),
-      ),
-  );
-  const providers = await Promise.all(
-    models.map((model, index) =>
-      providerFor(model, `synthetic-${index === 0 ? 'left' : 'right'}-model`),
-    ),
-  );
-  const sessions: Awaited<ReturnType<Agent['session']>>[] = [];
-  try {
-    await Promise.all([
-      writeFile(join(left.cwd, 'marker.txt'), 'left-root-value'),
-      writeFile(join(right.cwd, 'marker.txt'), 'right-root-value'),
-    ]);
-    sessions.push(
-      ...(await Promise.all(
-        providers.map((provider, index) =>
-          new Agent({
-            instructions: 'Use the selected executor.',
-            provider,
-            model: 'gpt-5',
-          }).session({
-            environment: environmentFor(index === 0 ? left : right),
-          }),
+    const releaseModel = Promise.withResolvers<void>();
+    const model = new ModelServer([
+      [
+        call(
+          'exec_command',
+          {
+            cmd: 'printf started >> started.txt; sleep 1',
+            yield_time_ms: 1000,
+          },
+          { callId: 'lost-start' },
         ),
-      )),
-    );
-    const results = await Promise.all(
-      sessions.map(
-        async (session) =>
-          (await (await session.submit('Read marker.')).wait()).finalOutput,
-      ),
-    );
-    expect(results).toEqual(['left complete', 'right complete']);
-    expectNoSecrets(
-      await Promise.all(sessions.map((session) => session.saveState())),
-      secrets,
-    );
-    await sessions[0].close();
-    await providers[0].close();
-    await writeFile(
-      join(right.cwd, 'marker.txt'),
-      'right-root-after-sibling-close',
-    );
-    expect(
-      (await (await sessions[1].submit('Read again.')).wait()).finalOutput,
-    ).toBe('right survives');
-    for (const [index, executor] of [left, right].entries()) {
-      const own = index === 0 ? 'left' : 'right';
-      const sibling = index === 0 ? 'right' : 'left';
-      expect(starts(executor)).toHaveLength(index === 0 ? 1 : 2);
-      for (const start of starts(executor)) {
-        const params = start.params as Record<string, unknown>;
-        expect(params.cwd).toBe(`file://${executor.cwd}`);
-        expect(params.metadata).toMatchObject({
-          toolCallId: 'same-native-call',
-        });
-      }
-      expect(JSON.stringify(executor.requests)).not.toContain(
-        `${sibling}-root-value`,
-      );
-      expectNoSecrets(executor.requests, secrets);
-      const model = models[index];
-      const postToolRequests = index === 0 ? [1] : [1, 3];
-      for (const [round, requestIndex] of postToolRequests.entries()) {
-        const outputs = (
-          model.requests[requestIndex].input as Record<string, unknown>[]
-        ).filter(
-          (item) =>
-            item.type === 'function_call_output' &&
-            item.call_id === 'same-native-call',
-        );
-        expect(outputs).toHaveLength(round + 1);
-        // The new output follows retained history; an earlier marker cannot prove this read.
-        const output = outputs[round].output;
-        const expected =
-          round === 0 ? `${own}-root-value` : 'right-root-after-sibling-close';
-        expect(output).toEqual(expect.stringContaining(expected));
-        expect(output).not.toContain(`${sibling}-root-value`);
-        if (round === 1) expect(output).not.toContain('right-root-value');
-      }
+      ],
+      async () => {
+        // Keep a transport-error continuation from completing before explicit cancellation.
+        await releaseModel.promise;
+        return [message('unused after cancellation')];
+      },
+    ]);
+    const provider = await providerFor(model, 'synthetic-lost-ack-model');
+    let session: Awaited<ReturnType<Agent['session']>> | undefined;
+    try {
+      session = await new Agent({
+        instructions: 'Use the selected executor.',
+        provider,
+        model: 'gpt-5',
+      }).session({ environment: environmentFor(executor) });
+      const turn = await session.submit('Start once.');
+      const outcome = turn.wait().catch((error: unknown) => error);
+      const deadline = Date.now() + 10_000;
+      while (!executor.droppedStartReply && Date.now() < deadline)
+        await delay(10);
       expect(
-        model.requestHeaders.every(
-          (headers) =>
-            headers.authorization === `Bearer synthetic-${own}-model`,
-        ),
+        executor.droppedStartReply,
+        JSON.stringify(executor.requests),
       ).toBe(true);
-      expectNoSecrets(model.requests, secrets);
-      model.assertExhausted();
-    }
-    expectNoSecrets(await sessions[1].saveState(), secrets);
-  } finally {
-    try {
-      await Promise.all(sessions.map((session) => session.close()));
+      await turn.cancel();
+      const failure = await outcome;
+      // Cancellation settles this admitted operation; it does not undo the remote write.
+      expect(turn.turnId).toEqual(expect.any(String));
+      expect(failure).toBeInstanceOf(NativeError);
+      expect(failure).toMatchObject({ name: 'TurnAborted', retryable: null });
+      const history = [];
+      for await (const recorded of session.turns()) history.push(recorded);
+      expect(
+        history.find((recorded) => recorded.id === turn.turnId),
+      ).toMatchObject({
+        status: 'cancelled',
+      });
+      expectNoSecrets(failure, [
+        executor.headers.Authorization,
+        'synthetic-lost-ack-model',
+      ]);
+      expect(await readFile(join(executor.cwd, 'started.txt'), 'utf8')).toBe(
+        'started',
+      );
+      expect(starts(executor), JSON.stringify(executor.requests)).toHaveLength(
+        1,
+      );
+      // No receipt claims that transport loss rolled back the observed remote effect.
+      expectNoSecrets(await session.saveState(), [
+        executor.headers.Authorization,
+        'synthetic-lost-ack-model',
+      ]);
     } finally {
+      releaseModel.resolve();
       try {
-        await Promise.all(providers.map((provider) => provider.close()));
+        await session?.close();
       } finally {
-        await right.close();
-        await left.close();
+        try {
+          await provider.close();
+        } finally {
+          await executor.close();
+        }
       }
     }
-  }
-}, 30_000);
+  },
+  25_000,
+);
+
+// Strict process effects require a working native sandbox.
+it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)(
+  'isolates colliding executor calls, credentials and roots while a sibling closes',
+  async () => {
+    const left = await startPublicExecutor({
+      authorization: 'Bearer synthetic-left-executor',
+    });
+    const right = await startPublicExecutor({
+      authorization: 'Bearer synthetic-right-executor',
+    });
+    // Both peers must be trusted together before native transport loads its roots.
+    const bundle = join(right.cwd, 'combined-ca.pem');
+    await writeFile(
+      bundle,
+      Buffer.concat(
+        await Promise.all([
+          readFile(left.caCertificate),
+          readFile(right.caCertificate),
+        ]),
+      ),
+    );
+    process.env.SSL_CERT_FILE = bundle;
+    process.env.CODEX_CA_CERTIFICATE = bundle;
+    const secrets = [
+      'synthetic-left-executor',
+      'synthetic-right-executor',
+      'synthetic-left-model',
+      'synthetic-right-model',
+    ];
+    const models = [left, right].map(
+      (_, index) =>
+        new ModelServer(
+          [
+            [
+              call(
+                'exec_command',
+                { cmd: 'cat marker.txt' },
+                { callId: 'same-native-call' },
+              ),
+            ],
+            [message(index === 0 ? 'left complete' : 'right complete')],
+            [
+              call(
+                'exec_command',
+                { cmd: 'cat marker.txt' },
+                { callId: 'same-native-call' },
+              ),
+            ],
+            [message('right survives')],
+          ].slice(0, index === 0 ? 2 : 4),
+        ),
+    );
+    const providers = await Promise.all(
+      models.map((model, index) =>
+        providerFor(model, `synthetic-${index === 0 ? 'left' : 'right'}-model`),
+      ),
+    );
+    const sessions: Awaited<ReturnType<Agent['session']>>[] = [];
+    try {
+      await Promise.all([
+        writeFile(join(left.cwd, 'marker.txt'), 'left-root-value'),
+        writeFile(join(right.cwd, 'marker.txt'), 'right-root-value'),
+      ]);
+      sessions.push(
+        ...(await Promise.all(
+          providers.map((provider, index) =>
+            new Agent({
+              instructions: 'Use the selected executor.',
+              provider,
+              model: 'gpt-5',
+            }).session({
+              environment: environmentFor(index === 0 ? left : right),
+            }),
+          ),
+        )),
+      );
+      const results = await Promise.all(
+        sessions.map(
+          async (session) =>
+            (await (await session.submit('Read marker.')).wait()).finalOutput,
+        ),
+      );
+      expect(results).toEqual(['left complete', 'right complete']);
+      expectNoSecrets(
+        await Promise.all(sessions.map((session) => session.saveState())),
+        secrets,
+      );
+      await sessions[0].close();
+      await providers[0].close();
+      await writeFile(
+        join(right.cwd, 'marker.txt'),
+        'right-root-after-sibling-close',
+      );
+      expect(
+        (await (await sessions[1].submit('Read again.')).wait()).finalOutput,
+      ).toBe('right survives');
+      for (const [index, executor] of [left, right].entries()) {
+        const own = index === 0 ? 'left' : 'right';
+        const sibling = index === 0 ? 'right' : 'left';
+        expect(starts(executor)).toHaveLength(index === 0 ? 1 : 2);
+        for (const start of starts(executor)) {
+          const params = start.params as Record<string, unknown>;
+          expect(params.cwd).toBe(`file://${executor.cwd}`);
+          expect(params.metadata).toMatchObject({
+            toolCallId: 'same-native-call',
+          });
+        }
+        expect(JSON.stringify(executor.requests)).not.toContain(
+          `${sibling}-root-value`,
+        );
+        expectNoSecrets(executor.requests, secrets);
+        const model = models[index];
+        const postToolRequests = index === 0 ? [1] : [1, 3];
+        for (const [round, requestIndex] of postToolRequests.entries()) {
+          const outputs = (
+            model.requests[requestIndex].input as Record<string, unknown>[]
+          ).filter(
+            (item) =>
+              item.type === 'function_call_output' &&
+              item.call_id === 'same-native-call',
+          );
+          expect(outputs).toHaveLength(round + 1);
+          // The new output follows retained history; an earlier marker cannot prove this read.
+          const output = outputs[round].output;
+          const expected =
+            round === 0
+              ? `${own}-root-value`
+              : 'right-root-after-sibling-close';
+          expect(output).toEqual(expect.stringContaining(expected));
+          expect(output).not.toContain(`${sibling}-root-value`);
+          if (round === 1) expect(output).not.toContain('right-root-value');
+        }
+        expect(
+          model.requestHeaders.every(
+            (headers) =>
+              headers.authorization === `Bearer synthetic-${own}-model`,
+          ),
+        ).toBe(true);
+        expectNoSecrets(model.requests, secrets);
+        model.assertExhausted();
+      }
+      expectNoSecrets(await sessions[1].saveState(), secrets);
+    } finally {
+      try {
+        await Promise.all(sessions.map((session) => session.close()));
+      } finally {
+        try {
+          await Promise.all(providers.map((provider) => provider.close()));
+        } finally {
+          await right.close();
+          await left.close();
+        }
+      }
+    }
+  },
+  30_000,
+);

@@ -16,7 +16,12 @@ import { startPublicExecutor } from './fixtures/public-executor';
 afterEach(() => ModelServer.closeAll());
 
 it
-  .skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')
+  .skipIf(
+    process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1' ||
+      (process.env.GITHUB_ACTIONS !== 'true' &&
+        process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+        process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
+  )
   .each(['allow', 'deny', 'cancel'] as const)(
   'nonempty terminal input retains its original action and policy: %s',
   async (choice) => {

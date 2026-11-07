@@ -179,6 +179,14 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      - name: Qualify checkpoint compatibility on macOS and Windows
+        if: runner.os == 'macOS' || runner.os == 'Windows'
+        env:
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+        run: >-
+          pnpm exec vitest run --pool=forks --project @openai/agents-codex
+          packages/agents-codex/test/native/checkpoint-upgrades-native.test.ts
+          --maxWorkers=1 --reporter=verbose
       - name: Qualify canonical native storage
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: >-

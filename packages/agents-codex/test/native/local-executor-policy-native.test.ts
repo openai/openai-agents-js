@@ -226,7 +226,11 @@ it.skipIf(!supported).for(['default', 'explicit'] as const)(
         model: 'gpt-5',
         instructions: 'Work.',
       });
-      const connection = { url: executor.url, headers: executor.headers };
+      const connection = {
+        url: executor.url,
+        headers: executor.headers,
+        writePolicy: 'legacy' as const,
+      };
       const network = {
         allowAllUnixSockets: true,
         allowedDomains: ['example.invalid'],
@@ -258,6 +262,7 @@ it.skipIf(!supported).for(['default', 'explicit'] as const)(
             ...connection,
             cwd: next,
             ...policy,
+            writePolicy: 'strict',
             writableRoots: [],
           }),
         }),
@@ -2361,7 +2366,15 @@ it.skipIf(process.platform !== 'darwin')(
   45_000,
 );
 
-it.skipIf(!supported).for(['portable', 'local'] as const)(
+// Honor the host restriction unless native sandbox execution is required.
+it
+  .skipIf(
+    !supported ||
+      (process.env.GITHUB_ACTIONS !== 'true' &&
+        process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+        process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
+  )
+  .for(['portable', 'local'] as const)(
   'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
   { timeout: 120_000 },
   async (route) => {

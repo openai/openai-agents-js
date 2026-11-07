@@ -1,3 +1,7 @@
 packages/*/src/metadata.ts
 *.yaml
 *.yml
+# Preserve the original public serializer bytes used by upgrade qualification.
+packages/agents-codex/test/native/fixtures/checkpoint-upgrades/*/idle.json
+packages/agents-codex/test/native/fixtures/checkpoint-upgrades/*/manual.json
+packages/agents-codex/test/native/fixtures/checkpoint-upgrades/*/code.json

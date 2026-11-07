@@ -51,11 +51,17 @@ An idle Session supports ordinary `compact()` in place using its current native 
 
 Use the memory and checkpoint route for portable `state`. Local storage and resume options are incompatible with portable state and are unavailable on `Agent.run()` or `Runner.run()`.
 
+### Preserve the recorded executor policy
+
+New Environments default to `writePolicy: 'strict'`. Reopening a local profile in strict mode requires recorded strict-mode evidence and the same applied executor policy. To keep remote execution when reopening legacy or unmarked remote history, supply an Environment with explicit `writePolicy: 'legacy'` and matching current authority. You can still omit the Environment for model-only work. A missing marker does not prove how older work was confined. Reopening never automatically upgrades that policy. See [workspace write grants](workspace-grants.md#save-and-restore-the-current-grant).
+
 ### Reopen with descendant history
 
 Reopen through the original root Session ID. A recorded child or grandchild ID cannot open as a root. Before model or callback work, the SDK checks the root and all recorded descendants, including closed branches. An open descendant with an unfinished turn or any descendant with an unknown effect blocks reopening, even when the current Agent declares no NativeAgents.
 
 Read settled descendant history through `session.subagents()` or the `subagentId` options on `session.items()` and `session.turns()`. These reads start no historical runtime. New work uses the destination's current declarations, credentials, callbacks, and Environment.
+
+Local history supports root recovery and inspection of settled child history. It does not automatically recover an active child graph or reconcile uncertain child effects. Your application owns external-effect reconciliation and decides whether to start new work. Preserve the refusal when a child outcome remains unknown; do not edit saved history to force reopening.
 
 ### Persistence failures and cleanup
 

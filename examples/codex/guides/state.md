@@ -66,7 +66,7 @@ This encoding applies to response, turn, and thread usage, including retained co
 
 `saveState()` exports idle conversation state. `suspend()` seals a supported pending manual boundary and exports its continuation. Restore with `agent.session({ state })`, supplying current trusted declarations. Snapshots contain conversation data. They contain neither running JavaScript nor a workspace backup. Python checkpoint interchange is not supported.
 
-Opening a checkpoint with a local executor or explicit `Environment.writableRoots` requires the matching saved executor policy digest. For a checkpoint without that digest, restore with a WSS Environment that omits `writableRoots` and matches the saved `network` setting. For an idle checkpoint with no network policy, you can also omit the Environment. To use a local executor or explicit `writableRoots` instead, open a new Session without this checkpoint. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.
+Opening a checkpoint with a local executor or strict WSS Environment requires the matching saved executor policy digest. New Environments default to `writePolicy: 'strict'`; saved policies retain their original mode. For a legacy checkpoint without that digest, restore with a WSS Environment that explicitly sets `writePolicy: 'legacy'`, omits `writableRoots`, and matches the saved `network` setting. For an idle legacy checkpoint with no network policy, you can also omit the Environment. To use a local executor or strict WSS policy instead, open a new Session without this checkpoint. Store checkpoints where your application can verify their integrity. The digest checks for a matching executor policy.
 
 [Check capture readiness](recovery.md#check-capture-readiness) before attempting a capture when needed. The report does not reserve a checkpoint; `saveState()` and `suspend()` perform their own checks.
 
@@ -86,10 +86,19 @@ Fork retains those accepted settings too. A different model or setting on the de
 
 ### Output and checkpoint versions
 
+Treat checkpoints as opaque data for this SDK and language. The current reader retains SDK envelope versions 2 through 15, subject to each version's restore checks below, and rejects unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
+
+The destination SDK must use the exact Codex revision that saved the checkpoint. A recognized envelope does not permit another native revision. Current trusted host configuration still supplies credentials, callbacks, tool bindings, the matching output contract, and executor policy; a recognized version grants none of those permissions.
+
+Portable checkpoints retain native history, including platform-specific absolute paths. Restore validates those paths on the destination platform, so moving a checkpoint between operating systems is not guaranteed. Do not rewrite saved paths to bypass validation.
+
+The [checkpoint capture provenance](../../../packages/agents-codex/test/native/fixtures/checkpoint-upgrades/README.md) records real idle, manual, and Code Mode captures from a preview source snapshot and its matching native artifact. Retained captures qualify later candidates by replaying accepted history and checking current restore refusals. They do not establish a stable-release upgrade, coverage of every historical preview, cross-language conversion, downgrade support, or arbitrary native-revision portability. Keep the producer SDK available until your candidate passes the relevant continuation tests.
+
 For a pending manual checkpoint, instructions and pending tool declarations/result schemas must match. Output-aware versions also require the same effective mode, JSON schema, and repair budget. Omitted, `undefined`, and zero repair budgets have the same output identity. Supply the matching output declaration on the destination Agent before restoring.
 
 | Idle / pending versions | Data and restore constraints |
 | --- | --- |
+| Legacy idle v2 | No saved output contract. Current output settings apply to new turns. |
 | Legacy pending v3 | Plain-text final output only. |
 | v4 / v5 | Effective output contract. Pending v5 supports plain or prompted output over HTTP or WebSocket; native structured output retains the active turn's schema, including a per-turn override. |
 | v6 / v7 | Adds settled Code Mode stored JSON, cell counters, and terminal observations. |
