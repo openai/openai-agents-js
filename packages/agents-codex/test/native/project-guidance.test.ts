@@ -404,69 +404,78 @@ it('does not turn foreign-root access into selected-root path guidance', async (
   server.assertExhausted();
 }, 30_000);
 
-it('does not infer access from successful shell reads, listings, or application metadata', async () => {
-  await using executor = await startProjectExecutor();
-  const root = join(executor.cwd, 'project');
-  await seedProject(root, 'NO_INFERENCE_GARNET');
-  const metadata = tool({
-    name: 'metadata',
-    parameters: z.object({ path: z.string() }),
-    execute: ({ path }) => ({
-      path,
-      resource_link: `file://${path}`,
-      type: 'image',
-    }),
-  });
-  const server = new ModelServer([
-    [
-      call(
-        'exec_command',
-        { cmd: 'cat src/source.txt; ls src', max_output_tokens: 1024 },
-        { callId: 'shell' },
-      ),
-    ],
-    (request) => {
-      expect(JSON.stringify(functionOutput(request, 'shell'))).toContain(
-        'executor text content',
-      );
-      expect(modelInput(request)).not.toContain('NO_INFERENCE_GARNET_SCOPED');
-      return [
+// This positive command case needs a working native filesystem sandbox.
+it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)(
+  'does not infer access from successful shell reads, listings, or application metadata',
+  async () => {
+    await using executor = await startProjectExecutor();
+    const root = join(executor.cwd, 'project');
+    await seedProject(root, 'NO_INFERENCE_GARNET');
+    const metadata = tool({
+      name: 'metadata',
+      parameters: z.object({ path: z.string() }),
+      execute: ({ path }) => ({
+        path,
+        resource_link: `file://${path}`,
+        type: 'image',
+      }),
+    });
+    const server = new ModelServer([
+      [
         call(
-          'metadata',
-          { path: join(root, 'src', 'pixel.png') },
-          { callId: 'metadata' },
+          'exec_command',
+          { cmd: 'cat src/source.txt; ls src', max_output_tokens: 1024 },
+          { callId: 'shell' },
         ),
-      ];
-    },
-    (request) => {
-      expect(JSON.stringify(functionOutput(request, 'metadata'))).toContain(
-        'resource_link',
-      );
-      expect(modelInput(request)).not.toContain('NO_INFERENCE_GARNET_SCOPED');
-      return [message('no access inferred')];
-    },
-  ]);
-  await using provider = await providerFor(server);
-  await using session = await new Agent({
-    provider,
-    instructions: 'Answer.',
-    tools: [metadata],
-  }).session({
-    environment: new Environment({
-      url: executor.url,
-      cwd: root,
-      headers: executor.headers,
-      tools: ['exec_command'],
-      approval: () => true,
-    }),
-    projectGuidance: true,
-  });
-  await (await session.submit('Go.')).wait();
-  expect(
-    executor.requests.filter((rpc) => rpc.method === 'process/start'),
-  ).toHaveLength(1);
-  server.assertExhausted();
-}, 30_000);
+      ],
+      (request) => {
+        expect(JSON.stringify(functionOutput(request, 'shell'))).toContain(
+          'executor text content',
+        );
+        expect(modelInput(request)).not.toContain('NO_INFERENCE_GARNET_SCOPED');
+        return [
+          call(
+            'metadata',
+            { path: join(root, 'src', 'pixel.png') },
+            { callId: 'metadata' },
+          ),
+        ];
+      },
+      (request) => {
+        expect(JSON.stringify(functionOutput(request, 'metadata'))).toContain(
+          'resource_link',
+        );
+        expect(modelInput(request)).not.toContain('NO_INFERENCE_GARNET_SCOPED');
+        return [message('no access inferred')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      provider,
+      instructions: 'Answer.',
+      tools: [metadata],
+    }).session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: root,
+        headers: executor.headers,
+        tools: ['exec_command'],
+        approval: () => true,
+      }),
+      projectGuidance: true,
+    });
+    await (await session.submit('Go.')).wait();
+    expect(
+      executor.requests.filter((rpc) => rpc.method === 'process/start'),
+    ).toHaveLength(1);
+    server.assertExhausted();
+  },
+  30_000,
+);
 
 it('keeps explicit empty operation selection effective with project guidance enabled', async () => {
   await using executor = await startProjectExecutor();
@@ -784,6 +793,14 @@ it.each(['omitted', 'false', 'fresh-root'] as const)(
     await using executor = await startProjectExecutor();
     const sourceRoot = join(executor.cwd, 'source');
     const destination = join(executor.cwd, 'destination');
+    // This fixture intentionally removes or relocates authority after restore.
+    const legacyEnvironment = (cwd: string) =>
+      new Environment({
+        url: executor.url,
+        cwd,
+        headers: executor.headers,
+        writePolicy: 'legacy',
+      });
     await seedProject(sourceRoot, 'SAVED_EMERALD');
     await seedProject(destination, 'CURRENT_AQUAMARINE');
     const server = new ModelServer([
@@ -808,7 +825,7 @@ it.each(['omitted', 'false', 'fresh-root'] as const)(
     let state: SessionState;
     {
       await using source = await agent.session({
-        environment: executor.environment(sourceRoot),
+        environment: legacyEnvironment(sourceRoot),
         projectGuidance: true,
       });
       await (await source.submit('Go.')).wait();
@@ -823,7 +840,7 @@ it.each(['omitted', 'false', 'fresh-root'] as const)(
       state,
       ...(mode === 'omitted'
         ? {}
-        : { environment: executor.environment(destination) }),
+        : { environment: legacyEnvironment(destination) }),
       ...(mode === 'fresh-root'
         ? { projectGuidance: true }
         : mode === 'false'
