@@ -676,6 +676,76 @@ it('rejects paths outside the root and unsupported search arguments', async () =
   server.assertExhausted();
 }, 30_000);
 
+it
+  .skipIf(process.platform === 'win32')
+  .each(['project_glob', 'project_grep'] as const)(
+  '%s retains valid root and nested matches beside a non-UTF-8 filename',
+  async (name) => {
+    await using project = await workspace();
+    await mkdir(join(project.root, 'nested'));
+    await writeFile(
+      join(project.root, 'encoding-root.txt'),
+      'encoding-match root\n',
+    );
+    await writeFile(
+      join(project.root, 'nested', 'encoding-nested.txt'),
+      'encoding-match nested\n',
+    );
+    await writeFile(
+      Buffer.concat([
+        Buffer.from(join(project.root, 'invalid-')),
+        Buffer.from([0xff]),
+        Buffer.from('.txt'),
+      ]),
+      'unrelated content\n',
+    );
+    const server = new ModelServer([
+      [
+        call(
+          name,
+          { pattern: name === 'project_glob' ? '**/*.txt' : '^encoding-match' },
+          { callId: 'encoding' },
+        ),
+      ],
+      (request) => {
+        const found = result(request, 'encoding');
+        expect(found).toMatchObject({
+          truncated: true,
+          truncation_reasons: expect.arrayContaining(['read_errors']),
+          errors: [{ path: '', code: 'path_unavailable' }],
+        });
+        expect(found.matches).toEqual(
+          name === 'project_glob'
+            ? ['encoding-root.txt', 'nested/encoding-nested.txt']
+            : [
+                {
+                  path: 'encoding-root.txt',
+                  line_number: 1,
+                  line: 'encoding-match root',
+                  before: [],
+                  after: [],
+                },
+                {
+                  path: 'nested/encoding-nested.txt',
+                  line_number: 1,
+                  line: 'encoding-match nested',
+                  before: [],
+                  after: [],
+                },
+              ],
+        );
+        return [message('retained valid matches')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    await new Agent({ provider, instructions: 'Search.' }).run('Go.', {
+      environment: project.environment([name]),
+    });
+    server.assertExhausted();
+  },
+  30_000,
+);
+
 it.skipIf(process.platform === 'win32')(
   'skips symlinks and files that are not UTF-8 text',
   async () => {
