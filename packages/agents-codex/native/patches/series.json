@@ -303,7 +303,11 @@
     {
       "path": "0084-update-native-test-fixtures.patch",
       "sha256": "ec86c33a20e83f3fb6f60e60400ce63475cd126704530de293798f9ca476bd65"
+    },
+    {
+      "path": "0077-avoid-unrequested-history-snapshots.patch",
+      "sha256": "b2e54de97b16ffbb23d9936eeb900882fec19373a24c34bec4fc55ea73fa1903"
     }
   ],
-  "result_tree": "046a30f8d57870f2916fc7c70691a5f2423ba89c"
+  "result_tree": "43987570a911b8834832014708ce5afe1d649e70"
 }

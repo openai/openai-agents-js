@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: Reduce native HTTP and text-event overhead while preserving session ownership and cleanup.
+fix: Reduce native HTTP, text-event, and history-read overhead while preserving session ownership and cleanup.
