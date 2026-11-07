@@ -1,17 +1,15 @@
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import {
   Agent,
   run,
   withTrace,
   applyPatchTool,
-  type Editor,
   type ApplyPatchOperation,
-  type ApplyPatchResult,
 } from '@openai/agents/classic';
-import { applyDiff } from '@openai/agents/classic';
+import { Manifest } from '@openai/agents/sandbox';
+import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import chalk from 'chalk';
 
 function printDiff(diff: string) {
@@ -24,60 +22,6 @@ function printDiff(diff: string) {
     } else {
       console.log(chalk.dim(line));
     }
-  }
-}
-
-export class WorkspaceEditor implements Editor {
-  private readonly root: string;
-
-  constructor(root: string) {
-    this.root = root;
-  }
-
-  async createFile(
-    operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
-  ): Promise<ApplyPatchResult | void> {
-    const targetPath = await this.resolve(operation.path);
-    await mkdir(path.dirname(targetPath), { recursive: true });
-    const content = applyDiff('', operation.diff, 'create');
-    await writeFile(targetPath, content, 'utf8');
-    return { status: 'completed', output: `Created ${operation.path}` };
-  }
-
-  async updateFile(
-    operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
-  ): Promise<ApplyPatchResult | void> {
-    const targetPath = await this.resolve(operation.path);
-    const original = await readFile(targetPath, 'utf8').catch((error: any) => {
-      if (error?.code === 'ENOENT') {
-        throw new Error(`Cannot update missing file: ${operation.path}`);
-      }
-      throw error;
-    });
-    const patched = applyDiff(original, operation.diff);
-    await writeFile(targetPath, patched, 'utf8');
-    return { status: 'completed', output: `Updated ${operation.path}` };
-  }
-
-  async deleteFile(
-    operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
-  ): Promise<ApplyPatchResult | void> {
-    const targetPath = await this.resolve(operation.path);
-    await rm(targetPath, { force: true });
-    return { status: 'completed', output: `Deleted ${operation.path}` };
-  }
-
-  private async resolve(relativePath: string): Promise<string> {
-    const resolved = path.resolve(this.root, relativePath);
-    const relative = path.relative(this.root, resolved);
-    if (
-      relative === '..' ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative)
-    ) {
-      throw new Error(`Operation outside workspace: ${relativePath}`);
-    }
-    return resolved;
   }
 }
 
@@ -108,43 +52,36 @@ async function promptApplyPatchApproval(
   }
 }
 
-async function seedWorkspace(root: string): Promise<void> {
-  await mkdir(root, { recursive: true });
-}
-
 async function main() {
-  const workspaceRoot = await mkdtemp(
-    path.join(os.tmpdir(), 'apply-patch-example-'),
-  );
+  const session = await new UnixLocalSandboxClient().create(new Manifest());
+  const workspaceRoot = session.state.workspaceRootPath;
   console.log(chalk.dim(`Temporary workspace: ${chalk.cyan(workspaceRoot)}`));
-  await seedWorkspace(workspaceRoot);
-  const editor = new WorkspaceEditor(workspaceRoot);
-
-  const agent = new Agent({
-    name: 'Patch Assistant',
-    model: 'gpt-5.4',
-    modelSettings: {
-      reasoning: { effort: 'low' },
-    },
-    instructions: `You can edit files inside ${workspaceRoot} using the apply_patch tool.`,
-    tools: [
-      applyPatchTool({
-        editor,
-        // could also be a function for you to determine if approval is needed
-        needsApproval: true,
-        onApproval: async (_ctx, approvalItem) => {
-          const op =
-            approvalItem.rawItem.type === 'apply_patch_call'
-              ? approvalItem.rawItem.operation
-              : undefined;
-          const approve = op ? await promptApplyPatchApproval(op) : false;
-          return { approve };
-        },
-      }),
-    ],
-  });
+  const editor = session.createEditor();
 
   try {
+    const agent = new Agent({
+      name: 'Patch Assistant',
+      model: 'gpt-5.4',
+      modelSettings: {
+        reasoning: { effort: 'low' },
+      },
+      instructions: `You can edit files inside ${workspaceRoot} using the apply_patch tool. Use workspace-relative paths such as tasks.md.`,
+      tools: [
+        applyPatchTool({
+          editor,
+          // could also be a function for you to determine if approval is needed
+          needsApproval: true,
+          onApproval: async (_ctx, approvalItem) => {
+            const op =
+              approvalItem.rawItem.type === 'apply_patch_call'
+                ? approvalItem.rawItem.operation
+                : undefined;
+            const approve = op ? await promptApplyPatchApproval(op) : false;
+            return { approve };
+          },
+        }),
+      ],
+    });
     console.log(chalk.dim('Asking agent to create tasks.md …\n'));
     await withTrace('apply-patch-example', async () => {
       const result = await run(
@@ -177,7 +114,7 @@ async function main() {
   } catch (err) {
     console.error(err);
   } finally {
-    await rm(workspaceRoot, { recursive: true, force: true });
+    await session.close();
   }
 }
 
