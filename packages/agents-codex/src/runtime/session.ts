@@ -5641,6 +5641,11 @@ export class Session<OutputT = string, Context = unknown> {
         const reply = await handler(action, run.controller.signal);
         if ((this.oneShot && root && !this.current(root)) || !this.current(run))
           return;
+        if (!call.grant.ownsReply(reply))
+          throw new TypeError(
+            'onInteraction must return a reply to the manual request it received',
+          );
+        if (!call.grant.request()) return;
         if (!(await this.submitManualResult(reply, key)))
           throw new TypeError(
             'onInteraction must return a reply to the manual request it received',

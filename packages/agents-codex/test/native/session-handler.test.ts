@@ -11,6 +11,10 @@ import {
   type Turn,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+import {
+  createManualRequest,
+  type ManualToolReply,
+} from '../../src/runtime/manual';
 import { startPublicExecutor } from './fixtures/public-executor';
 
 async function providerFor(server: ModelServer) {
@@ -209,3 +213,104 @@ it('keeps the retained handler alive for a child after its root completes', asyn
     }
   }
 }, 30_000);
+
+it.each([
+  ['bound', true],
+  ['delivered', true],
+  ['missing', true],
+  ['foreign', true],
+  ['missing', false],
+  ['foreign', false],
+] as const)(
+  'validates a %s handler return (answered by another consumer: %s)',
+  async (kind, answered) => {
+    const decision = manualTool({
+      name: 'decision',
+      description: 'Ask the application.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const entered = Promise.withResolvers<Parameters<InteractionHandler>[0]>();
+    const release = Promise.withResolvers<void>();
+    const returned = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    const continuing = Promise.withResolvers<void>();
+    const server = new ModelServer([
+      [call('decision', {}, { callId: 'held' })],
+      async () => {
+        continuing.resolve();
+        await finish.promise;
+        return [message('reader answer accepted')];
+      },
+    ]);
+    await using provider = await providerFor(server);
+    let delivered: ManualToolReply | undefined;
+    await using session = await new Agent({
+      instructions: 'Ask.',
+      model: 'gpt-5',
+      tools: [decision],
+      provider,
+    }).session({
+      async onInteraction(request) {
+        const matched = decision.match(request);
+        if (!matched) throw new Error('Unexpected interaction');
+        entered.resolve(request);
+        await release.promise;
+        returned.resolve();
+        if (kind === 'delivered') return delivered!;
+        if (kind === 'missing') return undefined as never;
+        if (kind === 'foreign') {
+          const foreign = createManualRequest(
+            decision,
+            {
+              sessionId: 'foreign',
+              submissionId: 'foreign',
+              subagentId: null,
+              turnId: 'foreign',
+              callId: 'foreign',
+            },
+            {},
+            () => true,
+          ).request()!;
+          return foreign.reply('foreign');
+        }
+        return matched.reply('handler answer');
+      },
+    });
+    try {
+      const root = await session.submit('First.');
+      const result = root.wait();
+      const expected =
+        kind === 'bound' || kind === 'delivered'
+          ? expect(result).resolves.toMatchObject({
+              finalOutput: 'reader answer accepted',
+            })
+          : expect(result).rejects.toThrow(
+              'onInteraction must return a reply to the manual request it received',
+            );
+      const request = decision.match(await entered.promise)!;
+      delivered = request.reply('reader answer');
+      if (answered) {
+        await session.respond(delivered);
+        await expect(session.respond(delivered)).rejects.toThrow();
+        await continuing.promise;
+      }
+      release.resolve();
+      await returned.promise;
+      finish.resolve();
+      await expected;
+      if (answered) {
+        expect(JSON.stringify(server.requests[1])).toContain('reader answer');
+        expect(JSON.stringify(server.requests[1])).not.toContain(
+          'handler answer',
+        );
+        server.assertExhausted();
+      } else {
+        expect(server.requests).toHaveLength(1);
+      }
+    } finally {
+      release.resolve();
+      finish.resolve();
+    }
+  },
+);

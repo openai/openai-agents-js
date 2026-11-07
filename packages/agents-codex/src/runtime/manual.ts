@@ -13,7 +13,7 @@ interface Definition {
   parseResult(value: unknown): ToolResponse;
 }
 
-/** A result for an exact live manual request. Submit it with Session.submit. */
+/** A result for an exact live manual request. Deliver it with Session.respond. */
 export interface ManualToolReply<Result = unknown> {
   readonly [manualReplyType]: Result;
 }
@@ -49,7 +49,7 @@ interface RequestAuthority {
 const requests = new WeakMap<object, RequestAuthority>();
 const replies = new WeakMap<
   object,
-  { authority: RequestAuthority; value: unknown }
+  { identity: object; value: unknown; consumed?: true }
 >();
 const preparedResults = new WeakMap<
   object,
@@ -173,6 +173,7 @@ export function createManualRequest<Input, Result>(
   isCurrent: () => boolean,
 ) {
   let active = true;
+  const replyIdentity = {};
   const definition = tool[manualDefinition];
   const authority: RequestAuthority = {
     definition,
@@ -210,7 +211,7 @@ export function createManualRequest<Input, Result>(
         },
         reply(value: Result): ManualToolReply<Result> {
           const reply = Object.freeze({}) as ManualToolReply<Result>;
-          replies.set(reply, { authority, value });
+          replies.set(reply, { identity: replyIdentity, value });
           return reply;
         },
       });
@@ -218,11 +219,14 @@ export function createManualRequest<Input, Result>(
       cachedRequest = request;
       return request;
     },
+    ownsReply(reply: unknown): boolean {
+      return isObject(reply) && replies.get(reply)?.identity === replyIdentity;
+    },
     matchesReply(reply: unknown): boolean {
       return (
         authority.current() &&
         isObject(reply) &&
-        replies.get(reply)?.authority === authority
+        replies.get(reply)?.identity === replyIdentity
       );
     },
     takeReply(
@@ -231,7 +235,7 @@ export function createManualRequest<Input, Result>(
     ): ToolResponse | undefined {
       if (!authority.current() || !isObject(reply)) return undefined;
       const found = replies.get(reply);
-      if (found?.authority !== authority) return undefined;
+      if (found?.identity !== replyIdentity) return undefined;
       let output: ToolResponse;
       try {
         const prepared = isObject(found.value)
@@ -246,7 +250,9 @@ export function createManualRequest<Input, Result>(
       beforeConsume?.(output);
       checkCurrent();
       active = false;
-      replies.delete(reply);
+      // Keep only binding identity so a retained handler can return this reply.
+      found.value = undefined;
+      found.consumed = true;
       return output;
     },
     deactivate(): void {
@@ -257,5 +263,5 @@ export function createManualRequest<Input, Result>(
 
 /** @internal Only candidates issued by this runtime carry reply authority. */
 export function isManualReply(value: unknown): value is ManualToolReply {
-  return isObject(value) && replies.has(value);
+  return isObject(value) && replies.has(value) && !replies.get(value)!.consumed;
 }
