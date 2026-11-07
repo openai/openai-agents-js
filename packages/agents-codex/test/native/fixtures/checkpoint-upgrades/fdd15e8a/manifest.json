@@ -1,0 +1,29 @@
+{
+  "format": 1,
+  "producer": {
+    "kind": "source-snapshot",
+    "source_commit": "fdd15e8abe181c64d3cbdff25b38f9c571af0a66",
+    "native_artifact_id": "13581513489",
+    "native_archive_sha256": "4f067daa3fe4a762ea87cf5ba0d277e20b6cd2b4204687b8d5da57ecbd13b881",
+    "native_receipt_sha256": "8846d049c6ea3283125a3dda97d138acdc0cb5de02eba25906d07ecd21d40d42",
+    "codex_revision": "7c2ce90716335c889a5076ded9a630459f9c9899"
+  },
+  "capture_script_sha256": "628c01442e0daa96091824147923a1b227ffb46fdeb5f0dcee7c50aec5957e26",
+  "cases": [
+    {
+      "file": "idle.json",
+      "sha256": "1b7ba05b4012e410bc63c825b28b37312f8deb022ecb104c215acfca5cf8ab75",
+      "sdk_format_version": 4
+    },
+    {
+      "file": "manual.json",
+      "sha256": "4cfc7202b3076d54db54c41f5f1a99e083ebf8b18ba8adad013176bf57302c1d",
+      "sdk_format_version": 5
+    },
+    {
+      "file": "code.json",
+      "sha256": "bf83932ff30f63ad0b99e1f7824a85107aa925763a7a3dcda907e36eddac8dbc",
+      "sdk_format_version": 6
+    }
+  ]
+}
