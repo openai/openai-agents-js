@@ -85,6 +85,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_ignored = "0.1.14"
 globset = "0.4.18"
+regex = "1"
 serde_yaml = "0.9.34"
 serde_path_to_error = "0.1"
 sha2 = "0.10"

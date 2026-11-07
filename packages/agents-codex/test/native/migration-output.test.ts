@@ -16,11 +16,48 @@ import {
   modelResponder,
   modelResponse,
 } from '@openai/agents/classic/testing';
+import { OutputValidationError } from '../../src/runtime/output';
 import { SDKRunner, type MigrationRunResult } from '@openai/agents/migration';
 
 setTracingDisabled(true);
 
 describe('structured migration output on the native loop', () => {
+  it('preserves application response paths and one validator call on migration rejection', async () => {
+    let validations = 0;
+    const raw = '{"response":"private-value"}';
+    const schema = z.object({
+      response: z.string().superRefine((_value, context) => {
+        validations++;
+        context.addIssue({
+          code: 'custom',
+          message: 'private-validator-message',
+        });
+      }),
+    });
+    const model = new ScriptedModel([
+      modelResponse({ output: [assistantMessage(raw)], usage: new Usage() }),
+    ]);
+    const agent = Agent.create({
+      name: 'Rejected report',
+      model: 'selected',
+      modelSettings: {},
+      outputType: schema,
+    });
+    const failure = await SDKRunner.run(agent, 'Answer.', {
+      context: undefined,
+      modelProvider: { getModel: () => model },
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(OutputValidationError);
+    if (!(failure instanceof OutputValidationError))
+      throw new Error('Expected output validation failure');
+    expect(failure.rawOutput).toBe(raw);
+    expect(failure.issues).toEqual([{ code: 'custom', path: ['response'] }]);
+    expect(String(failure)).not.toContain('private');
+    expect(failure).not.toHaveProperty('cause');
+    expect(validations).toBe(1);
+    expect(model.calls).toHaveLength(1);
+  });
+
   it('preserves the classic object schema through a selected native function round trip', async () => {
     const schema = z.object({ title: z.string(), count: z.number() });
     const value = { title: 'Native report', count: 7 };
@@ -206,13 +243,13 @@ describe('structured migration output on the native loop', () => {
     expect(result.history).toEqual(result.history);
     expect(result.output).toEqual(result.newItems.map((item) => item.rawItem));
     expect(result.rawResponses[0]).toBe(result.modelResponses[0]);
-    const events = await Array.fromAsync(result);
+    const events = await Array.fromAsync(result.replayEvents());
     expect(
       events.map((event) =>
         event.type === 'run_item_stream_event' ? event.name : event.type,
       ),
     ).toEqual(['message_output_created']);
-    expect(await Array.fromAsync(result.toStream())).toEqual(events);
+    expect(await Array.fromAsync(result.replayEvents())).toEqual(events);
     expect(result.finalOutput).toBe(seen[0]);
     expect(parses).toBe(1);
     expect(model.calls).toHaveLength(1);

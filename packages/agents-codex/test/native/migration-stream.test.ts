@@ -126,9 +126,9 @@ describe('live SDK Model events on the real native migration loop', () => {
       ],
     });
     const completion = watch(live.completed);
-    const semanticReader = live.toStream().getReader();
+    const semanticReader = live.replayEvents().getReader();
     const firstSemantic = watch(semanticReader.read());
-    const directSemantics = watch(Array.fromAsync(live));
+    const directSemantics = watch(Array.fromAsync(live.replayEvents()));
     const reader = live.unvalidatedRaw.getReader();
     expect(await reader.read()).toEqual({
       done: false,
@@ -228,7 +228,7 @@ describe('live SDK Model events on the real native migration loop', () => {
       context,
       signal: callerSignal().signal,
     });
-    const semantics = watch(Array.fromAsync(live));
+    const semantics = watch(Array.fromAsync(live.replayEvents()));
     const result = await watch(live.completed).promise;
     const accepted = await semantics.promise;
     expect(
@@ -460,8 +460,8 @@ describe('live SDK Model events on the real native migration loop', () => {
       });
       const completion = watch(live.completed);
       const reader = live.unvalidatedRaw.getReader();
-      const semantic = watch(live.toStream().getReader().read());
-      const directSemantics = watch(Array.fromAsync(live));
+      const semantic = watch(live.replayEvents().getReader().read());
+      const directSemantics = watch(Array.fromAsync(live.replayEvents()));
       expect((await reader.read()).value?.data).toEqual(delta);
       const next = watch(reader.read());
       release.release();
@@ -512,8 +512,8 @@ describe('live SDK Model events on the real native migration loop', () => {
       ],
     });
     const completion = watch(live.completed);
-    const semantic = watch(live.toStream().getReader().read());
-    const directSemantics = watch(Array.fromAsync(live));
+    const semantic = watch(live.replayEvents().getReader().read());
+    const directSemantics = watch(Array.fromAsync(live.replayEvents()));
     const reader = live.unvalidatedRaw.getReader();
     expect(await reader.read()).toEqual({
       done: false,
@@ -567,8 +567,8 @@ describe('live SDK Model events on the real native migration loop', () => {
       signal: callerSignal().signal,
     });
     const completion = watch(live.completed);
-    const semantic = watch(live.toStream().getReader().read());
-    const directSemantics = watch(Array.fromAsync(live));
+    const semantic = watch(live.replayEvents().getReader().read());
+    const directSemantics = watch(Array.fromAsync(live.replayEvents()));
     const reader = live.unvalidatedRaw.getReader();
     expect(await reader.read()).toEqual({
       done: false,

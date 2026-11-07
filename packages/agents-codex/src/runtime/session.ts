@@ -68,6 +68,7 @@ import {
   type NativeQuestionGrant,
   type NativeQuestion,
   type NativeQuestionReply,
+  type InteractionHandler,
   type Interaction,
   type NativeQuestionPresentation,
 } from './native-questions';
@@ -191,7 +192,11 @@ import {
 } from './state';
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
-import { captureWritableRoots, Environment } from './environment';
+import {
+  captureWritableRoots,
+  Environment,
+  projectSearchRuntime,
+} from './environment';
 import {
   captureTools,
   toolIdentity,
@@ -230,6 +235,7 @@ export type AcceptedSubmission = Exclude<
 >;
 
 export interface SessionOptions {
+  onInteraction?: InteractionHandler;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
@@ -287,14 +293,6 @@ export interface ManualCheckpointEntry {
 export type OneShotOptions = {
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
-  onNativeQuestion?: (
-    request: NativeQuestion,
-    signal: AbortSignal,
-  ) => NativeQuestionReply | Promise<NativeQuestionReply>;
-  onRequiredAction?: (
-    action: ManualToolRequest,
-    signal: AbortSignal,
-  ) => ManualToolReply | Promise<ManualToolReply>;
 };
 /** Select a new root native tool plan across all admitted tool families. */
 export interface OperationOptions<Context = unknown> {
@@ -361,11 +359,13 @@ export interface BeforeStepContext<Context = unknown> {
   readonly stepIndex: number;
   readonly signal: AbortSignal;
 }
-/** Omitted busy behavior steers the active root; reject starts only when idle. */
+/** Start one independent root. A busy Session rejects; use enqueue or Turn.steer explicitly. */
 export interface SubmitOptions<
   Context = unknown,
+  Output = never,
 > extends OperationOptions<Context> {
-  ifBusy?: 'steer' | 'reject';
+  outputType?: OutputSpec<Output>;
+  ifBusy?: 'reject';
 }
 /** @internal Validate before opening a provider or allocating a submission. */
 export function validateMaxModelSteps(
@@ -420,14 +420,15 @@ const sessionStopSchema = z
 export interface Completed<OutputT = string> {
   readonly turn: Turn<OutputT>;
   readonly finalOutput: OutputT;
-  readonly usage: TokenUsageInfo | null;
+  /** Cumulative native thread usage at completion, rather than a per-turn delta. */
+  readonly threadUsage: TokenUsageInfo | null;
   readonly state?: SessionState;
   readonly repairAttempts: readonly RecordedTurn[];
 }
 
 /** Wait for the captured turn's completion or its current manual request batch. */
 export interface RequestWaitOptions {
-  until: 'request';
+  until: 'manual_tool';
   /** Cancel only this wait, without cancelling the turn or its requests. */
   signal?: AbortSignal;
 }
@@ -459,7 +460,11 @@ export interface SteeringReceipt {
 export interface TurnNeedsAttention {
   readonly type: 'needs_attention';
   readonly reason:
-    'interrupted' | 'connection_lost' | 'rate_limited' | 'quota_blocked';
+    | 'interrupted'
+    | 'connection_lost'
+    | 'rate_limited'
+    | 'quota_blocked'
+    | 'budget_exceeded';
   readonly error: NativeError;
   readonly rateLimits: ApiRateLimits;
 }
@@ -478,6 +483,7 @@ function attentionReason(
   error: NativeError,
 ): TurnNeedsAttention['reason'] | undefined {
   if (error instanceof TurnAborted) return 'interrupted';
+  if (error.code === 'run_budget_exceeded') return 'budget_exceeded';
   if (error.category === 'connection_failed') return 'connection_lost';
   if (error.category === 'rate_limit_exceeded') return 'rate_limited';
   if (error.category && quotaCategories.has(error.category))
@@ -913,6 +919,18 @@ type ContextReplacement = {
 };
 
 export class Session<OutputT = string, Context = unknown> {
+  private sessionInteractionFailure?: { error: unknown };
+  private restoredRoot?: { turn: Turn<unknown>; output: PreparedOutput };
+
+  /** The opening manual root, validated against this opening output contract. */
+  get restoredTurn(): Turn<OutputT> | null {
+    if (!this.restoredRoot) return null;
+    if (this.restoredRoot.output !== this.defaultOutput)
+      throw new TypeError(
+        'Restored root has a separate captured output contract; use its captured Turn',
+      );
+    return this.restoredRoot.turn as Turn<OutputT>;
+  }
   private apiRateLimitState: { snapshot: ApiRateLimits } = {
     snapshot: Object.freeze({}),
   };
@@ -2196,6 +2214,7 @@ export class Session<OutputT = string, Context = unknown> {
                 'This URL request has no live native completion route',
               );
             }),
+          stopUrl,
         )
       : options.present;
     const grant: NativeQuestionGrant = issueNativeQuestion(
@@ -2294,24 +2313,27 @@ export class Session<OutputT = string, Context = unknown> {
         : {}),
     });
     this.observations.notify();
-    if (this.oneShot) {
-      const handler = this.oneShot.onNativeQuestion;
-      if (!handler) {
+    {
+      const handler = this.options.onInteraction;
+      if (!handler && this.oneShot) {
         void this.trackQuestionCallback(run, async () => {
           throw new InteractionRequired();
         }).catch(() => {});
         return;
       }
-      const response: { reply?: NativeQuestionReply } = {};
+      if (!handler) return;
       void this.trackQuestionCallback(run, async () => {
-        response.reply = await handler(grant.request, run.controller.signal);
-        if (!grant.current()) return;
-        if (!response.reply)
-          throw new NativeError(
-            'A native question handler must return its issued reply',
-          );
         try {
-          await this.submitNativeQuestion(response.reply, grant.request);
+          const reply = await handler(grant.request, run.controller.signal);
+          if (!this.current(run)) return;
+          if (!isNativeQuestionReply(reply))
+            throw new NativeError('onInteraction must return its issued reply');
+          if (nativeReplyRequest(reply) !== grant.request)
+            throw new TypeError(
+              'Native reply is foreign, expired, or already delivered',
+            );
+          if (!grant.current()) return;
+          await this.submitNativeQuestion(reply, grant.request);
         } catch (error) {
           if (
             !this.current(run) &&
@@ -2319,6 +2341,13 @@ export class Session<OutputT = string, Context = unknown> {
             error.message === 'Native request is expired or already answered'
           )
             return;
+          if (
+            grant.request.submissionId === null &&
+            this.canAnswerNativeQuestions(run)
+          ) {
+            this.sessionInteractionFailure ??= { error };
+            toolInvocation.exit(() => this.readerFailed(error));
+          }
           throw error;
         }
       }).catch(() => {});
@@ -2392,7 +2421,7 @@ export class Session<OutputT = string, Context = unknown> {
       finalOutput: this.decodedOutputs.has(run)
         ? this.decodedOutputs.get(run)
         : result.finalOutput,
-      usage: tokenUsageInfo(result.usage),
+      threadUsage: tokenUsageInfo(result.usage),
       repairAttempts: Object.freeze(
         this.repairTurns
           .filter((turn) => turn.parentTurnId === result.turnId)
@@ -2571,58 +2600,24 @@ export class Session<OutputT = string, Context = unknown> {
 
     return this.#waitResult();
   }
-  /** Start a new root with a captured output contract; reject while busy. */
-  async submitWithOutput<Next>(
-    input: UserInput,
-    outputType: OutputSpec<Next>,
-    options?: OperationOptions<Context>,
-  ): Promise<Turn<Next>> {
-    this.checkCallbackOperation('submit to');
-    this.idle('submitWithOutput');
-    if (!outputType)
-      throw new TypeError('submitWithOutput requires an output contract');
-    const parts = nativeInput(input);
-    const output = prepareOutput(outputType);
-    const selection = this.captureSelection(options, output);
-    const parentTrace =
-      captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
-    const run = this.startTurn(
-      parts,
-      true,
-      output,
-      true,
-      selection,
-      undefined,
-      options?.tracing,
-      options?.writableRoots,
-      parentTrace ?? this.options.parentTrace,
-    );
-    await afterSubmissionRetirement(run, run.accepted.promise);
-    // This root's parser was prepared from the same OutputSpec<Next>.
-    return this.#turnFor(run) as Turn<Next>;
-  }
-
   /** Register FIFO new work and issue its exact handle before native admission. */
   enqueue(
     input: UserInput,
-    outputType?: undefined,
-    options?: OperationOptions<Context>,
+    options?: SubmitOptions<Context>,
   ): Promise<Turn<OutputT, string | null>>;
   enqueue<Next>(
     input: UserInput,
-    outputType: OutputSpec<Next>,
-    options?: OperationOptions<Context>,
+    options: SubmitOptions<Context, Next> & { outputType: OutputSpec<Next> },
   ): Promise<Turn<Next, string | null>>;
   enqueue<Next>(
     input: UserInput,
-    outputType: OutputSpec<Next> | undefined,
-    options?: OperationOptions<Context>,
+    options?: SubmitOptions<Context, Next>,
   ): Promise<Turn<OutputT | Next, string | null>>;
   async enqueue<Next>(
     input: UserInput,
-    outputType?: OutputSpec<Next>,
-    options?: OperationOptions<Context>,
+    options?: SubmitOptions<Context, Next>,
   ): Promise<Turn<OutputT | Next, string | null>> {
+    const outputType = options?.outputType;
     this.checkCallbackOperation('enqueue on');
     if (
       !this.isOpen ||
@@ -2685,69 +2680,52 @@ export class Session<OutputT = string, Context = unknown> {
     input: UserInput,
     options?: SubmitOptions<Context>,
   ): Promise<Turn<OutputT>>;
-  submit(
-    input: ManualToolReply | FunctionCallOutput,
-  ): Promise<Turn<OutputT> | Turn<string>>;
-  submit(
-    input: UserInput | ManualToolReply | FunctionCallOutput,
-  ): Promise<Turn<OutputT> | Turn<string>>;
-  async submit(
-    input: UserInput | ManualToolReply | FunctionCallOutput,
-    options?: SubmitOptions<Context>,
+  submit<Next>(
+    input: UserInput,
+    options: SubmitOptions<Context, Next> & { outputType: OutputSpec<Next> },
+  ): Promise<Turn<Next>>;
+  submit<Next>(
+    input: UserInput,
+    options?: SubmitOptions<Context, Next>,
+  ): Promise<Turn<OutputT | Next>>;
+  async submit<Next>(
+    input: UserInput,
+    options?: SubmitOptions<Context, Next>,
   ): Promise<Turn<unknown>> {
     this.checkCallbackOperation('submit to');
-    if (options && 'outputType' in options)
-      throw new TypeError('Use submitWithOutput to select an output contract');
-    const parentTrace = captureTraceContext(options?.parentTrace);
-    const ifBusy = options?.ifBusy ?? 'steer';
-    if (ifBusy !== 'steer' && ifBusy !== 'reject')
-      throw new TypeError('ifBusy must be steer or reject');
+    if (options?.ifBusy !== undefined && options.ifBusy !== 'reject')
+      throw new TypeError(
+        'submit rejects busy work; use enqueue or Turn.steer',
+      );
+    const supplied: unknown = input;
     if (
-      isManualReply(input) ||
-      (typeof input === 'object' &&
-        input !== null &&
-        'type' in input &&
-        input.type === 'function_call_output')
-    ) {
-      if (options !== undefined)
-        throw new TypeError('Submit options apply only to user input');
-      return this.submitManualInput(input);
-    }
-    const parts = nativeInput(input as UserInput);
-    if (ifBusy === 'steer' && this.lifecycle.kind === 'turn') {
-      if (parentTrace)
-        throw new TypeError(
-          'Cannot reparent an active turn; submit a new root',
-        );
-      if (options?.writableRoots !== undefined)
-        throw new TypeError('Writable roots require a new root turn');
-      if (
-        options?.tools !== undefined ||
-        options?.beforeStep !== undefined ||
-        options?.maxModelSteps !== undefined ||
-        options?.budget !== undefined ||
-        options?.prepareRequest !== undefined ||
-        options?.tracing !== undefined
-      )
-        throw new TypeError('Operation selection applies only to new roots');
-      const run = this.rootRun(this.lifecycle.run);
-      this.requireDefaultOutput(run);
-      await this.steerRun(run, parts);
-      return this.#turnFor(run);
-    }
-    const selection = this.captureSelection(options);
+      isManualReply(supplied) ||
+      (typeof supplied === 'object' &&
+        supplied !== null &&
+        'type' in supplied &&
+        supplied.type === 'function_call_output')
+    )
+      throw new TypeError('Use Session.respond to deliver a reply');
+    this.idle('submit');
+    const parts = nativeInput(input);
+    const output =
+      options?.outputType === undefined
+        ? this.defaultOutput
+        : prepareOutput(options.outputType);
+    const selection = this.captureSelection(options, output);
+    const parentTrace =
+      captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
     const run = this.startTurn(
       parts,
       true,
-      this.defaultOutput,
-      false,
+      output,
+      options?.outputType !== undefined,
       selection,
       undefined,
       options?.tracing,
       options?.writableRoots,
-      parentTrace ?? this.options.parentTrace,
+      parentTrace,
     );
-
     await afterSubmissionRetirement(run, run.accepted.promise);
     return this.#turnFor(run);
   }
@@ -3366,7 +3344,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       !interactive &&
       this.defaultTools.some((tool) => tool.kind === 'manual') &&
-      !this.oneShot?.onRequiredAction &&
+      !this.options.onInteraction &&
       !this.canCheckpointManual(output, selection)
     )
       throw new InteractionRequired();
@@ -3732,6 +3710,7 @@ export class Session<OutputT = string, Context = unknown> {
     const open = this.options.openCorrection;
     if (!open)
       throw new NativeError('This Session does not support output repair');
+    let issues: OutputValidationError['issues'] = [];
     for (let index = 0; index < prepared.repair!.maxRetries; index++) {
       check(true);
       repair.session = await open(
@@ -3836,9 +3815,10 @@ export class Session<OutputT = string, Context = unknown> {
         return prepared.parse!(text);
       } catch (error) {
         if (!(error instanceof OutputValidationError)) throw error;
+        issues = error.issues;
       }
     }
-    throw new OutputValidationError(text);
+    throw new OutputValidationError(text, issues);
   }
 
   private finish(
@@ -5651,7 +5631,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.observations.notify();
     const action = call.grant.request();
     if (!action) return;
-    const handler = this.oneShot?.onRequiredAction;
+    const handler = this.options.onInteraction;
     if (handler) {
       const root =
         run instanceof NativeTurn
@@ -5661,15 +5641,25 @@ export class Session<OutputT = string, Context = unknown> {
             : undefined;
       // One-shot ownership ends with the root. An explicit Session can still
       // receive child manual requests after its root completes.
-      if (!root) return;
+      if (this.oneShot && !root) return;
       const answer = async () => {
-        if (!this.current(root) || !this.current(run) || !call.grant.request())
+        if (
+          (this.oneShot && root && !this.current(root)) ||
+          !this.current(run) ||
+          !call.grant.request()
+        )
           return;
         const reply = await handler(action, run.controller.signal);
-        if (!this.current(root) || !this.current(run)) return;
+        if ((this.oneShot && root && !this.current(root)) || !this.current(run))
+          return;
+        if (!call.grant.ownsReply(reply))
+          throw new TypeError(
+            'onInteraction must return a reply to the manual request it received',
+          );
+        if (!call.grant.request()) return;
         if (!(await this.submitManualResult(reply, key)))
           throw new TypeError(
-            'onRequiredAction must return a reply to the manual request it received',
+            'onInteraction must return a reply to the manual request it received',
           );
       };
       if (run instanceof NativeTurn) {
@@ -5695,7 +5685,12 @@ export class Session<OutputT = string, Context = unknown> {
                 !run.controller.signal.aborted ||
                 error !== run.controller.signal.reason
               ) {
-                if (this.current(root) && root.failure === undefined) {
+                if (
+                  root &&
+                  this.oneShot &&
+                  this.current(root) &&
+                  root.failure === undefined
+                ) {
                   root.failure = error;
                   // Child cleanup is joined by close, never from the callback
                   // that close itself must drain.
@@ -5704,7 +5699,7 @@ export class Session<OutputT = string, Context = unknown> {
                       this.readerFailed(cause),
                     );
                   });
-                } else if (error !== root.failure) {
+                } else if (this.oneShot && root && error !== root.failure) {
                   this.oneShotChildCleanupErrors.push(error);
                 }
               }
@@ -5840,7 +5835,7 @@ export class Session<OutputT = string, Context = unknown> {
   private maybeSealManual(run: NativeTurn): void {
     if (
       !this.oneShot ||
-      this.oneShot?.onRequiredAction ||
+      this.options.onInteraction ||
       this.pendingNativeQuestions(run).length ||
       this.manualSeal ||
       this.manualSealing ||
@@ -6226,6 +6221,10 @@ export class Session<OutputT = string, Context = unknown> {
     this.lastRun = run;
     this.manualCheckpointRun = run;
     this.manualRestoring = true;
+    this.restoredRoot = {
+      turn: this.#turnFor(run),
+      output: restoredOutput.output,
+    };
 
     const events = requests.map((request) =>
       parseEvent(encodeReceipt(request)),
@@ -7601,16 +7600,16 @@ export class Session<OutputT = string, Context = unknown> {
       });
     }
     const receipt = await native._execute_command(
-      command.name,
+      command.name === 'stop-background-terminals' ? 'stop' : command.name,
       command.arguments,
     );
-    if (command.name === 'stop') {
+    if (command.name === 'stop-background-terminals') {
       const accepted = decode(
         z.object({ session_id: z.string(), operation_id: z.string() }),
         receipt,
       );
       return Object.freeze({
-        command: 'stop',
+        command: 'stop-background-terminals',
         sessionId: accepted.session_id,
         operationId: accepted.operation_id,
       });
@@ -7898,14 +7897,17 @@ export class Session<OutputT = string, Context = unknown> {
       );
       // The candidate owns the effective Environment, including changes
       // accepted since the original opening declaration.
-      const { environment: _openingEnvironment, ...runtime } =
-        this.threadOptions.runtime ?? {};
+      const {
+        environment: _openingEnvironment,
+        _sdk_project_search: _openingSearch,
+        ...runtime
+      } = this.threadOptions.runtime ?? {};
       const options: ThreadOptions = {
         ...this.threadOptions,
         instructions: current.instructions,
         _sdk_instruction_files: current.instruction_files,
         config: { ...this.threadOptions.config, mcp_servers: servers },
-        runtime,
+        runtime: { ...runtime, ...projectSearchRuntime(this.environment) },
       };
       beforeRetirement();
       owner.creation = owner.change.createCandidateEngine(
@@ -8842,12 +8844,18 @@ export class Session<OutputT = string, Context = unknown> {
               name.namespace === 'functions') &&
             (name.name === 'exec_command' ||
               name.name === 'write_stdin' ||
-              name.name === 'apply_patch');
+              name.name === 'apply_patch' ||
+              name.name === 'project_glob' ||
+              name.name === 'project_grep');
           const before =
             request!.phase === 'before' && request!.boundary === 'pre_dispatch';
           const after =
             request!.phase === 'after' &&
-            request!.boundary === 'executor_return';
+            (request!.boundary === 'executor_return' ||
+              (builtin &&
+                (name.name === 'project_glob' ||
+                  name.name === 'project_grep') &&
+                request!.boundary === 'nested_return'));
           needsLease = after || request!.cell_owner_id !== undefined;
           if (
             builtin &&
@@ -9190,6 +9198,8 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('close');
     const state = this.lifecycle;
     if (state.kind === 'closed') {
+      if (this.sessionInteractionFailure)
+        return Promise.reject(this.sessionInteractionFailure.error);
       if (this.environmentCloseFailure) return this.environmentCloseFailure;
       // Completed persistent cleanup retains the engine's durability report.
       // Release-only diagnostics have already been consumed by native close.
@@ -9242,6 +9252,9 @@ export class Session<OutputT = string, Context = unknown> {
     const settleClose = (primary?: unknown) => {
       const failures = [
         ...(primary === undefined ? [] : [primary]),
+        ...(this.sessionInteractionFailure
+          ? [this.sessionInteractionFailure.error]
+          : []),
         ...this.oneShotChildCleanupErrors,
         ...interceptionFailures,
         ...(acknowledgmentFailure ? [acknowledgmentFailure] : []),

@@ -5,6 +5,7 @@ export type {
   AgentOptions,
   AgentOutput,
   Session,
+  SessionBaseOptions,
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
@@ -26,6 +27,7 @@ export {
   NativeError,
   InteractionRequired,
   StaleTurnError,
+  TurnAborted,
 } from './runtime/session';
 export type {
   Completed,
@@ -41,10 +43,14 @@ export type {
 export type {
   ApprovalRequest,
   ElicitationRequest,
+  FormRequest,
+  UrlRequest,
   NativeQuestion,
   NativeQuestionReply,
   NativeUrlCompletionOptions,
   Interaction,
+  InteractionReply,
+  InteractionHandler,
 } from './runtime/native-questions';
 export { checklist, tool, toolRef, ToolOutput } from './runtime/tools';
 export type { ToolCallInfo } from './runtime/call-metadata';
@@ -130,7 +136,7 @@ export type {
   ApiRateLimits,
   ApiRateLimitWindow,
 } from './runtime/api-rate-limits';
-export type { Subagent } from './runtime/subagents';
+export type { Subagent, ChildTurn, ChildCompleted } from './runtime/subagents';
 export type {
   SessionItem,
   ExecutionItem,
@@ -146,7 +152,7 @@ export type {
   WebSearchSource,
 } from './runtime/history';
 export { OutputValidationError } from './runtime/output';
-export type { OutputSpec } from './runtime/output';
+export type { OutputSpec, OutputValidationIssue } from './runtime/output';
 
 export type { ToolRef, ToolSelector } from './runtime/tools';
 export type {

@@ -139,9 +139,11 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         tools: [decision()],
       };
       await using original = await new Agent(declaration).session();
-      const turn = await original.submitWithOutput('ASK', {
-        mode: 'prompted',
-        schema: z.number(),
+      const turn = await original.submit('ASK', {
+        outputType: {
+          mode: 'prompted',
+          schema: z.number(),
+        },
       });
       await nextAction(original);
       const failure = turn.wait().catch((error: unknown) => error);

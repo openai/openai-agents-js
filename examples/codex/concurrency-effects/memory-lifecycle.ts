@@ -110,7 +110,7 @@ export async function runMemoryLifecycle() {
         });
         const turn = await session.submit(prompt);
         await turn.wait({
-          until: 'request',
+          until: 'manual_tool',
           signal: AbortSignal.timeout(10_000),
         });
       }

@@ -43,9 +43,17 @@ export class NativeProvider {
 
   constructor(options: NativeProviderOptions = {}) {
     for (const key of ['baseUrl', 'apiKey'] as const) {
-      if (options[key] !== undefined && !options[key])
-        throw new TypeError(`${key} must be non-empty`);
+      if (
+        options[key] !== undefined &&
+        (typeof options[key] !== 'string' || !options[key])
+      )
+        throw new TypeError(`${key} must be a non-empty string`);
     }
+    if (
+      options.supportsWebsockets !== undefined &&
+      typeof options.supportsWebsockets !== 'boolean'
+    )
+      throw new TypeError('supportsWebsockets must be a boolean');
     const captured = { ...options };
     this.#options = Object.freeze({
       ...captured,

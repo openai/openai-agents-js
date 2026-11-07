@@ -107,14 +107,14 @@ async function main() {
     url: old.url,
     bearerToken: oldToken,
     tools: ['search'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
   });
   const selected = new HttpMCP({
     name: 'docs',
     url: current.url,
     bearerToken: newToken,
     tools: ['search'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
   });
   const call = (key: string) =>
     functionCall('search', { key }, { callId: key, namespace: 'mcp__docs' });

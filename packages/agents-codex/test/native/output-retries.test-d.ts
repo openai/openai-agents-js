@@ -27,9 +27,11 @@ expectTypeOf(invalid).toMatchTypeOf<OutputSpec<string>>();
 
 declare const session: Session<string>;
 expectTypeOf(
-  session.submitWithOutput('Count', {
-    mode: 'prompted',
-    schema: z.number(),
-    maxRetries: 1,
+  session.submit('Count', {
+    outputType: {
+      mode: 'prompted',
+      schema: z.number(),
+      maxRetries: 1,
+    },
   }),
 ).toEqualTypeOf<Promise<Turn<number>>>();

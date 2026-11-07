@@ -19,6 +19,7 @@ const config = JSON.parse(process.argv[2]) as {
   mode:
     | 'hold-open'
     | 'hold-effect'
+    | 'hold-intent'
     | 'hold-abort'
     | 'run'
     | 'local-intent-fail'
@@ -77,10 +78,32 @@ const agent = new Agent({
 });
 async function main() {
   try {
+    const durable = fileSessionStore(config.directory);
+    const custom =
+      config.mode === 'hold-intent'
+        ? {
+            ...durable,
+            commit: async (...args: Parameters<typeof durable.commit>) => {
+              await durable.commit(...args);
+              const snapshot = JSON.parse(args[4]);
+              if (
+                snapshot.mutations.some((mutation: any) =>
+                  mutation.items?.some(
+                    (item: any) =>
+                      item.type === 'response_item' &&
+                      item.payload?.type === 'function_call',
+                  ),
+                )
+              ) {
+                process.send?.({ type: 'durable-intent' });
+                // The intent is durable, but application tool code has not run.
+                await new Promise(() => {});
+              }
+            },
+          }
+        : durable;
     const session = await agent.session({
-      storage: config.local
-        ? localStorage(config.directory)
-        : fileSessionStore(config.directory),
+      storage: config.local ? localStorage(config.directory) : custom,
       resume: config.resume,
     });
     if (config.mode === 'hold-abort')

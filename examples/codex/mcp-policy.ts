@@ -9,7 +9,7 @@ async function main() {
     name: 'records',
     url,
     tools: ['lookup'],
-    approvalMode: 'approve',
+    approvalMode: 'preapproved',
     before({ originalArguments }) {
       const key = originalArguments.key;
       if (typeof key !== 'string') return { action: 'allow' };

@@ -22,22 +22,23 @@ export async function runOutputOverrides(): Promise<void> {
   });
   await using session = await agent.session();
   try {
-    const native = await session.submitWithOutput(
-      'Count the letters in Ada.',
-      z.object({ count: z.number() }),
-    );
+    const native = await session.submit('Count the letters in Ada.', {
+      outputType: z.object({ count: z.number() }),
+    });
     console.log((await native.wait()).finalOutput.count);
-    const prompted = await session.submitWithOutput(
+    const prompted = await session.submit(
       'Return greetings keyed by Ada and Grace.',
       {
-        mode: 'prompted',
-        schema: z.record(z.string(), z.string()),
+        outputType: {
+          mode: 'prompted',
+          schema: z.record(z.string(), z.string()),
+        },
       },
     );
     console.log((await prompted.wait()).finalOutput);
-    const manual = await session.submitWithOutput(
+    const manual = await session.submit(
       'Call approve once for a report about these greetings, then return the approval decision.',
-      z.object({ approved: z.boolean() }),
+      { outputType: z.object({ approved: z.boolean() }) },
     );
     for await (const event of session.events()) {
       if (event.type === 'action_requested') {

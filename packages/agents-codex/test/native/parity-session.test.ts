@@ -97,7 +97,8 @@ describe('Python-aligned Session lifecycle', () => {
       const first = await session.submit('lookup');
       await entered.promise;
       expect(Object.isFrozen(first)).toBe(true);
-      expect(await session.submit('steering detail')).toBe(first);
+      await expect(session.submit('independent busy task')).rejects.toThrow();
+      await first.steer('steering detail');
       await expect(session.update({ instructions: 'busy' })).rejects.toThrow();
       release.resolve();
       const result = await first.wait();
@@ -263,6 +264,9 @@ describe('Python-aligned Session lifecycle', () => {
         structured.run(null, {
           state,
           onInteraction(request) {
+            if (request.type !== 'action_requested')
+              throw new Error('Unexpected native request');
+
             dispatched = true;
             return request.reply(wire);
           },
@@ -280,8 +284,11 @@ describe('Python-aligned Session lifecycle', () => {
           }
         }
         if (!request) throw new Error('No restored request');
-        await expect(restored.submit(request.reply(invalid))).rejects.toThrow();
-        const turn = await restored.submit({
+        await expect(
+          restored.respond(request.reply(invalid)),
+        ).rejects.toThrow();
+        const turn = restored.restoredTurn!;
+        await restored.respond({
           type: 'function_call_output',
           call_id: request.callId,
           output: wire,

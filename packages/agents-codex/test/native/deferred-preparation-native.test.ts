@@ -124,11 +124,11 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const completion = turn.wait().catch((error: unknown) => error);
         await expect
           .poll(async () => {
-            const pending = await turn.wait({ until: 'request' });
+            const pending = await turn.wait({ until: 'manual_tool' });
             return 'requests' in pending ? pending.requests.length : 0;
           })
           .toBe(3);
-        const pending = await turn.wait({ until: 'request' });
+        const pending = await turn.wait({ until: 'manual_tool' });
         if (!('requests' in pending)) throw new Error('Expected all siblings');
         const request = pending.requests.find((request) =>
           first.match(request),
@@ -219,7 +219,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             : {}),
         }).session();
         const turn = await session.submit('begin');
-        const batch = await turn.wait({ until: 'request' });
+        const batch = await turn.wait({ until: 'manual_tool' });
         if (!('requests' in batch)) throw new Error('Expected pending job');
         const persist = vi.fn(async () => {});
         const { coordinator } = jobs(persist, [
@@ -294,11 +294,11 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const turn = await session.submit('begin');
       await expect
         .poll(async () => {
-          const batch = await turn.wait({ until: 'request' });
+          const batch = await turn.wait({ until: 'manual_tool' });
           return 'requests' in batch ? batch.requests.length : 0;
         })
         .toBe(2);
-      const batch = await turn.wait({ until: 'request' });
+      const batch = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in batch))
         throw new Error('Expected both live requests');
       const selected = batch.requests.find((request) =>
@@ -351,7 +351,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       }).session();
       const turn = await session.submit('begin');
       const completion = turn.wait().catch((error: unknown) => error);
-      const batch = await turn.wait({ until: 'request' });
+      const batch = await turn.wait({ until: 'manual_tool' });
       if (!('requests' in batch))
         throw new Error('Expected a live job request');
       const staleReply = batch.requests[0].reply('expired');
@@ -430,7 +430,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         }).session();
         const turn = await session.submit('begin');
         const completion = turn.wait().catch((error: unknown) => error);
-        const batch = await turn.wait({ until: 'request' });
+        const batch = await turn.wait({ until: 'manual_tool' });
         if (!('requests' in batch)) throw new Error('Expected pending job');
         const Thread = (await binding()).NativeThread;
         const seal = Thread.prototype._seal_manual_checkpoint;

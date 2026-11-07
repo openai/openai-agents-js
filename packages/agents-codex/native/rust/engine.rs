@@ -485,9 +485,11 @@ impl EngineState {
         if let Some(options) = &environment_options {
             options.check_ready(&config, &environment).await?;
         }
+        let project_search = config::project_search(&runtime_json)?;
         let manager = Arc::new_cyclic(|weak| {
             let extensions = extensions::build(
                 &config,
+                project_search.clone(),
                 auth.clone(),
                 goals.as_ref(),
                 local_checklist_store.is_some() || custom_store.is_some(),
@@ -596,7 +598,7 @@ impl EngineState {
             );
             self.ensure_no_live_owner(id).await?;
             if let Some(store) = &self.custom_store {
-                store.open(id, true).await?;
+                store.open_for_resume(id).await?;
             }
             let saved = self.read_stored_thread(id).await?;
             if startup.config.model.is_none() {

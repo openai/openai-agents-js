@@ -291,7 +291,7 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
     'native/build-receipt.json',
     'bin/helper',
   ];
-  if (platform === 'darwin-arm64')
+  if (platform === 'linux-x64' || platform === 'darwin-arm64')
     products.push('native/test-bin/exec-server-fixture');
   for (const product of products) {
     mkdirSync(dirname(join(bundle, product)), { recursive: true });
@@ -366,6 +366,36 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
     expect(
       readFileSync(join(repo, 'packages/agents-codex', product), 'utf8'),
     ).toBe(product + '\n');
+  if (platform === 'linux-x64' || platform === 'darwin-arm64') {
+    const withoutFixture = execFileSync(
+      'tar',
+      [
+        '-czf',
+        '-',
+        '-C',
+        bundle,
+        'native/codex.node',
+        'native/build-receipt.json',
+        'bin',
+      ],
+      { stdio: 'pipe' },
+    );
+    const incomplete = run(
+      {
+        inputs,
+        artifact: {
+          ...pair,
+          'artifact-digest': createHash('sha256')
+            .update(withoutFixture)
+            .digest('hex'),
+        },
+        bytes: withoutFixture,
+      },
+      true,
+    );
+    expect(incomplete.status).toBe(1);
+    expect(incomplete.error).toContain('native/test-bin/exec-server-fixture');
+  }
   const corrupt = run(
     { inputs, artifact: pair, bytes: Buffer.from('corrupt') },
     true,

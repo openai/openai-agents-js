@@ -111,7 +111,7 @@ native('concurrency and application effects recipes', () => {
           await bounded(context.entered.promise);
           const observer = new AbortController();
           const reading = turn.wait({
-            until: 'request',
+            until: 'manual_tool',
             signal: observer.signal,
           });
           observer.abort(new Error('Reader stopped'));

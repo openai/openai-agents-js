@@ -138,7 +138,7 @@ it.each(['plain', 'question', 'publication failure'] as const)(
           new StdioMCP({
             name: 'startup',
             tools: ['lookup'],
-            approvalMode: 'approve',
+            approvalMode: 'preapproved',
             command: process.execPath,
             args: [peer, phase, log, question ? 'question' : 'control'],
             cwd: directory,

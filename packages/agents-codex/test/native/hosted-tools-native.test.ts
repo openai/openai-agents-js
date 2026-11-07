@@ -10,8 +10,74 @@ import {
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import type { JsonObject } from '../../src/runtime/binding';
+import type { CodeInterpreterOptions } from '../../src';
 
 afterEach(() => ModelServer.closeAll());
+
+it.each([
+  {
+    label: 'existing container with direct callers',
+    options: { container: 'cntr_callers', allowedCallers: ['direct'] },
+    expected: {
+      type: 'code_interpreter',
+      container: 'cntr_callers',
+      allowed_callers: ['direct'],
+    },
+  },
+  {
+    label: 'auto container with programmatic callers',
+    options: { container: { type: 'auto' }, allowedCallers: ['programmatic'] },
+    expected: {
+      type: 'code_interpreter',
+      container: { type: 'auto' },
+      allowed_callers: ['programmatic'],
+    },
+  },
+  {
+    label: 'omitted policy',
+    options: { container: 'cntr_default' },
+    expected: { type: 'code_interpreter', container: 'cntr_default' },
+  },
+  {
+    label: 'null policy',
+    options: { container: 'cntr_nullable', allowedCallers: null },
+    expected: { type: 'code_interpreter', container: 'cntr_nullable' },
+  },
+] satisfies {
+  label: string;
+  options: CodeInterpreterOptions;
+  expected: JsonObject;
+}[])(
+  'forwards Code Interpreter caller policy: $label',
+  async ({ options, expected }) => {
+    const model = new ModelServer([
+      [message('Code Interpreter is configured.')],
+    ]);
+    const config = await model.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as JsonObject)
+        .base_url as string,
+      apiKey: 'synthetic-callers',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Use the configured provider tools.',
+      tools: [codeInterpreter(options)],
+    }).session();
+    expect(
+      (await (await session.submit('Confirm the configuration.')).wait())
+        .finalOutput,
+    ).toBe('Code Interpreter is configured.');
+    expect(model.requests).toHaveLength(1);
+    expect(model.requests[0].tools).toContainEqual(expected);
+    expect(model.requests[0].include).toContain(
+      'code_interpreter_call.outputs',
+    );
+    model.assertExhausted();
+  },
+);
 
 it('accepts a hosted-only terminal image without repair or another model request', async () => {
   const image: JsonObject = {
@@ -345,14 +411,14 @@ it('inherits current hosted grants and delivers full partial images from a manag
       return events;
     })();
     await (await session.submit('Delegate an image.')).wait();
-    const children = await vi.waitFor(
+    const children = await vi.waitUntil(
       async () => {
         const children = await Array.fromAsync(session.subagents());
-        // The parent may finish before the child turn is published.
-        expect(children[0]?.turn).toBeTruthy();
+        // Retry only the observed snapshot with one unpublished child turn.
+        if (children.length === 1 && children[0]!.turn === null) return false;
         return children;
       },
-      { timeout: 5_000 },
+      { timeout: 3000 },
     );
     expect(children).toHaveLength(1);
     expect((await children[0].turn!.wait()).finalOutput).toBe('child done');

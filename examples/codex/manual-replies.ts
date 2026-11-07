@@ -31,7 +31,7 @@ export async function savePendingLookup(
     tools: [lookup],
     maxModelSteps: 4,
   });
-  const outcome = await turn.wait({ until: 'request' });
+  const outcome = await turn.wait({ until: 'manual_tool' });
   if (!('requests' in outcome))
     throw new Error('The run completed without requesting lookup.');
   for (const action of outcome.requests)
@@ -62,6 +62,9 @@ export async function resumeLookup(
   const result = await createAgent(provider).run(null, {
     state,
     onInteraction(action) {
+      if (action.type !== 'action_requested')
+        throw new Error('Unexpected native request');
+
       const request = lookup.match(action);
       if (!request) throw new Error('Unexpected manual tool.');
       return request.reply({ label });
@@ -79,6 +82,9 @@ export async function runLookupWithHandler(
     'Find the label for record-a.',
     {
       onInteraction(action) {
+        if (action.type !== 'action_requested')
+          throw new Error('Unexpected native request');
+
         const request = lookup.match(action);
         if (!request) throw new Error('Unexpected manual tool.');
         return request.reply({ label: `Label for ${request.arguments.key}` });

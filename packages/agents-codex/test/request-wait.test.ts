@@ -85,7 +85,10 @@ describe('request wait handle contract', () => {
       { notify, rateLimits: () => ({}), wait: observe },
     );
     const controller = new AbortController();
-    const options = { until: 'request', signal: controller.signal } as const;
+    const options = {
+      until: 'manual_tool',
+      signal: controller.signal,
+    } as const;
     expect(turn.turnId).toBeNull();
     const outcome = await turn.wait(options);
     expect(observe).toHaveBeenCalledTimes(1);
@@ -124,13 +127,13 @@ describe('request wait handle contract', () => {
       undefined,
       { notify, rateLimits: () => ({}), wait: observe },
     );
-    const first = turn.wait({ until: 'request' });
-    const second = turn.wait({ until: 'request' });
+    const first = turn.wait({ until: 'manual_tool' });
+    const second = turn.wait({ until: 'manual_tool' });
     const ordinary = turn.wait();
     const result: Completed = Object.freeze({
       turn,
       finalOutput: 'done',
-      usage: null,
+      threadUsage: null,
       repairAttempts: [],
     });
     pending.resolve(result);
@@ -170,7 +173,7 @@ describe('request wait handle contract', () => {
       },
     );
     const requestFailure = turn
-      .wait({ until: 'request' })
+      .wait({ until: 'manual_tool' })
       .catch((error: unknown) => error);
     const normalFailure = turn.wait().catch((error: unknown) => error);
     pending.reject(failure);

@@ -203,7 +203,7 @@ native('unattended native interactions', () => {
     let questions = 0;
     const result = await Runner.run(fixture.agent, 'Write the proof.', {
       environment: fixture.environment,
-      onNativeQuestion() {
+      onInteraction() {
         questions++;
         throw new Error('Workspace write unexpectedly requested approval');
       },
@@ -315,7 +315,7 @@ native('unattended native interactions', () => {
         provider,
       });
       const result = await Runner.run(agent, 'Probe unsupported calls.', {
-        onNativeQuestion() {
+        onInteraction() {
           questions++;
           throw new Error('An unselected tool must not issue a grant');
         },

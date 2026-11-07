@@ -119,7 +119,7 @@ async function runJob(job: Job, provider: NativeProvider, prompt: string) {
     }).session();
     notify(job);
     if (stopping(job)) return;
-    job.turn = await job.session.submitWithOutput(prompt, reportSchema);
+    job.turn = await job.session.submit(prompt, { outputType: reportSchema });
     const completion = job.turn.wait().then(
       (completed) => {
         job.settled = true;
@@ -138,7 +138,7 @@ async function runJob(job: Job, provider: NativeProvider, prompt: string) {
       notify(job);
     }
     while (job.status === 'running') {
-      const waiting = await job.turn.wait({ until: 'request' });
+      const waiting = await job.turn.wait({ until: 'manual_tool' });
       if (!('requests' in waiting)) break;
       // Stop may have revoked a batch while the request wait was resolving.
       if (job.status !== 'running') break;

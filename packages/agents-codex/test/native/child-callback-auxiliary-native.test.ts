@@ -339,7 +339,7 @@ for (const route of [
                     name: 'fixture',
                     url: peer.url,
                     tools: ['lookup'],
-                    approvalMode: 'approve',
+                    approvalMode: 'preapproved',
                     transformResult(
                       received: MCPResultContext<typeof context>,
                       result: JsonObject,

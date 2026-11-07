@@ -325,7 +325,7 @@ export class NativeA2AExecutor<
           } else {
             await session.submit(input!);
           }
-          const outcome = await session.wait({ until: 'request' });
+          const outcome = await session.wait({ until: 'manual_tool' });
           await claim.current();
           if ('requests' in outcome) {
             await current();

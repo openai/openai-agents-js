@@ -81,10 +81,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       const originalAgent = new Agent(declaration);
       await using original = await originalAgent.session();
       const events = original.events()[Symbol.asyncIterator]();
-      const first = await original.submitWithOutput(
-        'Read both records.',
-        output,
-      );
+      const first = await original.submit('Read both records.', {
+        outputType: output,
+      });
       const requests = [await action(events), await action(events)];
       const a = requests.find((request) => request.callId === 'manual-A')!;
       const b = requests.find((request) => request.callId === 'manual-B')!;
@@ -221,7 +220,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const originalTurn = child.turn;
         expect(request.subagentId).toBe(child.id);
         expect(request.turnId).toBe(originalTurn.turnId);
-        const pending = await originalTurn.wait({ until: 'request' });
+        const pending = await originalTurn.wait({ until: 'manual_tool' });
         if (!('requests' in pending))
           throw new Error('Expected an unfinished child manual request');
         expect(pending.requests).toHaveLength(1);

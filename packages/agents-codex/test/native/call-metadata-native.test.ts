@@ -174,7 +174,7 @@ it('keeps overlapping code manual calls separate when replied to in reverse orde
   expect(new Set(requests.map((r) => r.callId)).size).toBe(2);
   expect(new Set(requests.map((r) => metadata(r).nestedCallId)).size).toBe(2);
   for (const request of requests.toReversed())
-    await session.submit(request.reply(`accepted-${request.arguments.key}`));
+    await session.respond(request.reply(`accepted-${request.arguments.key}`));
   expect((await turn.wait()).finalOutput).toBe('both accepted');
   server.assertExhausted();
 }, 30_000);
@@ -223,7 +223,8 @@ it('restores direct manual metadata from the original turn model', async () => {
     expect(metadata(request).model).toBe('gpt-5.5');
     expect(metadata(request).route).toBe('direct');
     expect(metadata(request).callId).toBe('original-provider');
-    const turn = await restored.submit(request.reply('accepted'));
+    const turn = restored.restoredTurn!;
+    await restored.respond(request.reply('accepted'));
     expect((await turn.wait()).finalOutput).toBe('accepted');
     break;
   }
@@ -304,9 +305,12 @@ it('keeps sibling manual owners distinct when their provider call IDs match', as
         route: 'direct',
         model: 'gpt-5.5',
       });
-      const turn = await session.submit(
-        request.reply(`accepted-${request.arguments.key}`),
-      );
+      const descendants = await Array.fromAsync(session.subagents());
+      const turn = descendants.find(
+        (child) => child.id === request.subagentId,
+      )?.turn;
+      if (!turn) throw new Error('Expected captured child Turn');
+      await session.respond(request.reply(`accepted-${request.arguments.key}`));
       expect(turn.childId).toBe(info.childId);
       expect(turn.submissionId.split(':').at(-2)).toBe(info.childIncarnation);
       expect(turn.instanceId).not.toBe(info.childIncarnation);

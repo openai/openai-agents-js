@@ -6,7 +6,7 @@ With the current [source build](building.md), set `Environment.writableRoots` to
 
 Choose existing absolute directories in application code. Set the Environment's `writableRoots` to the first list before opening the Session. After the first Turn and its executor work finish, pass the replacement list in the next `session.submit` call's options. The same grant options work with a provisioned remote executor and [Environment.local](local-execution.md).
 
-The second list replaces the extra roots; it does not add to them. After acceptance, later submissions that omit `writableRoots` retain the current list. Pass `[]` to remove extra roots while keeping the workspace writable. `enqueue` and `submitWithOutput` accept the same operation option. A failed validation does not authorize the proposed roots.
+The second list replaces the extra roots; it does not add to them. After acceptance, later submissions that omit `writableRoots` retain the current list. Pass `[]` to remove extra roots while keeping the workspace writable. `enqueue` accepts the same operation option. A failed validation does not authorize the proposed roots.
 
 Use the runnable [local example](../local-execution.ts) to check the replacement against actual writes and `RecordedTurn.receipt.executors[].writableRoots`.
 

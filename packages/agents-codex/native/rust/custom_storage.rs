@@ -150,6 +150,30 @@ impl CustomThreadStore {
     pub async fn open(&self, id: ThreadId, existing: bool) -> ThreadStoreResult<()> {
         self.open_mode(id, existing, false).await
     }
+    pub(crate) async fn open_for_resume(&self, id: ThreadId) -> anyhow::Result<()> {
+        // Inspect the canonical intent/result ledger under the acquired writer,
+        // before Core can reconcile unfinished work or publish a new runtime.
+        self.open_mode(id, true, true).await?;
+        let history = self
+            .projection
+            .load_history(LoadThreadHistoryParams {
+                thread_id: id,
+                include_archived: true,
+            })
+            .await?;
+        match crate::local_reconciliation::plan(id, &history.items, &history.items, &[]) {
+            Ok(_) => Ok(()),
+            Err(error) => match error.downcast::<crate::local_reconciliation::RecoveryRequired>() {
+                Ok(mut required) => {
+                    required.history = history.items;
+                    // The engine retains this writer until failed-opening
+                    // cleanup settles, including an exact release retry.
+                    Err(required.into())
+                }
+                Err(error) => Err(error),
+            },
+        }
+    }
     async fn open_mode(
         &self,
         id: ThreadId,

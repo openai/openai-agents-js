@@ -90,12 +90,18 @@ async function main() {
       provider,
       tools: [...(await recordTools())],
     });
+    if (config.reconciledCalls !== undefined && config.resume === undefined)
+      throw new TypeError('reconciledCalls requires local storage and resume');
+    const persistence =
+      config.resume === undefined
+        ? { storage: localStorage(config.profile) }
+        : {
+            storage: localStorage(config.profile),
+            resume: config.resume,
+            reconciledCalls: config.reconciledCalls,
+          };
     const session = await agent.session({
-      storage: localStorage(config.profile),
-      ...(config.resume === undefined ? {} : { resume: config.resume }),
-      ...(config.reconciledCalls === undefined
-        ? {}
-        : { reconciledCalls: config.reconciledCalls }),
+      ...persistence,
       context,
     });
     const history = async () => {

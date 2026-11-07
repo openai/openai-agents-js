@@ -19,35 +19,41 @@ expectTypeOf(turn.wait()).toEqualTypeOf<
 expectTypeOf(session.wait()).toEqualTypeOf<
   Promise<Completed<{ answer: number }>>
 >();
-expectTypeOf(turn.wait({ until: 'request' })).toEqualTypeOf<
+expectTypeOf(turn.wait({ until: 'manual_tool' })).toEqualTypeOf<
   Promise<Completed<{ answer: number }> | PendingRequests<{ answer: number }>>
 >();
-expectTypeOf(session.wait({ until: 'request' })).toEqualTypeOf<
+expectTypeOf(session.wait({ until: 'manual_tool' })).toEqualTypeOf<
   Promise<
     | Completed<{ answer: number }>
     | PendingRequests<{ answer: number }, string | null>
   >
 >();
-expectTypeOf(queued.wait({ until: 'request' })).toEqualTypeOf<
+expectTypeOf(queued.wait({ until: 'manual_tool' })).toEqualTypeOf<
   Promise<Completed<number> | PendingRequests<number, string | null>>
 >();
 
 export async function requestOutputContracts() {
-  const transformed = await session.submitWithOutput('transform', {
-    mode: 'prompted',
-    schema: z.string().transform((text) => text.length),
+  const transformed = await session.submit('transform', {
+    outputType: {
+      mode: 'prompted',
+      schema: z.string().transform((text) => text.length),
+    },
   });
-  const native = await session.submitWithOutput('native', {
-    mode: 'native',
-    schema: z.number(),
+  const native = await session.submit('native', {
+    outputType: {
+      mode: 'native',
+      schema: z.number(),
+    },
   });
-  const prompted = await session.submitWithOutput('prompted', {
-    mode: 'prompted',
-    schema: z.number(),
+  const prompted = await session.submit('prompted', {
+    outputType: {
+      mode: 'prompted',
+      schema: z.number(),
+    },
   });
   for (const selected of [transformed, native, prompted]) {
     expectTypeOf(selected).toEqualTypeOf<Turn<number>>();
-    const result = await selected.wait({ until: 'request' });
+    const result = await selected.wait({ until: 'manual_tool' });
     if ('requests' in result) {
       expectTypeOf(result.turn).toEqualTypeOf<Turn<number>>();
       expectTypeOf(result.requests).toEqualTypeOf<readonly ActionRequested[]>();

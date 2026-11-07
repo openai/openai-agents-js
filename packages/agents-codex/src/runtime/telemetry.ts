@@ -226,6 +226,13 @@ export interface TraceEvent {
   readonly trace_id: string;
   readonly span_id: string;
   readonly parent_span_id: string | null;
+  readonly name: string;
+  readonly kind: string;
+  /** Exact Unix nanoseconds, encoded as decimal text. */
+  readonly start_time_unix_nanos: string;
+  readonly end_time_unix_nanos: string | null;
+  readonly attributes: Readonly<Record<string, unknown>>;
+  readonly outcome: 'ok' | 'error' | 'unset';
   readonly dropped_attributes_count: number;
   readonly [key: string]: unknown;
 }

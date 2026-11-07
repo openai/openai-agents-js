@@ -82,22 +82,7 @@ export function createUrlCompletion(
       // A completion that won the same deadline turn remains authoritative.
       if (outcome === true) return;
       if (selected === 'deadline' && outcome === undefined) {
-        const error = new DOMException(
-          'URL completion timed out',
-          'TimeoutError',
-        );
-        try {
-          await retire();
-        } catch (cause) {
-          throw new AggregateError(
-            [error, cause],
-            'URL completion cleanup failed',
-            {
-              cause: error,
-            },
-          );
-        }
-        throw error;
+        throw new DOMException('URL completion timed out', 'TimeoutError');
       }
       await retirement;
       throw new TypeError('Native URL request is expired');

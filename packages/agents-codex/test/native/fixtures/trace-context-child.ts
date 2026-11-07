@@ -469,7 +469,7 @@ async function graph() {
     const first = await session.submit('first');
     await entered.promise;
     const headers = { traceparent: OVERRIDE };
-    const queued = await session.enqueue('queued', undefined, {
+    const queued = await session.enqueue('queued', {
       parentTrace: headers,
     });
     headers.traceparent = WORKER;
@@ -477,8 +477,10 @@ async function graph() {
       parentTrace: parent(WORKER),
     });
     await assert.rejects(
-      session.submit('steer', { parentTrace: parent(OVERRIDE) }),
-      /Cannot reparent/,
+      session.submit('independent busy task', {
+        parentTrace: parent(OVERRIDE),
+      }),
+      /submit requires a settled open session/,
     );
     release.resolve();
     assert.equal((await first.wait()).finalOutput, 'first');
@@ -557,14 +559,14 @@ async function manual(mode: string, path: string) {
   try {
     if (mode === 'suspend') {
       const turn = await session.submit('ask');
-      await turn.wait({ until: 'request' });
+      await turn.wait({ until: 'manual_tool' });
       const state = await session.suspend();
       assert(!JSON.stringify(state).includes(PARENT));
       assert(!JSON.stringify(state).includes('"traceparent"'));
       await writeFile(path, JSON.stringify(state));
       return { turn: turn.turnId };
     }
-    const waiting = await session.wait({ until: 'request' });
+    const waiting = await session.wait({ until: 'manual_tool' });
     assert('requests' in waiting && waiting.requests.length === 1);
     await session.respond(waiting.requests[0]!.reply('approved'));
     const completed = await session.wait();

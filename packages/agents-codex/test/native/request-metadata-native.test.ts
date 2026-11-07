@@ -171,7 +171,7 @@ it('matches final HTTP scalar fields and links repeated provider IDs by occurren
     expect(event.snapshot).toEqual({ requests: { remaining: 7 } });
   }
   expect(session.rateLimits()).toEqual({ requests: { remaining: 7 } });
-  expect(result.usage?.totalTokenUsage.totalTokens).toBe(26);
+  expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(26);
   expect(
     events.filter(
       (event) => event.type === 'usage_updated' && event.usage === null,
@@ -501,7 +501,8 @@ for (const restore of [false, true]) {
         if (!action) throw new Error('No restored manual request');
       }
       expect(server.requests).toHaveLength(1);
-      const resumed = await owner.submit(action.reply('record A'));
+      const resumed = restore ? owner.restoredTurn! : original;
+      await owner.respond(action.reply('record A'));
       expect((await resumed.wait()).finalOutput).toBe('continued');
       const events = [];
       for await (const event of resumed.events()) events.push(event);

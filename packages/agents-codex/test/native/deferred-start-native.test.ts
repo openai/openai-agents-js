@@ -34,7 +34,10 @@ class FactoryAgent extends Agent {
   readonly opened: Session[] = [];
   readonly restoredRequests: ActionRequested[] = [];
   holdRestore?: ReturnType<typeof gate>;
-  openingDefaults?: Parameters<Agent['session']>[0];
+  openingDefaults?: Pick<
+    NonNullable<Parameters<Agent['session']>[0]>,
+    'provider' | 'model' | 'modelSettings'
+  >;
   failRestore = false;
   #calls = 0;
   get factoryCalls() {
@@ -270,10 +273,12 @@ async function fixture(
     if (options.changedSession === 'tools')
       await session.update({ tools: [tool] });
     const turn = options.promptedOverride
-      ? await session.submitWithOutput('ASK', {
-          mode: 'prompted',
-          schema: z.object({ answer: z.string() }),
-          ...(options.repair ? { maxRetries: 1 } : {}),
+      ? await session.submit('ASK', {
+          outputType: {
+            mode: 'prompted',
+            schema: z.object({ answer: z.string() }),
+            ...(options.repair ? { maxRetries: 1 } : {}),
+          },
         })
       : await session.submit('ASK');
     const completion = turn.wait().catch((error: unknown) => error);
@@ -641,7 +646,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             held.release.resolve();
             const result = await outcome.turn.wait();
             expect(result.finalOutput).toEqual({ answer: 'done' });
-            expect(result.usage?.totalTokenUsage.totalTokens).toBe(14);
+            expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(14);
             expect(result.repairAttempts).toHaveLength(1);
             expect(result.repairAttempts[0]!.usage?.totalTokens).toBe(11);
             expect(result.repairAttempts[0]!.sessionId).not.toBe(session.id);

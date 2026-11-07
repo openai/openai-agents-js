@@ -124,7 +124,8 @@ describe('native question grants', () => {
       () => true,
     );
     const request = grant.request;
-    if (request.type !== 'elicitation_request') throw new Error('fixture');
+    if (request.type !== 'elicitation_request' || request.mode !== 'form')
+      throw new Error('fixture');
     const schema = request.schema;
     (schema as Record<string, unknown>).changed = true;
     expect(request.schema).toEqual({});
@@ -164,7 +165,8 @@ async function form(id = '9007199254740993') {
     prepared,
   );
   const request = grant.request;
-  if (request.type !== 'elicitation_request') throw new Error('fixture');
+  if (request.type !== 'elicitation_request' || request.mode !== 'form')
+    throw new Error('fixture');
   return { schema, grant, request };
 }
 
@@ -253,7 +255,8 @@ describe('native form question grants', () => {
       () => true,
     );
     const request = grant.request;
-    if (request.type !== 'elicitation_request') throw new Error('fixture');
+    if (request.type !== 'elicitation_request' || request.mode !== 'form')
+      throw new Error('fixture');
     expect(() => request.reply({})).toThrow('decline only');
     expect(grant.current()).toBe(true);
     expect(grant.take(request.reply(null))).toBe('decline-url');
@@ -281,7 +284,8 @@ describe.each(['openai/form', 'openaiForm'] as const)(
         prepared,
       );
       const request = grant.request;
-      if (request.type !== 'elicitation_request') throw new Error('fixture');
+      if (request.type !== 'elicitation_request' || request.mode !== 'form')
+        throw new Error('fixture');
       return { grant, request };
     }
 
@@ -832,29 +836,25 @@ describe('URL completion observers', () => {
     expect(read).toHaveBeenCalledOnce();
   });
 
-  it('retires at the deadline while a probe is in flight and ignores its late success', async () => {
+  it('times out one observer without retiring a shared in-flight completion', async () => {
     let finishProbe!: (value: boolean) => void;
     const probe = new Promise<boolean>((resolve) => {
       finishProbe = resolve;
     });
     const cancel = vi.fn(async () => {});
     const completion = createUrlCompletion(cancel, () => probe);
-    const waiting = completion.wait({ timeoutMs: 10 });
-    const assertion = expect(waiting).rejects.toMatchObject({
+    const short = completion.wait({ timeoutMs: 10 });
+    const long = completion.wait({ timeoutMs: 1000 });
+    const assertion = expect(short).rejects.toMatchObject({
       name: 'TimeoutError',
     });
     await vi.advanceTimersByTimeAsync(10);
     await assertion;
-    expect(cancel).toHaveBeenCalledOnce();
-    expect(completion.expired()).toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(completion.pending()).toBe(true);
     finishProbe(true);
-    await completion.refresh();
-    await Promise.resolve();
-    await expect(completion.wait({ timeoutMs: 100 })).rejects.toThrow(
-      'expired',
-    );
-    await completion.retire();
-    expect(cancel).toHaveBeenCalledOnce();
+    await expect(long).resolves.toBeUndefined();
+    await completion.wait({ timeoutMs: 100 });
   });
 
   it('retains early peer completion while consent is prepared and delivered once', async () => {
@@ -880,10 +880,12 @@ describe('URL completion observers', () => {
           url: 'https://example.invalid/private',
         },
         completion.wait,
+        completion.retire,
       ),
     );
     const request = grant.request;
-    if (request.type !== 'elicitation_request') throw new Error('fixture');
+    if (request.type !== 'elicitation_request' || request.mode !== 'url')
+      throw new Error('fixture');
     completion.settle(true);
     const consent = request.replyUrlAccept();
     expect(grant.take(consent)).toBe(
@@ -951,38 +953,39 @@ describe('URL completion observers', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('joins timeout retirement and refuses completion that arrives afterward', async () => {
-    let release!: () => void;
-    const joined = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const cancel = vi.fn(() => joined);
+  it('joins explicit expiry and refuses completion that arrives afterward', async () => {
+    const release = Promise.withResolvers<void>();
+    const cancel = vi.fn(() => release.promise);
     const completion = createUrlCompletion(cancel);
-    const result = completion.wait({ timeoutMs: 10 });
-    const assertion = expect(result).rejects.toMatchObject({
-      name: 'TimeoutError',
-    });
-    await vi.advanceTimersByTimeAsync(10);
+    const result = completion.wait({ timeoutMs: 100 });
+    const assertion = expect(result).rejects.toThrow('expired');
+    const expiry = completion.retire();
+    await Promise.resolve();
     expect(cancel).toHaveBeenCalledOnce();
     completion.settle(true);
-    release();
+    release.resolve();
+    await expiry;
     await assertion;
-    await expect(completion.wait({ timeoutMs: 10 })).rejects.toThrow('expired');
+    await expect(completion.wait({ timeoutMs: 100 })).rejects.toThrow(
+      'expired',
+    );
     await completion.retire();
     expect(cancel).toHaveBeenCalledOnce();
   });
 
-  it('keeps a distinct retirement failure in the timeout error', async () => {
+  it('reports explicit expiry cleanup failure without making observer deadlines destructive', async () => {
     const cause = new Error('native cancellation failed');
     const completion = createUrlCompletion(async () => {
       throw cause;
     });
-    const result = completion.wait({ timeoutMs: 1 });
-    const assertion = expect(result).rejects.toMatchObject({
-      errors: [expect.objectContaining({ name: 'TimeoutError' }), cause],
+    const short = completion.wait({ timeoutMs: 1 });
+    const assertion = expect(short).rejects.toMatchObject({
+      name: 'TimeoutError',
     });
     await vi.advanceTimersByTimeAsync(1);
     await assertion;
+    expect(completion.pending()).toBe(true);
+    await expect(completion.retire()).rejects.toBe(cause);
   });
 
   it('does not clamp a long finite deadline to an immediate timeout', async () => {

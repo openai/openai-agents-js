@@ -121,6 +121,7 @@ describe('local profile declarations and failed-opening lease ownership', () => 
     const provider = new NativeProvider();
     const agent = new Agent({ instructions: 'Answer.', provider });
     const acquire = vi.spyOn(provider, '_acquire');
+    // @ts-expect-error Exercise the runtime boundary for untyped callers.
     await expect(agent.session({ resume: 'id' })).rejects.toThrow(
       'resume requires',
     );

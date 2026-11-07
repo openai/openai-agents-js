@@ -352,7 +352,7 @@ it('reports an MCP execution timeout as a tool error without claiming its entere
         name: 'fixture',
         url: peer.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         executionTimeout: 0.1,
       }),
     ],
@@ -427,7 +427,7 @@ it('expires an MCP result policy while retaining its callback and withholding it
         name: 'fixture',
         url: peer.url,
         tools: ['lookup'],
-        approvalMode: 'approve',
+        approvalMode: 'preapproved',
         transformResultTimeout: 0.1,
         async transformResult(_context, result) {
           entered.resolve();

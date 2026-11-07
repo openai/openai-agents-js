@@ -142,10 +142,12 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             // child keeps its own plain output and its original native identity.
             const root = await waitForPhase(
               'original root submission',
-              session.submitWithOutput('Start independent research.', {
-                mode: 'prompted',
-                schema: z.object({ label: z.string().min(2) }),
-                maxRetries: 2,
+              session.submit('Start independent research.', {
+                outputType: {
+                  mode: 'prompted',
+                  schema: z.object({ label: z.string().min(2) }),
+                  maxRetries: 2,
+                },
               }),
             );
             rootOutcome = 'pending';

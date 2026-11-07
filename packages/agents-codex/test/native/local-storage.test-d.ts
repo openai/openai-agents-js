@@ -4,18 +4,26 @@ import {
   localStorage,
   type LocalStorage,
   type SessionOptions,
+  type SessionBaseOptions,
+  type SessionState,
+  type SessionStore,
+  type ReconciledCall,
   type RunOptions,
 } from '../../src';
 
-interface ExtendedSession extends SessionOptions {
+type ExtendedSession = SessionOptions & {
   application?: string;
-}
+};
 interface ExtendedRun extends RunOptions {
   application?: string;
 }
-interface ContextOptions extends SessionOptions<{ tenant: string }> {
+type ContextOptions = SessionOptions<{ tenant: string }> & {
+  application?: string;
+};
+interface ExtendedBase extends SessionBaseOptions {
   application?: string;
 }
+expectTypeOf<ExtendedBase>().toExtend<SessionBaseOptions>();
 expectTypeOf<ExtendedSession>().toExtend<SessionOptions>();
 expectTypeOf<ExtendedRun>().toExtend<RunOptions>();
 expectTypeOf<ContextOptions>().toExtend<SessionOptions<{ tenant: string }>>();
@@ -25,9 +33,42 @@ declare const agent: Agent;
 const legacy: SessionOptions = {};
 agent.session(legacy);
 agent.session({ storage: { path: '/structural' }, resume: 'native-id' });
-// Optional interface fields retain compatibility; runtime validates this combination.
+// @ts-expect-error Resume requires the selected persistence owner.
 const invalidCombination: SessionOptions = { resume: 'without-profile' };
 agent.session(invalidCombination);
+declare const state: SessionState;
+declare const store: SessionStore;
+declare const receipts: readonly ReconciledCall[];
+agent.session({ state });
+agent.session({ storage: store, resume: 'native-id' });
+agent.session({
+  storage: localStorage('/profile'),
+  resume: 'native-id',
+  reconciledCalls: receipts,
+});
+agent.session({
+  storage: localStorage('/profile'),
+  resume: 'native-id',
+  reconciledCalls: [
+    {
+      threadId: 'thread',
+      turnId: 'turn',
+      callId: 'call',
+      outcome: 'applied',
+      result: 'verified',
+    },
+  ],
+});
+// @ts-expect-error A portable checkpoint cannot select persistent storage.
+agent.session({ state, storage: store });
+// @ts-expect-error Local recovery requires resume.
+agent.session({ storage: localStorage('/profile'), reconciledCalls: receipts });
+agent.session({
+  storage: store,
+  resume: 'native-id',
+  // @ts-expect-error Custom-store reconciliation uses its explicit result API.
+  reconciledCalls: receipts,
+});
 declare const required: Agent<{ tenant: string }>;
 const captured: SessionOptions<{ tenant: string }> & {
   context: { tenant: string };

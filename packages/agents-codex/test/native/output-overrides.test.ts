@@ -56,23 +56,28 @@ describe('persistent per-operation output contracts', () => {
     }).session();
     const first = await (await session.submit('DEFAULT_ROOT')).wait();
     const options = { outputType: z.number() };
-    const count = await session.submitWithOutput(
-      'COUNT_ROOT',
-      options.outputType,
-    );
+    const count = await session.submit('COUNT_ROOT', {
+      outputType: options.outputType,
+    });
     expectTypeOf(count).toEqualTypeOf<Turn<number>>();
     expect((await count.wait()).finalOutput).toBe(7);
-    const plain = await session.submitWithOutput('PLAIN_ROOT', z.string());
+    const plain = await session.submit('PLAIN_ROOT', {
+      outputType: z.string(),
+    });
     expect((await plain.wait()).finalOutput).toBe('ordinary text');
-    const map = await session.submitWithOutput('MAP_ROOT', {
-      mode: 'prompted',
-      schema: z.record(z.string(), z.number()),
+    const map = await session.submit('MAP_ROOT', {
+      outputType: {
+        mode: 'prompted',
+        schema: z.record(z.string(), z.number()),
+      },
     });
     expectTypeOf(map).toEqualTypeOf<Turn<Record<string, number>>>();
     expect((await map.wait()).finalOutput).toEqual({ count: 2 });
-    const transformed = await session.submitWithOutput('TRANSFORM_ROOT', {
-      mode: 'prompted',
-      schema: z.string().transform((text) => text.length),
+    const transformed = await session.submit('TRANSFORM_ROOT', {
+      outputType: {
+        mode: 'prompted',
+        schema: z.string().transform((text) => text.length),
+      },
     });
     expectTypeOf(transformed).toEqualTypeOf<Turn<number>>();
     expect((await transformed.wait()).finalOutput).toBe(5);
@@ -130,14 +135,12 @@ describe('persistent per-operation output contracts', () => {
     const fixed: Session<string> = session;
     const wider: Session<unknown> = session;
     try {
-      const turn = await wider.submitWithOutput('COUNT', z.number());
+      const turn = await wider.submit('COUNT', { outputType: z.number() });
       await entered.promise;
       await expect(fixed.wait()).rejects.toThrow('returned Turn');
-      await expect(fixed.submit('REJECTED_DETAIL')).rejects.toThrow(
-        'returned Turn',
-      );
+      await expect(fixed.submit('REJECTED_DETAIL')).rejects.toThrow('settled');
       await expect(
-        session.submitWithOutput('REJECTED_DETAIL', z.string()),
+        session.submit('REJECTED_DETAIL', { outputType: z.string() }),
       ).rejects.toThrow('settled');
       await turn.steer('EXACT_DETAIL');
       release.resolve();
@@ -173,17 +176,19 @@ describe('persistent per-operation output contracts', () => {
       provider,
       tools: [decision],
     }).session();
-    const turn = await session.submitWithOutput('COUNT', z.number());
+    const turn = await session.submit('COUNT', { outputType: z.number() });
     const action = await nextAction(session);
     const reply = action.reply('yes');
-    await expect(session.submit(reply)).rejects.toThrow('returned Turn');
+    // @ts-expect-error Replies cannot start user work.
+    await expect(session.submit(reply)).rejects.toThrow('Session.respond');
     await expect(
       session.submit({
+        // @ts-expect-error Raw results are delivered with respond.
         type: 'function_call_output',
         call_id: action.callId,
         output: 'yes',
       }),
-    ).rejects.toThrow('returned Turn');
+    ).rejects.toThrow('Session.respond');
     expect(validate).not.toHaveBeenCalled();
     await expect(
       session.respond({
@@ -226,7 +231,7 @@ describe('persistent per-operation output contracts', () => {
       provider,
     }).session();
     try {
-      const admission = session.submitWithOutput('OVERRIDE', z.number());
+      const admission = session.submit('OVERRIDE', { outputType: z.number() });
       const guarded = session.wait().catch((error: unknown) => error);
       release.resolve();
       const first = await admission;
@@ -236,7 +241,7 @@ describe('persistent per-operation output contracts', () => {
       const captured = session.wait();
       const normal = await defaultAdmission;
       const defaultResult = await normal.wait();
-      const later = await session.submitWithOutput('LATER', z.number());
+      const later = await session.submit('LATER', { outputType: z.number() });
       expect((await later.wait()).finalOutput).toBe(2);
       expect(await captured).toBe(defaultResult);
       await expect(session.wait()).rejects.toThrow('returned Turn');
@@ -331,9 +336,11 @@ describe('persistent per-operation output contracts', () => {
           }),
         ],
       }).session();
-      const turn = await session.submitWithOutput('ROOT_OVERRIDE', {
-        mode,
-        schema: z.number().refine(validate),
+      const turn = await session.submit('ROOT_OVERRIDE', {
+        outputType: {
+          mode,
+          schema: z.number().refine(validate),
+        },
       });
       const completed = await turn.wait();
       expect(completed.turn).toBe(turn);
@@ -391,7 +398,7 @@ describe('persistent per-operation output contracts', () => {
       provider,
     });
     await using session = await agent.session();
-    const turn = await session.submitWithOutput('COUNT', z.number());
+    const turn = await session.submit('COUNT', { outputType: z.number() });
     const completed = await turn.wait();
     await session.compact();
     const state = await session.saveState();
@@ -429,7 +436,7 @@ describe('persistent per-operation output contracts', () => {
       ...declaration,
       outputType: z.number(),
     }).session();
-    const turn = await session.submitWithOutput('ASK', z.string());
+    const turn = await session.submit('ASK', { outputType: z.string() });
     await nextAction(session);
     const failed = turn.wait().catch((error: unknown) => error);
     const state = await session.suspend();
@@ -466,7 +473,7 @@ describe('persistent per-operation output contracts', () => {
         mode,
         schema: z.number(),
       };
-      const turn = await session.submitWithOutput('ASK', output);
+      const turn = await session.submit('ASK', { outputType: output });
       const action = await nextAction(session);
       const stale = action.reply('yes');
       const interrupted = turn.wait().catch((error: unknown) => error);
@@ -491,8 +498,12 @@ describe('persistent per-operation output contracts', () => {
       expect(server.requests).toHaveLength(1);
       const current = await nextAction(restored);
       expect(current.callId).toBe(mode);
+      const resumed = restored.restoredTurn;
+      expectTypeOf(resumed).toEqualTypeOf<Turn<number> | null>();
+      if (!resumed) throw new Error('Expected the restored typed root');
+      expect(resumed.turnId).toBe(turn.turnId);
       await restored.respond(current.reply('yes'));
-      expect((await restored.wait()).finalOutput).toBe(3);
+      expect((await resumed.wait()).finalOutput).toBe(3);
       expect(server.requests).toHaveLength(2);
       expect(server.requests[1].text).toEqual(server.requests[0].text);
       server.assertExhausted();
@@ -508,7 +519,7 @@ describe('persistent per-operation output contracts', () => {
       provider,
       outputType: schema,
     }).session();
-    const turn = await session.submitWithOutput('SAME', schema);
+    const turn = await session.submit('SAME', { outputType: schema });
     expect((await turn.wait()).finalOutput).toEqual({ label: 'same' });
     await expect(session.wait()).rejects.toThrow('returned Turn');
     server.assertExhausted();
@@ -542,10 +553,9 @@ describe('persistent per-operation output contracts', () => {
         }),
       ],
     }).session();
-    const turn = await session.submitWithOutput(
-      'CANCEL',
-      z.number().refine(validate),
-    );
+    const turn = await session.submit('CANCEL', {
+      outputType: z.number().refine(validate),
+    });
     const result = turn.wait().catch((error: unknown) => error);
     await entered.promise;
     await turn.cancel();
@@ -568,14 +578,12 @@ describe('persistent per-operation output contracts', () => {
       provider,
     }).session();
     const chosen = { ifBusy: 'reject' as const, outputType: z.number() };
-    const busyOnly: { ifBusy?: 'steer' | 'reject' } = chosen;
-    const rejected: Promise<Turn<string>> = session.submit('Count', busyOnly);
-    await expect(rejected).rejects.toThrow('submitWithOutput');
-    expect(server.requests).toHaveLength(0);
     const normal = await session.submit('Normal', { ifBusy: 'reject' });
     expectTypeOf(normal).toEqualTypeOf<Turn<string>>();
     expect((await normal.wait()).finalOutput).toBe('default');
-    const explicit = await session.submitWithOutput('Count', chosen.outputType);
+    const explicit = await session.submit('Count', {
+      outputType: chosen.outputType,
+    });
     expectTypeOf(explicit).toEqualTypeOf<Turn<number>>();
     expect((await explicit.wait()).finalOutput).toBe(7);
     server.assertExhausted();
@@ -594,10 +602,12 @@ describe('persistent per-operation output contracts', () => {
     }).session();
 
     await expect(
-      session.submitWithOutput('NO_INPUT', z.record(z.string(), z.number())),
+      session.submit('NO_INPUT', {
+        outputType: z.record(z.string(), z.number()),
+      }),
     ).rejects.toThrow('open maps');
     expect(server.requests).toHaveLength(0);
-    const turn = await session.submitWithOutput('INVALID', z.number());
+    const turn = await session.submit('INVALID', { outputType: z.number() });
     const failure = await turn.wait().catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(OutputValidationError);
     await expect(turn.wait()).rejects.toBe(failure);
@@ -610,16 +620,16 @@ describe('persistent per-operation output contracts', () => {
 // Compile-only API checks: no model/provider effects.
 function checkTypes(session: Session<string>) {
   const schema = z.number();
-  expectTypeOf(session.submitWithOutput('count', schema)).toEqualTypeOf<
+  expectTypeOf(session.submit('count', { outputType: schema })).toEqualTypeOf<
     Promise<Turn<number>>
   >();
   const normal: SubmitOptions = { ifBusy: 'reject' };
   expectTypeOf(session.submit('normal', normal)).toEqualTypeOf<
     Promise<Turn<string>>
   >();
-  // @ts-expect-error A result-type argument alone cannot assert a schema.
+  // @ts-expect-error The removed branch-local method is not a public API.
   session.submitWithOutput<number>('count');
   // @ts-expect-error submitWithOutput accepts a schema, not a second options object.
-  session.submitWithOutput('count', schema, { ifBusy: 'steer' });
+  session.submit('count', { ...{ ifBusy: 'steer' }, outputType: schema });
 }
 void checkTypes;

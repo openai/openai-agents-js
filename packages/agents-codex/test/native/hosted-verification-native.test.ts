@@ -216,7 +216,10 @@ it('joins an aborted signer callback and refuses its late proof', async () => {
     return session;
   });
   const operation = f.agent.run('Verify this action', {
-    onNativeQuestion: async (request, signal) => {
+    onInteraction: async (request, signal) => {
+      if (request.type === 'action_requested')
+        throw new Error('Unexpected manual request');
+
       if (!isVerification(request)) throw new Error('Expected verification');
       received = request;
       callbackSignal = signal;

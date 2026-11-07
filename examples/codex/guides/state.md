@@ -43,9 +43,9 @@ A turn returned by `session.turns()` can include `responses`, an optional list o
 
 The list is not a complete log of provider attempts or charges. Read the Turn outcome for execution success, and use provider billing records for charges.
 
-For a live Turn, the result of `await turn.wait()` exposes a separate thread usage snapshot at `result.usage`. `usage_updated` events expose it at `event.usage`. Each is a nullable `TokenUsageInfo` with cumulative `totalTokenUsage` and `lastTokenUsage` for its latest reported response. These snapshots differ from the retained per-response facts in `RecordedResponse.usage`.
+For a live Turn, the result of `await turn.wait()` exposes a separate thread usage snapshot at `result.threadUsage`. `usage_updated` events expose it at `event.usage`. Each is a nullable `TokenUsageInfo` with cumulative `totalTokenUsage` and `lastTokenUsage` for its latest reported response. These snapshots differ from the retained per-response facts in `RecordedResponse.usage`.
 
-`result.usage?.modelContextWindow`, also available as `event.usage?.modelContextWindow`, reports the usable model limit captured with the settings and model metadata behind that response's usage. The `TokenUsageInfo` field has type `number | bigint | null`. Unknown fallback metadata reports `null` unless an explicit context-window override supplies a known value. This field does not measure remaining tokens.
+`result.threadUsage?.modelContextWindow`, also available as `event.usage?.modelContextWindow`, reports the usable model limit captured with the settings and model metadata behind that response's usage. The `TokenUsageInfo` field has type `number | bigint | null`. Unknown fallback metadata reports `null` unless an explicit context-window override supplies a known value. This field does not measure remaining tokens.
 
 Changing the selected model alone does not rewrite an old usage snapshot. A new usage observation can replace a known context window with `null`; restore and fork preserve the observed snapshot. Child compaction or sampling and terminal compaction overflow report the model actually used.
 

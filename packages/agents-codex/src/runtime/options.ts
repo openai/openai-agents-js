@@ -4,6 +4,10 @@ import type { EnvironmentConfig } from './environment';
 /** SDK-owned configuration sent to the native runtime. */
 export type RuntimeOptions = JsonObject & {
   environment?: EnvironmentConfig | null;
+  _sdk_project_search?: {
+    root: string;
+    tools: ('project_glob' | 'project_grep')[];
+  };
   native_goal_store?: string | null;
   native_thread_store?: string | null;
   _sdk_resume_thread_id?: string;

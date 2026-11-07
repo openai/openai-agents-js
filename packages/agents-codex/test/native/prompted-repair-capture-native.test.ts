@@ -272,10 +272,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       }
       expect(server.requests).toHaveLength(3);
       expect(effects).toEqual(['once']);
-      const later = await branch.submitWithOutput(
-        'LATER_PLAIN_ROOT',
-        z.string(),
-      );
+      const later = await branch.submit('LATER_PLAIN_ROOT', {
+        outputType: z.string(),
+      });
       const plain = await later.wait();
       expect(plain.finalOutput).toBe('later plain answer');
       expect(plain.repairAttempts).toEqual([]);

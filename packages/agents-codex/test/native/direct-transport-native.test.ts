@@ -149,7 +149,7 @@ it('dispatches native HTTP directly with full schemas, headers and observations'
   const turn = await session.submit('direct request marker');
   const result = await turn.wait();
   expect(result.finalOutput).toBe('direct answer');
-  expect(result.usage?.totalTokenUsage.totalTokens).toBe(13);
+  expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(13);
   expect(server.requests).toHaveLength(1);
   const request = server.requests[0];
   expect(request.model).toBe('gpt-5.5');
