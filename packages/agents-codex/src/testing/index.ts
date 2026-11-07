@@ -2,6 +2,8 @@ import { AssertionError } from 'node:assert';
 import { randomUUID } from 'node:crypto';
 import {
   createServer,
+  validateHeaderName,
+  validateHeaderValue,
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http';
@@ -32,7 +34,19 @@ export type ScriptedItem =
     }>;
 export type ScriptedResponse =
   | readonly ScriptedItem[]
-  | Readonly<{ kind: 'httpError'; status: number; body: JsonObject }>;
+  | Readonly<{
+      items: readonly ScriptedItem[];
+      /** Provider-reported usage; omission leaves it unknown. */
+      usage?: JsonObject;
+      /** Additional HTTP metadata. Framing headers remain SDK-owned. */
+      headers?: Readonly<Record<string, string>>;
+    }>
+  | Readonly<{
+      kind: 'httpError';
+      status: number;
+      body: JsonObject;
+      headers?: Readonly<Record<string, string>>;
+    }>;
 
 /** A callback-scoped native provider with detached request-body readback. */
 export interface ScriptedResponses {
@@ -123,13 +137,42 @@ const itemSchema = z.discriminatedUnion('type', [
     })
     .strict(),
 ]);
+const headersSchema = z
+  .record(z.string(), z.string())
+  .superRefine((headers, ctx) => {
+    try {
+      for (const [name, value] of Object.entries(headers)) {
+        validateHeaderName(name);
+        validateHeaderValue(name, value);
+        if (
+          ['content-type', 'content-length', 'transfer-encoding'].includes(
+            name.toLowerCase(),
+          )
+        )
+          throw new TypeError('Scripted framing headers are SDK-owned');
+      }
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Invalid scripted response headers',
+      });
+    }
+  });
 const responseSchema = z.union([
   z.array(itemSchema),
+  z
+    .object({
+      items: z.array(itemSchema),
+      usage: jsonObject.optional(),
+      headers: headersSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('httpError'),
       status: statusSchema,
       body: jsonObject,
+      headers: headersSchema.optional(),
     })
     .strict(),
 ]);
@@ -273,26 +316,40 @@ class Peer implements ScriptedResponses {
         return;
       }
       this.next++;
-      if (!Array.isArray(selected)) {
-        const error = selected as Extract<
-          ScriptedResponse,
-          { kind: 'httpError' }
-        >;
+      if ('kind' in selected) {
+        const error = selected;
         response
-          .writeHead(error.status, { 'content-type': 'application/json' })
+          .writeHead(error.status, {
+            ...error.headers,
+            'content-type': 'application/json',
+          })
           .end(JSON.stringify(error.body));
         return;
       }
       const id = randomUUID();
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      const envelope: {
+        items: readonly ScriptedItem[];
+        usage?: JsonObject;
+        headers?: Readonly<Record<string, string>>;
+      } = 'items' in selected ? selected : { items: selected };
+      response.writeHead(200, {
+        ...envelope.headers,
+        'content-type': 'text/event-stream',
+      });
       const events = [
         { type: 'response.created', response: { id } },
-        ...selected.map((item, output_index) => ({
+        ...envelope.items.map((item, output_index) => ({
           type: 'response.output_item.done',
           output_index,
           item,
         })),
-        { type: 'response.completed', response: { id } },
+        {
+          type: 'response.completed',
+          response: {
+            id,
+            ...(envelope.usage === undefined ? {} : { usage: envelope.usage }),
+          },
+        },
       ];
       for (const event of events)
         response.write(`data: ${JSON.stringify(event)}\n\n`);
