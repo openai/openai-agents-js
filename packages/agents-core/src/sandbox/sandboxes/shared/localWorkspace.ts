@@ -1516,7 +1516,13 @@ async function runLimited<T>(
       }
     },
   );
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } catch (error) {
+    // Cleanup must wait for every writer, including nested materialization queues.
+    await Promise.allSettled(workers);
+    throw error;
+  }
 }
 
 function resolveManifestEntryConcurrency(
