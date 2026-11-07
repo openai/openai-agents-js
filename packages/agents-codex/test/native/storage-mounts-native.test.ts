@@ -288,6 +288,7 @@ it.skipIf(process.platform !== 'linux')(
     const { root, cwd, source } = await directories();
     const marker = join(source, 'marker');
     let processId: number | undefined;
+    let spawnResult: JsonObject | undefined;
     const steps = new Map<string, number>();
     const respond = (request: JsonObject) => {
       const metadata = request.client_metadata as Record<string, string>;
@@ -296,20 +297,26 @@ it.skipIf(process.platform !== 'linux')(
       ) as { agent_name: string };
       const step = steps.get(name) ?? 0;
       steps.set(name, step + 1);
-      if (name === '/root')
-        return step === 0
-          ? [
-              call(
-                'spawn_agent',
-                {
-                  task_name: 'storage-reader',
-                  message: 'Verify the storage mount.',
-                  fork_turns: 'none',
-                },
-                { namespace: 'collaboration', callId: 'spawn-storage-reader' },
-              ),
-            ]
-          : [message('delegated')];
+      if (name === '/root') {
+        if (step === 0)
+          return [
+            call(
+              'spawn_agent',
+              {
+                task_name: 'storage_reader',
+                message: 'Verify the storage mount.',
+                fork_turns: 'none',
+              },
+              { namespace: 'collaboration', callId: 'spawn-storage-reader' },
+            ),
+          ];
+        spawnResult = (request.input as JsonObject[]).find(
+          (item) =>
+            item.type === 'function_call_output' &&
+            item.call_id === 'spawn-storage-reader',
+        );
+        return [message('delegated')];
+      }
       if (step === 0)
         return [
           call(
@@ -381,6 +388,10 @@ it.skipIf(process.platform !== 'linux')(
         });
       await using _owned = session;
       await (await session.submit('Delegate storage verification.')).wait();
+      expect(spawnResult?.output, 'spawn_agent tool result').toMatch(/^\{/);
+      expect(JSON.parse(spawnResult!.output as string)).toMatchObject({
+        task_name: '/root/storage_reader',
+      });
       const children = await vi.waitFor(
         async () => {
           const children = await Array.fromAsync(session.subagents());
