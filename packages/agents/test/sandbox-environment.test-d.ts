@@ -19,3 +19,7 @@ const source = sandboxEnvironment({
 expectTypeOf(source).toExtend<EnvironmentSource>();
 expectTypeOf(renderStorageLayout(new Manifest())).toEqualTypeOf<string>();
 expectTypeOf<SandboxEnvironmentOptions>().toHaveProperty('connect');
+expectTypeOf<SandboxEnvironmentOptions['manifest']>().toEqualTypeOf<Manifest>();
+expectTypeOf<
+  Parameters<typeof renderStorageLayout>[0]
+>().toEqualTypeOf<Manifest>();

@@ -6,6 +6,8 @@ Native commands can use provider storage through `sandboxEnvironment` or read-on
 
 Import `sandboxEnvironment` and `renderStorageLayout` from `@openai/agents/sandbox`. The existing typed `Manifest` declares storage, and a `SandboxClient` creates and prepares the provider session. Native execution uses your application's authenticated gateway connector to that exact session. No Classic runner or second model loop is involved. See the [runnable provider example](../provider-storage-mount.ts).
 
+Both helpers require an application-authorized `Manifest` instance; they do not parse manifest init objects. Validate untrusted values before constructing a manifest. Construction alone does not authorize its paths, resources, or credential selections. The client, provider options, and connector must also come from trusted application configuration.
+
 ```ts
 import {
   Manifest,

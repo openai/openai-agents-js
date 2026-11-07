@@ -1,7 +1,6 @@
 import {
   cloneManifest,
   Manifest,
-  type ManifestInput,
   type SandboxClient,
   type SandboxClientOptions,
   type SandboxSessionLike,
@@ -25,8 +24,9 @@ export interface SandboxEnvironmentOptions<
 > {
   /** A trusted client; provider ownership and cleanup rules apply. */
   client: SandboxClient<Options, State>;
-  manifest: ManifestInput;
-  /** Provider options: plain data is captured; opaque handles/functions remain caller-owned. */
+  /** Application-authorized manifest; validate untrusted data before constructing it. */
+  manifest: Manifest;
+  /** Trusted provider options: plain data is captured; opaque handles/functions remain caller-owned. */
   options?: Options;
   /** Connect an authenticated native executor to this exact sandbox. */
   connect(
@@ -54,7 +54,7 @@ export function sandboxEnvironment<
   const deleteResource = client.delete?.bind(client);
   const providerOptions =
     options.options === undefined ? undefined : captureOptions(options.options);
-  const manifest = cloneManifest(options.manifest);
+  const manifest = cloneManifest(requireManifest(options.manifest));
   for (const { entry } of manifest.mountTargets()) {
     if (!entry.mountStrategy)
       throw new TypeError(
@@ -144,8 +144,8 @@ export function sandboxEnvironment<
 }
 
 /** Render only paths, access and caller descriptions, never provider config or environment values. */
-export function renderStorageLayout(input: ManifestInput): string {
-  const manifest = input instanceof Manifest ? input : new Manifest(input);
+export function renderStorageLayout(input: Manifest): string {
+  const manifest = requireManifest(input);
   const storage = manifest.mountTargets().map(({ mountPath, entry }) => {
     const readOnly =
       entry.mountStrategy?.type === 'blaxel_drive'
@@ -160,6 +160,13 @@ export function renderStorageLayout(input: ManifestInput): string {
     };
   });
   return JSON.stringify({ workspace: manifest.root, storage }, null, 2);
+}
+
+function requireManifest(value: Manifest): Manifest {
+  if (!(value instanceof Manifest)) {
+    throw new TypeError('manifest must be a trusted Manifest instance');
+  }
+  return value;
 }
 
 // Copy configuration containers without cloning provider SDK handles or callbacks.

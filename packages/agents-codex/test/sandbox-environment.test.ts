@@ -61,6 +61,62 @@ function fixture() {
 }
 
 describe('native sandbox environment', () => {
+  it('rejects serialized provider secret selectors before provider effects', () => {
+    const f = fixture();
+    const manifest = {
+      entries: {
+        data: s3Mount({
+          bucket: 'synthetic-bucket',
+          mountStrategy: {
+            type: 'modal_cloud_bucket',
+            secretName: 'synthetic-application-secret',
+            secretEnvironmentName: 'synthetic-environment',
+          },
+        }),
+      },
+    } as unknown as Manifest;
+    expect(() => sandboxEnvironment({ ...f, manifest })).toThrow(
+      'trusted Manifest',
+    );
+    expect(() => renderStorageLayout(manifest)).toThrow('trusted Manifest');
+    expect(f.events).toEqual([]);
+    expect(f.connect).not.toHaveBeenCalled();
+  });
+  it('preserves application-authorized provider secret selection', async () => {
+    const f = fixture();
+    const manifest = new Manifest({
+      entries: {
+        data: s3Mount({
+          bucket: 'synthetic-bucket',
+          mountStrategy: {
+            type: 'modal_cloud_bucket',
+            secretName: 'synthetic-application-secret',
+            secretEnvironmentName: 'synthetic-environment',
+          },
+        }),
+      },
+    });
+    const owner = await acquireEnvironment(
+      sandboxEnvironment({ ...f, manifest }),
+    );
+    expect(f.resource.state.manifest).not.toBe(manifest);
+    expect(f.resource.state.manifest.entries.data).toEqual(
+      manifest.entries.data,
+    );
+    expect(renderStorageLayout(f.resource.state.manifest)).not.toContain(
+      'synthetic-application-secret',
+    );
+    await owner.dispose();
+  });
+  it('rejects even empty manifest init objects', () => {
+    const f = fixture();
+    const manifest = {} as Manifest;
+    expect(() => sandboxEnvironment({ ...f, manifest })).toThrow(
+      'trusted Manifest',
+    );
+    expect(() => renderStorageLayout(manifest)).toThrow('trusted Manifest');
+    expect(f.events).toEqual([]);
+  });
   it('captures trusted manifest/options and preserves provider mount declarations and readonly default', async () => {
     const f = fixture();
     const manifest = mountManifest();
@@ -142,7 +198,7 @@ describe('native sandbox environment', () => {
     expect(() =>
       sandboxEnvironment({
         ...f,
-        manifest: { entries: { data: s3Mount({ bucket: 'x' }) } },
+        manifest: new Manifest({ entries: { data: s3Mount({ bucket: 'x' }) } }),
       }),
     ).toThrow('explicit mountStrategy');
     expect(f.events).toEqual([]);
@@ -327,17 +383,19 @@ describe('native sandbox environment', () => {
   ] as const)(
     'renders Blaxel drive access using its provider override (%s, %s)',
     (driveReadOnly, readOnly, access) => {
-      const output = renderStorageLayout({
-        entries: {
-          drive: {
-            type: 'mount',
-            driveName: 'synthetic',
-            driveReadOnly,
-            readOnly,
-            mountStrategy: { type: 'blaxel_drive' },
+      const output = renderStorageLayout(
+        new Manifest({
+          entries: {
+            drive: {
+              type: 'mount',
+              driveName: 'synthetic',
+              driveReadOnly,
+              readOnly,
+              mountStrategy: { type: 'blaxel_drive' },
+            },
           },
-        },
-      });
+        }),
+      );
       expect(JSON.parse(output).storage).toEqual([
         { path: '/workspace/drive', access },
       ]);

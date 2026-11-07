@@ -19,7 +19,7 @@ it.each([
     const source = sandboxEnvironment({
       client: client() as SandboxClient,
       connect,
-      manifest: {
+      manifest: new Manifest({
         entries: {
           data: {
             type: 's3_mount',
@@ -27,7 +27,7 @@ it.each([
             mountStrategy: { type: 'docker_volume' },
           },
         },
-      },
+      }),
     });
     await expect(acquireEnvironment(source)).rejects.toThrow(/supports/);
     expect(connect).not.toHaveBeenCalled();
