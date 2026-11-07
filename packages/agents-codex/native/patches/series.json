@@ -283,7 +283,31 @@
     {
       "path": "req682-hosted-search-evidence.patch",
       "sha256": "9999a2376c507d69d7a0e37e813c3c63730546ee045aa787a6257429aaa8778e"
+    },
+    {
+      "path": "0061-cache-converted-ca-bundles.patch",
+      "sha256": "2d16bc0c9b57d90e95df52e2b4e2ebb1e375946faa6c2dd50578cb8d99d92115"
+    },
+    {
+      "path": "0063-native-model-http-dispatch.patch",
+      "sha256": "e7469d55c4756e3ff8af235e9f5ae15cd86158223bb115e1463e546e890118a9"
+    },
+    {
+      "path": "0083-native-performance-regression-tests.patch",
+      "sha256": "892b91e4143900de39692110261e02c4f6327f385dee7bb474b8fcb6b9a3b1ed"
+    },
+    {
+      "path": "0069-test-root-termination-under-backpressure.patch",
+      "sha256": "937a81392a18b15207c1177aeab9012629178d0600f6348c892455b8f0af8898"
+    },
+    {
+      "path": "0084-update-native-test-fixtures.patch",
+      "sha256": "ec86c33a20e83f3fb6f60e60400ce63475cd126704530de293798f9ca476bd65"
+    },
+    {
+      "path": "0077-avoid-unrequested-history-snapshots.patch",
+      "sha256": "b2e54de97b16ffbb23d9936eeb900882fec19373a24c34bec4fc55ea73fa1903"
     }
   ],
-  "result_tree": "48f9b7e1f8bf2ce4fbd52ac26b62db55e2c636a1"
+  "result_tree": "43987570a911b8834832014708ce5afe1d649e70"
 }

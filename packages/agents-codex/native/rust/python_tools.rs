@@ -707,6 +707,13 @@ impl PythonTools {
             .clone()
     }
 
+    pub(crate) fn has_pending_request(&self) -> bool {
+        self.family
+            .receiver
+            .try_lock()
+            .map_or(true, |receiver| !receiver.is_empty())
+    }
+
     pub async fn next_request(self: &Arc<Self>) -> Value {
         let mut receiver = self.family.receiver.lock().await;
         loop {

@@ -1,0 +1,640 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -221,6 +221,8 @@
+     cached_websocket_session: StdMutex<WebsocketSession>,
+     /// Last full tool list used for sampling, retained across turns and connection resets.
+     last_inference_tools: StdMutex<Option<Arc<[ToolSpec]>>>,
++    #[cfg(test)]
++    physical_transport_attempts: std::sync::atomic::AtomicUsize,
+ }
+
+ enum ClientRouting {
+@@ -575,6 +577,8 @@
+                 agent_identity_session_fallback: AgentIdentitySessionFallback::default(),
+                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
+                 last_inference_tools: StdMutex::new(None),
++                #[cfg(test)]
++                physical_transport_attempts: std::sync::atomic::AtomicUsize::new(0),
+             }),
+             agent_identity_policy,
+             prompt_cache_key_override: None,
+@@ -1243,6 +1247,10 @@
+         } else {
+             redirect_policy
+         };
++        #[cfg(test)]
++        self.state
++            .physical_transport_attempts
++            .fetch_add(1, Ordering::SeqCst);
+         let client = create_client_for_route(
+             &self.http_client_factory,
+             &api_provider.url_for_path(endpoint),
+diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+--- a/codex-rs/core/src/client_tests.rs
++++ b/codex-rs/core/src/client_tests.rs
+@@ -2651,3 +2651,233 @@
+     assert_eq!(server.received_requests().await.unwrap().len(), 3);
+     Ok(())
+ }
++
++mod direct_model_http_transport {
++    use super::*;
++    use codex_client::HttpTransport as _;
++    use codex_extension_api::{
++        ModelHttpStream, ModelRequestContributor, ModelRequestInput, ModelResponseInterceptor,
++        PreparedRequestAdmission,
++    };
++    use pretty_assertions::assert_eq;
++
++    #[derive(Debug)]
++    struct RefuseAdmission;
++    impl PreparedRequestAdmission for RefuseAdmission {
++        fn admit_request(&self) -> std::result::Result<(), String> {
++            Err("prepared admission refused".into())
++        }
++    }
++
++    #[derive(Debug)]
++    struct Claim {
++        claims: bool,
++        requests: Arc<AtomicUsize>,
++        streams: Arc<AtomicUsize>,
++    }
++    impl ModelRequestContributor for Claim {
++        fn http_stream(&self, _: &str) -> Option<ModelHttpStream> {
++            if !self.claims {
++                return None;
++            }
++            let streams = self.streams.clone();
++            Some(Arc::new(move |_| {
++                let streams = streams.clone();
++                Box::pin(async move {
++                    streams.fetch_add(1, Ordering::SeqCst);
++                    Err(TransportError::Build("direct dispatch observed".into()))
++                })
++            }))
++        }
++        fn request(&self, _: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>> {
++            self.requests.fetch_add(1, Ordering::SeqCst);
++            None
++        }
++    }
++
++    #[tokio::test]
++    async fn claimed_stream_does_not_construct_the_physical_transport() {
++        let requests = Arc::new(AtomicUsize::new(0));
++        let streams = Arc::new(AtomicUsize::new(0));
++        let mut client = test_model_client(SessionSource::Cli);
++        client.request_contributors = vec![Arc::new(Claim {
++            claims: true,
++            requests: requests.clone(),
++            streams: streams.clone(),
++        })];
++        let mut session = client.new_session();
++        let error = auth_recovery_stream(&mut session)
++            .await
++            .err()
++            .expect("direct error");
++        assert!(error.to_string().contains("direct dispatch observed"));
++        assert_eq!(requests.load(Ordering::SeqCst), 1);
++        assert_eq!(streams.load(Ordering::SeqCst), 1);
++        // Count the actual constructor site without retaining transport0060's cache.
++        assert_eq!(client.state.physical_transport_attempts.load(Ordering::SeqCst), 0);
++    }
++
++    #[tokio::test]
++    async fn declined_stream_constructs_before_prepared_admission_is_refused() {
++        let requests = Arc::new(AtomicUsize::new(0));
++        let streams = Arc::new(AtomicUsize::new(0));
++        let mut client = test_model_client(SessionSource::Cli);
++        client.request_contributors = vec![Arc::new(Claim {
++            claims: false,
++            requests: requests.clone(),
++            streams: streams.clone(),
++        })];
++        let mut session = client.new_session();
++        let metadata = test_responses_metadata_for_client(
++            &client,
++            None,
++            format!("{}:0", client.state.thread_id),
++            None,
++            TestCodexResponsesRequestKind::Turn,
++        );
++        let prompt = Prompt {
++            prepared_request_admission: Some(Arc::new(RefuseAdmission)),
++            ..Prompt::default()
++        };
++        let error = session
++            .stream(
++                &prompt,
++                &test_model_info(),
++                &test_session_telemetry(),
++                None,
++                codex_protocol::config_types::ReasoningSummary::None,
++                None,
++                &metadata,
++                &InferenceTraceContext::disabled(),
++            )
++            .await
++            .err()
++            .expect("admission error");
++        assert!(error.to_string().contains("prepared admission refused"));
++        assert_eq!(requests.load(Ordering::SeqCst), 1);
++        assert_eq!(streams.load(Ordering::SeqCst), 0);
++        assert_eq!(client.state.physical_transport_attempts.load(Ordering::SeqCst), 1);
++        // No upstream send occurs: the actual prepared-admission gate refused it.
++        // This proves construction order, not an injected constructor failure.
++    }
++
++    #[tokio::test]
++    async fn conflicting_claims_fail_before_admission_or_physical_construction() {
++        let requests = Arc::new(AtomicUsize::new(0));
++        let streams = Arc::new(AtomicUsize::new(0));
++        let mut client = test_model_client(SessionSource::Cli);
++        client.request_contributors = (0..2)
++            .map(|_| {
++                Arc::new(Claim {
++                    claims: true,
++                    requests: requests.clone(),
++                    streams: streams.clone(),
++                }) as Arc<dyn ModelRequestContributor>
++            })
++            .collect();
++        let mut session = client.new_session();
++        let error = auth_recovery_stream(&mut session)
++            .await
++            .err()
++            .expect("claim conflict");
++        assert!(
++            error
++                .to_string()
++                .contains("Multiple model HTTP dispatchers")
++        );
++        assert_eq!(requests.load(Ordering::SeqCst), 0);
++        assert_eq!(streams.load(Ordering::SeqCst), 0);
++        assert_eq!(client.state.physical_transport_attempts.load(Ordering::SeqCst), 0);
++    }
++
++    #[tokio::test]
++    async fn direct_transport_preserves_defaults_explicit_auth_repeated_and_obs_text() {
++        let captured = Arc::new(std::sync::Mutex::new(None));
++        let target = captured.clone();
++        let mut defaults = http::HeaderMap::new();
++        defaults.insert("originator", "default-origin".parse().unwrap());
++        defaults.insert("authorization", "Bearer default".parse().unwrap());
++        defaults.insert("x-repeated", "default-value".parse().unwrap());
++        defaults.insert(
++            "x-obs-text",
++            http::HeaderValue::from_bytes(b"\xe9").unwrap(),
++        );
++        let transport = super::super::ModelResponsesTransport {
++            direct: Some(Arc::new(move |request| {
++                *target.lock().unwrap() = Some(request.headers);
++                Box::pin(async { Err(TransportError::Build("captured".into())) })
++            })),
++            fallback: || -> std::result::Result<codex_client::ReqwestTransport, TransportError> {
++                panic!("claimed stream constructed physical transport")
++            },
++            defaults,
++        };
++        let mut request = codex_client::Request::new(
++            http::Method::POST,
++            "http://127.0.0.1/private/responses".into(),
++        );
++        request
++            .headers
++            .insert("authorization", "Bearer current".parse().unwrap());
++        request
++            .headers
++            .append("x-repeated", "first".parse().unwrap());
++        request
++            .headers
++            .append("x-repeated", "second".parse().unwrap());
++        request
++            .headers
++            .insert("traceparent", "trace-marker".parse().unwrap());
++        assert!(transport.stream(request).await.is_err());
++        let captured = captured.lock().unwrap();
++        let headers = captured.as_ref().unwrap();
++        assert_eq!(headers["originator"], "default-origin");
++        assert_eq!(headers["authorization"], "Bearer current");
++        assert_eq!(
++            headers
++                .get_all("x-repeated")
++                .iter()
++                .map(|value| value.as_bytes())
++                .collect::<Vec<_>>(),
++            vec![b"first".as_slice(), b"second".as_slice()]
++        );
++        assert_eq!(headers["x-obs-text"].as_bytes(), b"\xe9");
++        assert_eq!(headers["traceparent"], "trace-marker");
++    }
++    #[tokio::test]
++    async fn claimed_transport_execute_uses_ordinary_physical_fallback() {
++        let server = MockServer::start().await;
++        Mock::given(method("GET"))
++            .and(path("/unary"))
++            .respond_with(ResponseTemplate::new(200).set_body_string("physical response"))
++            .expect(1)
++            .mount(&server)
++            .await;
++        let physical = codex_login::default_client::create_client_for_route(
++            &HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
++            &server.uri(),
++            codex_http_client::ClientRouteClass::Api,
++            codex_login::default_client::ClientRedirectPolicy::Default,
++        )
++        .unwrap();
++        let physical = codex_client::ReqwestTransport::from_http_client(physical);
++        let constructions = AtomicUsize::new(0);
++        let transport = super::super::ModelResponsesTransport {
++            direct: Some(Arc::new(|_| panic!("execute invoked streaming callback"))),
++            fallback: || {
++                constructions.fetch_add(1, Ordering::SeqCst);
++                Ok(physical.clone())
++            },
++            defaults: http::HeaderMap::new(),
++        };
++        let response = transport
++            .execute(codex_client::Request::new(
++                http::Method::GET,
++                format!("{}/unary", server.uri()),
++            ))
++            .await
++            .unwrap();
++        assert_eq!(response.body.as_ref(), b"physical response");
++        assert_eq!(constructions.load(Ordering::SeqCst), 1);
++    }
++}
+diff --git a/codex-rs/http-client/src/custom_ca_tls_tests.rs b/codex-rs/http-client/src/custom_ca_tls_tests.rs
+--- a/codex-rs/http-client/src/custom_ca_tls_tests.rs
++++ b/codex-rs/http-client/src/custom_ca_tls_tests.rs
+@@ -77,3 +77,367 @@
+     }
+     panic!("handshake did not complete");
+ }
++
++struct BundleEnv {
++    preferred: Option<std::path::PathBuf>,
++    fallback: Option<std::path::PathBuf>,
++}
++
++impl super::EnvSource for BundleEnv {
++    fn var(&self, key: &str) -> Option<String> {
++        match key {
++            super::CODEX_CA_CERT_ENV => &self.preferred,
++            super::SSL_CERT_FILE_ENV => &self.fallback,
++            _ => return None,
++        }
++        .as_ref()
++        .map(|path| path.to_string_lossy().into_owned())
++    }
++}
++
++fn fresh_client(
++    env: &BundleEnv,
++    marker: &str,
++) -> Result<reqwest::Client, super::BuildCustomCaTransportError> {
++    let mut headers = reqwest::header::HeaderMap::new();
++    headers.insert("x-cache-test", marker.parse().unwrap());
++    super::build_reqwest_client_with_env(
++        env,
++        reqwest::Client::builder()
++            .use_rustls_tls()
++            .no_proxy()
++            .default_headers(headers)
++            .timeout(std::time::Duration::from_secs(5)),
++    )
++}
++
++fn assert_certificate_failure(error: reqwest::Error, expected: rustls::CertificateError) {
++    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&error);
++    while let Some(current) = cause {
++        if let Some(rustls::Error::InvalidCertificate(actual)) =
++            current.downcast_ref::<rustls::Error>()
++        {
++            if expected == rustls::CertificateError::NotValidForName {
++                assert!(
++                    matches!(
++                        actual,
++                        rustls::CertificateError::NotValidForName
++                            | rustls::CertificateError::NotValidForNameContext { .. }
++                    ),
++                    "expected a hostname mismatch, got {actual:?}"
++                );
++            } else {
++                assert_eq!(actual, &expected);
++            }
++            return;
++        }
++        // io::Error::source skips its immediate custom payload.
++        cause = if let Some(error) = current.downcast_ref::<std::io::Error>() {
++            error
++                .get_ref()
++                .map(|inner| inner as &(dyn std::error::Error + 'static))
++        } else {
++            current.source()
++        };
++    }
++    panic!("expected a certificate validation failure, got {error:?}");
++}
++
++fn independent_ca(common_name: &str) -> (String, Arc<rustls::ServerConfig>) {
++    codex_utils_rustls_provider::ensure_rustls_crypto_provider();
++    let mut params = CertificateParams::default();
++    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
++    params
++        .distinguished_name
++        .push(rcgen::DnType::CommonName, common_name);
++    let ca = CertifiedIssuer::self_signed(params, KeyPair::generate().unwrap()).unwrap();
++    let key = KeyPair::generate().unwrap();
++    let leaf = CertificateParams::new(vec!["localhost".to_string()])
++        .unwrap()
++        .signed_by(&key, &ca)
++        .unwrap();
++    let server = rustls::ServerConfig::builder()
++        .with_no_client_auth()
++        .with_single_cert(vec![leaf.der().clone()], key.into())
++        .unwrap();
++    (ca.pem(), Arc::new(server))
++}
++
++async fn request_with_fresh_connection(
++    client: &reqwest::Client,
++    config: Arc<rustls::ServerConfig>,
++    hostname: &str,
++) -> Result<String, reqwest::Error> {
++    use std::io::Read;
++    use std::io::Write;
++    use std::time::Duration;
++
++    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
++    listener.set_nonblocking(true).unwrap();
++    let port = listener.local_addr().unwrap().port();
++    let server = std::thread::spawn(move || -> std::io::Result<()> {
++        let deadline = std::time::Instant::now() + Duration::from_secs(5);
++        let stream = loop {
++            match listener.accept() {
++                Ok((stream, _)) => break stream,
++                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
++                    if std::time::Instant::now() >= deadline {
++                        return Err(std::io::ErrorKind::TimedOut.into());
++                    }
++                    std::thread::sleep(Duration::from_millis(1));
++                }
++                Err(error) => return Err(error),
++            }
++        };
++        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
++        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
++        let connection = rustls::ServerConnection::new(config).unwrap();
++        let mut tls = rustls::StreamOwned::new(connection, stream);
++        let mut request = Vec::new();
++        let mut buffer = [0; 1024];
++        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
++            let count = tls.read(&mut buffer)?;
++            if count == 0 {
++                return Err(std::io::ErrorKind::UnexpectedEof.into());
++            }
++            request.extend_from_slice(&buffer[..count]);
++        }
++        write!(
++            tls,
++            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
++            request.len()
++        )?;
++        tls.write_all(&request)?;
++        tls.flush()
++    });
++    let result = async {
++        client
++            .get(format!("https://{hostname}:{port}/"))
++            .send()
++            .await?
++            .text()
++            .await
++    }
++    .await;
++    let server_result = server.join().expect("TLS server should not panic");
++    if result.is_ok() {
++        server_result.expect("TLS server should return the request");
++    }
++    result
++}
++
++#[tokio::test]
++async fn converted_ca_cache_observes_same_path_rotation_and_preserves_builders() {
++    let (pem_a, server_a) = independent_ca("rotation issuer A");
++    let (pem_b, server_b) = independent_ca("rotation issuer B");
++    let temp = tempfile::TempDir::new().unwrap();
++    let path = temp.path().join("rotating.pem");
++    // Keep file length and mtime unchanged throughout rotation.
++    let pad = |pem: &str| format!("{pem}{}", " ".repeat(4096 - pem.len()));
++    std::fs::write(&path, pad(&pem_a)).unwrap();
++    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
++    let replace = |pem: &str| {
++        std::fs::write(&path, pad(pem)).unwrap();
++        std::fs::File::options()
++            .write(true)
++            .open(&path)
++            .unwrap()
++            .set_times(std::fs::FileTimes::new().set_modified(modified))
++            .unwrap();
++    };
++    let env = BundleEnv {
++        preferred: Some(path.clone()),
++        fallback: None,
++    };
++    let first = fresh_client(&env, "first").unwrap();
++    assert!(
++        request_with_fresh_connection(&first, server_a.clone(), "localhost")
++            .await
++            .unwrap()
++            .contains("x-cache-test: first")
++    );
++    let second = fresh_client(&env, "second").unwrap();
++    assert!(
++        request_with_fresh_connection(&second, server_a.clone(), "localhost")
++            .await
++            .unwrap()
++            .contains("x-cache-test: second")
++    );
++
++    replace("invalid PEM");
++    let error = fresh_client(&env, "invalid").unwrap_err();
++    assert!(
++        matches!(error, super::BuildCustomCaTransportError::InvalidCaFile { source_env: CODEX_CA_CERT_ENV, path: ref current, .. } if current == &path)
++    );
++
++    replace(&pem_b);
++    let rotated = fresh_client(&env, "rotated").unwrap();
++    assert!(
++        request_with_fresh_connection(&rotated, server_b.clone(), "localhost")
++            .await
++            .is_ok()
++    );
++    assert_certificate_failure(
++        request_with_fresh_connection(&rotated, server_a.clone(), "localhost")
++            .await
++            .expect_err("certificate validation should reject this server"),
++        rustls::CertificateError::UnknownIssuer,
++    );
++    assert_certificate_failure(
++        request_with_fresh_connection(&rotated, server_b.clone(), "127.0.0.1")
++            .await
++            .expect_err("certificate validation should reject this server"),
++        rustls::CertificateError::NotValidForName,
++    );
++    assert!(
++        request_with_fresh_connection(&first, server_a, "localhost")
++            .await
++            .is_ok()
++    );
++    let ordinary = fresh_client(
++        &BundleEnv {
++            preferred: None,
++            fallback: None,
++        },
++        "ordinary",
++    )
++    .unwrap();
++    assert_certificate_failure(
++        request_with_fresh_connection(&ordinary, server_b, "localhost")
++            .await
++            .expect_err("certificate validation should reject this server"),
++        rustls::CertificateError::UnknownIssuer,
++    );
++}
++
++#[tokio::test]
++async fn converted_ca_cache_keeps_concurrent_bundles_separate() {
++    let (pem_a, server_a) = independent_ca("concurrent issuer A");
++    let (pem_b, server_b) = independent_ca("concurrent issuer B");
++    let temp = tempfile::TempDir::new().unwrap();
++    let path_a = temp.path().join("a.pem");
++    let path_b = temp.path().join("b.pem");
++    std::fs::write(&path_a, pem_a).unwrap();
++    std::fs::write(&path_b, pem_b).unwrap();
++    let env_a = BundleEnv {
++        preferred: Some(path_a),
++        fallback: None,
++    };
++    let env_b = BundleEnv {
++        preferred: None,
++        fallback: Some(path_b),
++    };
++    let barrier = std::sync::Barrier::new(2);
++    let runtime = tokio::runtime::Handle::current();
++    let (client_a, client_b) = std::thread::scope(|scope| {
++        let build = |env: &BundleEnv| {
++            let _entered = runtime.enter();
++            barrier.wait();
++            fresh_client(env, "concurrent").unwrap()
++        };
++        let a = scope.spawn(move || build(&env_a));
++        let b = scope.spawn(move || build(&env_b));
++        (a.join().unwrap(), b.join().unwrap())
++    });
++    assert!(
++        request_with_fresh_connection(&client_a, server_a.clone(), "localhost")
++            .await
++            .is_ok()
++    );
++    assert_certificate_failure(
++        request_with_fresh_connection(&client_a, server_b.clone(), "localhost")
++            .await
++            .expect_err("certificate validation should reject this server"),
++        rustls::CertificateError::UnknownIssuer,
++    );
++    assert!(
++        request_with_fresh_connection(&client_b, server_b, "localhost")
++            .await
++            .is_ok()
++    );
++    assert_certificate_failure(
++        request_with_fresh_connection(&client_b, server_a, "localhost")
++            .await
++            .expect_err("certificate validation should reject this server"),
++        rustls::CertificateError::UnknownIssuer,
++    );
++}
++
++#[tokio::test]
++async fn converted_ca_cache_reports_current_file_and_conversion_errors() {
++    let temp = tempfile::TempDir::new().unwrap();
++    let path = temp.path().join("current.pem");
++    let pem = include_str!("../tests/fixtures/test-ca.pem");
++    std::fs::write(&path, pem).unwrap();
++    let env = BundleEnv {
++        preferred: None,
++        fallback: Some(path.clone()),
++    };
++    fresh_client(&env, "warm").unwrap();
++    std::fs::remove_file(&path).unwrap();
++    let error = fresh_client(&env, "deleted").unwrap_err();
++    assert!(
++        matches!(error, super::BuildCustomCaTransportError::ReadCaFile { source_env: super::SSL_CERT_FILE_ENV, path: ref current, ref source } if current == &path && source.kind() == std::io::ErrorKind::NotFound)
++    );
++
++    std::fs::write(&path, pem).unwrap();
++    let missing = temp.path().join("preferred-missing.pem");
++    let preferred = BundleEnv {
++        preferred: Some(missing.clone()),
++        fallback: Some(path.clone()),
++    };
++    let error = fresh_client(&preferred, "missing").unwrap_err();
++    assert!(
++        matches!(error, super::BuildCustomCaTransportError::ReadCaFile { source_env: CODEX_CA_CERT_ENV, path: ref current, ref source } if current == &missing && source.kind() == std::io::ErrorKind::NotFound)
++    );
++
++    std::fs::write(
++        &missing,
++        format!("{pem}\n-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n"),
++    )
++    .unwrap();
++    let error = fresh_client(&preferred, "bad-der").unwrap_err();
++    assert!(
++        matches!(error, super::BuildCustomCaTransportError::RegisterCertificate { source_env: CODEX_CA_CERT_ENV, path: ref current, certificate_index: 2, .. } if current == &missing)
++    );
++    std::fs::write(&missing, pem).unwrap();
++    fresh_client(&preferred, "restored").unwrap();
++
++    // Cache a conversion, then keep a caller's invalid builder setting observable.
++    let error = super::build_reqwest_client_with_env(
++        &preferred,
++        reqwest::Client::builder()
++            .no_proxy()
++            .user_agent("invalid\nheader"),
++    )
++    .unwrap_err();
++    assert!(
++        matches!(error, super::BuildCustomCaTransportError::BuildClientWithCustomCa { source_env: CODEX_CA_CERT_ENV, path: ref current, .. } if current == &missing)
++    );
++}
++
++#[tokio::test]
++async fn converted_ca_cache_preserves_trusted_labels_and_crl_bundles() {
++    let temp = tempfile::TempDir::new().unwrap();
++    let path = temp.path().join("variants.pem");
++    let env = BundleEnv {
++        preferred: Some(path.clone()),
++        fallback: None,
++    };
++    for pem in [
++        include_str!("../tests/fixtures/test-ca-trusted.pem").to_owned(),
++        format!(
++            "{}\n-----BEGIN X509 CRL-----\nMIIC\n-----END X509 CRL-----",
++            include_str!("../tests/fixtures/test-ca.pem")
++        ),
++        format!(
++            "{}\n{}",
++            include_str!("../tests/fixtures/test-ca.pem"),
++            KeyPair::generate().unwrap().serialize_pem()
++        ),
++    ] {
++        std::fs::write(&path, pem).unwrap();
++        fresh_client(&env, "miss").unwrap();
++        fresh_client(&env, "hit").unwrap();
++    }
++}

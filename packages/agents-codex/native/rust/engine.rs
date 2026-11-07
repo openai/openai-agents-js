@@ -2059,9 +2059,9 @@ async fn read_child(
 
 fn native_event(
     source: Option<(ThreadId, u64)>,
-    event: Event,
+    event: &Event,
 ) -> anyhow::Result<serde_json::Value> {
-    let mut value = serde_json::to_value(&event)?;
+    let mut value = serde_json::to_value(event)?;
     crate::usage::event_to_wire(&mut value["msg"])?;
     if let Some((id, instance)) = source {
         value["subagent_id"] = serde_json::json!(id);
@@ -2077,6 +2077,51 @@ fn graph_event(event: crate::storage::GraphEvent) -> anyhow::Result<serde_json::
     let mut message = serde_json::to_value(event)?;
     message["type"] = serde_json::json!("sdk_subagent_lifecycle");
     Ok(serde_json::json!({"id": "", "msg": message}))
+}
+
+const SESSION_EVENT_BATCH_LIMIT: usize = 8;
+const SESSION_EVENT_BATCH_BYTES: usize = 16 * 1024;
+
+// Poll only this retained root source, never a merged session read. A Pending
+// future may already own question/error metadata and must stay in its slot.
+fn take_ready_root_text_delta(
+    next: &mut Option<NextNativeEvent>,
+    dequeued: &AtomicBool,
+    thread: &str,
+    turn: &str,
+    remaining_bytes: usize,
+    make_next: impl FnOnce() -> NextNativeEvent,
+) -> Option<String> {
+    let reader = next.as_mut()?;
+    let waker = futures_util::task::noop_waker();
+    let mut context = std::task::Context::from_waker(&waker);
+    let Poll::Ready(result) = reader.as_mut().poll(&mut context) else {
+        return None;
+    };
+    let raw = match &result {
+        Ok((event, None)) if event.id == turn => match &event.msg {
+            EventMsg::AgentMessageContentDelta(delta)
+                if delta.thread_id == thread
+                    && delta.turn_id == turn
+                    && delta.delta.len() <= remaining_bytes =>
+            {
+                // Only string fields occur in this event. Its wire form needs
+                // no usage/error/question projection or delivery side effects.
+                serde_json::to_string(event).ok()
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(raw) = raw.filter(|raw| raw.len() <= remaining_bytes) {
+        dequeued.store(false, Ordering::Release);
+        *next = Some(make_next());
+        return Some(raw);
+    }
+    // Preserve control events, errors and over-budget text without applying
+    // root/child/manual/terminal delivery effects. Keep the dequeue witness.
+    *next = Some(Box::pin(std::future::ready(result)));
+    None
 }
 
 impl ThreadState {
@@ -2143,7 +2188,7 @@ impl ThreadState {
         } else {
             None
         };
-        let mut value = native_event(None, event)?;
+        let mut value = native_event(None, &event)?;
         if let Some(reason) = reason {
             value["msg"]["_sdk_response_integrity_reason"] = serde_json::json!(reason);
         }
@@ -2645,7 +2690,7 @@ impl ThreadState {
                 retained_error = terminal_error;
             }
         }
-        let mut value = native_event(Some(source), event)?;
+        let mut value = native_event(Some(source), &event)?;
         self.attach_question(&mut value, Some(source), question);
         if let Some(error) = retained_error {
             value["msg"]["error"] = error;
@@ -2739,6 +2784,70 @@ impl ThreadState {
                 ChildStepPublication::Deferred
             },
         )
+    }
+
+    pub async fn next_session_events(self: &Arc<Self>) -> anyhow::Result<Vec<String>> {
+        // This first read always stays on the original asynchronous bridge.
+        let first = self.next_session_event().await?;
+        let raw = serde_json::to_string(&first)?;
+        let mut bytes = raw.len();
+        let mut batch = vec![raw];
+        let thread = self.id.to_string();
+        if first["msg"]["type"] != "agent_message_content_delta"
+            || first.get("subagent_id").is_some()
+            || first.get("subagent_incarnation").is_some()
+            || first.get("subagent_instance_id").is_some()
+            || first["msg"]["thread_id"].as_str() != Some(thread.as_str())
+            || first["msg"]["turn_id"] != first["id"]
+            || bytes >= SESSION_EVENT_BATCH_BYTES
+        {
+            return Ok(batch);
+        }
+        let Some(turn) = first["id"].as_str() else {
+            return Ok(batch);
+        };
+        // Never wait for another owner, new event, or a full batch.
+        let Ok(mut events) = self.events.try_lock() else {
+            return Ok(batch);
+        };
+        let python_tools = self
+            .thread
+            .thread_extension_data()
+            .get::<crate::python_tools::PythonTools>();
+        while batch.len() < SESSION_EVENT_BATCH_LIMIT {
+            if self.is_closed()
+                || events.root_step.is_some()
+                || events.publication_prefix.is_some()
+                || !events.boundary_requests.is_empty()
+                || events.session_terminal.is_some()
+                || !events.children.is_empty()
+                || !events.pending.is_empty()
+                || !events.deferred_child_steps.is_empty()
+                || !events.graph.is_empty()
+                || !events.created.is_empty()
+                || !events.extensions.is_empty()
+                || self.request_metadata.has_pending()
+                || python_tools
+                    .as_ref()
+                    .is_some_and(|tools| tools.has_pending_request())
+            {
+                break;
+            }
+            let witness = events.native_dequeued.clone();
+            let Some(raw) = take_ready_root_text_delta(
+                &mut events.native,
+                &witness,
+                &thread,
+                turn,
+                SESSION_EVENT_BATCH_BYTES - bytes,
+                || next_native_event(self.thread.clone(), witness.clone()),
+            ) else {
+                break;
+            };
+            bytes += raw.len();
+            batch.push(raw);
+        }
+        Ok(batch)
     }
 
     pub async fn next_session_event(self: &Arc<Self>) -> anyhow::Result<serde_json::Value> {
@@ -3094,10 +3203,18 @@ impl ThreadState {
                             .manager
                             .request_agent_tree_shutdown(self.id)
                             .await?;
+                        // Tree cancellation already enters Core's full shutdown
+                        // handler. Join its same loop without queuing an unused
+                        // second Shutdown submission behind that cancellation.
+                        tokio::time::timeout_at(shutdown_deadline, thread.wait_until_terminated())
+                            .await
+                            .context("Codex thread shutdown timed out")?;
+                    } else {
+                        // Discovered descendants may own distinct runtimes.
+                        tokio::time::timeout_at(shutdown_deadline, thread.shutdown_and_wait())
+                            .await
+                            .context("Codex thread shutdown timed out")??;
                     }
-                    tokio::time::timeout_at(shutdown_deadline, thread.shutdown_and_wait())
-                        .await
-                        .context("Codex thread shutdown timed out")??;
                     stopped.insert(id, thread);
                 }
                 // Shut down parents before rediscovering children created during shutdown.
@@ -3498,6 +3615,10 @@ mod publication_boundary_tests {
         assert!(!children[0].1.dequeued.load(Ordering::Acquire));
     }
 }
+
+#[cfg(test)]
+#[path = "async_event_batch_tests.rs"]
+mod async_event_batch_tests;
 
 #[cfg(test)]
 #[path = "checklist_tests.rs"]

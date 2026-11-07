@@ -1,3 +1,4 @@
+import { nativeEventBatch } from './fixtures/native-event-batches';
 import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Engine, NativeThread } from '../src/runtime/binding';
@@ -471,7 +472,8 @@ function startupFixture() {
     _next_native_interception: vi.fn(() => mcpResult.promise),
     _revoke_native_interception: vi.fn(),
     _replace_mcp_servers: publish,
-    _next_session_event: nextEvent,
+    _next_session_events: () =>
+      nextEvent().then((raw) => nativeEventBatch([raw])),
     _finish_child_event_reader: vi.fn(),
     _next_native_mcp_result: vi.fn(() => mcpResult.promise),
     _revoke_native_mcp_results: vi.fn(),

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -1326,12 +1326,18 @@ describe(
                 event.submissionId === ids.childSubmission,
             );
             expect((await unwrap(rootWait)).finalOutput).toBe('root done');
-            const children = await collect(session.subagents());
-            expect(children).toHaveLength(1);
-            const child = children[0];
+            const { child, original } = await vi.waitFor(
+              async () => {
+                const children = await collect(session.subagents());
+                expect(children).toHaveLength(1);
+                const child = children[0];
+                if (!child?.turn)
+                  throw new Error('Missing actual live child Turn');
+                return { child, original: child.turn };
+              },
+              { timeout: 5000 },
+            );
             expect(child.isLive).toBe(true);
-            const original = child.turn;
-            if (!original) throw new Error('Missing actual live child Turn');
             ids.childSubmission = original.submissionId;
             const childWait = context.track(original.wait());
             const action = await nextAction(

@@ -1,3 +1,4 @@
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { createServer } from 'node:http';
@@ -902,12 +903,12 @@ it.each([true, false])(
     const { binding } = await import('../../src/runtime/binding');
     const native = await binding();
     const nativeErrors: unknown[] = [];
-    const nextEvent = native.NativeThread.prototype._next_session_event;
+    const nextEvent = native.NativeThread.prototype._next_session_events;
     const observer = vi
-      .spyOn(native.NativeThread.prototype, '_next_session_event')
+      .spyOn(native.NativeThread.prototype, '_next_session_events')
       .mockImplementation(async function (this: NativeThread) {
         const raw = await nextEvent.call(this);
-        const event = JSON.parse(raw);
+        const event = JSON.parse(firstNativeBatchWire(raw));
         if (
           event.msg.type === 'error' &&
           String(event.msg.message).includes('automatic compaction')

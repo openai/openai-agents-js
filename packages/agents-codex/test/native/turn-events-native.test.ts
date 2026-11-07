@@ -1,3 +1,5 @@
+import type { NativeEventBatch } from '../fixtures/native-event-batches';
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -35,17 +37,17 @@ afterEach(async () => {
 describe('passive real-native root Turn events', () => {
   it('drains genuine terminal publication without public wait and supports independent replay', async () => {
     const native = await binding();
-    const next = native.NativeThread.prototype._next_session_event;
+    const next = native.NativeThread.prototype._next_session_events;
     const terminal = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     let held = false;
     // Delay delivery only: the terminal and its identity come from real Core.
     vi.spyOn(
       native.NativeThread.prototype,
-      '_next_session_event',
+      '_next_session_events',
     ).mockImplementation(async function (this: NativeThread) {
       const raw = await next.call(this);
-      const event = JSON.parse(raw);
+      const event = JSON.parse(firstNativeBatchWire(raw));
       if (
         !held &&
         !event.subagent_id &&
@@ -461,11 +463,11 @@ describe('passive real-native root Turn events', () => {
       },
     }).session();
     const native = await binding();
-    const next = native.NativeThread.prototype._next_session_event;
-    const originalReads = new Set<Promise<string>>();
+    const next = native.NativeThread.prototype._next_session_events;
+    const originalReads = new Set<Promise<NativeEventBatch>>();
     vi.spyOn(
       native.NativeThread.prototype,
-      '_next_session_event',
+      '_next_session_events',
     ).mockImplementation(function (this: NativeThread) {
       const pending = next.call(this);
       // Fail only the original reader; the correction and its cleanup are real.

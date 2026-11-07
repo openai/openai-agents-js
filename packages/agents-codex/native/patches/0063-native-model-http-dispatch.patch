@@ -1,0 +1,170 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -3347,6 +3347,7 @@
+ version = "0.0.0"
+ dependencies = [
+  "codex-api",
++ "codex-client",
+  "codex-config",
+  "codex-context-fragments",
+  "codex-exec-server-protocol",
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -467,6 +467,46 @@
+     let mut headers = ApiHeaderMap::new();
+     api_auth.add_auth_headers(&mut headers);
+     headers
++}
++
++// Keep EndpointSession's existing HttpTransport boundary. Only a trusted
++// contributor can claim streaming; execute always uses physical transport.
++struct ModelResponsesTransport<F> {
++    direct: Option<codex_extension_api::ModelHttpStream>,
++    fallback: F,
++    defaults: ApiHeaderMap,
++}
++
++impl<F> codex_client::HttpTransport for ModelResponsesTransport<F>
++where
++    F: Fn() -> std::result::Result<ReqwestTransport, codex_client::TransportError> + Send + Sync,
++{
++    async fn execute(
++        &self,
++        req: codex_client::Request,
++    ) -> std::result::Result<codex_client::Response, codex_client::TransportError> {
++        codex_client::HttpTransport::execute(&(self.fallback)()?, req).await
++    }
++
++    async fn stream(
++        &self,
++        mut req: codex_client::Request,
++    ) -> std::result::Result<codex_client::StreamResponse, codex_client::TransportError> {
++        if let Some(direct) = &self.direct {
++            // Match the physical client's merge: explicit/auth/trace headers win,
++            // including all values of a repeated header. Preserve the same snapshot.
++            for name in self.defaults.keys() {
++                if !req.headers.contains_key(name) {
++                    for value in self.defaults.get_all(name) {
++                        req.headers.append(name, value.clone());
++                    }
++                }
++            }
++            direct(req).await
++        } else {
++            codex_client::HttpTransport::stream(&(self.fallback)()?, req).await
++        }
++    }
+ }
+
+ impl ModelClient {
+@@ -1705,11 +1745,49 @@
+                 .client
+                 .responses_headers(client_setup.auth.as_ref(), &model_info.slug);
+             tracing::Span::current().record("api.path", "/responses");
+-            let transport = self.client.build_api_transport(
+-                &client_setup.api_provider,
+-                "/responses",
+-                client_setup.redirect_policy,
+-            )?;
++            let url = client_setup.api_provider.url_for_path("/responses");
++            let mut selected = self
++                .client
++                .request_contributors
++                .iter()
++                .filter_map(|contributor| contributor.http_stream(&url));
++            let direct = selected.next();
++            if selected.next().is_some() {
++                return Err(CodexErr::Fatal(
++                    "Multiple model HTTP dispatchers claimed the route".into(),
++                ));
++            }
++            // Preserve the original construction point and error mapping for
++            // declined routes, before prepared admission, observations and auth.
++            let physical = if direct.is_none() {
++                Some(self.client.build_api_transport(
++                    &client_setup.api_provider,
++                    "/responses",
++                    client_setup.redirect_policy,
++                )?)
++            } else {
++                None
++            };
++            let fallback_provider = client_setup.api_provider.clone();
++            let fallback_redirect_policy = client_setup.redirect_policy;
++            let transport = ModelResponsesTransport {
++                direct,
++                // Claimed streams never construct a physical client. Only a
++                // claimed transport's hypothetical unary call needs lazy fallback.
++                fallback: || {
++                    if let Some(physical) = &physical {
++                        return Ok(physical.clone());
++                    }
++                    self.client
++                        .build_api_transport(
++                            &fallback_provider,
++                            "/responses",
++                            fallback_redirect_policy,
++                        )
++                        .map_err(|error| codex_client::TransportError::Build(error.to_string()))
++                },
++                defaults: codex_login::default_client::default_headers(),
++            };
+             let request_auth_context = AuthRequestTelemetryContext::new(
+                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+                 client_setup.api_auth.as_ref(),
+diff --git a/codex-rs/ext/extension-api/Cargo.toml b/codex-rs/ext/extension-api/Cargo.toml
+--- a/codex-rs/ext/extension-api/Cargo.toml
++++ b/codex-rs/ext/extension-api/Cargo.toml
+@@ -15,6 +15,7 @@
+
+ [dependencies]
+ codex-api = { workspace = true }
++codex-client = { workspace = true }
+ futures = { workspace = true }
+ codex-guardian-context = { workspace = true }
+ codex-history = { workspace = true }
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -123,6 +123,7 @@
+     ModelResponseLinked,
+ };
+
++pub use model_request::ModelHttpStream;
+ pub use model_request::ModelRequestContributor;
+ pub use model_request::ModelRequestInput;
+ pub use model_request::ModelRequestKind;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -81,9 +81,28 @@
+     pub model: &'a str,
+ }
+
++/// Trusted in-process HTTP stream dispatch. The endpoint session still prepares,
++/// authenticates, observes and retries the request through HttpTransport.
++/// A selected dispatcher owns the route: failures must never fall back to I/O.
++pub type ModelHttpStream = Arc<
++    dyn Fn(
++            codex_client::Request,
++        )
++            -> BoxFuture<'static, Result<codex_client::StreamResponse, codex_client::TransportError>>
++        + Send
++        + Sync,
++>;
++
+ /// Contributes request-scoped preparation and response interception.
+ /// Return None for requests this host does not manage.
+ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
++    /// Select solely from the provider endpoint before physical-client creation.
++    /// Declining must not mutate request admission or execute application code.
++    /// The returned dispatcher must revalidate the exact authenticated request.
++    fn http_stream(&self, _url: &str) -> Option<ModelHttpStream> {
++        None
++    }
++
+     /// Whether this exact operation opted into prepared-request editing.
+     /// Keep this captured marker true through retirement; it is not an owner-liveness check.
+     /// Hosts must reject unsupported operation settings before starting work.

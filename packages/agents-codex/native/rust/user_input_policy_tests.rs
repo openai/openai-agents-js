@@ -133,7 +133,7 @@ async fn exercise(enabled: bool, legacy_only: bool, non_root: bool) {
                             async_messages.push(message);
                         } else if message.id == "final" {
                             assert!(matches!(&message.content[..],
-                                [AgentMessageContent::Text { text }] if text == "done"));
+                                [AgentMessageContent::Text { text, .. }] if text == "done"));
                             final_messages += 1;
                         }
                     }
@@ -191,7 +191,7 @@ async fn exercise(enabled: bool, legacy_only: bool, non_root: bool) {
             } else {
                 assert!(message.questions.is_none(), "independent message must not become a question");
                 assert!(matches!(&message.content[..],
-                    [AgentMessageContent::Text { text }] if text == "Deployment is ready."));
+                    [AgentMessageContent::Text { text, .. }] if text == "Deployment is ready."));
             }
         }
         thread.close().await.unwrap();

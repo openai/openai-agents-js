@@ -1,3 +1,4 @@
+import { nativeEventBatch } from '../fixtures/native-event-batches';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   NativeError,
@@ -413,7 +414,8 @@ async function admissionSession(submit: () => Promise<string>) {
     {
       id: 'effects-session',
       _submit: submit,
-      _next_session_event: () => ended.promise,
+      _next_session_events: () =>
+        ended.promise.then((raw) => nativeEventBatch([raw])),
       _finish_child_event_reader: () => {},
       _stop_sampling_for_close: () => {},
       _close_report: async () => {
@@ -589,13 +591,13 @@ it.each([
         _stop_sampling_for_close: () => {},
         _submit: async () =>
           JSON.stringify({ status: 'started', turn_id: 'root' }),
-        _next_session_event: async () => {
+        _next_session_events: async () => {
           while (!queued.length && !closed) {
             await changed.promise;
             changed = Promise.withResolvers<void>();
           }
           if (closed) throw new Error('reader closed');
-          return queued.shift()!;
+          return nativeEventBatch([queued.shift()!]);
         },
         _finish_child_event_reader: () => {},
         _close_report: async () => {

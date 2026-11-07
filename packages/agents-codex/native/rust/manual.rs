@@ -601,9 +601,20 @@ impl PythonTools {
             ensure!(wait.id == id, "foreign manual checkpoint wait");
             (wait.progress.clone(), wait.cancelled.clone())
         };
-        tokio::select! {
-            _ = cancelled.cancelled() => {},
-            _ = progress.changed() => {},
+        let changed = tokio::select! {
+            _ = cancelled.cancelled() => false,
+            _ = progress.changed() => true,
+        };
+        if changed {
+            let mut manual = self.manual.lock().expect("manual tools poisoned");
+            if let Some(wait) = manual.waiter.as_mut()
+                && wait.id == id
+            {
+                // A returned wait is followed by a fresh readiness check. Mark
+                // all changes already visible before returning, so the next
+                // wait cannot replay the same notification indefinitely.
+                let _ = wait.progress.borrow_and_update();
+            }
         }
         Ok(())
     }
@@ -652,6 +663,10 @@ impl PythonTools {
             }
             EventMsg::RawResponseCompleted(_) if manual.attempt.as_ref() == Some(&event.id) => {
                 manual.completed_calls = manual.observed_calls.clone();
+                // Core persists the raw event before delivery. Publish only
+                // after the live ledger reflects that completed sample too.
+                drop(manual);
+                self.family.manual_progress.0.send_replace(());
             }
             EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
                 if manual.attempt.as_ref() == Some(&event.id) =>
@@ -1135,5 +1150,142 @@ impl PythonTools {
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         manual.restored = None;
         manual.waiter = None;
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use codex_protocol::protocol::RawResponseCompletedEvent;
+    use std::future::{Future, poll_fn};
+    use std::task::Poll;
+
+    fn waiting_tools() -> Arc<PythonTools> {
+        let tools = super::super::pending_tests::tools();
+        tools.manual.lock().unwrap().waiter = Some(ManualWait {
+            id: "progress-test".into(),
+            progress: tools.family.manual_progress.0.subscribe(),
+            cancelled: CancellationToken::new(),
+        });
+        tools
+    }
+
+    async fn pending(mut read: std::pin::Pin<&mut impl Future<Output = Result<()>>>) {
+        assert!(matches!(
+            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await,
+            Poll::Pending
+        ));
+    }
+
+    async fn ready(mut read: std::pin::Pin<&mut impl Future<Output = Result<()>>>) {
+        assert!(matches!(
+            poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx))).await,
+            Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[tokio::test]
+    async fn sampled_call_mutation_wakes_an_already_registered_wait() {
+        let tools = waiting_tools();
+        {
+            let mut manual = tools.manual.lock().unwrap();
+            manual.attempt = Some("physical-turn".into());
+            manual.observed_calls.insert("manual-call".into());
+            assert!(!manual.completed_calls.contains("manual-call"));
+        }
+        let mut waiting = Box::pin(tools.wait_manual_progress("progress-test"));
+        pending(waiting.as_mut()).await;
+        tools.observe_manual_event(&Event {
+            id: "physical-turn".into(),
+            msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                response_id: "response".into(),
+                token_usage: None,
+                usage_metadata: None,
+            }),
+        });
+        ready(waiting.as_mut()).await;
+        assert!(
+            tools
+                .manual
+                .lock()
+                .unwrap()
+                .completed_calls
+                .contains("manual-call")
+        );
+        tools.end_manual_wait("progress-test").unwrap();
+    }
+
+    #[tokio::test]
+    async fn each_wait_requires_a_new_change_and_retirement_still_releases_it() {
+        let tools = waiting_tools();
+        tools.family.manual_progress.0.send_replace(());
+        let mut first = Box::pin(tools.wait_manual_progress("progress-test"));
+        ready(first.as_mut()).await;
+        let mut next = Box::pin(tools.wait_manual_progress("progress-test"));
+        pending(next.as_mut()).await;
+        tools.family.manual_progress.0.send_replace(());
+        ready(next.as_mut()).await;
+        let mut last = Box::pin(tools.wait_manual_progress("progress-test"));
+        pending(last.as_mut()).await;
+        tools.end_manual_wait("progress-test").unwrap();
+        ready(last.as_mut()).await;
+        tools.wait_manual_progress("progress-test").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_waits_share_a_change_without_replaying_it_for_later_waits() {
+        let tools = waiting_tools();
+        let mut one = Box::pin(tools.wait_manual_progress("progress-test"));
+        let mut two = Box::pin(tools.wait_manual_progress("progress-test"));
+        pending(one.as_mut()).await;
+        pending(two.as_mut()).await;
+        tools.family.manual_progress.0.send_replace(());
+        ready(one.as_mut()).await;
+        ready(two.as_mut()).await;
+        let mut later = Box::pin(tools.wait_manual_progress("progress-test"));
+        pending(later.as_mut()).await;
+        tools.end_manual_wait("progress-test").unwrap();
+        ready(later.as_mut()).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_a_woken_wait_keeps_the_change_for_the_next_wait() {
+        let tools = waiting_tools();
+        let mut abandoned = Box::pin(tools.wait_manual_progress("progress-test"));
+        pending(abandoned.as_mut()).await;
+        tools.family.manual_progress.0.send_replace(());
+        drop(abandoned);
+        let mut next = Box::pin(tools.wait_manual_progress("progress-test"));
+        ready(next.as_mut()).await;
+        tools.end_manual_wait("progress-test").unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_retired_wait_cannot_consume_a_replacement_tokens_change() {
+        let tools = waiting_tools();
+        let mut old = Box::pin(tools.wait_manual_progress("progress-test"));
+        pending(old.as_mut()).await;
+        // Retain the retired registration until the old future resumes, forcing
+        // its changed branch rather than letting cancellation mask the ID check.
+        let retired = tools
+            .manual
+            .lock()
+            .unwrap()
+            .waiter
+            .replace(ManualWait {
+                id: "replacement".into(),
+                progress: tools.family.manual_progress.0.subscribe(),
+                cancelled: CancellationToken::new(),
+            })
+            .unwrap();
+        tools.family.manual_progress.0.send_replace(());
+        ready(old.as_mut()).await;
+        let mut current = Box::pin(tools.wait_manual_progress("replacement"));
+        ready(current.as_mut()).await;
+        drop(retired);
+        let mut next = Box::pin(tools.wait_manual_progress("replacement"));
+        pending(next.as_mut()).await;
+        tools.end_manual_wait("replacement").unwrap();
+        ready(next.as_mut()).await;
     }
 }

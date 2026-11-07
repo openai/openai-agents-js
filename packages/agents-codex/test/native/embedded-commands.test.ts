@@ -21,7 +21,7 @@ import {
   Turn,
   embeddedCommands,
 } from '@openai/agents';
-import { Engine as NativeEngine, NativeThread } from '../../native/index.js';
+import { NativeThread } from '../../native/index.js';
 import * as agentRuntime from '../../src/runtime/agent';
 import { binding, type JsonObject } from '../../src/runtime/binding';
 import { SDKRunner } from '../../src/migration';
@@ -274,8 +274,6 @@ it.each(['cancel', 'error'] as const)(
   async (outcome) => {
     const release = Promise.withResolvers<void>();
     let entered = false;
-    const nativeAdmit = NativeEngine.prototype._sentinel_admit;
-    const admissions = vi.spyOn(NativeEngine.prototype, '_sentinel_admit');
     const server = new ModelServer([
       outcome === 'error'
         ? { status: 400, body: 'Synthetic review failure' }
@@ -300,30 +298,12 @@ it.each(['cancel', 'error'] as const)(
       completion.catch(() => {});
       if (outcome === 'cancel') {
         await vi.waitFor(() => expect(entered).toBe(true), { timeout: 10_000 });
-        const [providerId, metadata] = admissions.mock.calls.at(-1)!;
-        const engine = admissions.mock.contexts.at(-1) as NativeEngine;
-        await expect(
-          nativeAdmit.call(engine, `${providerId}-wrong`, metadata),
-        ).rejects.toThrow();
-        await expect(
-          nativeAdmit.call(
-            engine,
-            providerId,
-            JSON.stringify({
-              ...JSON.parse(metadata),
-              sdk_sentinel_nonce: 'wrong-request',
-            }),
-          ),
-        ).rejects.toThrow();
+        // Native HTTP admission now stays in Rust. Its exact receipt/retirement
+        // checks live in the Rust Review fixture; this real provider gate keeps
+        // cancellation and public event ownership on the returned Review Turn.
         const stopping = command.turn.cancel({ mode: 'force' });
         release.resolve();
         await stopping;
-        await expect(
-          nativeAdmit.call(engine, providerId, metadata),
-        ).rejects.toThrow();
-        await expect(
-          engine._sentinel_restore_schemas(providerId, metadata, '{}'),
-        ).rejects.toThrow();
       }
       await expect(completion).rejects.toBeInstanceOf(NativeError);
       expect(await Array.fromAsync(command.turn.events())).toContainEqual(

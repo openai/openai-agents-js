@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import {
   Agent,
   NativeProvider,
@@ -205,8 +205,14 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           expect(
             (await (await session.submit('Begin')).wait()).finalOutput,
           ).toBe('root finished');
-          const children = [];
-          for await (const child of session.subagents()) children.push(child);
+          const children = await vi.waitFor(
+            async () => {
+              const children = await Array.fromAsync(session.subagents());
+              expect(children[0]?.turn).toBeTruthy();
+              return children;
+            },
+            { timeout: 5_000 },
+          );
           expect(children).toHaveLength(1);
           const turn = children[0].turn;
           if (!turn) throw new Error('Missing child turn');

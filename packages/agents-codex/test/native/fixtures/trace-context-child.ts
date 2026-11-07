@@ -331,7 +331,12 @@ async function ownedChildren(flags?: string, steering = false) {
           },
         );
     try {
-      const owned = await Array.fromAsync(session.subagents());
+      const deadline = Date.now() + 5_000;
+      let owned = await Array.fromAsync(session.subagents());
+      while (owned.length === 1 && !owned[0]!.turn && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        owned = await Array.fromAsync(session.subagents());
+      }
       assert.equal(owned.length, 1);
       const child = owned[0]!;
       assert(child.turn);

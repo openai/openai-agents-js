@@ -1,3 +1,5 @@
+import type { NativeEventBatch } from '../fixtures/native-event-batches';
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -276,15 +278,15 @@ it('records sampled instructions, build identity and matching live and retained 
 
 it('signals a gap when a native execution completion arrives after the turn stream ends', async () => {
   const native = await binding();
-  const next = native.NativeThread.prototype._next_session_event;
+  const next = native.NativeThread.prototype._next_session_events;
   const release = Promise.withResolvers<void>();
-  let delayed: string | undefined;
+  let delayed: NativeEventBatch | undefined;
   let terminalDelivered = false;
   // Reorder one genuine native item. A background exec watcher can publish
   // its completion after the model turn's terminal event.
   vi.spyOn(
     native.NativeThread.prototype,
-    '_next_session_event',
+    '_next_session_events',
   ).mockImplementation(async function (this: NativeThread) {
     if (terminalDelivered && delayed !== undefined) {
       await release.promise;
@@ -294,7 +296,7 @@ it('signals a gap when a native execution completion arrives after the turn stre
     }
     for (;;) {
       const raw = await next.call(this);
-      const { msg } = JSON.parse(raw);
+      const { msg } = JSON.parse(firstNativeBatchWire(raw));
       if (
         msg.type === 'item_completed' &&
         msg.item?.type === 'CommandExecution' &&

@@ -1,3 +1,4 @@
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { once } from 'node:events';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -756,8 +757,15 @@ for (const queuedInput of [false, true]) {
       ]);
       expect(f.calls).toHaveLength(1);
       step('child owner snapshot');
-      const children = [];
-      for await (const child of session.subagents()) children.push(child);
+      const childSession = session;
+      const children = await vi.waitFor(
+        async () => {
+          const children = await Array.fromAsync(childSession.subagents());
+          expect(children[0]?.turn).toBeTruthy();
+          return children;
+        },
+        { timeout: 5_000 },
+      );
       expect(children).toHaveLength(1);
       const child = children[0];
       if (!child.turn) throw new Error('Expected the actual live child turn');
@@ -928,7 +936,7 @@ it('starts the sole real event reader before publishing MCP and refuses an unown
   const f = await fixture({ startupQuestion: true });
   const { NativeThread: Thread } = await binding();
   const publish = Thread.prototype._replace_mcp_servers;
-  const reading = vi.spyOn(Thread.prototype, '_next_session_event');
+  const reading = vi.spyOn(Thread.prototype, '_next_session_events');
   vi.spyOn(Thread.prototype, '_replace_mcp_servers').mockImplementation(
     function (this: NativeThread, ...args) {
       expect(reading.mock.contexts.at(-1)).toBe(this);
@@ -1217,7 +1225,7 @@ it.each(['early', 'late'] as const)(
 
 it('URL consent deadline ignores late delivery of an already-consented native completion', async () => {
   const { NativeThread: Thread } = await binding();
-  const originalRead = Thread.prototype._next_session_event;
+  const originalRead = Thread.prototype._next_session_events;
   const originalStatus = Thread.prototype._native_url_completion_status;
   const originalCancel = Thread.prototype._cancel_native_url_completion;
   const originalPending = Thread.prototype._native_url_pending;
@@ -1226,10 +1234,10 @@ it('URL consent deadline ignores late delivery of an already-consented native co
   const releaseStatus = Promise.withResolvers<void>();
   const releaseProbe = Promise.withResolvers<void>();
   let pendingAfterCancellation: boolean | undefined;
-  vi.spyOn(Thread.prototype, '_next_session_event').mockImplementation(
+  vi.spyOn(Thread.prototype, '_next_session_events').mockImplementation(
     async function (this: NativeThread) {
       const raw = await originalRead.call(this);
-      const event = JSON.parse(raw);
+      const event = JSON.parse(firstNativeBatchWire(raw));
       if (
         event.msg?.type === 'elicitation_status' &&
         event.msg.completed === true &&
@@ -1355,13 +1363,13 @@ it('URL consent timeout refuses a foreign completion and a prepared late reply',
 
 it('URL consent deadline retires the accepted native lifecycle after its root turn', async () => {
   const { NativeThread: Thread } = await binding();
-  const read = Thread.prototype._next_session_event;
+  const read = Thread.prototype._next_session_events;
   const retired = Promise.withResolvers<void>();
   let originalToken: unknown;
-  vi.spyOn(Thread.prototype, '_next_session_event').mockImplementation(
+  vi.spyOn(Thread.prototype, '_next_session_events').mockImplementation(
     async function (this: NativeThread) {
       const raw = await read.call(this);
-      const event = JSON.parse(raw);
+      const event = JSON.parse(firstNativeBatchWire(raw));
       if (
         event?.msg?.type === 'elicitation_request' &&
         event.msg.request?.mode === 'url'
@@ -2061,16 +2069,20 @@ it('keeps issued native decisions usable during graceful cancellation', async ()
 it('delivers an entered tool question after the graceful fence to its waiting caller', async () => {
   const f = await fixture();
   const { NativeThread: Thread } = await binding();
-  const read = Thread.prototype._next_session_event;
+  const read = Thread.prototype._next_session_events;
   const entered = Promise.withResolvers<void>();
   entered.promise.catch(() => {});
   const release = Promise.withResolvers<void>();
   const held = { value: false };
-  vi.spyOn(Thread.prototype, '_next_session_event').mockImplementation(
+  vi.spyOn(Thread.prototype, '_next_session_events').mockImplementation(
     async function (this: NativeThread) {
       try {
         const raw = await read.call(this);
-        if (!held.value && JSON.parse(raw).msg.type === 'elicitation_request') {
+        if (
+          !held.value &&
+          JSON.parse(firstNativeBatchWire(raw)).msg.type ===
+            'elicitation_request'
+        ) {
           held.value = true;
           entered.resolve();
           // Hold the actual Core event receipt, preserving its original wire.
@@ -2188,16 +2200,17 @@ it('keeps opening unpublished until its real publication boundary reaches the so
       engineClosed.value = true;
       return receipt;
     });
-  const next = Thread.prototype._next_session_event;
+  const next = Thread.prototype._next_session_events;
   const publish = Thread.prototype._replace_mcp_servers;
   const held = { value: false };
-  vi.spyOn(Thread.prototype, '_next_session_event').mockImplementation(
+  vi.spyOn(Thread.prototype, '_next_session_events').mockImplementation(
     async function (this: NativeThread) {
       const raw = await next.call(this);
       // Inspect only the kind; deliver the exact original native wire unchanged.
       if (
         !held.value &&
-        JSON.parse(raw).msg.type === 'sdk_mcp_publication_boundary'
+        JSON.parse(firstNativeBatchWire(raw)).msg.type ===
+          'sdk_mcp_publication_boundary'
       ) {
         held.value = true;
         boundaryHeld.resolve();

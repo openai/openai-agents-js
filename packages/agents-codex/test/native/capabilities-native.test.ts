@@ -1,3 +1,7 @@
+import {
+  firstNativeBatchWire,
+  replaceSingletonNativeBatchEvent,
+} from '../fixtures/native-event-batches';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,16 +59,16 @@ async function nextAction(
 
 async function observeNative() {
   const native = await binding();
-  const next = native.NativeThread.prototype._next_session_event;
+  const next = native.NativeThread.prototype._next_session_events;
   const entered = Promise.withResolvers<NativeThread>();
   let keys: string | undefined;
   vi.spyOn(
     native.NativeThread.prototype,
-    '_next_session_event',
+    '_next_session_events',
   ).mockImplementation(async function (this: NativeThread) {
     entered.resolve(this);
     const raw = await next.call(this);
-    const event = parseEvent(raw);
+    const event = parseEvent(firstNativeBatchWire(raw));
     if (event.msg._sdk_python_tool) keys = '[' + encodeReceipt(event.msg) + ']';
     return raw;
   });
@@ -92,7 +96,11 @@ const decision = () =>
     result: z.string(),
   });
 
+let releaseManualSamplingFence: (() => void) | undefined;
 afterEach(async () => {
+  // Timeout cleanup must release the provider's SSE fence before server close.
+  releaseManualSamplingFence?.();
+  releaseManualSamplingFence = undefined;
   vi.restoreAllMocks();
   await ModelServer.closeAll();
 });
@@ -382,24 +390,24 @@ describe('public live capabilities and checkpoint advice', () => {
     // Qualified existing seam: project conditional continuation admission only.
     // Native model work, pending receipts, grants and checkpoint readiness stay real.
     const native = await binding();
-    const next = native.NativeThread.prototype._next_session_event;
+    const next = native.NativeThread.prototype._next_session_events;
     const submit = native.NativeThread.prototype._submit;
     let initialId: string | undefined;
     let pendingOwner: { thread: NativeThread; keys: string } | undefined;
     vi.spyOn(
       native.NativeThread.prototype,
-      '_next_session_event',
+      '_next_session_events',
     ).mockImplementation(async function (this: NativeThread) {
       const raw = await next.call(this);
-      const event = parseEvent(raw);
+      const event = parseEvent(firstNativeBatchWire(raw));
       if (
         !initialId &&
         !event.subagent_id &&
         ['task_complete', 'turn_complete'].includes(event.msg.type)
       ) {
         initialId = event.id;
-        return JSON.stringify({
-          ...JSON.parse(raw),
+        return replaceSingletonNativeBatchEvent(raw, {
+          ...JSON.parse(firstNativeBatchWire(raw)),
           sdk_unsampled_steering: true,
         });
       }
@@ -997,4 +1005,144 @@ describe('public live capabilities and checkpoint advice', () => {
       await executor.close();
     }
   }, 30_000);
+  it('wakes manual readiness when the sampled response completes after a false check', async () => {
+    const releaseCompleted = Promise.withResolvers<void>();
+    const completionHeld = Promise.withResolvers<void>();
+    const rawObserved = Promise.withResolvers<void>();
+    releaseManualSamplingFence = releaseCompleted.resolve;
+    const server = new ModelServer(
+      [
+        [
+          call('lookup', {}, { callId: 'manual-progress' }),
+          { type: 'reasoning', id: 'manual-sampling-fence', summary: [] },
+        ],
+        [message('{"response":"done"}')],
+      ],
+      [],
+      async (item) => {
+        // Tool dispatch starts at output_item.done. Hold a later harmless item
+        // so response.completed cannot reach either readiness ledger yet.
+        if (item.id === 'manual-sampling-fence') {
+          completionHeld.resolve();
+          await releaseCompleted.promise;
+        }
+      },
+    );
+    const native = await binding();
+    const prototype = native.NativeThread.prototype;
+    const next = prototype._next_session_events;
+    let owner: NativeThread | undefined;
+    let keys: string | undefined;
+    let physicalTurn: string | undefined;
+    vi.spyOn(prototype, '_next_session_events').mockImplementation(
+      async function (this: NativeThread) {
+        const result = await next.call(this);
+        for (const wire of result) {
+          const event = parseEvent(wire);
+          if (event.msg._sdk_python_tool) {
+            // Keep the exact receiver for the later capability assertion.
+            // eslint-disable-next-line @typescript-eslint/no-this-alias
+            owner = this;
+            keys = '[' + encodeReceipt(event.msg) + ']';
+            if (typeof event.msg.turnId !== 'string')
+              throw new Error('Missing physical manual turn');
+            physicalTurn = event.msg.turnId;
+          }
+          if (
+            event.msg.type === 'raw_response_completed' &&
+            event.id === physicalTurn
+          )
+            rawObserved.resolve();
+        }
+        return result;
+      },
+    );
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Ask.',
+      model: 'gpt-5',
+      provider,
+      tools: [decision()],
+      outputType: { mode: 'prompted', schema: z.string() },
+    }).session();
+    // A local deadline unwinds this body on the unfixed runtime. Vitest's
+    // outer timeout alone would leave its pending native wait registered.
+    let phase = 'submission';
+    const deadline = Promise.withResolvers<never>();
+    const timer = setTimeout(() => {
+      deadline.reject(
+        new Error(`Manual checkpoint regression stalled at ${phase}`),
+      );
+    }, 2000);
+    const bounded = <T>(pending: Promise<T>, label: string) => {
+      phase = label;
+      return Promise.race([pending, deadline.promise]);
+    };
+    try {
+      const turn = await bounded(
+        session.submitWithOutput('override', {
+          mode: 'native',
+          schema: z.string(),
+        }),
+        'submission',
+      );
+      const request = await bounded(nextAction(session), 'manual request');
+      await bounded(completionHeld.promise, 'provider completion fence');
+      expect(server.completedFrames).toHaveLength(0);
+      if (!owner || !keys)
+        throw new Error('Expected the real pending manual receipt');
+      const thread = owner;
+      const token = thread._begin_manual_checkpoint_wait(keys);
+      let waiting: Promise<void> | undefined;
+      try {
+        expect(
+          await bounded(
+            thread._manual_checkpoint_ready(keys),
+            'initial readiness',
+          ),
+        ).toBe(false);
+        waiting = thread._wait_manual_checkpoint_progress(token);
+        releaseCompleted.resolve();
+        await bounded(waiting, 'progress after sampling completion');
+        while (
+          !(await bounded(
+            thread._manual_checkpoint_ready(keys),
+            'updated readiness',
+          ))
+        ) {
+          waiting = thread._wait_manual_checkpoint_progress(token);
+          await bounded(waiting, 'next progress');
+        }
+        await bounded(rawObserved.promise, 'matching raw completion');
+      } finally {
+        // End cancels an asleep native waiter even on the old binary. Join its
+        // original Promise before any session/provider disposer can run.
+        releaseCompleted.resolve();
+        thread._end_manual_checkpoint_wait(token);
+        await waiting?.catch(() => {});
+      }
+      expect(
+        (
+          await bounded(
+            session.checkpointStatus({ kind: 'manualWait' }),
+            'checkpoint status',
+          )
+        ).status,
+      ).toBe('ready');
+      await bounded(
+        session.respond(request.reply('accepted')),
+        'manual response',
+      );
+      expect((await bounded(turn.wait(), 'turn completion')).finalOutput).toBe(
+        'done',
+      );
+      server.assertExhausted();
+    } finally {
+      // This finally runs before await-using disposes session/provider. The
+      // suite afterEach above covers Vitest timeouts that leave this body pending.
+      clearTimeout(timer);
+      releaseCompleted.resolve();
+      releaseManualSamplingFence = undefined;
+    }
+  });
 });

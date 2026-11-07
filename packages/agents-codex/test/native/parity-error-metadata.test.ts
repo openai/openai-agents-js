@@ -1,3 +1,4 @@
+import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
@@ -392,15 +393,15 @@ describe('native retry guidance', () => {
       { request: 0, stream: 1 },
     );
     const native = await binding();
-    const nextEvent = native.NativeThread.prototype._next_session_event;
+    const nextEvent = native.NativeThread.prototype._next_session_events;
     let retryObserved = false;
     // Observe Core selecting the retry; a sent HTTP response alone does not
     // prove that the client has consumed the advice and entered retry handling.
     const observer = vi
-      .spyOn(native.NativeThread.prototype, '_next_session_event')
+      .spyOn(native.NativeThread.prototype, '_next_session_events')
       .mockImplementation(async function (this: NativeThread) {
         const raw = await nextEvent.call(this);
-        const event = JSON.parse(raw);
+        const event = JSON.parse(firstNativeBatchWire(raw));
         if (event.msg.type === 'stream_error') retryObserved = true;
         return raw;
       });
@@ -1021,9 +1022,19 @@ describe('Python-aligned native provider error metadata', () => {
       expect((await (await session.submit('Begin.')).wait()).finalOutput).toBe(
         'root finished',
       );
-      const children = [];
+      let children = [];
       for await (const child of session.subagents()) children.push(child);
       expect(children).toHaveLength(1);
+      const childId = children[0].id;
+      // Rows are immutable snapshots; root completion does not wait for child publication.
+      const deadline = Date.now() + 5_000;
+      while (children[0].turn === null && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        children = [];
+        for await (const child of session.subagents()) children.push(child);
+        expect(children).toHaveLength(1);
+        expect(children[0].id).toBe(childId);
+      }
       const childTurn = children[0].turn;
       assert(childTurn, 'Missing spawned child turn');
       const error: unknown = await childTurn
