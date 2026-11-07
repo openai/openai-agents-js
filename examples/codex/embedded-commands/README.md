@@ -66,6 +66,6 @@ if (receipt.command === 'review') {
 }
 ```
 
-Observe review through its returned Turn. `Session.wait()` and implicit steering keep the Agent's output type, so they refuse review's different result contract. A later ordinary submission restores their usual behavior.
+Observe review through its returned Turn. `session.wait()` rejects review's different result contract; `turn.wait()` returns its structured review result. To add input while review is active, use that Turn's `steer()` method. `session.submit()` rejects while busy. A later ordinary submission uses the Agent's output type again.
 
 The Turn controls belong to the original operation. Waiting on the Turn retains the existing callback and cleanup behavior. An observer stopping its wait does not transfer ownership or authorize a new operation.

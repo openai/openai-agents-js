@@ -228,7 +228,7 @@ Use `connectMcpServers` to connect multiple MCP servers, track failures, and clo
 
 Use cases:
 
-- **Multiple servers at once**: connect everything in parallel and use `mcpServers.active` for the agent.
+- **Multiple servers**: use `mcpServers.active` for the agent. Set `connectInParallel: true` to connect concurrently; the default connects sequentially.
 - **Partial failure handling**: inspect `failed` + `errors` and decide whether to continue or retry.
 - **Retry failed servers**: call `mcpServers.reconnect()` (defaults to retrying failed servers only).
 

@@ -2,7 +2,7 @@
 
 Run two catalog lookups and score both the answer and the tool calls that produced it. Start with scripted responses to check the runner. Use live mode to compare model configurations.
 
-Run the commands from the repository root with [matching built packages and native runtime](../guides/building.md). The runner reads Git metadata, TypeScript source, and the default [cases](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/evaluation/cases.json) and [configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/evaluation/config.json) from the checkout. The npm package includes the example source and README. Its default JSON inputs live in the repository.
+Run the commands from the repository root with [matching built packages and native runtime](../guides/building.md). The runner reads Git metadata, TypeScript source, and the default [cases](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/evaluation/cases.json) and [configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/examples/codex/evaluation/config.json) from the checkout. Use the source checkout for these files; the native npm package does not include the examples.
 
 Create a private output directory in a POSIX shell. Keep the shell open while you compare runs.
 

@@ -1,5 +1,7 @@
 # Realtime Next.js Demo
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 This example combines Next.js with the OpenAI Agents SDK to create a realtime voice agent.
 
 ## Run the example

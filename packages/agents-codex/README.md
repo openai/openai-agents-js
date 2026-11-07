@@ -2,7 +2,7 @@
 
 <a name="native-agents-sdk-for-typescript"></a>`@openai/agents` runs agents through an embedded Codex runtime. Give an Agent instructions and tools, then run it to get an answer. Use a Session when you need follow-up messages, streamed output, or a saved conversation.
 
-Applications import `@openai/agents` and its supported subpaths. Those imports load `@openai/agents-codex`, which contains the runtime, native helpers, migration adapters, and examples in this directory.
+Applications import `@openai/agents` and its supported subpaths. Those imports load `@openai/agents-codex`, which contains the runtime, native helpers, and migration adapters. Runnable examples live in the repository's [`examples/codex`](../../examples/codex/README.md) directory.
 
 ## Install
 

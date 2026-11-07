@@ -1,10 +1,8 @@
 # Next.js Demo
 
-This example shows a basic example of how to use human-in-the-loop in a Next.js application.
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
 
-Right now it only uses a synchronous approach without streaming and storing in an in-memory DB.
-
-Eventually we will add more examples.
+This Next.js application pauses tool execution for human approval and stores pending runs in memory. It waits for each run to finish before returning its response.
 
 ## Run the example
 

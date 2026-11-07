@@ -96,7 +96,7 @@ To configure your own `Runner` instance, pass a `RunConfig` object.
 | `inputGuardrails` | `InputGuardrail[]` | Guardrails applied to the _initial_ user input. |
 | `outputGuardrails` | `OutputGuardrail[]` | Guardrails applied to the _final_ output. |
 | `tracingDisabled` | `boolean` | Disable OpenAI Tracing completely. |
-| `traceIncludeSensitiveData` | `boolean` | Exclude LLM/tool inputs & outputs from traces while still emitting spans. |
+| `traceIncludeSensitiveData` | `boolean` | Set to `false` to exclude LLM/tool inputs and outputs from traces while still emitting spans. Defaults to `true`. |
 | `workflowName` | `string` | Appears in the Traces dashboard – helps group related runs. |
 | `traceId` / `groupId` | `string` | Manually specify the trace or group ID instead of letting the SDK generate one. |
 | `traceMetadata` | `Record<string, string>` | Arbitrary metadata to attach to every span. |

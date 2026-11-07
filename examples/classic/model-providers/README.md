@@ -1,5 +1,7 @@
 # Model Providers Examples
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 This directory contains small scripts showing how to integrate custom model providers. Run them with `pnpm` using the commands shown below.
 
 - `custom-example-agent.ts` – Pass a model instance directly to an `Agent`.

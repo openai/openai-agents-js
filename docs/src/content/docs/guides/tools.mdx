@@ -189,7 +189,7 @@ Use `tool()` to turn any function into a tool.
 | `name` | No | Defaults to the function name (e.g., `get_weather`). |
 | `description` | Yes | Clear, human-readable description shown to the LLM. |
 | `parameters` | Yes | A Zod schema, supported Standard Schema value, or raw JSON Schema object. Validation schemas automatically enable **strict** mode. |
-| `strict` | No | When `true` (default), the SDK returns a model error if the arguments don't validate. Set to `false` for fuzzy matching. |
+| `strict` | No | Request strict schema adherence from the model (default: `true`). Set to `false` only with raw JSON Schema. Raw JSON Schema arguments are parsed as JSON without local schema validation in either mode. |
 | `execute` | Yes | `(args, context, details) => string \| unknown \| Promise<...>` – your business logic. Non-string outputs are serialized for the model. `context` is optional `RunContext`; `details` includes metadata like `toolCall`, `resumeState`, and `signal`. |
 | `allowedCallers` | No | Responses-only non-empty list controlling whether the tool can be called directly, programmatically, or both. Use `'direct'`, `'programmatic'`, or both values. |
 | `outputSchema` | No | Responses-only schema for the tool result. A Zod schema constrains the `execute` return type and validates/transforms the runtime result; a raw JSON schema describes the wire contract only. |
@@ -229,7 +229,7 @@ If you invoke a function tool directly, use [`invokeFunctionTool`](/openai-agent
 
 #### Non‑strict JSON‑schema tools
 
-If you need the model to _guess_ invalid or partial input you can disable strict mode when using raw JSON schema:
+To disable provider-side strict schema adherence, set `strict: false` with raw JSON Schema. Validate the parsed arguments in `execute` if your application requires local schema checks:
 
 <Code
   lang="typescript"
@@ -430,7 +430,7 @@ Refer to the [Agents guide](/openai-agents-js/guides/agents#forcing-tool-use) fo
 
 - **Short, explicit descriptions** – describe _what_ the tool does _and when to use it_.
 - **Validate inputs** – use Zod or supported Standard Schema values for strict JSON validation where possible.
-- **Avoid side‑effects in error handlers** – `errorFunction` should return a helpful string, not throw.
+- **Handle errors deliberately**: Keep side effects out of `errorFunction`. Return a model-visible result that satisfies `outputSchema` when configured, or set `errorFunction: null` to propagate execution errors.
 - **One responsibility per tool** – small, composable tools lead to better model reasoning.
 
 ---

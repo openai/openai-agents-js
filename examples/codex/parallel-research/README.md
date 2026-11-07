@@ -47,4 +47,4 @@ The function owns its provider, Session, event iterator, and observer. It joins 
 
 This lesson demonstrates research with two children. It does not promise ten-agent capacity, parallel external-effect execution, exactly-once effects, or general graph recovery. Tests use finite local model/executor fixtures with real native children; live model runs are not part of test authorization.
 
-The package manifest includes this README and `parallel-research.ts` through its recursive examples rule. Packaged examples still require the matching native runtime and a separately provisioned executor.
+The example source and this README live in the repository. Use the source checkout and its matching native runtime.

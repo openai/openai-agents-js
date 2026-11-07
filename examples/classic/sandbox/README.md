@@ -1,5 +1,7 @@
 # Sandbox Examples
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 These examples show the JavaScript sandbox APIs that are implemented in this branch: `Manifest`, `SandboxAgent`, local and Docker sandbox clients, filesystem and shell capabilities, lazy skills, host tools, handoffs, local and remote snapshots, external memory stores, and SDK conversation sessions.
 
 Unix-local examples run commands as host processes on macOS and Linux without adding OS-level filesystem or network isolation. Use these examples for trusted local development or within an externally isolated environment. For untrusted commands, including commands influenced by untrusted inputs, choose an appropriately configured Docker or hosted backend, or provide external isolation. SDK file path grants do not restrict arbitrary shell commands.

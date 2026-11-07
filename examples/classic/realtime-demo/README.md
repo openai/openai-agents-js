@@ -1,18 +1,19 @@
 # Realtime Demo
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 This example is a small [Vite](https://vitejs.dev/) application showcasing the realtime agent API.
 
-1. Install dependencies in the repo root with `pnpm install`.
-2. Generate an ephemeral API key:
+1. Set `OPENAI_API_KEY` in your server shell and generate a short-lived client secret:
    ```bash
    pnpm -F realtime-demo generate-token
    ```
    Copy the printed key.
-3. Start the dev server:
+2. Start the dev server:
    ```bash
    pnpm examples:realtime-demo
    ```
-4. Open the printed localhost URL and paste the key when prompted.
+3. Open the printed localhost URL and paste the key when prompted.
 
 Use `pnpm -F realtime-demo build` to create a production build.
 

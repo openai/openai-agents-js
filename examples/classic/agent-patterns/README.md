@@ -1,5 +1,7 @@
 # Agent Pattern Examples
 
+Follow the [classic example setup](../README.md) to install dependencies and build the SDK before running these commands.
+
 These small scripts show different agent patterns. Run them with the `pnpm` commands below.
 
 - `agents-as-tools.ts`. Use translator agents as tools.
