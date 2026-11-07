@@ -11,7 +11,12 @@ import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
 
-it('denies before executor side effects and transforms approved arguments with exact turn context', async () => {
+// Approved strict execution requires a host that can run the native sandbox.
+it.skipIf(
+  process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
+    process.env.GITHUB_ACTIONS !== 'true' &&
+    process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1',
+)('denies before executor side effects and transforms approved arguments with exact turn context', async () => {
   const executor = await startPublicExecutor();
   const model = new ModelServer([
     [
