@@ -146,7 +146,9 @@ async function main() {
                 return [message('accepted search')];
               },
             ]
-          : []),
+          : !code
+            ? [[message('result withheld')]]
+            : []),
       ]);
       try {
         const config = await model.config();
@@ -204,47 +206,16 @@ async function main() {
           release.resolve();
           const result = await outcome;
           await flush();
-          const completed = searchRecords();
           if (reject) {
             assert.equal(result.ok, false);
             if (result.ok) throw new Error('Expected policy failure');
             assert(result.error instanceof Error);
             assert.equal(result.error.name, 'NativeError');
             assert.equal(result.error.message, 'Executor policy failed');
-            for (const record of completed) {
-              assert.equal(record.success, 'false');
-              assert(!String(record.output).includes(projection.marker));
-            }
-            assert.equal(model.requests.length, 1);
           } else {
             if (!result.ok) throw result.error;
             assert.equal(result.value.finalOutput, 'accepted search');
-            assert.equal(completed.length, 1);
-            assert(completed[0]);
-            assert.equal(completed[0].success, 'true');
-            assert.equal(completed[0].output_truncated, false);
-            assert.equal(typeof completed[0].call_id, 'string');
-            assert(String(completed[0].call_id).length > 0);
-            if (!code) assert.equal(completed[0].call_id, 'observed-search');
-            assert.deepEqual(
-              JSON.parse(String(completed[0].output)),
-              projection,
-            );
           }
-          assert.equal(calls, 1);
-          for (const canary of [rawCanary, errorCanary]) {
-            assert(!JSON.stringify(received).includes(canary));
-            assert(!JSON.stringify(model.requests).includes(canary));
-          }
-          model.assertExhausted();
-          console.log(
-            JSON.stringify({
-              mode,
-              blockedRecords: 0,
-              completed: completed.length,
-              records: completed,
-            }),
-          );
         } finally {
           release.resolve();
           await outcome;
@@ -252,6 +223,63 @@ async function main() {
       } finally {
         await ModelServer.closeAll();
       }
+      // Disposal joins the provider before checking for late requests and logs.
+      await flush();
+      const completed = searchRecords();
+      if (reject) {
+        for (const record of completed) {
+          assert.equal(record.success, 'false');
+          assert(!String(record.output).includes(projection.marker));
+        }
+        assert(!JSON.stringify(model.requests).includes(projection.marker));
+      } else {
+        assert.equal(completed.length, 1);
+        assert(completed[0]);
+        assert.equal(completed[0].success, 'true');
+        assert.equal(completed[0].output_truncated, false);
+        assert.equal(typeof completed[0].call_id, 'string');
+        assert(String(completed[0].call_id).length > 0);
+        if (!code) assert.equal(completed[0].call_id, 'observed-search');
+        assert.deepEqual(JSON.parse(String(completed[0].output)), projection);
+      }
+      assert.equal(calls, 1);
+      for (const canary of [rawCanary, errorCanary]) {
+        assert(!JSON.stringify(received).includes(canary));
+        assert(!JSON.stringify(model.requests).includes(canary));
+      }
+      if (reject && !code) {
+        // A failed transform withholds output; it does not issue StopTurn.
+        assert(model.requests.length === 1 || model.requests.length === 2);
+        if (model.requests.length === 2) {
+          const input = model.requests[1]!.input as JsonObject[];
+          const invocation = input.filter(
+            (item) => item.type === 'function_call',
+          );
+          assert.equal(invocation.length, 1);
+          assert.equal(invocation[0]!.name, 'project_grep');
+          assert.equal(invocation[0]!.call_id, 'observed-search');
+          const output = input.filter(
+            (item) => item.type === 'function_call_output',
+          );
+          assert.equal(output.length, 1);
+          assert.equal(output[0]!.call_id, 'observed-search');
+          assert.equal(
+            output[0]!.output,
+            'Native tool output withheld by result policy',
+          );
+          model.assertExhausted();
+        }
+      } else {
+        model.assertExhausted();
+      }
+      console.log(
+        JSON.stringify({
+          mode,
+          blockedRecords: 0,
+          completed: completed.length,
+          records: completed,
+        }),
+      );
     } finally {
       await executor.close();
     }
