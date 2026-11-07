@@ -57,6 +57,8 @@ Reopen through the original root Session ID. A recorded child or grandchild ID c
 
 Read settled descendant history through `session.subagents()` or the `subagentId` options on `session.items()` and `session.turns()`. These reads start no historical runtime. New work uses the destination's current declarations, credentials, callbacks, and Environment.
 
+Local history supports root recovery and inspection of settled child history. It does not automatically recover an active child graph or reconcile uncertain child effects. Your application owns external-effect reconciliation and decides whether to start new work. Preserve the refusal when a child outcome remains unknown; do not edit saved history to force reopening.
+
 ### Persistence failures and cleanup
 
 The native store flushes each managed result before the model can use it. If a root call has no saved result after process loss, opening stops before the model runs or the SDK dispatches a tool.

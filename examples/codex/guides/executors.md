@@ -83,7 +83,9 @@ Putting `bash -lc ...` inside `cmd` asks the configured shell to launch a second
 
 ## Native child agents
 
-Add a `NativeAgents` declaration to `tools` to declare child roles and limits. Children require an explicit model and an environment with all executor tools.
+Add a `NativeAgents` declaration to `tools` for workspace delegation with child roles and limits. Children require an explicit model and an `Environment` with `exec_command`, `write_stdin`, and `apply_patch`, even when the delegated task only calls functions or MCP tools.
+
+For delegation without an executor workspace, call separately configured `Agent` instances and let your application coordinate their inputs, results, and lifetimes.
 
 Use `session.subagents()` to get child snapshots. Live children support `submit()`, and their issued turns support `wait()`. Application tool callbacks receive a `ChildInvocation` when invoked by a child.
 
