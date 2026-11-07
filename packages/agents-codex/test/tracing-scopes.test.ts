@@ -936,7 +936,7 @@ it.each([
             },
           }),
       );
-      await session.submit('steering input');
+      await turn.steer('steering input');
       const token = starts[0].tracing_context as string;
       const context = harness.contexts.get(token)!;
       expect(context).toMatchObject({
