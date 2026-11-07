@@ -1,13 +1,13 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { Agent, manualTool, tool } from '../src/index';
+import { Agent, Environment, manualTool, tool } from '../src/index';
 import { text, toolCall, withScriptedResponses } from '../src/testing/index';
 import { AgentCard, Message, Part, Role, Task, TaskState } from '@a2a-js/sdk';
 import {
@@ -26,6 +26,7 @@ import { connectA2A, type A2ALimits } from '../src/a2a/client';
 import { inputProposal } from '../src/a2a/content';
 import { FileA2AStore } from './a2a-store';
 import { runA2AExample } from '../../../examples/codex/a2a/two-agents';
+import { startPublicExecutor } from './native/fixtures/public-executor';
 afterEach(() => vi.restoreAllMocks());
 
 const user = { isAuthenticated: true, userName: 'user' };
@@ -107,6 +108,173 @@ const input = (parts: Part[], taskId = '', contextId = '') => ({
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'A2A with native Sessions and the official HTTP handler',
   () => {
+    it.each(['same', 'changed', 'omitted'] as const)(
+      'uses only the current trusted Environment through suspension and %s resume',
+      async (mode) => {
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const executor = await startPublicExecutor();
+        try {
+          await withScriptedResponses(
+            [
+              [
+                toolCall(
+                  'exec_command',
+                  { cmd: 'pwd', max_output_tokens: 100 },
+                  { callId: 'before' },
+                ),
+              ],
+              [toolCall('decision', {}, { callId: 'decision' })],
+              ...(mode === 'same'
+                ? [
+                    [
+                      toolCall(
+                        'exec_command',
+                        { cmd: 'pwd', max_output_tokens: 100 },
+                        { callId: 'after' },
+                      ),
+                    ],
+                    [text('trusted workspace')],
+                  ]
+                : []),
+            ],
+            async (model) => {
+              const decision = manualTool({
+                name: 'decision',
+                description: 'Choose.',
+                parameters: z.strictObject({}),
+                result: z.boolean(),
+              });
+              const agent = new Agent({
+                instructions: 'Inspect the workspace, ask, then inspect again.',
+                model: 'gpt-5.5',
+                provider: model.provider,
+                tools: [decision],
+              });
+              const extra = join(executor.cwd, '..', 'extra');
+              await mkdir(extra);
+              let resumed = false,
+                acquired = 0,
+                disposed = 0,
+                factories = 0;
+              const approved: string[] = [];
+              const store = new FileA2AStore();
+              const remote = await host(
+                store,
+                new NativeA2AExecutor({
+                  store,
+                  agentFactory: async () => {
+                    factories++;
+                    const phase = resumed ? 'resumed' : 'initial';
+                    return {
+                      agent,
+                      context: undefined,
+                      environment:
+                        resumed && mode === 'omitted'
+                          ? undefined
+                          : async () => {
+                              acquired++;
+                              return Environment.lease(
+                                new Environment({
+                                  url: executor.url,
+                                  headers: executor.headers,
+                                  cwd: executor.cwd,
+                                  tools: ['exec_command'],
+                                  approval: (context) => {
+                                    approved.push(`${phase}:${context.callId}`);
+                                    return true;
+                                  },
+                                  writableRoots:
+                                    resumed && mode === 'changed'
+                                      ? [extra]
+                                      : [],
+                                }),
+                                () => {
+                                  disposed++;
+                                },
+                              );
+                            },
+                    };
+                  },
+                }),
+              );
+              try {
+                const initial = input([Part.fromJSON({ text: 'begin' })]);
+                initial.message.metadata = {
+                  environment: { cwd: '/peer-selected', writableRoots: ['/'] },
+                };
+                const created = await remote.client.sendMessage(initial);
+                if (!('id' in created)) throw new Error('Expected task');
+                const waiting = await settled(remote.client, created);
+                expect(waiting.status?.state).toBe(
+                  TaskState.TASK_STATE_INPUT_REQUIRED,
+                );
+                expect(model.requests).toHaveLength(2);
+                expect(JSON.stringify(model.requests[1].input)).toContain(
+                  executor.cwd,
+                );
+                expect(acquired).toBe(1);
+                expect(disposed).toBe(1);
+                expect(approved).toEqual(['initial:before']);
+                const proposal = inputProposal(waiting)!;
+                resumed = true;
+                const updated = await remote.client.sendMessage(
+                  input(
+                    [
+                      Part.fromJSON({
+                        data: {
+                          challenge: proposal.challenge,
+                          generation: proposal.generation,
+                          result: true,
+                        },
+                      }),
+                    ],
+                    waiting.id,
+                    waiting.contextId,
+                  ),
+                );
+                if (!('id' in updated)) throw new Error('Expected task');
+                const done = await settled(remote.client, updated);
+                expect(factories).toBe(2);
+                expect(done.status?.state).toBe(
+                  mode === 'same'
+                    ? TaskState.TASK_STATE_COMPLETED
+                    : TaskState.TASK_STATE_FAILED,
+                );
+                expect(model.requests).toHaveLength(mode === 'same' ? 4 : 2);
+                if (mode === 'same') {
+                  expect(JSON.stringify(model.requests[3].input)).toContain(
+                    executor.cwd,
+                  );
+                  expect(done.artifacts[0].parts[0].content).toEqual({
+                    $case: 'text',
+                    value: 'trusted workspace',
+                  });
+                }
+                expect(disposed).toBe(acquired);
+                expect(approved).toEqual(
+                  mode === 'same'
+                    ? ['initial:before', 'resumed:after']
+                    : ['initial:before'],
+                );
+                const starts = executor.requests.filter(
+                  (request) => request.method === 'process/start',
+                );
+                expect(starts).toHaveLength(mode === 'same' ? 2 : 1);
+                expect(
+                  store.record(done.id, context)!.checkpoint,
+                ).toBeUndefined();
+              } finally {
+                await remote.close();
+              }
+            },
+          );
+        } finally {
+          await executor.close();
+        }
+      },
+      30000,
+    );
+
     it.each([false, true])(
       'retires a fresh factory cancellation with commit failure=%s',
       async (commitFailure) => {
