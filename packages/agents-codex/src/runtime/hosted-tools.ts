@@ -18,6 +18,8 @@ export interface CodeInterpreterOptions {
   /** The provider owns container creation, reuse, expiry, and file retention. */
   container:
     string | OpenAI.Responses.Tool.CodeInterpreter.CodeInterpreterToolAuto;
+  /** Provider invocation contexts; omission preserves provider defaults. */
+  allowedCallers?: OpenAI.Responses.Tool.CodeInterpreter['allowed_callers'];
 }
 
 /** Provider-owned code execution, independent of the workspace executor. */
@@ -123,6 +125,9 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
       return {
         type: tool.kind,
         container: tool.container as JsonObject | string,
+        ...(tool.allowedCallers === undefined
+          ? {}
+          : { allowed_callers: tool.allowedCallers }),
       };
     const fields = {
       action: tool.action,
