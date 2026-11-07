@@ -175,6 +175,51 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       25000,
     );
 
+    it.each([1, 2])(
+      'preserves diagnostics from the final invalid output after %i retries',
+      async (maxRetries) => {
+        const invalid = [
+          '{"initial":1,"final":2}',
+          '{"initial":"ok","final":-1}',
+          '{"initial":"ok","final":"private-final-value"}',
+        ];
+        const server = new ModelServer(
+          invalid.slice(0, maxRetries + 1).map((raw) => [message(raw)]),
+        );
+        await using provider = await providerFor(server);
+        await using session = await new Agent({
+          instructions: 'Answer.',
+          model: 'gpt-5',
+          provider,
+          outputType: {
+            mode: 'prompted',
+            schema: z.object({ initial: z.string(), final: z.number().min(0) }),
+            maxRetries,
+          },
+        }).session();
+        const turn = await session.submit('Return a report.');
+        const failure = await turn.wait().catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(OutputValidationError);
+        if (!(failure instanceof OutputValidationError))
+          throw new Error('Expected output validation failure');
+        expect(failure.rawOutput).toBe(invalid[maxRetries]);
+        expect(failure.issues).toEqual([
+          {
+            code: maxRetries === 1 ? 'too_small' : 'invalid_type',
+            path: ['final'],
+          },
+        ]);
+        expect(failure.message).toBe(
+          'Final output did not match the requested output type',
+        );
+        expect(String(failure)).not.toContain('private-final-value');
+        expect(failure).not.toHaveProperty('cause');
+        await expect(turn.wait()).rejects.toBe(failure);
+        expect(server.requests).toHaveLength(maxRetries + 1);
+        server.assertExhausted();
+      },
+    );
+
     it('uses captured routing and auth with accepted updated settings', async () => {
       vi.stubEnv('OPENAI_API_KEY', 'synthetic-captured-key');
       const server = new ModelServer([

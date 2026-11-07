@@ -2561,3 +2561,132 @@ it('rejects a sibling Session reply and preserves that sibling authority', async
     await foreign.close();
   }
 }, 30_000);
+
+it.each(['bound', 'delivered', 'missing', 'foreign'] as const)(
+  'authenticates a %s native handler return after independent delivery',
+  async (kind) => {
+    const f = await fixture();
+    const other = kind === 'foreign' ? await fixture() : undefined;
+    let foreignSession: Awaited<ReturnType<typeof f.agent.session>> | undefined;
+    let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
+    const entered =
+      Promise.withResolvers<import('../../src').ApprovalRequest>();
+    const release = Promise.withResolvers<void>();
+    let bound: import('../../src').NativeQuestionReply;
+    let delivered: typeof bound;
+    let foreign: typeof bound;
+    try {
+      if (other) {
+        foreignSession = await other.agent.session();
+        await foreignSession.submit('Source question');
+        const cursor = foreignSession.interactions();
+        const next = await cursor.next();
+        await cursor.return?.();
+        if (next.done || next.value.type !== 'approval_request')
+          throw new Error('Expected source approval');
+        foreign = next.value.reply('deny');
+      }
+      session = await f.agent.session({
+        async onInteraction(request) {
+          if (request.type !== 'approval_request')
+            throw new Error('Expected approval');
+          bound = request.reply('deny');
+          entered.resolve(request);
+          await release.promise;
+          return kind === 'bound'
+            ? bound
+            : kind === 'delivered'
+              ? delivered
+              : kind === 'foreign'
+                ? foreign
+                : (undefined as never);
+        },
+      });
+      const root = await session.submit('Race question');
+      let settled = false;
+      const result = root.wait().then(
+        (value) => {
+          settled = true;
+          return value;
+        },
+        (error) => {
+          settled = true;
+          throw error;
+        },
+      );
+      result.catch(() => {});
+      const request = await entered.promise;
+      delivered = request.reply('deny');
+      await session.respond(delivered);
+      await expect(session.respond(delivered)).rejects.toThrow();
+      expect(settled).toBe(false);
+      expect(request.turnId).toBe(root.turnId);
+      release.resolve();
+      const outcome = await result.then(
+        (value) => ({
+          success: true,
+          output: value.finalOutput,
+          exactOwner: value.turn === root,
+        }),
+        (error) => ({ success: false, message: String(error) }),
+      );
+      if (kind === 'bound' || kind === 'delivered')
+        expect(outcome).toMatchObject({
+          success: true,
+          output: 'done',
+          exactOwner: true,
+        });
+      else
+        expect(outcome).toMatchObject({
+          success: false,
+          message: expect.stringContaining(
+            kind === 'foreign' ? 'foreign' : 'issued reply',
+          ),
+        });
+    } finally {
+      release.resolve();
+      await session?.close().catch(() => {});
+      await foreignSession?.close().catch(() => {});
+      await other?.close();
+      await f.close();
+    }
+  },
+  30000,
+);
+
+it('joins owner cancellation before ignoring a late native handler return', async () => {
+  const f = await fixture();
+  const entered = Promise.withResolvers<void>();
+  const aborted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let session: Awaited<ReturnType<typeof f.agent.session>> | undefined;
+  try {
+    session = await f.agent.session({
+      async onInteraction(_request, signal) {
+        signal.addEventListener('abort', () => aborted.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await release.promise;
+        return undefined as never;
+      },
+    });
+    const root = await session.submit('Cancel own question');
+    const result = root.wait().catch((error) => error);
+    await entered.promise;
+    let stopped = false;
+    const cancellation = root.cancel().then(() => {
+      stopped = true;
+    });
+    await aborted.promise;
+    expect(stopped).toBe(false);
+    release.resolve();
+    await cancellation;
+    const failure = await result;
+    expect(failure).toBeInstanceOf(TurnAborted);
+  } finally {
+    release.resolve();
+    await session?.close().catch(() => {});
+    await f.close();
+  }
+}, 30000);

@@ -2321,9 +2321,14 @@ export class Session<OutputT = string, Context = unknown> {
       void this.trackQuestionCallback(run, async () => {
         try {
           const reply = await handler(grant.request, run.controller.signal);
-          if (!grant.current()) return;
+          if (!this.current(run)) return;
           if (!isNativeQuestionReply(reply))
             throw new NativeError('onInteraction must return its issued reply');
+          if (nativeReplyRequest(reply) !== grant.request)
+            throw new TypeError(
+              'Native reply is foreign, expired, or already delivered',
+            );
+          if (!grant.current()) return;
           await this.submitNativeQuestion(reply, grant.request);
         } catch (error) {
           if (
@@ -3701,6 +3706,7 @@ export class Session<OutputT = string, Context = unknown> {
     const open = this.options.openCorrection;
     if (!open)
       throw new NativeError('This Session does not support output repair');
+    let issues: OutputValidationError['issues'] = [];
     for (let index = 0; index < prepared.repair!.maxRetries; index++) {
       check(true);
       repair.session = await open(
@@ -3805,9 +3811,10 @@ export class Session<OutputT = string, Context = unknown> {
         return prepared.parse!(text);
       } catch (error) {
         if (!(error instanceof OutputValidationError)) throw error;
+        issues = error.issues;
       }
     }
-    throw new OutputValidationError(text);
+    throw new OutputValidationError(text, issues);
   }
 
   private finish(

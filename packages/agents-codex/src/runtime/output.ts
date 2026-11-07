@@ -52,6 +52,19 @@ export class OutputValidationError extends Error {
   }
 }
 
+/** @internal Retain diagnostic codes and paths without retaining the validator exception. */
+export function outputValidationIssues(
+  error: unknown,
+  wrapped = false,
+): OutputValidationIssue[] {
+  return error instanceof z.ZodError
+    ? error.issues.map(({ code, path }) => ({
+        code,
+        path: wrapped ? (path[0] === 'response' ? path.slice(1) : []) : path,
+      }))
+    : [{ code: 'validation_error', path: [] }];
+}
+
 /** Portable schema meaning, not identity of application parser code. */
 export interface OutputIdentity {
   readonly version: 1;
@@ -135,24 +148,11 @@ export function prepareOutput<Output>(
       try {
         return parse(text);
       } catch (error) {
-        const issues: OutputValidationIssue[] =
-          error instanceof z.ZodError
-            ? error.issues.map(({ code, path }) => ({
-                code,
-                path: wrapped
-                  ? path[0] === 'response'
-                    ? path.slice(1)
-                    : []
-                  : path,
-              }))
-            : [
-                {
-                  code: 'validation_error',
-                  path: [],
-                },
-              ];
         // Retain only explicitly accessed codes/paths, never the validator exception.
-        throw new OutputValidationError(text, issues);
+        throw new OutputValidationError(
+          text,
+          outputValidationIssues(error, wrapped),
+        );
       }
     };
   if (explicit && output.mode === 'prompted') {

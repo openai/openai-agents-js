@@ -280,7 +280,10 @@ describe('structured output with native tool-policy finish', () => {
     const running = runOwned(current, 'stream');
     await expect(running).rejects.toBeInstanceOf(OutputValidationError);
     const failure = await running.catch((error: unknown) => error);
-    expect(failure).toMatchObject({ rawOutput: toSmartString(invalid) });
+    expect(failure).toMatchObject({
+      rawOutput: toSmartString(invalid),
+      issues: [{ code: 'invalid_type', path: ['count'] }],
+    });
     expectOneRequestAndEffect(current, true);
     expect(current.parsed).toHaveBeenCalledTimes(1);
     expect(current.parsed.mock.results[0].type).toBe('throw');
