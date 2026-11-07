@@ -146,7 +146,7 @@ export type {
   WebSearchSource,
 } from './runtime/history';
 export { OutputValidationError } from './runtime/output';
-export type { OutputSpec } from './runtime/output';
+export type { OutputSpec, OutputValidationIssue } from './runtime/output';
 
 export type { ToolRef, ToolSelector } from './runtime/tools';
 export type {
