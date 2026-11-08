@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { Agent, NativeProvider } from '../src';
+import type { Session as CoreSession } from '../src/runtime/session';
 import type { NativeRealtimeAdapter } from '../src/runtime/realtime-adapter';
 import { ModelServer, message } from './native/fixtures/model-server';
 
@@ -230,7 +231,9 @@ nativeIt.each(['update', 'approval'] as const)(
                     // its still-active adapter ancestor must remain authoritative.
                     const proceed = Promise.withResolvers<void>();
                     let pending!: Promise<void>;
-                    await session._runVoiceCallback(() => {
+                    await (
+                      session as CoreSession<string, undefined>
+                    )._runVoiceCallback(() => {
                       pending = proceed.promise.then(control);
                     });
                     proceed.resolve();
@@ -308,10 +311,12 @@ nativeIt.each(['update', 'approval'] as const)(
         expect(
           frames.some((frame) => frame.item?.type === 'mcp_approval_response'),
         ).toBe(false);
-        await session._runVoiceCallback(async () => {
-          await voice.update({ instructions: 'Ordinary callback update' });
-          await voice.approveHostedMcp(request, { approve: true });
-        });
+        await (session as CoreSession<string, undefined>)._runVoiceCallback(
+          async () => {
+            await voice.update({ instructions: 'Ordinary callback update' });
+            await voice.approveHostedMcp(request, { approve: true });
+          },
+        );
         expect(
           frames.filter((frame) => frame.type === 'session.update'),
         ).toHaveLength(2);

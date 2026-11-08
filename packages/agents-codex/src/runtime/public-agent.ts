@@ -658,7 +658,7 @@ export class Agent<Context = undefined, Output = string> {
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
               programmaticToolCalling,
-            }),
+            } as AgentOptions<Context, Output>),
           )
         : undefined;
 
@@ -1299,7 +1299,7 @@ export function captureAgentProfiles<Context, Output>(
       ),
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
-    });
+    } as AgentOptions<Context, Output>);
     if (wireIdentity(declaration) !== output)
       throw new TypeError(
         'Handoff profiles must share output mode, schema and wrapping',
