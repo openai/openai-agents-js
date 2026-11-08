@@ -465,6 +465,7 @@ impl Engine {
                 body.into(),
                 &ticket,
                 "responses",
+                None,
             )
             .await?;
             Ok(NativeModelResponse {
@@ -3697,9 +3698,16 @@ async fn direct_sentinel_stream(
     // errors so Core keeps its existing auth recovery and retry classification.
     let unmatched = || reject(http::StatusCode::UNAUTHORIZED);
     let invalid = || reject(http::StatusCode::BAD_GATEWAY);
-    // Current ResponsesOptions never supplies these transport limits. Reject a
-    // future incompatible caller explicitly rather than silently dropping limits.
-    if request.timeout.is_some() || request.response_body_limit_bytes.is_some() {
+    let endpoint = if request.url.ends_with("/decisions") {
+        "decisions"
+    } else {
+        "responses"
+    };
+    // Decisions carries its body limit through to the physical transport.
+    // Responses does not supply limits; reject unsupported options explicitly.
+    if request.timeout.is_some()
+        || (endpoint != "decisions" && request.response_body_limit_bytes.is_some())
+    {
         return Err(invalid());
     }
     if request.url != expected_url {
@@ -3712,11 +3720,6 @@ async fn direct_sentinel_stream(
         .clone()
         .ok_or_else(unmatched)?;
     let prefix = format!("{}/p-", binding.0.trim_end_matches('/'));
-    let endpoint = if request.url.ends_with("/decisions") {
-        "decisions"
-    } else {
-        "responses"
-    };
     let suffix = format!("/{endpoint}");
     let encoded = request
         .url
@@ -3825,10 +3828,17 @@ async fn direct_sentinel_stream(
     // authoritative for provider/grant/Host resolution.
     let headers = serde_json::to_string(&headers).map_err(|_| invalid())?;
     let body = serde_json::to_vec(&body).map_err(|_| invalid())?;
-    let (status, headers, body) =
-        sentinel_stream_dispatch(inner, provider_id, &headers, body.into(), &ticket, endpoint)
-            .await
-            .map_err(|_| invalid())?;
+    let (status, headers, body) = sentinel_stream_dispatch(
+        inner,
+        provider_id,
+        &headers,
+        body.into(),
+        &ticket,
+        endpoint,
+        request.response_body_limit_bytes,
+    )
+    .await
+    .map_err(|_| invalid())?;
     let headers = sentinel_response_headers(headers).map_err(|_| invalid())?;
     match body {
         NativeModelBody::HttpError(text) => {
@@ -3927,6 +3937,7 @@ async fn sentinel_stream_dispatch(
     body: bytes::Bytes,
     ticket: &serde_json::Value,
     endpoint: &str,
+    response_body_limit_bytes: Option<usize>,
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
@@ -3936,6 +3947,7 @@ async fn sentinel_stream_dispatch(
     let mut request = provider
         .build_request("POST".parse().map_err(native_error)?, endpoint)
         .with_raw_body(body);
+    request.response_body_limit_bytes = response_body_limit_bytes;
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
     let result = match request.into_prepared() {
         Ok(request) => {
