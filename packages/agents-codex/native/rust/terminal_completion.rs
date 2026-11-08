@@ -5,8 +5,8 @@ use codex_extension_api::{ToolCompletionDecision, ToolCompletionInput};
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TerminalSlots {
-    generation: String,
-    slots: Vec<usize>,
+    pub(super) generation: String,
+    pub(super) slots: Vec<usize>,
 }
 
 #[derive(Deserialize)]
@@ -147,6 +147,9 @@ impl PythonTools {
                 slot < current.entries.len() && slots.insert(slot),
                 "Invalid terminal tool slot"
             );
+        }
+        if current.terminal_slots == slots {
+            return Ok(());
         }
         let mut generation = (*current).clone();
         generation.terminal_slots = slots;

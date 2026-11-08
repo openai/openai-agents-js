@@ -1,3 +1,6 @@
+import type { NativeThread } from '../../src/runtime/binding';
+import { inspect } from 'node:util';
+import { z } from 'zod';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -5,7 +8,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   Agent,
   NativeProvider,
+  Environment,
+  NativeAgents,
+  NativeError,
   StdioMCP,
+  tool,
+  type FunctionTool,
   type Session,
   type MCPMetadataContext,
 } from '../../src';
@@ -30,6 +38,12 @@ async function setup(
   inCode = false,
   policies = false,
   state?: Awaited<ReturnType<Session['saveState']>>,
+  profile?: 'root' | 'destination',
+  enteredTool?: FunctionTool,
+  family?: {
+    environment: Environment;
+    responses: ConstructorParameters<typeof ModelServer>[0];
+  },
 ) {
   const roster = join(directory, 'roster.json'),
     calls = join(directory, 'calls.jsonl'),
@@ -60,6 +74,7 @@ async function setup(
     name: 'fixture',
     tools: ['lookup'],
     approvalMode: 'preapproved',
+    ...(family ? { location: 'host' as const } : {}),
     command: process.execPath,
     args: [resolve(import.meta.dirname, 'mcp-peer.mjs'), roster, calls, starts],
     ...(policies
@@ -94,7 +109,20 @@ async function setup(
         { key: 'original' },
         { callId: 'metadata-call', namespace: 'mcp__fixture' },
       );
-  const model = new ModelServer([[first], [message('done')]]);
+  const model = new ModelServer(
+    family?.responses ?? [
+      ...(profile === 'destination'
+        ? [[call('transfer_to_b', {}, { callId: 'metadata-transfer' })]]
+        : []),
+      [
+        ...(enteredTool
+          ? [call(enteredTool.name, {}, { callId: 'held-callback' })]
+          : []),
+        first,
+      ],
+      [message('done')],
+    ],
+  );
   const config = await model.config();
   const provider = new NativeProvider({
     baseUrl: (config['model_providers.fixture'] as { base_url: string })
@@ -103,14 +131,36 @@ async function setup(
     supportsWebsockets: false,
   });
   providers.push(provider);
+  const target = profile
+    ? new Agent({
+        name: 'B',
+        instructions: 'Read in B.',
+        tools: profile === 'destination' ? [declaration] : [],
+      })
+    : undefined;
   const agent = new Agent({
+    name: 'A',
     instructions: 'Read the record.',
-    model: 'gpt-5',
+    model: family ? 'gpt-5.6-terra' : 'gpt-5',
     provider,
     programmaticToolCalling: inCode,
-    tools: [declaration],
+    tools:
+      profile === 'destination'
+        ? []
+        : [
+            declaration,
+            ...(enteredTool ? [enteredTool] : []),
+            ...(family ? [new NativeAgents()] : []),
+          ],
+    ...(target ? { handoffs: [target] } : {}),
   });
-  const session = await agent.session(state ? { state } : undefined);
+  const session = await agent.session(
+    family
+      ? { environment: family.environment, ...(state ? { state } : {}) }
+      : state
+        ? { state }
+        : undefined,
+  );
   sessions.push(session);
   return { session, model, order, calls, agent };
 }
@@ -146,7 +196,7 @@ it.each([
     const turn = await session.submit('read');
     if (reserved) {
       await expect(turn.wait()).rejects.toThrow(/Native MCP/);
-      expect(model.requests).toHaveLength(2); // Existing JS MCP failure is surfaced at turn end.
+      expect(model.requests).toHaveLength(1); // Invalid metadata fences native sampling before continuation.
     } else expect((await turn.wait()).finalOutput).toBe('done');
     const actual = await records(calls);
     expect(actual).toHaveLength(reserved ? 0 : 1);
@@ -207,7 +257,7 @@ it.each([undefined, null, {}, { 'app/value': [null, true, 2, 'ok'] }])(
     expect(actual).toHaveLength(1);
     expect(typeof actual[0]._meta.callId).toBe('string');
     expect(seen).toBe(1);
-    expect(model.requests).toHaveLength(2);
+    expect(model.requests).toHaveLength(1);
   },
 );
 it.each([
@@ -318,3 +368,296 @@ it.each([false, true])(
   },
   20_000,
 );
+
+it.each(['root', 'destination'] as const)(
+  'retains metadata selection for captured %s profile',
+  async (profile) => {
+    const contexts: MCPMetadataContext[] = [];
+    const secret = 'private-profile-metadata';
+    const { session, model, order, calls } = await setup(
+      (ctx) => {
+        contexts.push(ctx);
+        return { 'app/profile': secret };
+      },
+      false,
+      false,
+      undefined,
+      profile,
+    );
+    const turn = await session.submit('Read.');
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0].submission).toBe(turn);
+    expect(order).toEqual(['metadata']);
+    const actual = await records(calls);
+    expect(actual).toHaveLength(1);
+    expect(actual[0]._meta['app/profile']).toBe(secret);
+    expect(model.requests).toHaveLength(profile === 'destination' ? 3 : 2);
+    expect(JSON.stringify(model.requests)).not.toContain(secret);
+    expect(JSON.stringify(await session.saveState())).not.toContain(secret);
+    model.assertExhausted();
+  },
+  30000,
+);
+
+it.each(['throw', 'reserved'] as const)(
+  'fences failed metadata before continuation and joins entered SDK work (%s)',
+  async (mode) => {
+    const entered = Promise.withResolvers<void>();
+    const aborted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const privateFailure = new Error('owned private metadata callback failure');
+    let effects = 0;
+    const held = tool({
+      name: 'held',
+      parameters: z.object({}),
+      async execute(_args, context) {
+        context.signal.addEventListener('abort', () => aborted.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await release.promise;
+        effects += 1;
+        return 'must-not-publish-held-result';
+      },
+    });
+    const { session, model, calls } = await setup(
+      async () => {
+        await entered.promise;
+        if (mode === 'throw') throw privateFailure;
+        return { 'codex/sandbox-state-meta': privateFailure.message };
+      },
+      false,
+      false,
+      undefined,
+      undefined,
+      held,
+    );
+    const turn = await session.submit('Read.');
+    const completed = (async () => {
+      let found = false;
+      for await (const event of turn.events()) {
+        if (event.type === 'turn_finished' && event.status === 'completed')
+          found = true;
+      }
+      return found;
+    })();
+    let settled = false;
+    const result = turn
+      .wait()
+      .then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    try {
+      await aborted.promise;
+      expect(settled).toBe(false);
+      expect(effects).toBe(0);
+      expect(await records(calls)).toEqual([]);
+      expect(model.requests).toHaveLength(1);
+    } finally {
+      release.resolve();
+    }
+    const outcome = await result;
+    const observedError = 'error' in outcome ? outcome.error : undefined;
+    expect(observedError).toBeInstanceOf(NativeError);
+    expect(observedError).toMatchObject({
+      message: 'Native MCP result policy failed',
+    });
+    await expect(turn.wait()).rejects.toBe(observedError);
+    expect(effects).toBe(1);
+    expect(await completed).toBe(false);
+    const saved = JSON.stringify(await session.saveState());
+    expect(saved).not.toContain('must-not-publish-held-result');
+    expect(saved).not.toContain(privateFailure.message);
+    expect(JSON.stringify(model.requests)).not.toContain(
+      privateFailure.message,
+    );
+    const successor = await session.submit('Continue explicitly.');
+    expect((await successor.wait()).finalOutput).toBe('done');
+    expect(model.requests).toHaveLength(2);
+    model.assertExhausted();
+  },
+  30000,
+);
+
+it('redacts late metadata callback errors while cancellation joins entered work', async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const secret = 'private-metadata-cleanup-error';
+  const { session, model, calls } = await setup(async () => {
+    entered.resolve();
+    await release.promise;
+    throw new Error(secret);
+  });
+  const { binding } = await import('../../src/runtime/binding');
+  const { NativeThread: Thread } = await binding();
+  const interrupt = Thread.prototype._interrupt_session;
+  let nativeStopped = false;
+  const observer = vi
+    .spyOn(Thread.prototype, '_interrupt_session')
+    .mockImplementation(function (this: NativeThread) {
+      return interrupt.call(this).then((value) => {
+        nativeStopped = true;
+        return value;
+      });
+    });
+  const turn = await session.submit('Read.');
+  let resultSettled = false;
+  const result = turn
+    .wait()
+    .catch((error: unknown) => error)
+    .finally(() => {
+      resultSettled = true;
+    });
+  let cancellation: Promise<unknown> | undefined;
+  let settled = false;
+  try {
+    await entered.promise;
+    cancellation = turn
+      .cancel()
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await vi.waitFor(() => expect(nativeStopped).toBe(true));
+    expect(settled).toBe(false);
+    expect(resultSettled).toBe(false);
+    expect(await records(calls)).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+  } finally {
+    release.resolve();
+    observer.mockRestore();
+  }
+  expect(inspect(await result, { depth: 12 })).not.toContain(secret);
+  expect(inspect(await cancellation, { depth: 12 })).not.toContain(secret);
+  const cleanup = await session.close().catch((error: unknown) => error);
+  expect(inspect(cleanup, { depth: 12 })).not.toContain(secret);
+  const index = sessions.indexOf(session);
+  if (index >= 0) sessions.splice(index, 1);
+}, 30000);
+
+it('fences child metadata rejection without continuing its model and joins its entered callback', async () => {
+  const { startPublicExecutor } = await import('./fixtures/public-executor');
+  const executor = await startPublicExecutor();
+  const childCaptured = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let aborted = false;
+  let effects = 0;
+  let selectedSession: Session | undefined;
+  let rootId: string | undefined;
+  let rootRequests = 0;
+  let childRequests = 0;
+  try {
+    const held = tool({
+      name: 'held',
+      parameters: z.object({}),
+      async execute(_args, context) {
+        context.signal.addEventListener(
+          'abort',
+          () => {
+            aborted = true;
+          },
+          { once: true },
+        );
+        entered.resolve();
+        await release.promise;
+        effects += 1;
+        return 'must-not-publish-child-held-result';
+      },
+    });
+    const respond = (request: Record<string, any>) => {
+      const id = JSON.parse(request.client_metadata['x-codex-turn-metadata'])
+        .thread_id as string;
+      rootId ??= id;
+      if (id === rootId) {
+        if (++rootRequests === 1)
+          return [
+            call(
+              'spawn_agent',
+              { task_name: 'metadata_child', message: 'Read.' },
+              { namespace: 'collaboration', callId: 'metadata-child-spawn' },
+            ),
+          ];
+        return [message('root done')];
+      }
+      childRequests += 1;
+      return [
+        call('held', {}, { callId: 'child-held' }),
+        call(
+          'lookup',
+          { key: 'original' },
+          { namespace: 'mcp__fixture', callId: 'child-metadata' },
+        ),
+      ];
+    };
+    const { session, model, calls } = await setup(
+      async () => {
+        await entered.promise;
+        await childCaptured.promise;
+        return {
+          'codex/sandbox-state-meta': 'private-child-rejected-metadata',
+        };
+      },
+      false,
+      false,
+      undefined,
+      undefined,
+      held,
+      {
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        }),
+        responses: Array.from({ length: 3 }, () => respond),
+      },
+    );
+    selectedSession = session;
+    const root = await session.submit('Delegate.');
+    expect((await root.wait()).finalOutput).toBe('root done');
+    const children = await vi.waitUntil(async () => {
+      const children = await Array.fromAsync(session.subagents());
+      return children.length === 1 && children[0].turn ? children : false;
+    });
+    const child = children[0];
+    let settled = false;
+    const result = child
+      .turn!.wait()
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    childCaptured.resolve();
+    await vi.waitFor(() => expect(aborted).toBe(true));
+    expect(settled).toBe(false);
+    expect(effects).toBe(0);
+    expect(await records(calls)).toEqual([]);
+    expect(childRequests).toBe(1);
+    release.resolve();
+    expect(await result).toBeInstanceOf(NativeError);
+    expect(await result).toMatchObject({
+      message: 'Native MCP result policy failed',
+    });
+    expect(effects).toBe(1);
+    expect(rootRequests).toBe(2);
+    expect(childRequests).toBe(1);
+    expect(JSON.stringify(model.requests)).not.toContain(
+      'private-child-rejected-metadata',
+    );
+    model.assertExhausted();
+  } finally {
+    release.resolve();
+    childCaptured.resolve();
+    try {
+      await selectedSession?.close();
+    } finally {
+      await executor.close();
+    }
+  }
+}, 30000);

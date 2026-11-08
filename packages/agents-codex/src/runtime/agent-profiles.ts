@@ -135,6 +135,7 @@ export function captureProfileRuntimes(
     const instructions =
       index === 0 ? rootInstructions : declaration.instructions;
     const model = modelOverrides(declaration.model, declaration.modelSettings);
+    const policies = JSON.parse(mcpPolicies(mcp, 0n));
     captured.set(
       profile.id,
       Object.freeze({
@@ -162,6 +163,9 @@ export function captureProfileRuntimes(
       manual_slots: catalog.tools.flatMap((tool, slot) =>
         tool.kind === 'manual' ? [slot] : [],
       ),
+      terminal_slots: catalog.tools.flatMap((tool, slot) =>
+        tool.kind !== 'manual' && tool.finishTurn ? [slot] : [],
+      ),
       step_defaults: catalog.tools.map((_, index) => index),
       handoffs: { ...profile.handoffs },
       transform_context: false,
@@ -170,7 +174,8 @@ export function captureProfileRuntimes(
       selecting_steps: false,
       output_fingerprint: output.identity.fingerprint,
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
-      mcp_result_tools: JSON.parse(mcpPolicies(mcp, 0n)).servers,
+      mcp_result_tools: policies.servers,
+      mcp_metadata_tools: policies.metadata_servers,
       mcp_tools: Object.fromEntries(
         mcp.map((server) => [
           server.name,

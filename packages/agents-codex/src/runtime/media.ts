@@ -93,22 +93,35 @@ export function captureFile(value: unknown): FileReference {
   const captured = source(data[key], true);
   if (key === 'file_url') url(captured, ['https:']);
   if (key === 'file_data') {
-    let payload = captured;
+    let payloadStart = 0;
     if (captured.slice(0, 5).toLowerCase() === 'data:') {
       const comma = captured.indexOf(',');
       if (
-        comma < 0 ||
-        !captured.slice(5, comma).toLowerCase().endsWith(';base64')
+        comma < 12 ||
+        captured.slice(comma - 7, comma).toLowerCase() !== ';base64'
       )
         throw new TypeError('File data must contain base64 data');
-      payload = captured.slice(comma + 1);
+      payloadStart = comma + 1;
     }
-    const canonical = Buffer.from(payload, 'base64').toString('base64');
-    if (
-      !payload ||
-      (payload !== canonical && payload !== canonical.replace(/=+$/, ''))
-    )
+    if (payloadStart === captured.length)
       throw new TypeError('File data must contain canonical base64 data');
+    // Four-character alignment preserves the existing canonical padded/unpadded contract.
+    // Keep decode/re-encode allocations bounded independently of descriptor size.
+    const chunkSize = 32_768;
+    for (
+      let start = payloadStart;
+      start < captured.length;
+      start += chunkSize
+    ) {
+      const end = Math.min(start + chunkSize, captured.length);
+      const chunk = captured.slice(start, end);
+      const canonical = Buffer.from(chunk, 'base64').toString('base64');
+      if (
+        (end < captured.length && chunk.endsWith('=')) ||
+        (chunk !== canonical && chunk !== canonical.replace(/=+$/, ''))
+      )
+        throw new TypeError('File data must contain canonical base64 data');
+    }
   }
   const filename = data.filename;
   if (filename != null && typeof filename !== 'string')

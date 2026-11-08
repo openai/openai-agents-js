@@ -4232,7 +4232,10 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError(
         'Cannot replace writableRoots while storage mounts are active',
       );
-    return captureWritableRoots(roots);
+    const captured = captureWritableRoots(roots);
+    if (this.environment?.readOnly && captured.length)
+      throw new TypeError('Read-only execution does not accept writableRoots');
+    return captured;
   }
 
   private startTurn(
@@ -6060,10 +6063,12 @@ export class Session<OutputT = string, Context = unknown> {
       this.notifyManualProgress();
       let error = run.failure;
       if (
-        kind !== 'turn_aborted' &&
         this.mcpReaderStarted &&
         run.id &&
-        this.#native._take_native_mcp_result_failure(run.id)
+        this.#native._take_native_mcp_result_failure(
+          run.id,
+          kind === 'turn_aborted',
+        )
       )
         error ??= new NativeError('Native MCP result policy failed');
       if (
@@ -7640,6 +7645,7 @@ export class Session<OutputT = string, Context = unknown> {
           },
           this.checkpointSelections(run),
           networkPolicyDigest(this.environment?.network),
+          this.environment?.readOnly ?? false,
         );
 
         if (!this.current(run))
@@ -8662,6 +8668,9 @@ export class Session<OutputT = string, Context = unknown> {
                 encode(this.interceptionRules(active, generation)),
                 candidate.generation.toString(),
                 candidate.specsJson,
+                undefined,
+                undefined,
+                this.terminalSlots(candidate),
               ),
             );
             // The combined ingress owns function and MCP publication. Any
@@ -8678,6 +8687,8 @@ export class Session<OutputT = string, Context = unknown> {
             const accepted = await this.#native._replace_tools(
               candidate.generation.toString(),
               candidate.specsJson,
+              undefined,
+              this.terminalSlots(candidate),
             );
             if (accepted !== candidate.generation.toString())
               throw new NativeError(
@@ -8788,6 +8799,7 @@ export class Session<OutputT = string, Context = unknown> {
         candidate.generation.toString(),
         candidate.specsJson,
         encode(slots),
+        this.terminalSlots(candidate),
       );
       confirmed = accepted === candidate.generation.toString();
       if (confirmed) {
@@ -8815,10 +8827,10 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
   }
-  private terminalSlots(): string {
+  private terminalSlots(catalog: ToolCatalog = this.catalog): string {
     return encode({
-      generation: this.catalog.generation.toString(),
-      slots: this.catalog.tools.flatMap((tool, slot) =>
+      generation: catalog.generation.toString(),
+      slots: catalog.tools.flatMap((tool, slot) =>
         tool.kind !== 'manual' && tool.finishTurn ? [slot] : [],
       ),
     });
@@ -10284,6 +10296,7 @@ export class Session<OutputT = string, Context = unknown> {
         undefined,
         this.checkpointSelections(),
         networkPolicyDigest(this.environment?.network),
+        this.environment?.readOnly ?? false,
       );
     const prior = this.restored.recovery;
     const decorated: NativeCheckpoint = {
@@ -10313,6 +10326,7 @@ export class Session<OutputT = string, Context = unknown> {
       undefined,
       this.checkpointSelections(),
       networkPolicyDigest(this.environment?.network),
+      this.environment?.readOnly ?? false,
     );
   }
 
@@ -10397,7 +10411,12 @@ export class Session<OutputT = string, Context = unknown> {
               async () => {
                 try {
                   response = await transform();
-                } catch {
+                } catch (error) {
+                  if (
+                    owner.controller.signal.aborted &&
+                    error === owner.controller.signal.reason
+                  )
+                    throw error;
                   throw new NativeError('Native MCP result policy failed');
                 }
               },
@@ -10414,15 +10433,41 @@ export class Session<OutputT = string, Context = unknown> {
             );
           }
           if (!requestExpired && this.current(owner)) {
-            native._resolve_native_mcp_result(
+            const accepted = native._resolve_native_mcp_result(
               notice.nonce,
               notice.turn_id,
               notice.call_id,
               JSON.stringify(losslessJsonValueSchema.parse(response)),
             );
+            if (
+              !accepted &&
+              native._check_native_mcp_result(
+                notice.nonce,
+                notice.turn_id,
+                notice.call_id,
+              )
+            ) {
+              throw new NativeError('Native MCP result policy failed');
+            }
           }
         } catch {
-          throw new NativeError('Native MCP result policy failed');
+          if (
+            !this.current(owner) ||
+            !native._check_native_mcp_result(
+              notice.nonce,
+              notice.turn_id,
+              notice.call_id,
+            )
+          )
+            return;
+          const failure = new NativeError('Native MCP result policy failed');
+          // Retain the owning SDK failure before releasing a sender can wake native stop.
+          // The current owner check keeps retired calls out of a replacement turn.
+          if (this.current(owner)) {
+            owner.failure ??= failure;
+            throw owner.failure;
+          }
+          throw failure;
         } finally {
           try {
             // Close owns sender revocation. Otherwise, settle even a retired

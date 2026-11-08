@@ -707,6 +707,7 @@ impl PythonTools {
         &self,
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
+        terminal_slots: &[usize],
         defaults: Option<&[usize]>,
         flags: [bool; 4],
         _reuse_initial: bool,
@@ -721,6 +722,12 @@ impl PythonTools {
             );
         }
         generation.manual_slots = Some(manual);
+        for &slot in terminal_slots {
+            ensure!(
+                slot < generation.entries.len() && generation.terminal_slots.insert(slot),
+                "Invalid or duplicate terminal tool slot"
+            );
+        }
         generation.defaults = defaults
             .map(Vec::from)
             .unwrap_or_else(|| (0..generation.entries.len()).collect());
@@ -759,32 +766,38 @@ impl PythonTools {
         source: &ProfileCatalog,
     ) -> Result<ProfileCatalog> {
         let generation = self.snapshot();
-        let names = source
+        let rebind = |slots: &HashSet<usize>| {
+            let names = slots
+                .iter()
+                .map(|&slot| {
+                    source.generation.entries[slot]
+                        .name
+                        .clone()
+                        .with_default_namespace()
+                })
+                .collect::<HashSet<_>>();
+            generation
+                .entries
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, entry)| {
+                    names
+                        .contains(&entry.name.clone().with_default_namespace())
+                        .then_some(slot)
+                })
+                .collect::<Vec<_>>()
+        };
+        let manual = source
             .generation
             .manual_slots
             .as_ref()
-            .into_iter()
-            .flatten()
-            .map(|&slot| {
-                source.generation.entries[slot]
-                    .name
-                    .clone()
-                    .with_default_namespace()
-            })
-            .collect::<HashSet<_>>();
-        let manual = generation
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(slot, entry)| {
-                names
-                    .contains(&entry.name.clone().with_default_namespace())
-                    .then_some(slot)
-            })
-            .collect::<Vec<_>>();
+            .map(&rebind)
+            .unwrap_or_default();
+        let terminal = rebind(&source.generation.terminal_slots);
         self.profile_catalog(
             generation.specs.clone(),
             &manual,
+            &terminal,
             Some(&generation.defaults),
             flags,
             false,
@@ -1367,14 +1380,35 @@ impl PythonTools {
         id: u64,
         specs: Vec<DynamicToolSpec>,
         defaults: Option<Vec<usize>>,
+        terminal: Option<TerminalSlots>,
     ) -> Result<u64> {
-        if let Some(id) =
-            crate::agent_profiles::replace_tools(thread, id, specs.clone(), defaults.clone())
-                .await?
+        let terminal_slots = if let Some(config) = terminal {
+            ensure!(
+                config.generation == id.to_string(),
+                "Expired terminal replacement generation"
+            );
+            config.slots
+        } else {
+            Vec::new()
+        };
+        if let Some(id) = crate::agent_profiles::replace_tools(
+            thread,
+            id,
+            specs.clone(),
+            defaults.clone(),
+            &terminal_slots,
+        )
+        .await?
         {
             return Ok(id);
         }
         let mut candidate = self.prepare(id, specs)?;
+        for slot in terminal_slots {
+            ensure!(
+                slot < candidate.entries.len() && candidate.terminal_slots.insert(slot),
+                "Invalid terminal tool slot"
+            );
+        }
         if let Some(defaults) = defaults {
             validate_selection(&defaults, &(0..candidate.entries.len()).collect::<Vec<_>>())?;
             candidate.defaults = defaults;
@@ -4906,6 +4940,55 @@ mod pending_tests {
                 .is_ok()
         );
         assert_eq!(tools.next_request().await, json!({"id":"successor"}));
+    }
+
+    #[test]
+    fn captured_profile_terminal_slots_survive_startup_and_idempotent_configuration() {
+        let tools = tools();
+        let source = tools
+            .profile_catalog(
+                tools.snapshot().specs.clone(),
+                &[],
+                &[0],
+                None,
+                [false; 4],
+                false,
+            )
+            .unwrap();
+        *tools.current.write().unwrap() = Arc::clone(&source.generation);
+        tools
+            .configure_terminal(TerminalSlots {
+                generation: source.generation.id.to_string(),
+                slots: vec![0],
+            })
+            .unwrap();
+        assert!(Arc::ptr_eq(&source.generation, &tools.snapshot()));
+        let startup = tools.startup_profile_catalog([false; 4], &source).unwrap();
+        assert_eq!(startup.generation.terminal_slots, HashSet::from([0]));
+        assert!(
+            tools
+                .profile_catalog(
+                    tools.snapshot().specs.clone(),
+                    &[],
+                    &[1],
+                    None,
+                    [false; 4],
+                    false
+                )
+                .is_err()
+        );
+        assert!(
+            tools
+                .profile_catalog(
+                    tools.snapshot().specs.clone(),
+                    &[],
+                    &[0, 0],
+                    None,
+                    [false; 4],
+                    false
+                )
+                .is_err()
+        );
     }
 }
 

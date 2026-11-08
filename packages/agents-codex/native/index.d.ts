@@ -137,7 +137,7 @@ export class NativeThread {
   _finish_native_interception_reader(): void;
   _enable_native_mcp_results(timeout: number): void;
   _revoke_native_mcp_results(): void;
-  _take_native_mcp_result_failure(turn_id: string): boolean;
+  _take_native_mcp_result_failure(turn_id: string, aborted?: boolean): boolean;
   _next_native_mcp_result(): Promise<string>;
   _check_native_mcp_result(
     nonce: NativeId,
@@ -224,6 +224,7 @@ export class NativeThread {
     generation: NativeId,
     specs_json: string,
     default_slots_json?: string,
+    terminal_slots_json?: string,
   ): Promise<NativeId>;
   _replace_mcp_servers(
     servers_json: string,
@@ -233,6 +234,7 @@ export class NativeThread {
     specs_json?: string,
     startup_boundary?: string,
     cancel_on_resource_close?: boolean,
+    terminal_slots_json?: string,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(response_json: string): Promise<boolean>;

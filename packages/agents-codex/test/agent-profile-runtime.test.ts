@@ -255,3 +255,52 @@ it('captures every model control in profiles and normalizes named and cleared ch
     request_controls: { max_output_tokens: null, named_tool_choice: null },
   });
 });
+
+it('captures terminal slots and metadata selections separately for every profile', async () => {
+  const { StdioMCP } = await import('../src/runtime/mcp');
+  const first = tool({
+    name: 'finish',
+    namespace: 'reports',
+    parameters: z.object({}),
+    finishTurn: false,
+    execute: () => 'A',
+  });
+  const second = tool({
+    name: 'finish',
+    namespace: 'reports',
+    parameters: z.object({}),
+    finishTurn: true,
+    execute: () => 'B',
+  });
+  const mcp = new StdioMCP({
+    name: 'fixture',
+    command: 'unused-pure-capture',
+    tools: ['lookup'],
+    requestMetadata: () => ({ audit: 'B' }),
+  });
+  const target = new Agent({
+    name: 'B',
+    instructions: 'B',
+    tools: [second, mcp],
+  });
+  const root = new Agent({
+    name: 'A',
+    instructions: 'A',
+    tools: [first],
+    handoffs: [target],
+  });
+  const graph = captureProfileRuntimes(
+    captureAgentProfiles(root),
+    captureTools([first]),
+    'A',
+  );
+  expect(graph.roster[0]).toMatchObject({
+    terminal_slots: [],
+    mcp_metadata_tools: {},
+  });
+  expect(graph.roster[1]).toMatchObject({
+    terminal_slots: [0],
+    mcp_metadata_tools: { fixture: ['lookup'] },
+  });
+  expect(JSON.stringify(graph.roster)).not.toContain('"audit"');
+});

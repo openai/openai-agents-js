@@ -530,6 +530,33 @@ impl DirectTurn {
     }
 }
 
+// Stop only the captured task. Its existing host stop/join owner retains
+// physical settlement; joining here would wait on this very MCP hook.
+pub(crate) fn expire_mcp_result(
+    thread_store: &ExtensionData,
+    turn_store: &ExtensionData,
+    claim: impl FnOnce() -> bool,
+) {
+    if let (Some(control), Some(owner)) = (
+        thread_store.get::<Control>(),
+        turn_store.get::<DirectTurn>(),
+    ) {
+        let _state = control
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        if !control.stopped.is_cancelled() && owner.admits_policy(true) && claim() {
+            owner.policy_stopped.store(true, Ordering::Release);
+            if let Some(task) = &owner.core_task {
+                task.request_stop();
+            }
+        }
+    } else {
+        claim();
+    }
+}
+
 // Reuse the existing exact-turn publication fence for pre-send application metadata.
 pub(crate) fn publish_mcp_metadata(
     thread: &ExtensionData,
@@ -7887,6 +7914,33 @@ mod tests {
         );
         assert!(control.release(nonce));
         assert_eq!(control.channel.bytes.available_permits(), MAX_PAYLOAD_BYTES);
+    }
+
+    #[test]
+    fn rejected_mcp_policy_stops_only_captured_owner_before_publication() {
+        let thread = ExtensionData::new("root");
+        let control = thread.get_or_init(|| Control::new("root".into(), true));
+        control.enable(3.0, Scope::Root).unwrap();
+        let old = direct_request(control.clone(), "same-id");
+        let successor = direct_request(control.clone(), "same-id");
+        *control.direct_turn.lock().unwrap() = Some(successor.owner.clone());
+        let old_turn = old.tool_admission.as_ref().unwrap().turn_store();
+        let successor_turn = successor.tool_admission.as_ref().unwrap().turn_store();
+        old.owner.cancelled.cancel(); // Natural completion still owns retained work.
+        expire_mcp_result(&thread, old_turn, || false); // Cancelled/revoked call cannot claim.
+        assert!(!old.owner.policy_stopped.load(Ordering::Acquire));
+        expire_mcp_result(&thread, old_turn, || true);
+        assert!(old.owner.policy_stopped.load(Ordering::Acquire));
+        assert!(!successor.owner.policy_stopped.load(Ordering::Acquire));
+        let probe: CancellationProbe = Arc::new(|| false);
+        let mut publications = 0;
+        publish_mcp_metadata(&thread, old_turn, true, &probe, || publications += 1);
+        assert_eq!(publications, 0);
+        publish_mcp_metadata(&thread, successor_turn, true, &probe, || publications += 1);
+        assert_eq!(
+            publications, 1,
+            "same-id successor retains its own authority"
+        );
     }
 
     #[test]

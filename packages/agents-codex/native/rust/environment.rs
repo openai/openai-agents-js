@@ -109,6 +109,8 @@ pub struct EnvironmentOptions {
     connect_timeout: Option<f64>,
     capability_directories: Option<Vec<PathUri>>,
     writable_roots: Option<Vec<PathUri>>,
+    #[serde(default)]
+    read_only: bool,
     #[serde(default, deserialize_with = "deserialize_mounts")]
     mounts: Option<Vec<LocalStorageMount>>,
     #[serde(default, deserialize_with = "deserialize_network")]
@@ -185,6 +187,7 @@ pub(crate) struct StrictExecutorWrites {
     canonical_cwd: PathUri,
     root_pins: HashMap<Vec<u8>, PathUri>,
     has_storage_mounts: bool,
+    read_only: bool,
 }
 
 impl StrictExecutorWrites {
@@ -350,6 +353,20 @@ impl EnvironmentOptions {
     }
 
     pub(crate) fn check_config(&self, config: &Config) -> Result<()> {
+        if self.read_only {
+            ensure!(
+                self.strict_writes(),
+                "read-only execution requires strict write policy"
+            );
+            ensure!(
+                self.writable_roots.as_ref().is_none_or(Vec::is_empty),
+                "read-only execution does not accept writable_roots"
+            );
+            ensure!(
+                !self.local || cfg!(any(target_os = "linux", target_os = "macos")),
+                "read-only local execution requires Linux or macOS"
+            );
+        }
         self.validate_storage_mounts(config, None)?;
         if self.strict_writes() {
             check_writable_config(config, /*local_session_proxy*/ false)?;
@@ -598,6 +615,7 @@ impl EnvironmentOptions {
                 self.writable_roots.as_deref().unwrap_or_default(),
                 &mounts,
                 local_storage,
+                self.read_only,
             )
             .await?;
             Ok((Some(strict), profile))
@@ -838,6 +856,7 @@ async fn strict_write_profile(
     additional: &[PathUri],
     mounts: &[PathUri],
     local_storage: Option<&Path>,
+    read_only: bool,
 ) -> Result<(StrictExecutorWrites, PermissionProfile)> {
     ensure!(
         matches!(
@@ -928,16 +947,26 @@ async fn strict_write_profile(
             access: FileSystemAccessMode::Read,
             missing_path_behavior: None,
         }));
+    // Intersect only after strict roots, Minimal and protected exclusions exist.
+    let profile = PermissionProfile::from_runtime_permissions(
+        &filesystem_policy,
+        NetworkSandboxPolicy::Restricted,
+    );
+    let profile = if read_only {
+        profile
+            .intersect_with_read_only()
+            .context("read-only execution requires managed filesystem enforcement")?
+    } else {
+        profile
+    };
     Ok((
         StrictExecutorWrites {
             canonical_cwd: roots[0].clone(),
             root_pins,
             has_storage_mounts: !mounts.is_empty(),
+            read_only,
         },
-        PermissionProfile::from_runtime_permissions(
-            &filesystem_policy,
-            NetworkSandboxPolicy::Restricted,
-        ),
+        profile,
     ))
 }
 
@@ -1362,6 +1391,10 @@ pub(crate) async fn replace_writable_roots(
         !previous.has_storage_mounts,
         "Cannot replace writable_roots while storage mounts are active"
     );
+    ensure!(
+        !previous.read_only || writable_roots.is_empty(),
+        "read-only execution does not accept writable_roots"
+    );
     // The SDK installs its local proxy after rejecting an ambient controller at selection.
     let local = selection.environment_id == LOCAL_ENVIRONMENT_ID;
     check_writable_config(config, local)?;
@@ -1382,6 +1415,7 @@ pub(crate) async fn replace_writable_roots(
         &writable_roots,
         &[],
         local_storage,
+        previous.read_only,
     )
     .await?;
     strict.check_pins(previous)?;
@@ -2200,6 +2234,7 @@ mod tests {
             canonical_cwd: cwd.clone(),
             root_pins: HashMap::from([(write_root_key(&cwd), cwd)]),
             has_storage_mounts: false,
+            read_only: false,
         };
         let recorded = store.join("rollout.jsonl");
         let compressed = recorded.with_extension("jsonl.zst");

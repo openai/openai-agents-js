@@ -144,6 +144,7 @@ const remoteEnvironmentSchema = z
     cwd: pathUri,
     capability_directories: z.array(capabilityDirectory).optional(),
     writable_roots: z.array(capabilityDirectory).optional(),
+    read_only: z.boolean().optional(),
     headers: z.record(z.string(), z.string()).optional(),
     connect_timeout: z.number().nonnegative().finite().nullable().optional(),
     network: networkPolicyWireSchema.optional(),
@@ -223,6 +224,10 @@ export interface EnvironmentOptions<Context = unknown> {
     value: JsonValue,
   ) => JsonValue | Promise<JsonValue>;
   policyTimeout?: number;
+  /** Cap native filesystem access within current read/network scope. Strict only.
+   * Application callbacks retain their host authority.
+   */
+  readOnly?: boolean;
 }
 
 export type LocalEnvironmentOptions<Context = unknown> = Omit<
@@ -264,6 +269,7 @@ export class Environment<Context = any> {
   #remoteUrl?: string;
   readonly kind: 'local' | 'remote';
   readonly writePolicy: 'strict' | 'legacy';
+  readonly readOnly: boolean;
   /** WSS transport URL. A local Environment has no transport URL. */
   get url(): string {
     if (this.#remoteUrl === undefined)
@@ -291,6 +297,17 @@ export class Environment<Context = any> {
     this.kind = 'local' in options ? 'local' : 'remote';
     this.writePolicy =
       options.writePolicy === undefined ? 'strict' : options.writePolicy;
+    if (options.readOnly !== undefined && typeof options.readOnly !== 'boolean')
+      throw new TypeError('readOnly must be a boolean');
+    this.readOnly = options.readOnly ?? false;
+    if (this.readOnly && this.writePolicy !== 'strict')
+      throw new TypeError('Read-only execution requires strict write policy');
+    if (
+      this.readOnly &&
+      this.kind === 'local' &&
+      !['linux', 'darwin'].includes(process.platform)
+    )
+      throw new TypeError('Read-only local execution requires Linux or macOS');
     if (this.writePolicy !== 'strict' && this.writePolicy !== 'legacy')
       throw new TypeError('writePolicy must be strict or legacy');
     if (this.writePolicy === 'legacy') {
@@ -350,6 +367,8 @@ export class Environment<Context = any> {
       )
     )
       throw new TypeError('Select distinct executor tool names');
+    if (this.readOnly && tools.includes('apply_patch'))
+      throw new TypeError('Read-only execution does not support apply_patch');
     if (tools.includes('write_stdin') && !tools.includes('exec_command'))
       throw new TypeError('write_stdin requires exec_command');
     if (options.network !== undefined && !tools.includes('exec_command'))
@@ -416,6 +435,8 @@ export class Environment<Context = any> {
               options.writableRoots === undefined ? [] : options.writableRoots,
             ),
           );
+    if (this.readOnly && this.writableRoots?.length)
+      throw new TypeError('Read-only execution does not accept writableRoots');
     if ('mounts' in options && options.mounts !== undefined)
       this.mounts = captureStorageMounts(
         options.mounts,
@@ -451,6 +472,7 @@ export function environmentConfig(environment: Environment): EnvironmentConfig {
       ? { local: true }
       : { url: environment.url, headers: environment.headers }),
     cwd: environment.cwd,
+    ...(environment.readOnly ? { read_only: true } : {}),
     ...(environment.mounts === undefined
       ? {}
       : {

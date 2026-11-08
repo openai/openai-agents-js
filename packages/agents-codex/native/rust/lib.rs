@@ -1116,7 +1116,7 @@ impl ContextChange {
         tokio::select! {
             biased;
             _ = self.candidate_publication_stop.cancelled() => Err(native_error("candidate MCP publication cancelled")),
-            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None) => receipt,
+            receipt = candidate._replace_mcp_servers(servers_json, policies_json, interception_rules_json, None, None, None, None, None) => receipt,
         }
     }
 
@@ -1491,13 +1491,19 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_take_native_mcp_result_failure")]
-    pub fn _take_native_mcp_result_failure(&self, turn_id: String) -> napi::Result<bool> {
-        let turn_id = turn_id.as_str();
-
-        Ok(self
+    pub fn _take_native_mcp_result_failure(
+        &self,
+        turn_id: String,
+        aborted: Option<bool>,
+    ) -> napi::Result<bool> {
+        let control = self
             .mcp_result_control()?
-            .ok_or_else(|| native_error("Codex thread is closed"))?
-            .take_unresolved(turn_id))
+            .ok_or_else(|| native_error("Codex thread is closed"))?;
+        Ok(if aborted.unwrap_or(false) {
+            control.take_settled_failure(&turn_id)
+        } else {
+            control.take_unresolved(&turn_id)
+        })
     }
 
     #[napi(js_name = "_next_native_mcp_result")]
@@ -2628,9 +2634,14 @@ impl NativeThread {
         generation: String,
         specs_json: String,
         default_slots_json: Option<String>,
+        terminal_slots_json: Option<String>,
     ) -> napi::Result<String> {
         let generation = crate::native_id(&generation)?;
         let specs_json = specs_json.as_str();
+        let terminal = terminal_slots_json
+            .map(|json| serde_json::from_str::<python_tools::TerminalSlots>(&json))
+            .transpose()
+            .map_err(input_error)?;
 
         let specs = serde_json::from_str(specs_json).map_err(native_error)?;
         let defaults = default_slots_json
@@ -2648,7 +2659,7 @@ impl NativeThread {
                 .get::<python_tools::PythonTools>()
                 .ok_or_else(|| native_error("replace_tools requires a replaceable tool session"))?;
             tools
-                .replace(&inner.thread, generation, specs, defaults)
+                .replace(&inner.thread, generation, specs, defaults, terminal)
                 .await
                 .map(|generation| generation.to_string())
                 .map_err(native_error)
@@ -2667,6 +2678,7 @@ impl NativeThread {
         specs_json: Option<String>,
         startup_boundary: Option<String>,
         cancel_on_resource_close: Option<bool>,
+        terminal_slots_json: Option<String>,
     ) -> napi::Result<String> {
         let servers_json = servers_json.as_str();
         if startup_boundary
@@ -2710,6 +2722,15 @@ impl NativeThread {
         {
             return Err(input_error(
                 "MCP pre-policy rules do not match selected callbacks",
+            ));
+        }
+        let terminal = terminal_slots_json
+            .map(|json| serde_json::from_str::<python_tools::TerminalSlots>(&json))
+            .transpose()
+            .map_err(input_error)?;
+        if terminal.is_some() && tool_generation.is_none() {
+            return Err(input_error(
+                "Terminal replacement requires a function catalog",
             ));
         }
         let function_update = match (tool_generation, specs_json) {
@@ -2817,7 +2838,7 @@ impl NativeThread {
                 }
                 // An uncertain function publication cannot reopen the old policy.
                 let published = tools
-                    .replace(&inner.thread, generation, specs, None)
+                    .replace(&inner.thread, generation, specs, None, terminal)
                     .await
                     .map_err(native_error)?;
                 function_generation = Some(published.to_string());

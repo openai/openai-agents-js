@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ToolOutput, type InputFile, type InputImageFile } from '../../src';
 import { nativeInput, responseContent } from '../../src/runtime/input';
 import { outputOf } from '../../src/runtime/tools';
@@ -142,5 +142,53 @@ describe('media capture and shared projections', () => {
       root_code_mode,
     });
     expect(parsed.root_code_mode).toEqual(root_code_mode);
+  });
+});
+
+describe('bounded canonical file-data validation', () => {
+  it.each(['', 'data:application/pdf;base64,', 'DATA:application/pdf;BASE64,'])(
+    'retains large canonical data with bounded real decoder calls (%s)',
+    (prefix) => {
+      const payload = 'AQID'.repeat(20_000);
+      const value = prefix + payload;
+      const decoder = vi.spyOn(Buffer, 'from');
+      try {
+        const output = ToolOutput.file({ file_data: value });
+        expect(output.contentItems[0]).toEqual({
+          type: 'inputFile',
+          file_data: value,
+        });
+        const lengths = decoder.mock.calls.map(([input]) =>
+          typeof input === 'string' ? input.length : 0,
+        );
+        expect(lengths.length).toBeGreaterThan(1);
+        expect(Math.max(...lengths)).toBeLessThanOrEqual(32_768);
+      } finally {
+        decoder.mockRestore();
+      }
+    },
+  );
+  it.each(['Zg', 'Zg==', 'Zm8', 'Zm8='])(
+    'accepts canonical padded and unpadded tails after a chunk boundary (%s)',
+    (tail) => {
+      const value = 'AAAA'.repeat(8192) + tail;
+      expect(ToolOutput.file({ file_data: value }).contentItems[0]).toEqual({
+        type: 'inputFile',
+        file_data: value,
+      });
+    },
+  );
+  it.each(['Zh', 'Zh==', 'Zm9', 'Zm9=', 'Zg=', 'Zg===', 'Zg==AAAA'])(
+    'rejects invalid padding or nonzero unused bits after a chunk boundary (%s)',
+    (tail) => {
+      expect(() =>
+        ToolOutput.file({ file_data: 'AAAA'.repeat(8192) + tail }),
+      ).toThrow('canonical base64');
+    },
+  );
+  it('rejects padding at a nonfinal chunk boundary', () => {
+    expect(() =>
+      ToolOutput.file({ file_data: 'AAAA'.repeat(8191) + 'Zg==' + 'AAAA' }),
+    ).toThrow('canonical base64');
   });
 });

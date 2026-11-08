@@ -38622,7 +38622,7 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
              error: Some(event),
 --- /dev/null
 +++ b/codex-rs/protocol/src/input_file.rs
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,421 @@
 +//! Provider-owned file references shared by user input and tool output.
 +//! Validation performs no host file access, network access, upload, or content estimation.
 +
@@ -38737,21 +38737,32 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
 +                    let (metadata, payload) = file_data[5..]
 +                        .split_once(',')
 +                        .ok_or("file_data must contain base64 data")?;
-+                    if !metadata.to_ascii_lowercase().ends_with(";base64") {
++                    if !metadata
++                        .get(metadata.len().saturating_sub(7)..)
++                        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(";base64"))
++                    {
 +                        return Err("file_data must contain base64 data".into());
 +                    }
 +                    payload
 +                } else {
 +                    file_data.as_str()
 +                };
-+                // Validate inline bytes locally, without retaining a decoded cache or estimating document tokens.
-+                if payload.is_empty()
-+                    || STANDARD
-+                        .decode(payload)
-+                        .or_else(|_| STANDARD_NO_PAD.decode(payload))
-+                        .is_err()
-+                {
++                if payload.is_empty() {
 +                    return Err("file_data must contain base64 data".into());
++                }
++                // Validate aligned chunks with fixed scratch space, without allocating decoded files.
++                const CHUNK_SIZE: usize = 32 * 1024;
++                let mut decoded = [0_u8; CHUNK_SIZE / 4 * 3];
++                let mut chunks = payload.as_bytes().chunks(CHUNK_SIZE).peekable();
++                while let Some(chunk) = chunks.next() {
++                    if (chunks.peek().is_some() && chunk.contains(&b'='))
++                        || STANDARD
++                            .decode_slice(chunk, &mut decoded)
++                            .or_else(|_| STANDARD_NO_PAD.decode_slice(chunk, &mut decoded))
++                            .is_err()
++                    {
++                        return Err("file_data must contain base64 data".into());
++                    }
 +                }
 +                file_data
 +            }
@@ -38914,6 +38925,34 @@ Y$VX2zfD$+72g>aP6p?PNHC+IR0glH_FaQ7m
 +            None
 +        );
 +    }
++    #[test]
++    fn chunked_inline_validation_preserves_canonical_encodings() {
++        let prefix = "AAAA".repeat(8192);
++        for suffix in ["Zg==", "Zg", "Zm8=", "Zm8"] {
++            let source = format!("{prefix}{suffix}");
++            let file = InputFile::from_file_data(source.clone(), None).unwrap();
++            assert_eq!(file.source(), &InputFileSource::Data { file_data: source });
++            assert!(
++                InputFile::from_file_data(
++                    format!("DATA:application/pdf;BASE64,{prefix}{suffix}"),
++                    None
++                )
++                .is_ok()
++            );
++        }
++    }
++
++    #[test]
++    fn chunked_inline_validation_rejects_padding_and_noncanonical_tail() {
++        let prefix = "AAAA".repeat(8192);
++        for suffix in ["Zh==", "Zh", "Zm9=", "Zm9", "____", "AA A"] {
++            assert!(InputFile::from_file_data(format!("{prefix}{suffix}"), None).is_err());
++        }
++        assert!(
++            InputFile::from_file_data(format!("{}Zg==AAAA", "AAAA".repeat(8191)), None).is_err()
++        );
++    }
++
 +    fn actual_test_model() -> crate::openai_models::ModelInfo {
 +        let model: crate::openai_models::ModelInfo = serde_json::from_value(serde_json::json!({
 +            "slug": "test-model",
