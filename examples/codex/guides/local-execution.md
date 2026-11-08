@@ -10,9 +10,36 @@ Choose an existing absolute workspace directory. Install the SDK and helpers out
 
 Import `Environment` from `@openai/agents` and create the local declaration with `Environment.local`. Set `cwd` to the chosen directory and include `exec_command` in `tools`. The local declaration takes no URL, headers, or connection timeout. The [complete local example](../local-execution.ts) shows this setup and its cleanup.
 
-Pass the declaration as the `environment` option when opening `agent.session`. Omitting `tools` grants no command tools. Select `write_stdin` together with `exec_command` when you need to continue a process. The workspace remains writable; use [extra write grants](workspace-grants.md) for other directories.
+Pass the declaration as the `environment` option when opening `agent.session`. Omitting `tools` grants no command tools. Select `write_stdin` together with `exec_command` when you need to continue a process. By default the workspace remains writable; use [extra write grants](workspace-grants.md) for other directories.
 
 Commands start with a system `PATH` and a fresh environment rather than inheriting the application's variables. A provider API key in the application does not become a command environment variable. The command sandbox permits reads of the workspace, declared writable roots, and platform runtime files. A separately declared host stdio MCP process has its own [process permissions](mcp.md#run-a-stdio-server-on-the-host-or-executor).
+
+## Inspect a read-only workspace
+
+This option is available in current source builds and is intended for a forthcoming preview. The older `0.22.0-alpha.2` preview referenced above does not include it.
+
+Set `readOnly: true` to let native commands read the workspace while denying changes to its files. Select command tools explicitly; the default tool list is empty. Replace `/jobs/worker/work` with an existing absolute workspace outside the SDK installation. Configure your model-provider credentials before running this example, which makes a model call.
+
+```typescript
+import { Agent, Environment } from '@openai/agents';
+
+const environment = Environment.local({
+  cwd: '/jobs/worker/work',
+  tools: ['exec_command'],
+  readOnly: true,
+});
+const agent = new Agent({
+  model: 'gpt-5.5',
+  instructions: 'Summarize the assigned workspace.',
+});
+await using session = await agent.session({ environment });
+const turn = await session.submit('Read README.md and summarize it.');
+console.log((await turn.wait()).finalOutput);
+```
+
+This option keeps the selected read and network scope. It rejects `apply_patch`, `NativeAgents`, `writePolicy: 'legacy'`, and nonempty `writableRoots`. An empty root list remains valid and cannot remove the read-only ceiling. Restore requires the same read-only mode and applied executor policy. Use a separate ordinary strict Environment for work that needs to edit files.
+
+Local execution requires the supported Linux or macOS sandbox described above. A compatible strict WSS Environment accepts the same option, with enforcement owned by the trusted executor. Node callbacks and MCP services retain their own permissions. The SDK still manages its private runtime state.
 
 ## Run and verify the example
 
