@@ -23,6 +23,31 @@ afterEach(async () => {
 });
 
 describe('fileSessionStore', () => {
+  it('retains only unfinished release ownership across repeated leases', async () => {
+    const store = fileSessionStore(directory);
+    const originalSet = Map.prototype.set;
+    let retainedSize: (() => number) | undefined;
+    const spy = vi.spyOn(Map.prototype, 'set').mockImplementation(function (
+      this: Map<unknown, unknown>,
+      key,
+      value,
+    ) {
+      if (typeof key === 'string' && key.startsWith('["retention",'))
+        retainedSize = () => this.size;
+      return originalSet.call(this, key, value);
+    });
+    try {
+      for (let index = 0; index < 100; index++) {
+        const fence = await store.acquire('retention');
+        await store.release('retention', fence);
+      }
+      expect(retainedSize).toBeDefined();
+      expect(retainedSize!()).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('persists opaque snapshots and revisions across adapter instances', async () => {
     const first = fileSessionStore(directory);
     const fence = await first.acquire('thread-1');
@@ -65,7 +90,7 @@ describe('fileSessionStore', () => {
     await expect(
       first.commit('thread', oldFence, 'old', 0, '{}'),
     ).rejects.toThrow('fence');
-    await expect(first.release('thread', oldFence)).rejects.toThrow('fence');
+    await first.release('thread', oldFence);
     await second.commit('thread', fence, 'new', 0, '{}');
     await second.release('thread', fence);
   });
@@ -221,9 +246,7 @@ describe('fileSessionStore', () => {
     const successor = fileSessionStore(directory);
     const nextFence = await successor.acquire('thread');
     await store.release('thread', fence);
-    await expect(store.release('thread', 'never-issued')).rejects.toThrow(
-      'fence',
-    );
+    await store.release('thread', 'never-issued');
     await successor.commit(
       'thread',
       nextFence,

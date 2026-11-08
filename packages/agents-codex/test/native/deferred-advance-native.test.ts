@@ -200,7 +200,7 @@ async function preparedFixture<Result>(
         ? {}
         : { maxOutputBytes: options.maxOutputBytes }),
     });
-  const agent = new Agent({
+  const agent = new Agent<undefined, string | { answer: string }>({
     instructions: 'Ask for the declared jobs, then finish.',
     model: 'gpt-5',
     provider,

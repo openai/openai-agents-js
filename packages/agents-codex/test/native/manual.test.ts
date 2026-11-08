@@ -79,6 +79,62 @@ describe('manual tool declarations and exact reply ownership', () => {
     expect(authority.request()).toBeUndefined();
   });
 
+  it('captures JSON transforms once and preserves own keys in detached argument reads', () => {
+    const output = JSON.parse('{"__proto__":{"label":"kept"},"tags":[["a"]]}');
+    const transform = vi.fn(() => output);
+    const tool = manualTool({
+      name: 'json',
+      description: '',
+      parameters: z
+        .object({ value: z.string().optional() })
+        .transform(transform),
+      result: z.string(),
+    });
+    const authority = createManualRequest(tool, identity, {}, () => true);
+    output.tags[0].push('external mutation');
+    const request = authority.request()!;
+    const first = request.arguments;
+    expect(Object.hasOwn(first, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(first)).toBe(Object.prototype);
+    expect(first.__proto__).toEqual({ label: 'kept' });
+    first.tags[0].push('reader mutation');
+    expect(request.arguments.tags).toEqual([['a']]);
+    expect(transform).toHaveBeenCalledTimes(1);
+    expect(authority.takeReply(request.reply('done'))?.success).toBe(true);
+  });
+
+  it.each([
+    [
+      'class',
+      () =>
+        new (class Key {
+          text() {
+            return 'value';
+          }
+        })(),
+    ],
+    ['Date', () => new Date(0)],
+    ['Map', () => new Map([['key', 'value']])],
+    ['nonfinite number', () => Number.POSITIVE_INFINITY],
+    ['undefined field', () => ({ value: undefined })],
+  ])(
+    'rejects a %s parsed argument before exposing a request',
+    (_label, output) => {
+      // Untyped callers must receive the same JSON contract at runtime.
+      const tool = manualTool({
+        name: 'invalid',
+        description: '',
+        parameters: z
+          .object({})
+          .transform((): unknown => output()) as z.ZodType<any>,
+        result: z.string(),
+      });
+      expect(() => createManualRequest(tool, identity, {}, () => true)).toThrow(
+        'Manual tool arguments failed validation',
+      );
+    },
+  );
+
   it('rejects foreign or serialized replies without consuming either valid grant', () => {
     const lookup = manualTool({
       name: 'value',

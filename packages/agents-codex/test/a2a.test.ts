@@ -1755,3 +1755,112 @@ it.each(
   },
   30000,
 );
+
+it('captures reused encoder parts before awaiting host authorization', async () => {
+  const remote = await peer();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const template = Part.fromJSON({
+    text: 'initial',
+    metadata: { input: 'initial' },
+  });
+  const provider = new A2AJobProvider<string>({
+    endpoint: remote.endpoint,
+    authorize: async (current) => {
+      if (current.key === 'A') {
+        entered.resolve();
+        await release.promise;
+      }
+    },
+    authorization: async () => 'synthetic',
+    reserve: async () => {},
+    encode: (input) => {
+      template.content = { $case: 'text', value: input };
+      template.metadata!.input = input;
+      return [template];
+    },
+    project: (task) => ({
+      text: task.history[0].parts[0].content?.value,
+      metadata: task.history[0].parts[0].metadata,
+    }),
+  });
+  const first = provider.start({ ...claim(), key: 'A' }, 'A', context);
+  try {
+    await entered.promise;
+    const second = await provider.start({ ...claim(), key: 'B' }, 'B', context);
+    release.resolve();
+    expect(await first).toMatchObject({
+      status: 'completed',
+      value: { text: 'A', metadata: { input: 'A' } },
+    });
+    expect(second).toMatchObject({
+      status: 'completed',
+      value: { text: 'B', metadata: { input: 'B' } },
+    });
+  } finally {
+    release.resolve();
+    await first;
+  }
+});
+
+it('captures reused projected JSON before concurrent starts return', async () => {
+  const sent = new Set<string>();
+  const remote = await peer({
+    async execute(current, bus) {
+      const text = current.userMessage.parts[0].content?.value as string;
+      sent.add(text);
+      bus.publish(
+        AgentEvent.task({
+          ...Task.fromJSON({}),
+          id: current.taskId,
+          contextId: current.contextId,
+          history: [current.userMessage],
+          status: {
+            state: TaskState.TASK_STATE_COMPLETED,
+            message: undefined,
+            timestamp: undefined,
+          },
+        }),
+      );
+      bus.finished();
+    },
+    async cancelTask() {},
+  });
+  const release = Promise.withResolvers<void>();
+  const waiting = new Set<string>();
+  const returned = new Set<string>();
+  const template = { nested: { text: '' } };
+  const provider = new A2AJobProvider<string>({
+    endpoint: remote.endpoint,
+    authorize: async (current) => {
+      if (sent.has(current.key)) {
+        waiting.add(current.key);
+        if (waiting.size === 2) release.resolve();
+        await release.promise;
+      }
+    },
+    authorization: async () => 'synthetic',
+    reserve: async () => {},
+    encode: (text) => [Part.fromJSON({ text })],
+    project: (task) => {
+      expect(returned.size).toBe(0);
+      template.nested.text = task.history[0].parts[0].content?.value as string;
+      return template;
+    },
+  });
+  const starts = ['A', 'B'].map((key) =>
+    provider.start({ ...claim(), key }, key, context).then((update) => {
+      returned.add(key);
+      return update;
+    }),
+  );
+  try {
+    expect(await Promise.all(starts)).toMatchObject([
+      { status: 'completed', value: { nested: { text: 'A' } } },
+      { status: 'completed', value: { nested: { text: 'B' } } },
+    ]);
+  } finally {
+    release.resolve();
+    await Promise.all(starts);
+  }
+});

@@ -117,7 +117,7 @@ export function featureSupport(
       return report(
         'limited',
         facts.local
-          ? 'Prompted root output with local storage supports zero retries.'
+          ? 'Prompted root output with persistent storage supports zero retries.'
           : 'Prompted root output supports bounded formatting repair.',
         'Local final-output validation; corrections have no original tools or context; children remain plain text.',
       );
@@ -125,8 +125,8 @@ export function featureSupport(
       if (facts.local)
         return report(
           'unsupported',
-          'Local storage cannot export SessionState.',
-          'Use the existing profile; no portable manual transfer.',
+          'Persistent storage cannot export SessionState.',
+          'Retain Session.id and reopen with the same storage backend; no portable manual transfer.',
         );
       if (!facts.manual)
         return report(
@@ -144,7 +144,7 @@ export function featureSupport(
         return report(
           'unsupported',
           facts.local
-            ? 'Local storage cannot export SessionState.'
+            ? 'Persistent storage cannot export SessionState.'
             : 'No current manual declarations support portable restore.',
           'Portable restore requires current matching manual declarations and a settled checkpoint.',
         );
@@ -217,7 +217,7 @@ export function featureSupport(
       return report(
         'limited',
         'Controls admitted builtin results before model, code and observation publication.',
-        'exec_command, write_stdin and apply_patch whole results only. Cannot undo committed effects or replace final cell output.',
+        'exec_command, write_stdin, apply_patch, project_glob and project_grep whole results only. Cannot undo committed effects or replace final cell output.',
       );
     case 'nativeAgents':
       return facts.nativeAgents

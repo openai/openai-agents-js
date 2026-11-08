@@ -1,7 +1,13 @@
-import { Agent, Environment, type LocalStorageMount } from '@openai/agents';
+import {
+  Agent,
+  Environment,
+  NativeProvider,
+  type LocalStorageMount,
+} from '@openai/agents';
 
 /** The application owns both existing directories and their contents. */
 export async function readLocalStorage(cwd: string, source: string) {
+  await using provider = new NativeProvider();
   const mount: LocalStorageMount = {
     source,
     destination: source,
@@ -9,6 +15,7 @@ export async function readLocalStorage(cwd: string, source: string) {
     readOnly: true,
   };
   const agent = new Agent({
+    provider,
     model: 'gpt-5',
     instructions:
       'Inspect the mounted storage with native commands. Summarize its files without changing them.',

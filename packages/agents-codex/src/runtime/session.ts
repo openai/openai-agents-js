@@ -760,12 +760,14 @@ export class InteractionRequired extends NativeError {
   }
 }
 
-const toolInvocation = new AsyncLocalStorage<{
+interface ToolInvocation {
   session: Session<unknown>;
   run?: NativeTurn;
   child?: ChildCallbackOwner;
   active: boolean;
-}>();
+  parent?: ToolInvocation;
+}
+const toolInvocation = new AsyncLocalStorage<ToolInvocation>();
 
 function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
   if (!run.toolCleanupErrors.length) return primary;
@@ -1521,8 +1523,11 @@ export class Session<OutputT = string, Context = unknown> {
           if (request) requests.push(request);
         }
       }
-      for (const owner of owners)
+      for (const owner of owners) {
+        if (!this.canReturnRequests(owner))
+          requests.push(...this.pendingEnteredManual(owner));
         requests.push(...this.pendingNativeQuestions(owner));
+      }
       return Object.freeze(requests);
     }
   }
@@ -3089,6 +3094,18 @@ export class Session<OutputT = string, Context = unknown> {
     );
   }
 
+  private pendingEnteredManual(
+    owner: NativeTurn | ChildCallbackOwner,
+  ): Interaction[] {
+    if (!this.canAnswerNativeQuestions(owner)) return [];
+    return [...this.manualCalls.values()].flatMap((call) => {
+      if (call.run !== owner || !call.ready || !this.manualCurrent(call.event))
+        return [];
+      const request = call.grant.request();
+      return request ? [request] : [];
+    });
+  }
+
   private canAnswerNativeQuestions(
     run: NativeTurn | ChildCallbackOwner,
   ): boolean {
@@ -3156,7 +3173,10 @@ export class Session<OutputT = string, Context = unknown> {
         ) {
           // A graceful sampling fence must not hide a decision needed by an
           // already entered tool. Force/failure/terminal still revoke grants.
-          const requests = this.pendingNativeQuestions(current, true);
+          const requests = [
+            ...this.pendingEnteredManual(current),
+            ...this.pendingNativeQuestions(current, true),
+          ];
           if (requests.length)
             return Object.freeze({ turn, requests: Object.freeze(requests) });
         }
@@ -3456,7 +3476,7 @@ export class Session<OutputT = string, Context = unknown> {
     outputOverride = false,
   ): NativeTurn {
     if (this.options.localStorage && output.repair)
-      throw new TypeError('Local storage does not support output repair');
+      throw new TypeError('Persistent storage does not support output repair');
     const run = new NativeTurn(() => this.assertCanWait(run));
     submissions.set(run, { output, outputOverride, observation: 'open' });
     void run.completion.promise.then(
@@ -4506,7 +4526,12 @@ export class Session<OutputT = string, Context = unknown> {
     this.childCallbacks.track(
       owner,
       async () => {
-        const scope = { session: this, child: owner, active: true };
+        const scope = {
+          session: this,
+          child: owner,
+          active: true,
+          parent: toolInvocation.getStore(),
+        };
         try {
           await toolInvocation.run(scope, () =>
             this.handleChildRequest(owner, event),
@@ -5370,7 +5395,12 @@ export class Session<OutputT = string, Context = unknown> {
     signal: AbortSignal = run.controller.signal,
     tracingContext?: string,
   ): Promise<void> {
-    const scope = { session: this, run, active: true };
+    const scope = {
+      session: this,
+      run,
+      active: true,
+      parent: toolInvocation.getStore(),
+    };
     const tracing = run.tracing ?? run.issuedTracing;
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
@@ -5410,11 +5440,11 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private checkCallbackOperation(operation: string): void {
-    const scope = toolInvocation.getStore();
-    if (scope?.active && scope.session === this)
-      throw new NativeError(
-        `A tool callback cannot ${operation} its own session`,
-      );
+    for (let scope = toolInvocation.getStore(); scope; scope = scope.parent)
+      if (scope.active && scope.session === this)
+        throw new NativeError(
+          `A tool callback cannot ${operation} its own session`,
+        );
   }
   private observeToolStart(
     owner: NativeTurn | ChildCallbackOwner,
@@ -6891,6 +6921,13 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (options.tools !== undefined) {
       const next = splitToolDeclarations(options.tools);
+      if (
+        this.options.customStore &&
+        next.tools.some((tool) => tool.kind === 'manual')
+      )
+        throw new TypeError(
+          'Custom canonical storage does not support manual tools',
+        );
       const registration = this.options.mcpTools?.find(isHostedRegistration);
       if (
         next.mcp.some(
@@ -7644,7 +7681,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
       throw new TypeError(
-        'Local storage does not support compact; retain Session.id and reopen its profile',
+        'Persistent storage does not support a supplied compaction summary; use compact() without options for native compaction',
       );
     this.checkCallbackOperation('compact');
     this.idle('compact');
@@ -7832,7 +7869,7 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return 'Session is not available for checkpoint inspection';
     if (this.options.localStorage)
-      return 'Local storage cannot export SessionState';
+      return 'Persistent storage cannot export SessionState';
     if (this.pendingRoots.length) return 'Session has queued root work';
     if (this.graphStops.size) return 'Session graph is stopping';
     if (this.childCallbacks.entered().length)
@@ -7966,7 +8003,9 @@ export class Session<OutputT = string, Context = unknown> {
   async fork(): Promise<SessionState> {
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
-      throw new TypeError('Local storage does not support fork');
+      throw new TypeError(
+        'Persistent storage does not support fork; retain Session.id and reopen with the same storage backend',
+      );
     this.checkCallbackOperation('fork');
     if (this.graphStops.size || this.childContinuations.size)
       throw new NativeError('fork requires a settled Session');
@@ -8271,7 +8310,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
       throw new TypeError(
-        'Local storage does not support saveState; retain Session.id and reopen its profile',
+        'Persistent storage does not support saveState; retain Session.id and reopen with the same storage backend',
       );
     this.checkCallbackOperation('save');
     if (this.graphStops.size)
@@ -8298,7 +8337,7 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Native questions cannot be suspended or serialized');
     if (this.options.localStorage)
       throw new TypeError(
-        'Local storage does not support suspend; retain Session.id and reopen its profile',
+        'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
       );
     if (this.sealedStateJson !== undefined)
       return parseSessionState(this.sealedStateJson);
@@ -8777,7 +8816,12 @@ export class Session<OutputT = string, Context = unknown> {
       this.childCallbacks.track(
         owner,
         async () => {
-          const scope = { session: this, child: owner, active: true };
+          const scope = {
+            session: this,
+            child: owner,
+            active: true,
+            parent: toolInvocation.getStore(),
+          };
           try {
             await toolInvocation.run(scope, () =>
               withNativeCallbackContext(
@@ -9624,7 +9668,11 @@ export class Session<OutputT = string, Context = unknown> {
           if (!this.environmentDisposalFinished) {
             try {
               await this.options.environmentOwner?.dispose(async (dispose) => {
-                const scope = { session: this, active: true };
+                const scope = {
+                  session: this,
+                  active: true,
+                  parent: toolInvocation.getStore(),
+                };
                 try {
                   await toolInvocation.run(scope, dispose);
                 } finally {

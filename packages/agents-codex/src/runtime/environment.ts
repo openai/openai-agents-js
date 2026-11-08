@@ -182,7 +182,7 @@ export interface ExecutorContext<Context = unknown> {
   readonly outerCallId: string | null;
   readonly cellId: string | null;
   readonly runtimeToolCallId: string | null;
-  readonly session: Session;
+  readonly session: Session<unknown, Context>;
   readonly agent: Agent<any, any>;
   readonly agentRole: string | null;
   readonly model: string | null;

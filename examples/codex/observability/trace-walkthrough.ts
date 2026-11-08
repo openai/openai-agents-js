@@ -57,7 +57,7 @@ async function exercise(scenario: Scenario) {
           : [[toolCall('lookup', { record: 'A' }, { callId: 'lookup-a' })]];
 
   return withScriptedResponses(responses, async (peer) => {
-    const agent = new Agent({
+    const agent = new Agent<unknown, string | { count: number }>({
       name: 'Synthetic observability lesson',
       instructions: 'Use lookup when requested. Otherwise answer briefly.',
       provider: peer.provider,
