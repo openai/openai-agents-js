@@ -168,6 +168,7 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
 
 struct PendingCall {
     invocation: u64,
+    retired: bool,
     callback: Option<Arc<CallbackRelease>>,
     _tracing: Option<codex_otel::sdk_trace::ContextLease>,
     sender: oneshot::Sender<ToolReply>,
@@ -580,6 +581,7 @@ impl PythonTools {
         if call.invocation != invocation {
             return;
         }
+        call.retired = true;
         let Some(callback) = call.callback.clone() else {
             pending.remove(key);
             return;
@@ -598,9 +600,10 @@ impl PythonTools {
             let mut pending = self.pending.lock().expect("callback pending poisoned");
             pending
                 .iter_mut()
-                .filter(|(key, _)| {
+                .filter(|(key, call)| {
                     turn.is_none_or(|turn| key.turn == turn)
                         && call_id.is_none_or(|id| key.call == id)
+                        && (cancel || call.retired)
                 })
                 .filter_map(|(key, call)| {
                     call.callback.clone().map(|callback| {
@@ -1632,6 +1635,7 @@ impl PythonTools {
                 key.clone(),
                 PendingCall {
                     invocation,
+                    retired: false,
                     callback,
                     _tracing: tracing,
                     sender,
@@ -3016,12 +3020,10 @@ impl ToolLifecycleContributor for PythonContributor {
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
+                // A rejected duplicate shares a call ID, not the original invocation.
+                // PendingReply already retires and cancels its exact owner on drop.
                 tools
-                    .finish_callbacks(
-                        Some(input.turn_id),
-                        Some(input.call_id),
-                        !matches!(input.outcome, ToolCallOutcome::Completed { .. }),
-                    )
+                    .finish_callbacks(Some(input.turn_id), Some(input.call_id), false)
                     .await;
             }
             if input.source == ToolCallSource::Direct
@@ -3407,6 +3409,82 @@ mod pending_tests {
             instance: None,
             turn: "turn".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_duplicate_finish_preserves_the_original_callback() {
+        let (thread, tools) = selector_fixture(None);
+        tools.configure_manual(Vec::new()).unwrap();
+        let generation = tools.snapshot();
+        let session = ExtensionData::new("session");
+        let turn = ExtensionData::new("turn");
+        let (key, mut receive) = tools
+            .enqueue(
+                "root",
+                &generation,
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &ToolCallSource::Direct,
+                "model",
+            )
+            .unwrap();
+        assert!(
+            tools
+                .enqueue(
+                    "root",
+                    &generation,
+                    0,
+                    "turn",
+                    "call",
+                    json!({}),
+                    &ToolCallSource::Direct,
+                    "model",
+                )
+                .is_err()
+        );
+        let (invocation, receipt) = {
+            let pending = tools.pending.lock().unwrap();
+            let call = &pending[&key];
+            (
+                call.invocation,
+                call.callback.as_ref().unwrap().receipt.clone(),
+            )
+        };
+        for outcome in [
+            ToolCallOutcome::Completed { success: false },
+            ToolCallOutcome::Failed {
+                handler_executed: true,
+            },
+            ToolCallOutcome::Aborted,
+        ] {
+            PythonContributor::default()
+                .on_tool_finish(ToolFinishInput {
+                    session_store: &session,
+                    thread_store: &thread,
+                    turn_store: &turn,
+                    turn_id: "turn",
+                    call_id: "call",
+                    tool_name: &generation.entries[0].name,
+                    source: ToolCallSource::Direct,
+                    outcome,
+                })
+                .await;
+            assert!(matches!(
+                receive.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            assert!(!tools.callback_operation("root", &receipt, "cancelled"));
+        }
+        assert!(tools.callback_operation("root", &receipt, "enter"));
+        tools.retire_callback(&key, invocation, false);
+        assert!(receive.await.is_err());
+        assert!(tools.callback_operation("root", &receipt, "release"));
+        tools
+            .finish_callbacks(Some("turn"), Some("call"), false)
+            .await;
+        assert!(tools.pending.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

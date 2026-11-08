@@ -9617,7 +9617,7 @@ index 5565d4a6a2dfc125b017adf3663328ac4f1fdf65..c7a079cc7f3385b43ff3f0075359c275
      pub async fn thread_settings_snapshot(&self) -> ThreadSettingsSnapshot {
          self.session.thread_settings_snapshot().await
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index f25c9c825827a9a83d1d9973a5861cf644b33bfb..d09f11c12abbc05a9fb596b7dad796fcbd4ed1c5 100644
+index f25c9c825827a9a83d1d9973a5861cf644b33bfb..6ffc967139dea9d2a8d25225f448ed593554fa9b 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -91,12 +91,13 @@ pub(crate) async fn build_compaction_initial_context(
@@ -9741,6 +9741,15 @@ index f25c9c825827a9a83d1d9973a5861cf644b33bfb..d09f11c12abbc05a9fb596b7dad796fc
              &mut client_session,
              &responses_metadata,
              &prompt,
+@@ -307,7 +323,7 @@ async fn run_compact_task_inner_impl(
+             {
+                 return Err(err);
+             }
+-            // Fatal history-retention failures must not repeat the model request.
++            // Fatal admission or history-retention failures must not repeat the model request.
+             Err(e) if matches!(e.details(), CodexErrorDetails::Fatal(_)) => return Err(e),
+             Err(e) if matches!(e.details(), CodexErrorDetails::SessionBudgetExceeded) => {
+                 return Err(e);
 @@ -322,7 +338,7 @@ async fn run_compact_task_inner_impl(
                      retries = 0;
                      continue;
@@ -9770,7 +9779,7 @@ index f25c9c825827a9a83d1d9973a5861cf644b33bfb..d09f11c12abbc05a9fb596b7dad796fc
 +            | ResponseItem::CodeInterpreterCall { .. }
 +            | ResponseItem::ImageGenerationCall { .. }
 +    ) {
-+        return Err(CodexErr::InvalidRequest(
++        return Err(CodexErr::Fatal(
 +            "Tools are unavailable during local compaction".into(),
 +        ));
 +    }

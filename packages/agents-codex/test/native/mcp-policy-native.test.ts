@@ -20,6 +20,7 @@ import {
   Environment,
   HttpMCP,
   NativeAgents,
+  NativeError,
   NativeProvider,
   StdioMCP,
   manualTool,
@@ -672,6 +673,61 @@ it.each(['direct', 'code'] as const)(
   },
   15_000,
 );
+
+it('rejects unexpected MCP calls during native compaction without consuming the next turn', async () => {
+  const remote = await peer();
+  const approval = vi.fn((_ctx: MCPCallContext) => true);
+  const { model, session } = await open(
+    new HttpMCP({
+      name: 'fixture',
+      url: remote.url,
+      tools: ['lookup'],
+      approvalMode: 'preapproved',
+      approval,
+    }),
+    [
+      [message('Remembered.')],
+      [
+        call(
+          'lookup',
+          { key: 'unexpected-summary' },
+          { namespace: 'mcp__fixture', callId: 'unexpected-summary-call' },
+        ),
+        message('Summary of the remembered input.'),
+      ],
+      [
+        call(
+          'lookup',
+          { key: 'real-search' },
+          { namespace: 'mcp__fixture', callId: 'real-search-call' },
+        ),
+      ],
+      [message('Continued after the real tool call.')],
+    ],
+  );
+  expect(
+    (await (await session.submit('Remember this input.')).wait()).finalOutput,
+  ).toBe('Remembered.');
+  await expect(session.compact()).rejects.toBeInstanceOf(NativeError);
+  expect(approval).not.toHaveBeenCalled();
+  expect(remote.effects).toEqual([]);
+  expect(model.requests).toHaveLength(2);
+  expect(model.requests[1]?.tools).toEqual([]);
+  expect(JSON.stringify(await session.saveState())).not.toContain(
+    'unexpected-summary-call',
+  );
+  expect((await (await session.submit('Search now.')).wait()).finalOutput).toBe(
+    'Continued after the real tool call.',
+  );
+  expect(approval).toHaveBeenCalledTimes(1);
+  expect(approval.mock.calls[0]?.[0].call.callId).toBe('real-search-call');
+  expect(remote.effects).toHaveLength(1);
+  expect(remote.effects[0]).toMatchObject({
+    name: 'lookup',
+    arguments: { key: 'real-search' },
+  });
+  model.assertExhausted();
+}, 30_000);
 
 it.each([false, true])(
   'preserves before and approval enforcement after supplied compaction with approval=%s',
