@@ -4,6 +4,7 @@ import {
   Agent,
   NativeProvider,
   ToolOutput,
+  ToolTimeoutError,
   manualTool,
   tool,
   type ToolContext,
@@ -113,7 +114,7 @@ it('revokes a timed-out callback result while joining its entered work', async (
     expect(settled).toBe(false);
     release();
     const failure = await result;
-    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toBeInstanceOf(ToolTimeoutError);
     await expect(turn.wait()).rejects.toBe(failure);
     expect(server.requests).toHaveLength(1);
     const items = [];
