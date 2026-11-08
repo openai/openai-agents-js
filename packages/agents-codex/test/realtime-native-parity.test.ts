@@ -1969,3 +1969,88 @@ nativeIt(
   },
   15000,
 );
+
+nativeIt(
+  'executes 1030 sequential native function calls on one voice owner and reuses the caller Session',
+  async () => {
+    const executed: number[] = [];
+    const lookup = tool({
+      name: 'retention_lookup',
+      parameters: z.object({ index: z.number().int() }),
+      execute: ({ index }) => {
+        executed.push(index);
+        return `accepted result ${index}`;
+      },
+    });
+    const model = new ModelServer([[message('caller Session is reusable')]]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Return accepted lookup results.',
+        tools: [lookup],
+        model: 'gpt-5.5',
+        provider,
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const finished = new Set<string>();
+      const reading = (async () => {
+        for await (const event of voice.events()) {
+          if (event.type === 'function_call' && event.status === 'completed')
+            finished.add(event.callId);
+        }
+      })();
+      void reading.catch(() => {});
+      try {
+        const initial = await peer.frame(
+          (frame) => frame.type === 'session.update',
+        );
+        expect(initial.session.tools).toContainEqual(
+          expect.objectContaining({ name: 'retention_lookup' }),
+        );
+        // Cross Core's former 256-call and 1,024-request limits.
+        for (let index = 0; index < 1030; index++) {
+          const callId = `retention-call-${index}`;
+          const after = peer.frames.length;
+          peer.call('retention_lookup', { index }, callId);
+          await vi.waitFor(
+            () => {
+              const output = peer.frames
+                .slice(after)
+                .find(
+                  (frame) =>
+                    frame.type === 'conversation.item.create' &&
+                    frame.item?.type === 'function_call_output' &&
+                    frame.item.call_id === callId,
+                );
+              expect(output?.item.output).toBe(`accepted result ${index}`);
+              expect(finished.has(callId)).toBe(true);
+            },
+            { timeout: 10000, interval: 1 },
+          );
+        }
+        expect(executed).toEqual(Array.from({ length: 1030 }, (_, i) => i));
+        expect(
+          peer.frames.filter(
+            (frame) =>
+              frame.type === 'conversation.item.create' &&
+              frame.item?.type === 'function_call_output',
+          ),
+        ).toHaveLength(1030);
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+      expect(
+        (await (await session.submit('continue after voice')).wait())
+          .finalOutput,
+      ).toBe('caller Session is reusable');
+      model.assertExhausted();
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  120000,
+);
