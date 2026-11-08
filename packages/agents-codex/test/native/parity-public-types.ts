@@ -4,8 +4,12 @@ import {
   type Completed,
   type ChildTurn,
   type ElicitationRequest,
+  type EnvironmentOptions,
+  type ExecutorToolName,
   type FunctionTool,
+  type ItemStatus,
   type Session,
+  type SessionItem,
 } from '../../src';
 
 // This file is checked by tsconfig.test.json and is never executed.
@@ -31,6 +35,23 @@ export function contextualAgent(
 
 export function contextFreeAgent(agent: Agent) {
   return [agent.session(), agent.run('answer'), Runner.run(agent, 'answer')];
+}
+
+export function executorAllowlist(tools: readonly ExecutorToolName[]) {
+  const options: Pick<EnvironmentOptions, 'tools'> = { tools };
+  return options;
+}
+
+export function historyStatusLabels(
+  labels: Record<ItemStatus, string>,
+  item: Extract<SessionItem, { type: 'reasoning' }>,
+) {
+  // @ts-expect-error A reasoning status can be null and needs a separate label.
+  const knownStatus: ItemStatus = item.status;
+  return {
+    knownStatus,
+    label: item.status === null ? 'Unknown' : labels[item.status],
+  };
 }
 
 export async function replaceContextualTool(

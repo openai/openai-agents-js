@@ -94,16 +94,18 @@ See the [typed context example](../typed-context.ts) for a complete agent with t
 `agent.withOutputType(schema)` returns an `AgentOutput` view with typed `run()` and `session()` methods. It fixes the output choice without changing `agent.outputType` or calling the Agent constructor again. Other Agent defaults remain live until each opening captures them. Each call has its own output choice, so separate views can open concurrently. Restore portable state through a view with the matching output contract.
 
 ```ts
-import { Agent } from '@openai/agents';
+import { Agent, NativeProvider } from '@openai/agents';
 import { z } from 'zod';
 
-const agent = new Agent({ instructions: 'Answer clearly.' });
+await using provider = new NativeProvider();
+const agent = new Agent({ instructions: 'Answer clearly.', provider });
 const counts = agent.withOutputType(z.object({ count: z.number() }));
 const result = await counts.run('Count the items.', { returnState: true });
 console.log(result.finalOutput.count);
-const restored = await counts.session({ state: result.state! });
-await restored.close();
+await using restored = await counts.session({ state: result.state! });
 ```
+
+The owned run closes its Session before returning. The restored Session's disposal scope closes it before the shared provider. See [provider lifetime](session-configuration.md#provider-lifetime).
 
 A view exposes its fixed `outputType`, `run()` and `session()`. It is not an Agent instance and does not expose application subclass methods. The view captures the mode, schema and retry fields in an output-mode wrapper when it is created. `session.submit(input, { outputType })` and `session.enqueue(input, { outputType })` select output for individual operations.
 

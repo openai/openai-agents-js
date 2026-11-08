@@ -57,7 +57,9 @@ const client = await connectA2A(
 );
 ```
 
-Discovery sends no credentials. After the card passes admission, the adapter resolves the current bearer token for each RPC operation. The token never enters an endpoint, receipt, public Task, or error message. Use `fetch` to supply the host's approved egress implementation. `parentTrace` explicitly carries the caller's trace parent; the adapter does not inspect ambient trace state.
+Discovery sends no credentials. After the card passes admission, the adapter resolves the current bearer token for each RPC operation. It sends that token in the RPC request's `Authorization` header. The adapter does not copy that local credential into endpoint descriptors or its generated error messages. Use `fetch` to supply the host's approved egress implementation. `parentTrace` explicitly carries the caller's trace parent; the adapter does not inspect ambient trace state.
+
+Successful peer responses are not subject to a general credential filter. Task fields and IDs from the peer can contain sensitive data, including a reflected credential. The host must validate that data before logging, storing, or exposing it to the model. For deferred work, use `A2AJobProvider.project` to validate and select public result fields. Use the host's `JobJournal.record` to validate updates and receipts before persisting them. The [deferred thumbnail example](../../examples/codex/a2a/deferred-thumbnail.ts) shows result projection; the [external-job guide](EXTERNAL_JOBS.md#declare-and-register-a-deferred-tool) explains the public-result contract.
 
 The returned client is the official A2A `Client`. Direct callers must treat an uncertain mutation acknowledgment as an unknown outcome; message IDs do not make creation idempotent.
 
