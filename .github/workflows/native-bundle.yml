@@ -77,6 +77,8 @@ jobs:
       - name: Build the executor test fixture
         if: runner.os == 'Linux' || runner.os == 'macOS'
         working-directory: packages/agents-codex/native
+        # Keep this equal to the runtime build so cc does not rerun and replace
+        # the saved C compiler command output used for allocator verification.
         env:
           CC_ENABLE_DEBUG_OUTPUT: ${{ runner.os == 'Linux' && '1' || '0' }}
         run: |
