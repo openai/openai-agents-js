@@ -324,6 +324,7 @@ export function withDecisionSignal<
   T extends {
     signal: AbortSignal;
     decide?: BoundDecide;
+    /** @internal */
     [decisionBinding]?: (signal: AbortSignal) => BoundDecide;
   },
 >(context: T, signal: AbortSignal): T {

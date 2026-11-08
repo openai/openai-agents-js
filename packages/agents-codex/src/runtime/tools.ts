@@ -82,6 +82,7 @@ export type ToolTimeoutErrorFunction<Context = unknown> = (
 
 export interface ToolCallContext<Context = unknown> {
   readonly decide?: BoundDecide;
+  /** @internal */
   readonly [decisionBinding]?: (signal: AbortSignal) => BoundDecide;
   /** Exact issuing native span, when native tracing has an active context. */
   readonly traceContext?: import('./trace-context').TraceContext;
