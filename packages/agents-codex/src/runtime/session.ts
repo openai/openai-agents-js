@@ -132,6 +132,8 @@ import {
   type MCPListResourcesResult,
   type MCPListResourceTemplatesResult,
   type MCPReadResourceResult,
+  type MCPPrompt,
+  type MCPGetPromptResult,
 } from './mcp';
 import {
   createManualRequest,
@@ -7200,7 +7202,7 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<MCPListResourcesResult> {
     if (cursor !== undefined && typeof cursor !== 'string')
       throw new TypeError('MCP cursor must be a string');
-    return this.mcpResourceRequest(
+    return this.mcpRequest(
       'list_mcp_resources',
       server,
       cursor === undefined ? {} : { cursor },
@@ -7217,7 +7219,7 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<MCPListResourceTemplatesResult> {
     if (cursor !== undefined && typeof cursor !== 'string')
       throw new TypeError('MCP cursor must be a string');
-    return this.mcpResourceRequest(
+    return this.mcpRequest(
       'list_mcp_resource_templates',
       server,
       cursor === undefined ? {} : { cursor },
@@ -7236,16 +7238,60 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<MCPReadResourceResult> {
     if (typeof uri !== 'string' || !uri)
       throw new TypeError('MCP resource URI must be a nonempty string');
-    return this.mcpResourceRequest('read_mcp_resource', server, {
+    return this.mcpRequest('read_mcp_resource', server, {
       uri,
     }) as Promise<MCPReadResourceResult>;
   }
 
-  private async mcpResourceRequest(
+  /**
+   * List every prompt from a currently selected ordinary MCP server while idle.
+   * Core exhausts pagination and rejects failures without returning a partial list.
+   * Its existing catalog limits apply: 100 pages, 2,048 items, 64 KiB per cursor,
+   * and the server execution timeout for the collection. Missing capability returns [].
+   * Lazy activation grants no tools. Results never enter instructions or model context.
+   */
+  async listMcpPrompts(server: string): Promise<MCPPrompt[]> {
+    return this.mcpRequest('list_mcp_prompts', server, {}) as Promise<
+      MCPPrompt[]
+    >;
+  }
+
+  /**
+   * Get a named prompt as caller-owned data, preserving rich content and metadata.
+   * Omitted arguments remain omitted; an explicit empty object remains empty.
+   * The server validates names and required arguments. Native errors propagate.
+   * Idle interaction and joined close semantics match readMcpResource.
+   */
+  async getMcpPrompt(
+    server: string,
+    name: string,
+    args?: Readonly<Record<string, string>>,
+  ): Promise<MCPGetPromptResult> {
+    if (typeof name !== 'string')
+      throw new TypeError('MCP prompt name must be a string');
+    const params: JsonObject = { name };
+    if (args !== undefined) {
+      if (args === null || typeof args !== 'object' || Array.isArray(args))
+        throw new TypeError('MCP prompt arguments must map strings to strings');
+      const entries = Object.entries(args);
+      if (entries.some(([, value]) => typeof value !== 'string'))
+        throw new TypeError('MCP prompt arguments must map strings to strings');
+      params.arguments = Object.fromEntries(entries);
+    }
+    return this.mcpRequest(
+      'get_mcp_prompt',
+      server,
+      params,
+    ) as Promise<MCPGetPromptResult>;
+  }
+
+  private async mcpRequest(
     operation:
       | 'list_mcp_resources'
       | 'list_mcp_resource_templates'
-      | 'read_mcp_resource',
+      | 'read_mcp_resource'
+      | 'list_mcp_prompts'
+      | 'get_mcp_prompt',
     server: string,
     params: JsonObject,
   ): Promise<unknown> {
@@ -7256,11 +7302,11 @@ export class Session<OutputT = string, Context = unknown> {
     );
     if (!selected || isHostedRegistration(selected))
       throw new TypeError(
-        'Resource operations require a currently selected ordinary MCP server',
+        'MCP operations require a currently selected ordinary MCP server',
       );
     if (selected instanceof StdioMCP && selected.lifetime === 'turn')
       throw new TypeError(
-        'Idle resource operations require session-lifetime MCP stdio',
+        'Idle MCP operations require session-lifetime MCP stdio',
       );
     return this.mutate(async () => {
       try {

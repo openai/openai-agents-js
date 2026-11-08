@@ -66,6 +66,12 @@ for await (const line of lines) {
     case 'resources/read':
       result = roster.readResult;
       break;
+    case 'prompts/list':
+      result = roster.promptPages[request.params?.cursor ?? 'first'];
+      break;
+    case 'prompts/get':
+      result = roster.promptResult;
+      break;
     case 'tools/call': {
       const recorded =
         roster.exitAfterKey === undefined

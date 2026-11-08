@@ -206,6 +206,8 @@ export type Session<Output = string, Context = any> = Pick<
   | 'listMcpResources'
   | 'listMcpResourceTemplates'
   | 'readMcpResource'
+  | 'listMcpPrompts'
+  | 'getMcpPrompt'
   | 'subagents'
   | 'checklist'
   | 'update'
