@@ -1986,6 +1986,53 @@ describe('sandbox runner integration', () => {
     );
   });
 
+  it('writes v5 only for runner-owned envelopes while retaining the v6 client marker', () => {
+    const state = {
+      manifest: new Manifest(),
+      snapshot: null,
+      snapshotFingerprint: 'fingerprint',
+      snapshotFingerprintVersion: '1',
+      workspaceReady: false,
+    };
+    const providerState = {
+      sessionId: 'session',
+      opaque: { retained: [1, 'value'] },
+    };
+    const runner = toSessionStateEnvelope('fake-sandbox', state, providerState);
+    const explicitRunner = toSessionStateEnvelope(
+      'fake-sandbox',
+      state,
+      providerState,
+      {},
+    );
+    expect(runner).toEqual(explicitRunner);
+    expect(runner).toMatchObject({
+      version: 5,
+      providerState,
+      snapshot: null,
+      snapshotFingerprint: 'fingerprint',
+      snapshotFingerprintVersion: '1',
+      workspaceReady: false,
+    });
+    expect(runner).not.toHaveProperty('environmentPreparation');
+    const client = toSessionStateEnvelope(
+      'fake-sandbox',
+      state,
+      providerState,
+      { environmentPreparation: 'client' },
+    );
+    expect(client.version).toBe(6);
+    expect(client.environmentPreparation).toBe('client');
+    const {
+      version: _version,
+      environmentPreparation: _owner,
+      ...clientPayload
+    } = client;
+    const { version: _runnerVersion, ...runnerPayload } = runner;
+    expect(clientPayload).toEqual(runnerPayload);
+    expect(SANDBOX_SESSION_STATE_VERSION).toBe(6);
+  });
+
   it('rejects serialized environment preparation ownership mismatches', async () => {
     const providerState = {
       manifest: new Manifest(),
@@ -2028,6 +2075,18 @@ describe('sandbox runner integration', () => {
         new Manifest(),
       ),
     ).rejects.toThrow(/environment preparation does not match/u);
+    await expect(
+      deserializeSandboxSessionStateEntry(
+        clientPreparedClient,
+        {
+          ...clientPreparedEntry,
+          sessionState: { ...clientPreparedEntry.sessionState, version: 5 },
+        },
+        new Manifest(),
+      ),
+    ).rejects.toThrow(/requires the current sandbox session state version/u);
+    expect(defaultClient.resumeCalls).toHaveLength(0);
+    expect(clientPreparedClient.resumeCalls).toHaveLength(0);
   });
 
   it('does not expose trusted manifests to default-client validation hooks', async () => {
@@ -5277,7 +5336,7 @@ describe('sandbox runner integration', () => {
       currentAgentKey: 'SandboxWorker',
       currentAgentName: 'SandboxWorker',
       sessionState: {
-        version: SANDBOX_SESSION_STATE_VERSION,
+        version: 5,
         backendId: 'fake-sandbox',
         workspaceReady: true,
         providerState: {
@@ -10188,63 +10247,75 @@ describe('sandbox runner integration', () => {
     ]);
   });
 
-  it('retains untouched released v5 sessions across RunState reserialization and later resume', async () => {
-    const client = new FakeSandboxClient();
-    const agent = new SandboxAgent<unknown, AgentOutputType>({
-      name: 'SandboxWorker',
-      model: new RecordingModel([]),
-    });
-    const other = new SandboxAgent<unknown, AgentOutputType>({
-      name: 'OtherWorker',
-      model: new RecordingModel([]),
-    });
-    const state = new RunState(new RunContext(), 'Hello', agent, 1);
-    const entry = (name: string, sessionId: string) => ({
-      backendId: client.backendId,
-      currentAgentKey: name,
-      currentAgentName: name,
-      sessionState: fakeSandboxSessionStateEnvelope(
-        { sessionId },
-        { version: 5 },
-      ),
-    });
-    const current = entry('SandboxWorker', 'current-v5');
-    state._sandbox = {
-      ...current,
-      sessionsByAgent: {
-        SandboxWorker: current,
-        OtherWorker: entry('OtherWorker', 'untouched-v5'),
-      },
-    };
-    expect(state.toJSON().$schemaVersion).toBe('1.23');
-    const restored = await RunState.fromString(agent, state.toString());
-    const manager = new SandboxRuntimeManager({
-      startingAgent: agent,
-      sandboxConfig: { client },
-      runState: restored,
-    });
-    await manager.prepareAgent({ currentAgent: agent, turnInput: [] });
-    await manager.cleanup(restored, { preserveOwnedSessions: true });
-    expect(
-      restored._sandbox?.sessionsByAgent.OtherWorker?.sessionState,
-    ).toMatchObject({
-      version: 5,
-      providerState: { sessionId: 'untouched-v5' },
-    });
-    expect(restored.toJSON().$schemaVersion).toBe('1.24');
-    const resumed = await RunState.fromString(agent, restored.toString());
-    const later = new SandboxRuntimeManager({
-      startingAgent: agent,
-      sandboxConfig: { client },
-      runState: resumed,
-    });
-    await later.prepareAgent({ currentAgent: other, turnInput: [] });
-    expect(client.resumeCalls.map((call) => call.state.sessionId)).toContain(
-      'untouched-v5',
-    );
-    expect(client.createCalls).toHaveLength(0);
-    await later.cleanup(resumed);
-  });
+  it.each([5, 6] as const)(
+    'preserves untouched v%s sessions across compatible runner serialization and later resume',
+    async (preservedVersion) => {
+      const client = new FakeSandboxClient();
+      const agent = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'SandboxWorker',
+        model: new RecordingModel([]),
+      });
+      const other = new SandboxAgent<unknown, AgentOutputType>({
+        name: 'OtherWorker',
+        model: new RecordingModel([]),
+      });
+      const state = new RunState(new RunContext(), 'Hello', agent, 1);
+      const entry = (name: string, sessionId: string, version: 5 | 6 = 5) => ({
+        backendId: client.backendId,
+        currentAgentKey: name,
+        currentAgentName: name,
+        sessionState: fakeSandboxSessionStateEnvelope(
+          { sessionId },
+          { version },
+        ),
+      });
+      const current = entry('SandboxWorker', 'current-v5');
+      state._sandbox = {
+        ...current,
+        sessionsByAgent: {
+          SandboxWorker: current,
+          OtherWorker: entry(
+            'OtherWorker',
+            'untouched-session',
+            preservedVersion,
+          ),
+        },
+      };
+      expect(state.toJSON().$schemaVersion).toBe(
+        preservedVersion === 5 ? '1.23' : '1.24',
+      );
+      const restored = await RunState.fromString(agent, state.toString());
+      const manager = new SandboxRuntimeManager({
+        startingAgent: agent,
+        sandboxConfig: { client },
+        runState: restored,
+      });
+      await manager.prepareAgent({ currentAgent: agent, turnInput: [] });
+      await manager.cleanup(restored, { preserveOwnedSessions: true });
+      expect(
+        restored._sandbox?.sessionsByAgent.OtherWorker?.sessionState,
+      ).toMatchObject({
+        version: preservedVersion,
+        providerState: { sessionId: 'untouched-session' },
+      });
+      expect(restored._sandbox?.sessionState.version).toBe(5);
+      expect(restored.toJSON().$schemaVersion).toBe(
+        preservedVersion === 5 ? '1.23' : '1.24',
+      );
+      const resumed = await RunState.fromString(agent, restored.toString());
+      const later = new SandboxRuntimeManager({
+        startingAgent: agent,
+        sandboxConfig: { client },
+        runState: resumed,
+      });
+      await later.prepareAgent({ currentAgent: other, turnInput: [] });
+      expect(client.resumeCalls.map((call) => call.state.sessionId)).toContain(
+        'untouched-session',
+      );
+      expect(client.createCalls).toHaveLength(0);
+      await later.cleanup(resumed);
+    },
+  );
 
   it('drops untouched legacy session envelopes when serializing current runtime state', async () => {
     const client = new FakeSandboxClient();
@@ -10285,9 +10356,7 @@ describe('sandbox runner integration', () => {
     });
 
     expect(result?.sessionsByAgent.LegacyWorker).toBeUndefined();
-    expect(result?.sessionsByAgent.CurrentWorker?.sessionState.version).toBe(
-      SANDBOX_SESSION_STATE_VERSION,
-    );
+    expect(result?.sessionsByAgent.CurrentWorker?.sessionState.version).toBe(5);
     expect(JSON.stringify(result)).not.toContain(
       'LEGACY_PROVIDER_SECRET_SENTINEL',
     );

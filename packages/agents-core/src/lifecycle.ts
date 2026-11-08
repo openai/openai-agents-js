@@ -151,7 +151,7 @@ export type RunHookEvents<
   agent_tool_start: [
     context: RunContext<TContext>,
     agent: Agent<TContext, TOutput>,
-    tool: Tool<TContext>,
+    tool: Tool<any>,
     details: { toolCall: protocol.ToolCallItem },
   ];
   /**
@@ -163,7 +163,7 @@ export type RunHookEvents<
   agent_tool_end: [
     context: RunContext<TContext>,
     agent: Agent<TContext, TOutput>,
-    tool: Tool<TContext>,
+    tool: Tool<any>,
     result: string,
     details: { toolCall: protocol.ToolCallItem },
   ];

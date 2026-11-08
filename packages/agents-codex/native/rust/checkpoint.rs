@@ -33,6 +33,23 @@ pub(crate) struct ForkMetadata {
     executor_policy_digest: Option<String>,
 }
 
+/// Select fresh source declarations before allocation; saved state grants nothing.
+pub(crate) fn restore_specs(
+    payload: &Value,
+    options: &mut options::ThreadOptions,
+    specs: Option<Vec<DynamicToolSpec>>,
+) -> anyhow::Result<Option<Vec<DynamicToolSpec>>> {
+    let Some(opening) = &options.agent_profiles else {
+        return Ok(specs);
+    };
+    ensure!(specs.is_some(), "Agent profiles require managed tools");
+    let history: Vec<RolloutItem> = serde_json::from_value(payload["history"].clone())?;
+    let (specs, _) = opening.restore_catalog(&history, &payload["managed_tool_specs"])?;
+    // ProfileCatalog restores manual slots from the same fresh source template;
+    // JavaScript's separate manual-name API retains its native grant fences.
+    Ok(Some(specs))
+}
+
 impl ForkMetadata {
     pub(crate) fn validate_identity(&self, id: ThreadId) -> anyhow::Result<()> {
         if let Some(goal) = &self.goal {
@@ -405,7 +422,33 @@ pub(crate) async fn capture_code_states(state: &ThreadState) -> anyhow::Result<C
 }
 
 pub async fn export(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<Value> {
+    check_export_owner(state, pending).await?;
     export_inner(state, pending, false).await
+}
+
+async fn check_export_owner(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<()> {
+    if let Some(key) = pending {
+        check_capture(state, key)?;
+    } else if let Some(tools) = state
+        .thread
+        .thread_extension_data()
+        .get::<crate::python_tools::PythonTools>()
+    {
+        tools.check_idle(&state.thread).await?;
+    }
+    Ok(())
+}
+
+// Only the restored batch owner may snapshot while retaining its manual ledger.
+// The caller holds ThreadState.mutations through validation and completion/reseal.
+pub(crate) async fn export_restored_manual(state: &ThreadState) -> anyhow::Result<Value> {
+    let tools = state
+        .thread
+        .thread_extension_data()
+        .get::<crate::python_tools::PythonTools>()
+        .context("restored manual snapshot requires managed tools")?;
+    tools.check_restored_manual_idle(&state.thread).await?;
+    export_inner(state, None, false).await
 }
 
 pub(crate) fn redact_executor_observations(history: &mut [codex_history::RolloutItem]) {
@@ -505,19 +548,21 @@ async fn export_inner(
         tools.check_prepared_checkpoint()?;
     }
     let managed_tool_specs = if let Some(tools) = &tools {
-        if let Some(key) = pending {
-            check_capture(state, key)?;
-        } else {
-            tools.check_idle(&state.thread).await?;
-        }
-        Some(tools.current_specs()?)
+        Some(
+            match crate::agent_profiles::active_specs(&state.thread).await? {
+                Some(specs) => specs,
+                None => tools.current_specs()?,
+            },
+        )
     } else {
-        if let Some(key) = pending {
-            check_capture(state, key)?;
-        }
         None
     };
+    let graph = state
+        .thread
+        .thread_extension_data()
+        .get::<crate::agent_profiles::OpeningProfiles>();
     if !probe
+        && graph.is_none()
         && pending.is_none()
         && state.instructions.needs_publication(true)
         && tools
@@ -571,7 +616,7 @@ async fn export_inner(
     let mut interrupted_thread_ids = Vec::new();
     let (history, root_metadata) =
         capture(&state.engine, state.id, &mut interrupted_thread_ids).await?;
-    if probe {
+    if probe && graph.is_none() {
         // Validate actual evidence before a temporary new revision could shadow it.
         state.instructions.check_usable()?;
         crate::application_instructions::latest(&history)?;
@@ -588,6 +633,9 @@ async fn export_inner(
         } else {
             crate::application_instructions::validate(&history, &text)?;
         }
+    }
+    if probe && let Some(graph) = &graph {
+        crate::agent_profiles::validate_restored(graph, &history)?;
     }
     let root_memory_mode = memory_mode(state, state.id).await?;
     let root_checklist = checklist(state, state.id).await?;
@@ -823,6 +871,7 @@ pub(crate) async fn probe(state: &ThreadState) -> anyhow::Result<Probe<Value>> {
     let result: anyhow::Result<Value> = async {
         let before = ProbeGraph::observe(state, false)?;
         before.check(state, false).await?;
+        check_export_owner(state, None).await?;
         let captured = export_inner(state, None, true).await;
         before.check(state, false).await?;
         captured
@@ -1322,6 +1371,7 @@ pub async fn restore(
     let mut ids = checkpoint.validate(python_specs.as_deref(), fresh_manual)?;
     // Match the current application declaration before any native import or
     // config-dependent startup. This is the same parser used by JS preflight.
+    let has_agent_profiles = options.agent_profiles.is_some();
     let accepted = options.validate_instructions(&checkpoint.history)?;
     if fresh_manual {
         let old = checkpoint.source_session_id;
@@ -1461,11 +1511,15 @@ pub async fn restore(
         engine.validate_hosted_search_model(model).await?;
     }
     let initial_receipt = if let Some(accepted) = accepted {
-        let initial = crate::application_instructions::take_initial_receipt(
-            &mut checkpoint.history,
-            &accepted,
-            root,
-        );
+        let initial = if has_agent_profiles {
+            None
+        } else {
+            crate::application_instructions::take_initial_receipt(
+                &mut checkpoint.history,
+                &accepted,
+                root,
+            )
+        };
         instructions.confirm(accepted)?;
         initial
     } else {
@@ -1650,6 +1704,7 @@ async fn import(
     engine
         .store
         .create_thread(CreateThreadParams {
+            sdk_mcp_source_required: meta.sdk_mcp_source_required,
             creator_user_id: meta.creator_user_id,
             creator_account_id: meta.creator_account_id,
             session_id: meta.session_id,

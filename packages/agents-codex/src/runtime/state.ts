@@ -243,6 +243,19 @@ const manualContinuationSchema = z.object({
       z.string(),
       z
         .object({
+          type: z.literal('response_item'),
+          payload: z
+            .object({
+              type: z.enum(['function_call_output', 'custom_tool_call_output']),
+              call_id: z.string().min(1),
+              output: jsonValue,
+            })
+            .catchall(jsonValue),
+          metadata: jsonObject.optional(),
+        })
+        .catchall(jsonValue),
+      z
+        .object({
           type: z.enum(['function_call_output', 'custom_tool_call_output']),
           call_id: z.string().min(1),
           output: jsonValue,
@@ -606,7 +619,12 @@ export const sessionStateSchema = z
       for (const [callId, receipt] of Object.entries(
         continuation.accepted_replies,
       )) {
-        if (typeof receipt !== 'string' && receipt.call_id !== callId) {
+        if (
+          typeof receipt !== 'string' &&
+          (receipt.type === 'response_item'
+            ? receipt.payload.call_id
+            : receipt.call_id) !== callId
+        ) {
           ctx.addIssue({
             code: 'custom',
             message:

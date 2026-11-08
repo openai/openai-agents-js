@@ -63,6 +63,8 @@ it.each(['cjs', 'mjs'] as const)(
           cwd: tmpdir(),
           env,
           encoding: 'utf8',
+          // Keep child runtime diagnostics out of the parent test's stderr guard.
+          stdio: 'pipe',
           timeout: 5_000,
         }),
       );

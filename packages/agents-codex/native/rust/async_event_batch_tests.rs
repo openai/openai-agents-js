@@ -57,14 +57,9 @@ impl Source {
     fn take(&mut self, bytes: usize) -> Option<String> {
         let receive = self.receive.clone();
         let witness = self.witness.clone();
-        take_ready_root_text_delta(
-            &mut self.next,
-            &self.witness,
-            THREAD,
-            TURN,
-            bytes,
-            || read(receive, witness),
-        )
+        take_ready_root_text_delta(&mut self.next, &self.witness, THREAD, TURN, bytes, || {
+            read(receive, witness)
+        })
     }
 }
 

@@ -172,7 +172,9 @@ export function parseNative(source: string): unknown {
           key === 'subagent_instance_id' ||
           key === 'admitted' ||
           key === 'limit' ||
-          key === 'next_cell_id') &&
+          key === 'next_cell_id' ||
+          key === 'profile_epoch' ||
+          key === 'epoch') &&
         typeof value === 'number'
       ) {
         const original = context?.source;
@@ -202,6 +204,7 @@ export function parseNative(source: string): unknown {
   restore(parsed, 'generation');
   restore(parsed, 'delivery');
   restore(parsed, 'subagent_instance_id');
+  restore(parsed, 'profile_epoch');
   const checkpoint = checkpointPayload(parsed);
   if (
     typeof checkpoint === 'object' &&
@@ -215,11 +218,74 @@ export function parseNative(source: string): unknown {
     restore(state, 'next_cell_id');
   if (typeof parsed === 'object' && parsed !== null && 'msg' in parsed) {
     const msg = parsed.msg;
+    restore(msg, 'profile_epoch');
     if (typeof msg === 'object' && msg !== null && '_sdk_python_tool' in msg) {
       restore(msg._sdk_python_tool, 'generation');
+      restore(msg._sdk_python_tool, 'profile_epoch');
+    }
+    if (typeof msg === 'object' && msg !== null) {
+      const callbacks = [
+        '_sdk_callback' in msg ? msg._sdk_callback : undefined,
+        'type' in msg && msg.type === '_sdk_callback_cancel' && 'receipt' in msg
+          ? msg.receipt
+          : undefined,
+      ];
+      for (const callback of callbacks) {
+        if (
+          typeof callback !== 'object' ||
+          callback === null ||
+          !('request' in callback)
+        )
+          continue;
+        const request = callback.request;
+        if (
+          typeof request === 'object' &&
+          request !== null &&
+          '_sdk_python_tool' in request
+        )
+          restore(request._sdk_python_tool, 'generation');
+      }
+    }
+  }
+  if (typeof parsed === 'object' && parsed !== null && 'msg' in parsed) {
+    const msg = parsed.msg;
+    if (
+      msg &&
+      typeof msg === 'object' &&
+      'type' in msg &&
+      msg.type === 'realtime_conversation_realtime' &&
+      'payload' in msg &&
+      msg.payload &&
+      typeof msg.payload === 'object'
+    ) {
+      for (const [kind, value] of Object.entries(msg.payload)) {
+        if (value && typeof value === 'object' && 'profile_receipt' in value)
+          restore(value.profile_receipt, 'epoch');
+        if (
+          kind === 'FunctionBatchFinished' &&
+          value &&
+          typeof value === 'object' &&
+          'target' in value
+        )
+          restore(value.target, 'epoch');
+      }
     }
   }
   return parsed;
+}
+
+/** Private operation selections use string catalog IDs and a numeric source epoch. */
+export function encodeOperationSelection(value: unknown): string {
+  const dto = jsonObject.parse(value);
+  const source = dto.operation_declaration_source;
+  return JSON.stringify(dto, function (key, item: unknown) {
+    if (this === source && key === 'epoch' && typeof item === 'string') {
+      if (!/^(0|[1-9][0-9]*)$/.test(item))
+        throw new TypeError('Invalid native source epoch');
+      return JSON.rawJSON(item);
+    }
+    return item;
+  });
 }
 
 export function encodeReceipt(value: unknown): string {
@@ -247,6 +313,11 @@ export function encodeReceipt(value: unknown): string {
     'root_turn_budget' in checkpoint
       ? checkpoint.root_turn_budget
       : undefined;
+  const selection = validated.selection;
+  const declarationSource =
+    selection && typeof selection === 'object' && !Array.isArray(selection)
+      ? selection.operation_declaration_source
+      : undefined;
   const request = validated.request;
   const marker =
     typeof request === 'object' && request !== null && !Array.isArray(request)
@@ -261,7 +332,9 @@ export function encodeReceipt(value: unknown): string {
             key === 'nonce' ||
             key === 'old_nonce' ||
             key === 'delivery' ||
-            key === 'subagent_instance_id')) ||
+            key === 'subagent_instance_id' ||
+            key === 'profile_epoch')) ||
+          (this === declarationSource && key === 'epoch') ||
           (this === budget && (key === 'admitted' || key === 'limit')) ||
           (codeStates.has(this) && key === 'next_cell_id')) &&
         typeof item === 'string'

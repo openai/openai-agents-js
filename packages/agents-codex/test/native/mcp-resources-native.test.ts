@@ -12,7 +12,7 @@ import {
   StdioMCP,
 } from '../../src';
 import type { JsonObject } from '../../src/runtime/binding';
-import { ModelServer, message } from './fixtures/model-server';
+import { ModelServer, call, message } from './fixtures/model-server';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -291,6 +291,8 @@ async function httpPeer(
           templatePages[
             (params.cursor ?? 'first') as keyof typeof templatePages
           ];
+      else if (rpc.method === 'tools/call')
+        result = { content: [{ type: 'text', text: 'lookup result' }] };
       else if (rpc.method === 'resources/read') {
         if (options.hold) await options.hold;
         result = readResult;
@@ -1149,3 +1151,167 @@ it('interrupts and joins lazy resource activation when close starts', async () =
   await closing;
   held.resolve();
 });
+
+it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1').each([true, false])(
+  'restores active graph MCP selection without widening native tools (empty=%s)',
+  async (empty) => {
+    const peer = await httpPeer({ name: 'destination', tools: ['lookup'] });
+    const model = new ModelServer([
+      [message('restored')],
+      [message('regranted')],
+    ]);
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-graph-restore',
+      supportsWebsockets: false,
+    });
+    cleanup.push(() => provider.close());
+    const target = new Agent({
+      name: 'B',
+      instructions: 'Use B tools.',
+      tools: [peer.declaration],
+    });
+    const root = new Agent({
+      name: 'A',
+      instructions: 'Source A.',
+      provider,
+      handoffs: [target],
+    });
+    const session = await root.session();
+    cleanup.push(() => session.close());
+    await session.update({ agent: target });
+    await session.update({
+      tools: empty
+        ? []
+        : [
+            new HttpMCP({
+              name: 'destination',
+              url: peer.declaration.url,
+              tools: [],
+            }),
+          ],
+    });
+    const saved = await session.saveState();
+    await session.close();
+    const restored = await root.session({ state: saved });
+    cleanup.push(() => restored.close());
+    expect(await restored.getActiveAgent()).toBe(target);
+    if (empty)
+      await expect(restored.listMcpResources('destination')).rejects.toThrow(
+        'currently selected',
+      );
+    else
+      expect(await restored.listMcpResources('destination')).toEqual(
+        resourcePages.first,
+      );
+    expect((await (await restored.submit('Continue')).wait()).finalOutput).toBe(
+      'restored',
+    );
+    expect(JSON.stringify(model.requests[0])).not.toContain('lookup');
+    await restored.update({ agent: target });
+    expect(
+      (await (await restored.submit('Use B defaults')).wait()).finalOutput,
+    ).toBe('regranted');
+    expect(JSON.stringify(model.requests[1])).toContain('lookup');
+    model.assertExhausted();
+  },
+  30000,
+);
+
+it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1').each([false, true])(
+  'keeps same-namespace MCP exposure with each active graph profile (root deferred=%s)',
+  async (rootDeferred) => {
+    const peer = await httpPeer({ name: 'shared', tools: ['lookup'] });
+    const phases = [rootDeferred, !rootDeferred, rootDeferred];
+    const model = new ModelServer(
+      phases.flatMap((deferred, index) => [
+        ...(deferred
+          ? [
+              [
+                {
+                  type: 'tool_search_call',
+                  call_id: `discover-${index}`,
+                  execution: 'client',
+                  arguments: { query: 'lookup', limit: 5 },
+                },
+              ],
+            ]
+          : []),
+        [
+          call(
+            'lookup',
+            {},
+            { callId: `lookup-${index}`, namespace: 'mcp__shared' },
+          ),
+        ],
+        [message(`finished-${index}`)],
+      ]),
+    );
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-graph-exposure',
+      supportsWebsockets: false,
+    });
+    cleanup.push(() => provider.close());
+    const approved: string[] = [];
+    const descriptor = (label: string, deferLoading: boolean) =>
+      new HttpMCP({
+        name: 'shared',
+        url: peer.declaration.url,
+        tools: ['lookup'],
+        deferLoading,
+        approvalMode: 'preapproved',
+        approval(context) {
+          approved.push(`${label}:${context.call.callId}`);
+          return true;
+        },
+      });
+    const target = new Agent({
+      name: 'B',
+      model: 'gpt-5.5',
+      instructions: 'B reads shared records.',
+      tools: [descriptor('B', !rootDeferred)],
+    });
+    const root = new Agent({
+      name: 'A',
+      model: 'gpt-5.5',
+      instructions: 'A reads shared records.',
+      tools: [descriptor('A', rootDeferred)],
+      handoffs: [target],
+      provider,
+    });
+    const session = await root.session();
+    cleanup.push(() => session.close());
+    for (const [index, deferred] of phases.entries()) {
+      if (index) await session.update({ agent: index === 1 ? target : root });
+      const start = model.requests.length;
+      expect(
+        (await (await session.submit(`Read phase ${index}`)).wait())
+          .finalOutput,
+      ).toBe(`finished-${index}`);
+      const initial = model.requests[start];
+      const visible = JSON.stringify([
+        initial.tools ?? [],
+        ...(initial.input as JsonObject[]).filter(
+          (item) => item.type === 'additional_tools',
+        ),
+      ]);
+      expect(visible.includes('mcp__shared')).toBe(!deferred);
+      expect(visible.includes('tool_search')).toBe(deferred);
+      if (deferred)
+        expect(JSON.stringify(model.requests[start + 1].input)).toContain(
+          `discover-${index}`,
+        );
+    }
+    expect(approved).toEqual(['A:lookup-0', 'B:lookup-1', 'A:lookup-2']);
+    expect(
+      peer.calls.filter((item) => item.method === 'tools/call'),
+    ).toHaveLength(3);
+    model.assertExhausted();
+  },
+  30000,
+);
