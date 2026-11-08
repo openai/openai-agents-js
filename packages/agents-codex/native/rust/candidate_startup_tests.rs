@@ -128,9 +128,10 @@ impl Fixture {
             runtime["codex_linux_sandbox_exe"] = json!(sandbox);
             runtime
         };
-        let source_engine = crate::create_engine(config.to_string(), runtime.to_string(), None, None)
-            .await
-            .unwrap();
+        let source_engine =
+            crate::create_engine(config.to_string(), runtime.to_string(), None, None)
+                .await
+                .unwrap();
         let options = options(None);
         let source = source_engine
             .start_replaceable_thread(options.clone(), specs())

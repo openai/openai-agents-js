@@ -80,7 +80,28 @@ export class _ContextChange {
   stopCandidateEvents(): Promise<void>;
   cleanupCandidate(): Promise<string | null>;
 }
+/** Private exact-generation media cleanup; retains no native Thread or Engine. */
+export class _RealtimeCleanup {
+  close(generation: string): Promise<void>;
+}
+
 export class NativeThread {
+  _realtime_adapter(generation: string): _NativeRealtimeAdapter;
+  _prepare_realtime(
+    paramsJson: string,
+    adapter?: _NativeRealtimeAdapter | null,
+  ): Promise<string>;
+  _realtime_cleanup(): _RealtimeCleanup;
+  _submit_realtime_tools(paramsJson: string): Promise<string>;
+  _configure_agent_profiles(
+    rosterJson: string,
+    rootId: string,
+  ): Promise<string>;
+  _active_agent_profile(): Promise<string>;
+  _activate_agent_profile(
+    target: string,
+    expectedJson: string,
+  ): Promise<string>;
   _native_question_pending(question_id: string): Promise<boolean>;
   /** Whether this captured URL still has its original unanswered consent RPC. */
   _native_url_pending(question_id: string): Promise<boolean>;
@@ -144,12 +165,31 @@ export class NativeThread {
     probe?: boolean,
   ): Promise<string>;
   _check_python_tool(request_json: string): void;
+  _enter_python_callback(receipt_json: string): boolean;
+  _python_callback_cancelled(receipt_json: string): boolean;
+  _release_python_callback(receipt_json: string): boolean;
   /** JSON array of original native event strings, preserving exact receipt integers. */
   _pending_manual_tools(owner_json: string): string;
   _manual_tool_current(request_json: string): boolean;
   call(
     operation:
       | 'set_instructions'
+      | 'realtime_tool_selection_sdk'
+      | 'realtime_conversation_hosted_mcp_approval_sdk'
+      | 'realtime_conversation_prepare_sdk'
+      | 'realtime_conversation_activate_sdk'
+      | 'realtime_conversation_start_sdk'
+      | 'realtime_conversation_update_sdk'
+      | 'realtime_conversation_audio_sdk'
+      | 'realtime_conversation_audio_commit_sdk'
+      | 'realtime_conversation_input_sdk'
+      | 'realtime_conversation_response_sdk'
+      | 'realtime_conversation_delete_item_sdk'
+      | 'realtime_conversation_text_sdk'
+      | 'realtime_conversation_complete_sdk'
+      | 'realtime_conversation_fail_sdk'
+      | 'realtime_conversation_interrupt_sdk'
+      | 'realtime_conversation_close_sdk'
       | 'list_subagents'
       | 'list_mcp_resources'
       | 'list_mcp_prompts'
@@ -350,6 +390,9 @@ export function _embedded_commands(): string;
 export const CODEX_REVISION: string;
 
 declare const binding: {
+  _agent_profiles_fingerprint: typeof _agent_profiles_fingerprint;
+  _agent_profiles_restore_source: typeof _agent_profiles_restore_source;
+  _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
   _packaged_runtime(): {
     codex_self_exe: string;
     codex_linux_sandbox_exe?: string;
@@ -396,4 +439,36 @@ export default binding;
 export class _NativePolicyStop {
   private constructor();
   finish(): Promise<void>;
+}
+
+export function _agent_profiles_fingerprint(
+  rosterJson: string,
+  rootId: string,
+): string;
+
+export function _agent_profiles_restore_source(
+  rosterJson: string,
+  rootId: string,
+  historyJson: string,
+): string;
+
+/** Resolve the proved declaration origin of an explicitly selected suspended operation. */
+export function _agent_profiles_operation_source(
+  roster_json: string,
+  root_id: string,
+  history_json: string,
+  turn_id: string,
+): string;
+
+export class _NativeRealtimeAdapter {
+  private constructor();
+  next(): Promise<_NativeRealtimeAdapterRequest | null>;
+  receive(frame: string): Promise<void>;
+  end(success: boolean): void;
+  finish(): void;
+}
+export class _NativeRealtimeAdapterRequest {
+  private constructor();
+  readonly event_json: string;
+  complete(success: boolean): boolean;
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import {
   createAgentSpan,
+  createResponseSpan,
   createFunctionSpan,
   createGuardrailSpan,
   createSpeechSpan,
@@ -19,7 +20,7 @@ import {
   withTraceContext,
 } from '../src/tracing';
 import type { TraceProvider } from '../src/tracing/provider';
-import type { Span } from '../src/tracing/spans';
+import { NoopSpan, type Span } from '../src/tracing/spans';
 import * as providerModule from '../src/tracing/provider';
 import { defaultProcessor, TracingProcessor } from '../src/tracing/processor';
 import type { Trace } from '../src/tracing/traces';
@@ -248,5 +249,61 @@ describe('with*Span helpers', () => {
       message: 'stream failed',
       data: { phase: 'stream loop' },
     });
+  });
+});
+
+describe('createResponseSpan with a real provider', () => {
+  let provider: providerModule.TraceProvider;
+  let spy: ReturnType<typeof vi.spyOn>;
+  const processor = new RecordingProcessor();
+
+  beforeEach(() => {
+    processor.reset();
+    provider = new providerModule.TraceProvider();
+    provider.setDisabled(false);
+    provider.registerProcessor(processor);
+    spy = vi
+      .spyOn(providerModule, 'getGlobalTraceProvider')
+      .mockReturnValue(provider);
+  });
+
+  afterEach(async () => {
+    spy.mockRestore();
+    await provider.shutdown();
+  });
+
+  it('preserves explicit response identifiers in the span and serialized data', async () => {
+    const parent = provider.createTrace({ name: 'response options' });
+    const span = createResponseSpan(
+      {
+        spanId: 'span_0123456789abcdef01234567',
+        data: { response_id: 'resp_synthetic' },
+      },
+      parent,
+    );
+    expect(span.spanId).toBe('span_0123456789abcdef01234567');
+    expect(span.traceId).toBe(parent.traceId);
+    expect(span.spanData).toEqual({
+      type: 'response',
+      response_id: 'resp_synthetic',
+    });
+    expect(span.toJSON()).toMatchObject({
+      id: 'span_0123456789abcdef01234567',
+      span_data: { type: 'response', response_id: 'resp_synthetic' },
+    });
+    span.start();
+    span.end();
+    await provider.forceFlush();
+    expect(processor.spansEnded).toContain(span);
+  });
+
+  it('honors disabled and retains the no-options default', () => {
+    const parent = provider.createTrace({ name: 'response defaults' });
+    expect(createResponseSpan({ disabled: true }, parent)).toBeInstanceOf(
+      NoopSpan,
+    );
+    const span = createResponseSpan(undefined, parent);
+    expect(span).not.toBeInstanceOf(NoopSpan);
+    expect(span.spanData).toEqual({ type: 'response' });
   });
 });

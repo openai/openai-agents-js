@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import {
+  isBackgroundResult,
+  markBackgroundToolResponse,
+  type BackgroundResult,
+} from './background-result';
+import {
   decode,
   encode,
   jsonValue,
@@ -253,15 +258,24 @@ export function tool<
   before?: (
     context: ToolContext<Context>,
   ) => ToolDecision<z.input<T>> | Promise<ToolDecision<z.input<T>>>;
-  /** Transform validated, normalized content before it is sent to the model. */
+  /**
+   * Transform validated content. Returning the same output preserves background
+   * intent; a replacement is foreground unless wrapped in backgroundResult().
+   */
   after?: (
     output: ToolOutput,
     context: ToolContext<Context>,
-  ) => ToolOutput | Promise<ToolOutput>;
+  ) =>
+    | ToolOutput
+    | BackgroundResult<ToolOutput>
+    | Promise<ToolOutput | BackgroundResult<ToolOutput>>;
   execute: (
     args: z.output<T>,
     context: ToolContext<Context>,
-  ) => z.input<Result> | Promise<z.input<Result>>;
+  ) =>
+    | z.input<Result>
+    | BackgroundResult<z.input<Result>>
+    | Promise<z.input<Result> | BackgroundResult<z.input<Result>>>;
 }): FunctionTool<Context> {
   if (
     options.deferLoading !== undefined &&
@@ -355,7 +369,7 @@ export function tool<
         callbackTimeout === undefined
           ? undefined
           : new ToolTimeoutError(name, callbackTimeout);
-      let value: z.input<Result>;
+      let value: z.input<Result> | BackgroundResult<z.input<Result>>;
       try {
         value = await invokeWithTimeout(
           (signal) => execute(parsed, { ...callContext, signal }),
@@ -384,9 +398,11 @@ export function tool<
         };
       }
       admit();
+      let background = isBackgroundResult(value);
+      const content = isBackgroundResult(value) ? value.content : value;
       let response: ToolResponse;
       try {
-        const validated = result ? result.parse(value) : value;
+        const validated = result ? result.parse(content) : content;
         admit();
         response = outputOf(validated);
       } catch {
@@ -395,11 +411,17 @@ export function tool<
       }
       admit();
       if (after) {
-        const output = await after(
-          new ToolOutput(response.contentItems, response.success),
-          callContext,
+        const original = new ToolOutput(
+          response.contentItems,
+          response.success,
         );
+        const accepted = await after(original, callContext);
         admit();
+        background =
+          isBackgroundResult(accepted) || (background && accepted === original);
+        const output = isBackgroundResult<ToolOutput>(accepted)
+          ? accepted.content
+          : accepted;
         if (!(output instanceof ToolOutput))
           throw new TypeError('Tool after must return ToolOutput');
         try {
@@ -409,7 +431,7 @@ export function tool<
         }
       }
       admit();
-      return response;
+      return background ? markBackgroundToolResponse(response) : response;
     },
   });
 }

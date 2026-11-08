@@ -282,3 +282,49 @@ export {
   renderStorageLayout,
 } from './runtime/sandbox-environment';
 export type { SandboxEnvironmentOptions } from './runtime/sandbox-environment';
+
+export type {
+  NativeRealtimeSession,
+  NativeRealtimeOptions,
+  NativeRealtimeEvent,
+  NativeRealtimeHistoryItem,
+  NativeRealtimeHostedMcpApprovalRequest,
+  NativeRealtimeHostedMcpToolDefinition,
+  NativeRealtimeAudioInput,
+  NativeRealtimeUserInput,
+  NativeRealtimeAudioFormat,
+  NativeRealtimePlaybackPosition,
+  NativeRealtimeTransport,
+} from './runtime/realtime';
+
+export type {
+  NativeRealtimeSettings,
+  NativeRealtimeToolChoice,
+  NativeRealtimeHostedMcpTool,
+  NativeRealtimeMcpToolFilter,
+  NativeRealtimeSessionUpdate,
+  NativeRealtimeTranscription,
+  NativeRealtimeTurnDetection,
+  NativeRealtimePrompt,
+  NativeRealtimePromptVariable,
+  NativeRealtimeTracing,
+} from './runtime/realtime-settings';
+
+export type {
+  NativeRealtimeAdapter,
+  NativeRealtimeAdapterContext,
+  NativeRealtimeConnection,
+} from './runtime/realtime-adapter';
+
+export type {
+  NativeRealtimeOutputGuardrail,
+  NativeRealtimeGuardrailInput,
+  NativeRealtimeGuardrailResult,
+  NativeRealtimeGuardrailEvent,
+} from './runtime/realtime-guardrails';
+
+export {
+  backgroundResult,
+  isBackgroundResult,
+} from './runtime/background-result';
+export type { BackgroundResult } from './runtime/background-result';

@@ -333,9 +333,25 @@
       "sha256": "f47339c54594aa98d4fd52e40eaed8f80325a50bb69a80693d14524594b68940"
     },
     {
-      "path": "0090-reject-ambiguous-code-mode-names.patch",
+      "path": "0090-sdk-realtime-owner.patch",
+      "sha256": "4b027115e15069146a8b9e09f39fbc63373da48d9ceff69be662b53d9044d504"
+    },
+    {
+      "path": "0091-typed-realtime-settings.patch",
+      "sha256": "79c31fb4d973dd3b33b4ce3f8c82a49b1586f364170645eeb0d016746c83cec8"
+    },
+    {
+      "path": "0092-realtime-settings-operations.patch",
+      "sha256": "98cfa1fe060aaab432e7c32c6ce10051ac9aa9ca75db20d60981cd052482a5bc"
+    },
+    {
+      "path": "0093-native-voice-parity.patch",
+      "sha256": "dfe002f762b7c55ae900a3b5fc8fe42e7953abf8607cf7da54eb5d45edae8bd5"
+    },
+    {
+      "path": "0094-reject-ambiguous-code-mode-names.patch",
       "sha256": "4e2bb732edab48888aa9bdca723f591caaf87465c86c0ce0a76ea5baa60c1081"
     }
   ],
-  "result_tree": "29621b55232b2d376dc7e0c49d91235425765dac"
+  "result_tree": "b616cf67a61c0c6bf7f42b81d264a9505583f01f"
 }

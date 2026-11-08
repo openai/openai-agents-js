@@ -522,9 +522,7 @@ describe('FIFO root enqueue', () => {
   it('keeps successful entered callback acknowledgment ahead of the next root', async () => {
     const native = await binding();
     const respond = native.NativeThread.prototype._respond_python_tool;
-    const next = native.NativeThread.prototype._next_session_events;
     const entered = Promise.withResolvers<void>();
-    const terminal = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     vi.spyOn(
       native.NativeThread.prototype,
@@ -534,16 +532,6 @@ describe('FIFO root enqueue', () => {
       entered.resolve();
       await release.promise;
       return value;
-    });
-    vi.spyOn(
-      native.NativeThread.prototype,
-      '_next_session_events',
-    ).mockImplementation(async function (this: NativeThread) {
-      const raw = await next.call(this);
-      const event = JSON.parse(firstNativeBatchWire(raw));
-      if (['task_complete', 'turn_complete'].includes(event.msg.type))
-        terminal.resolve();
-      return raw;
     });
     const server = new ModelServer([
       [call('done', {}, { callId: 'success' })],
@@ -563,9 +551,10 @@ describe('FIFO root enqueue', () => {
       const a = await session.submit('A');
       await entered.promise;
       const b = await session.enqueue('B');
-      await terminal.promise;
+      // Native completion now joins the accepted callback's physical cleanup.
+      await new Promise<void>((resolve) => setImmediate(resolve));
       expect(b.turnId).toBeNull();
-      expect(server.requests).toHaveLength(2);
+      expect(server.requests).toHaveLength(1);
       release.resolve();
       expect((await b.wait()).finalOutput).toBe('B');
       expect((await a.wait()).finalOutput).toBe('A');

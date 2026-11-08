@@ -162,6 +162,36 @@
         "types": "./dist/voice/index.d.ts",
         "default": "./dist/voice/index.js"
       }
+    },
+    "./voice/browser": {
+      "import": {
+        "types": "./dist/voice/browser.d.mts",
+        "default": "./dist/voice/browser.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/browser.d.ts",
+        "default": "./dist/voice/browser.js"
+      }
+    },
+    "./voice/workerd": {
+      "import": {
+        "types": "./dist/voice/workerd.d.mts",
+        "default": "./dist/voice/workerd.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/workerd.d.ts",
+        "default": "./dist/voice/workerd.js"
+      }
+    },
+    "./voice/twilio": {
+      "import": {
+        "types": "./dist/voice/twilio.d.mts",
+        "default": "./dist/voice/twilio.mjs"
+      },
+      "require": {
+        "types": "./dist/voice/twilio.d.ts",
+        "default": "./dist/voice/twilio.js"
+      }
     }
   },
   "scripts": {
@@ -246,6 +276,15 @@
       ],
       "voice": [
         "dist/voice/index.d.ts"
+      ],
+      "voice/browser": [
+        "dist/voice/browser.d.ts"
+      ],
+      "voice/workerd": [
+        "dist/voice/workerd.d.ts"
+      ],
+      "voice/twilio": [
+        "dist/voice/twilio.d.ts"
       ]
     }
   }
