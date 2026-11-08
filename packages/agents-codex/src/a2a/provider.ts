@@ -44,8 +44,9 @@ export interface A2AJobProviderOptions<Input> {
     operation: Exclude<A2AOperation, 'observe'>,
     actionId: string,
   ): Promise<void>;
+  /** Parts are captured as protocol JSON before asynchronous authorization or discovery. */
   encode(input: Input): readonly Part[];
-  /** Validate using the host's current result schema before returning model-visible data. */
+  /** Validate the result schema; the provider returns captured JSON, preserving no object identity. */
   project(task: Task): unknown;
   readonly limits?: A2ALimits;
   readonly fetch?: typeof fetch;
@@ -163,10 +164,11 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
       return { status: 'unknown', receipt };
     try {
       if (state === TaskState.TASK_STATE_COMPLETED) {
-        const value = this.#options.project(structuredClone(task));
-        checkBytes(
-          value,
-          bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
+        const value: unknown = JSON.parse(
+          checkBytes(
+            this.#options.project(structuredClone(task)),
+            bound(this.#options.limits?.bodyBytes, 2 * 1024 * 1024),
+          ),
         );
         return { status: 'completed', receipt, value };
       }
@@ -202,12 +204,14 @@ export class A2AJobProvider<Input> implements JobProvider<Input> {
     context: JobContext,
   ): Promise<JobUpdate> {
     if (claim.update?.receipt) return this.observe(claim, context);
-    const parts = this.#options.encode(input);
-    a2aInput(parts);
-    checkBytes(
-      parts.map((part) => Part.toJSON(part)),
-      bound(this.#options.limits?.inputBytes, 1024 * 1024),
+    const encoded: unknown[] = JSON.parse(
+      checkBytes(
+        this.#options.encode(input).map((part) => Part.toJSON(part)),
+        bound(this.#options.limits?.inputBytes, 1024 * 1024),
+      ),
     );
+    const parts = encoded.map((part) => Part.fromJSON(part));
+    a2aInput(parts);
     const client = await this.#connect(claim, 'start', context);
     let result: Awaited<ReturnType<typeof client.sendMessage>>;
     try {

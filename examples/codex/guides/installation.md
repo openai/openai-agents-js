@@ -8,15 +8,17 @@ Use Node.js 24 with its bundled npm. Choose a bundle for your operating system a
 
 The Windows x64 bundle uses the Microsoft Visual C++ runtime. If Windows reports that `VCRUNTIME140.dll` is missing, install the [x64 Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist/).
 
+To run the migration repository examples, build the SDK and examples from the same `v0.22.0-alpha.2` checkout using the [source-build guide](building.md). External applications need the matching five-package bundle. The alpha.2 starter below includes those five packages and a greeting example to check the installation.
+
 ## Run the starter bundle
 
-Choose the starter archive for the machine that will run your application from the [0.22.0-alpha.1 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.1). These prebuilt bundles and the current source checkout can expose different features. Use the guides and examples for the SDK version you install.
+Choose the starter archive for the machine that will run your application from the [0.22.0-alpha.2 GitHub prerelease](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.2). These prebuilt bundles and the current source checkout can expose different features. Use the guides and examples for the SDK version you install.
 
 | Platform            | Starter archive                                     |
 | ------------------- | --------------------------------------------------- |
-| Linux x64           | `agents-starter-0.22.0-alpha.1-linux-x64.tar.gz`    |
-| macOS Apple silicon | `agents-starter-0.22.0-alpha.1-darwin-arm64.tar.gz` |
-| Windows x64         | `agents-starter-0.22.0-alpha.1-win32-x64.tar.gz`    |
+| Linux x64           | `agents-starter-0.22.0-alpha.2-linux-x64.tar.gz`    |
+| macOS Apple silicon | `agents-starter-0.22.0-alpha.2-darwin-arm64.tar.gz` |
+| Windows x64         | `agents-starter-0.22.0-alpha.2-win32-x64.tar.gz`    |
 
 Each archive includes the built SDK, the compiled Codex runtime, a lockfile, and a JavaScript example.
 
@@ -44,23 +46,26 @@ npm install --ignore-scripts
 node hello.mjs
 ```
 
-npm uses the four bundled SDK packages and resolves their third-party dependencies from your registry. Keep the new `package-lock.json` for later installs.
+npm uses the five bundled SDK packages and resolves their third-party dependencies from your registry. Keep the new `package-lock.json` for later installs.
 
 ## Add the SDK to an existing application
 
-The starter contains four SDK tarballs in `vendor/agents/`. The release also provides them separately. Use all four from the same version and platform. They include the prebuilt native runtime.
+The starter contains five SDK tarballs in `vendor/agents/`. The release also provides them separately. Use all five from the same version and platform. The `@openai/agents-codex` package includes the prebuilt native runtime. Applications continue to import from `@openai/agents` and its supported subpaths.
 
-Copy the four tarballs into your application's `vendor/agents/` directory. Merge these entries into your `package.json`. The example uses version `0.22.0-alpha.1` and platform `linux-x64`. Use the filenames from your download.
+Copy the five tarballs into your application's `vendor/agents/` directory. Merge these entries into your `package.json`. The example uses version `0.22.0-alpha.2` and platform `linux-x64`. Use the filenames from your download.
 
 ```json
 {
   "dependencies": {
-    "@openai/agents": "file:vendor/agents/openai-agents-0.22.0-alpha.1-linux-x64.tgz",
-    "@openai/agents-core": "file:vendor/agents/openai-agents-core-0.22.0-alpha.1-linux-x64.tgz",
-    "@openai/agents-openai": "file:vendor/agents/openai-agents-openai-0.22.0-alpha.1-linux-x64.tgz",
-    "@openai/agents-realtime": "file:vendor/agents/openai-agents-realtime-0.22.0-alpha.1-linux-x64.tgz"
+    "@openai/agents": "file:vendor/agents/openai-agents-0.22.0-alpha.2-linux-x64.tgz",
+    "@openai/agents-codex": "file:vendor/agents/openai-agents-codex-0.22.0-alpha.2-linux-x64.tgz",
+    "@openai/agents-core": "file:vendor/agents/openai-agents-core-0.22.0-alpha.2-linux-x64.tgz",
+    "@openai/agents-openai": "file:vendor/agents/openai-agents-openai-0.22.0-alpha.2-linux-x64.tgz",
+    "@openai/agents-realtime": "file:vendor/agents/openai-agents-realtime-0.22.0-alpha.2-linux-x64.tgz",
+    "zod": "^4.3.5"
   },
   "overrides": {
+    "@openai/agents-codex": "$@openai/agents-codex",
     "@openai/agents-core": "$@openai/agents-core",
     "@openai/agents-openai": "$@openai/agents-openai",
     "@openai/agents-realtime": "$@openai/agents-realtime"
@@ -68,11 +73,11 @@ Copy the four tarballs into your application's `vendor/agents/` directory. Merge
 }
 ```
 
-The overrides keep transitive SDK dependencies on the same local packages. Run `npm install --ignore-scripts` from your application's directory to update its lockfile. Keep the lockfile and the four tarballs. For later installs, run `npm ci --ignore-scripts`.
+The overrides keep transitive SDK dependencies on the same local packages. Run `npm install --ignore-scripts` from your application's directory to update its lockfile. Keep the lockfile and the five tarballs. For later installs, run `npm ci --ignore-scripts`.
 
 ## Run the classic extensions
 
-The alpha bundle includes the core SDK packages. Run examples that use `@openai/agents-extensions` from a checkout of the `feat/codex-harness` branch so the SDK and extensions use the same revision.
+The alpha bundle includes the core SDK packages. Run examples that use `@openai/agents-extensions` from a checkout of the `v0.22.0-alpha.2` tag so the SDK and extensions use the same revision.
 
 Use Node.js 24 and the pnpm version pinned in `package.json`. From the repository root, install dependencies and build the TypeScript packages:
 
@@ -81,7 +86,7 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-Then follow the setup for the [AI SDK examples](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/ai-sdk) or [Twilio example](https://github.com/openai/openai-agents-js/tree/feat/codex-harness/examples/classic/realtime-twilio).
+Then follow the setup for the [AI SDK examples](https://github.com/openai/openai-agents-js/tree/v0.22.0-alpha.2/examples/classic/ai-sdk) or [Twilio example](https://github.com/openai/openai-agents-js/tree/v0.22.0-alpha.2/examples/classic/realtime-twilio).
 
 ## Deno and Bun
 

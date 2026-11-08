@@ -76,7 +76,7 @@ Pass the per-turn `outputType` in the same options object as tool selection and 
 Keep the Turn returned for the overridden root and use it throughout that operation:
 
 - Await `turn.wait()` for its typed result. `session.wait()` rejects for this root, including after completion.
-- Use `turn.steer()` for input while it runs. With the current source build, use [exact native-step steering](sessions.md#steer-a-logical-root-or-one-native-step) when the input must target a captured step. Implicit busy steering through `session.submit(input)` rejects.
+- Use `turn.steer()` for input while it runs. In `0.22.0-alpha.2`, use [exact native-step steering](sessions.md#steer-a-logical-root-or-one-native-step) when the input must target a captured step. Implicit busy steering through `session.submit(input)` rejects.
 - Deliver manual replies with `session.respond(reply)`, which returns no final result. Result-returning `session.submit(reply)` rejects.
 
 A later default submission restores the ordinary shortcuts. Default-only submissions keep their result types.

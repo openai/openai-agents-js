@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  appendFileSync,
   chmodSync,
+  cpSync,
   copyFileSync,
   mkdtempSync,
   mkdirSync,
@@ -46,6 +48,23 @@ function emptySeries(native: string, source: string, revision: string): void {
   writeFileSync(
     join(native, 'tests/fixtures/exec_server.rs'),
     '// Executor fixture input.\n',
+  );
+  // Audit the production payload; only Rust tool execution is synthetic.
+  const actual = resolve(import.meta.dirname, '../native');
+  for (const name of ['rust/vendor', 'rust/tests/hyper-readiness'])
+    cpSync(join(actual, name), join(native, name), { recursive: true });
+  mkdirSync(join(native, '../licenses/hyper'), { recursive: true });
+  copyFileSync(
+    join(actual, '../licenses/hyper/LICENSE'),
+    join(native, '../licenses/hyper/LICENSE'),
+  );
+  appendFileSync(
+    join(native, 'Cargo.toml'),
+    '[dependencies]\nhyper = { version = "=1.8.1", features = ["client", "server", "http1"] }\n[patch.crates-io]\nhyper = { path = "rust/vendor/hyper-1.8.1" }\n',
+  );
+  writeFileSync(
+    join(native, 'Cargo.lock'),
+    'version = 4\n[[package]]\nname = "hyper"\nversion = "1.8.1"\n',
   );
 }
 
@@ -213,6 +232,75 @@ describe('native source archive reviewed patches', () => {
       );
     return { native, source, patches, manifest, save, command };
   }
+
+  it.each([
+    'dispatch',
+    'other-source',
+    'extra',
+    'lock',
+    'fixture-lock',
+    'override',
+    'license',
+    'patch',
+    'base-inventory',
+    'joint-dispatch',
+    'joint-patch',
+  ])('rejects unreviewed fixed Hyper inputs (%s)', (mutation) => {
+    const { native, command } = fixture();
+    command('prepare');
+    const names: Record<string, string> = {
+      dispatch: 'rust/vendor/hyper-1.8.1/src/client/dispatch.rs',
+      'other-source': 'rust/vendor/hyper-1.8.1/src/lib.rs',
+      extra: 'rust/vendor/hyper-1.8.1/unreviewed.rs',
+      lock: 'Cargo.lock',
+      'fixture-lock': 'rust/tests/hyper-readiness/Cargo.lock',
+      override: 'Cargo.toml',
+      license: '../licenses/hyper/LICENSE',
+      patch: 'rust/vendor/hyper-1.8.1-readiness.patch',
+      'base-inventory': 'rust/vendor/hyper-1.8.1-provenance.json',
+      'joint-dispatch': 'rust/vendor/hyper-1.8.1/src/client/dispatch.rs',
+      'joint-patch': 'rust/vendor/hyper-1.8.1-readiness.patch',
+    };
+    const path = join(native, names[mutation]);
+    if (mutation === 'joint-dispatch' || mutation === 'joint-patch') {
+      appendFileSync(path, 'unreviewed\n');
+      const data = readFileSync(path);
+      const manifestPath = join(
+        native,
+        'rust/vendor/hyper-1.8.1-provenance.json',
+      );
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      if (mutation === 'joint-dispatch')
+        manifest.files['src/client/dispatch.rs'][1] = createHash('sha1')
+          .update(`blob ${data.length}\0`)
+          .update(data)
+          .digest('hex');
+      else
+        manifest.patch_sha256 = createHash('sha256').update(data).digest('hex');
+      writeFileSync(manifestPath, JSON.stringify(manifest));
+    } else if (mutation === 'lock' || mutation === 'fixture-lock')
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace(
+          'version = "1.8.1"',
+          'version = "1.8.2"',
+        ),
+      );
+    else if (mutation === 'override')
+      writeFileSync(
+        path,
+        readFileSync(path, 'utf8').replace(
+          'path = "rust/vendor/hyper-1.8.1"',
+          'path = "other"',
+        ),
+      );
+    else if (mutation === 'base-inventory') {
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      manifest.original_files.LICENSE[1] = '0'.repeat(40);
+      writeFileSync(path, JSON.stringify(manifest));
+    } else appendFileSync(path, 'unreviewed\n');
+    expect(() => command('audit')).toThrow();
+  });
   it('prepares the committed base plus reviewed bytes without changing the pristine cache or source checkout', () => {
     const { native, source, command } = fixture();
     command('prepare');
@@ -348,7 +436,7 @@ describe.skipIf(process.platform === 'win32')(
         emptySeries(native, source, git('rev-parse', 'HEAD'));
         writeFileSync(
           join(native, 'Cargo.lock'),
-          '[[package]]\nname = "v8"\nversion = "1.2.3"\n',
+          'version = 4\n[[package]]\nname = "hyper"\nversion = "1.8.1"\n[[package]]\nname = "v8"\nversion = "1.2.3"\n',
         );
         const downloads = host === 'x86_64-unknown-linux-gnu' && !configured;
         const windows = host.endsWith('-windows-msvc');
@@ -407,6 +495,7 @@ const output = path.join(process.env.CARGO_TARGET_DIR, ...(target ? [target] : [
 const windows = process.env.TEST_RUST_HOST.endsWith('-windows-msvc');
 const darwin = process.env.TEST_RUST_HOST.includes('-apple-');
 fs.appendFileSync(process.env.TEST_CARGO_LOG, JSON.stringify({ args, output, jobs: process.env.CARGO_BUILD_JOBS }) + '\\n');
+if (args[0] === 'test' && process.env.TEST_FAIL_HYPER_READINESS === '1') process.exit(1);
 fs.mkdirSync(output, { recursive: true });
 if (args.includes('--lib')) fs.writeFileSync(path.join(output, windows ? 'agents_codex.dll' : darwin ? 'libagents_codex.dylib' : 'libagents_codex.so'), 'addon without helper CRT flags');
 for (let i = 0; i < args.length; i++) {
@@ -498,6 +587,19 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           .split('\n')
           .map((line) => JSON.parse(line));
         expect(commands[0].args).toEqual([
+          'test',
+          '--locked',
+          '--target',
+          host,
+          '--manifest-path',
+          join(native, 'rust/tests/hyper-readiness/Cargo.toml'),
+          '--test',
+          'readiness',
+        ]);
+        expect(commands[0].output).toBe(
+          join(dir, 'target', 'hyper-readiness', host, 'debug'),
+        );
+        expect(commands[1].args).toEqual([
           'clean',
           '--locked',
           '--package',
@@ -675,6 +777,12 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
             for (const name of names) writeFileSync(join(cache, name), name);
           }
         }
+        const rejectedGate = invoke(build, { TEST_FAIL_HYPER_READINESS: '1' });
+        expect(rejectedGate.status).toBe(1);
+        expect(rejectedGate.stderr).toContain('cargo test');
+        expect(() =>
+          readFileSync(join(native, 'build-receipt.json')),
+        ).toThrow();
         // A previous receipt cannot qualify a failed build with changed inputs.
         expect(() =>
           execFileSync(

@@ -1,6 +1,6 @@
 # Load instruction files and discover skills
 
-Use `instructionFiles` to load trusted instruction files that your application selects. Use capability directories to discover skill names and descriptions for a workspace. Both features require the current [source build](building.md).
+Use `instructionFiles` to load trusted instruction files that your application selects. Use capability directories to discover skill names and descriptions for a workspace. Both features are available in `0.22.0-alpha.2`.
 
 ## Load trusted instruction files
 

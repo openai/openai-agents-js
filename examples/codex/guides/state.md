@@ -27,7 +27,7 @@ History projects a canonical accepted input's Responses record and native user i
 
 ### Inspect effective turn settings
 
-With the [current source build](building.md), a recorded turn from `session.turns()` can include `receipt: TurnReceipt`. The receipt describes the latest recorded sampling attempt within that native turn, rather than every request or the Session's current defaults. Read a child's receipt through `session.turns({ subagentId })`. The published `0.22.0-alpha.1` does not expose this receipt.
+In `0.22.0-alpha.2`, a recorded turn from `session.turns()` can include `receipt: TurnReceipt`. The receipt describes the latest recorded sampling attempt within that native turn, rather than every request or the Session's current defaults. Read a child's receipt through `session.turns({ subagentId })`. The published `0.22.0-alpha.1` does not expose this receipt.
 
 The receipt records the sampled model and reasoning effort, accepted instruction revision, developer-instruction hash, ordered instruction-file paths/sources/hashes, whether native user configuration participated, native source/build identities, approval policy, and executor settings when available. Inspect these observations when an answer appears to use different settings from those you expected. The [session configuration example](../session-configuration.ts) loads trusted instruction files, runs a scripted turn, and checks their sampled hashes and turn identity.
 
@@ -63,6 +63,8 @@ Usage has different live and serialized representations:
 This encoding applies to response, turn, and thread usage, including retained compacted records and descendant histories. Preserve those strings in JSON storage. Restore and `readSessionInstructions()` reject older unsafe numeric counters because they may already have rounded; converting such a number to a string cannot recover the original value. Core's stored history and application tool data keep their existing formats.
 
 ## Save or suspend a session
+
+Persistent storage (`LocalStorage` or `CustomStorage`) cannot export portable state with `saveState()`, `suspend()`, or `fork()`. Retain `Session.id` and reopen with the same storage backend and current application bindings.
 
 `saveState()` exports idle conversation state. `suspend()` seals a supported pending manual boundary and exports its continuation. Restore with `agent.session({ state })`, supplying current trusted declarations. Snapshots contain conversation data. They contain neither running JavaScript nor a workspace backup. Python checkpoint interchange is not supported.
 

@@ -18,6 +18,7 @@ afterEach(() => vi.restoreAllMocks());
 function ownedSpecialist() {
   const specialist = new Agent<Catalog, Summary>({
     instructions: 'Summarize.',
+    outputType: summarySchema,
   });
   const opening = Promise.withResolvers<Session<Summary, Catalog>>();
   const admitted = Promise.withResolvers<void>();

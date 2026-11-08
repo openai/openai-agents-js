@@ -5,13 +5,13 @@ Send native traces, logs, or metrics to an OpenTelemetry collector. To see the s
 ## Configure the process
 
 1. Await `telemetry.configure()` before constructing an engine or opening a Session.
-2. Run and close all Sessions.
+2. Run and close all Sessions, then close their providers.
 3. Await `telemetry.shutdown()` to request a final flush and retire the telemetry owner.
 
 The example below needs a model credential in `OPENAI_API_KEY` and an OTLP/HTTP receiver that accepts JSON logs on port 4318. Save it as `telemetry.mts` and run `npx tsx telemetry.mts` in your application.
 
 ```ts
-import { Agent, telemetry } from '@openai/agents';
+import { Agent, NativeProvider, telemetry } from '@openai/agents';
 
 await telemetry.configure({
   logs: {
@@ -22,7 +22,8 @@ await telemetry.configure({
   environment: 'dev',
 });
 try {
-  const agent = new Agent({ instructions: 'Answer clearly.' });
+  await using provider = new NativeProvider();
+  const agent = new Agent({ instructions: 'Answer clearly.', provider });
   await agent.run('Hello.');
 } finally {
   await telemetry.shutdown();
@@ -35,7 +36,7 @@ Set `environment` to label exporter resources. Use `spanAttributes` to add strin
 
 ## Trace one workflow
 
-With the current [source build](building.md), wrap a task in `telemetry.withTrace(options, callback)`. Use `telemetry.withSpan(options, callback)` inside it to time a step such as submitting a Turn. The [native telemetry example](../native-telemetry.ts) creates a named workflow and a child span, then compares exported spans with the application's receipts.
+In `0.22.0-alpha.2`, wrap a task in `telemetry.withTrace(options, callback)`. Use `telemetry.withSpan(options, callback)` inside it to time a step such as submitting a Turn. The [native telemetry example](../native-telemetry.ts) creates a named workflow and a child span, then compares exported spans with the application's receipts.
 
 Use `name` to identify the workflow and `groupId` to group related traces. Workflows record metadata by default. Set `includeSensitiveData: true` only when the workflow should include sensitive content. Children inherit their ancestors' tracing restrictions, including across queued Turns and native child agents.
 
@@ -45,7 +46,7 @@ For an application-owned trace destination, use the source-built [native trace p
 
 ## Carry a W3C parent across services
 
-With the current [source build](building.md), construct `TraceContext` from selected `traceparent` and optional `tracestate` headers, then pass it as `parentTrace` when opening a Session or starting a new operation. The [native trace context example](../native-trace-context.ts) exports `runWithTrace(headers)` for an application that supplies its own ingress instrumentation and model credentials. Configure native telemetry before calling it if you want native spans exported.
+In `0.22.0-alpha.2`, construct `TraceContext` from selected `traceparent` and optional `tracestate` headers, then pass it as `parentTrace` when opening a Session or starting a new operation. The [native trace context example](../native-trace-context.ts) exports `runWithTrace(headers)` for an application that supplies its own ingress instrumentation and model credentials. Configure native telemetry before calling it if you want native spans exported.
 
 `TraceContext` validates and freezes an explicit header carrier. Constructing it does not create a span, configure an exporter, or read an arbitrary JavaScript OpenTelemetry provider's ambient state. A tool callback receives `context.traceContext` for its issuing native tool span; pass that carrier to a nested run or call `toHeaders()` when injecting an outbound request.
 

@@ -22,7 +22,7 @@ Your application owns the provider, including the default provider created by `n
 
 Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions; create a new provider for later work.
 
-For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#port-the-contracts-that-affect-behavior).
+For JavaScript clients and custom model loops, see [classic model configuration](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) and the [provider migration guidance](migration.md#check-application-compatibility).
 
 ## Per-session configuration
 
@@ -59,7 +59,7 @@ The command prints a native Turn receipt after checking the request's effective 
 
 ## Load trusted instruction files
 
-With the current [source build](building.md), pass `instructionFiles` when opening a Session or starting a new `agent.run()`. The SDK loads each selected file as UTF-8 during opening, appends its text after the Agent instructions in the supplied order, and separates the parts with blank lines. Relative paths resolve against the application's current working directory. An unreadable file, non-file path, or invalid UTF-8 rejects opening.
+In `0.22.0-alpha.2`, pass `instructionFiles` when opening a Session or starting a new `agent.run()`. The SDK loads each selected file as UTF-8 during opening, appends its text after the Agent instructions in the supplied order, and separates the parts with blank lines. Relative paths resolve against the application's current working directory. An unreadable file, non-file path, or invalid UTF-8 rejects opening.
 
 Select files and parent directories that untrusted actors cannot modify. File contents become developer instructions. This option does not discover project files automatically or read files through an executor. Later edits to a file do not update an open Session's captured instructions.
 
@@ -67,7 +67,7 @@ The [session configuration example](../session-configuration.ts) creates two pri
 
 ## Prepare one model request
 
-With the current [source build](building.md), use `prepareRequest` to edit detached sampling instructions, input, and tool presentation. Return the edited request to apply it. Read [Prepare a native model request](request-preparation.md) for the HTTP, model, tool, compaction, and restore constraints before adding a callback.
+In `0.22.0-alpha.2`, use `prepareRequest` to edit detached sampling instructions, input, and tool presentation. Return the edited request to apply it. Read [Prepare a native model request](request-preparation.md) for the HTTP, model, tool, compaction, and restore constraints before adding a callback.
 
 ## Override opening tools
 
@@ -102,13 +102,13 @@ Before repeating an operation with uncertain effects, check the original action 
 
 ### Diagnose authentication failures
 
-With the current [source build](building.md), terminal HTTP 401 or 403 errors retain their observed status, provider code, request ID, and `authentication_error` category when available. Native authentication recovery can make another attempt before reporting a terminal 401. Once recovery ends, authentication errors report `retryable: false`, even if the server supplied `Retry-After` advice. A reported delay does not make that failure retryable.
+In `0.22.0-alpha.2`, terminal HTTP 401 or 403 errors retain their observed status, provider code, request ID, and `authentication_error` category when available. Native authentication recovery can make another attempt before reporting a terminal 401. Once recovery ends, authentication errors report `retryable: false`, even if the server supplied `Retry-After` advice. A reported delay does not make that failure retryable.
 
 Check the selected endpoint, model credential, and provider error code before starting more work. An explicit provider API key is captured by that provider; changing `OPENAI_API_KEY` does not replace it. Create a provider with corrected credentials for a new Session or supported restore, and close its Sessions before closing the old provider. A later authentication failure can follow a completed tool effect, so reconcile earlier work before repeating the operation.
 
 ### Inspect an incomplete model response
 
-With the current [source build](building.md), `NativeError.responseIntegrityReason` can identify why the runtime rejected model output. Known causes are `undecodable_output_item`, `provider_owned_tool_receipt`, `unfinished_assistant_item`, and `missing_supported_terminal_output`. The field is `null` when the runtime has no recognized cause for the selected failure. Use it for diagnosis alongside the effect information above.
+In `0.22.0-alpha.2`, `NativeError.responseIntegrityReason` can identify why the runtime rejected model output. Known causes are `undecodable_output_item`, `provider_owned_tool_receipt`, `unfinished_assistant_item`, and `missing_supported_terminal_output`. The field is `null` when the runtime has no recognized cause for the selected failure. Use it for diagnosis alongside the effect information above.
 
 ### Check the WebSocket request size
 

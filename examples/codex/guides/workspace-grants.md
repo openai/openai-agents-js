@@ -1,6 +1,6 @@
 # Choose workspace write grants
 
-With the current [source build](building.md), new local and remote Environments default to `writePolicy: 'strict'`. Command tools can write in `Environment.cwd`; set `Environment.writableRoots` to opt into additional directories. Omitting roots or passing `[]` keeps the workspace writable. Neither value creates a read-only workspace. These roots select directories, while `Environment.tools` selects operations and `capabilityDirectories` selects [skill discovery](project-guidance.md#prepare-a-skill-catalog).
+In `0.22.0-alpha.2`, new local and remote Environments default to `writePolicy: 'strict'`. Command tools can write in `Environment.cwd`; set `Environment.writableRoots` to opt into additional directories. Omitting roots or passing `[]` keeps the workspace writable. Neither value creates a read-only workspace. These roots select directories, while `Environment.tools` selects operations and `capabilityDirectories` selects [skill discovery](project-guidance.md#prepare-a-skill-catalog).
 
 ## Replace the extra roots for a new Turn
 

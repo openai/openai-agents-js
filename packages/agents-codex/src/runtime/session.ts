@@ -99,6 +99,7 @@ import {
   type TurnObservationScope,
 } from './observation';
 import { managedCallInfo } from './call-metadata';
+import { FunctionAdmission } from './function-admission';
 import {
   nativeAgentsPolicyRules,
   applyNativeAgentsApproval,
@@ -246,6 +247,7 @@ export type AcceptedSubmission = Exclude<
 export interface SessionOptions {
   /** @internal Captured native Decisions configuration; never restored from state. */
   decisionsApi?: DecisionsPolicy;
+  maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
@@ -763,12 +765,14 @@ export class InteractionRequired extends NativeError {
   }
 }
 
-const toolInvocation = new AsyncLocalStorage<{
+interface ToolInvocation {
   session: Session<unknown>;
   run?: NativeTurn;
   child?: ChildCallbackOwner;
   active: boolean;
-}>();
+  parent?: ToolInvocation;
+}
+const toolInvocation = new AsyncLocalStorage<ToolInvocation>();
 
 function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
   if (!run.toolCleanupErrors.length) return primary;
@@ -1090,6 +1094,10 @@ export class Session<OutputT = string, Context = unknown> {
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
   private readonly childCallbacks = new ChildCallbacks();
+  private readonly functionAdmissions = new WeakMap<
+    NativeTurn | ChildCallbackOwner,
+    FunctionAdmission
+  >();
   private readonly childSelections = new WeakMap<
     ChildCallbackOwner,
     OperationSelection
@@ -1524,8 +1532,11 @@ export class Session<OutputT = string, Context = unknown> {
           if (request) requests.push(request);
         }
       }
-      for (const owner of owners)
+      for (const owner of owners) {
+        if (!this.canReturnRequests(owner))
+          requests.push(...this.pendingEnteredManual(owner));
         requests.push(...this.pendingNativeQuestions(owner));
+      }
       return Object.freeze(requests);
     }
   }
@@ -3092,6 +3103,18 @@ export class Session<OutputT = string, Context = unknown> {
     );
   }
 
+  private pendingEnteredManual(
+    owner: NativeTurn | ChildCallbackOwner,
+  ): Interaction[] {
+    if (!this.canAnswerNativeQuestions(owner)) return [];
+    return [...this.manualCalls.values()].flatMap((call) => {
+      if (call.run !== owner || !call.ready || !this.manualCurrent(call.event))
+        return [];
+      const request = call.grant.request();
+      return request ? [request] : [];
+    });
+  }
+
   private canAnswerNativeQuestions(
     run: NativeTurn | ChildCallbackOwner,
   ): boolean {
@@ -3159,7 +3182,10 @@ export class Session<OutputT = string, Context = unknown> {
         ) {
           // A graceful sampling fence must not hide a decision needed by an
           // already entered tool. Force/failure/terminal still revoke grants.
-          const requests = this.pendingNativeQuestions(current, true);
+          const requests = [
+            ...this.pendingEnteredManual(current),
+            ...this.pendingNativeQuestions(current, true),
+          ];
           if (requests.length)
             return Object.freeze({ turn, requests: Object.freeze(requests) });
         }
@@ -3461,7 +3487,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.options.decisionsApi && output.identity.mode === 'prompted')
       throw new TypeError('Decisions supports only plain or native output');
     if (this.options.localStorage && output.repair)
-      throw new TypeError('Local storage does not support output repair');
+      throw new TypeError('Persistent storage does not support output repair');
     const run = new NativeTurn(() => this.assertCanWait(run));
     submissions.set(run, { output, outputOverride, observation: 'open' });
     void run.completion.promise.then(
@@ -4511,7 +4537,12 @@ export class Session<OutputT = string, Context = unknown> {
     this.childCallbacks.track(
       owner,
       async () => {
-        const scope = { session: this, child: owner, active: true };
+        const scope = {
+          session: this,
+          child: owner,
+          active: true,
+          parent: toolInvocation.getStore(),
+        };
         try {
           await toolInvocation.run(scope, () =>
             this.handleChildRequest(owner, event),
@@ -5375,7 +5406,12 @@ export class Session<OutputT = string, Context = unknown> {
     signal: AbortSignal = run.controller.signal,
     tracingContext?: string,
   ): Promise<void> {
-    const scope = { session: this, run, active: true };
+    const scope = {
+      session: this,
+      run,
+      active: true,
+      parent: toolInvocation.getStore(),
+    };
     const tracing = run.tracing ?? run.issuedTracing;
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
@@ -5415,11 +5451,11 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private checkCallbackOperation(operation: string): void {
-    const scope = toolInvocation.getStore();
-    if (scope?.active && scope.session === this)
-      throw new NativeError(
-        `A tool callback cannot ${operation} its own session`,
-      );
+    for (let scope = toolInvocation.getStore(); scope; scope = scope.parent)
+      if (scope.active && scope.session === this)
+        throw new NativeError(
+          `A tool callback cannot ${operation} its own session`,
+        );
   }
   private observeToolStart(
     owner: NativeTurn | ChildCallbackOwner,
@@ -6276,8 +6312,14 @@ export class Session<OutputT = string, Context = unknown> {
     if (tool.kind === 'manual') return;
     if (typeof msg.callId !== 'string')
       throw new NativeError('Native tool invocation has no call identity');
+    let admission = this.functionAdmissions.get(owner);
+    if (!admission && this.options.maxFunctionConcurrency !== undefined) {
+      admission = new FunctionAdmission(this.options.maxFunctionConcurrency);
+      this.functionAdmissions.set(owner, admission);
+    }
     const execute = async () => {
       if (!this.current(owner)) return;
+      admission?.check();
       this.#native._check_python_tool(encodeReceipt(msg));
       const submission = root
         ? this.#turnFor(owner)
@@ -6285,6 +6327,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (!submission) return;
       if (!root) {
         if (!this.current(owner)) return;
+        admission?.check();
         this.#native._check_python_tool(encodeReceipt(msg));
       }
       const context = {
@@ -6325,6 +6368,7 @@ export class Session<OutputT = string, Context = unknown> {
           context,
           (error) => {
             owner.failure ??= error;
+            admission?.seal(error);
             if (root)
               toolInvocation.exit(() => {
                 void this.#cancel(owner).catch((cause) =>
@@ -6360,6 +6404,12 @@ export class Session<OutputT = string, Context = unknown> {
             ? 'completed'
             : 'failed'
           : 'cancelled';
+      } catch (error) {
+        if (admission) {
+          owner.failure ??= error;
+          admission.seal(error);
+        }
+        throw error;
       } finally {
         const finalStatus = owner.controller.signal.aborted
           ? 'cancelled'
@@ -6382,29 +6432,42 @@ export class Session<OutputT = string, Context = unknown> {
         this.observeToolEnd(owner, identity, finalStatus ?? 'failed');
       }
     };
-    if (root)
-      await this.invokeTool(
-        owner,
-        JSON.stringify([
-          event.subagent_id,
-          event.subagent_instance_id,
-          msg.callId,
-        ]),
-        execute,
-        typeof msg.tracing_context === 'string'
-          ? msg.tracing_context
-          : undefined,
-      );
-    else
-      await withNativeCallbackContext(
-        typeof msg.tracing_context === 'string'
-          ? msg.tracing_context
-          : undefined,
-        execute,
-        owner.controller.signal,
-        (traceId, workflowSpanId) =>
-          this.workflowForTrace(traceId, workflowSpanId),
-      );
+    const release = admission
+      ? await admission.acquire(owner.controller.signal)
+      : undefined;
+    try {
+      if (root)
+        await this.invokeTool(
+          owner,
+          JSON.stringify([
+            event.subagent_id,
+            event.subagent_instance_id,
+            msg.callId,
+          ]),
+          execute,
+          typeof msg.tracing_context === 'string'
+            ? msg.tracing_context
+            : undefined,
+        );
+      else
+        await withNativeCallbackContext(
+          typeof msg.tracing_context === 'string'
+            ? msg.tracing_context
+            : undefined,
+          execute,
+          owner.controller.signal,
+          (traceId, workflowSpanId) =>
+            this.workflowForTrace(traceId, workflowSpanId),
+        );
+    } catch (error) {
+      if (admission) {
+        owner.failure ??= error;
+        admission.seal(error);
+      }
+      throw error;
+    } finally {
+      release?.();
+    }
   }
 
   private async childNativeTurn(
@@ -6906,6 +6969,13 @@ export class Session<OutputT = string, Context = unknown> {
       )
         throw new TypeError(
           'Decisions supports only ordinary eager function tools',
+        );
+      if (
+        this.options.customStore &&
+        next.tools.some((tool) => tool.kind === 'manual')
+      )
+        throw new TypeError(
+          'Custom canonical storage does not support manual tools',
         );
       const registration = this.options.mcpTools?.find(isHostedRegistration);
       if (
@@ -7668,7 +7738,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (options !== undefined) this.requireCompleteRepairReceipts();
     if (this.options.localStorage && options !== undefined)
       throw new TypeError(
-        'Local storage does not support compact; retain Session.id and reopen its profile',
+        'Persistent storage does not support a supplied compaction summary; use compact() without options for native compaction',
       );
     this.checkCallbackOperation('compact');
     this.idle('compact');
@@ -7856,7 +7926,7 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return 'Session is not available for checkpoint inspection';
     if (this.options.localStorage)
-      return 'Local storage cannot export SessionState';
+      return 'Persistent storage cannot export SessionState';
     if (this.pendingRoots.length) return 'Session has queued root work';
     if (this.graphStops.size) return 'Session graph is stopping';
     if (this.childCallbacks.entered().length)
@@ -7992,7 +8062,9 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Decisions does not support portable state');
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
-      throw new TypeError('Local storage does not support fork');
+      throw new TypeError(
+        'Persistent storage does not support fork; retain Session.id and reopen with the same storage backend',
+      );
     this.checkCallbackOperation('fork');
     if (this.graphStops.size || this.childContinuations.size)
       throw new NativeError('fork requires a settled Session');
@@ -8299,7 +8371,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.requireCompleteRepairReceipts();
     if (this.options.localStorage)
       throw new TypeError(
-        'Local storage does not support saveState; retain Session.id and reopen its profile',
+        'Persistent storage does not support saveState; retain Session.id and reopen with the same storage backend',
       );
     this.checkCallbackOperation('save');
     if (this.graphStops.size)
@@ -8328,7 +8400,7 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Native questions cannot be suspended or serialized');
     if (this.options.localStorage)
       throw new TypeError(
-        'Local storage does not support suspend; retain Session.id and reopen its profile',
+        'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
       );
     if (this.sealedStateJson !== undefined)
       return parseSessionState(this.sealedStateJson);
@@ -8807,7 +8879,12 @@ export class Session<OutputT = string, Context = unknown> {
       this.childCallbacks.track(
         owner,
         async () => {
-          const scope = { session: this, child: owner, active: true };
+          const scope = {
+            session: this,
+            child: owner,
+            active: true,
+            parent: toolInvocation.getStore(),
+          };
           try {
             await toolInvocation.run(scope, () =>
               withNativeCallbackContext(
@@ -9654,7 +9731,11 @@ export class Session<OutputT = string, Context = unknown> {
           if (!this.environmentDisposalFinished) {
             try {
               await this.options.environmentOwner?.dispose(async (dispose) => {
-                const scope = { session: this, active: true };
+                const scope = {
+                  session: this,
+                  active: true,
+                  parent: toolInvocation.getStore(),
+                };
                 try {
                   await toolInvocation.run(scope, dispose);
                 } finally {

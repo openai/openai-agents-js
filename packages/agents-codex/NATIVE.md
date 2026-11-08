@@ -13,7 +13,7 @@ For an existing v0 application, follow the [direct migration to native v1](../..
 - <a name="deno-and-bun"></a>[Deno and Bun](../../examples/codex/guides/installation.md#deno-and-bun)
 - <a name="build-from-source"></a>[Build from source](../../examples/codex/guides/building.md#build-from-source)
 
-The guides describe this source checkout. For the `0.22.0-alpha.1` starter, use the [installation guide](../../examples/codex/guides/installation.md) and the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md). Build the current source when a guide identifies a newer feature.
+The guides describe `0.22.0-alpha.2`. Follow the [installation guide](../../examples/codex/guides/installation.md) for its prebuilt bundles. For the earlier alpha.1 starter, use the [documentation at its release tag](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/README.md).
 
 ## Run and manage sessions
 

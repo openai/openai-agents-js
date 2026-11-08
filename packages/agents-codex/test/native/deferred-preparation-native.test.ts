@@ -209,7 +209,10 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           [message(reason === 'native output' ? '{"answer":"done"}' : 'done')],
         ]);
         await using provider = await providerFor(model);
-        await using session = await new Agent({
+        await using session = await new Agent<
+          undefined,
+          string | { answer: string }
+        >({
           instructions: 'Ask.',
           model: 'gpt-5',
           provider,

@@ -84,6 +84,8 @@ export async function evaluateCatalogCase(
   };
   let timedOut = false;
   try {
+    if (timeoutMs > 2_147_483_647)
+      throw new RangeError('timeoutMs must be at most 2147483647.');
     const lookup = tool({
       name: 'lookup',
       parameters: z.strictObject({ code: z.string() }),

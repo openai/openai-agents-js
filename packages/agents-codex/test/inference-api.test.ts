@@ -502,24 +502,23 @@ it('rejects unsupported tools and prompted output before acquiring a provider', 
     deferLoading: true,
     execute: () => 'done',
   });
-  for (const options of [
-    { tools: [deferred] },
-    {
+  const declaration = {
+    instructions: 'Choose.',
+    model: 'classifier',
+    api: 'decisions' as const,
+    provider,
+  };
+  for (const agent of [
+    new Agent({ ...declaration, tools: [deferred] }),
+    new Agent({
+      ...declaration,
       outputType: {
-        mode: 'prompted' as const,
+        mode: 'prompted',
         schema: z.object({ choice: z.enum(['a', 'b']) }),
       },
-    },
+    }),
   ])
-    await expect(
-      new Agent({
-        instructions: 'Choose.',
-        model: 'classifier',
-        api: 'decisions',
-        provider,
-        ...options,
-      }).session(),
-    ).rejects.toThrow('Decisions');
+    await expect(agent.session()).rejects.toThrow('Decisions');
   expect(acquire).not.toHaveBeenCalled();
 });
 

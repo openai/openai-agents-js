@@ -182,8 +182,12 @@ export async function runQuestionSession(
   },
   timeoutMs = 60_000,
 ): Promise<string> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
-    throw new TypeError('timeoutMs must be positive and finite.');
+  if (
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs <= 0 ||
+    timeoutMs > 2_147_483_647
+  )
+    throw new TypeError('timeoutMs must be positive and at most 2147483647.');
   await using session = await agent.session();
   const reader = session.interactions();
   const controller = new AbortController();

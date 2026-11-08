@@ -72,7 +72,7 @@ An observer's `signal` cancels only that observer. It does not answer questions,
 
 ### Wait for a supervisory outcome
 
-With the current [source build](building.md), `await turn.waitForAttention({ signal })` waits for the captured Turn's completed result, current owned interactions, or a known terminal stop that needs application action. The `0.22.0-alpha.1` bundles do not provide this method.
+In `0.22.0-alpha.2`, `await turn.waitForAttention({ signal })` waits for the captured Turn's completed result, current owned interactions, or a known terminal stop that needs application action. The `0.22.0-alpha.1` bundles do not provide this method.
 
 Narrow the returned value in this order:
 

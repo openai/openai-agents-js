@@ -6,7 +6,7 @@ Applications import `@openai/agents` and its supported subpaths. Those imports l
 
 ## Install
 
-[Install the native SDK](../../examples/codex/guides/installation.md) to run the release starter or add the SDK to an existing application. Use the [source build](../../examples/codex/guides/building.md) for current branch features such as the [A2A adapter](A2A.md) and [supervised-worker controls](../../examples/codex/supervised-worker/README.md).
+[Install the native SDK](../../examples/codex/guides/installation.md) to run the release starter or add the SDK to an existing application. The release includes the [A2A adapter](A2A.md) and [supervised-worker controls](../../examples/codex/supervised-worker/README.md). Run repository examples from a matching [source checkout](../../examples/codex/guides/building.md).
 
 ## Run an agent
 

@@ -122,7 +122,6 @@ export interface ToolDeclaration {
 }
 
 const prepareInvocation = Symbol('function tool binding');
-const namespaceBinding = Symbol('function tool namespace');
 type Invocation<Context> = (
   args: JsonValue,
   context: ToolCallContext<Context>,
@@ -137,19 +136,17 @@ export type ToolDecision<Arguments = unknown> =
   | { readonly action: 'replaceArguments'; readonly arguments: Arguments };
 
 export interface FunctionTool<Context = unknown> extends ToolDeclaration {
+  readonly namespace?: string;
+  readonly namespaceDescription?: string;
   readonly callbackTimeout?: number;
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly kind?: 'function';
   readonly [prepareInvocation]: Invocation<Context>;
-  readonly [namespaceBinding]?: Readonly<{
-    name: string;
-    description?: string;
-  }>;
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
 export function toolNamespace(tool: SessionTool): string | null {
-  return tool.kind === 'manual' ? null : (tool[namespaceBinding]?.name ?? null);
+  return tool.kind === 'manual' ? null : (tool.namespace ?? null);
 }
 
 /** @internal Core treats unnamespaced functions as the functions namespace. */
@@ -177,7 +174,8 @@ export function createNamespacedFunctionTool<Context>(options: {
     name,
     description,
     parameters,
-    [namespaceBinding]: namespace,
+    namespace: namespace.name,
+    namespaceDescription: namespace.description,
     async [prepareInvocation](
       args: JsonValue,
       context: ToolCallContext<Context>,
@@ -244,6 +242,9 @@ export function tool<
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   name: string;
+  /** Publish this function under a captured native namespace. */
+  namespace?: string;
+  namespaceDescription?: string;
   description?: string;
   parameters: T;
   /** Validate the callback result before converting it to model-visible content. */
@@ -274,6 +275,11 @@ export function tool<
       options.callbackTimeout > 2_147_483_647 / 1000)
   )
     throw new TypeError('callbackTimeout must be in (0, 2147483.647] seconds');
+  if (
+    options.namespaceDescription !== undefined &&
+    options.namespace === undefined
+  )
+    throw new TypeError('namespaceDescription requires namespace');
   const {
     name,
     parameters,
@@ -287,6 +293,8 @@ export function tool<
   } = options;
   return Object.freeze({
     name: options.name,
+    namespace: options.namespace,
+    namespaceDescription: options.namespaceDescription,
     description: options.description ?? '',
     callbackTimeout,
     timeoutBehavior,
@@ -458,13 +466,13 @@ export function captureTools(
       inputSchema: tool.parameters,
       deferLoading: tool.deferLoading ?? false,
     };
-    const namespace =
-      tool.kind === 'manual' ? undefined : tool[namespaceBinding];
-    return namespace
+    const namespace = tool.kind === 'manual' ? undefined : tool.namespace;
+    return namespace !== undefined
       ? {
           type: 'namespace',
-          name: namespace.name,
-          description: namespace.description ?? '',
+          name: namespace,
+          description:
+            tool.kind === 'manual' ? '' : (tool.namespaceDescription ?? ''),
           tools: [spec],
         }
       : spec;

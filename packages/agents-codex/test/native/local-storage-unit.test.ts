@@ -140,7 +140,7 @@ describe('local profile declarations and failed-opening lease ownership', () => 
       }),
     ])
       await expect(agent.session({ storage })).rejects.toThrow(
-        'Local storage supports',
+        'Persistent storage supports',
       );
     await expect(
       new Agent({

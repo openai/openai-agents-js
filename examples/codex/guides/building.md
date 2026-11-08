@@ -90,4 +90,4 @@ To add this build to an existing application:
 3. From the application directory, run `npm install --ignore-scripts`. This flag disables lifecycle scripts for the whole installation; complete any application-owned dependency setup separately. Retain the new lockfile together with all five tarballs, and use `npm ci --ignore-scripts` for later installs.
 4. Run the [scripted native check](../../../packages/agents-codex/TESTING.md) in that application before making a live request. It verifies the installed native tool loop without model credentials.
 
-The published `0.22.0-alpha.1` bundles predate this split and contain four tarballs. Follow their [release installation instructions](installation.md#add-the-sdk-to-an-existing-application) when using that release.
+The published `0.22.0-alpha.1` bundles predate this split and contain four tarballs. Follow their [release installation instructions](https://github.com/openai/openai-agents-js/blob/v0.22.0-alpha.1/examples/codex/guides/installation.md#add-the-sdk-to-an-existing-application) when using that release.

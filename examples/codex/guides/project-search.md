@@ -1,6 +1,6 @@
 # Search project files with structured tools
 
-The current source build supports `project_glob` and `project_grep`. Select either tool in `Environment.tools`. Both tools search the selected executor, including a remote WSS executor. They do not need command tools or project guidance. See the [project search example](../project-search.ts).
+The `0.22.0-alpha.2` release supports `project_glob` and `project_grep`. Select either tool in `Environment.tools`. Both tools search the selected executor, including a remote WSS executor. They do not need command tools or project guidance. See the [project search example](../project-search.ts).
 
 The trusted root is the Environment's opening `cwd`. A tool call cannot replace that root. Its optional `path` narrows the search to a relative subdirectory and defaults to `.`. Paths cannot contain `..`, absolute paths, file URIs, or backslashes. The tools reject symlink components, including a symlink in the root path.
 

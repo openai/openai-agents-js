@@ -314,6 +314,58 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       server.assertExhausted();
     });
 
+    it('dispatches the selected namespace when eager functions share a short name', async () => {
+      const effects: string[] = [];
+      const server = new ModelServer([
+        route('namespaced-route', 'route_2'),
+        (request) => {
+          const fields = questions(request);
+          expect(fields).toHaveLength(1);
+          expect(JSON.stringify(fields)).toContain('support');
+          expect(JSON.stringify(fields)).toContain('lookup');
+          return decision('namespaced-fields', fields.map(fieldAnswer));
+        },
+        (request) => {
+          expect(JSON.stringify(request.input)).toContain(
+            'NAMESPACED_LOOKUP_RESULT',
+          );
+          return route('namespaced-final', 'route_0')(request);
+        },
+      ]);
+      const paths = fixturePaths(server);
+      await using provider = await providerFor(server);
+      const lookupIn = (namespace: string) =>
+        tool({
+          name: 'lookup',
+          namespace,
+          description: 'Look up the selected category.',
+          parameters: z.strictObject({
+            category: z.enum(['billing', 'technical']),
+          }),
+          execute: ({ category }) => {
+            effects.push(`${namespace}:${category}`);
+            return 'NAMESPACED_LOOKUP_RESULT';
+          },
+        });
+      const agent = new Agent({
+        instructions: 'Use the selected lookup and return done.',
+        provider,
+        api: 'decisions',
+        tools: [lookupIn('sales'), lookupIn('support')],
+        outputType: z.strictObject({ status: z.literal('done') }),
+      });
+      const result = await agent.run('Look up the technical category.');
+      expect(result.finalOutput).toEqual({ status: 'done' });
+      expect(effects).toEqual(['support:technical']);
+      expect(result.threadUsage?.totalTokenUsage.totalTokens).toBe(30);
+      expect(paths).toEqual([
+        '/v1/decisions',
+        '/v1/decisions',
+        '/v1/decisions',
+      ]);
+      server.assertExhausted();
+    });
+
     it.each([
       'unsupported selected route',
       'low selected probability',

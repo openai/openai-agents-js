@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { decode, jsonValue, type JsonValue } from './binding';
+import { copyJsonValue, decode, jsonValue, type JsonValue } from './binding';
 import type { ThreadOptions } from './options';
 import type { ToolCallInfo } from './call-metadata';
 import { outputOf, type ToolDeclaration, type ToolResponse } from './tools';
@@ -85,8 +85,19 @@ export function supportsManualCheckpoint(
   );
 }
 
-/** Declare a function whose result the application supplies, without an execution callback. */
-export function manualTool<P extends z.ZodType, R extends z.ZodType>(options: {
+type JsonData =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonData[]
+  | { readonly [key: string]: JsonData };
+
+/** Declare a manual function with JSON-compatible parsed arguments, including readonly data. */
+export function manualTool<
+  P extends z.ZodType<JsonData>,
+  R extends z.ZodType,
+>(options: {
   name: string;
   description: string;
   parameters: P;
@@ -184,9 +195,9 @@ export function createManualRequest<Input, Result>(
       throw new TypeError('Manual tool request is no longer active');
   };
   checkCurrent();
-  let parsed: unknown;
+  let parsed: JsonValue;
   try {
-    parsed = definition.parseInput(args);
+    parsed = copyJsonValue(definition.parseInput(args));
   } catch {
     throw new TypeError('Manual tool arguments failed validation');
   }
@@ -207,7 +218,7 @@ export function createManualRequest<Input, Result>(
         callId: identity.callId,
         call: identity.call,
         get arguments() {
-          return structuredClone(parsed) as Input;
+          return copyJsonValue(parsed) as Input;
         },
         reply(value: Result): ManualToolReply<Result> {
           const reply = Object.freeze({}) as ManualToolReply<Result>;

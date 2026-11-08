@@ -339,7 +339,7 @@ export class ObservationBuffer {
       );
     let closed = false;
     let reading = false;
-    const seen = scope ? undefined : new Set<ManualToolRequest>();
+    const seen = scope ? undefined : new WeakSet<ManualToolRequest>();
     const close = () => {
       closed = true;
       this.notify();

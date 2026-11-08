@@ -1589,7 +1589,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
-        self.tools.has_manual_tools()
+        // Core admits each callback independently. A waiting callback must not
+        // prevent an automatic or manual sibling from producing its result.
+        true
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {

@@ -54,7 +54,7 @@ Use the signal or control that owns the work you want to stop:
 | `session.interrupt()` | Requests a stop with the selected scope and mode, and discards queued roots. | When the stop is accepted. |
 | `session.close()` | Stops all work owned by the Session and releases its resources. | After owned work and cleanup settle. |
 
-The current source build also provides `turn.waitForAttention({ signal })`; its signal cancels only that observer. See [supervisory outcomes](interactions.md#wait-for-a-supervisory-outcome).
+The `0.22.0-alpha.2` release also provides `turn.waitForAttention({ signal })`; its signal cancels only that observer. See [supervisory outcomes](interactions.md#wait-for-a-supervisory-outcome).
 
 For an owned task with a deadline, pass an `AbortSignal` to `agent.run()`. In an explicit Session, aborting a request waiter does not stop the task. If the application abandons that root, await `turn.cancel()` and close the Session in `finally`. If submission has not returned a Turn yet, close the Session and join the pending submission. The [supervised worker](../supervised-worker/README.md#set-deadlines) shows both deadline paths with the current source build.
 
@@ -78,7 +78,7 @@ The reader ends when its Turn finishes publishing observations, even when an old
 
 ### Inspect execution details
 
-With the current [source build](building.md), event readers can opt into execution payloads with `includeExecutionDetails: true`. The `0.22.0-alpha.1` bundles do not provide this option. By default, an `execution_item_completed` observation contains only the item's type, IDs, and status. A detailed reader can also receive command output, file changes, or MCP arguments and results, depending on the item type.
+In `0.22.0-alpha.2`, event readers can opt into execution payloads with `includeExecutionDetails: true`. The `0.22.0-alpha.1` bundles do not provide this option. By default, an `execution_item_completed` observation contains only the item's type, IDs, and status. A detailed reader can also receive command output, file changes, or MCP arguments and results, depending on the item type.
 
 Read `turn.events({ includeExecutionDetails: true })` and select observations whose `type` is `execution_item_completed`. For command output, narrow `event.item.type` to `command_execution`, check that `output` exists on the item, and collect only non-null `event.item.output` strings. After the reader ends, await `turn.wait()` for the validated result or failure. Close the owning Session in `finally`, including when reading or validation fails. The [native receipt test](../../../packages/agents-codex/test/native/worker-receipts-native.test.ts) compares detailed command observations with retained command history.
 
@@ -90,7 +90,7 @@ Both projections use the same bounded event buffer. A slow or reconnecting reade
 
 Use `turn.steer(input)` when new input should follow that captured root through its owned continuations. `session.submit(input)` rejects while busy. Use `enqueue()` for separate work.
 
-With the current [source build](building.md), `turn.steerExact(input, expectedTurnId)` instead targets one native step. The `0.22.0-alpha.1` bundles do not provide this method. Capture the expected ID from the `turn_started` observation for the step that the application displayed. A root's `turn.turnId` remains its initial native ID even after a continuation starts, so that property cannot identify a later step.
+In `0.22.0-alpha.2`, `turn.steerExact(input, expectedTurnId)` instead targets one native step. The `0.22.0-alpha.1` bundles do not provide this method. Capture the expected ID from the `turn_started` observation for the step that the application displayed. A root's `turn.turnId` remains its initial native ID even after a continuation starts, so that property cannot identify a later step.
 
 Pass the captured observation's `turnId` as `expectedTurnId`. Handle `StaleTurnError` when that step has ended or been replaced; the SDK rejects the attempt instead of targeting the successor. The [root control tests](../../../packages/agents-codex/test/native/turn-controls.test.ts) exercise exact steering across native continuations.
 
