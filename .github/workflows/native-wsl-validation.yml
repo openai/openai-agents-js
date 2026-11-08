@@ -39,6 +39,7 @@ jobs:
           function Invoke-Wsl([string] $Stage, [string[]] $Arguments) {
             $output = & wsl.exe @Arguments 2>&1 | Out-String
             $code = $LASTEXITCODE
+            $output = $output.Replace("`0", '').Trim()
             if ($code -ne 0) {
               $failure = [Exception]::new('WSL command failed.')
               $failure.Data['native_exit_code'] = $code
@@ -46,7 +47,7 @@ jobs:
               $failure.Data['error_codes'] = @([regex]::Matches($output, '(?:Wsl/[A-Za-z0-9_/-]+|HCS_E_[A-Z0-9_]+|0x[0-9A-Fa-f]{8})') | ForEach-Object { $_.Value } | Select-Object -Unique)
               throw $failure
             }
-            return $output.Replace("`0", '').Trim()
+            return $output
           }
           function Test-Capability([string] $Name, [scriptblock] $Probe) {
             try {
@@ -55,9 +56,11 @@ jobs:
             } catch {
               # Keep native output and environment values out of public diagnostics.
               $report.capabilities[$Name] = @{ status = 'failed' }
+              if ($_.Exception.Data.Contains('stage')) {
+                $report.capabilities[$Name].stage = $_.Exception.Data['stage']
+              }
               if ($_.Exception.Data.Contains('native_exit_code')) {
                 $report.capabilities[$Name].native_exit_code = $_.Exception.Data['native_exit_code']
-                $report.capabilities[$Name].stage = $_.Exception.Data['stage']
                 $report.capabilities[$Name].error_codes = $_.Exception.Data['error_codes']
               }
             }
@@ -79,11 +82,28 @@ jobs:
               $report['default_wsl_version'] = [int] $Matches[1]
             }
             Save-Report
+            Invoke-Wsl -Stage 'set_default_wsl2' -Arguments @('--set-default-version', '2') | Out-Null
             Invoke-Wsl -Stage 'install_distro' -Arguments @('--install', '-d', 'Ubuntu-24.04', '--no-launch', '--web-download') | Out-Null
-            Invoke-Wsl -Stage 'set_wsl2' -Arguments @('--set-version', 'Ubuntu-24.04', '2') | Out-Null
+            $report['distro_registered'] = $false
             $list = Invoke-Wsl -Stage 'list_distro_version' -Arguments @('--list', '--verbose')
+            if ($list -match '(?m)^\s*\*?\s*Ubuntu-24\.04\s+\S+\s+([12])\s*$') {
+              $report['distro_registered'] = $true
+              $report['distro_version_before_conversion'] = [int] $Matches[1]
+            }
+            Save-Report
+            if (-not $report.distro_registered) {
+              $failure = [Exception]::new('Installed distro registration is not visible.')
+              $failure.Data['stage'] = 'verify_registration'
+              throw $failure
+            }
+            if ($report.distro_version_before_conversion -eq 1) {
+              Invoke-Wsl -Stage 'convert_wsl1_to_wsl2' -Arguments @('--set-version', 'Ubuntu-24.04', '2') | Out-Null
+              $list = Invoke-Wsl -Stage 'verify_conversion' -Arguments @('--list', '--verbose')
+            }
             if ($list -notmatch '(?m)^\s*\*?\s*Ubuntu-24\.04\s+\S+\s+2\s*$') {
-              throw 'The probe distro is not listed as WSL2.'
+              $failure = [Exception]::new('The registered probe distro is not listed as WSL2.')
+              $failure.Data['stage'] = 'verify_wsl2'
+              throw $failure
             }
             Invoke-Wsl -Stage 'launch_linux' -Arguments @('-d', 'Ubuntu-24.04', '-u', 'root', '--', '/bin/sh', '-c', 'test "$(uname -s)" = Linux') | Out-Null
           }
